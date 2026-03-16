@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.nyc_output/
+*.db
+*.db-shm
+*.db-wal
+.env
+.DS_Store
+docs-generated/
