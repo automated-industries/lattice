@@ -1,0 +1,13 @@
+src/
+tests/
+examples/
+.github/
+*.tsbuildinfo
+coverage/
+docs-generated/
+tsconfig*.json
+vitest.config.ts
+eslint.config.js
+.prettierrc
+.prettierignore
+NOTICE
