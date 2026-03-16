@@ -97,7 +97,7 @@ export class SchemaManager {
   ): void {
     const existing = adapter
       .all(`PRAGMA table_info("${table}")`)
-      .map((r) => r['name'] as string);
+      .map((r) => r.name as string);
 
     for (const [col, type] of Object.entries(columns)) {
       if (!existing.includes(col)) {

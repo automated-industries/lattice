@@ -22,8 +22,8 @@ describe('Lattice (integration)', () => {
       columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', active: 'INTEGER DEFAULT 1' },
       render: (rows) =>
         rows
-          .filter((r) => r['active'])
-          .map((r) => `- ${r['name'] as string}`)
+          .filter((r) => r.active)
+          .map((r) => `- ${r.name as string}`)
           .join('\n'),
       outputFile: 'bots.md',
     });
@@ -54,7 +54,7 @@ describe('Lattice (integration)', () => {
     await db.insert('bots', { id: 'b1', name: 'Alpha' });
     await db.upsert('bots', { id: 'b1', name: 'Alpha Updated' });
     const row = await db.get('bots', 'b1');
-    expect(row?.['name']).toBe('Alpha Updated');
+    expect(row?.name).toBe('Alpha Updated');
   });
 
   it('delete removes a row', async () => {
@@ -97,7 +97,7 @@ describe('Lattice (integration)', () => {
     });
     auditDb.define('bots', {
       columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL' },
-      render: (rows) => rows.map((r) => r['name'] as string).join('\n'),
+      render: (rows) => rows.map((r) => r.name as string).join('\n'),
       outputFile: 'bots.md',
     });
     await auditDb.init();

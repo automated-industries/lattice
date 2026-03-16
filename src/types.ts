@@ -88,12 +88,12 @@ export interface SyncResult extends RenderResult {
 
 export type StopFn = () => void;
 
-export type AuditEvent = {
+export interface AuditEvent {
   table: string;
   operation: 'insert' | 'update' | 'delete';
   id: string;
   timestamp: string;
-};
+}
 
 export type LatticeEvent =
   | { type: 'audit'; data: AuditEvent }
