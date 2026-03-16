@@ -5,12 +5,20 @@ const SUSPICIOUS_PATTERNS = [
   /<script[\s\S]*?>/i,
   /javascript:/i,
   /\.\.[/\\]/,
+  // Intentional null-byte check — eslint-disable to allow control char in regex
+  // eslint-disable-next-line no-control-regex
   /\x00/,
 ];
 
+// Control characters to strip: \x01-\x08, \x0b, \x0c, \x0e-\x1f, \x7f (keep \t, \n, \r)
+// eslint-disable-next-line no-control-regex
+const NULL_BYTE_RE = /\x00/g;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_RE = /[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
 export class Sanitizer {
   private readonly _options: Required<SecurityOptions>;
-  private readonly _auditHandlers: Array<(event: AuditEvent) => void> = [];
+  private readonly _auditHandlers: ((event: AuditEvent) => void)[] = [];
 
   constructor(options: SecurityOptions = {}) {
     this._options = {
@@ -31,10 +39,8 @@ export class Sanitizer {
     for (const [key, val] of Object.entries(row)) {
       if (typeof val === 'string') {
         let s = val
-          // Strip null bytes
-          .replace(/\x00/g, '')
-          // Strip dangerous control chars (keep tab/newline/CR)
-          .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+          .replace(NULL_BYTE_RE, '')
+          .replace(CONTROL_CHAR_RE, '');
 
         // Apply field limit
         const limit = this._options.fieldLimits[key];

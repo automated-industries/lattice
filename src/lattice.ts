@@ -15,13 +15,13 @@ import type {
   AuditEvent,
   LatticeEvent,
 } from './types.js';
+import type Database from 'better-sqlite3';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { SchemaManager } from './schema/manager.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine } from './render/engine.js';
 import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
-import type { Database } from 'better-sqlite3';
 
 type EventHandler<T> = (data: T) => void;
 
@@ -40,10 +40,10 @@ export class Lattice {
   private readonly _errorHandlers: EventHandler<Error>[] = [];
 
   constructor(path: string, options: LatticeOptions = {}) {
-    this._adapter = new SQLiteAdapter(path, {
-      wal: options.wal,
-      busyTimeout: options.busyTimeout,
-    });
+    const adapterOpts: { wal?: boolean; busyTimeout?: number } = {};
+    if (options.wal !== undefined) adapterOpts.wal = options.wal;
+    if (options.busyTimeout !== undefined) adapterOpts.busyTimeout = options.busyTimeout;
+    this._adapter = new SQLiteAdapter(path, adapterOpts);
     this._schema = new SchemaManager();
     this._sanitizer = new Sanitizer(options.security);
     this._render = new RenderEngine(this._schema, this._adapter);
@@ -76,9 +76,9 @@ export class Lattice {
     return this;
   }
 
-  async init(options: InitOptions = {}): Promise<void> {
+  init(options: InitOptions = {}): Promise<void> {
     if (this._initialized) {
-      throw new Error('Lattice: init() has already been called');
+      return Promise.reject(new Error('Lattice: init() has already been called'));
     }
     this._adapter.open();
     this._schema.applySchema(this._adapter);
@@ -86,6 +86,7 @@ export class Lattice {
       this._schema.applyMigrations(this._adapter, options.migrations);
     }
     this._initialized = true;
+    return Promise.resolve();
   }
 
   close(): void {
@@ -97,10 +98,12 @@ export class Lattice {
   // CRUD
   // -------------------------------------------------------------------------
 
-  async insert(table: string, row: Row): Promise<string> {
-    this._assertInit();
+  insert(table: string, row: Row): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+
     const sanitized = this._sanitizer.sanitizeRow(row);
-    const id = (sanitized['id'] as string | undefined) ?? uuidv4();
+    const id = (sanitized.id as string | undefined) ?? uuidv4();
     const rowWithId = { ...sanitized, id };
 
     const cols = Object.keys(rowWithId).map((c) => `"${c}"`).join(', ');
@@ -112,14 +115,16 @@ export class Lattice {
       values,
     );
 
-    this._sanitizer.emitAudit(table, 'insert', String(id));
-    return String(id);
+    this._sanitizer.emitAudit(table, 'insert', id);
+    return Promise.resolve(id);
   }
 
-  async upsert(table: string, row: Row): Promise<string> {
-    this._assertInit();
+  upsert(table: string, row: Row): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+
     const sanitized = this._sanitizer.sanitizeRow(row);
-    const id = (sanitized['id'] as string | undefined) ?? uuidv4();
+    const id = (sanitized.id as string | undefined) ?? uuidv4();
     const rowWithId = { ...sanitized, id };
 
     const cols = Object.keys(rowWithId).map((c) => `"${c}"`).join(', ');
@@ -135,30 +140,29 @@ export class Lattice {
       values,
     );
 
-    this._sanitizer.emitAudit(table, 'update', String(id));
-    return String(id);
+    this._sanitizer.emitAudit(table, 'update', id);
+    return Promise.resolve(id);
   }
 
-  async upsertBy(
-    table: string,
-    col: string,
-    val: unknown,
-    row: Row,
-  ): Promise<string> {
-    this._assertInit();
+  upsertBy(table: string, col: string, val: unknown, row: Row): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+
     const existing = this._adapter.get(
       `SELECT id FROM "${table}" WHERE "${col}" = ?`,
       [val],
     );
     if (existing) {
-      await this.update(table, String(existing['id']), row);
-      return String(existing['id']);
+      const existingId = String(existing.id);
+      return this.update(table, existingId, row).then(() => existingId);
     }
     return this.insert(table, { ...row, [col]: val });
   }
 
-  async update(table: string, id: string, row: Partial<Row>): Promise<void> {
-    this._assertInit();
+  update(table: string, id: string, row: Partial<Row>): Promise<void> {
+    const notInit = this._notInitError<void>();
+    if (notInit) return notInit;
+
     const sanitized = this._sanitizer.sanitizeRow(row as Row);
     const setCols = Object.keys(sanitized)
       .map((c) => `"${c}" = ?`)
@@ -167,16 +171,22 @@ export class Lattice {
 
     this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE "id" = ?`, values);
     this._sanitizer.emitAudit(table, 'update', id);
+    return Promise.resolve();
   }
 
-  async delete(table: string, id: string): Promise<void> {
-    this._assertInit();
+  delete(table: string, id: string): Promise<void> {
+    const notInit = this._notInitError<void>();
+    if (notInit) return notInit;
+
     this._adapter.run(`DELETE FROM "${table}" WHERE "id" = ?`, [id]);
     this._sanitizer.emitAudit(table, 'delete', id);
+    return Promise.resolve();
   }
 
-  async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
-    this._assertInit();
+  query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+
     let sql = `SELECT * FROM "${table}"`;
     const params: unknown[] = [];
 
@@ -192,24 +202,30 @@ export class Lattice {
       sql += ` ORDER BY "${opts.orderBy}" ${dir}`;
     }
     if (opts.limit !== undefined) {
-      sql += ` LIMIT ${opts.limit}`;
+      sql += ` LIMIT ${opts.limit.toString()}`;
     }
     if (opts.offset !== undefined) {
-      sql += ` OFFSET ${opts.offset}`;
+      // SQLite requires LIMIT before OFFSET; use -1 (unlimited) if no explicit limit
+      if (opts.limit === undefined) sql += ' LIMIT -1';
+      sql += ` OFFSET ${opts.offset.toString()}`;
     }
 
-    return this._adapter.all(sql, params);
+    return Promise.resolve(this._adapter.all(sql, params));
   }
 
-  async get(table: string, id: string): Promise<Row | null> {
-    this._assertInit();
-    return (
-      this._adapter.get(`SELECT * FROM "${table}" WHERE "id" = ?`, [id]) ?? null
+  get(table: string, id: string): Promise<Row | null> {
+    const notInit = this._notInitError<Row | null>();
+    if (notInit) return notInit;
+
+    return Promise.resolve(
+      this._adapter.get(`SELECT * FROM "${table}" WHERE "id" = ?`, [id]) ?? null,
     );
   }
 
-  async count(table: string, opts: CountOptions = {}): Promise<number> {
-    this._assertInit();
+  count(table: string, opts: CountOptions = {}): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+
     let sql = `SELECT COUNT(*) as n FROM "${table}"`;
     const params: unknown[] = [];
 
@@ -222,7 +238,7 @@ export class Lattice {
     }
 
     const row = this._adapter.get(sql, params);
-    return Number(row?.['n'] ?? 0);
+    return Promise.resolve(Number(row?.n ?? 0));
   }
 
   // -------------------------------------------------------------------------
@@ -230,14 +246,18 @@ export class Lattice {
   // -------------------------------------------------------------------------
 
   async render(outputDir: string): Promise<RenderResult> {
-    this._assertInit();
+    const notInit = this._notInitError<RenderResult>();
+    if (notInit) return notInit;
+
     const result = await this._render.render(outputDir);
     for (const h of this._renderHandlers) h(result);
     return result;
   }
 
   async sync(outputDir: string): Promise<SyncResult> {
-    this._assertInit();
+    const notInit = this._notInitError<SyncResult>();
+    if (notInit) return notInit;
+
     const renderResult = await this._render.render(outputDir);
     for (const h of this._renderHandlers) h(renderResult);
 
@@ -246,9 +266,11 @@ export class Lattice {
     return { ...renderResult, writebackProcessed };
   }
 
-  async watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {
-    this._assertInit();
-    return this._loop.watch(outputDir, {
+  watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {
+    const notInit = this._notInitError<StopFn>();
+    if (notInit) return notInit;
+
+    const stop = this._loop.watch(outputDir, {
       ...opts,
       onRender: (result) => {
         opts.onRender?.(result);
@@ -259,6 +281,7 @@ export class Lattice {
         for (const h of this._errorHandlers) h(err);
       },
     });
+    return Promise.resolve(stop);
   }
 
   // -------------------------------------------------------------------------
@@ -272,7 +295,14 @@ export class Lattice {
     handler: EventHandler<{ filePath: string; entriesProcessed: number }>,
   ): this;
   on(event: 'error', handler: EventHandler<Error>): this;
-  on(event: LatticeEvent['type'], handler: EventHandler<unknown>): this {
+  on(
+    event: LatticeEvent['type'],
+    handler:
+      | EventHandler<AuditEvent>
+      | EventHandler<RenderResult>
+      | EventHandler<{ filePath: string; entriesProcessed: number }>
+      | EventHandler<Error>,
+  ): this {
     switch (event) {
       case 'audit':
         this._auditHandlers.push(handler as EventHandler<AuditEvent>);
@@ -296,18 +326,22 @@ export class Lattice {
   // Escape hatch
   // -------------------------------------------------------------------------
 
-  get db(): Database {
-    return this._adapter.db as unknown as Database;
+  get db(): Database.Database {
+    return this._adapter.db;
   }
 
   // -------------------------------------------------------------------------
   // Private
   // -------------------------------------------------------------------------
 
-  private _assertInit(): void {
+  /** Returns a rejected Promise if not initialized; null if ready. */
+  private _notInitError<T>(): Promise<T> | null {
     if (!this._initialized) {
-      throw new Error('Lattice: call await db.init() before using CRUD or sync methods');
+      return Promise.reject(
+        new Error('Lattice: call await db.init() before using CRUD or sync methods'),
+      ) as Promise<T>;
     }
+    return null;
   }
 
   private _assertNotInit(method: string): void {
