@@ -21,7 +21,7 @@ export class SQLiteAdapter implements StorageAdapter {
 
   open(): void {
     this._db = new Database(this._path);
-    this._db.pragma(`busy_timeout = ${this._busyTimeout}`);
+    this._db.pragma(`busy_timeout = ${this._busyTimeout.toString()}`);
     if (this._wal) {
       this._db.pragma('journal_mode = WAL');
     }
