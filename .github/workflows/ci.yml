@@ -38,7 +38,7 @@ jobs:
         run: npm run build
 
       - name: Verify ESM import
-        run: node -e "import('./dist/index.mjs').then(m => { if (!m.Lattice) throw new Error('ESM export missing'); console.log('ESM OK'); })"
+        run: node -e "import('./dist/index.js').then(m => { if (!m.Lattice) throw new Error('ESM export missing'); console.log('ESM OK'); })"
 
       - name: Verify CJS require
-        run: node -e "const m = require('./dist/index.js'); if (!m.Lattice) throw new Error('CJS export missing'); console.log('CJS OK');"
+        run: node -e "const m = require('./dist/index.cjs'); if (!m.Lattice) throw new Error('CJS export missing'); console.log('CJS OK');"
