@@ -116,10 +116,7 @@ function _enrichRow(
 
     try {
       const refCol = rel.references ?? schema.getPrimaryKey(rel.table)[0] ?? 'id';
-      const relRow = adapter.get(
-        `SELECT * FROM "${rel.table}" WHERE "${refCol}" = ?`,
-        [fkValue],
-      );
+      const relRow = adapter.get(`SELECT * FROM "${rel.table}" WHERE "${refCol}" = ?`, [fkValue]);
       if (relRow) {
         enriched[relName] = relRow;
       }
@@ -135,10 +132,7 @@ function _enrichRow(
 // Internal — built-in renderers
 // ---------------------------------------------------------------------------
 
-function _applyFormatRow(
-  row: Row,
-  formatRow: ((row: Row) => string) | string | undefined,
-): string {
+function _applyFormatRow(row: Row, formatRow: ((row: Row) => string) | string | undefined): string {
   if (formatRow == null) {
     return Object.entries(row)
       .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
@@ -149,10 +143,7 @@ function _applyFormatRow(
 }
 
 /** One bullet point per row: `- <formatted content>` */
-function _renderList(
-  rows: Row[],
-  formatRow: ((row: Row) => string) | string | undefined,
-): string {
+function _renderList(rows: Row[], formatRow: ((row: Row) => string) | string | undefined): string {
   if (rows.length === 0) return '';
   return rows.map((row) => `- ${_applyFormatRow(row, formatRow)}`).join('\n');
 }
@@ -166,7 +157,15 @@ function _renderTable(rows: Row[]): string {
   const headerRow = `| ${headers.join(' | ')} |`;
   const separatorRow = `| ${headers.map(() => '---').join(' | ')} |`;
   const bodyRows = rows
-    .map((row) => `| ${headers.map((h) => { const v = row[h]; return v == null ? '' : String(v as string | number | boolean); }).join(' | ')} |`)
+    .map(
+      (row) =>
+        `| ${headers
+          .map((h) => {
+            const v = row[h];
+            return v == null ? '' : String(v as string | number | boolean);
+          })
+          .join(' | ')} |`,
+    )
     .join('\n');
   return [headerRow, separatorRow, bodyRows].join('\n');
 }
@@ -191,15 +190,17 @@ function _renderDetail(
 
   return rows
     .map((row) => {
-      const pkVal = pkCols.map((col) => { const v = row[col]; return v == null ? '' : String(v as string | number | boolean); }).join(':');
+      const pkVal = pkCols
+        .map((col) => {
+          const v = row[col];
+          return v == null ? '' : String(v as string | number | boolean);
+        })
+        .join(':');
       const heading = `## ${pkVal}`;
 
       let body: string;
       if (formatRow != null) {
-        body =
-          typeof formatRow === 'function'
-            ? formatRow(row)
-            : interpolate(formatRow, row);
+        body = typeof formatRow === 'function' ? formatRow(row) : interpolate(formatRow, row);
       } else {
         body = Object.entries(row)
           .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)

@@ -65,9 +65,7 @@ describe('interpolate()', () => {
   });
 
   it('resolves two levels of dot notation', () => {
-    expect(
-      interpolate('{{a.b.c}}', { a: { b: { c: 'deep' } } }),
-    ).toBe('deep');
+    expect(interpolate('{{a.b.c}}', { a: { b: { c: 'deep' } } })).toBe('deep');
   });
 
   it('resolves sibling tokens on nested objects', () => {

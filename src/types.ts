@@ -254,10 +254,7 @@ export interface WritebackDefinition {
   /** Path or glob to agent-written files */
   file: string;
   /** Parse new file content starting at fromOffset; return entries and next offset */
-  parse: (
-    content: string,
-    fromOffset: number,
-  ) => { entries: unknown[]; nextOffset: number };
+  parse: (content: string, fromOffset: number) => { entries: unknown[]; nextOffset: number };
   /** Persist a single parsed entry; called exactly once per unique dedupeKey */
   persist: (entry: unknown, filePath: string) => Promise<void>;
   /** Optional dedup key — if omitted, every entry is processed */

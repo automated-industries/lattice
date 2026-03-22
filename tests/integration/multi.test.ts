@@ -45,9 +45,7 @@ describe('defineMulti', () => {
       outputFile: (bot) => `bots/${bot.name as string}/CONTEXT.md`,
       tables: ['tasks'],
       render: (bot, tables) => {
-        const myTasks = (tables.tasks ?? []).filter(
-          (t) => t.bot_id === bot.id,
-        );
+        const myTasks = (tables.tasks ?? []).filter((t) => t.bot_id === bot.id);
         return `# ${bot.name as string}\n\nTasks: ${myTasks.length.toString()}`;
       },
     });
@@ -91,7 +89,9 @@ describe('upsertBy', () => {
     await db.init();
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => {
+    db.close();
+  });
 
   it('inserts a new row if not found by column', async () => {
     await db.upsertBy('bots', 'name', 'Alpha', { persona: 'You are Alpha.' });
@@ -133,7 +133,9 @@ describe('query options', () => {
     await db.insert('items', { id: 'i3', name: 'Gamma', score: 2 });
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => {
+    db.close();
+  });
 
   it('orderBy ascending', async () => {
     const rows = await db.query('items', { orderBy: 'score', orderDir: 'asc' });
