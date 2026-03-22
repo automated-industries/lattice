@@ -47,36 +47,36 @@ db: ./data/cms.db
 entities:
   author:
     fields:
-      id:       { type: uuid, primaryKey: true }
-      slug:     { type: text, required: true }
-      name:     { type: text, required: true }
-      email:    { type: text, required: true }
-      bio:      { type: text }
-      active:   { type: boolean, default: 1 }
+      id: { type: uuid, primaryKey: true }
+      slug: { type: text, required: true }
+      name: { type: text, required: true }
+      email: { type: text, required: true }
+      bio: { type: text }
+      active: { type: boolean, default: 1 }
     render: default-table
     outputFile: context/AUTHORS.md
 
   tag:
     fields:
-      id:    { type: uuid, primaryKey: true }
+      id: { type: uuid, primaryKey: true }
       label: { type: text, required: true }
     render: default-list
     outputFile: context/TAGS.md
 
   post:
     fields:
-      id:           { type: uuid,     primaryKey: true }
-      slug:         { type: text,     required: true }
-      title:        { type: text,     required: true }
-      excerpt:      { type: text }
-      status:       { type: text,     default: draft }
-      author_id:    { type: uuid,     ref: author }
-      word_count:   { type: integer,  default: 0 }
+      id: { type: uuid, primaryKey: true }
+      slug: { type: text, required: true }
+      title: { type: text, required: true }
+      excerpt: { type: text }
+      status: { type: text, default: draft }
+      author_id: { type: uuid, ref: author }
+      word_count: { type: integer, default: 0 }
       published_at: { type: datetime }
-      updated_at:   { type: datetime }
+      updated_at: { type: datetime }
     render:
       template: default-detail
-      formatRow: "**{{title}}** [{{status}}] by {{author.name}} — {{word_count}} words"
+      formatRow: '**{{title}}** [{{status}}] by {{author.name}} — {{word_count}} words'
     outputFile: context/POSTS.md
 ```
 
@@ -115,11 +115,11 @@ db.defineMulti('author-context', {
 
   render: (author, tables) => {
     const authorPosts = (tables.post ?? [])
-      .filter(p => p.author_id === author.id)
+      .filter((p) => p.author_id === author.id)
       .sort((a, b) => String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? '')));
 
-    const published = authorPosts.filter(p => p.status === 'published');
-    const drafts    = authorPosts.filter(p => p.status === 'draft');
+    const published = authorPosts.filter((p) => p.status === 'published');
+    const drafts = authorPosts.filter((p) => p.status === 'draft');
 
     const lines: string[] = [
       `# ${author.name as string}`,
@@ -131,9 +131,12 @@ db.defineMulti('author-context', {
       '',
       '## Recent Posts',
       '',
-      ...published.slice(0, 5).map(p =>
-        `- **${p.title as string}** — ${p.published_at as string ?? 'unpublished'} (${p.word_count as number} words)`
-      ),
+      ...published
+        .slice(0, 5)
+        .map(
+          (p) =>
+            `- **${p.title as string}** — ${(p.published_at as string) ?? 'unpublished'} (${p.word_count as number} words)`,
+        ),
     ];
 
     if (drafts.length > 0) {
@@ -143,7 +146,7 @@ db.defineMulti('author-context', {
       }
     }
 
-    return lines.filter(l => l !== null).join('\n');
+    return lines.filter((l) => l !== null).join('\n');
   },
 });
 
@@ -198,11 +201,14 @@ export async function createDraft(opts: {
   });
 }
 
-export async function updatePost(id: string, content: { title?: string; excerpt?: string; wordCount?: number }) {
+export async function updatePost(
+  id: string,
+  content: { title?: string; excerpt?: string; wordCount?: number },
+) {
   await db.update('post', id, {
-    ...(content.title     ? { title:      content.title }        : {}),
-    ...(content.excerpt   ? { excerpt:    content.excerpt }      : {}),
-    ...(content.wordCount ? { word_count: content.wordCount }    : {}),
+    ...(content.title ? { title: content.title } : {}),
+    ...(content.excerpt ? { excerpt: content.excerpt } : {}),
+    ...(content.wordCount ? { word_count: content.wordCount } : {}),
     updated_at: new Date().toISOString(),
   });
 }
@@ -211,7 +217,7 @@ export async function publishPost(id: string) {
   await db.update('post', id, {
     status: 'published',
     published_at: new Date().toISOString(),
-    updated_at:   new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   });
 }
 
@@ -233,8 +239,8 @@ export async function getPublishedPosts(authorId?: string) {
 export async function searchPosts(query: string) {
   return db.query('post', {
     filters: [
-      { col: 'title',  op: 'like', val: `%${query}%` },
-      { col: 'status', op: 'ne',   val: 'archived' },
+      { col: 'title', op: 'like', val: `%${query}%` },
+      { col: 'status', op: 'ne', val: 'archived' },
     ],
   });
 }
@@ -243,7 +249,7 @@ export async function getLongPosts(minWords = 1000) {
   return db.query('post', {
     filters: [
       { col: 'word_count', op: 'gte', val: minWords },
-      { col: 'status',     op: 'eq',  val: 'published' },
+      { col: 'status', op: 'eq', val: 'published' },
     ],
     orderBy: 'word_count',
     orderDir: 'desc',
@@ -281,7 +287,7 @@ await db.render('./context');
 
 // Or watch with a longer interval (content changes slowly):
 const stop = await db.watch('./context', {
-  interval: 60_000,  // 1 minute
+  interval: 60_000, // 1 minute
   onRender: (r) => {
     if (r.filesWritten.length > 0) {
       console.log(`[cms] Context updated: ${r.filesWritten.join(', ')}`);

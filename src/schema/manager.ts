@@ -1,11 +1,5 @@
 import type { StorageAdapter } from '../db/adapter.js';
-import type {
-  TableDefinition,
-  MultiTableDefinition,
-  Migration,
-  Relation,
-  Row,
-} from '../types.js';
+import type { TableDefinition, MultiTableDefinition, Migration, Relation, Row } from '../types.js';
 
 export interface RegisteredTable {
   name: string;
@@ -102,16 +96,15 @@ export class SchemaManager {
   applyMigrations(adapter: StorageAdapter, migrations: Migration[]): void {
     const sorted = [...migrations].sort((a, b) => a.version - b.version);
     for (const m of sorted) {
-      const exists = adapter.get(
-        'SELECT 1 FROM __lattice_migrations WHERE version = ?',
-        [m.version],
-      );
+      const exists = adapter.get('SELECT 1 FROM __lattice_migrations WHERE version = ?', [
+        m.version,
+      ]);
       if (!exists) {
         adapter.run(m.sql);
-        adapter.run(
-          'INSERT INTO __lattice_migrations (version, applied_at) VALUES (?, ?)',
-          [m.version, new Date().toISOString()],
-        );
+        adapter.run('INSERT INTO __lattice_migrations (version, applied_at) VALUES (?, ?)', [
+          m.version,
+          new Date().toISOString(),
+        ]);
       }
     }
   }
@@ -134,9 +127,7 @@ export class SchemaManager {
       .map(([col, type]) => `"${col}" ${type}`)
       .join(', ');
     const constraintDefs =
-      tableConstraints && tableConstraints.length > 0
-        ? ', ' + tableConstraints.join(', ')
-        : '';
+      tableConstraints && tableConstraints.length > 0 ? ', ' + tableConstraints.join(', ') : '';
     adapter.run(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs}${constraintDefs})`);
     this._addMissingColumns(adapter, name, columns);
   }
@@ -146,9 +137,7 @@ export class SchemaManager {
     table: string,
     columns: Record<string, string>,
   ): void {
-    const existing = adapter
-      .all(`PRAGMA table_info("${table}")`)
-      .map((r) => r.name as string);
+    const existing = adapter.all(`PRAGMA table_info("${table}")`).map((r) => r.name as string);
 
     for (const [col, type] of Object.entries(columns)) {
       if (!existing.includes(col)) {

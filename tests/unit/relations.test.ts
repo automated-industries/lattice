@@ -106,9 +106,9 @@ describe('Relationship declarations', () => {
       render: () => '',
       outputFile: 'posts.md',
       relations: {
-        author:   { type: 'belongsTo', table: 'users',    foreignKey: 'author_id' },
-        comments: { type: 'hasMany',   table: 'comments', foreignKey: 'post_id'   },
-        tags:     { type: 'hasMany',   table: 'post_tags', foreignKey: 'post_id'  },
+        author: { type: 'belongsTo', table: 'users', foreignKey: 'author_id' },
+        comments: { type: 'hasMany', table: 'comments', foreignKey: 'post_id' },
+        tags: { type: 'hasMany', table: 'post_tags', foreignKey: 'post_id' },
       },
     });
 
@@ -151,7 +151,12 @@ describe('Relationship declarations', () => {
       render: () => '',
       outputFile: 'articles.md',
       relations: {
-        revisions: { type: 'hasMany', table: 'revisions', foreignKey: 'article_slug', references: 'slug' },
+        revisions: {
+          type: 'hasMany',
+          table: 'revisions',
+          foreignKey: 'article_slug',
+          references: 'slug',
+        },
       },
     });
 

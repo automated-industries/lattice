@@ -68,19 +68,19 @@ When using the config form, Lattice reads the YAML file, resolves the `db` path 
 
 **Parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `path` | `string` | Path to the SQLite file, or `':memory:'` for an in-memory database |
-| `config` | `LatticeConfigInput` | Object with a `config` path to a `lattice.config.yml` file |
-| `options` | `LatticeOptions` | Optional runtime configuration |
+| Parameter | Type                 | Description                                                        |
+| --------- | -------------------- | ------------------------------------------------------------------ |
+| `path`    | `string`             | Path to the SQLite file, or `':memory:'` for an in-memory database |
+| `config`  | `LatticeConfigInput` | Object with a `config` path to a `lattice.config.yml` file         |
+| `options` | `LatticeOptions`     | Optional runtime configuration                                     |
 
 **`LatticeOptions`:**
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `wal` | `boolean` | `false` | Enable WAL journal mode (recommended for concurrent read/write) |
-| `busyTimeout` | `number` | – | SQLite busy timeout in milliseconds |
-| `security` | `SecurityOptions` | – | Input sanitization and audit options |
+| Option        | Type              | Default | Description                                                     |
+| ------------- | ----------------- | ------- | --------------------------------------------------------------- |
+| `wal`         | `boolean`         | `false` | Enable WAL journal mode (recommended for concurrent read/write) |
+| `busyTimeout` | `number`          | –       | SQLite busy timeout in milliseconds                             |
+| `security`    | `SecurityOptions` | –       | Input sanitization and audit options                            |
 
 ---
 
@@ -93,8 +93,8 @@ Register a table schema before calling `init()`. Returns `this` for chaining.
 ```ts
 db.define('tasks', {
   columns: {
-    id:     'TEXT PRIMARY KEY',
-    title:  'TEXT NOT NULL',
+    id: 'TEXT PRIMARY KEY',
+    title: 'TEXT NOT NULL',
     status: "TEXT DEFAULT 'open'",
   },
   render: 'default-list',
@@ -106,15 +106,15 @@ Must be called **before** `init()`. Throws if called after `init()`.
 
 **`TableDefinition`** fields:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `columns` | `Record<string, string>` | yes | Column name → SQLite column spec |
-| `render` | `RenderSpec` | yes | How to render rows into context text |
-| `outputFile` | `string` | yes | Output file path (relative to `outputDir` in `render()`/`watch()`) |
-| `filter` | `(rows: Row[]) => Row[]` | no | Pre-filter applied before render |
-| `primaryKey` | `PrimaryKey` | no | Primary key column(s); defaults to `'id'` |
-| `tableConstraints` | `string[]` | no | Table-level SQL constraints (e.g. composite PK) |
-| `relations` | `Record<string, Relation>` | no | Declared foreign-key relationships |
+| Field              | Type                       | Required | Description                                                        |
+| ------------------ | -------------------------- | -------- | ------------------------------------------------------------------ |
+| `columns`          | `Record<string, string>`   | yes      | Column name → SQLite column spec                                   |
+| `render`           | `RenderSpec`               | yes      | How to render rows into context text                               |
+| `outputFile`       | `string`                   | yes      | Output file path (relative to `outputDir` in `render()`/`watch()`) |
+| `filter`           | `(rows: Row[]) => Row[]`   | no       | Pre-filter applied before render                                   |
+| `primaryKey`       | `PrimaryKey`               | no       | Primary key column(s); defaults to `'id'`                          |
+| `tableConstraints` | `string[]`                 | no       | Table-level SQL constraints (e.g. composite PK)                    |
+| `relations`        | `Record<string, Relation>` | no       | Declared foreign-key relationships                                 |
 
 ---
 
@@ -128,7 +128,7 @@ db.defineMulti('agent-context', {
   outputFile: (agent) => `agents/${agent.slug}/CONTEXT.md`,
   render: (agent, tables) => {
     const tasks = tables.tasks ?? [];
-    return `# ${agent.name}\n\n${tasks.map(t => `- ${t.title}`).join('\n')}`;
+    return `# ${agent.name}\n\n${tasks.map((t) => `- ${t.title}`).join('\n')}`;
   },
   tables: ['tasks'],
 });
@@ -136,12 +136,12 @@ db.defineMulti('agent-context', {
 
 **`MultiTableDefinition`** fields:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `keys` | `() => Promise<Row[]>` | Returns the anchor rows; one output file per row |
-| `outputFile` | `(key: Row) => string` | Derive output file path from an anchor row |
-| `render` | `(key: Row, tables: Record<string, Row[]>) => string` | Produce the file content |
-| `tables` | `string[]` | Additional table names to query and pass into `render` |
+| Field        | Type                                                  | Description                                            |
+| ------------ | ----------------------------------------------------- | ------------------------------------------------------ |
+| `keys`       | `() => Promise<Row[]>`                                | Returns the anchor rows; one output file per row       |
+| `outputFile` | `(key: Row) => string`                                | Derive output file path from an anchor row             |
+| `render`     | `(key: Row, tables: Record<string, Row[]>) => string` | Produce the file content                               |
+| `tables`     | `string[]`                                            | Additional table names to query and pass into `render` |
 
 ---
 
@@ -154,7 +154,10 @@ db.defineWriteback({
   file: './context/INBOX.md',
   parse: (content, fromOffset) => {
     const newContent = content.slice(fromOffset);
-    const entries = newContent.split('\n').filter(l => l.startsWith('- ')).map(l => ({ text: l.slice(2) }));
+    const entries = newContent
+      .split('\n')
+      .filter((l) => l.startsWith('- '))
+      .map((l) => ({ text: l.slice(2) }));
     return { entries, nextOffset: content.length };
   },
   persist: async (entry) => {
@@ -166,12 +169,12 @@ db.defineWriteback({
 
 **`WritebackDefinition`** fields:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `file` | `string` | Path or glob to the agent-written file(s) |
-| `parse` | `(content, fromOffset) => { entries, nextOffset }` | Parse new content from the last-read offset |
-| `persist` | `(entry, filePath) => Promise<void>` | Persist one parsed entry |
-| `dedupeKey` | `(entry) => string` | Optional dedup key; entries with the same key are processed only once |
+| Field       | Type                                               | Description                                                           |
+| ----------- | -------------------------------------------------- | --------------------------------------------------------------------- |
+| `file`      | `string`                                           | Path or glob to the agent-written file(s)                             |
+| `parse`     | `(content, fromOffset) => { entries, nextOffset }` | Parse new content from the last-read offset                           |
+| `persist`   | `(entry, filePath) => Promise<void>`               | Persist one parsed entry                                              |
+| `dedupeKey` | `(entry) => string`                                | Optional dedup key; entries with the same key are processed only once |
 
 ---
 
@@ -318,14 +321,14 @@ const highPriority = await db.query('tasks', {
 
 **`QueryOptions`:**
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `where` | `Record<string, unknown>` | Equality filter shorthand |
-| `filters` | `Filter[]` | Advanced filter clauses |
-| `orderBy` | `string` | Column to sort by |
-| `orderDir` | `'asc' \| 'desc'` | Sort direction (default: `'asc'`) |
-| `limit` | `number` | Max rows to return |
-| `offset` | `number` | Skip N rows |
+| Option     | Type                      | Description                       |
+| ---------- | ------------------------- | --------------------------------- |
+| `where`    | `Record<string, unknown>` | Equality filter shorthand         |
+| `filters`  | `Filter[]`                | Advanced filter clauses           |
+| `orderBy`  | `string`                  | Column to sort by                 |
+| `orderDir` | `'asc' \| 'desc'`         | Sort direction (default: `'asc'`) |
+| `limit`    | `number`                  | Max rows to return                |
+| `offset`   | `number`                  | Skip N rows                       |
 
 ---
 
@@ -358,11 +361,11 @@ console.log(`Wrote ${result.filesWritten.length} files in ${result.durationMs}ms
 
 **`RenderResult`:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `filesWritten` | `string[]` | Absolute paths of files written |
-| `filesSkipped` | `number` | Count of files skipped (content unchanged) |
-| `durationMs` | `number` | Render duration in milliseconds |
+| Field          | Type       | Description                                |
+| -------------- | ---------- | ------------------------------------------ |
+| `filesWritten` | `string[]` | Absolute paths of files written            |
+| `filesSkipped` | `number`   | Count of files skipped (content unchanged) |
+| `durationMs`   | `number`   | Render duration in milliseconds            |
 
 ---
 
@@ -372,13 +375,15 @@ Render all output files **and** process any pending writeback entries.
 
 ```ts
 const result = await db.sync('./context');
-console.log(`Wrote ${result.filesWritten.length} files, processed ${result.writebackProcessed} writeback entries`);
+console.log(
+  `Wrote ${result.filesWritten.length} files, processed ${result.writebackProcessed} writeback entries`,
+);
 ```
 
 **`SyncResult`** extends `RenderResult` with:
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field                | Type     | Description                                         |
+| -------------------- | -------- | --------------------------------------------------- |
 | `writebackProcessed` | `number` | Number of writeback entries processed in this cycle |
 
 ---
@@ -389,7 +394,7 @@ Start a polling sync loop. Returns a `StopFn` to stop it.
 
 ```ts
 const stop = await db.watch('./context', {
-  interval: 10_000,              // poll every 10 seconds (default: 5000ms)
+  interval: 10_000, // poll every 10 seconds (default: 5000ms)
   onRender: (result) => console.log('Rendered:', result.filesWritten),
   onError: (err) => console.error('Watch error:', err),
 });
@@ -400,11 +405,11 @@ stop();
 
 **`WatchOptions`:**
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `interval` | `number` | `5000` | Poll interval in milliseconds |
-| `onRender` | `(result: RenderResult) => void` | – | Called after each successful render cycle |
-| `onError` | `(err: Error) => void` | – | Called on render errors |
+| Option     | Type                             | Default | Description                               |
+| ---------- | -------------------------------- | ------- | ----------------------------------------- |
+| `interval` | `number`                         | `5000`  | Poll interval in milliseconds             |
+| `onRender` | `(result: RenderResult) => void` | –       | Called after each successful render cycle |
+| `onError`  | `(err: Error) => void`           | –       | Called on render errors                   |
 
 ---
 
@@ -415,10 +420,9 @@ stop();
 Subscribe to lifecycle events. Returns `this` for chaining.
 
 ```ts
-db
-  .on('audit', (event) => {
-    console.log(`${event.operation} on ${event.table} — id: ${event.id}`);
-  })
+db.on('audit', (event) => {
+  console.log(`${event.operation} on ${event.table} — id: ${event.id}`);
+})
   .on('render', (result) => {
     console.log(`Render complete: ${result.filesWritten.length} files`);
   })
@@ -429,12 +433,12 @@ db
 
 **Available events:**
 
-| Event | Handler type | Fires when |
-|-------|-------------|-----------|
-| `'audit'` | `(event: AuditEvent) => void` | Any insert/update/delete |
-| `'render'` | `(result: RenderResult) => void` | After a render cycle |
-| `'writeback'` | `(data: { filePath: string; entriesProcessed: number }) => void` | After writeback processing |
-| `'error'` | `(err: Error) => void` | On uncaught errors in watch/sync |
+| Event         | Handler type                                                     | Fires when                       |
+| ------------- | ---------------------------------------------------------------- | -------------------------------- |
+| `'audit'`     | `(event: AuditEvent) => void`                                    | Any insert/update/delete         |
+| `'render'`    | `(result: RenderResult) => void`                                 | After a render cycle             |
+| `'writeback'` | `(data: { filePath: string; entriesProcessed: number }) => void` | After writeback processing       |
+| `'error'`     | `(err: Error) => void`                                           | On uncaught errors in watch/sync |
 
 **`AuditEvent`:**
 
@@ -469,7 +473,7 @@ Use sparingly — raw queries bypass Lattice's sanitization and audit pipeline.
 ### `parseConfigFile()`
 
 ```ts
-function parseConfigFile(configPath: string): ParsedConfig
+function parseConfigFile(configPath: string): ParsedConfig;
 ```
 
 Read a `lattice.config.yml` file, validate it, and return a `ParsedConfig` with resolved paths and compiled `TableDefinition` objects ready to pass to `define()`.
@@ -486,6 +490,7 @@ await db.init();
 ```
 
 Throws on:
+
 - File not found or unreadable
 - YAML parse error
 - Missing `db` key
@@ -497,7 +502,7 @@ Throws on:
 ### `parseConfigString()`
 
 ```ts
-function parseConfigString(yamlContent: string, configDir: string): ParsedConfig
+function parseConfigString(yamlContent: string, configDir: string): ParsedConfig;
 ```
 
 Parse a raw YAML string instead of reading a file. `configDir` is used to resolve relative paths for `db` and `outputFile`.
@@ -526,7 +531,7 @@ const { dbPath, tables } = parseConfigString(yaml, process.cwd());
 ### `Row`
 
 ```ts
-type Row = Record<string, unknown>
+type Row = Record<string, unknown>;
 ```
 
 A generic database row — column name to value.
@@ -555,11 +560,11 @@ interface SecurityOptions {
 }
 ```
 
-| Option | Description |
-|--------|-------------|
-| `sanitize` | Enable input sanitization (strip null bytes, HTML-encode dangerous chars) |
-| `auditTables` | Table names to emit `audit` events for (empty = all tables) |
-| `fieldLimits` | Maximum string length per column name |
+| Option        | Description                                                               |
+| ------------- | ------------------------------------------------------------------------- |
+| `sanitize`    | Enable input sanitization (strip null bytes, HTML-encode dangerous chars) |
+| `auditTables` | Table names to emit `audit` events for (empty = all tables)               |
+| `fieldLimits` | Maximum string length per column name                                     |
 
 ---
 
@@ -612,18 +617,18 @@ interface Filter {
 
 **Operator reference:**
 
-| Operator | SQL equivalent | `val` type |
-|----------|----------------|-----------|
-| `eq` | `col = ?` | any scalar |
-| `ne` | `col != ?` | any scalar |
-| `gt` | `col > ?` | number or string |
-| `gte` | `col >= ?` | number or string |
-| `lt` | `col < ?` | number or string |
-| `lte` | `col <= ?` | number or string |
-| `like` | `col LIKE ?` | string with `%` wildcards |
-| `in` | `col IN (?, ?, ...)` | `unknown[]` |
-| `isNull` | `col IS NULL` | _(not used)_ |
-| `isNotNull` | `col IS NOT NULL` | _(not used)_ |
+| Operator    | SQL equivalent       | `val` type                |
+| ----------- | -------------------- | ------------------------- |
+| `eq`        | `col = ?`            | any scalar                |
+| `ne`        | `col != ?`           | any scalar                |
+| `gt`        | `col > ?`            | number or string          |
+| `gte`       | `col >= ?`           | number or string          |
+| `lt`        | `col < ?`            | number or string          |
+| `lte`       | `col <= ?`           | number or string          |
+| `like`      | `col LIKE ?`         | string with `%` wildcards |
+| `in`        | `col IN (?, ?, ...)` | `unknown[]`               |
+| `isNull`    | `col IS NULL`        | _(not used)_              |
+| `isNotNull` | `col IS NOT NULL`    | _(not used)_              |
 
 ---
 
@@ -648,7 +653,7 @@ Migrations are applied in order of `version`. Each version is tracked in the `_l
 
 ```ts
 interface WatchOptions {
-  interval?: number;      // ms, default 5000
+  interval?: number; // ms, default 5000
   onRender?: (result: RenderResult) => void;
   onError?: (err: Error) => void;
 }
@@ -688,7 +693,7 @@ interface AuditEvent {
 ### `PkLookup`
 
 ```ts
-type PkLookup = string | Record<string, unknown>
+type PkLookup = string | Record<string, unknown>;
 ```
 
 Used by `get()`, `update()`, and `delete()` to identify a row:
@@ -701,7 +706,7 @@ Used by `get()`, `update()`, and `delete()` to identify a row:
 ### `PrimaryKey`
 
 ```ts
-type PrimaryKey = string | string[]
+type PrimaryKey = string | string[];
 ```
 
 The primary key of a table. A string for single-column PKs; an array for composite PKs.
@@ -713,16 +718,16 @@ The primary key of a table. A string for single-column PKs; an array for composi
 ```ts
 interface BelongsToRelation {
   type: 'belongsTo';
-  table: string;        // related table name
-  foreignKey: string;   // FK column on THIS table
-  references?: string;  // PK column on the related table (default: its first PK)
+  table: string; // related table name
+  foreignKey: string; // FK column on THIS table
+  references?: string; // PK column on the related table (default: its first PK)
 }
 
 interface HasManyRelation {
   type: 'hasMany';
-  table: string;        // related table name
-  foreignKey: string;   // FK column on the RELATED table
-  references?: string;  // PK column on THIS table (default: its first PK)
+  table: string; // related table name
+  foreignKey: string; // FK column on the RELATED table
+  references?: string; // PK column on THIS table (default: its first PK)
 }
 
 type Relation = BelongsToRelation | HasManyRelation;
@@ -756,9 +761,17 @@ See [Template Rendering](./templates.md) for the complete guide.
 
 ```ts
 type LatticeFieldType =
-  | 'uuid' | 'text' | 'integer' | 'int'
-  | 'real' | 'float' | 'boolean' | 'bool'
-  | 'datetime' | 'date' | 'blob';
+  | 'uuid'
+  | 'text'
+  | 'integer'
+  | 'int'
+  | 'real'
+  | 'float'
+  | 'boolean'
+  | 'bool'
+  | 'datetime'
+  | 'date'
+  | 'blob';
 
 interface LatticeFieldDef {
   type: LatticeFieldType;
@@ -819,7 +832,7 @@ The object form of the `Lattice` constructor when initialising from a YAML confi
 ### `StopFn`
 
 ```ts
-type StopFn = () => void
+type StopFn = () => void;
 ```
 
 Returned by `watch()`. Call it to stop the polling loop.
