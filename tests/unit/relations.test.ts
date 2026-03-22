@@ -23,7 +23,7 @@ describe('Relationship declarations', () => {
     });
 
     const rels = mgr.getRelations('comments');
-    const rel = rels['post'] as BelongsToRelation;
+    const rel = rels.post as BelongsToRelation;
     expect(rel).toBeDefined();
     expect(rel.type).toBe('belongsTo');
     expect(rel.table).toBe('posts');
@@ -47,7 +47,7 @@ describe('Relationship declarations', () => {
       },
     });
 
-    const rel = mgr.getRelations('orders')['customer'] as BelongsToRelation;
+    const rel = mgr.getRelations('orders').customer as BelongsToRelation;
     expect(rel.references).toBe('email');
   });
 
@@ -67,7 +67,7 @@ describe('Relationship declarations', () => {
     });
 
     const rels = mgr.getRelations('posts');
-    const rel = rels['comments'] as HasManyRelation;
+    const rel = rels.comments as HasManyRelation;
     expect(rel).toBeDefined();
     expect(rel.type).toBe('hasMany');
     expect(rel.table).toBe('comments');
@@ -91,7 +91,7 @@ describe('Relationship declarations', () => {
       },
     });
 
-    const rel = mgr.getRelations('teams')['members'] as HasManyRelation;
+    const rel = mgr.getRelations('teams').members as HasManyRelation;
     expect(rel.references).toBe('slug');
   });
 
@@ -114,9 +114,9 @@ describe('Relationship declarations', () => {
 
     const rels = mgr.getRelations('posts');
     expect(Object.keys(rels)).toHaveLength(3);
-    expect((rels['author'] as BelongsToRelation).type).toBe('belongsTo');
-    expect((rels['comments'] as HasManyRelation).type).toBe('hasMany');
-    expect((rels['tags'] as HasManyRelation).table).toBe('post_tags');
+    expect((rels.author as BelongsToRelation).type).toBe('belongsTo');
+    expect((rels.comments as HasManyRelation).type).toBe('hasMany');
+    expect((rels.tags as HasManyRelation).table).toBe('post_tags');
   });
 
   // -------------------------------------------------------------------------
@@ -158,7 +158,7 @@ describe('Relationship declarations', () => {
     const pk = mgr.getPrimaryKey('articles');
     expect(pk).toEqual(['slug']);
 
-    const rel = mgr.getRelations('articles')['revisions'] as HasManyRelation;
+    const rel = mgr.getRelations('articles').revisions as HasManyRelation;
     expect(rel.foreignKey).toBe('article_slug');
     expect(rel.references).toBe('slug');
   });
@@ -181,6 +181,6 @@ describe('Relationship declarations', () => {
       relations: { owner: relDef },
     });
 
-    expect(mgr.getRelations('tasks')['owner']).toBe(relDef);
+    expect(mgr.getRelations('tasks').owner).toBe(relDef);
   });
 });

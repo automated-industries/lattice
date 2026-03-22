@@ -26,6 +26,6 @@ export function interpolate(template: string, row: Row): string {
       if (val == null || typeof val !== 'object') return '';
       val = (val as Record<string, unknown>)[part];
     }
-    return val == null ? '' : String(val);
+    return val == null ? '' : String(val as string | number | boolean);
   });
 }
