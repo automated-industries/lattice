@@ -45,39 +45,39 @@ db: ./data/tickets.db
 entities:
   user:
     fields:
-      id:         { type: uuid, primaryKey: true }
-      name:       { type: text, required: true }
-      email:      { type: text, required: true }
-      team:       { type: text }
+      id: { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
+      email: { type: text, required: true }
+      team: { type: text }
     render: default-table
     outputFile: context/USERS.md
 
   ticket:
     fields:
-      id:          { type: uuid,    primaryKey: true }
-      title:       { type: text,    required: true }
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
       description: { type: text }
-      status:      { type: text,    default: open }
-      priority:    { type: integer, default: 2 }
-      reporter_id: { type: uuid,    ref: user }
-      assignee_id: { type: uuid,    ref: user }
-      created_at:  { type: datetime }
-      closed_at:   { type: datetime }
+      status: { type: text, default: open }
+      priority: { type: integer, default: 2 }
+      reporter_id: { type: uuid, ref: user }
+      assignee_id: { type: uuid, ref: user }
+      created_at: { type: datetime }
+      closed_at: { type: datetime }
     render:
       template: default-list
-      formatRow: "[{{status}}] P{{priority}} {{title}} — {{assignee.name}}"
+      formatRow: '[{{status}}] P{{priority}} {{title}} — {{assignee.name}}'
     outputFile: context/TICKETS.md
 
   comment:
     fields:
-      id:         { type: uuid, primaryKey: true }
-      body:       { type: text, required: true }
-      ticket_id:  { type: uuid, ref: ticket }
-      author_id:  { type: uuid, ref: user }
+      id: { type: uuid, primaryKey: true }
+      body: { type: text, required: true }
+      ticket_id: { type: uuid, ref: ticket }
+      author_id: { type: uuid, ref: user }
       created_at: { type: datetime }
     render:
       template: default-list
-      formatRow: "{{author.name}} ({{created_at}}): {{body}}"
+      formatRow: '{{author.name}} ({{created_at}}): {{body}}'
     outputFile: context/COMMENTS.md
 ```
 
@@ -105,8 +105,8 @@ export interface Ticket {
   description?: string;
   status?: string;
   priority?: number;
-  reporter_id?: string;  // → user
-  assignee_id?: string;  // → user
+  reporter_id?: string; // → user
+  assignee_id?: string; // → user
   created_at?: string;
   closed_at?: string;
 }
@@ -114,8 +114,8 @@ export interface Ticket {
 export interface Comment {
   id: string;
   body: string;
-  ticket_id?: string;  // → ticket
-  author_id?: string;  // → user
+  ticket_id?: string; // → ticket
+  author_id?: string; // → user
   created_at?: string;
 }
 ```
@@ -254,14 +254,14 @@ export async function getComments(ticketId: string) {
 
 ```ts
 // Dashboard stats
-const openCount  = await db.count('ticket', { where: { status: 'open' } });
+const openCount = await db.count('ticket', { where: { status: 'open' } });
 const closedCount = await db.count('ticket', { where: { status: 'closed' } });
 
 // Tickets assigned to no-one
 const unassigned = await db.query('ticket', {
   filters: [
     { col: 'assignee_id', op: 'isNull' },
-    { col: 'status',      op: 'eq', val: 'open' },
+    { col: 'status', op: 'eq', val: 'open' },
   ],
 });
 
@@ -279,7 +279,10 @@ const stop = await db.watch('./context', {
   onRender: (r) => console.log(`[sync] ${r.filesWritten.length} files updated`),
 });
 
-process.on('SIGTERM', () => { stop(); db.close(); });
+process.on('SIGTERM', () => {
+  stop();
+  db.close();
+});
 ```
 
 ---
@@ -301,10 +304,10 @@ process.on('SIGTERM', () => { stop(); db.close(); });
 ```markdown
 # user
 
-| id | name | email | team |
-| --- | --- | --- | --- |
-| u-1 | Alice | alice@example.com | Backend |
-| u-2 | Bob | bob@example.com | Frontend |
+| id  | name  | email             | team     |
+| --- | ----- | ----------------- | -------- |
+| u-1 | Alice | alice@example.com | Backend  |
+| u-2 | Bob   | bob@example.com   | Frontend |
 ```
 
 An LLM reading the ticket context immediately sees what's open, who owns what, and at what priority — without needing to query the database directly.

@@ -99,10 +99,10 @@ Renders rows as a GitHub-flavoured Markdown table. Good for structured data with
 ```markdown
 # users
 
-| id | name | email | role |
-| --- | --- | --- | --- |
-| u-1 | Alice | alice@example.com | admin |
-| u-2 | Bob | bob@example.com | member |
+| id  | name  | email             | role   |
+| --- | ----- | ----------------- | ------ |
+| u-1 | Alice | alice@example.com | admin  |
+| u-2 | Bob   | bob@example.com   | member |
 ```
 
 Column headers are derived from the first row's keys. Does not support `formatRow`.
@@ -141,7 +141,7 @@ Each item in the section's list is rendered using `formatRow` instead of the def
 
 Renders all rows as a JSON array. Useful when downstream tools consume structured data.
 
-```markdown
+````markdown
 # tasks
 
 ```json
@@ -150,7 +150,9 @@ Renders all rows as a JSON array. Useful when downstream tools consume structure
   { "id": "task-2", "title": "Write tests", "status": "done" }
 ]
 ```
-```
+````
+
+````
 
 No formatting hooks apply to `default-json`. If you need to transform the data, use `beforeRender` or a custom render function.
 
@@ -173,9 +175,10 @@ render: {
       .sort((a, b) => Number(b.priority) - Number(a.priority)),
   },
 }
-```
+````
 
 Use cases:
+
 - Exclude archived / deleted rows
 - Sort rows by a computed field
 - Add computed properties (e.g. format a date)
@@ -210,7 +213,7 @@ In YAML config, only the template string form is supported:
 ```yaml
 render:
   template: default-list
-  formatRow: "{{title}} — {{status}}"
+  formatRow: '{{title}} — {{status}}'
 ```
 
 ---
@@ -244,8 +247,8 @@ To use relation data, the relation must be declared:
 ```ts
 db.define('tickets', {
   columns: {
-    id:          'TEXT PRIMARY KEY',
-    title:       'TEXT NOT NULL',
+    id: 'TEXT PRIMARY KEY',
+    title: 'TEXT NOT NULL',
     assignee_id: 'TEXT',
   },
   relations: {
@@ -260,6 +263,7 @@ db.define('tickets', {
 ```
 
 When rendering, Lattice:
+
 1. Executes `SELECT * FROM users WHERE id = assignee_id` for each ticket
 2. Makes all `users` columns available as `{{assignee.<column>}}`
 
@@ -269,15 +273,16 @@ In YAML config, `ref: user` automatically creates the `belongsTo` relation:
 entities:
   ticket:
     fields:
-      id:          { type: uuid, primaryKey: true }
-      title:       { type: text, required: true }
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
       assignee_id: { type: uuid, ref: user }
     render:
       template: default-list
-      formatRow: "{{title}} → {{assignee.name}}"
+      formatRow: '{{title}} → {{assignee.name}}'
 ```
 
 **Limitations:**
+
 - Only `belongsTo` relations are resolved in templates (the table holding the FK)
 - `hasMany` relations are not resolved in `{{...}}` interpolation; use a custom render function or `defineMulti` instead
 - Only one level of nesting is supported (`{{assignee.name}}`, not `{{assignee.org.name}}`)
@@ -291,24 +296,23 @@ For full control, pass a `(rows: Row[]) => string` function directly:
 ```ts
 db.define('changelog', {
   columns: {
-    id:      'TEXT PRIMARY KEY',
+    id: 'TEXT PRIMARY KEY',
     version: 'TEXT NOT NULL',
-    notes:   'TEXT',
-    date:    'TEXT',
+    notes: 'TEXT',
+    date: 'TEXT',
   },
   render: (rows) => {
-    const sorted = [...rows].sort((a, b) =>
-      String(b.date).localeCompare(String(a.date))
-    );
-    return sorted.map(r =>
-      `## v${r.version} — ${r.date}\n\n${r.notes ?? '_No notes_'}`
-    ).join('\n\n---\n\n');
+    const sorted = [...rows].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    return sorted
+      .map((r) => `## v${r.version} — ${r.date}\n\n${r.notes ?? '_No notes_'}`)
+      .join('\n\n---\n\n');
   },
   outputFile: 'context/CHANGELOG.md',
 });
 ```
 
 Custom functions:
+
 - Receive the full `Row[]` array (after any `filter` defined on the table)
 - Must return a string
 - Have no access to relation data (join manually via `db.query()` if needed)
@@ -318,15 +322,16 @@ Custom functions:
 
 ## Choosing a template
 
-| Template | Best for |
-|----------|----------|
-| `default-list` | Compact overviews with `formatRow` control; good for lists the LLM reads |
-| `default-table` | Structured data with uniform fields; easy to scan |
-| `default-detail` | Rich entities with many fields; one section per row |
-| `default-json` | Downstream tool consumption; structured data handoff |
-| Custom function | Any format not covered above; multi-table joins; complex Markdown |
+| Template         | Best for                                                                 |
+| ---------------- | ------------------------------------------------------------------------ |
+| `default-list`   | Compact overviews with `formatRow` control; good for lists the LLM reads |
+| `default-table`  | Structured data with uniform fields; easy to scan                        |
+| `default-detail` | Rich entities with many fields; one section per row                      |
+| `default-json`   | Downstream tool consumption; structured data handoff                     |
+| Custom function  | Any format not covered above; multi-table joins; complex Markdown        |
 
 General guidance:
+
 - Use `default-list` + `formatRow` for most agent context files — it's compact and readable
 - Use `default-table` for reference data (users, tags, config settings)
 - Use `default-json` when another system (not a human / LLM) reads the output

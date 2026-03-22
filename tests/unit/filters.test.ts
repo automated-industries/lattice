@@ -8,11 +8,11 @@ describe('Expanded query filters', () => {
     db = new Lattice(':memory:');
     db.define('items', {
       columns: {
-        id:    'TEXT PRIMARY KEY',
-        name:  'TEXT',
+        id: 'TEXT PRIMARY KEY',
+        name: 'TEXT',
         score: 'INTEGER DEFAULT 0',
-        tag:   'TEXT',
-        note:  'TEXT',
+        tag: 'TEXT',
+        note: 'TEXT',
       },
       render: () => '',
       outputFile: 'items.md',
@@ -21,12 +21,20 @@ describe('Expanded query filters', () => {
 
     // Seed rows
     await db.insert('items', { id: 'a', name: 'Alpha', score: 10, tag: 'bug' });
-    await db.insert('items', { id: 'b', name: 'Beta',  score: 50, tag: 'feature' });
+    await db.insert('items', { id: 'b', name: 'Beta', score: 50, tag: 'feature' });
     await db.insert('items', { id: 'c', name: 'Gamma', score: 80, tag: 'bug' });
-    await db.insert('items', { id: 'd', name: 'Delta', score: 80, tag: null as unknown as string, note: 'annotated' });
+    await db.insert('items', {
+      id: 'd',
+      name: 'Delta',
+      score: 80,
+      tag: null as unknown as string,
+      note: 'annotated',
+    });
   });
 
-  afterEach(() => { db.close(); });
+  afterEach(() => {
+    db.close();
+  });
 
   // -------------------------------------------------------------------------
   // Comparison operators
@@ -125,7 +133,7 @@ describe('Expanded query filters', () => {
 
   it('where + filters are ANDed together', async () => {
     const rows = await db.query('items', {
-      where:   { tag: 'bug' },
+      where: { tag: 'bug' },
       filters: [{ col: 'score', op: 'gt', val: 50 }],
     });
     // tag='bug' AND score>50 → only Gamma
@@ -154,7 +162,7 @@ describe('Expanded query filters', () => {
 
   it('count() combines where + filters', async () => {
     const n = await db.count('items', {
-      where:   { tag: 'bug' },
+      where: { tag: 'bug' },
       filters: [{ col: 'score', op: 'lt', val: 80 }],
     });
     expect(n).toBe(1); // only Alpha (tag=bug, score=10)

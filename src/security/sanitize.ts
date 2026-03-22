@@ -38,9 +38,7 @@ export class Sanitizer {
     const out: Row = {};
     for (const [key, val] of Object.entries(row)) {
       if (typeof val === 'string') {
-        let s = val
-          .replace(NULL_BYTE_RE, '')
-          .replace(CONTROL_CHAR_RE, '');
+        let s = val.replace(NULL_BYTE_RE, '').replace(CONTROL_CHAR_RE, '');
 
         // Apply field limit
         const limit = this._options.fieldLimits[key];
@@ -64,11 +62,7 @@ export class Sanitizer {
     return out;
   }
 
-  emitAudit(
-    table: string,
-    operation: AuditEvent['operation'],
-    id: string,
-  ): void {
+  emitAudit(table: string, operation: AuditEvent['operation'], id: string): void {
     if (!this._options.auditTables.includes(table)) return;
     const event: AuditEvent = {
       table,

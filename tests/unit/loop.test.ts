@@ -11,9 +11,7 @@ interface MockEngine extends RenderEngine {
 
 function makeEngine(result: RenderResult | Error = mockResult): MockEngine {
   const render =
-    result instanceof Error
-      ? vi.fn().mockRejectedValue(result)
-      : vi.fn().mockResolvedValue(result);
+    result instanceof Error ? vi.fn().mockRejectedValue(result) : vi.fn().mockResolvedValue(result);
   return { render } as unknown as MockEngine;
 }
 
@@ -23,7 +21,12 @@ describe('SyncLoop', () => {
     const loop = new SyncLoop(engine);
     const stop = loop.watch('/out', { interval: 20 });
 
-    await vi.waitFor(() => { expect(engine.render).toHaveBeenCalled(); }, { timeout: 200 });
+    await vi.waitFor(
+      () => {
+        expect(engine.render).toHaveBeenCalled();
+      },
+      { timeout: 200 },
+    );
     stop();
   });
 
@@ -31,9 +34,19 @@ describe('SyncLoop', () => {
     const engine = makeEngine();
     const loop = new SyncLoop(engine);
     const results: RenderResult[] = [];
-    const stop = loop.watch('/out', { interval: 20, onRender: (r) => { results.push(r); } });
+    const stop = loop.watch('/out', {
+      interval: 20,
+      onRender: (r) => {
+        results.push(r);
+      },
+    });
 
-    await vi.waitFor(() => { expect(results.length).toBeGreaterThan(0); }, { timeout: 200 });
+    await vi.waitFor(
+      () => {
+        expect(results.length).toBeGreaterThan(0);
+      },
+      { timeout: 200 },
+    );
     stop();
     expect(results[0]).toEqual(mockResult);
   });
@@ -43,9 +56,19 @@ describe('SyncLoop', () => {
     const engine = makeEngine(err);
     const loop = new SyncLoop(engine);
     const errors: Error[] = [];
-    const stop = loop.watch('/out', { interval: 20, onError: (e) => { errors.push(e); } });
+    const stop = loop.watch('/out', {
+      interval: 20,
+      onError: (e) => {
+        errors.push(e);
+      },
+    });
 
-    await vi.waitFor(() => { expect(errors.length).toBeGreaterThan(0); }, { timeout: 200 });
+    await vi.waitFor(
+      () => {
+        expect(errors.length).toBeGreaterThan(0);
+      },
+      { timeout: 200 },
+    );
     stop();
     expect(errors[0]?.message).toBe('render failed');
   });
@@ -55,7 +78,12 @@ describe('SyncLoop', () => {
     const loop = new SyncLoop(engine);
     const stop = loop.watch('/out', { interval: 20 });
 
-    await vi.waitFor(() => { expect(engine.render).toHaveBeenCalled(); }, { timeout: 200 });
+    await vi.waitFor(
+      () => {
+        expect(engine.render).toHaveBeenCalled();
+      },
+      { timeout: 200 },
+    );
     const callsBefore = engine.render.mock.calls.length;
     stop();
 

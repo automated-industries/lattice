@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { parse } from 'yaml';
+import type { LatticeConfig, LatticeEntityDef, LatticeFieldDef } from './types.js';
 import type {
-  LatticeConfig,
-  LatticeEntityDef,
-  LatticeFieldDef,
-} from './types.js';
-import type { TableDefinition, RenderSpec, BelongsToRelation, BuiltinTemplateName } from '../types.js';
+  TableDefinition,
+  RenderSpec,
+  BelongsToRelation,
+  BuiltinTemplateName,
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -37,18 +38,14 @@ export function parseConfigFile(configPath: string): ParsedConfig {
   try {
     raw = readFileSync(absPath, 'utf-8');
   } catch (e) {
-    throw new Error(
-      `Lattice: cannot read config file at "${absPath}": ${(e as Error).message}`,
-    );
+    throw new Error(`Lattice: cannot read config file at "${absPath}": ${(e as Error).message}`);
   }
 
   let parsed: unknown;
   try {
     parsed = parse(raw);
   } catch (e) {
-    throw new Error(
-      `Lattice: YAML parse error in "${absPath}": ${(e as Error).message}`,
-    );
+    throw new Error(`Lattice: YAML parse error in "${absPath}": ${(e as Error).message}`);
   }
 
   return buildParsedConfig(parsed, absPath, configDir);

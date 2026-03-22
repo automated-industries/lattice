@@ -73,15 +73,15 @@ const db = new Lattice('./state.db');
 
 db.define('agents', {
   columns: {
-    id:      'TEXT PRIMARY KEY',
-    name:    'TEXT NOT NULL',
+    id: 'TEXT PRIMARY KEY',
+    name: 'TEXT NOT NULL',
     persona: 'TEXT',
-    active:  'INTEGER DEFAULT 1',
+    active: 'INTEGER DEFAULT 1',
   },
   render(rows) {
     return rows
-      .filter(r => r.active)
-      .map(r => `## ${r.name}\n\n${r.persona ?? ''}`)
+      .filter((r) => r.active)
+      .map((r) => `## ${r.name}\n\n${r.persona ?? ''}`)
       .join('\n\n---\n\n');
   },
   outputFile: 'AGENTS.md',
@@ -90,7 +90,7 @@ db.define('agents', {
 await db.init();
 
 await db.insert('agents', { name: 'Alpha', persona: 'You are Alpha, a research assistant.' });
-await db.insert('agents', { name: 'Beta',  persona: 'You are Beta, a code reviewer.'      });
+await db.insert('agents', { name: 'Beta', persona: 'You are Beta, a code reviewer.' });
 
 // Render DB → context files
 await db.render('./context');
@@ -142,22 +142,22 @@ new Lattice(path: string, options?: LatticeOptions)
 new Lattice(config: LatticeConfigInput, options?: LatticeOptions)
 ```
 
-| Overload | Description |
-| -------- | ----------- |
-| `new Lattice('./app.db')` | Open a SQLite file at the given path |
-| `new Lattice(':memory:')` | In-memory database (useful for tests) |
+| Overload                                          | Description                                   |
+| ------------------------------------------------- | --------------------------------------------- |
+| `new Lattice('./app.db')`                         | Open a SQLite file at the given path          |
+| `new Lattice(':memory:')`                         | In-memory database (useful for tests)         |
 | `new Lattice({ config: './lattice.config.yml' })` | Read schema + DB path from a YAML config file |
 
 **`LatticeOptions`**
 
 ```typescript
 interface LatticeOptions {
-  wal?: boolean;          // WAL journal mode (default: true — recommended for concurrent reads)
-  busyTimeout?: number;   // SQLite busy_timeout in ms (default: 5000)
+  wal?: boolean; // WAL journal mode (default: true — recommended for concurrent reads)
+  busyTimeout?: number; // SQLite busy_timeout in ms (default: 5000)
   security?: {
-    sanitize?: boolean;         // Strip control characters from string inputs (default: true)
-    auditTables?: string[];     // Tables that emit 'audit' events on write
-    fieldLimits?: Record<string, number>;  // Max characters per named column
+    sanitize?: boolean; // Strip control characters from string inputs (default: true)
+    auditTables?: string[]; // Tables that emit 'audit' events on write
+    fieldLimits?: Record<string, number>; // Max characters per named column
   };
 }
 ```
@@ -225,15 +225,17 @@ interface TableDefinition {
 ```typescript
 db.define('tasks', {
   columns: {
-    id:     'TEXT PRIMARY KEY',
-    title:  'TEXT NOT NULL',
+    id: 'TEXT PRIMARY KEY',
+    title: 'TEXT NOT NULL',
     status: 'TEXT DEFAULT "open"',
-    due:    'TEXT',
+    due: 'TEXT',
   },
   render(rows) {
-    const open = rows.filter(r => r.status === 'open');
-    return `# Open Tasks (${open.length})\n\n` +
-      open.map(r => `- [ ] ${r.title}${r.due ? ` — due ${r.due}` : ''}`).join('\n');
+    const open = rows.filter((r) => r.status === 'open');
+    return (
+      `# Open Tasks (${open.length})\n\n` +
+      open.map((r) => `- [ ] ${r.title}${r.due ? ` — due ${r.due}` : ''}`).join('\n')
+    );
   },
   outputFile: 'TASKS.md',
 });
@@ -244,11 +246,11 @@ db.define('tasks', {
 ```typescript
 db.define('pages', {
   columns: {
-    slug:    'TEXT NOT NULL',
-    title:   'TEXT NOT NULL',
+    slug: 'TEXT NOT NULL',
+    title: 'TEXT NOT NULL',
     content: 'TEXT',
   },
-  primaryKey: 'slug',       // <-- tell Lattice which column is the PK
+  primaryKey: 'slug', // <-- tell Lattice which column is the PK
   render: 'default-list',
   outputFile: 'pages.md',
 });
@@ -265,8 +267,8 @@ await db.delete('pages', 'about-us');
 db.define('event_seats', {
   columns: {
     event_id: 'TEXT NOT NULL',
-    seat_no:  'INTEGER NOT NULL',
-    holder:   'TEXT',
+    seat_no: 'INTEGER NOT NULL',
+    holder: 'TEXT',
   },
   tableConstraints: ['PRIMARY KEY (event_id, seat_no)'],
   primaryKey: ['event_id', 'seat_no'],
@@ -285,16 +287,16 @@ await db.delete('event_seats', { event_id: 'evt-1', seat_no: 12 });
 ```typescript
 db.define('comments', {
   columns: {
-    id:      'TEXT PRIMARY KEY',
+    id: 'TEXT PRIMARY KEY',
     post_id: 'TEXT NOT NULL',
     author_id: 'TEXT NOT NULL',
-    body:    'TEXT',
+    body: 'TEXT',
   },
   relations: {
-    post:   { type: 'belongsTo', table: 'posts', foreignKey: 'post_id' },
+    post: { type: 'belongsTo', table: 'posts', foreignKey: 'post_id' },
     author: { type: 'belongsTo', table: 'users', foreignKey: 'author_id' },
     // hasMany: the other table holds the FK
-    likes:  { type: 'hasMany', table: 'comment_likes', foreignKey: 'comment_id' },
+    likes: { type: 'hasMany', table: 'comment_likes', foreignKey: 'comment_id' },
   },
   render: {
     template: 'default-detail',
@@ -312,7 +314,7 @@ db.define('comments', {
 db.defineMulti(name: string, definition: MultiTableDefinition): this
 ```
 
-Produces one output file per *anchor entity* — useful for per-agent or per-project context files.
+Produces one output file per _anchor entity_ — useful for per-agent or per-project context files.
 
 ```typescript
 db.defineMulti('agent-context', {
@@ -326,16 +328,16 @@ db.defineMulti('agent-context', {
   tables: ['tasks', 'notes'],
 
   render(agent, { tasks, notes }) {
-    const myTasks = tasks.filter(t => t.assigned_to === agent.id);
-    const myNotes = notes.filter(n => n.agent_id === agent.id);
+    const myTasks = tasks.filter((t) => t.assigned_to === agent.id);
+    const myNotes = notes.filter((n) => n.agent_id === agent.id);
     return [
       `# ${agent.name} — context`,
       '',
       '## Pending tasks',
-      myTasks.map(t => `- ${t.title}`).join('\n') || '_none_',
+      myTasks.map((t) => `- ${t.title}`).join('\n') || '_none_',
       '',
       '## Notes',
-      myNotes.map(n => `- ${n.body}`).join('\n') || '_none_',
+      myNotes.map((n) => `- ${n.body}`).join('\n') || '_none_',
     ].join('\n');
   },
 });
@@ -495,8 +497,8 @@ await db.query(table: string, opts?: QueryOptions): Promise<Row[]>
 
 ```typescript
 interface QueryOptions {
-  where?: Record<string, unknown>;  // Equality shorthand
-  filters?: Filter[];               // Advanced operators (see below)
+  where?: Record<string, unknown>; // Equality shorthand
+  filters?: Filter[]; // Advanced operators (see below)
   orderBy?: string;
   orderDir?: 'asc' | 'desc';
   limit?: number;
@@ -510,11 +512,11 @@ const open = await db.query('tasks', { where: { status: 'open' } });
 
 // Sorted + paginated
 const page1 = await db.query('tasks', {
-  where:    { status: 'open' },
-  orderBy:  'created_at',
+  where: { status: 'open' },
+  orderBy: 'created_at',
   orderDir: 'desc',
-  limit:    20,
-  offset:   0,
+  limit: 20,
+  offset: 0,
 });
 
 // All rows
@@ -541,7 +543,7 @@ The `filters` array supports operators beyond equality. `where` and `filters` ar
 interface Filter {
   col: string;
   op: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'like' | 'in' | 'isNull' | 'isNotNull';
-  val?: unknown;  // not needed for isNull / isNotNull
+  val?: unknown; // not needed for isNull / isNotNull
 }
 ```
 
@@ -570,12 +572,12 @@ const unassigned = await db.query('tasks', {
 
 // Combine where + filters (ANDed)
 const results = await db.query('tasks', {
-  where:   { project_id: 'proj-1' },
+  where: { project_id: 'proj-1' },
   filters: [
-    { col: 'priority', op: 'gte',    val: 3 },
+    { col: 'priority', op: 'gte', val: 3 },
     { col: 'deleted_at', op: 'isNull' },
   ],
-  orderBy:  'priority',
+  orderBy: 'priority',
   orderDir: 'desc',
 });
 
@@ -625,9 +627,9 @@ Poll the DB every `interval` ms and re-render when content changes.
 
 ```typescript
 const stop = await db.watch('./context', {
-  interval: 5_000,              // default: 5000 ms
+  interval: 5_000, // default: 5000 ms
   onRender: (r) => console.log('rendered', r.filesWritten.length, 'files'),
-  onError:  (e) => console.error('render error:', e.message),
+  onError: (e) => console.error('render error:', e.message),
 });
 
 // Stop the loop later
@@ -664,12 +666,16 @@ db.db: Database.Database  // better-sqlite3 instance
 Escape hatch for queries Lattice doesn't cover (JOINs, aggregates, etc.):
 
 ```typescript
-const rows = db.db.prepare(`
+const rows = db.db
+  .prepare(
+    `
   SELECT t.*, u.name AS assignee_name
   FROM tasks t
   LEFT JOIN users u ON u.id = t.assignee_id
   WHERE t.status = ?
-`).all('open');
+`,
+  )
+  .all('open');
 ```
 
 ---
@@ -683,17 +689,17 @@ Pass a `BuiltinTemplateName` string as `render` to use a built-in template witho
 ```typescript
 db.define('users', {
   columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', email: 'TEXT', role: 'TEXT' },
-  render: 'default-table',   // or 'default-list' | 'default-detail' | 'default-json'
+  render: 'default-table', // or 'default-list' | 'default-detail' | 'default-json'
   outputFile: 'USERS.md',
 });
 ```
 
-| Template | Output |
-| -------- | ------ |
-| `default-list` | One bullet per row: `- key: value, key: value, ...` |
-| `default-table` | GitHub-flavoured Markdown table with a header row |
-| `default-detail` | `## <pk>` section per row with `key: value` body |
-| `default-json` | `JSON.stringify(rows, null, 2)` |
+| Template         | Output                                              |
+| ---------------- | --------------------------------------------------- |
+| `default-list`   | One bullet per row: `- key: value, key: value, ...` |
+| `default-table`  | GitHub-flavoured Markdown table with a header row   |
+| `default-detail` | `## <pk>` section per row with `key: value` body    |
+| `default-json`   | `JSON.stringify(rows, null, 2)`                     |
 
 All templates return empty string for zero rows.
 
@@ -710,9 +716,10 @@ db.define('tasks', {
     template: 'default-list',
     hooks: {
       // Transform or filter rows before rendering
-      beforeRender: (rows) => rows
-        .filter(r => r.status !== 'done')
-        .sort((a, b) => (b.priority as number) - (a.priority as number)),
+      beforeRender: (rows) =>
+        rows
+          .filter((r) => r.status !== 'done')
+          .sort((a, b) => (b.priority as number) - (a.priority as number)),
 
       // Customise how each row becomes a line
       formatRow: '{{title}} [priority {{priority}}]',
@@ -722,10 +729,10 @@ db.define('tasks', {
 });
 ```
 
-| Hook | Applies to | Type |
-| ---- | ---------- | ---- |
-| `beforeRender(rows)` | All templates | `(rows: Row[]) => Row[]` |
-| `formatRow` | `default-list`, `default-detail` | `((row: Row) => string) \| string` |
+| Hook                 | Applies to                       | Type                               |
+| -------------------- | -------------------------------- | ---------------------------------- |
+| `beforeRender(rows)` | All templates                    | `(rows: Row[]) => Row[]`           |
+| `formatRow`          | `default-list`, `default-detail` | `((row: Row) => string) \| string` |
 
 `formatRow` can be a function or a `{{field}}` template string. When it's a string, `belongsTo` relation fields are resolved and available as `{{relationName.field}}`.
 
@@ -744,10 +751,10 @@ db.define('users', {
 
 db.define('tickets', {
   columns: {
-    id:          'TEXT PRIMARY KEY',
-    title:       'TEXT',
+    id: 'TEXT PRIMARY KEY',
+    title: 'TEXT',
     assignee_id: 'TEXT',
-    status:      'TEXT',
+    status: 'TEXT',
   },
   relations: {
     assignee: { type: 'belongsTo', table: 'users', foreignKey: 'assignee_id' },
@@ -764,6 +771,7 @@ db.define('tickets', {
 ```
 
 **Rules:**
+
 - `{{field}}` — value of `field` in the current row
 - `{{relation.field}}` — value of `field` in the related row (resolved via `belongsTo`)
 - Unknown paths, `null`, and `undefined` all render as empty string
@@ -786,23 +794,23 @@ entities:
   # ── Entity name = table name ──────────────────────────────────────────────
   user:
     fields:
-      id:    { type: uuid,    primaryKey: true }    # auto-UUID on insert
-      name:  { type: text,    required: true   }    # NOT NULL
-      email: { type: text                      }    # nullable
-      score: { type: integer, default: 0       }    # DEFAULT 0
+      id: { type: uuid, primaryKey: true } # auto-UUID on insert
+      name: { type: text, required: true } # NOT NULL
+      email: { type: text } # nullable
+      score: { type: integer, default: 0 } # DEFAULT 0
     render: default-table
     outputFile: context/USERS.md
 
   ticket:
     fields:
-      id:          { type: uuid,    primaryKey: true }
-      title:       { type: text,    required: true   }
-      status:      { type: text,    default: open    }
-      priority:    { type: integer, default: 1       }
-      assignee_id: { type: uuid,    ref: user        }  # creates belongsTo relation
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
+      status: { type: text, default: open }
+      priority: { type: integer, default: 1 }
+      assignee_id: { type: uuid, ref: user } # creates belongsTo relation
     render:
       template: default-list
-      formatRow: "{{title}} ({{status}}) — {{assignee.name}}"
+      formatRow: '{{title}} ({{status}}) — {{assignee.name}}'
     outputFile: context/TICKETS.md
 ```
 
@@ -824,22 +832,22 @@ entities:
 
 **Field options**
 
-| Option       | Type               | Description |
-| ------------ | ------------------ | ----------- |
-| `type`       | `LatticeFieldType` | Column data type (required) |
-| `primaryKey` | boolean            | Primary key column (`TEXT PRIMARY KEY` for uuid/text) |
-| `required`   | boolean            | `NOT NULL` constraint |
-| `default`    | string/number/bool | SQL `DEFAULT` value |
+| Option       | Type               | Description                                                                                                                                           |
+| ------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`       | `LatticeFieldType` | Column data type (required)                                                                                                                           |
+| `primaryKey` | boolean            | Primary key column (`TEXT PRIMARY KEY` for uuid/text)                                                                                                 |
+| `required`   | boolean            | `NOT NULL` constraint                                                                                                                                 |
+| `default`    | string/number/bool | SQL `DEFAULT` value                                                                                                                                   |
 | `ref`        | string             | Foreign-key reference to another entity. Creates a `belongsTo` relation; `_id` suffix is stripped from the relation name (`assignee_id` → `assignee`) |
 
 **Entity-level options**
 
-| Option        | Type                    | Description |
-| ------------- | ----------------------- | ----------- |
-| `fields`      | `Record<string, FieldDef>` | Column definitions (required) |
-| `render`      | string or object        | Built-in template name, or `{ template, formatRow }` |
-| `outputFile`  | string                  | Render output path (relative to config file) |
-| `primaryKey`  | string or string[]      | Override PK — takes precedence over field-level `primaryKey: true` |
+| Option       | Type                       | Description                                                        |
+| ------------ | -------------------------- | ------------------------------------------------------------------ |
+| `fields`     | `Record<string, FieldDef>` | Column definitions (required)                                      |
+| `render`     | string or object           | Built-in template name, or `{ template, formatRow }`               |
+| `outputFile` | string                     | Render output path (relative to config file)                       |
+| `primaryKey` | string or string[]         | Override PK — takes precedence over field-level `primaryKey: true` |
 
 **Render spec forms in YAML:**
 
@@ -905,9 +913,10 @@ await db.init();
 ```
 
 `ParsedConfig`:
+
 ```typescript
 interface ParsedConfig {
-  dbPath: string;   // Absolute path to the SQLite file
+  dbPath: string; // Absolute path to the SQLite file
   tables: ReadonlyArray<{ name: string; definition: TableDefinition }>;
 }
 ```
@@ -927,13 +936,13 @@ npx lattice generate --config ./lattice.config.yml --out ./generated --scaffold
 
 **Options**
 
-| Flag | Default | Description |
-| ---- | ------- | ----------- |
-| `--config, -c <path>` | `./lattice.config.yml` | Path to the config file |
-| `--out, -o <dir>` | `./generated` | Output directory |
-| `--scaffold` | off | Create empty files at each entity's `outputFile` path (skips existing files) |
-| `--help, -h` | — | Show help |
-| `--version, -v` | — | Print version |
+| Flag                  | Default                | Description                                                                  |
+| --------------------- | ---------------------- | ---------------------------------------------------------------------------- |
+| `--config, -c <path>` | `./lattice.config.yml` | Path to the config file                                                      |
+| `--out, -o <dir>`     | `./generated`          | Output directory                                                             |
+| `--scaffold`          | off                    | Create empty files at each entity's `outputFile` path (skips existing files) |
+| `--help, -h`          | —                      | Show help                                                                    |
+| `--version, -v`       | —                      | Print version                                                                |
 
 **Output structure**
 
@@ -951,7 +960,7 @@ generated/
 
 export interface User {
   id: string;
-  name: string;   // required: true → no ?
+  name: string; // required: true → no ?
   email?: string;
   score?: number;
 }
@@ -961,7 +970,7 @@ export interface Ticket {
   title: string;
   status?: string;
   priority?: number;
-  assignee_id?: string;  // → user
+  assignee_id?: string; // → user
 }
 ```
 
@@ -1102,11 +1111,11 @@ See [docs/architecture.md](./docs/architecture.md) for a deeper walkthrough.
 
 Three complete, commented examples are in [docs/examples/](./docs/examples/):
 
-| Example | Description |
-| ------- | ----------- |
-| [Agent system](./docs/examples/agent-system.md) | Multi-agent context management with per-agent context files |
-| [Ticket tracker](./docs/examples/ticket-tracker.md) | Project management system with relationships and templates |
-| [CMS](./docs/examples/cms.md) | Content management with writeback pipeline for agent edits |
+| Example                                             | Description                                                 |
+| --------------------------------------------------- | ----------------------------------------------------------- |
+| [Agent system](./docs/examples/agent-system.md)     | Multi-agent context management with per-agent context files |
+| [Ticket tracker](./docs/examples/ticket-tracker.md) | Project management system with relationships and templates  |
+| [CMS](./docs/examples/cms.md)                       | Content management with writeback pipeline for agent edits  |
 
 ---
 

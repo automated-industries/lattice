@@ -91,12 +91,12 @@ Tests use [Vitest](https://vitest.dev/). All tests run against real SQLite (`:me
 
 ### Test locations
 
-| What | Where |
-|------|-------|
-| Config parsing | `tests/unit/config.test.ts` |
-| Code generation | `tests/unit/codegen.test.ts` |
+| What              | Where                        |
+| ----------------- | ---------------------------- |
+| Config parsing    | `tests/unit/config.test.ts`  |
+| Code generation   | `tests/unit/codegen.test.ts` |
 | Core CRUD + query | `tests/unit/lattice.test.ts` |
-| Render templates | `tests/unit/render.test.ts` |
+| Render templates  | `tests/unit/render.test.ts`  |
 
 ---
 
