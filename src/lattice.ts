@@ -14,6 +14,7 @@ import type {
   StopFn,
   AuditEvent,
   LatticeEvent,
+  Filter,
 } from './types.js';
 import type Database from 'better-sqlite3';
 import { SQLiteAdapter } from './db/sqlite.js';
@@ -24,6 +25,13 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 
 type EventHandler<T> = (data: T) => void;
+
+/**
+ * A primary key lookup value.
+ * - `string` — the value of the table's single PK column (backward compatible).
+ * - `Record<string, unknown>` — column → value map for composite PKs.
+ */
+export type PkLookup = string | Record<string, unknown>;
 
 export class Lattice {
   private readonly _adapter: SQLiteAdapter;
@@ -103,20 +111,31 @@ export class Lattice {
     if (notInit) return notInit;
 
     const sanitized = this._sanitizer.sanitizeRow(row);
-    const id = (sanitized.id as string | undefined) ?? uuidv4();
-    const rowWithId = { ...sanitized, id };
+    const pkCols = this._schema.getPrimaryKey(table);
+    const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
 
-    const cols = Object.keys(rowWithId).map((c) => `"${c}"`).join(', ');
-    const placeholders = Object.keys(rowWithId).map(() => '?').join(', ');
-    const values = Object.values(rowWithId);
+    // Auto-generate UUID only for the default 'id' PK when the field is absent.
+    let rowWithPk: Row;
+    if (isDefaultPk) {
+      const id = (sanitized.id as string | undefined) ?? uuidv4();
+      rowWithPk = { ...sanitized, id };
+    } else {
+      rowWithPk = sanitized;
+    }
+
+    const cols = Object.keys(rowWithPk).map((c) => `"${c}"`).join(', ');
+    const placeholders = Object.keys(rowWithPk).map(() => '?').join(', ');
+    const values = Object.values(rowWithPk);
 
     this._adapter.run(
       `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`,
       values,
     );
 
-    this._sanitizer.emitAudit(table, 'insert', id);
-    return Promise.resolve(id);
+    // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
+    const pkValue = String(rowWithPk[pkCols[0] as string] ?? '');
+    this._sanitizer.emitAudit(table, 'insert', pkValue);
+    return Promise.resolve(pkValue);
   }
 
   upsert(table: string, row: Row): Promise<string> {
@@ -124,24 +143,37 @@ export class Lattice {
     if (notInit) return notInit;
 
     const sanitized = this._sanitizer.sanitizeRow(row);
-    const id = (sanitized.id as string | undefined) ?? uuidv4();
-    const rowWithId = { ...sanitized, id };
+    const pkCols = this._schema.getPrimaryKey(table);
+    const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
 
-    const cols = Object.keys(rowWithId).map((c) => `"${c}"`).join(', ');
-    const placeholders = Object.keys(rowWithId).map(() => '?').join(', ');
-    const updateCols = Object.keys(rowWithId)
-      .filter((c) => c !== 'id')
+    let rowWithPk: Row;
+    if (isDefaultPk) {
+      const id = (sanitized.id as string | undefined) ?? uuidv4();
+      rowWithPk = { ...sanitized, id };
+    } else {
+      rowWithPk = sanitized;
+    }
+
+    const cols = Object.keys(rowWithPk).map((c) => `"${c}"`).join(', ');
+    const placeholders = Object.keys(rowWithPk).map(() => '?').join(', ');
+    // Conflict target uses all PK columns
+    const conflictCols = pkCols.map((c) => `"${c}"`).join(', ');
+    // Exclude all PK columns from the UPDATE SET clause
+    const updateCols = Object.keys(rowWithPk)
+      .filter((c) => !pkCols.includes(c))
       .map((c) => `"${c}" = excluded."${c}"`)
       .join(', ');
-    const values = Object.values(rowWithId);
+    const values = Object.values(rowWithPk);
 
     this._adapter.run(
-      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ON CONFLICT("id") DO UPDATE SET ${updateCols}`,
+      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`,
       values,
     );
 
-    this._sanitizer.emitAudit(table, 'update', id);
-    return Promise.resolve(id);
+    // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
+    const pkValue = String(rowWithPk[pkCols[0] as string] ?? '');
+    this._sanitizer.emitAudit(table, 'update', pkValue);
+    return Promise.resolve(pkValue);
   }
 
   upsertBy(table: string, col: string, val: unknown, row: Row): Promise<string> {
@@ -149,17 +181,24 @@ export class Lattice {
     if (notInit) return notInit;
 
     const existing = this._adapter.get(
-      `SELECT id FROM "${table}" WHERE "${col}" = ?`,
+      `SELECT * FROM "${table}" WHERE "${col}" = ?`,
       [val],
     );
     if (existing) {
-      const existingId = String(existing.id);
-      return this.update(table, existingId, row).then(() => existingId);
+      const pkCols = this._schema.getPrimaryKey(table);
+      // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
+      const pkLookup: PkLookup =
+        pkCols.length === 1
+          ? String(existing[pkCols[0] as string])
+          : Object.fromEntries(pkCols.map((c) => [c, existing[c]]));
+      return this.update(table, pkLookup, row).then(() =>
+        typeof pkLookup === 'string' ? pkLookup : JSON.stringify(pkLookup),
+      );
     }
     return this.insert(table, { ...row, [col]: val });
   }
 
-  update(table: string, id: string, row: Partial<Row>): Promise<void> {
+  update(table: string, id: PkLookup, row: Partial<Row>): Promise<void> {
     const notInit = this._notInitError<void>();
     if (notInit) return notInit;
 
@@ -167,20 +206,37 @@ export class Lattice {
     const setCols = Object.keys(sanitized)
       .map((c) => `"${c}" = ?`)
       .join(', ');
-    const values = [...Object.values(sanitized), id];
 
-    this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE "id" = ?`, values);
-    this._sanitizer.emitAudit(table, 'update', id);
+    const { clause, params: pkParams } = this._pkWhere(table, id);
+    const values = [...Object.values(sanitized), ...pkParams];
+
+    this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
+
+    const auditId = typeof id === 'string' ? id : JSON.stringify(id);
+    this._sanitizer.emitAudit(table, 'update', auditId);
     return Promise.resolve();
   }
 
-  delete(table: string, id: string): Promise<void> {
+  delete(table: string, id: PkLookup): Promise<void> {
     const notInit = this._notInitError<void>();
     if (notInit) return notInit;
 
-    this._adapter.run(`DELETE FROM "${table}" WHERE "id" = ?`, [id]);
-    this._sanitizer.emitAudit(table, 'delete', id);
+    const { clause, params } = this._pkWhere(table, id);
+    this._adapter.run(`DELETE FROM "${table}" WHERE ${clause}`, params);
+
+    const auditId = typeof id === 'string' ? id : JSON.stringify(id);
+    this._sanitizer.emitAudit(table, 'delete', auditId);
     return Promise.resolve();
+  }
+
+  get(table: string, id: PkLookup): Promise<Row | null> {
+    const notInit = this._notInitError<Row | null>();
+    if (notInit) return notInit;
+
+    const { clause, params } = this._pkWhere(table, id);
+    return Promise.resolve(
+      this._adapter.get(`SELECT * FROM "${table}" WHERE ${clause}`, params) ?? null,
+    );
   }
 
   query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
@@ -189,13 +245,25 @@ export class Lattice {
 
     let sql = `SELECT * FROM "${table}"`;
     const params: unknown[] = [];
+    const whereClauses: string[] = [];
 
+    // Equality where (backward compat shorthand)
     if (opts.where && Object.keys(opts.where).length > 0) {
-      const clauses = Object.entries(opts.where).map(([col, val]) => {
+      for (const [col, val] of Object.entries(opts.where)) {
+        whereClauses.push(`"${col}" = ?`);
         params.push(val);
-        return `"${col}" = ?`;
-      });
-      sql += ` WHERE ${clauses.join(' AND ')}`;
+      }
+    }
+
+    // Advanced filters with full operator support
+    if (opts.filters && opts.filters.length > 0) {
+      const { clauses, params: fp } = this._buildFilters(opts.filters);
+      whereClauses.push(...clauses);
+      params.push(...fp);
+    }
+
+    if (whereClauses.length > 0) {
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
     }
     if (opts.orderBy) {
       const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
@@ -205,21 +273,11 @@ export class Lattice {
       sql += ` LIMIT ${opts.limit.toString()}`;
     }
     if (opts.offset !== undefined) {
-      // SQLite requires LIMIT before OFFSET; use -1 (unlimited) if no explicit limit
       if (opts.limit === undefined) sql += ' LIMIT -1';
       sql += ` OFFSET ${opts.offset.toString()}`;
     }
 
     return Promise.resolve(this._adapter.all(sql, params));
-  }
-
-  get(table: string, id: string): Promise<Row | null> {
-    const notInit = this._notInitError<Row | null>();
-    if (notInit) return notInit;
-
-    return Promise.resolve(
-      this._adapter.get(`SELECT * FROM "${table}" WHERE "id" = ?`, [id]) ?? null,
-    );
   }
 
   count(table: string, opts: CountOptions = {}): Promise<number> {
@@ -228,13 +286,23 @@ export class Lattice {
 
     let sql = `SELECT COUNT(*) as n FROM "${table}"`;
     const params: unknown[] = [];
+    const whereClauses: string[] = [];
 
     if (opts.where && Object.keys(opts.where).length > 0) {
-      const clauses = Object.entries(opts.where).map(([col, val]) => {
+      for (const [col, val] of Object.entries(opts.where)) {
+        whereClauses.push(`"${col}" = ?`);
         params.push(val);
-        return `"${col}" = ?`;
-      });
-      sql += ` WHERE ${clauses.join(' AND ')}`;
+      }
+    }
+
+    if (opts.filters && opts.filters.length > 0) {
+      const { clauses, params: fp } = this._buildFilters(opts.filters);
+      whereClauses.push(...clauses);
+      params.push(...fp);
+    }
+
+    if (whereClauses.length > 0) {
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
     }
 
     const row = this._adapter.get(sql, params);
@@ -331,8 +399,90 @@ export class Lattice {
   }
 
   // -------------------------------------------------------------------------
-  // Private
+  // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Build the WHERE clause and params for a PK lookup.
+   * - `string` → matches against the table's first PK column.
+   * - `Record` → matches every PK column; all must be present in the object.
+   */
+  private _pkWhere(
+    table: string,
+    id: PkLookup,
+  ): { clause: string; params: unknown[] } {
+    const pkCols = this._schema.getPrimaryKey(table);
+
+    if (typeof id === 'string') {
+      return { clause: `"${pkCols[0]}" = ?`, params: [id] };
+    }
+
+    const clauses = pkCols.map((col) => `"${col}" = ?`);
+    const params = pkCols.map((col) => id[col]);
+    return { clause: clauses.join(' AND '), params };
+  }
+
+  /**
+   * Convert Filter objects into SQL clause strings and bound params.
+   * An `in` filter with an empty array is silently ignored (produces no clause).
+   */
+  private _buildFilters(filters: Filter[]): {
+    clauses: string[];
+    params: unknown[];
+  } {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+
+    for (const f of filters) {
+      const col = `"${f.col}"`;
+      switch (f.op) {
+        case 'eq':
+          clauses.push(`${col} = ?`);
+          params.push(f.val);
+          break;
+        case 'ne':
+          clauses.push(`${col} != ?`);
+          params.push(f.val);
+          break;
+        case 'gt':
+          clauses.push(`${col} > ?`);
+          params.push(f.val);
+          break;
+        case 'gte':
+          clauses.push(`${col} >= ?`);
+          params.push(f.val);
+          break;
+        case 'lt':
+          clauses.push(`${col} < ?`);
+          params.push(f.val);
+          break;
+        case 'lte':
+          clauses.push(`${col} <= ?`);
+          params.push(f.val);
+          break;
+        case 'like':
+          clauses.push(`${col} LIKE ?`);
+          params.push(f.val);
+          break;
+        case 'in': {
+          const list = f.val as unknown[];
+          if (Array.isArray(list) && list.length > 0) {
+            clauses.push(`${col} IN (${list.map(() => '?').join(', ')})`);
+            params.push(...list);
+          }
+          break;
+        }
+        case 'isNull':
+          clauses.push(`${col} IS NULL`);
+          break;
+        case 'isNotNull':
+          clauses.push(`${col} IS NOT NULL`);
+          break;
+      }
+    }
+
+    return { clauses, params };
+  }
 
   /** Returns a rejected Promise if not initialized; null if ready. */
   private _notInitError<T>(): Promise<T> | null {
