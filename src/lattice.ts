@@ -69,7 +69,7 @@ export class Lattice {
   constructor(pathOrConfig: string | LatticeConfigInput, options: LatticeOptions = {}) {
     // Resolve config-file form: read YAML, extract dbPath, collect table defs
     let dbPath: string;
-    let configTables: Array<{ name: string; definition: TableDefinition }> | undefined;
+    let configTables: { name: string; definition: TableDefinition }[] | undefined;
 
     if (typeof pathOrConfig === 'string') {
       dbPath = pathOrConfig;
@@ -179,7 +179,9 @@ export class Lattice {
     );
 
     // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
-    const pkValue = String(rowWithPk[pkCols[0] as string] ?? '');
+    const pkCol = pkCols[0] ?? 'id';
+    const rawPk = rowWithPk[pkCol];
+    const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     return Promise.resolve(pkValue);
   }
@@ -217,7 +219,9 @@ export class Lattice {
     );
 
     // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
-    const pkValue = String(rowWithPk[pkCols[0] as string] ?? '');
+    const pkCol = pkCols[0] ?? 'id';
+    const rawPk = rowWithPk[pkCol];
+    const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     this._sanitizer.emitAudit(table, 'update', pkValue);
     return Promise.resolve(pkValue);
   }
@@ -235,7 +239,7 @@ export class Lattice {
       // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
       const pkLookup: PkLookup =
         pkCols.length === 1
-          ? String(existing[pkCols[0] as string])
+          ? String(existing[pkCols[0] ?? 'id'] as string | number)
           : Object.fromEntries(pkCols.map((c) => [c, existing[c]]));
       return this.update(table, pkLookup, row).then(() =>
         typeof pkLookup === 'string' ? pkLookup : JSON.stringify(pkLookup),
@@ -245,7 +249,7 @@ export class Lattice {
   }
 
   update(table: string, id: PkLookup, row: Partial<Row>): Promise<void> {
-    const notInit = this._notInitError<void>();
+    const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
     const sanitized = this._sanitizer.sanitizeRow(row as Row);
@@ -264,7 +268,7 @@ export class Lattice {
   }
 
   delete(table: string, id: PkLookup): Promise<void> {
-    const notInit = this._notInitError<void>();
+    const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
     const { clause, params } = this._pkWhere(table, id);
@@ -460,7 +464,8 @@ export class Lattice {
     const pkCols = this._schema.getPrimaryKey(table);
 
     if (typeof id === 'string') {
-      return { clause: `"${pkCols[0]}" = ?`, params: [id] };
+      const firstCol = pkCols[0] ?? 'id';
+      return { clause: `"${firstCol}" = ?`, params: [id] };
     }
 
     const clauses = pkCols.map((col) => `"${col}" = ?`);
@@ -535,7 +540,7 @@ export class Lattice {
     if (!this._initialized) {
       return Promise.reject(
         new Error('Lattice: call await db.init() before using CRUD or sync methods'),
-      ) as Promise<T>;
+      );
     }
     return null;
   }
