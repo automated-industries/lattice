@@ -75,8 +75,8 @@ entities:
 `;
     const { tables } = parseConfigString(yaml, configDir);
     const def = tables[0]!.definition;
-    expect(def.columns['id']).toBe('TEXT PRIMARY KEY');
-    expect(def.columns['name']).toBe('TEXT');
+    expect(def.columns.id).toBe('TEXT PRIMARY KEY');
+    expect(def.columns.name).toBe('TEXT');
   });
 
   it('maps required to NOT NULL', () => {
@@ -91,7 +91,7 @@ entities:
     outputFile: items.md
 `;
     const { tables } = parseConfigString(yaml, configDir);
-    expect(tables[0]!.definition.columns['title']).toBe('TEXT NOT NULL');
+    expect(tables[0]!.definition.columns.title).toBe('TEXT NOT NULL');
   });
 
   it('maps string default correctly', () => {
@@ -106,7 +106,7 @@ entities:
     outputFile: items.md
 `;
     const { tables } = parseConfigString(yaml, configDir);
-    expect(tables[0]!.definition.columns['status']).toBe("TEXT DEFAULT 'open'");
+    expect(tables[0]!.definition.columns.status).toBe("TEXT DEFAULT 'open'");
   });
 
   it('maps numeric default correctly', () => {
@@ -121,7 +121,7 @@ entities:
     outputFile: items.md
 `;
     const { tables } = parseConfigString(yaml, configDir);
-    expect(tables[0]!.definition.columns['score']).toBe('INTEGER DEFAULT 0');
+    expect(tables[0]!.definition.columns.score).toBe('INTEGER DEFAULT 0');
   });
 
   it('maps all scalar types to correct SQLite types', () => {
@@ -146,17 +146,17 @@ entities:
 `;
     const { tables } = parseConfigString(yaml, configDir);
     const cols = tables[0]!.definition.columns;
-    expect(cols['a']).toMatch(/^TEXT/);
-    expect(cols['b']).toMatch(/^TEXT/);
-    expect(cols['c']).toMatch(/^INTEGER/);
-    expect(cols['d']).toMatch(/^INTEGER/);
-    expect(cols['e']).toMatch(/^REAL/);
-    expect(cols['f']).toMatch(/^REAL/);
-    expect(cols['g']).toMatch(/^INTEGER/);
-    expect(cols['h']).toMatch(/^INTEGER/);
-    expect(cols['i']).toMatch(/^TEXT/);
-    expect(cols['j']).toMatch(/^TEXT/);
-    expect(cols['k']).toMatch(/^BLOB/);
+    expect(cols.a).toMatch(/^TEXT/);
+    expect(cols.b).toMatch(/^TEXT/);
+    expect(cols.c).toMatch(/^INTEGER/);
+    expect(cols.d).toMatch(/^INTEGER/);
+    expect(cols.e).toMatch(/^REAL/);
+    expect(cols.f).toMatch(/^REAL/);
+    expect(cols.g).toMatch(/^INTEGER/);
+    expect(cols.h).toMatch(/^INTEGER/);
+    expect(cols.i).toMatch(/^TEXT/);
+    expect(cols.j).toMatch(/^TEXT/);
+    expect(cols.k).toMatch(/^BLOB/);
   });
 
   // -------------------------------------------------------------------------
@@ -211,7 +211,7 @@ entities:
 `;
     const { tables } = parseConfigString(yaml, configDir);
     const def = tables[0]!.definition;
-    expect(def.relations?.['assignee']).toMatchObject({
+    expect(def.relations?.assignee).toMatchObject({
       type: 'belongsTo',
       table: 'user',
       foreignKey: 'assignee_id',
@@ -230,7 +230,7 @@ entities:
     outputFile: comments.md
 `;
     const { tables } = parseConfigString(yaml, configDir);
-    expect(tables[0]!.definition.relations?.['post']).toMatchObject({ table: 'posts' });
+    expect(tables[0]!.definition.relations?.post).toMatchObject({ table: 'posts' });
   });
 
   // -------------------------------------------------------------------------
@@ -356,7 +356,7 @@ describe('parseConfigFile()', () => {
   it('fixture ticket entity has assignee belongsTo relation', () => {
     const result = parseConfigFile(FIXTURE_CONFIG);
     const ticket = result.tables.find((t) => t.name === 'ticket')!;
-    expect(ticket.definition.relations?.['assignee']).toMatchObject({
+    expect(ticket.definition.relations?.assignee).toMatchObject({
       type: 'belongsTo',
       table: 'user',
       foreignKey: 'assignee_id',

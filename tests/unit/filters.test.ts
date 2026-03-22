@@ -26,7 +26,7 @@ describe('Expanded query filters', () => {
     await db.insert('items', { id: 'd', name: 'Delta', score: 80, tag: null as unknown as string, note: 'annotated' });
   });
 
-  afterEach(() => db.close());
+  afterEach(() => { db.close(); });
 
   // -------------------------------------------------------------------------
   // Comparison operators

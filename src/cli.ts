@@ -38,9 +38,11 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--version' || arg === '-v') {
       version = true;
     } else if ((arg === '--config' || arg === '-c') && i + 1 < argv.length) {
-      config = argv[++i]!;
+      i++;
+      config = argv[i] ?? config;
     } else if ((arg === '--out' || arg === '-o') && i + 1 < argv.length) {
-      out = argv[++i]!;
+      i++;
+      out = argv[i] ?? out;
     } else if (arg === '--scaffold') {
       scaffold = true;
     }
@@ -111,7 +113,7 @@ function runGenerate(args: ParsedArgs): void {
     process.exit(1);
   }
 
-  if (!config?.entities) {
+  if (!(config as { entities?: unknown }).entities) {
     console.error('Error: config must have an "entities" key');
     process.exit(1);
   }
@@ -121,7 +123,7 @@ function runGenerate(args: ParsedArgs): void {
 
   try {
     const result = generateAll({ config, configDir, outDir, scaffold: args.scaffold });
-    console.log(`Generated ${result.filesWritten.length} file(s):`);
+    console.log(`Generated ${String(result.filesWritten.length)} file(s):`);
     for (const f of result.filesWritten) {
       console.log(`  ✓ ${f}`);
     }
