@@ -8,10 +8,7 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: {
-          // Allow test files to be type-checked without a separate tsconfig
-          allowDefaultProject: ['tests/*/*.ts', '*.config.ts'],
-        },
+        project: './tsconfig.lint.json',
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -22,6 +19,13 @@ export default tseslint.config(
       '@typescript-eslint/no-misused-promises': 'error',
       // union types must use `type`, not `interface` — disable to allow mixed usage
       '@typescript-eslint/consistent-type-definitions': 'off',
+    },
+  },
+  {
+    // Test files: relax rules that are overly strict for test code
+    files: ['tests/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
     },
   },
   {

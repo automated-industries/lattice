@@ -5,7 +5,6 @@ import type {
   LatticeConfig,
   LatticeEntityDef,
   LatticeFieldDef,
-  LatticeEntityRenderSpec,
 } from './types.js';
 import type { TableDefinition, RenderSpec, BelongsToRelation, BuiltinTemplateName } from '../types.js';
 
@@ -18,7 +17,7 @@ export interface ParsedConfig {
   /** Absolute path to the SQLite database file */
   dbPath: string;
   /** Table definitions in declaration order */
-  tables: ReadonlyArray<{ name: string; definition: TableDefinition }>;
+  tables: readonly { name: string; definition: TableDefinition }[];
 }
 
 /**
@@ -86,17 +85,17 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
 
   const cfg = raw as Record<string, unknown>;
 
-  if (typeof cfg['db'] !== 'string') {
-    throw new Error(`Lattice: config.db must be a string path (got ${typeof cfg['db']})`);
+  if (typeof cfg.db !== 'string') {
+    throw new Error(`Lattice: config.db must be a string path (got ${typeof cfg.db})`);
   }
-  if (!cfg['entities'] || typeof cfg['entities'] !== 'object' || Array.isArray(cfg['entities'])) {
+  if (!cfg.entities || typeof cfg.entities !== 'object' || Array.isArray(cfg.entities)) {
     throw new Error(`Lattice: config.entities must be an object`);
   }
 
   const config = raw as LatticeConfig;
   const dbPath = resolve(configDir, config.db);
 
-  const tables: Array<{ name: string; definition: TableDefinition }> = [];
+  const tables: { name: string; definition: TableDefinition }[] = [];
   for (const [entityName, entityDef] of Object.entries(config.entities)) {
     const definition = entityToTableDef(entityName, entityDef, configDir);
     tables.push({ name: entityName, definition });
@@ -110,7 +109,8 @@ function entityToTableDef(
   entity: LatticeEntityDef,
   configDir: string,
 ): TableDefinition {
-  if (!entity.fields || typeof entity.fields !== 'object') {
+  const rawFields = (entity as { fields?: unknown }).fields;
+  if (!rawFields || typeof rawFields !== 'object' || Array.isArray(rawFields)) {
     throw new Error(`Lattice: entity "${entityName}" must have a "fields" object`);
   }
 
@@ -220,7 +220,7 @@ function parseEntityRender(render: LatticeEntityDef['render']): RenderSpec {
   }
 
   // Object form: { template, formatRow? }
-  const spec = render as LatticeEntityRenderSpec;
+  const spec = render;
   if (spec.formatRow) {
     return {
       template: spec.template as BuiltinTemplateName,

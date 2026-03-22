@@ -129,7 +129,7 @@ describe('generateTypes()', () => {
 
   it('generates interfaces for all entities in config', () => {
     const output = generateTypes(FIXTURE_CONFIG);
-    expect(output.match(/^export interface /m)).toBeTruthy();
+    expect(/^export interface /m.test(output)).toBe(true);
     const matches = [...output.matchAll(/^export interface \w+/gm)];
     expect(matches).toHaveLength(2);
   });
@@ -238,7 +238,7 @@ entities:
     render: default-json
     outputFile: tags.md
 `;
-    const configPath = join(tmpdir(), `lattice-test-${Date.now()}.yml`);
+    const configPath = join(tmpdir(), `lattice-test-${String(Date.now())}.yml`);
     writeFileSync(configPath, configContent, 'utf-8');
 
     // Point the db to :memory: by using a pre-resolved path trick:
