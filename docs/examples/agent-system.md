@@ -43,41 +43,41 @@ db: ./data/agents.db
 entities:
   agent:
     fields:
-      id:          { type: uuid,  primaryKey: true }
-      slug:        { type: text,  required: true }
-      name:        { type: text,  required: true }
-      role:        { type: text,  required: true }
-      status:      { type: text,  default: active }
-      model:       { type: text,  default: claude-sonnet-4-6 }
-      created_at:  { type: datetime }
+      id: { type: uuid, primaryKey: true }
+      slug: { type: text, required: true }
+      name: { type: text, required: true }
+      role: { type: text, required: true }
+      status: { type: text, default: active }
+      model: { type: text, default: claude-sonnet-4-6 }
+      created_at: { type: datetime }
     render: default-table
     outputFile: context/AGENTS.md
 
   task:
     fields:
-      id:          { type: uuid,    primaryKey: true }
-      title:       { type: text,    required: true }
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
       description: { type: text }
-      status:      { type: text,    default: pending }
-      priority:    { type: integer, default: 1 }
-      agent_id:    { type: uuid,    ref: agent }
-      created_at:  { type: datetime }
+      status: { type: text, default: pending }
+      priority: { type: integer, default: 1 }
+      agent_id: { type: uuid, ref: agent }
+      created_at: { type: datetime }
       completed_at: { type: datetime }
     render:
       template: default-list
-      formatRow: "[{{status}}] {{title}} → {{agent.name}}"
+      formatRow: '[{{status}}] {{title}} → {{agent.name}}'
     outputFile: context/TASKS.md
 
   event:
     fields:
-      id:         { type: uuid,     primaryKey: true }
-      type:       { type: text,     required: true }
-      agent_id:   { type: uuid,     ref: agent }
-      payload:    { type: text }
+      id: { type: uuid, primaryKey: true }
+      type: { type: text, required: true }
+      agent_id: { type: uuid, ref: agent }
+      payload: { type: text }
       created_at: { type: datetime }
     render:
       template: default-list
-      formatRow: "{{created_at}} [{{type}}] {{agent.name}}"
+      formatRow: '{{created_at}} [{{type}}] {{agent.name}}'
     outputFile: context/EVENTS.md
 ```
 
@@ -108,7 +108,7 @@ export interface Task {
   description?: string;
   status?: string;
   priority?: number;
-  agent_id?: string;  // → agent
+  agent_id?: string; // → agent
   created_at?: string;
   completed_at?: string;
 }
@@ -116,7 +116,7 @@ export interface Task {
 export interface Event {
   id: string;
   type: string;
-  agent_id?: string;  // → agent
+  agent_id?: string; // → agent
   payload?: string;
   created_at?: string;
 }
@@ -152,9 +152,14 @@ async function seedAgents() {
   await db.init();
 
   const agents = [
-    { id: 'agent-craft',   slug: 'craft',   name: 'Craft',   role: 'Software architect and implementer' },
-    { id: 'agent-audit',   slug: 'audit',   name: 'Audit',   role: 'Code reviewer and security analyst' },
-    { id: 'agent-research',slug: 'research',name: 'Research',role: 'Technical researcher and planner' },
+    { id: 'agent-craft', slug: 'craft', name: 'Craft', role: 'Software architect and implementer' },
+    { id: 'agent-audit', slug: 'audit', name: 'Audit', role: 'Code reviewer and security analyst' },
+    {
+      id: 'agent-research',
+      slug: 'research',
+      name: 'Research',
+      role: 'Technical researcher and planner',
+    },
   ];
 
   for (const agent of agents) {
@@ -204,7 +209,7 @@ await db.update('task', taskId, {
 
 // Count by status
 const openCount = await db.count('task', { where: { status: 'pending' } });
-const doneCount  = await db.count('task', { where: { status: 'done' } });
+const doneCount = await db.count('task', { where: { status: 'done' } });
 console.log(`Tasks: ${openCount} open, ${doneCount} done`);
 ```
 
@@ -289,10 +294,10 @@ process.on('SIGTERM', () => {
 ```markdown
 # agent
 
-| id | slug | name | role | status | model |
-| --- | --- | --- | --- | --- | --- |
+| id          | slug  | name  | role               | status | model             |
+| ----------- | ----- | ----- | ------------------ | ------ | ----------------- |
 | agent-craft | craft | Craft | Software architect | active | claude-sonnet-4-6 |
-| agent-audit | audit | Audit | Code reviewer | active | claude-sonnet-4-6 |
+| agent-audit | audit | Audit | Code reviewer      | active | claude-sonnet-4-6 |
 ```
 
 **`context/TASKS.md`** (rendered by `default-list` with `formatRow`):
