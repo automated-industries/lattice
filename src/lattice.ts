@@ -19,10 +19,12 @@ import type {
 import type Database from 'better-sqlite3';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { SchemaManager } from './schema/manager.js';
+import type { CompiledTableDef } from './schema/manager.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine } from './render/engine.js';
 import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
+import { compileRender } from './render/templates.js';
 
 type EventHandler<T> = (data: T) => void;
 
@@ -69,7 +71,11 @@ export class Lattice {
 
   define(table: string, def: TableDefinition): this {
     this._assertNotInit('define');
-    this._schema.define(table, def);
+    const compiledDef: CompiledTableDef = {
+      ...def,
+      render: compileRender(def, table, this._schema, this._adapter),
+    };
+    this._schema.define(table, compiledDef);
     return this;
   }
 
