@@ -1,5 +1,5 @@
-import { readFileSync, statSync, existsSync } from 'node:fs';
-import { glob } from 'node:fs/promises';
+import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
 import type { WritebackDefinition } from '../types.js';
 
 interface FileState {
@@ -25,7 +25,7 @@ export class WritebackPipeline {
   }
 
   private async _processDef(def: WritebackDefinition): Promise<number> {
-    const paths = await this._expandGlob(def.file);
+    const paths = this._expandGlob(def.file);
     let processed = 0;
 
     for (const filePath of paths) {
@@ -66,14 +66,20 @@ export class WritebackPipeline {
     return processed;
   }
 
-  private async _expandGlob(pattern: string): Promise<string[]> {
+  private _expandGlob(pattern: string): string[] {
     if (!pattern.includes('*') && !pattern.includes('?')) {
       return [pattern];
     }
-    const results: string[] = [];
-    for await (const file of glob(pattern)) {
-      results.push(file);
-    }
-    return results;
+    const dir = dirname(pattern);
+    const filePattern = basename(pattern);
+    if (!existsSync(dir)) return [];
+    const regexStr = filePattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+      .replace(/\?/g, '.');
+    const regex = new RegExp(`^${regexStr}$`);
+    return readdirSync(dir)
+      .filter((f) => regex.test(f))
+      .map((f) => join(dir, f));
   }
 }
