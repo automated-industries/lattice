@@ -3,7 +3,6 @@ import type {
   TableDefinition,
   RenderHooks,
   BuiltinTemplateName,
-  TemplateRenderSpec,
   RenderSpec,
 } from '../types.js';
 import type { SchemaManager } from '../schema/manager.js';
@@ -81,9 +80,9 @@ function _normalizeSpec(render: RenderSpec): _NormalizedSpec {
     return { renderFn: render };
   }
   if (typeof render === 'string') {
-    return { templateName: render as BuiltinTemplateName };
+    return { templateName: render };
   }
-  const spec = render as TemplateRenderSpec;
+  const spec = render;
   return { templateName: spec.template, hooks: spec.hooks };
 }
 
@@ -142,7 +141,7 @@ function _applyFormatRow(
 ): string {
   if (formatRow == null) {
     return Object.entries(row)
-      .map(([k, v]) => `${k}: ${v == null ? '' : String(v)}`)
+      .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
       .join(', ');
   }
   if (typeof formatRow === 'function') return formatRow(row);
@@ -161,11 +160,13 @@ function _renderList(
 /** GitHub-flavoured Markdown table */
 function _renderTable(rows: Row[]): string {
   if (rows.length === 0) return '';
-  const headers = Object.keys(rows[0]!);
+  const firstRow = rows[0];
+  if (!firstRow) return '';
+  const headers = Object.keys(firstRow);
   const headerRow = `| ${headers.join(' | ')} |`;
   const separatorRow = `| ${headers.map(() => '---').join(' | ')} |`;
   const bodyRows = rows
-    .map((row) => `| ${headers.map((h) => String(row[h] ?? '')).join(' | ')} |`)
+    .map((row) => `| ${headers.map((h) => { const v = row[h]; return v == null ? '' : String(v as string | number | boolean); }).join(' | ')} |`)
     .join('\n');
   return [headerRow, separatorRow, bodyRows].join('\n');
 }
@@ -190,7 +191,7 @@ function _renderDetail(
 
   return rows
     .map((row) => {
-      const pkVal = pkCols.map((col) => String(row[col] ?? '')).join(':');
+      const pkVal = pkCols.map((col) => { const v = row[col]; return v == null ? '' : String(v as string | number | boolean); }).join(':');
       const heading = `## ${pkVal}`;
 
       let body: string;
@@ -201,7 +202,7 @@ function _renderDetail(
             : interpolate(formatRow, row);
       } else {
         body = Object.entries(row)
-          .map(([k, v]) => `${k}: ${v == null ? '' : String(v)}`)
+          .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
           .join('\n');
       }
 

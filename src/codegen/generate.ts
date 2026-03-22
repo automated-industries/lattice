@@ -159,5 +159,5 @@ function toTsType(type: LatticeFieldDef['type']): string {
 }
 
 function toPascalCase(s: string): string {
-  return s.replace(/(^|[_-])([a-z])/g, (_, __, c: string) => (c as string).toUpperCase());
+  return s.replace(/(^|[_-])([a-z])/g, (_, __, c: string) => c.toUpperCase());
 }
