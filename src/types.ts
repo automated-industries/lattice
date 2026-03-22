@@ -117,14 +117,83 @@ export interface Filter {
 }
 
 // ---------------------------------------------------------------------------
+// Template rendering (v0.3+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Names of the four built-in render templates.
+ *
+ * - `default-list`   — one bullet per row (supports `formatRow` hook)
+ * - `default-table`  — GitHub-flavoured Markdown table
+ * - `default-detail` — section per row with all fields (supports `formatRow` hook)
+ * - `default-json`   — `JSON.stringify(rows, null, 2)`
+ */
+export type BuiltinTemplateName =
+  | 'default-list'
+  | 'default-table'
+  | 'default-detail'
+  | 'default-json';
+
+/**
+ * Lifecycle hooks that customise a built-in template.
+ *
+ * - `beforeRender(rows)` — transform or filter the row array before rendering.
+ * - `formatRow` — control how each row is serialised to a string.
+ *   Can be a plain function or a `{{field}}` interpolation template string.
+ *   Supported by `default-list` and `default-detail`.
+ *   `belongsTo` relation fields are available as `{{relationName.field}}`.
+ *
+ * @example
+ * ```ts
+ * hooks: {
+ *   beforeRender: (rows) => rows.filter(r => r.active),
+ *   formatRow: '{{title}} — {{status}}',
+ * }
+ * ```
+ */
+export interface RenderHooks {
+  beforeRender?: (rows: Row[]) => Row[];
+  formatRow?: ((row: Row) => string) | string;
+}
+
+/**
+ * Use a built-in template, optionally with lifecycle hooks.
+ *
+ * @example
+ * ```ts
+ * render: { template: 'default-list', hooks: { formatRow: '- {{title}} ({{status}})' } }
+ * ```
+ */
+export interface TemplateRenderSpec {
+  template: BuiltinTemplateName;
+  hooks?: RenderHooks;
+}
+
+/**
+ * The accepted value for `TableDefinition.render`:
+ *
+ * - A plain `(rows: Row[]) => string` function — full control, unchanged from v0.1/v0.2.
+ * - A `BuiltinTemplateName` string — use a built-in template with default settings.
+ * - A `TemplateRenderSpec` object — use a built-in template with lifecycle hooks.
+ */
+export type RenderSpec = ((rows: Row[]) => string) | BuiltinTemplateName | TemplateRenderSpec;
+
+// ---------------------------------------------------------------------------
 // Table / multi-table definitions
 // ---------------------------------------------------------------------------
 
 export interface TableDefinition {
   /** Column name → SQLite type spec (e.g. `'TEXT PRIMARY KEY'`) */
   columns: Record<string, string>;
-  /** Transform DB rows into text content for the context file */
-  render: (rows: Row[]) => string;
+  /**
+   * How to render DB rows into text content for the context file.
+   *
+   * - Pass a `(rows: Row[]) => string` function for full control (v0.1/v0.2 behaviour).
+   * - Pass a `BuiltinTemplateName` string (`'default-list'`, `'default-table'`,
+   *   `'default-detail'`, `'default-json'`) to use a built-in template.
+   * - Pass a `TemplateRenderSpec` to use a built-in template with lifecycle hooks.
+   */
+  render: RenderSpec;
   /** Output path relative to the outputDir passed to render/watch */
   outputFile: string;
   /** Optional pre-filter applied before render */

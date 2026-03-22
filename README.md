@@ -151,7 +151,7 @@ const seat = await db.get('seats', { event_id: 'evt-1', seat_no: 5 });
 await db.update('seats', { event_id: 'evt-1', seat_no: 5 }, { holder: 'Alice' });
 ```
 
-**Relationship declarations** — metadata for context rendering (v0.2+, used by templates in v0.3+):
+**Relationship declarations** — metadata for context rendering (v0.2+):
 
 ```typescript
 db.define('comments', {
@@ -164,6 +164,73 @@ db.define('comments', {
   outputFile: 'comments.md',
 });
 ```
+
+### Built-in render templates (v0.3+)
+
+Instead of a render function, pass a template name or spec:
+
+```typescript
+// Shortest form — pick a built-in template
+db.define('tasks', {
+  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', status: 'TEXT' },
+  render: 'default-list',   // or 'default-table' | 'default-detail' | 'default-json'
+  outputFile: 'tasks.md',
+});
+```
+
+The four built-in templates:
+
+| Name | Output |
+| --- | --- |
+| `default-list` | One bullet per row: `- key: value, ...` |
+| `default-table` | GitHub-flavoured Markdown table |
+| `default-detail` | One `## <pk>` section per row with all fields |
+| `default-json` | `JSON.stringify(rows, null, 2)` |
+
+**Lifecycle hooks** — customise any built-in template:
+
+```typescript
+db.define('tasks', {
+  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', status: 'TEXT', priority: 'INTEGER' },
+  render: {
+    template: 'default-list',
+    hooks: {
+      // Filter or transform rows before rendering
+      beforeRender: (rows) => rows.filter(r => r.status !== 'done'),
+      // Control how each row becomes a string.
+      // Can be a function or a {{field}} interpolation template.
+      formatRow: '{{title}} ({{status}})',
+    },
+  },
+  outputFile: 'tasks.md',
+  // Writes: "- Write docs (open)\n- Fix bug (open)"
+});
+```
+
+**`{{field}}` interpolation** — `formatRow` supports dot-notation for `belongsTo` relations:
+
+```typescript
+db.define('users', {
+  columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT' },
+  render: 'default-list',
+  outputFile: 'users.md',
+});
+
+db.define('tasks', {
+  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', author_id: 'TEXT' },
+  relations: {
+    author: { type: 'belongsTo', table: 'users', foreignKey: 'author_id' },
+  },
+  render: {
+    template: 'default-list',
+    hooks: { formatRow: '{{title}} by {{author.name}}' },
+  },
+  outputFile: 'tasks.md',
+  // Writes: "- Write docs by Alice\n- Fix bug by Bob"
+});
+```
+
+Hooks are also supported for `default-detail` (controls the section body) and `default-json` (`beforeRender` only — `formatRow` has no effect on JSON output).
 
 ### `db.defineMulti(name, definition)`
 

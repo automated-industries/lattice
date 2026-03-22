@@ -17,13 +17,22 @@ export interface RegisteredMulti {
   definition: MultiTableDefinition;
 }
 
+/**
+ * Internal representation of a table definition where `render` has always
+ * been compiled down to a plain function by `Lattice.define()`.
+ * This is what SchemaManager and RenderEngine always work with.
+ */
+export type CompiledTableDef = Omit<TableDefinition, 'render'> & {
+  render: (rows: Row[]) => string;
+};
+
 export class SchemaManager {
-  private readonly _tables = new Map<string, TableDefinition>();
+  private readonly _tables = new Map<string, CompiledTableDef>();
   /** Normalised primary key columns per table (always an array). */
   private readonly _tablePK = new Map<string, string[]>();
   private readonly _multis = new Map<string, MultiTableDefinition>();
 
-  define(table: string, def: TableDefinition): void {
+  define(table: string, def: CompiledTableDef): void {
     if (this._tables.has(table)) {
       throw new Error(`Table "${table}" is already defined`);
     }
@@ -49,7 +58,7 @@ export class SchemaManager {
     this._multis.set(name, def);
   }
 
-  getTables(): Map<string, TableDefinition> {
+  getTables(): Map<string, CompiledTableDef> {
     return this._tables;
   }
 
