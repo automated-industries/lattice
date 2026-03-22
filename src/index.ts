@@ -23,4 +23,9 @@ export type {
   Relation,
   FilterOp,
   Filter,
+  // v0.3 additions
+  BuiltinTemplateName,
+  RenderHooks,
+  TemplateRenderSpec,
+  RenderSpec,
 } from './types.js';
