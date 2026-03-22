@@ -25,6 +25,23 @@ import { RenderEngine } from './render/engine.js';
 import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
+import { parseConfigFile } from './config/parser.js';
+
+/**
+ * Initialise Lattice from a YAML config file instead of an explicit path.
+ *
+ * @example
+ * ```ts
+ * const db = new Lattice({ config: './lattice.config.yml' });
+ * await db.init();
+ * ```
+ */
+export interface LatticeConfigInput {
+  /** Path to `lattice.config.yml` (absolute or relative to `process.cwd()`) */
+  config: string;
+  /** Optional Lattice runtime options */
+  options?: LatticeOptions;
+}
 
 type EventHandler<T> = (data: T) => void;
 
@@ -49,11 +66,27 @@ export class Lattice {
   private readonly _writebackHandlers: EventHandler<{ filePath: string; entriesProcessed: number }>[] = [];
   private readonly _errorHandlers: EventHandler<Error>[] = [];
 
-  constructor(path: string, options: LatticeOptions = {}) {
+  constructor(pathOrConfig: string | LatticeConfigInput, options: LatticeOptions = {}) {
+    // Resolve config-file form: read YAML, extract dbPath, collect table defs
+    let dbPath: string;
+    let configTables: Array<{ name: string; definition: TableDefinition }> | undefined;
+
+    if (typeof pathOrConfig === 'string') {
+      dbPath = pathOrConfig;
+    } else {
+      const parsed = parseConfigFile(pathOrConfig.config);
+      dbPath = parsed.dbPath;
+      configTables = [...parsed.tables];
+      // Config-level options merge under any explicit options passed in
+      if (pathOrConfig.options) {
+        options = { ...pathOrConfig.options, ...options };
+      }
+    }
+
     const adapterOpts: { wal?: boolean; busyTimeout?: number } = {};
     if (options.wal !== undefined) adapterOpts.wal = options.wal;
     if (options.busyTimeout !== undefined) adapterOpts.busyTimeout = options.busyTimeout;
-    this._adapter = new SQLiteAdapter(path, adapterOpts);
+    this._adapter = new SQLiteAdapter(dbPath, adapterOpts);
     this._schema = new SchemaManager();
     this._sanitizer = new Sanitizer(options.security);
     this._render = new RenderEngine(this._schema, this._adapter);
@@ -63,6 +96,13 @@ export class Lattice {
     this._sanitizer.onAudit((event) => {
       for (const h of this._auditHandlers) h(event);
     });
+
+    // Register all tables declared in the YAML config
+    if (configTables) {
+      for (const { name, definition } of configTables) {
+        this.define(name, definition);
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
