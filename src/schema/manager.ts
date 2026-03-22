@@ -1,5 +1,11 @@
 import type { StorageAdapter } from '../db/adapter.js';
-import type { TableDefinition, MultiTableDefinition, Migration, Row } from '../types.js';
+import type {
+  TableDefinition,
+  MultiTableDefinition,
+  Migration,
+  Relation,
+  Row,
+} from '../types.js';
 
 export interface RegisteredTable {
   name: string;
@@ -13,6 +19,8 @@ export interface RegisteredMulti {
 
 export class SchemaManager {
   private readonly _tables = new Map<string, TableDefinition>();
+  /** Normalised primary key columns per table (always an array). */
+  private readonly _tablePK = new Map<string, string[]>();
   private readonly _multis = new Map<string, MultiTableDefinition>();
 
   define(table: string, def: TableDefinition): void {
@@ -20,6 +28,18 @@ export class SchemaManager {
       throw new Error(`Table "${table}" is already defined`);
     }
     this._tables.set(table, def);
+
+    // Normalise primaryKey to string[] and store separately.
+    if (def.primaryKey === undefined || def.primaryKey === 'id') {
+      this._tablePK.set(table, ['id']);
+    } else if (Array.isArray(def.primaryKey)) {
+      if (def.primaryKey.length === 0) {
+        throw new Error(`Table "${table}": primaryKey array must not be empty`);
+      }
+      this._tablePK.set(table, def.primaryKey);
+    } else {
+      this._tablePK.set(table, [def.primaryKey]);
+    }
   }
 
   defineMulti(name: string, def: MultiTableDefinition): void {
@@ -38,14 +58,31 @@ export class SchemaManager {
   }
 
   /**
+   * Return the normalised primary key column list for a table.
+   * Falls back to `['id']` for tables that were not registered via `define()`
+   * (e.g. tables accessed through the raw `.db` escape hatch).
+   */
+  getPrimaryKey(table: string): string[] {
+    return this._tablePK.get(table) ?? ['id'];
+  }
+
+  /**
+   * Return the declared relationships for a table, keyed by relation name.
+   * Returns an empty object for tables with no `relations` definition.
+   */
+  getRelations(table: string): Record<string, Relation> {
+    return this._tables.get(table)?.relations ?? {};
+  }
+
+  /**
    * Apply schema: create missing tables, add missing columns.
    * Never drops tables or columns.
    */
   applySchema(adapter: StorageAdapter): void {
     for (const [name, def] of this._tables) {
-      this._ensureTable(adapter, name, def.columns);
+      this._ensureTable(adapter, name, def.columns, def.tableConstraints);
     }
-    // Internal schema_migrations table
+    // Internal migrations tracking table
     this._ensureTable(adapter, '__lattice_migrations', {
       version: 'INTEGER PRIMARY KEY',
       applied_at: 'TEXT NOT NULL',
@@ -82,11 +119,16 @@ export class SchemaManager {
     adapter: StorageAdapter,
     name: string,
     columns: Record<string, string>,
+    tableConstraints?: string[],
   ): void {
     const colDefs = Object.entries(columns)
       .map(([col, type]) => `"${col}" ${type}`)
       .join(', ');
-    adapter.run(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs})`);
+    const constraintDefs =
+      tableConstraints && tableConstraints.length > 0
+        ? ', ' + tableConstraints.join(', ')
+        : '';
+    adapter.run(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs}${constraintDefs})`);
     this._addMissingColumns(adapter, name, columns);
   }
 
