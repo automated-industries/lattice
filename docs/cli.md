@@ -60,35 +60,35 @@ lattice generate [options]
 
 **Options:**
 
-| Option | Short | Default | Description |
-|--------|-------|---------|-------------|
-| `--config <path>` | `-c` | `./lattice.config.yml` | Path to the YAML config file |
-| `--out <dir>` | `-o` | `./generated` | Output directory for generated files |
-| `--scaffold` | – | off | Also create empty scaffold render output files |
+| Option            | Short | Default                | Description                                    |
+| ----------------- | ----- | ---------------------- | ---------------------------------------------- |
+| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                   |
+| `--out <dir>`     | `-o`  | `./generated`          | Output directory for generated files           |
+| `--scaffold`      | –     | off                    | Also create empty scaffold render output files |
 
 **Output files:**
 
-| File | Description |
-|------|-------------|
-| `<out>/types.ts` | TypeScript interfaces, one per entity |
-| `<out>/migration.sql` | `CREATE TABLE IF NOT EXISTS` SQL for all entities |
+| File                    | Description                                                |
+| ----------------------- | ---------------------------------------------------------- |
+| `<out>/types.ts`        | TypeScript interfaces, one per entity                      |
+| `<out>/migration.sql`   | `CREATE TABLE IF NOT EXISTS` SQL for all entities          |
 | `<outDir>/<outputFile>` | _(only with `--scaffold`)_ Empty placeholder context files |
 
 **Exit codes:**
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | Config file not found, YAML parse error, or missing required config key |
+| Code | Meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| `0`  | Success                                                                 |
+| `1`  | Config file not found, YAML parse error, or missing required config key |
 
 ---
 
 ## Global options
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--help` | `-h` | Show help message |
-| `--version` | `-v` | Print the installed version number |
+| Option      | Short | Description                        |
+| ----------- | ----- | ---------------------------------- |
+| `--help`    | `-h`  | Show help message                  |
+| `--version` | `-v`  | Print the installed version number |
 
 ```sh
 lattice --version   # → 0.4.0
@@ -109,10 +109,10 @@ Given this config:
 entities:
   task_comment:
     fields:
-      id:      { type: uuid,    primaryKey: true }
-      body:    { type: text,    required: true }
-      task_id: { type: uuid,    ref: task }
-      score:   { type: integer, default: 0 }
+      id: { type: uuid, primaryKey: true }
+      body: { type: text, required: true }
+      task_id: { type: uuid, ref: task }
+      score: { type: integer, default: 0 }
 ```
 
 Generates:
@@ -123,12 +123,13 @@ Generates:
 export interface TaskComment {
   id: string;
   body: string;
-  task_id?: string;  // → task
+  task_id?: string; // → task
   score?: number;
 }
 ```
 
 **Type mapping rules:**
+
 - `uuid`, `text`, `datetime`, `date` → `string`
 - `integer`, `int`, `real`, `float` → `number`
 - `boolean`, `bool` → `boolean`

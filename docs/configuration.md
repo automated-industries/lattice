@@ -46,18 +46,18 @@ my-project/
 ## Top-level structure
 
 ```yaml
-db: ./data/app.db        # Required — path to SQLite file
-entities:                 # Required — one key per table
+db: ./data/app.db # Required — path to SQLite file
+entities: # Required — one key per table
   table_name:
     fields: ...
     render: ...
     outputFile: ...
 ```
 
-| Key | Type | Required | Description |
-|-----|------|----------|-------------|
-| `db` | string | yes | Path to the SQLite database, relative to this config file |
-| `entities` | object | yes | Map of entity (table) name → entity definition |
+| Key        | Type   | Required | Description                                               |
+| ---------- | ------ | -------- | --------------------------------------------------------- |
+| `db`       | string | yes      | Path to the SQLite database, relative to this config file |
+| `entities` | object | yes      | Map of entity (table) name → entity definition            |
 
 The `db` path is resolved relative to the directory containing `lattice.config.yml`, not `process.cwd()`. Using `:memory:` for `db` is valid for testing.
 
@@ -67,19 +67,19 @@ The `db` path is resolved relative to the directory containing `lattice.config.y
 
 Each field in an entity's `fields` map must have a `type`. The supported types and their mappings:
 
-| YAML type | SQLite column type | TypeScript type |
-|-----------|--------------------|-----------------|
-| `uuid` | `TEXT` | `string` |
-| `text` | `TEXT` | `string` |
-| `integer` | `INTEGER` | `number` |
-| `int` | `INTEGER` | `number` |
-| `real` | `REAL` | `number` |
-| `float` | `REAL` | `number` |
-| `boolean` | `INTEGER` | `boolean` |
-| `bool` | `INTEGER` | `boolean` |
-| `datetime` | `TEXT` | `string` |
-| `date` | `TEXT` | `string` |
-| `blob` | `BLOB` | `Buffer` |
+| YAML type  | SQLite column type | TypeScript type |
+| ---------- | ------------------ | --------------- |
+| `uuid`     | `TEXT`             | `string`        |
+| `text`     | `TEXT`             | `string`        |
+| `integer`  | `INTEGER`          | `number`        |
+| `int`      | `INTEGER`          | `number`        |
+| `real`     | `REAL`             | `number`        |
+| `float`    | `REAL`             | `number`        |
+| `boolean`  | `INTEGER`          | `boolean`       |
+| `bool`     | `INTEGER`          | `boolean`       |
+| `datetime` | `TEXT`             | `string`        |
+| `date`     | `TEXT`             | `string`        |
+| `blob`     | `BLOB`             | `Buffer`        |
 
 `uuid` and `text` are both stored as `TEXT` — the distinction is semantic: use `uuid` for ID columns, `text` for everything else. Use `boolean`/`bool` for true/false values stored as SQLite integers.
 
@@ -93,21 +93,21 @@ Every field accepts these options in addition to `type`:
 entities:
   task:
     fields:
-      id:          { type: uuid,    primaryKey: true }
-      title:       { type: text,    required: true }
-      status:      { type: text,    default: open }
-      priority:    { type: integer, default: 1 }
-      assignee_id: { type: uuid,    ref: user }
-      deleted_at:  { type: datetime }
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
+      status: { type: text, default: open }
+      priority: { type: integer, default: 1 }
+      assignee_id: { type: uuid, ref: user }
+      deleted_at: { type: datetime }
 ```
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `type` | `LatticeFieldType` | **Required.** Column data type (see table above) |
-| `primaryKey` | `boolean` | Mark this field as the primary key. Generates `TEXT PRIMARY KEY` (for uuid/text) |
-| `required` | `boolean` | Column is `NOT NULL`. Cannot be used together with `primaryKey` |
-| `default` | string / number / boolean | SQL `DEFAULT` value. Strings are quoted; numbers are unquoted |
-| `ref` | string | Foreign-key reference to another entity (see [Relationships](#relationships-ref)) |
+| Option       | Type                      | Description                                                                       |
+| ------------ | ------------------------- | --------------------------------------------------------------------------------- |
+| `type`       | `LatticeFieldType`        | **Required.** Column data type (see table above)                                  |
+| `primaryKey` | `boolean`                 | Mark this field as the primary key. Generates `TEXT PRIMARY KEY` (for uuid/text)  |
+| `required`   | `boolean`                 | Column is `NOT NULL`. Cannot be used together with `primaryKey`                   |
+| `default`    | string / number / boolean | SQL `DEFAULT` value. Strings are quoted; numbers are unquoted                     |
+| `ref`        | string                    | Foreign-key reference to another entity (see [Relationships](#relationships-ref)) |
 
 ### Generated SQL
 
@@ -129,22 +129,23 @@ Adding `ref: <entity>` to a field automatically creates a `belongsTo` relationsh
 entities:
   ticket:
     fields:
-      id:          { type: uuid, primaryKey: true }
+      id: { type: uuid, primaryKey: true }
       assignee_id: { type: uuid, ref: user }
 ```
 
 This generates:
+
 - Column: `"assignee_id" TEXT`
 - Relation: `assignee: { type: 'belongsTo', table: 'user', foreignKey: 'assignee_id' }`
 
 **Relation name derivation:** If the field name ends with `_id`, the suffix is stripped to form the relation name. Otherwise the full field name is used:
 
-| Field name | Relation name |
-|------------|---------------|
-| `assignee_id` | `assignee` |
-| `project_id` | `project` |
-| `parent_id` | `parent` |
-| `author` | `author` |
+| Field name    | Relation name |
+| ------------- | ------------- |
+| `assignee_id` | `assignee`    |
+| `project_id`  | `project`     |
+| `parent_id`   | `parent`      |
+| `author`      | `author`      |
 
 The relation name is used in `{{relationName.field}}` interpolation strings inside render templates.
 
@@ -173,7 +174,7 @@ entities:
   ticket:
     render:
       template: default-list
-      formatRow: "{{title}} ({{status}}) — assigned to {{assignee.name}}"
+      formatRow: '{{title}} ({{status}}) — assigned to {{assignee.name}}'
 ```
 
 The `formatRow` string uses `{{field}}` interpolation. Use `{{relationName.field}}` to pull in a field from a `belongsTo` related row.
@@ -186,7 +187,7 @@ If `render` is omitted, it defaults to `default-list`.
 entities:
   note:
     fields:
-      id:   { type: uuid, primaryKey: true }
+      id: { type: uuid, primaryKey: true }
       body: { type: text }
     outputFile: context/NOTES.md
     # render defaults to 'default-list'
@@ -206,7 +207,7 @@ The simplest form — mark one field with `primaryKey: true`:
 entities:
   user:
     fields:
-      id:   { type: uuid, primaryKey: true }
+      id: { type: uuid, primaryKey: true }
       name: { type: text }
 ```
 
@@ -220,7 +221,7 @@ Use a non-`id` field as the primary key:
 entities:
   setting:
     fields:
-      key:   { type: text, primaryKey: true }
+      key: { type: text, primaryKey: true }
       value: { type: text }
 ```
 
@@ -235,8 +236,8 @@ entities:
   line_item:
     fields:
       order_id: { type: uuid }
-      seq:      { type: integer }
-      qty:      { type: integer }
+      seq: { type: integer }
+      qty: { type: integer }
     primaryKey: [order_id, seq]
 ```
 
@@ -252,7 +253,7 @@ The `outputFile` path is resolved relative to the **config file's directory** (n
 # lattice.config.yml lives at /project/lattice.config.yml
 entities:
   agent:
-    outputFile: context/AGENTS.md   # → /project/context/AGENTS.md
+    outputFile: context/AGENTS.md # → /project/context/AGENTS.md
 ```
 
 This means the context files are co-located with the config file, regardless of where you run commands from.
@@ -272,33 +273,33 @@ db: ./data/app.db
 entities:
   user:
     fields:
-      id:    { type: uuid,  primaryKey: true }
-      name:  { type: text,  required: true }
+      id: { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
       email: { type: text }
     render: default-table
     outputFile: context/USERS.md
 
   project:
     fields:
-      id:       { type: uuid, primaryKey: true }
-      name:     { type: text, required: true }
+      id: { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
       owner_id: { type: uuid, ref: user }
     render:
       template: default-list
-      formatRow: "{{name}} (owner: {{owner.name}})"
+      formatRow: '{{name}} (owner: {{owner.name}})'
     outputFile: context/PROJECTS.md
 
   task:
     fields:
-      id:          { type: uuid,    primaryKey: true }
-      title:       { type: text,    required: true }
-      status:      { type: text,    default: open }
-      priority:    { type: integer, default: 1 }
-      project_id:  { type: uuid,    ref: project }
-      assignee_id: { type: uuid,    ref: user }
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
+      status: { type: text, default: open }
+      priority: { type: integer, default: 1 }
+      project_id: { type: uuid, ref: project }
+      assignee_id: { type: uuid, ref: user }
     render:
       template: default-list
-      formatRow: "{{title}} [{{status}}] → {{assignee.name}}"
+      formatRow: '{{title}} [{{status}}] → {{assignee.name}}'
     outputFile: context/TASKS.md
 ```
 
@@ -337,10 +338,10 @@ entities:
   # --- Users ---
   user:
     fields:
-      id:         { type: uuid,  primaryKey: true }
-      name:       { type: text,  required: true }
-      email:      { type: text,  required: true }
-      role:       { type: text,  default: member }
+      id: { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
+      email: { type: text, required: true }
+      role: { type: text, default: member }
       created_at: { type: datetime }
     render: default-table
     outputFile: context/USERS.md
@@ -348,43 +349,43 @@ entities:
   # --- Projects ---
   project:
     fields:
-      id:         { type: uuid, primaryKey: true }
-      name:       { type: text, required: true }
-      status:     { type: text, default: active }
-      owner_id:   { type: uuid, ref: user }
+      id: { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
+      status: { type: text, default: active }
+      owner_id: { type: uuid, ref: user }
     render:
       template: default-list
-      formatRow: "**{{name}}** [{{status}}] — {{owner.name}}"
+      formatRow: '**{{name}}** [{{status}}] — {{owner.name}}'
     outputFile: context/PROJECTS.md
 
   # --- Tasks ---
   task:
     fields:
-      id:          { type: uuid,    primaryKey: true }
-      title:       { type: text,    required: true }
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
       description: { type: text }
-      status:      { type: text,    default: open }
-      priority:    { type: integer, default: 1 }
-      project_id:  { type: uuid,    ref: project }
-      assignee_id: { type: uuid,    ref: user }
-      created_at:  { type: datetime }
-      due_at:      { type: datetime }
+      status: { type: text, default: open }
+      priority: { type: integer, default: 1 }
+      project_id: { type: uuid, ref: project }
+      assignee_id: { type: uuid, ref: user }
+      created_at: { type: datetime }
+      due_at: { type: datetime }
     render:
       template: default-list
-      formatRow: "{{title}} [P{{priority}}/{{status}}] → {{assignee.name}}"
+      formatRow: '{{title}} [P{{priority}}/{{status}}] → {{assignee.name}}'
     outputFile: context/TASKS.md
 
   # --- Comments ---
   comment:
     fields:
-      id:         { type: uuid, primaryKey: true }
-      body:       { type: text, required: true }
-      task_id:    { type: uuid, ref: task }
-      author_id:  { type: uuid, ref: user }
+      id: { type: uuid, primaryKey: true }
+      body: { type: text, required: true }
+      task_id: { type: uuid, ref: task }
+      author_id: { type: uuid, ref: user }
       created_at: { type: datetime }
     render:
       template: default-list
-      formatRow: "{{author.name}}: {{body}}"
+      formatRow: '{{author.name}}: {{body}}'
     outputFile: context/COMMENTS.md
 ```
 

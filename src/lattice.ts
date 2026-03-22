@@ -63,7 +63,10 @@ export class Lattice {
 
   private readonly _auditHandlers: EventHandler<AuditEvent>[] = [];
   private readonly _renderHandlers: EventHandler<RenderResult>[] = [];
-  private readonly _writebackHandlers: EventHandler<{ filePath: string; entriesProcessed: number }>[] = [];
+  private readonly _writebackHandlers: EventHandler<{
+    filePath: string;
+    entriesProcessed: number;
+  }>[] = [];
   private readonly _errorHandlers: EventHandler<Error>[] = [];
 
   constructor(pathOrConfig: string | LatticeConfigInput, options: LatticeOptions = {}) {
@@ -169,14 +172,15 @@ export class Lattice {
       rowWithPk = sanitized;
     }
 
-    const cols = Object.keys(rowWithPk).map((c) => `"${c}"`).join(', ');
-    const placeholders = Object.keys(rowWithPk).map(() => '?').join(', ');
+    const cols = Object.keys(rowWithPk)
+      .map((c) => `"${c}"`)
+      .join(', ');
+    const placeholders = Object.keys(rowWithPk)
+      .map(() => '?')
+      .join(', ');
     const values = Object.values(rowWithPk);
 
-    this._adapter.run(
-      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`,
-      values,
-    );
+    this._adapter.run(`INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`, values);
 
     // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
     const pkCol = pkCols[0] ?? 'id';
@@ -202,8 +206,12 @@ export class Lattice {
       rowWithPk = sanitized;
     }
 
-    const cols = Object.keys(rowWithPk).map((c) => `"${c}"`).join(', ');
-    const placeholders = Object.keys(rowWithPk).map(() => '?').join(', ');
+    const cols = Object.keys(rowWithPk)
+      .map((c) => `"${c}"`)
+      .join(', ');
+    const placeholders = Object.keys(rowWithPk)
+      .map(() => '?')
+      .join(', ');
     // Conflict target uses all PK columns
     const conflictCols = pkCols.map((c) => `"${c}"`).join(', ');
     // Exclude all PK columns from the UPDATE SET clause
@@ -230,10 +238,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
 
-    const existing = this._adapter.get(
-      `SELECT * FROM "${table}" WHERE "${col}" = ?`,
-      [val],
-    );
+    const existing = this._adapter.get(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [val]);
     if (existing) {
       const pkCols = this._schema.getPrimaryKey(table);
       // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
@@ -457,10 +462,7 @@ export class Lattice {
    * - `string` → matches against the table's first PK column.
    * - `Record` → matches every PK column; all must be present in the object.
    */
-  private _pkWhere(
-    table: string,
-    id: PkLookup,
-  ): { clause: string; params: unknown[] } {
+  private _pkWhere(table: string, id: PkLookup): { clause: string; params: unknown[] } {
     const pkCols = this._schema.getPrimaryKey(table);
 
     if (typeof id === 'string') {
