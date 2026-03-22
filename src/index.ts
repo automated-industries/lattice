@@ -1,4 +1,5 @@
 export { Lattice } from './lattice.js';
+export type { PkLookup } from './lattice.js';
 export type {
   Row,
   LatticeOptions,
@@ -15,4 +16,11 @@ export type {
   SyncResult,
   StopFn,
   AuditEvent,
+  // v0.2 additions
+  PrimaryKey,
+  BelongsToRelation,
+  HasManyRelation,
+  Relation,
+  FilterOp,
+  Filter,
 } from './types.js';
