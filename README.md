@@ -2,11 +2,67 @@
 
 **SQLite ↔ LLM context bridge.** Keeps a database and a set of text files in sync so AI agents always start a session with accurate, up-to-date state.
 
+[![npm version](https://img.shields.io/npm/v/@m-flat/lattice.svg)](https://www.npmjs.com/package/@m-flat/lattice)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
+[![Node.js >=18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
+
+---
+
 ## What it does
 
-LLM context windows are ephemeral. Your application state lives in a database. Every agent session starts cold unless something bridges them. Lattice is that bridge — a minimal, generic engine that renders DB state into agent-readable files and ingests agent-written output back into the DB.
+LLM context windows are ephemeral. Your application state lives in a database. Every agent session starts cold unless something bridges them. Lattice is that bridge — a minimal, generic engine that:
 
-Lattice has no opinions about what tables you store, what your agents do, or what your context files look like. You bring your schema. Lattice provides the sync loop.
+1. **Renders** DB rows into agent-readable text files (Markdown, JSON, or any format you define)
+2. **Watches** for DB changes and re-renders automatically
+3. **Ingests** agent-written output back into the DB via the writeback pipeline
+
+Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
+
+---
+
+## Table of contents
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [The sync loop](#the-sync-loop)
+- [API reference](#api-reference)
+  - [Constructor](#constructor)
+  - [define()](#definedefine)
+  - [defineMulti()](#definemulti)
+  - [defineWriteback()](#definewriteback)
+  - [init() / close()](#init--close)
+  - [CRUD operations](#crud-operations)
+  - [Query operators](#query-operators)
+  - [Render, sync, and watch](#render-sync-and-watch)
+  - [Events](#events)
+  - [Raw DB access](#raw-db-access)
+- [Template rendering](#template-rendering)
+  - [Built-in templates](#built-in-templates)
+  - [Lifecycle hooks](#lifecycle-hooks)
+  - [Field interpolation](#field-interpolation)
+- [YAML config (v0.4+)](#yaml-config-v04)
+  - [lattice.config.yml reference](#latticeconfigyml-reference)
+  - [Init from config](#init-from-config)
+  - [Config API](#config-api-programmatic)
+- [CLI — lattice generate](#cli--lattice-generate)
+- [Schema migrations](#schema-migrations)
+- [Security](#security)
+- [Architecture](#architecture)
+- [Examples](#examples)
+- [Contributing](#contributing)
+- [Changelog](#changelog)
+
+---
+
+## Installation
+
+```bash
+npm install @m-flat/lattice
+```
+
+Requires **Node.js 18+**. Uses `better-sqlite3` — no external database process needed.
+
+---
 
 ## Quick start
 
@@ -15,7 +71,7 @@ import { Lattice } from '@m-flat/lattice';
 
 const db = new Lattice('./state.db');
 
-db.define('bots', {
+db.define('agents', {
   columns: {
     id:      'TEXT PRIMARY KEY',
     name:    'TEXT NOT NULL',
@@ -25,23 +81,22 @@ db.define('bots', {
   render(rows) {
     return rows
       .filter(r => r.active)
-      .map(r => `## ${r.name}\n${r.persona ?? ''}`)
-      .join('\n\n');
+      .map(r => `## ${r.name}\n\n${r.persona ?? ''}`)
+      .join('\n\n---\n\n');
   },
-  outputFile: 'bots.md',
+  outputFile: 'AGENTS.md',
 });
 
 await db.init();
 
-// Insert rows
-await db.insert('bots', { id: 'bot-1', name: 'Alpha', persona: 'You are Alpha.' });
-await db.insert('bots', { id: 'bot-2', name: 'Beta',  persona: 'You are Beta.'  });
+await db.insert('agents', { name: 'Alpha', persona: 'You are Alpha, a research assistant.' });
+await db.insert('agents', { name: 'Beta',  persona: 'You are Beta, a code reviewer.'      });
 
-// Render DB → files
+// Render DB → context files
 await db.render('./context');
-// Writes: context/bots.md
+// Writes: context/AGENTS.md
 
-// Watch for changes (re-renders every 5 seconds when DB content changes)
+// Watch for changes, re-render every 5 seconds
 const stop = await db.watch('./context', { interval: 5000 });
 
 // Later:
@@ -49,52 +104,123 @@ stop();
 db.close();
 ```
 
+**YAML config form** (v0.4+) — declare your schema in a file instead:
+
+```typescript
+const db = new Lattice({ config: './lattice.config.yml' });
+await db.init();
+// Tables and render functions are wired automatically from the config
+```
+
+---
+
 ## The sync loop
 
 ```
 Your DB (SQLite)
-    │  Lattice reads rows
-    ▼
-Render functions (you define these)
-    │  Lattice writes files atomically
-    ▼
-Context files  ◄──── LLM agents read these
-
-Agent output files  ────► Lattice parses these
-    │  Writeback pipeline (optional)
-    ▼
+     │  Lattice reads rows → render functions → text
+     ▼
+Context files (Markdown, JSON, etc.)
+     │  LLM agents read these at session start
+     ▼
+Agent output files
+     │  Lattice writeback pipeline parses these
+     ▼
 Your DB (rows inserted/updated)
 ```
 
-## Installation
+Lattice never modifies your existing rows — it only reads for rendering and appends via the writeback pipeline.
 
-```bash
-npm install @m-flat/lattice
-```
+---
 
-Requires Node.js 18+. Uses `better-sqlite3` — no external DB process needed.
+## API reference
 
-## API
-
-### `new Lattice(path, options?)`
-
-Opens a SQLite database at `path`.
+### Constructor
 
 ```typescript
-const db = new Lattice('./state.db', {
-  wal: true,            // WAL mode (default: true)
-  busyTimeout: 5000,    // SQLite busy timeout ms (default: 5000)
+new Lattice(path: string, options?: LatticeOptions)
+new Lattice(config: LatticeConfigInput, options?: LatticeOptions)
+```
+
+| Overload | Description |
+| -------- | ----------- |
+| `new Lattice('./app.db')` | Open a SQLite file at the given path |
+| `new Lattice(':memory:')` | In-memory database (useful for tests) |
+| `new Lattice({ config: './lattice.config.yml' })` | Read schema + DB path from a YAML config file |
+
+**`LatticeOptions`**
+
+```typescript
+interface LatticeOptions {
+  wal?: boolean;          // WAL journal mode (default: true — recommended for concurrent reads)
+  busyTimeout?: number;   // SQLite busy_timeout in ms (default: 5000)
+  security?: {
+    sanitize?: boolean;         // Strip control characters from string inputs (default: true)
+    auditTables?: string[];     // Tables that emit 'audit' events on write
+    fieldLimits?: Record<string, number>;  // Max characters per named column
+  };
+}
+```
+
+```typescript
+const db = new Lattice('./app.db', {
+  wal: true,
+  busyTimeout: 10_000,
   security: {
-    sanitize: true,     // sanitize string inputs (default: true)
-    auditTables: ['credentials'],  // tables that emit audit events
-    fieldLimits: { notes: 10000 }, // per-column char limits
+    sanitize: true,
+    auditTables: ['users', 'credentials'],
+    fieldLimits: { notes: 50_000, bio: 2_000 },
   },
 });
 ```
 
-### `db.define(table, definition)`
+---
 
-Register a table with a render function. Must be called before `init()`.
+### `define()`
+
+```typescript
+db.define(table: string, definition: TableDefinition): this
+```
+
+Register a table. Must be called before `init()`. Returns `this` for chaining.
+
+**`TableDefinition`**
+
+```typescript
+interface TableDefinition {
+  /** Column name → SQLite type spec */
+  columns: Record<string, string>;
+
+  /**
+   * How rows become context text.
+   * - A render function: (rows: Row[]) => string
+   * - A built-in template name: 'default-list' | 'default-table' | 'default-detail' | 'default-json'
+   * - A template spec with hooks: { template: BuiltinTemplateName, hooks?: RenderHooks }
+   */
+  render: RenderSpec;
+
+  /** Output file path, relative to the outputDir passed to render()/watch() */
+  outputFile: string;
+
+  /** Optional row filter applied before rendering */
+  filter?: (rows: Row[]) => Row[];
+
+  /**
+   * Primary key column name or [col1, col2] for composite PKs.
+   * Defaults to 'id'. When 'id' is the PK and the field is absent on insert,
+   * a UUID v4 is generated automatically.
+   */
+  primaryKey?: string | string[];
+
+  /** Additional SQL constraints (required for composite PKs) */
+  tableConstraints?: string[];
+
+  /** Declared relationships used by template rendering */
+  relations?: Record<string, Relation>;
+}
+```
+
+**Basic example:**
 
 ```typescript
 db.define('tasks', {
@@ -102,39 +228,41 @@ db.define('tasks', {
     id:     'TEXT PRIMARY KEY',
     title:  'TEXT NOT NULL',
     status: 'TEXT DEFAULT "open"',
+    due:    'TEXT',
   },
   render(rows) {
     const open = rows.filter(r => r.status === 'open');
-    return `# Open Tasks\n${open.map(r => `- ${r.title}`).join('\n')}`;
+    return `# Open Tasks (${open.length})\n\n` +
+      open.map(r => `- [ ] ${r.title}${r.due ? ` — due ${r.due}` : ''}`).join('\n');
   },
-  outputFile: 'tasks.md',
+  outputFile: 'TASKS.md',
 });
 ```
 
-**Custom primary key** — use any column name as the PK (v0.2+):
+**Custom primary key:**
 
 ```typescript
-db.define('posts', {
+db.define('pages', {
   columns: {
-    slug:  'TEXT NOT NULL PRIMARY KEY',
-    title: 'TEXT NOT NULL',
-    views: 'INTEGER DEFAULT 0',
+    slug:    'TEXT NOT NULL',
+    title:   'TEXT NOT NULL',
+    content: 'TEXT',
   },
-  primaryKey: 'slug',   // tell Lattice which column is the PK
-  render: (rows) => rows.map(r => `- ${r.title}`).join('\n'),
-  outputFile: 'posts.md',
+  primaryKey: 'slug',       // <-- tell Lattice which column is the PK
+  render: 'default-list',
+  outputFile: 'pages.md',
 });
 
-// Now get/update/delete accept the slug value directly:
-const post = await db.get('posts', 'my-post-slug');
-await db.update('posts', 'my-post-slug', { views: 42 });
-await db.delete('posts', 'my-post-slug');
+// get/update/delete now use the slug value directly
+const page = await db.get('pages', 'about-us');
+await db.update('pages', 'about-us', { title: 'About' });
+await db.delete('pages', 'about-us');
 ```
 
-**Composite primary key** — use `tableConstraints` + `primaryKey` array (v0.2+):
+**Composite primary key:**
 
 ```typescript
-db.define('seats', {
+db.define('event_seats', {
   columns: {
     event_id: 'TEXT NOT NULL',
     seat_no:  'INTEGER NOT NULL',
@@ -142,146 +270,290 @@ db.define('seats', {
   },
   tableConstraints: ['PRIMARY KEY (event_id, seat_no)'],
   primaryKey: ['event_id', 'seat_no'],
-  render: (rows) => rows.map(r => `${r.event_id}:${r.seat_no} → ${r.holder}`).join('\n'),
+  render: 'default-table',
   outputFile: 'seats.md',
 });
 
-// Pass a Record for get/update/delete on composite-keyed tables:
-const seat = await db.get('seats', { event_id: 'evt-1', seat_no: 5 });
-await db.update('seats', { event_id: 'evt-1', seat_no: 5 }, { holder: 'Alice' });
+// Pass a Record for get/update/delete
+const seat = await db.get('event_seats', { event_id: 'evt-1', seat_no: 12 });
+await db.update('event_seats', { event_id: 'evt-1', seat_no: 12 }, { holder: 'Alice' });
+await db.delete('event_seats', { event_id: 'evt-1', seat_no: 12 });
 ```
 
-**Relationship declarations** — metadata for context rendering (v0.2+):
+**Relationship declarations:**
 
 ```typescript
 db.define('comments', {
-  columns: { id: 'TEXT PRIMARY KEY', post_id: 'TEXT', body: 'TEXT' },
-  relations: {
-    post:    { type: 'belongsTo', table: 'posts',    foreignKey: 'post_id'   },
-    replies: { type: 'hasMany',   table: 'replies',  foreignKey: 'comment_id'},
+  columns: {
+    id:      'TEXT PRIMARY KEY',
+    post_id: 'TEXT NOT NULL',
+    author_id: 'TEXT NOT NULL',
+    body:    'TEXT',
   },
-  render: (rows) => rows.map(r => `- ${r.body}`).join('\n'),
+  relations: {
+    post:   { type: 'belongsTo', table: 'posts', foreignKey: 'post_id' },
+    author: { type: 'belongsTo', table: 'users', foreignKey: 'author_id' },
+    // hasMany: the other table holds the FK
+    likes:  { type: 'hasMany', table: 'comment_likes', foreignKey: 'comment_id' },
+  },
+  render: {
+    template: 'default-detail',
+    hooks: { formatRow: '{{author.name}}: {{body}}' },
+  },
   outputFile: 'comments.md',
 });
 ```
 
-### Built-in render templates (v0.3+)
+---
 
-Instead of a render function, pass a template name or spec:
-
-```typescript
-// Shortest form — pick a built-in template
-db.define('tasks', {
-  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', status: 'TEXT' },
-  render: 'default-list',   // or 'default-table' | 'default-detail' | 'default-json'
-  outputFile: 'tasks.md',
-});
-```
-
-The four built-in templates:
-
-| Name | Output |
-| --- | --- |
-| `default-list` | One bullet per row: `- key: value, ...` |
-| `default-table` | GitHub-flavoured Markdown table |
-| `default-detail` | One `## <pk>` section per row with all fields |
-| `default-json` | `JSON.stringify(rows, null, 2)` |
-
-**Lifecycle hooks** — customise any built-in template:
+### `defineMulti()`
 
 ```typescript
-db.define('tasks', {
-  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', status: 'TEXT', priority: 'INTEGER' },
-  render: {
-    template: 'default-list',
-    hooks: {
-      // Filter or transform rows before rendering
-      beforeRender: (rows) => rows.filter(r => r.status !== 'done'),
-      // Control how each row becomes a string.
-      // Can be a function or a {{field}} interpolation template.
-      formatRow: '{{title}} ({{status}})',
-    },
-  },
-  outputFile: 'tasks.md',
-  // Writes: "- Write docs (open)\n- Fix bug (open)"
-});
+db.defineMulti(name: string, definition: MultiTableDefinition): this
 ```
 
-**`{{field}}` interpolation** — `formatRow` supports dot-notation for `belongsTo` relations:
-
-```typescript
-db.define('users', {
-  columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT' },
-  render: 'default-list',
-  outputFile: 'users.md',
-});
-
-db.define('tasks', {
-  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', author_id: 'TEXT' },
-  relations: {
-    author: { type: 'belongsTo', table: 'users', foreignKey: 'author_id' },
-  },
-  render: {
-    template: 'default-list',
-    hooks: { formatRow: '{{title}} by {{author.name}}' },
-  },
-  outputFile: 'tasks.md',
-  // Writes: "- Write docs by Alice\n- Fix bug by Bob"
-});
-```
-
-Hooks are also supported for `default-detail` (controls the section body) and `default-json` (`beforeRender` only — `formatRow` has no effect on JSON output).
-
-### `db.defineMulti(name, definition)`
-
-Register a multi-entity render — produces one file per anchor entity.
+Produces one output file per *anchor entity* — useful for per-agent or per-project context files.
 
 ```typescript
 db.defineMulti('agent-context', {
+  // Returns the anchor entities (one file will be created per agent)
   keys: () => db.query('agents', { where: { active: 1 } }),
-  outputFile: (agent) => `agents/${agent.slug}/CONTEXT.md`,
-  tables: ['tasks'],
-  render(agent, { tasks }) {
-    const mine = tasks.filter(t => t.assigned_to === agent.id);
-    return `# ${agent.name}\n\n## Tasks\n${mine.map(t => `- ${t.title}`).join('\n')}`;
+
+  // Derive the output file path from the anchor entity
+  outputFile: (agent) => `agents/${agent.slug as string}/CONTEXT.md`,
+
+  // Extra tables to query and pass into render
+  tables: ['tasks', 'notes'],
+
+  render(agent, { tasks, notes }) {
+    const myTasks = tasks.filter(t => t.assigned_to === agent.id);
+    const myNotes = notes.filter(n => n.agent_id === agent.id);
+    return [
+      `# ${agent.name} — context`,
+      '',
+      '## Pending tasks',
+      myTasks.map(t => `- ${t.title}`).join('\n') || '_none_',
+      '',
+      '## Notes',
+      myNotes.map(n => `- ${n.body}`).join('\n') || '_none_',
+    ].join('\n');
   },
 });
 ```
 
-### `await db.init(options?)`
+---
 
-Opens the connection, creates tables, runs migrations.
+### `defineWriteback()`
+
+```typescript
+db.defineWriteback(definition: WritebackDefinition): this
+```
+
+Register an agent-output file for parsing and DB ingestion. Lattice tracks file offsets and handles rotation (truncation) automatically.
+
+```typescript
+db.defineWriteback({
+  // Path or glob to agent-written output files
+  file: './context/agents/*/SESSION.md',
+
+  parse(content, fromOffset) {
+    // Parse new content since last read
+    const newContent = content.slice(fromOffset);
+    const entries = parseMarkdownItems(newContent);
+    return { entries, nextOffset: content.length };
+  },
+
+  async persist(entry, filePath) {
+    await db.insert('events', {
+      source_file: filePath,
+      ...(entry as Row),
+    });
+  },
+
+  // Optional: skip entries with the same dedupeKey seen before
+  dedupeKey: (entry) => (entry as { id: string }).id,
+});
+```
+
+---
+
+### `init()` / `close()`
+
+```typescript
+await db.init(options?: InitOptions): Promise<void>
+db.close(): void
+```
+
+`init()` opens the SQLite file, runs `CREATE TABLE IF NOT EXISTS` for all defined tables, and applies any migrations. Must be called once before any CRUD or render operations.
 
 ```typescript
 await db.init({
   migrations: [
-    { version: 2, sql: 'ALTER TABLE tasks ADD COLUMN due_date TEXT' },
+    { version: 1, sql: 'ALTER TABLE tasks ADD COLUMN due_date TEXT' },
+    { version: 2, sql: 'ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 0' },
   ],
 });
 ```
 
-### CRUD
+Migrations are idempotent — each `version` number is applied exactly once, tracked in a `__lattice_migrations` internal table.
+
+`close()` closes the SQLite connection. Call it when the process shuts down.
+
+---
+
+### CRUD operations
+
+All CRUD methods return Promises and are safe to `await`.
+
+#### `insert()`
 
 ```typescript
-const id = await db.insert('tasks', { title: 'Write docs' });
-await db.upsert('tasks', { id, title: 'Write docs', status: 'done' });
-await db.update('tasks', id, { status: 'done' });
-await db.delete('tasks', id);
-
-const tasks = await db.query('tasks', { where: { status: 'open' }, orderBy: 'title' });
-const task  = await db.get('tasks', id);
-const n     = await db.count('tasks', { where: { status: 'open' } });
+await db.insert(table: string, row: Row): Promise<string>
 ```
 
-**Expanded query operators** (v0.2+) — use `filters` for anything beyond equality:
+Insert a row. Returns the primary key value (as a string). For the default `id` column, a UUID is auto-generated when absent.
 
 ```typescript
-// Comparison: gt, gte, lt, lte
-const recent = await db.query('tasks', {
-  filters: [{ col: 'priority', op: 'gte', val: 3 }],
+const id = await db.insert('tasks', { title: 'Write docs', status: 'open' });
+// id → 'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+
+// With a custom PK — caller must supply the value
+await db.insert('pages', { slug: 'about', title: 'About Us' });
+
+// With explicit id
+await db.insert('tasks', { id: 'task-001', title: 'Specific task' });
+```
+
+#### `upsert()`
+
+```typescript
+await db.upsert(table: string, row: Row): Promise<string>
+```
+
+Insert or update a row by primary key (`ON CONFLICT DO UPDATE`). All PK columns must be present in `row`.
+
+```typescript
+await db.upsert('tasks', { id: 'task-001', title: 'Updated title', status: 'done' });
+```
+
+#### `upsertBy()`
+
+```typescript
+await db.upsertBy(table: string, col: string, val: unknown, row: Row): Promise<string>
+```
+
+Upsert by an arbitrary column — looks up the row by `col = val`, updates if found, inserts if not. Useful for `email`-keyed users, `slug`-keyed posts, etc.
+
+```typescript
+await db.upsertBy('users', 'email', 'alice@example.com', { name: 'Alice' });
+```
+
+#### `update()`
+
+```typescript
+await db.update(table: string, id: PkLookup, row: Partial<Row>): Promise<void>
+```
+
+Update specific columns on an existing row.
+
+```typescript
+await db.update('tasks', 'task-001', { status: 'done' });
+
+// Composite PK
+await db.update('event_seats', { event_id: 'e-1', seat_no: 3 }, { holder: 'Bob' });
+```
+
+#### `delete()`
+
+```typescript
+await db.delete(table: string, id: PkLookup): Promise<void>
+```
+
+```typescript
+await db.delete('tasks', 'task-001');
+await db.delete('event_seats', { event_id: 'e-1', seat_no: 3 });
+```
+
+#### `get()`
+
+```typescript
+await db.get(table: string, id: PkLookup): Promise<Row | null>
+```
+
+Fetch a single row by PK. Returns `null` if not found.
+
+```typescript
+const task = await db.get('tasks', 'task-001');
+// { id: 'task-001', title: 'Write docs', status: 'open' } | null
+```
+
+#### `query()`
+
+```typescript
+await db.query(table: string, opts?: QueryOptions): Promise<Row[]>
+```
+
+```typescript
+interface QueryOptions {
+  where?: Record<string, unknown>;  // Equality shorthand
+  filters?: Filter[];               // Advanced operators (see below)
+  orderBy?: string;
+  orderDir?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+}
+```
+
+```typescript
+// Simple equality filter
+const open = await db.query('tasks', { where: { status: 'open' } });
+
+// Sorted + paginated
+const page1 = await db.query('tasks', {
+  where:    { status: 'open' },
+  orderBy:  'created_at',
+  orderDir: 'desc',
+  limit:    20,
+  offset:   0,
 });
 
-// Pattern matching
+// All rows
+const all = await db.query('tasks');
+```
+
+#### `count()`
+
+```typescript
+await db.count(table: string, opts?: CountOptions): Promise<number>
+```
+
+```typescript
+const n = await db.count('tasks', { where: { status: 'open' } });
+```
+
+---
+
+### Query operators
+
+The `filters` array supports operators beyond equality. `where` and `filters` are combined with `AND`.
+
+```typescript
+interface Filter {
+  col: string;
+  op: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'like' | 'in' | 'isNull' | 'isNotNull';
+  val?: unknown;  // not needed for isNull / isNotNull
+}
+```
+
+**Examples:**
+
+```typescript
+// Comparison
+const highPriority = await db.query('tasks', {
+  filters: [{ col: 'priority', op: 'gte', val: 4 }],
+});
+
+// Pattern match
 const search = await db.query('tasks', {
   filters: [{ col: 'title', op: 'like', val: '%refactor%' }],
 });
@@ -296,14 +568,14 @@ const unassigned = await db.query('tasks', {
   filters: [{ col: 'assignee_id', op: 'isNull' }],
 });
 
-// Combine with where (equality shorthand) — ANDed together
+// Combine where + filters (ANDed)
 const results = await db.query('tasks', {
   where:   { project_id: 'proj-1' },
   filters: [
-    { col: 'priority', op: 'gte', val: 3 },
+    { col: 'priority', op: 'gte',    val: 3 },
     { col: 'deleted_at', op: 'isNull' },
   ],
-  orderBy: 'priority',
+  orderBy:  'priority',
   orderDir: 'desc',
 });
 
@@ -313,72 +585,213 @@ const n = await db.count('tasks', {
 });
 ```
 
-For queries not covered by the API (JOINs, GROUP BY, etc.), use `db.db` — the raw `better-sqlite3` `Database` instance.
+---
 
-### Render / sync
+### Render, sync, and watch
+
+#### `render()`
 
 ```typescript
-// Render once
+await db.render(outputDir: string): Promise<RenderResult>
+```
+
+Render all tables to text files in `outputDir`. Files are written atomically (write to temp, rename). Files whose content hasn't changed are skipped.
+
+```typescript
 const result = await db.render('./context');
-// { filesWritten: ['context/tasks.md'], filesSkipped: 0, durationMs: 8 }
-
-// Render + writeback in one call
-const result = await db.sync('./context');
-
-// Watch for changes
-const stop = await db.watch('./context', {
-  interval: 5000,
-  onRender: (r) => console.log('rendered', r.filesWritten),
-  onError:  (e) => console.error(e),
-});
-stop(); // cancel the loop
+// { filesWritten: ['context/TASKS.md'], filesSkipped: 2, durationMs: 12 }
 ```
 
-### Writeback pipeline
+#### `sync()`
 
 ```typescript
-db.defineWriteback({
-  file: './context/agents/*/SESSION.md',
-  parse(content, fromOffset) {
-    // Parse new content since fromOffset; return entries + next offset
-    // Lattice handles offset tracking and file rotation automatically
-    return { entries: parseYourFormat(content.slice(fromOffset)), nextOffset: content.length };
-  },
-  async persist(entry, filePath) {
-    await db.insert('events', entry as Row);
-  },
-  dedupeKey: (entry) => (entry as { id: string }).id,
-});
+await db.sync(outputDir: string): Promise<SyncResult>
 ```
+
+`render()` + writeback pipeline in one call.
+
+```typescript
+const result = await db.sync('./context');
+// { filesWritten: [...], filesSkipped: 0, durationMs: 18, writebackProcessed: 3 }
+```
+
+#### `watch()`
+
+```typescript
+await db.watch(outputDir: string, opts?: WatchOptions): Promise<StopFn>
+```
+
+Poll the DB every `interval` ms and re-render when content changes.
+
+```typescript
+const stop = await db.watch('./context', {
+  interval: 5_000,              // default: 5000 ms
+  onRender: (r) => console.log('rendered', r.filesWritten.length, 'files'),
+  onError:  (e) => console.error('render error:', e.message),
+});
+
+// Stop the loop later
+stop();
+```
+
+---
 
 ### Events
 
 ```typescript
-db.on('audit',     ({ table, operation, id }) => { /* ... */ });
-db.on('render',    (result) => { /* ... */ });
-db.on('writeback', ({ filePath, entriesProcessed }) => { /* ... */ });
-db.on('error',     (err) => { /* ... */ });
+db.on('audit',     ({ table, operation, id, timestamp }) => void)
+db.on('render',    ({ filesWritten, filesSkipped, durationMs }) => void)
+db.on('writeback', ({ filePath, entriesProcessed }) => void)
+db.on('error',     (err: Error) => void)
 ```
 
-## YAML config + CLI (v0.4+)
+`audit` events fire on every insert/update/delete for tables listed in `security.auditTables`. Use them to build an audit log.
 
-Define your schema once in `lattice.config.yml` and let Lattice wire everything up for you.
+```typescript
+db.on('audit', ({ table, operation, id, timestamp }) => {
+  console.log(`[AUDIT] ${operation} on ${table}#${id} at ${timestamp}`);
+});
+```
+
+---
+
+### Raw DB access
+
+```typescript
+db.db: Database.Database  // better-sqlite3 instance
+```
+
+Escape hatch for queries Lattice doesn't cover (JOINs, aggregates, etc.):
+
+```typescript
+const rows = db.db.prepare(`
+  SELECT t.*, u.name AS assignee_name
+  FROM tasks t
+  LEFT JOIN users u ON u.id = t.assignee_id
+  WHERE t.status = ?
+`).all('open');
+```
+
+---
+
+## Template rendering
+
+### Built-in templates
+
+Pass a `BuiltinTemplateName` string as `render` to use a built-in template without writing a render function:
+
+```typescript
+db.define('users', {
+  columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', email: 'TEXT', role: 'TEXT' },
+  render: 'default-table',   // or 'default-list' | 'default-detail' | 'default-json'
+  outputFile: 'USERS.md',
+});
+```
+
+| Template | Output |
+| -------- | ------ |
+| `default-list` | One bullet per row: `- key: value, key: value, ...` |
+| `default-table` | GitHub-flavoured Markdown table with a header row |
+| `default-detail` | `## <pk>` section per row with `key: value` body |
+| `default-json` | `JSON.stringify(rows, null, 2)` |
+
+All templates return empty string for zero rows.
+
+---
+
+### Lifecycle hooks
+
+Add a `hooks` object to customise any built-in template:
+
+```typescript
+db.define('tasks', {
+  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', status: 'TEXT', priority: 'INTEGER' },
+  render: {
+    template: 'default-list',
+    hooks: {
+      // Transform or filter rows before rendering
+      beforeRender: (rows) => rows
+        .filter(r => r.status !== 'done')
+        .sort((a, b) => (b.priority as number) - (a.priority as number)),
+
+      // Customise how each row becomes a line
+      formatRow: '{{title}} [priority {{priority}}]',
+    },
+  },
+  outputFile: 'TASKS.md',
+});
+```
+
+| Hook | Applies to | Type |
+| ---- | ---------- | ---- |
+| `beforeRender(rows)` | All templates | `(rows: Row[]) => Row[]` |
+| `formatRow` | `default-list`, `default-detail` | `((row: Row) => string) \| string` |
+
+`formatRow` can be a function or a `{{field}}` template string. When it's a string, `belongsTo` relation fields are resolved and available as `{{relationName.field}}`.
+
+---
+
+### Field interpolation
+
+Any `formatRow` string supports `{{field}}` tokens with dot-notation for related rows:
+
+```typescript
+db.define('users', {
+  columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', team: 'TEXT' },
+  render: 'default-list',
+  outputFile: 'USERS.md',
+});
+
+db.define('tickets', {
+  columns: {
+    id:          'TEXT PRIMARY KEY',
+    title:       'TEXT',
+    assignee_id: 'TEXT',
+    status:      'TEXT',
+  },
+  relations: {
+    assignee: { type: 'belongsTo', table: 'users', foreignKey: 'assignee_id' },
+  },
+  render: {
+    template: 'default-list',
+    hooks: {
+      formatRow: '{{title}} → {{assignee.name}} ({{status}})',
+    },
+  },
+  outputFile: 'TICKETS.md',
+});
+// Output line: "- Fix login → Alice (open)"
+```
+
+**Rules:**
+- `{{field}}` — value of `field` in the current row
+- `{{relation.field}}` — value of `field` in the related row (resolved via `belongsTo`)
+- Unknown paths, `null`, and `undefined` all render as empty string
+- Non-string values are coerced with `String()`
+- Leading/trailing whitespace in token names is trimmed: `{{ name }}` works
+
+---
+
+## YAML config (v0.4+)
+
+Define your entire schema in a YAML file. Lattice reads it at construction time, creates all tables on `init()`, and wires render functions automatically.
 
 ### `lattice.config.yml` reference
 
 ```yaml
-# Path to the SQLite database (relative to this config file)
+# Path to the SQLite database file (relative to this config file)
 db: ./data/app.db
 
 entities:
-  # Entity name becomes the table name
+  # ── Entity name = table name ──────────────────────────────────────────────
   user:
     fields:
-      id:    { type: uuid,    primaryKey: true }
-      name:  { type: text,    required: true   }
-      email: { type: text }
-    render: default-table          # BuiltinTemplateName
-    outputFile: context/USERS.md  # where to write the context file
+      id:    { type: uuid,    primaryKey: true }    # auto-UUID on insert
+      name:  { type: text,    required: true   }    # NOT NULL
+      email: { type: text                      }    # nullable
+      score: { type: integer, default: 0       }    # DEFAULT 0
+    render: default-table
+    outputFile: context/USERS.md
 
   ticket:
     fields:
@@ -389,7 +802,7 @@ entities:
       assignee_id: { type: uuid,    ref: user        }  # creates belongsTo relation
     render:
       template: default-list
-      formatRow: "{{title}} ({{status}}) → {{assignee.name}}"
+      formatRow: "{{title}} ({{status}}) — {{assignee.name}}"
     outputFile: context/TICKETS.md
 ```
 
@@ -411,12 +824,36 @@ entities:
 
 **Field options**
 
-| Option       | Type               | Description                                         |
-| ------------ | ------------------ | --------------------------------------------------- |
-| `primaryKey` | boolean            | Marks this column as the table's primary key        |
-| `required`   | boolean            | Adds `NOT NULL` constraint                          |
-| `default`    | string/number/bool | Sets a SQL `DEFAULT` value                          |
-| `ref`        | string (tableName) | Creates a `belongsTo` relation; `_id` suffix stripped from relation name |
+| Option       | Type               | Description |
+| ------------ | ------------------ | ----------- |
+| `type`       | `LatticeFieldType` | Column data type (required) |
+| `primaryKey` | boolean            | Primary key column (`TEXT PRIMARY KEY` for uuid/text) |
+| `required`   | boolean            | `NOT NULL` constraint |
+| `default`    | string/number/bool | SQL `DEFAULT` value |
+| `ref`        | string             | Foreign-key reference to another entity. Creates a `belongsTo` relation; `_id` suffix is stripped from the relation name (`assignee_id` → `assignee`) |
+
+**Entity-level options**
+
+| Option        | Type                    | Description |
+| ------------- | ----------------------- | ----------- |
+| `fields`      | `Record<string, FieldDef>` | Column definitions (required) |
+| `render`      | string or object        | Built-in template name, or `{ template, formatRow }` |
+| `outputFile`  | string                  | Render output path (relative to config file) |
+| `primaryKey`  | string or string[]      | Override PK — takes precedence over field-level `primaryKey: true` |
+
+**Render spec forms in YAML:**
+
+```yaml
+# String form — plain BuiltinTemplateName
+render: default-table
+
+# Object form — template + formatRow hook
+render:
+  template: default-list
+  formatRow: "{{title}} ({{status}})"
+```
+
+---
 
 ### Init from config
 
@@ -426,48 +863,97 @@ import { Lattice } from '@m-flat/lattice';
 const db = new Lattice({ config: './lattice.config.yml' });
 await db.init();
 
-// All entities from the config are now available
-await db.insert('ticket', { title: 'Fix login bug', assignee_id: 'u-1' });
+// All entities are available immediately
+await db.insert('user', { name: 'Alice', email: 'alice@example.com' });
+await db.insert('ticket', { title: 'Fix login', assignee_id: 'u-1' });
+
+const tickets = await db.query('ticket', { where: { status: 'open' } });
+await db.render('./context');
 ```
 
-The `{ config }` form reads the YAML, creates all tables on `init()`, and wires render functions automatically. Fully equivalent to calling `new Lattice('./path/to/db')` + `define(...)` for each entity.
+The `{ config }` constructor reads the YAML file synchronously, extracts the `db` path, and calls `define()` for each entity. It is exactly equivalent to:
 
-### `lattice generate` CLI
-
-Generate TypeScript interfaces, an initial SQL migration, and (optionally) empty scaffold render files:
-
-```sh
-npx lattice generate --config lattice.config.yml --out generated/
-
-# Or after installing globally / as a project script:
-lattice generate
+```typescript
+// Equivalent manual setup (no YAML)
+const db = new Lattice('./data/app.db');
+db.define('user', { columns: { ... }, render: 'default-table', outputFile: '...' });
+db.define('ticket', { columns: { ... }, render: { ... }, outputFile: '...' });
+await db.init();
 ```
 
-```
-Options for generate:
-  --config, -c <path>    Path to config file    (default: ./lattice.config.yml)
-  --out, -o <dir>        Output directory        (default: ./generated)
-  --scaffold             Create empty render output files at each entity's outputFile path
+---
+
+### Config API (programmatic)
+
+Parse a config file or string without constructing a Lattice instance:
+
+```typescript
+import { parseConfigFile, parseConfigString } from '@m-flat/lattice';
+
+// From a file (throws on missing/invalid file or YAML parse error)
+const { dbPath, tables } = parseConfigFile('./lattice.config.yml');
+
+// From a YAML string — configDir is used to resolve relative outputFile paths
+const { tables } = parseConfigString(yamlContent, '/project/root');
+
+// Wire into any Lattice instance manually
+const db = new Lattice(':memory:');
+for (const { name, definition } of tables) {
+  db.define(name, definition);
+}
+await db.init();
 ```
 
-**Output**
+`ParsedConfig`:
+```typescript
+interface ParsedConfig {
+  dbPath: string;   // Absolute path to the SQLite file
+  tables: ReadonlyArray<{ name: string; definition: TableDefinition }>;
+}
+```
+
+---
+
+## CLI — `lattice generate`
+
+Generate TypeScript interfaces, an initial SQL migration file, and optional scaffold files from a YAML config.
+
+```bash
+npx lattice generate
+
+# With options
+npx lattice generate --config ./lattice.config.yml --out ./generated --scaffold
+```
+
+**Options**
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `--config, -c <path>` | `./lattice.config.yml` | Path to the config file |
+| `--out, -o <dir>` | `./generated` | Output directory |
+| `--scaffold` | off | Create empty files at each entity's `outputFile` path (skips existing files) |
+| `--help, -h` | — | Show help |
+| `--version, -v` | — | Print version |
+
+**Output structure**
 
 ```
 generated/
-├── types.ts               # TypeScript interfaces — one per entity
+├── types.ts               # TypeScript interface per entity
 └── migrations/
     └── 0001_initial.sql   # CREATE TABLE IF NOT EXISTS statements
 ```
 
-Example `generated/types.ts`:
+**Example output — `generated/types.ts`:**
 
 ```typescript
 // Auto-generated by `lattice generate`. Do not edit manually.
 
 export interface User {
   id: string;
-  name: string;
+  name: string;   // required: true → no ?
   email?: string;
+  score?: number;
 }
 
 export interface Ticket {
@@ -479,26 +965,162 @@ export interface Ticket {
 }
 ```
 
-### Config API (programmatic)
+**Example output — `generated/migrations/0001_initial.sql`:**
 
-Parse a config file or string directly:
+```sql
+-- Auto-generated by `lattice generate`. Do not edit manually.
+
+CREATE TABLE IF NOT EXISTS "user" (
+  "id" TEXT PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "email" TEXT,
+  "score" INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS "ticket" (
+  "id" TEXT PRIMARY KEY,
+  "title" TEXT NOT NULL,
+  "status" TEXT DEFAULT 'open',
+  "priority" INTEGER DEFAULT 1,
+  "assignee_id" TEXT
+);
+```
+
+---
+
+## Schema migrations
+
+Lattice auto-creates tables and adds missing columns on every `init()` — you never need to manually write `CREATE TABLE` or `ALTER TABLE ADD COLUMN` for schema evolution.
+
+For changes that require data transformation (renaming a column, dropping a column, changing a type), use the `migrations` option:
 
 ```typescript
-import { parseConfigFile, parseConfigString } from '@m-flat/lattice';
-
-// From a file (throws on missing/invalid file)
-const { dbPath, tables } = parseConfigFile('./lattice.config.yml');
-
-// From a YAML string (useful for testing)
-const { tables } = parseConfigString(yamlString, '/base/dir');
-
-// Wire tables into any Lattice instance
-const db = new Lattice(':memory:');
-for (const { name, definition } of tables) {
-  db.define(name, definition);
-}
-await db.init();
+await db.init({
+  migrations: [
+    // version 1: rename 'notes' → 'description'
+    {
+      version: 1,
+      sql: `
+        ALTER TABLE tasks ADD COLUMN description TEXT;
+        UPDATE tasks SET description = notes;
+      `,
+    },
+    // version 2: add index
+    {
+      version: 2,
+      sql: `CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status)`,
+    },
+    // version 3: add computed default via UPDATE
+    {
+      version: 3,
+      sql: `UPDATE tasks SET priority = 1 WHERE priority IS NULL`,
+    },
+  ],
+});
 ```
+
+Migrations are applied in ascending `version` order. Each version is applied at most once, tracked in a `__lattice_migrations` internal table. Safe to call `init()` multiple times across restarts — already-applied migrations are skipped.
+
+For the YAML config workflow, generate the initial migration with `lattice generate` and add subsequent migrations manually to the `migrations/` directory (Lattice doesn't manage multi-file migrations — that's intentionally left to external tools like `flyway` or `dbmate` if you need it).
+
+See [docs/migrations.md](./docs/migrations.md) for a step-by-step migration workflow.
+
+---
+
+## Security
+
+**Input sanitization** — enabled by default. Strips control characters from string columns before storing. Disable per-instance with `security: { sanitize: false }`.
+
+**Audit events** — declare which tables emit audit events:
+
+```typescript
+const db = new Lattice('./app.db', {
+  security: { auditTables: ['users', 'api_keys'] },
+});
+
+db.on('audit', ({ table, operation, id, timestamp }) => {
+  auditLog.write({ table, operation, id, timestamp });
+});
+```
+
+**Field limits** — cap string lengths per column:
+
+```typescript
+const db = new Lattice('./app.db', {
+  security: { fieldLimits: { notes: 50_000, bio: 500 } },
+});
+```
+
+**SQL injection** — all values are passed as bound parameters; no user input is ever interpolated into SQL strings.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Lattice class                          │
+│  define() / defineMulti() / defineWriteback()               │
+│  CRUD: insert / upsert / upsertBy / update / delete         │
+│  Query: get / query / count                                 │
+│  Render: render / sync / watch                              │
+├────────────────┬──────────────────┬─────────────────────────┤
+│ SchemaManager  │  RenderEngine    │  WritebackPipeline      │
+│                │                  │                         │
+│ Stores table   │  Queries rows →  │  Watches output files   │
+│ definitions,   │  calls render()  │  for new agent-written  │
+│ PK registry,   │  → atomicWrite() │  content, calls         │
+│ relation map   │                  │  parse() + persist()    │
+├────────────────┴──────────────────┴─────────────────────────┤
+│                      SQLiteAdapter                          │
+│           (better-sqlite3 — synchronous I/O)                │
+└─────────────────────────────────────────────────────────────┘
+        │
+        │  compileRender() — called once at define()-time
+        ▼
+┌───────────────────────────────┐
+│  render/templates.ts          │
+│  • compileRender(spec)        │
+│  • _enrichRow() (belongsTo)   │
+│  • _renderList/Table/Detail   │
+│  • interpolate() {{field}}    │
+└───────────────────────────────┘
+```
+
+**Key design decisions:**
+
+- **Synchronous SQLite** — `better-sqlite3` gives synchronous reads; all Lattice CRUD methods return Promises for API consistency but resolve synchronously under the hood.
+- **Compile-time render** — `RenderSpec` is compiled to a plain `(rows: Row[]) => string` function at `define()`-time, not at render-time. `RenderEngine` stays unchanged.
+- **Atomic writes** — files are written to a `.tmp` sibling then renamed. No partial writes, no reader sees incomplete content.
+- **Schema-additive only** — Lattice never drops tables or columns automatically; it only adds missing ones.
+
+See [docs/architecture.md](./docs/architecture.md) for a deeper walkthrough.
+
+---
+
+## Examples
+
+Three complete, commented examples are in [docs/examples/](./docs/examples/):
+
+| Example | Description |
+| ------- | ----------- |
+| [Agent system](./docs/examples/agent-system.md) | Multi-agent context management with per-agent context files |
+| [Ticket tracker](./docs/examples/ticket-tracker.md) | Project management system with relationships and templates |
+| [CMS](./docs/examples/cms.md) | Content management with writeback pipeline for agent edits |
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, test commands, and contribution guidelines.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full history.
+
+---
 
 ## License
 
