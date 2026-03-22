@@ -13,14 +13,18 @@ describe('SchemaManager', () => {
     const mgr = new SchemaManager();
     const def = { columns: { id: 'TEXT PRIMARY KEY' }, render: () => '', outputFile: 'f.md' };
     mgr.define('bots', def);
-    expect(() => { mgr.define('bots', def); }).toThrow(/"bots"/);
+    expect(() => {
+      mgr.define('bots', def);
+    }).toThrow(/"bots"/);
   });
 
   it('throws if same multi name is defined twice', () => {
     const mgr = new SchemaManager();
     const def = { keys: () => Promise.resolve([]), outputFile: () => 'x.md', render: () => '' };
     mgr.defineMulti('ctx', def);
-    expect(() => { mgr.defineMulti('ctx', def); }).toThrow(/"ctx"/);
+    expect(() => {
+      mgr.defineMulti('ctx', def);
+    }).toThrow(/"ctx"/);
   });
 
   it('applySchema creates the table', () => {
@@ -67,9 +71,7 @@ describe('SchemaManager', () => {
     });
     mgr.applySchema(adapter);
 
-    const cols = adapter
-      .all('PRAGMA table_info(items)')
-      .map((r) => r.name as string);
+    const cols = adapter.all('PRAGMA table_info(items)').map((r) => r.name as string);
     expect(cols).toContain('name');
     expect(cols).toContain('active');
     adapter.close();
@@ -88,9 +90,7 @@ describe('SchemaManager', () => {
       { version: 1, sql: 'ALTER TABLE items ADD COLUMN name TEXT' },
     ]);
 
-    const cols = adapter
-      .all('PRAGMA table_info(items)')
-      .map((r) => r.name as string);
+    const cols = adapter.all('PRAGMA table_info(items)').map((r) => r.name as string);
     expect(cols).toContain('name');
     expect(cols).toContain('score');
     adapter.close();
@@ -104,11 +104,11 @@ describe('SchemaManager', () => {
     );
     adapter.run('CREATE TABLE items (id TEXT PRIMARY KEY)');
 
-    const migrations = [
-      { version: 1, sql: 'ALTER TABLE items ADD COLUMN name TEXT' },
-    ];
+    const migrations = [{ version: 1, sql: 'ALTER TABLE items ADD COLUMN name TEXT' }];
     mgr.applyMigrations(adapter, migrations);
-    expect(() => { mgr.applyMigrations(adapter, migrations); }).not.toThrow();
+    expect(() => {
+      mgr.applyMigrations(adapter, migrations);
+    }).not.toThrow();
     adapter.close();
   });
 

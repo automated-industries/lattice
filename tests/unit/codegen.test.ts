@@ -11,8 +11,8 @@ const FIXTURE_CONFIG: LatticeConfig = {
   entities: {
     user: {
       fields: {
-        id:    { type: 'uuid',    primaryKey: true },
-        name:  { type: 'text',    required: true },
+        id: { type: 'uuid', primaryKey: true },
+        name: { type: 'text', required: true },
         email: { type: 'text' },
         score: { type: 'integer', default: 0 },
       },
@@ -21,10 +21,10 @@ const FIXTURE_CONFIG: LatticeConfig = {
     },
     ticket: {
       fields: {
-        id:          { type: 'uuid',    primaryKey: true },
-        title:       { type: 'text',    required: true },
-        status:      { type: 'text',    default: 'open' },
-        assignee_id: { type: 'uuid',    ref: 'user' },
+        id: { type: 'uuid', primaryKey: true },
+        title: { type: 'text', required: true },
+        status: { type: 'text', default: 'open' },
+        assignee_id: { type: 'uuid', ref: 'user' },
       },
       render: 'default-list',
       outputFile: 'context/TICKETS.md',
@@ -163,7 +163,7 @@ describe('generateMigration()', () => {
 
   it("generates DEFAULT 'open' for text field with default open", () => {
     const output = generateMigration(FIXTURE_CONFIG);
-    expect(output).toContain("\"status\" TEXT DEFAULT 'open'");
+    expect(output).toContain('"status" TEXT DEFAULT \'open\'');
   });
 
   it('generates DEFAULT 0 for numeric default', () => {

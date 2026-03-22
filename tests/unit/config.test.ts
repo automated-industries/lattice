@@ -30,21 +30,19 @@ entities:
   });
 
   it('throws when db key is missing', () => {
-    expect(() =>
-      parseConfigString('entities: {}', configDir),
-    ).toThrow(/config\.db must be a string/);
+    expect(() => parseConfigString('entities: {}', configDir)).toThrow(
+      /config\.db must be a string/,
+    );
   });
 
   it('throws when entities key is missing', () => {
-    expect(() =>
-      parseConfigString('db: ./app.db', configDir),
-    ).toThrow(/config\.entities must be an object/);
+    expect(() => parseConfigString('db: ./app.db', configDir)).toThrow(
+      /config\.entities must be an object/,
+    );
   });
 
   it('throws on malformed YAML', () => {
-    expect(() =>
-      parseConfigString('db: [\nbad yaml{{{', configDir),
-    ).toThrow(/YAML parse error/);
+    expect(() => parseConfigString('db: [\nbad yaml{{{', configDir)).toThrow(/YAML parse error/);
   });
 
   it('throws when entity has no fields', () => {

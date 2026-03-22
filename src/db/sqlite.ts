@@ -47,7 +47,8 @@ export class SQLiteAdapter implements StorageAdapter {
   prepare(sql: string): PreparedStatement {
     const stmt = this.db.prepare(sql);
     return {
-      run: (...params: unknown[]) => stmt.run(...params) as { changes: number; lastInsertRowid: number | bigint },
+      run: (...params: unknown[]) =>
+        stmt.run(...params) as { changes: number; lastInsertRowid: number | bigint },
       get: (...params: unknown[]) => stmt.get(...params) as Row | undefined,
       all: (...params: unknown[]) => stmt.all(...params) as Row[],
     };

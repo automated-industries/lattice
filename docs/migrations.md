@@ -39,6 +39,7 @@ await db.init({
 4. Migrations are run in the order they appear in the array, not necessarily by version number — but using ascending version numbers is strongly recommended.
 
 **Key properties:**
+
 - Each migration runs at most once per database (idempotent across restarts)
 - Migrations run inside implicit transactions (SQLite auto-commit per statement)
 - If a migration fails, the error is thrown and the version is not recorded — the migration will be retried on the next startup
@@ -53,8 +54,8 @@ await db.init({
 ```ts
 db.define('tasks', {
   columns: {
-    id:     'TEXT PRIMARY KEY',
-    title:  'TEXT NOT NULL',
+    id: 'TEXT PRIMARY KEY',
+    title: 'TEXT NOT NULL',
     status: "TEXT DEFAULT 'open'",
   },
   render: 'default-list',
@@ -68,10 +69,10 @@ await db.init();
 ```ts
 db.define('tasks', {
   columns: {
-    id:       'TEXT PRIMARY KEY',
-    title:    'TEXT NOT NULL',
-    status:   "TEXT DEFAULT 'open'",
-    priority: 'INTEGER DEFAULT 1',   // New column
+    id: 'TEXT PRIMARY KEY',
+    title: 'TEXT NOT NULL',
+    status: "TEXT DEFAULT 'open'",
+    priority: 'INTEGER DEFAULT 1', // New column
   },
   render: 'default-list',
   outputFile: 'context/TASKS.md',
@@ -104,10 +105,10 @@ Add the new field to your entity:
 entities:
   task:
     fields:
-      id:       { type: uuid,    primaryKey: true }
-      title:    { type: text,    required: true }
-      status:   { type: text,    default: open }
-      priority: { type: integer, default: 1 }    # ← added
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
+      status: { type: text, default: open }
+      priority: { type: integer, default: 1 } # ← added
     render: default-list
     outputFile: context/TASKS.md
 ```
@@ -126,9 +127,7 @@ The generated `migration.sql` is for fresh databases. For existing databases, wr
 
 ```ts
 await db.init({
-  migrations: [
-    { version: 1, sql: 'ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 1' },
-  ],
+  migrations: [{ version: 1, sql: 'ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 1' }],
 });
 ```
 
@@ -267,6 +266,7 @@ SQLite does not support transactional DDL (Data Definition Language) across mult
 - **Table rebuilds are risky.** If a rename migration fails halfway, the database may be in an inconsistent state. Restore from backup.
 
 For production deployments, always:
+
 1. Back up the database
 2. Run migrations in a pre-start hook before the app opens the connection
 3. Have a tested restore procedure

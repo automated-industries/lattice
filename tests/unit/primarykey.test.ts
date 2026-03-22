@@ -8,7 +8,9 @@ function makeDb(): Lattice {
 describe('Custom primary key', () => {
   let db: Lattice;
 
-  afterEach(() => { db.close(); });
+  afterEach(() => {
+    db.close();
+  });
 
   // -------------------------------------------------------------------------
   // Default behaviour (backward compat)
