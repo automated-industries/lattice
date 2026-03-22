@@ -1,5 +1,14 @@
 export { Lattice } from './lattice.js';
-export type { PkLookup } from './lattice.js';
+export type { PkLookup, LatticeConfigInput } from './lattice.js';
+export { parseConfigFile, parseConfigString } from './config/parser.js';
+export type { ParsedConfig } from './config/parser.js';
+export type {
+  LatticeFieldType,
+  LatticeFieldDef,
+  LatticeEntityDef,
+  LatticeEntityRenderSpec,
+  LatticeConfig,
+} from './config/types.js';
 export type {
   Row,
   LatticeOptions,

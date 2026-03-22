@@ -1,0 +1,22 @@
+db: ./data/test.db
+
+entities:
+  user:
+    fields:
+      id:    { type: uuid,    primaryKey: true }
+      name:  { type: text,    required: true }
+      email: { type: text }
+    render: default-table
+    outputFile: context/USERS.md
+
+  ticket:
+    fields:
+      id:          { type: uuid,    primaryKey: true }
+      title:       { type: text,    required: true }
+      status:      { type: text,    default: open }
+      priority:    { type: integer, default: 1 }
+      assignee_id: { type: uuid,    ref: user }
+    render:
+      template: default-list
+      formatRow: "{{title}} ({{status}})"
+    outputFile: context/TICKETS.md
