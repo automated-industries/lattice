@@ -342,3 +342,18 @@ export type LatticeEvent =
   | { type: 'render'; data: RenderResult }
   | { type: 'writeback'; data: { filePath: string; entriesProcessed: number } }
   | { type: 'error'; data: Error };
+
+// ---------------------------------------------------------------------------
+// Entity context directories (v0.5+)
+// ---------------------------------------------------------------------------
+
+export type {
+  SelfSource,
+  HasManySource,
+  ManyToManySource,
+  BelongsToSource,
+  CustomSource,
+  EntityFileSource,
+  EntityFileSpec,
+  EntityContextDefinition,
+} from './schema/entity-context.js';
