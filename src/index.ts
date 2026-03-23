@@ -46,4 +46,10 @@ export type {
   EntityFileSource,
   EntityFileSpec,
   EntityContextDefinition,
+  CleanupOptions,
+  CleanupResult,
+  ReconcileOptions,
+  ReconcileResult,
 } from './types.js';
+export { readManifest, writeManifest, manifestPath } from './lifecycle/manifest.js';
+export type { LatticeManifest, EntityContextManifestEntry } from './lifecycle/manifest.js';
