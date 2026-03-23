@@ -145,8 +145,9 @@ export class Lattice {
     if (options.migrations?.length) {
       this._schema.applyMigrations(this._adapter, options.migrations);
     }
-    // Build column cache from actual PRAGMA after all migrations have run.
-    // This ensures migration-added columns are accepted by _filterToSchemaColumns.
+    // Snapshot actual columns post-migration: schema state only includes declared
+    // columns, so migration-added columns would be stripped by _filterToSchemaColumns
+    // without this PRAGMA-based cache.
     for (const tableName of this._schema.getTables().keys()) {
       const rows = this._adapter.all(`PRAGMA table_info("${tableName}")`);
       this._columnCache.set(tableName, new Set(rows.map((r) => r.name as string)));
@@ -157,6 +158,7 @@ export class Lattice {
 
   close(): void {
     this._adapter.close();
+    this._columnCache.clear();
     this._initialized = false;
   }
 
@@ -477,8 +479,10 @@ export class Lattice {
    */
   private _filterToSchemaColumns(table: string, row: Row): Row {
     const cols = this._columnCache.get(table);
-    if (!cols) return row; // unregistered or pre-init — pass through
-    return Object.fromEntries(Object.entries(row).filter(([k]) => cols.has(k))) as Row;
+    if (!cols) return row; // unregistered table — pass through unchanged
+    const keys = Object.keys(row);
+    if (keys.every((k) => cols.has(k))) return row; // common case: no unknown keys
+    return Object.fromEntries(keys.filter((k) => cols.has(k)).map((k) => [k, row[k]])) as Row;
   }
 
   /**
