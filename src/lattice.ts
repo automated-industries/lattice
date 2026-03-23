@@ -16,7 +16,10 @@ import type {
   LatticeEvent,
   Filter,
   EntityContextDefinition,
+  ReconcileOptions,
+  ReconcileResult,
 } from './types.js';
+import { readManifest } from './lifecycle/manifest.js';
 import type Database from 'better-sqlite3';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { SchemaManager } from './schema/manager.js';
@@ -405,6 +408,28 @@ export class Lattice {
     const writebackProcessed = await this._writeback.process();
 
     return { ...renderResult, writebackProcessed };
+  }
+
+  async reconcile(outputDir: string, options: ReconcileOptions = {}): Promise<ReconcileResult> {
+    const notInit = this._notInitError<ReconcileResult>();
+    if (notInit) return notInit;
+
+    // Read previous manifest BEFORE render so cleanup can detect orphans
+    const prevManifest = readManifest(outputDir);
+
+    // Render first (writes new manifest)
+    const renderResult = await this._render.render(outputDir);
+    for (const h of this._renderHandlers) h(renderResult);
+
+    // Read the new manifest just written by render
+    const newManifest = readManifest(outputDir);
+
+    // Run cleanup after render, passing both old and new manifests.
+    // Old manifest: detects orphaned directories (deleted entities).
+    // New manifest: detects stale files in surviving entities (omitIfEmpty, removed files).
+    const cleanup = this._render.cleanup(outputDir, prevManifest, options, newManifest);
+
+    return { ...renderResult, cleanup };
   }
 
   watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {

@@ -5,6 +5,10 @@ import type { StorageAdapter } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
 import { atomicWrite } from './writer.js';
 import { resolveEntitySource, truncateContent } from './entity-query.js';
+import type { EntityContextManifestEntry, LatticeManifest } from '../lifecycle/manifest.js';
+import { writeManifest } from '../lifecycle/manifest.js';
+import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
+import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
 
 export class RenderEngine {
   private readonly _schema: SchemaManager;
@@ -56,7 +60,16 @@ export class RenderEngine {
     }
 
     // Entity context renders
-    this._renderEntityContexts(outputDir, filesWritten, counters);
+    const entityContextManifest = this._renderEntityContexts(outputDir, filesWritten, counters);
+
+    // Write manifest if there are any entity contexts
+    if (this._schema.getEntityContexts().size > 0) {
+      writeManifest(outputDir, {
+        version: 1,
+        generated_at: new Date().toISOString(),
+        entityContexts: entityContextManifest,
+      });
+    }
 
     return {
       filesWritten,
@@ -66,17 +79,54 @@ export class RenderEngine {
   }
 
   /**
+   * Run orphan cleanup using the previous manifest.
+   * Called by reconcile() and optionally by the watch loop.
+   *
+   * @param newManifest - Optional: the manifest just written by render().
+   *   When provided, step 2 (stale files in surviving entity dirs) compares
+   *   old vs new manifest entries, catching omitIfEmpty files that were written
+   *   before but skipped in the current render cycle.
+   */
+  cleanup(
+    outputDir: string,
+    prevManifest: LatticeManifest | null,
+    options: CleanupOptions = {},
+    newManifest?: LatticeManifest | null,
+  ): CleanupResult {
+    const entityContexts = this._schema.getEntityContexts();
+    const currentSlugsByTable = new Map<string, Set<string>>();
+    for (const [table, def] of entityContexts) {
+      const rows = this._schema.queryTable(this._adapter, table);
+      const slugs = new Set(rows.map((row) => def.slug(row)));
+      currentSlugsByTable.set(table, slugs);
+    }
+    return cleanupEntityContexts(outputDir, entityContexts, currentSlugsByTable, prevManifest, options, newManifest);
+  }
+
+  /**
    * Render all entity context definitions.
    * Mutates `filesWritten` and `counters` in place.
+   * Returns manifest data for the entity contexts rendered this cycle.
    */
   private _renderEntityContexts(
     outputDir: string,
     filesWritten: string[],
     counters: { skipped: number },
-  ): void {
+  ): Record<string, EntityContextManifestEntry> {
+    const manifestData: Record<string, EntityContextManifestEntry> = {};
+
     for (const [table, def] of this._schema.getEntityContexts()) {
       const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
       const allRows = this._schema.queryTable(this._adapter, table);
+      const directoryRoot = def.directoryRoot ?? table;
+
+      const manifestEntry: EntityContextManifestEntry = {
+        directoryRoot,
+        ...(def.index ? { indexFile: def.index.outputFile } : {}),
+        declaredFiles: Object.keys(def.files),
+        protectedFiles: def.protectedFiles ?? [],
+        entities: {},
+      };
 
       // --- index file ---
       if (def.index) {
@@ -93,7 +143,7 @@ export class RenderEngine {
         const slug = def.slug(entityRow);
         const entityDir = def.directory
           ? join(outputDir, def.directory(entityRow))
-          : join(outputDir, def.directoryRoot ?? table, slug);
+          : join(outputDir, directoryRoot, slug);
 
         mkdirSync(entityDir, { recursive: true });
 
@@ -136,9 +186,17 @@ export class RenderEngine {
             } else {
               counters.skipped++;
             }
+            renderedFiles.set(def.combined.outputFile, parts.join('\n\n---\n\n'));
           }
         }
+
+        // Track what was written for this entity in the manifest
+        manifestEntry.entities[slug] = [...renderedFiles.keys()];
       }
+
+      manifestData[table] = manifestEntry;
     }
+
+    return manifestData;
   }
 }
