@@ -9,3 +9,7 @@ coverage/
 .env
 .DS_Store
 docs-generated/
+*.key
+*.pem
+*.secret
+*.p12

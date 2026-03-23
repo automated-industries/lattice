@@ -78,6 +78,16 @@ export class SchemaManager {
   }
 
   /**
+   * Return the declared column names for a table, or `null` if the table was
+   * not registered via `define()` (e.g. accessed through the raw `.db` handle).
+   */
+  getColumns(table: string): string[] | null {
+    const def = this._tables.get(table);
+    if (!def) return null;
+    return Object.keys(def.columns);
+  }
+
+  /**
    * Apply schema: create missing tables, add missing columns.
    * Never drops tables or columns.
    */
