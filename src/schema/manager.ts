@@ -1,5 +1,6 @@
 import type { StorageAdapter } from '../db/adapter.js';
 import type { TableDefinition, MultiTableDefinition, Migration, Relation, Row } from '../types.js';
+import type { EntityContextDefinition } from './entity-context.js';
 
 export interface RegisteredTable {
   name: string;
@@ -25,6 +26,7 @@ export class SchemaManager {
   /** Normalised primary key columns per table (always an array). */
   private readonly _tablePK = new Map<string, string[]>();
   private readonly _multis = new Map<string, MultiTableDefinition>();
+  private readonly _entityContexts = new Map<string, EntityContextDefinition>();
 
   define(table: string, def: CompiledTableDef): void {
     if (this._tables.has(table)) {
@@ -52,12 +54,27 @@ export class SchemaManager {
     this._multis.set(name, def);
   }
 
+  /**
+   * Register an entity context definition.
+   * Throws if a context for the same table has already been registered.
+   */
+  defineEntityContext(table: string, def: EntityContextDefinition): void {
+    if (this._entityContexts.has(table)) {
+      throw new Error(`Entity context for table "${table}" is already defined`);
+    }
+    this._entityContexts.set(table, def);
+  }
+
   getTables(): Map<string, CompiledTableDef> {
     return this._tables;
   }
 
   getMultis(): Map<string, MultiTableDefinition> {
     return this._multis;
+  }
+
+  getEntityContexts(): Map<string, EntityContextDefinition> {
+    return this._entityContexts;
   }
 
   /**

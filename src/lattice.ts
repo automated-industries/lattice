@@ -15,6 +15,7 @@ import type {
   AuditEvent,
   LatticeEvent,
   Filter,
+  EntityContextDefinition,
 } from './types.js';
 import type Database from 'better-sqlite3';
 import { SQLiteAdapter } from './db/sqlite.js';
@@ -128,6 +129,12 @@ export class Lattice {
   defineMulti(name: string, def: MultiTableDefinition): this {
     this._assertNotInit('defineMulti');
     this._schema.defineMulti(name, def);
+    return this;
+  }
+
+  defineEntityContext(table: string, def: EntityContextDefinition): this {
+    this._assertNotInit('defineEntityContext');
+    this._schema.defineEntityContext(table, def);
     return this;
   }
 
