@@ -12,6 +12,8 @@ How `@m-flat/lattice` is structured internally and the design decisions behind i
 - [Design decisions](#design-decisions)
 - [Package structure](#package-structure)
 
+> **v0.5 additions** are called out inline below. They cover entity context directories, lifecycle management, the manifest, and the `reconcile()` method.
+
 ---
 
 ## High-level picture
@@ -20,6 +22,8 @@ How `@m-flat/lattice` is structured internally and the design decisions behind i
                     ┌─────────────────────────────────────┐
                     │              Lattice                 │
                     │          (public facade)             │
+                    │                                      │
+                    │  defineEntityContext()  reconcile()  │  ← v0.5
                     └──────────────────┬──────────────────┘
                                        │
           ┌────────────────────────────┼──────────────────────────┐
@@ -28,10 +32,11 @@ How `@m-flat/lattice` is structured internally and the design decisions behind i
 │   SchemaManager     │   │    SQLiteAdapter       │  │   WritebackPipeline  │
 │                     │   │                        │  │                      │
 │ • define(table)     │   │ • open() / close()     │  │ • define(def)        │
-│ • getPrimaryKey()   │   │ • run() / all() / get()│  │ • process()          │
-│ • getRelations()    │   │ • WAL mode             │  │ • file watching      │
-│ • applySchema()     │   │ • busy timeout         │  │ • dedup              │
-│ • applyMigrations() │   └────────────────────────┘  └──────────────────────┘
+│ • defineEntityCtx() │   │ • run() / all() / get()│  │ • process()          │
+│ • getPrimaryKey()   │   │ • WAL mode             │  │ • file watching      │
+│ • getRelations()    │   │ • busy timeout         │  │ • dedup              │
+│ • applySchema()     │   └────────────────────────┘  └──────────────────────┘
+│ • applyMigrations() │
 └─────────────────────┘
           │
 ┌─────────▼──────────┐   ┌────────────────────────┐
@@ -39,18 +44,32 @@ How `@m-flat/lattice` is structured internally and the design decisions behind i
 │                     │   │                         │
 │ • render(outputDir) │◄──│ • watch(outputDir)      │
 │ • resolveRelations()│   │ • setInterval polling   │
-│ • writeFiles()      │   │ • StopFn returned       │
-└─────────────────────┘   └─────────────────────────┘
+│ • writeFiles()      │   │ • cleanup on each tick  │  ← v0.5
+│ • _renderEntityCtxs │   │ • StopFn returned       │
+│ • writeManifest()   │   └─────────────────────────┘
+│ • cleanup()         │   ← v0.5
+└─────────────────────┘
           │
-┌─────────▼──────────┐   ┌────────────────────────┐
-│   RenderTemplates   │   │      Sanitizer          │
-│                     │   │                         │
-│ • compileRender()   │   │ • sanitizeRow()         │
-│ • default-list      │   │ • null-byte strip       │
-│ • default-table     │   │ • field length limits   │
-│ • default-detail    │   │ • audit event emission  │
-│ • default-json      │   └─────────────────────────┘
+┌─────────▼──────────┐   ┌────────────────────────┐   ┌──────────────────────┐
+│   RenderTemplates   │   │      Sanitizer          │   │  Lifecycle (v0.5)    │
+│                     │   │                         │   │                      │
+│ • compileRender()   │   │ • sanitizeRow()         │   │ • readManifest()     │
+│ • default-list      │   │ • null-byte strip       │   │ • writeManifest()    │
+│ • default-table     │   │ • field length limits   │   │ • manifestPath()     │
+│ • default-detail    │   │ • audit event emission  │   │ • cleanupEntityCtxs()│
+│ • default-json      │   └─────────────────────────┘   └──────────────────────┘
 │ • interpolate()     │
+└─────────────────────┘
+          │
+┌─────────▼──────────┐
+│  EntityQuery (v0.5) │
+│                     │
+│ • resolveSource()   │
+│ • self / hasMany    │
+│ • manyToMany        │
+│ • belongsTo         │
+│ • custom            │
+│ • truncateContent() │
 └─────────────────────┘
 ```
 
@@ -97,18 +116,38 @@ Holds all registered table and multi-table definitions. Responsibilities:
 
 Executes the render cycle. Responsibilities:
 
-- `render(outputDir)` — iterates all registered tables and multi-table views, renders each to a string, and writes to the appropriate output file (skipping unchanged content)
+- `render(outputDir)` — iterates all registered tables, multi-table views, and entity context definitions; renders each to a string; writes to the appropriate output file (skipping unchanged content)
 - `resolveRelations(table, rows)` — for `belongsTo` relations referenced in template strings, joins to the related table in-process
+- `_renderEntityContexts(outputDir)` — (v0.5) renders all `defineEntityContext()` definitions; returns `Record<string, EntityContextManifestEntry>` and writes the manifest
+- `cleanup(outputDir, prevManifest, options, newManifest?)` — (v0.5) builds current slug sets from the DB and calls `cleanupEntityContexts()`
 - Returns `RenderResult` with file paths and timing
 
 File writes are skipped when the new content equals the existing file content — important for keeping LLM context file mtimes stable.
+
+### `EntityQuery` — entity source resolver (`src/render/entity-query.ts`) _(v0.5)_
+
+Contains the synchronous row-resolution logic for entity context directories. Responsibilities:
+
+- `resolveEntitySource(source, entityRow, entityPk, adapter)` — dispatches to the correct SQL query based on the source type (`self`, `hasMany`, `manyToMany`, `belongsTo`, `custom`)
+- `truncateContent(content, budget?)` — applies the per-file character budget and appends the truncation notice
+
+### `Lifecycle` — manifest and cleanup (`src/lifecycle/`) _(v0.5)_
+
+Two modules:
+
+- `manifest.ts` — `readManifest()`, `writeManifest()`, `manifestPath()` and the `LatticeManifest` / `EntityContextManifestEntry` types
+- `cleanup.ts` — `cleanupEntityContexts()` and the `CleanupOptions` / `CleanupResult` types
+
+The manifest (`{outputDir}/.lattice/manifest.json`) is the single source of truth for what Lattice generated. It is written atomically after every render cycle that includes entity contexts and read by the cleanup step to determine orphans.
 
 ### `SyncLoop` — polling loop (`src/sync/loop.ts`)
 
 Wraps `RenderEngine` in a `setInterval` polling loop. Responsibilities:
 
 - `watch(outputDir, opts)` — starts the loop, returns a `StopFn`
-- Calls `onRender` and `onError` callbacks per cycle
+- Reads the previous manifest before each render cycle when `opts.cleanup` is set (v0.5)
+- Calls `engine.cleanup()` after each render cycle when `opts.cleanup` is set (v0.5)
+- Calls `onRender`, `onError`, and `onCleanup` callbacks per cycle
 
 ### `WritebackPipeline` — agent-to-db writes (`src/writeback/pipeline.ts`)
 
@@ -181,7 +220,38 @@ db.render(outputDir) / SyncLoop (watch)
         → call def.keys() for anchor rows
         → for each anchor: query tables, call def.render(key, tables)
         → write files
+    → _renderEntityContexts(outputDir):        ← v0.5
+        → for each entity context definition:
+            → render index file (if defined)
+            → for each entity row:
+                → derive slug → entity subdirectory
+                → for each EntityFileSpec:
+                    → resolveEntitySource(source, row, pk, adapter)
+                    → call spec.render(rows)
+                    → apply budget truncation (if defined)
+                    → skip write if omitIfEmpty and rows empty
+                    → write file if content changed
+                → write combined file (if defined)
+        → writeManifest(outputDir, manifest)
   → return RenderResult
+```
+
+### Reconcile flow _(v0.5)_
+
+```
+db.reconcile(outputDir, options)
+  → prevManifest = readManifest(outputDir)   ← read BEFORE render
+  → RenderEngine.render(outputDir)           ← writes new manifest
+  → newManifest = readManifest(outputDir)
+  → cleanupEntityContexts(
+      outputDir,
+      entityContexts,
+      currentSlugsByTable,       ← fresh DB query
+      prevManifest,
+      options,
+      newManifest                ← used to detect omitIfEmpty-skipped files
+    )
+  → return ReconcileResult { ...renderResult, cleanup: CleanupResult }
 ```
 
 ### Sync flow
@@ -209,6 +279,10 @@ db.sync(outputDir)
 
 **Relation resolution happens in-process.** When a `belongsTo` relation is referenced in a `{{rel.field}}` token, Lattice issues a `SELECT` for each row via the adapter. This is intentionally simple — N+1 for N rows. For tables with thousands of rows this could be slow, but Lattice is designed for small-to-medium context tables (dozens to hundreds of rows), not analytics workloads.
 
+**Manifest-driven cleanup.** Lattice never scans the output directory for files it does not recognise. Instead it only removes files and directories it previously recorded in the manifest. This means files created by agents or other tools in entity directories are never touched — unless they happen to match a filename Lattice manages, which is why `protectedFiles` exists as an escape valve.
+
+**Render before cleanup.** `reconcile()` always runs the render cycle first, writing a new manifest, before running cleanup. This ensures the cleanup step has both the previous state (what to remove) and the current state (what is still being written) and can correctly detect `omitIfEmpty` files that were skipped this cycle but existed before.
+
 ---
 
 ## Package structure
@@ -229,10 +303,15 @@ src/
 ├── schema/
 │   └── manager.ts        # SchemaManager
 ├── render/
-│   ├── engine.ts         # RenderEngine
-│   └── templates.ts      # Built-in templates + compileRender + interpolate
+│   ├── engine.ts         # RenderEngine (+ entity context rendering, v0.5)
+│   ├── templates.ts      # Built-in templates + compileRender + interpolate
+│   └── entity-query.ts   # resolveEntitySource + truncateContent (v0.5)
+├── lifecycle/             # v0.5
+│   ├── index.ts          # Barrel export
+│   ├── manifest.ts       # readManifest / writeManifest / manifestPath
+│   └── cleanup.ts        # cleanupEntityContexts + CleanupOptions/Result
 ├── sync/
-│   └── loop.ts           # SyncLoop
+│   └── loop.ts           # SyncLoop (+ cleanup integration, v0.5)
 ├── writeback/
 │   └── pipeline.ts       # WritebackPipeline
 └── security/
@@ -240,10 +319,13 @@ src/
 
 tests/
 ├── unit/
-│   ├── config.test.ts    # parseConfigFile / parseConfigString
-│   ├── codegen.test.ts   # generateTypes / generateMigration + integration
-│   ├── lattice.test.ts   # Core CRUD / query / render tests
-│   └── ...
+│   ├── config.test.ts        # parseConfigFile / parseConfigString
+│   ├── codegen.test.ts       # generateTypes / generateMigration + integration
+│   ├── lattice.test.ts       # Core CRUD / query / render tests
+│   └── entity-query.test.ts  # resolveEntitySource unit tests (v0.5)
+├── integration/
+│   ├── entity-context.test.ts # defineEntityContext() flow (v0.5)
+│   └── lifecycle.test.ts      # reconcile() + cleanup (v0.5)
 └── fixtures/
     └── lattice.config.yml
 ```

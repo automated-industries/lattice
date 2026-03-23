@@ -145,6 +145,86 @@ db.defineMulti('agent-context', {
 
 ---
 
+#### `defineEntityContext(table, definition): this`
+
+Register an entity context definition for a table. Must be called **before** `init()`. Returns `this` for chaining.
+
+```ts
+db.defineEntityContext('agent', {
+  slug: (row) => row.slug as string,
+  index: {
+    outputFile: 'AGENTS.md',
+    render: (rows) => rows.map((r) => `- [${r.name}](${r.slug}/)`).join('\n'),
+  },
+  files: [
+    {
+      filename: 'AGENT.md',
+      source: { type: 'self' },
+      render: (rows) => `# ${rows[0]?.name}\n\n${rows[0]?.bio ?? ''}`,
+    },
+    {
+      filename: 'TASKS.md',
+      source: { type: 'hasMany', table: 'task', foreignKey: 'agent_id' },
+      render: (rows) => rows.map((r) => `- [ ] ${r.title}`).join('\n'),
+      omitIfEmpty: true,
+    },
+    {
+      filename: 'SKILLS.md',
+      source: {
+        type: 'manyToMany',
+        junctionTable: 'agent_skill',
+        localKey: 'agent_id',
+        remoteKey: 'skill_id',
+        remoteTable: 'skill',
+      },
+      render: (rows) => rows.map((r) => `- ${r.name}`).join('\n'),
+      omitIfEmpty: true,
+    },
+  ],
+  combined: {
+    outputFile: 'CONTEXT.md',
+  },
+  directoryRoot: 'agents',
+  protectedFiles: ['SESSION.md'],
+});
+```
+
+**`EntityContextDefinition`** fields:
+
+| Field            | Type                                       | Required | Description                                                                        |
+| ---------------- | ------------------------------------------ | -------- | ---------------------------------------------------------------------------------- |
+| `slug`           | `(row: Row) => string`                     | yes      | Derive the per-entity directory name from the entity row                           |
+| `index`          | `{ outputFile, render }`                   | no       | A single index file written at the `directoryRoot` level listing all entities      |
+| `files`          | `EntityFileSpec[]`                         | yes      | One or more per-entity files to generate inside each entity's subdirectory         |
+| `combined`       | `{ outputFile, exclude? }`                 | no       | Concatenate all rendered files into a single combined file per entity              |
+| `directory`      | `(row: Row) => string`                     | no       | Override the default `{directoryRoot}/{slug}` directory path for an entity         |
+| `directoryRoot`  | `string`                                   | no       | Root directory Lattice owns; defaults to the table name. Used by orphan cleanup    |
+| `protectedFiles` | `string[]`                                 | no       | Filenames Lattice must never delete during orphan cleanup (e.g. `'SESSION.md'`)    |
+
+**`EntityFileSpec`** fields:
+
+| Field         | Type                              | Required | Description                                                          |
+| ------------- | --------------------------------- | -------- | -------------------------------------------------------------------- |
+| `filename`    | `string`                          | yes      | Output filename within the entity's subdirectory                     |
+| `source`      | `EntitySource`                    | yes      | How to query rows for this file (see source types below)             |
+| `render`      | `(rows: Row[]) => string`         | yes      | Render resolved rows to a string                                     |
+| `budget`      | `number`                          | no       | Max character count; truncated with a notice if exceeded             |
+| `omitIfEmpty` | `boolean`                         | no       | Skip writing the file if the source returns zero rows                |
+
+**Source types:**
+
+| Type          | Required fields                                           | Description                                            |
+| ------------- | --------------------------------------------------------- | ------------------------------------------------------ |
+| `self`        | _(none)_                                                  | The entity row itself (always exactly one row)         |
+| `hasMany`     | `table`, `foreignKey`                                     | Rows on a related table where `foreignKey = entity.PK` |
+| `manyToMany`  | `junctionTable`, `localKey`, `remoteKey`, `remoteTable`   | Rows from a remote table via a junction table          |
+| `belongsTo`   | `table`, `foreignKey`                                     | Single parent row: `related.PK = entity.foreignKey`    |
+| `custom`      | `query: (row, adapter) => Row[]`                          | Fully custom synchronous query                         |
+
+All source types accept an optional `references` field to override the default primary key column.
+
+---
+
 #### `defineWriteback(definition): this`
 
 Register a writeback pipeline: watch an agent-written file for new entries and persist them to the database.
@@ -388,15 +468,65 @@ console.log(
 
 ---
 
+#### `reconcile(outputDir, options?): Promise<ReconcileResult>`
+
+Run a full render cycle and then clean up orphaned files and directories produced by previous cycles. The recommended one-shot method when you want both rendering and lifecycle management.
+
+```ts
+const result = await db.reconcile('./context', {
+  removeOrphanedDirectories: true,
+  removeOrphanedFiles: true,
+});
+
+console.log(`Wrote ${result.filesWritten.length} files`);
+console.log(`Removed ${result.cleanup.directoriesRemoved} stale directories`);
+console.log(`Removed ${result.cleanup.filesRemoved} stale files`);
+```
+
+`reconcile()` reads the manifest written by the **previous** render cycle before rendering, then compares old and new manifests to detect what was generated before but not now. Order of operations:
+
+1. Read previous `.lattice/manifest.json` (if it exists)
+2. Run a full render cycle (writes a new manifest)
+3. Compare old vs. new manifest to identify orphans
+4. Delete orphaned directories / files according to `options`
+5. Return `ReconcileResult`
+
+**`ReconcileOptions`** (all optional):
+
+| Option                        | Type                                       | Default | Description                                                        |
+| ----------------------------- | ------------------------------------------ | ------- | ------------------------------------------------------------------ |
+| `removeOrphanedDirectories`   | `boolean`                                  | `false` | Delete directories for entities no longer in the database          |
+| `removeOrphanedFiles`         | `boolean`                                  | `false` | Delete files within surviving directories that were not re-rendered |
+| `protectedFiles`              | `string[]`                                 | `[]`    | Filenames to never delete (merged with per-definition protections) |
+| `dryRun`                      | `boolean`                                  | `false` | Report what would be deleted without deleting anything             |
+| `onOrphan`                    | `(path: string, kind: string) => void`     | –       | Called for each orphaned path before it is deleted                 |
+
+**`ReconcileResult`** extends `RenderResult` with:
+
+| Field     | Type            | Description                        |
+| --------- | --------------- | ---------------------------------- |
+| `cleanup` | `CleanupResult` | Orphan cleanup summary (see below) |
+
+---
+
 #### `watch(outputDir, options?): Promise<StopFn>`
 
 Start a polling sync loop. Returns a `StopFn` to stop it.
 
 ```ts
 const stop = await db.watch('./context', {
-  interval: 10_000, // poll every 10 seconds (default: 5000ms)
+  interval: 10_000,
   onRender: (result) => console.log('Rendered:', result.filesWritten),
   onError: (err) => console.error('Watch error:', err),
+  cleanup: {
+    removeOrphanedDirectories: true,
+    removeOrphanedFiles: true,
+  },
+  onCleanup: (result) => {
+    if (result.directoriesRemoved > 0 || result.filesRemoved > 0) {
+      console.log(`Cleaned up ${result.directoriesRemoved} dirs, ${result.filesRemoved} files`);
+    }
+  },
 });
 
 // Later:
@@ -405,11 +535,13 @@ stop();
 
 **`WatchOptions`:**
 
-| Option     | Type                             | Default | Description                               |
-| ---------- | -------------------------------- | ------- | ----------------------------------------- |
-| `interval` | `number`                         | `5000`  | Poll interval in milliseconds             |
-| `onRender` | `(result: RenderResult) => void` | –       | Called after each successful render cycle |
-| `onError`  | `(err: Error) => void`           | –       | Called on render errors                   |
+| Option      | Type                                   | Default | Description                                                        |
+| ----------- | -------------------------------------- | ------- | ------------------------------------------------------------------ |
+| `interval`  | `number`                               | `5000`  | Poll interval in milliseconds                                      |
+| `onRender`  | `(result: RenderResult) => void`       | –       | Called after each successful render cycle                          |
+| `onError`   | `(err: Error) => void`                 | –       | Called on render errors                                            |
+| `cleanup`   | `CleanupOptions`                       | –       | If set, orphan cleanup runs after each render cycle                |
+| `onCleanup` | `(result: CleanupResult) => void`      | –       | Called after each cleanup cycle (requires `cleanup` to be set)     |
 
 ---
 
@@ -523,6 +655,48 @@ entities:
 
 const { dbPath, tables } = parseConfigString(yaml, process.cwd());
 ```
+
+---
+
+### `readManifest(outputDir)`
+
+```ts
+function readManifest(outputDir: string): LatticeManifest | null;
+```
+
+Read the Lattice manifest from `{outputDir}/.lattice/manifest.json`. Returns `null` on first run (no manifest yet).
+
+```ts
+import { readManifest } from '@m-flat/lattice';
+
+const manifest = readManifest('./context');
+if (manifest) {
+  console.log('Last generated:', manifest.generated_at);
+  for (const [table, entry] of Object.entries(manifest.entityContexts)) {
+    console.log(`${table}: ${Object.keys(entry.entities).length} entities`);
+  }
+}
+```
+
+---
+
+### `writeManifest(outputDir, manifest)`
+
+```ts
+function writeManifest(outputDir: string, manifest: LatticeManifest): void;
+```
+
+Write the manifest atomically. Called automatically by `render()`, `sync()`, and `reconcile()` — you rarely need to call this directly.
+
+---
+
+### `manifestPath(outputDir)`
+
+```ts
+function manifestPath(outputDir: string): string;
+```
+
+Return the path where Lattice writes its manifest: `{outputDir}/.lattice/manifest.json`.
 
 ---
 
@@ -656,6 +830,8 @@ interface WatchOptions {
   interval?: number; // ms, default 5000
   onRender?: (result: RenderResult) => void;
   onError?: (err: Error) => void;
+  cleanup?: CleanupOptions;
+  onCleanup?: (result: CleanupResult) => void;
 }
 ```
 
@@ -836,3 +1012,199 @@ type StopFn = () => void;
 ```
 
 Returned by `watch()`. Call it to stop the polling loop.
+
+---
+
+### Entity Context types
+
+#### `EntityContextDefinition`
+
+```ts
+interface EntityContextDefinition {
+  slug: (row: Row) => string;
+  index?: {
+    outputFile: string;
+    render: (rows: Row[]) => string;
+  };
+  files: EntityFileSpec[];
+  combined?: {
+    outputFile: string;
+    exclude?: string[];
+  };
+  directory?: (row: Row) => string;
+  directoryRoot?: string;
+  protectedFiles?: string[];
+}
+```
+
+#### `EntityFileSpec`
+
+```ts
+interface EntityFileSpec {
+  filename: string;
+  source: EntitySource;
+  render: (rows: Row[]) => string;
+  budget?: number;
+  omitIfEmpty?: boolean;
+}
+```
+
+#### `EntitySource`
+
+```ts
+type EntitySource =
+  | SelfSource
+  | HasManySource
+  | ManyToManySource
+  | BelongsToSource
+  | CustomSource;
+
+interface SelfSource {
+  type: 'self';
+}
+
+interface HasManySource {
+  type: 'hasMany';
+  table: string;
+  foreignKey: string;
+  references?: string;
+}
+
+interface ManyToManySource {
+  type: 'manyToMany';
+  junctionTable: string;
+  localKey: string;
+  remoteKey: string;
+  remoteTable: string;
+  references?: string;
+}
+
+interface BelongsToSource {
+  type: 'belongsTo';
+  table: string;
+  foreignKey: string;
+  references?: string;
+}
+
+interface CustomSource {
+  type: 'custom';
+  query: (row: Row, adapter: StorageAdapter) => Row[];
+}
+```
+
+---
+
+### Lifecycle types
+
+#### `CleanupOptions`
+
+```ts
+interface CleanupOptions {
+  removeOrphanedDirectories?: boolean;
+  removeOrphanedFiles?: boolean;
+  protectedFiles?: string[];
+  dryRun?: boolean;
+  onOrphan?: (path: string, kind: 'directory' | 'file') => void;
+}
+```
+
+#### `CleanupResult`
+
+```ts
+interface CleanupResult {
+  directoriesRemoved: number;
+  filesRemoved: number;
+  directoriesSkipped: number;
+  warnings: string[];
+}
+```
+
+#### `ReconcileOptions`
+
+Identical to `CleanupOptions` — all fields are optional. Passed directly to the cleanup step inside `reconcile()`.
+
+#### `ReconcileResult`
+
+```ts
+interface ReconcileResult extends RenderResult {
+  cleanup: CleanupResult;
+}
+```
+
+---
+
+### Manifest types and functions
+
+#### `LatticeManifest`
+
+```ts
+interface LatticeManifest {
+  version: 1;
+  generated_at: string; // ISO 8601
+  entityContexts: Record<string, EntityContextManifestEntry>;
+}
+```
+
+Written to `.lattice/manifest.json` inside `outputDir` after every render cycle that includes entity contexts. The manifest is the authoritative record of what Lattice generated — it enables safe orphan cleanup across restarts.
+
+#### `EntityContextManifestEntry`
+
+```ts
+interface EntityContextManifestEntry {
+  directoryRoot: string;
+  indexFile?: string;
+  declaredFiles: string[];
+  protectedFiles: string[];
+  entities: Record<string, string[]>; // slug → [filenames written]
+}
+```
+
+#### `readManifest(outputDir)`
+
+```ts
+function readManifest(outputDir: string): LatticeManifest | null;
+```
+
+Read `.lattice/manifest.json` from `outputDir`. Returns `null` if the file does not exist (first run).
+
+#### `writeManifest(outputDir, manifest)`
+
+```ts
+function writeManifest(outputDir: string, manifest: LatticeManifest): void;
+```
+
+Write the manifest atomically (`.tmp` → rename). Called automatically by `render()` and `reconcile()` when entity contexts are registered.
+
+#### `manifestPath(outputDir)`
+
+```ts
+function manifestPath(outputDir: string): string;
+```
+
+Return the path to the manifest file: `{outputDir}/.lattice/manifest.json`.
+
+---
+
+### Internal exports (for testing)
+
+The following are exported from `@m-flat/lattice` to support integration testing but are not part of the stable public API:
+
+```ts
+function resolveEntitySource(
+  source: EntitySource,
+  entityRow: Row,
+  entityPk: string | string[],
+  adapter: StorageAdapter,
+): Row[];
+
+function truncateContent(content: string, budget?: number): string;
+
+function cleanupEntityContexts(
+  outputDir: string,
+  entityContexts: Record<string, EntityContextDefinition & { table: string }>,
+  currentSlugsByTable: Record<string, Set<string>>,
+  manifest: LatticeManifest | null,
+  options: CleanupOptions,
+  newManifest?: LatticeManifest,
+): CleanupResult;
+```
