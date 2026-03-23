@@ -80,6 +80,9 @@ export class Lattice {
     // Resolve config-file form: read YAML, extract dbPath, collect table defs
     let dbPath: string;
     let configTables: { name: string; definition: TableDefinition }[] | undefined;
+    let configEntityContexts:
+      | { table: string; definition: EntityContextDefinition }[]
+      | undefined;
 
     if (typeof pathOrConfig === 'string') {
       dbPath = pathOrConfig;
@@ -87,6 +90,7 @@ export class Lattice {
       const parsed = parseConfigFile(pathOrConfig.config);
       dbPath = parsed.dbPath;
       configTables = [...parsed.tables];
+      configEntityContexts = [...parsed.entityContexts];
       // Config-level options merge under any explicit options passed in
       if (pathOrConfig.options) {
         options = { ...pathOrConfig.options, ...options };
@@ -111,6 +115,13 @@ export class Lattice {
     if (configTables) {
       for (const { name, definition } of configTables) {
         this.define(name, definition);
+      }
+    }
+
+    // Register entity contexts declared in the YAML config
+    if (configEntityContexts) {
+      for (const { table, definition } of configEntityContexts) {
+        this.defineEntityContext(table, definition);
       }
     }
   }
