@@ -316,6 +316,13 @@ export interface WatchOptions {
   interval?: number;
   onRender?: (result: RenderResult) => void;
   onError?: (err: Error) => void;
+  /**
+   * If set, runs orphan cleanup after each render cycle using the previous manifest.
+   * Safe to enable in long-running daemons — never removes protectedFiles.
+   */
+  cleanup?: import('./lifecycle/cleanup.js').CleanupOptions;
+  /** Called after each cleanup cycle (only when cleanup option is set). */
+  onCleanup?: (result: import('./lifecycle/cleanup.js').CleanupResult) => void;
 }
 
 export interface RenderResult {
@@ -357,3 +364,27 @@ export type {
   EntityFileSpec,
   EntityContextDefinition,
 } from './schema/entity-context.js';
+
+// ---------------------------------------------------------------------------
+// Lifecycle management (v0.5+)
+// ---------------------------------------------------------------------------
+
+export type { CleanupOptions, CleanupResult } from './lifecycle/cleanup.js';
+import type { CleanupResult } from './lifecycle/cleanup.js';
+
+export interface ReconcileOptions {
+  /** Remove entity directories whose slug is no longer in the DB. Default: true. */
+  removeOrphanedDirectories?: boolean;
+  /** Remove files inside entity dirs that are no longer declared. Default: true. */
+  removeOrphanedFiles?: boolean;
+  /** Additional globally protected files. */
+  protectedFiles?: string[];
+  /** Report orphans but do not delete anything. */
+  dryRun?: boolean;
+  /** Called for each orphan before removal. */
+  onOrphan?: (path: string, kind: 'directory' | 'file') => void;
+}
+
+export interface ReconcileResult extends RenderResult {
+  cleanup: CleanupResult;
+}
