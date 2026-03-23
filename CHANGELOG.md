@@ -6,6 +6,70 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.5.0] — 2026-03-23
+
+### Added
+
+**Entity Context Directories**
+
+A new high-level API for generating parallel file-system trees that mirror your database schema — one directory per entity, one file per relationship type, and an optional combined context file per entity. Replaces ad-hoc `defineMulti()` patterns for per-entity context generation.
+
+- `defineEntityContext(table, def)` — new `Lattice` method, must be called before `init()`. Returns `this` for chaining.
+- `EntityContextDefinition` — top-level config type: `slug`, `index?`, `files`, `combined?`, `directory?`, `directoryRoot?`, `protectedFiles?`
+- `EntityFileSpec` — per-file spec: `source`, `render`, `budget?`, `omitIfEmpty?`
+- Five source types for per-file row resolution:
+  - `SelfSource` (`{ type: 'self' }`) — entity row itself
+  - `HasManySource` (`{ type: 'hasMany', table, foreignKey, references? }`) — rows on a related table pointing back
+  - `ManyToManySource` (`{ type: 'manyToMany', junctionTable, localKey, remoteKey, remoteTable, references? }`) — rows from a remote table via a junction table
+  - `BelongsToSource` (`{ type: 'belongsTo', table, foreignKey, references? }`) — single parent row via FK on this entity
+  - `CustomSource` (`{ type: 'custom', query: (row, adapter) => Row[] }`) — fully custom query
+- `resolveEntitySource(source, entityRow, entityPk, adapter)` — internal resolver (exported for testing)
+- `truncateContent(content, budget?)` — truncates at `budget` characters with a `*[truncated — context budget exceeded]*` notice
+- `combined` option — concatenates all rendered files with `\n\n---\n\n` dividers into a single combined file per entity, respecting an `exclude` list
+- `omitIfEmpty` flag — skip writing a file when the source returns zero rows
+- `budget` — per-file character limit with truncation notice
+- `directoryRoot` — top-level directory owned by the entity context (defaults to table name); used by orphan cleanup
+- `protectedFiles` — filenames Lattice must never delete during cleanup (e.g. `SESSION.md`)
+- `directory(row)` — optional custom directory path function (overrides default `{directoryRoot}/{slug}` pattern)
+
+**Lifecycle Management**
+
+Tracks what Lattice has generated and removes orphaned files/directories when entities are deleted or definitions change.
+
+- `reconcile(outputDir, options?)` — new `Lattice` method: runs a full render cycle then cleans up orphans. Returns `ReconcileResult` (`RenderResult` + `CleanupResult`)
+- `ReconcileOptions` / `ReconcileResult` — new types
+- `WatchOptions.cleanup?: CleanupOptions` — if set, the watch loop reads the previous manifest before each render and runs orphan cleanup after
+- `WatchOptions.onCleanup?: (result: CleanupResult) => void` — callback fired after each cleanup cycle in watch mode
+- `CleanupOptions` — `{ removeOrphanedDirectories?, removeOrphanedFiles?, protectedFiles?, dryRun?, onOrphan? }`
+- `CleanupResult` — `{ directoriesRemoved, filesRemoved, directoriesSkipped, warnings }`
+- `cleanupEntityContexts(outputDir, entityContexts, currentSlugsByTable, manifest, options, newManifest?)` — internal cleanup function (exported)
+
+**Manifest**
+
+After every render cycle that includes entity contexts, Lattice writes `.lattice/manifest.json` inside `outputDir`. The manifest is the authoritative record of what Lattice generated — it is what enables safe orphan cleanup.
+
+- `readManifest(outputDir)` — read `.lattice/manifest.json`; returns `LatticeManifest | null`
+- `writeManifest(outputDir, manifest)` — write the manifest atomically
+- `manifestPath(outputDir)` — return the path to the manifest file
+- `LatticeManifest` — `{ version: 1, generated_at, entityContexts: Record<string, EntityContextManifestEntry> }`
+- `EntityContextManifestEntry` — `{ directoryRoot, indexFile?, declaredFiles, protectedFiles, entities: Record<slug, string[]> }`
+
+**Documentation**
+
+- `docs/entity-context.md` — complete guide to entity context directories
+- Updated `docs/api-reference.md` — all v0.5 types and methods
+- Updated `docs/architecture.md` — lifecycle module, manifest, cleanup
+- Updated `README.md` — entity context and lifecycle sections
+
+### Changed
+
+- `package.json` version → `0.5.0`
+- `RenderEngine._renderEntityContexts()` now returns `Record<string, EntityContextManifestEntry>` and manifests are written after each render cycle that includes entity contexts
+- `SyncLoop.watch()` reads the previous manifest before render and calls `RenderEngine.cleanup()` after render when `WatchOptions.cleanup` is set
+- `Lattice.reconcile()` reads previous manifest, renders (writing new manifest), then compares old vs new manifest to detect orphans
+
+---
+
 ## [0.4.0] — 2026-03-22
 
 ### Added
