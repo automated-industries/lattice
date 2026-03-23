@@ -332,6 +332,348 @@ entities:
 });
 
 // ---------------------------------------------------------------------------
+// entityContexts parsing — unit tests
+// ---------------------------------------------------------------------------
+
+describe('parseConfigString() — entityContexts', () => {
+  const configDir = '/fake/project';
+
+  const baseYaml = `
+db: ./app.db
+entities:
+  agent:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      slug: { type: text }
+      name: { type: text }
+    render: default-list
+    outputFile: agents.md
+`;
+
+  it('returns empty array when entityContexts key is absent', () => {
+    const result = parseConfigString(baseYaml, configDir);
+    expect(result.entityContexts).toEqual([]);
+  });
+
+  it('parses a single entity context with self source', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-detail
+`;
+    const result = parseConfigString(yaml, configDir);
+    expect(result.entityContexts).toHaveLength(1);
+    expect(result.entityContexts[0]?.table).toBe('agent');
+    const def = result.entityContexts[0]!.definition;
+    expect(def.files['AGENT.md']).toBeDefined();
+    expect(def.files['AGENT.md']!.source).toEqual({ type: 'self' });
+    expect(def.files['AGENT.md']!.render).toBeTypeOf('function');
+  });
+
+  it('extracts slug field from {{field}} template', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-list
+`;
+    const result = parseConfigString(yaml, configDir);
+    const slugFn = result.entityContexts[0]!.definition.slug;
+    expect(slugFn({ slug: 'alpha', name: 'Alpha' })).toBe('alpha');
+  });
+
+  it('parses hasMany source', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      TASKS.md:
+        source:
+          type: hasMany
+          table: tasks
+          foreignKey: agent_id
+        template: default-list
+`;
+    const result = parseConfigString(yaml, configDir);
+    const source = result.entityContexts[0]!.definition.files['TASKS.md']!.source;
+    expect(source).toMatchObject({ type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' });
+  });
+
+  it('parses hasMany source with references', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      TASKS.md:
+        source:
+          type: hasMany
+          table: tasks
+          foreignKey: agent_id
+          references: agent_slug
+        template: default-list
+`;
+    const result = parseConfigString(yaml, configDir);
+    const source = result.entityContexts[0]!.definition.files['TASKS.md']!.source;
+    expect(source).toMatchObject({
+      type: 'hasMany',
+      table: 'tasks',
+      foreignKey: 'agent_id',
+      references: 'agent_slug',
+    });
+  });
+
+  it('parses manyToMany source', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      SKILLS.md:
+        source:
+          type: manyToMany
+          junctionTable: agent_skills
+          localKey: agent_id
+          remoteKey: skill_id
+          remoteTable: skills
+        template: default-list
+        omitIfEmpty: true
+`;
+    const result = parseConfigString(yaml, configDir);
+    const spec = result.entityContexts[0]!.definition.files['SKILLS.md']!;
+    expect(spec.source).toMatchObject({
+      type: 'manyToMany',
+      junctionTable: 'agent_skills',
+      localKey: 'agent_id',
+      remoteKey: 'skill_id',
+      remoteTable: 'skills',
+    });
+    expect(spec.omitIfEmpty).toBe(true);
+  });
+
+  it('parses belongsTo source', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      ORG.md:
+        source:
+          type: belongsTo
+          table: orgs
+          foreignKey: org_id
+        template: default-detail
+`;
+    const result = parseConfigString(yaml, configDir);
+    const source = result.entityContexts[0]!.definition.files['ORG.md']!.source;
+    expect(source).toMatchObject({ type: 'belongsTo', table: 'orgs', foreignKey: 'org_id' });
+  });
+
+  it('passes through budget', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-detail
+        budget: 4000
+`;
+    const result = parseConfigString(yaml, configDir);
+    expect(result.entityContexts[0]!.definition.files['AGENT.md']!.budget).toBe(4000);
+  });
+
+  it('passes through omitIfEmpty', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      EVENTS.md:
+        source:
+          type: hasMany
+          table: events
+          foreignKey: agent_id
+        template: default-list
+        omitIfEmpty: true
+`;
+    const result = parseConfigString(yaml, configDir);
+    expect(result.entityContexts[0]!.definition.files['EVENTS.md']!.omitIfEmpty).toBe(true);
+  });
+
+  it('parses directoryRoot and protectedFiles', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    directoryRoot: agents
+    protectedFiles:
+      - SESSION.md
+      - NOTES.md
+    files:
+      AGENT.md:
+        source: self
+        template: default-list
+`;
+    const result = parseConfigString(yaml, configDir);
+    const def = result.entityContexts[0]!.definition;
+    expect(def.directoryRoot).toBe('agents');
+    expect(def.protectedFiles).toEqual(['SESSION.md', 'NOTES.md']);
+  });
+
+  it('parses index spec', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    index:
+      outputFile: agents/AGENTS.md
+      render: default-table
+    files:
+      AGENT.md:
+        source: self
+        template: default-list
+`;
+    const result = parseConfigString(yaml, configDir);
+    const def = result.entityContexts[0]!.definition;
+    expect(def.index).toBeDefined();
+    expect(def.index!.outputFile).toBe('agents/AGENTS.md');
+    expect(def.index!.render).toBeTypeOf('function');
+  });
+
+  it('parses combined spec', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-list
+    combined:
+      outputFile: CONTEXT.md
+      exclude:
+        - CONTEXT.md
+`;
+    const result = parseConfigString(yaml, configDir);
+    const def = result.entityContexts[0]!.definition;
+    expect(def.combined).toBeDefined();
+    expect(def.combined!.outputFile).toBe('CONTEXT.md');
+    expect(def.combined!.exclude).toEqual(['CONTEXT.md']);
+  });
+
+  it('render function for default-list produces bullet list', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-list
+`;
+    const result = parseConfigString(yaml, configDir);
+    const renderFn = result.entityContexts[0]!.definition.files['AGENT.md']!.render;
+    const output = renderFn([{ name: 'Alpha', slug: 'alpha' }]);
+    expect(output).toContain('- ');
+    expect(output).toContain('name: Alpha');
+  });
+
+  it('render function for default-table produces markdown table', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-table
+`;
+    const result = parseConfigString(yaml, configDir);
+    const renderFn = result.entityContexts[0]!.definition.files['AGENT.md']!.render;
+    const output = renderFn([{ name: 'Alpha', slug: 'alpha' }]);
+    expect(output).toContain('| name | slug |');
+    expect(output).toContain('| Alpha | alpha |');
+  });
+
+  it('render function for default-json produces JSON', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-json
+`;
+    const result = parseConfigString(yaml, configDir);
+    const renderFn = result.entityContexts[0]!.definition.files['AGENT.md']!.render;
+    const output = renderFn([{ name: 'Alpha' }]);
+    expect(JSON.parse(output)).toEqual([{ name: 'Alpha' }]);
+  });
+
+  it('parses multiple entity contexts', () => {
+    const yaml =
+      baseYaml +
+      `
+entityContexts:
+  agent:
+    slug: "{{slug}}"
+    files:
+      AGENT.md:
+        source: self
+        template: default-list
+  project:
+    slug: "{{name}}"
+    files:
+      PROJECT.md:
+        source: self
+        template: default-detail
+`;
+    const result = parseConfigString(yaml, configDir);
+    expect(result.entityContexts).toHaveLength(2);
+    expect(result.entityContexts.map((ec) => ec.table)).toEqual(['agent', 'project']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseConfigFile — filesystem tests
 // ---------------------------------------------------------------------------
 
