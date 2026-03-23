@@ -29,17 +29,19 @@ Lattice has no opinions about your schema, your agents, or your file format. You
   - [Constructor](#constructor)
   - [define()](#definedefine)
   - [defineMulti()](#definemulti)
+  - [defineEntityContext()](#defineentitycontext-v05)
   - [defineWriteback()](#definewriteback)
   - [init() / close()](#init--close)
   - [CRUD operations](#crud-operations)
   - [Query operators](#query-operators)
-  - [Render, sync, and watch](#render-sync-and-watch)
+  - [Render, sync, watch, and reconcile](#render-sync-watch-and-reconcile)
   - [Events](#events)
   - [Raw DB access](#raw-db-access)
 - [Template rendering](#template-rendering)
   - [Built-in templates](#built-in-templates)
   - [Lifecycle hooks](#lifecycle-hooks)
   - [Field interpolation](#field-interpolation)
+- [Entity context directories (v0.5+)](#entity-context-directories-v05)
 - [YAML config (v0.4+)](#yaml-config-v04)
   - [lattice.config.yml reference](#latticeconfigyml-reference)
   - [Init from config](#init-from-config)
@@ -345,6 +347,88 @@ db.defineMulti('agent-context', {
 
 ---
 
+### `defineEntityContext()` (v0.5+)
+
+```typescript
+db.defineEntityContext(table: string, def: EntityContextDefinition): this
+```
+
+Generate a **parallel file-system tree** for an entity type — one subdirectory per row, one file per declared relationship, and an optional combined context file. Must be called before `init()`.
+
+```typescript
+db.defineEntityContext('agents', {
+  // Derive the subdirectory name for each entity
+  slug: (row) => row.slug as string,
+
+  // Global index file listing all entities
+  index: {
+    outputFile: 'agents/AGENTS.md',
+    render: (rows) => `# Agents\n\n${rows.map((r) => `- ${r.name as string}`).join('\n')}`,
+  },
+
+  // Files inside each entity's directory
+  files: {
+    'AGENT.md': {
+      source: { type: 'self' },                        // entity's own row
+      render: ([r]) => `# ${r.name as string}\n\n${r.bio as string ?? ''}`,
+    },
+    'TASKS.md': {
+      source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
+      render: (rows) => rows.map((r) => `- ${r.title as string}`).join('\n'),
+      omitIfEmpty: true,                               // skip if no tasks
+      budget: 4000,                                    // truncate at 4 000 chars
+    },
+    'SKILLS.md': {
+      source: {
+        type: 'manyToMany',
+        junctionTable: 'agent_skills',
+        localKey: 'agent_id',
+        remoteKey: 'skill_id',
+        remoteTable: 'skills',
+      },
+      render: (rows) => rows.map((r) => `- ${r.name as string}`).join('\n'),
+      omitIfEmpty: true,
+    },
+  },
+
+  // Concatenate all files into one combined context file per entity
+  combined: { outputFile: 'CONTEXT.md', exclude: [] },
+
+  // Files agents may write — Lattice never deletes these during cleanup
+  protectedFiles: ['SESSION.md'],
+});
+```
+
+**On each `render()` / `reconcile()` call this produces:**
+
+```
+context/
+├── agents/
+│   └── AGENTS.md               ← global index
+├── agents/alpha/
+│   ├── AGENT.md
+│   ├── TASKS.md                ← omitted when empty
+│   ├── SKILLS.md               ← omitted when empty
+│   └── CONTEXT.md              ← AGENT.md + TASKS.md + SKILLS.md combined
+└── agents/beta/
+    ├── AGENT.md
+    └── CONTEXT.md
+```
+
+**Source types:**
+
+| Type | What it queries |
+|---|---|
+| `{ type: 'self' }` | The entity row itself |
+| `{ type: 'hasMany', table, foreignKey, references? }` | Rows in `table` where `foreignKey = entityPk` |
+| `{ type: 'manyToMany', junctionTable, localKey, remoteKey, remoteTable, references? }` | Remote rows via a junction table |
+| `{ type: 'belongsTo', table, foreignKey, references? }` | Single parent row via FK on this entity (`null` FK → empty) |
+| `{ type: 'custom', query: (row, adapter) => Row[] }` | Fully custom synchronous query |
+
+See [docs/entity-context.md](./docs/entity-context.md) for the complete guide.
+
+---
+
 ### `defineWriteback()`
 
 ```typescript
@@ -589,7 +673,7 @@ const n = await db.count('tasks', {
 
 ---
 
-### Render, sync, and watch
+### Render, sync, watch, and reconcile
 
 #### `render()`
 
@@ -634,6 +718,63 @@ const stop = await db.watch('./context', {
 
 // Stop the loop later
 stop();
+```
+
+**With automatic orphan cleanup (v0.5+):**
+
+```typescript
+const stop = await db.watch('./context', {
+  interval: 10_000,
+  cleanup: {
+    removeOrphanedDirectories: true,  // delete dirs for deleted entities
+    removeOrphanedFiles: true,        // delete stale relationship files
+    protectedFiles: ['SESSION.md'],   // never delete these
+    dryRun: false,
+  },
+  onCleanup: (r) => {
+    if (r.directoriesRemoved.length > 0) {
+      console.log('removed orphaned dirs:', r.directoriesRemoved);
+    }
+  },
+});
+```
+
+#### `reconcile()` (v0.5+)
+
+```typescript
+await db.reconcile(outputDir: string, options?: ReconcileOptions): Promise<ReconcileResult>
+```
+
+One-shot render + orphan cleanup. Reads the previous manifest, renders all tables and entity contexts (writing a new manifest), then removes orphaned directories and files.
+
+```typescript
+const result = await db.reconcile('./context', {
+  removeOrphanedDirectories: true,
+  removeOrphanedFiles: true,
+  protectedFiles: ['SESSION.md'],
+  dryRun: false,                        // set true to preview without deleting
+  onOrphan: (path, kind) => console.log(`would remove ${kind}: ${path}`),
+});
+
+console.log(result.filesWritten);           // files written this cycle
+console.log(result.cleanup.directoriesRemoved);  // orphaned dirs removed
+console.log(result.cleanup.warnings);            // dirs left in place (user files)
+```
+
+`ReconcileResult` extends `RenderResult` with a `cleanup: CleanupResult` field:
+
+```typescript
+interface ReconcileResult {
+  filesWritten: string[];
+  filesSkipped: number;
+  durationMs: number;
+  cleanup: {
+    directoriesRemoved: string[];   // absolute paths
+    filesRemoved: string[];
+    directoriesSkipped: string[];   // had user files — left in place
+    warnings: string[];
+  };
+}
 ```
 
 ---
@@ -777,6 +918,83 @@ db.define('tickets', {
 - Unknown paths, `null`, and `undefined` all render as empty string
 - Non-string values are coerced with `String()`
 - Leading/trailing whitespace in token names is trimmed: `{{ name }}` works
+
+---
+
+## Entity context directories (v0.5+)
+
+`defineEntityContext()` is the high-level API for per-entity file generation — the pattern where each entity type gets its own directory tree, with a separate file for each relationship type.
+
+### Why use it instead of `defineMulti()`?
+
+`defineMulti()` produces one file per anchor entity but you manage queries yourself. `defineEntityContext()` declares the _structure_ — which tables to pull, how to render them, what budget to enforce — and Lattice handles all the querying, directory creation, hash-skip deduplication, and orphan cleanup.
+
+### Minimal example
+
+```typescript
+db.defineEntityContext('projects', {
+  slug: (r) => r.slug as string,
+  files: {
+    'PROJECT.md': {
+      source: { type: 'self' },
+      render: ([r]) => `# ${r.name as string}\n\n${r.description as string ?? ''}`,
+    },
+  },
+});
+```
+
+After `db.render('./ctx')` this creates:
+
+```
+ctx/
+└── projects/
+    ├── my-project/
+    │   └── PROJECT.md
+    └── another-project/
+        └── PROJECT.md
+```
+
+### Lifecycle — orphan cleanup
+
+When you delete an entity from the database the old directory becomes an orphan. Use `reconcile()` to clean it up:
+
+```typescript
+await db.delete('projects', 'old-id');
+
+const result = await db.reconcile('./ctx', {
+  removeOrphanedDirectories: true,
+  protectedFiles: ['NOTES.md'],   // agents wrote these — keep them
+});
+// result.cleanup.directoriesRemoved → ['/.../ctx/projects/old-project']
+```
+
+Lattice writes a `.lattice/manifest.json` inside `outputDir` after every render cycle — this is what `reconcile()` uses to know which directories it owns and what it previously wrote in each.
+
+### Protected files
+
+Declare files that agents write inside entity directories. Lattice will never delete them during cleanup:
+
+```typescript
+db.defineEntityContext('agents', {
+  slug: (r) => r.slug as string,
+  protectedFiles: ['SESSION.md', 'NOTES.md'],
+  files: { /* ... */ },
+});
+```
+
+If an entity is deleted and its directory still contains `SESSION.md`, Lattice removes only its own managed files, leaves the directory in place, and adds a warning to `CleanupResult.warnings`.
+
+### Reading the manifest
+
+```typescript
+import { readManifest } from '@m-flat/lattice';
+
+const manifest = readManifest('./ctx');
+// manifest?.entityContexts.agents.entities['alpha']
+// → ['AGENT.md', 'TASKS.md', 'CONTEXT.md']  (files written last cycle for agent 'alpha')
+```
+
+See [docs/entity-context.md](./docs/entity-context.md) for the complete reference.
 
 ---
 
@@ -1067,33 +1285,36 @@ const db = new Lattice('./app.db', {
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Lattice class                          │
-│  define() / defineMulti() / defineWriteback()               │
-│  CRUD: insert / upsert / upsertBy / update / delete         │
-│  Query: get / query / count                                 │
-│  Render: render / sync / watch                              │
-├────────────────┬──────────────────┬─────────────────────────┤
-│ SchemaManager  │  RenderEngine    │  WritebackPipeline      │
-│                │                  │                         │
-│ Stores table   │  Queries rows →  │  Watches output files   │
-│ definitions,   │  calls render()  │  for new agent-written  │
-│ PK registry,   │  → atomicWrite() │  content, calls         │
-│ relation map   │                  │  parse() + persist()    │
-├────────────────┴──────────────────┴─────────────────────────┤
-│                      SQLiteAdapter                          │
-│           (better-sqlite3 — synchronous I/O)                │
-└─────────────────────────────────────────────────────────────┘
-        │
-        │  compileRender() — called once at define()-time
-        ▼
-┌───────────────────────────────┐
-│  render/templates.ts          │
-│  • compileRender(spec)        │
-│  • _enrichRow() (belongsTo)   │
-│  • _renderList/Table/Detail   │
-│  • interpolate() {{field}}    │
-└───────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           Lattice class                              │
+│  define() / defineMulti() / defineEntityContext() / defineWriteback()│
+│  CRUD: insert / upsert / upsertBy / update / delete                  │
+│  Query: get / query / count                                          │
+│  Render: render / sync / watch / reconcile                           │
+├──────────────────┬──────────────────┬───────────────────────────────┤
+│  SchemaManager   │  RenderEngine    │  WritebackPipeline            │
+│                  │                  │                               │
+│ Stores table,    │ Queries rows →   │ Watches output files for      │
+│ multi-table, and │ render → atomic  │ new agent-written content,    │
+│ entity context   │ write. Writes    │ calls parse() + persist()     │
+│ definitions      │ manifest after   │                               │
+│                  │ entity contexts  │                               │
+├──────────────────┴──────────────────┴───────────────────────────────┤
+│                         SQLiteAdapter                                │
+│              (better-sqlite3 — synchronous I/O)                     │
+└──────────────────────────────────────────────────────────────────────┘
+        │                              │
+        │ compileRender()              │ lifecycle/
+        │ at define()-time             │ manifest.ts  ← readManifest/writeManifest
+        ▼                              │ cleanup.ts   ← cleanupEntityContexts
+┌────────────────────────┐            ▼
+│  render/templates.ts   │    ┌────────────────────────┐
+│  • compileRender(spec) │    │  render/entity-query.ts│
+│  • _enrichRow()        │    │  • resolveEntitySource │
+│  • renderList/Table/   │    │    (self/hasMany/m2m/  │
+│    Detail/Json         │    │     belongsTo/custom)  │
+│  • interpolate()       │    │  • truncateContent()   │
+└────────────────────────┘    └────────────────────────┘
 ```
 
 **Key design decisions:**
@@ -1102,6 +1323,7 @@ const db = new Lattice('./app.db', {
 - **Compile-time render** — `RenderSpec` is compiled to a plain `(rows: Row[]) => string` function at `define()`-time, not at render-time. `RenderEngine` stays unchanged.
 - **Atomic writes** — files are written to a `.tmp` sibling then renamed. No partial writes, no reader sees incomplete content.
 - **Schema-additive only** — Lattice never drops tables or columns automatically; it only adds missing ones.
+- **Manifest-driven cleanup** — `reconcile()` compares the previous manifest (what Lattice wrote last cycle) against the current DB state and the new manifest (what was written this cycle) to safely remove orphaned directories and stale files.
 
 See [docs/architecture.md](./docs/architecture.md) for a deeper walkthrough.
 
