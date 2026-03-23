@@ -324,6 +324,104 @@ describe('lifecycle: manifest + orphan cleanup', () => {
     db.close();
   });
 
+  // Scenario 5: file spec removed from definition — SKILLS.md removed on next reconcile
+  it('reconcile removes file when file spec is dropped from entity context definition', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'lattice-lc-sc5-'));
+    tmpDirs.push(tmpDir);
+    const dbPath = join(tmpDir, 'test.db');
+    const outputDir = tempDir();
+
+    // --- db1: full definition including SKILLS.md ---
+    const db1 = new Lattice(dbPath);
+
+    db1.define('agents', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', slug: 'TEXT NOT NULL' },
+      render: (rows) => rows.map((r) => `- ${r.name as string}`).join('\n'),
+      outputFile: 'agents.md',
+    });
+
+    db1.define('skills', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL' },
+      render: (rows) => rows.map((r) => `- ${r.name as string}`).join('\n'),
+      outputFile: 'skills.md',
+    });
+
+    db1.define('agent_skills', {
+      columns: { id: 'TEXT PRIMARY KEY', agent_id: 'TEXT NOT NULL', skill_id: 'TEXT NOT NULL' },
+      render: () => '',
+      outputFile: '_ignored.md',
+    });
+
+    db1.defineEntityContext('agents', {
+      slug: (r) => r.slug as string,
+      directoryRoot: 'agents',
+      files: {
+        'AGENT.md': {
+          source: { type: 'self' },
+          render: ([r]) => `# ${(r ?? {}).name as string}`,
+        },
+        'SKILLS.md': {
+          source: {
+            type: 'manyToMany',
+            junctionTable: 'agent_skills',
+            localKey: 'agent_id',
+            remoteKey: 'skill_id',
+            remoteTable: 'skills',
+          },
+          render: (rows) => rows.map((r) => `- ${r.name as string}`).join('\n'),
+        },
+      },
+    });
+
+    await db1.init();
+
+    await db1.insert('agents', { id: 'a1', name: 'Alpha', slug: 'alpha' });
+    await db1.insert('skills', { id: 's1', name: 'TypeScript' });
+    await db1.insert('agent_skills', { id: 'as1', agent_id: 'a1', skill_id: 's1' });
+
+    await db1.reconcile(outputDir);
+
+    // Verify initial state: SKILLS.md was written
+    expect(existsSync(join(outputDir, 'agents', 'alpha', 'SKILLS.md'))).toBe(true);
+    expect(existsSync(join(outputDir, 'agents', 'alpha', 'AGENT.md'))).toBe(true);
+
+    db1.close();
+
+    // --- db2: same DB file, but entity context WITHOUT SKILLS.md ---
+    const db2 = new Lattice(dbPath);
+
+    db2.define('agents', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', slug: 'TEXT NOT NULL' },
+      render: (rows) => rows.map((r) => `- ${r.name as string}`).join('\n'),
+      outputFile: 'agents.md',
+    });
+
+    db2.defineEntityContext('agents', {
+      slug: (r) => r.slug as string,
+      directoryRoot: 'agents',
+      files: {
+        'AGENT.md': {
+          source: { type: 'self' },
+          render: ([r]) => `# ${(r ?? {}).name as string}`,
+        },
+        // SKILLS.md intentionally omitted
+      },
+    });
+
+    await db2.init();
+
+    const result = await db2.reconcile(outputDir, { removeOrphanedFiles: true });
+
+    // SKILLS.md should be removed — it's in the manifest but no longer in the definition
+    expect(existsSync(join(outputDir, 'agents', 'alpha', 'SKILLS.md'))).toBe(false);
+    expect(result.cleanup.filesRemoved.some((f) => f.endsWith('SKILLS.md'))).toBe(true);
+
+    // AGENT.md should still be present — it's still declared
+    expect(existsSync(join(outputDir, 'agents', 'alpha', 'AGENT.md'))).toBe(true);
+
+    db2.close();
+  });
+
   // Bonus: reconcile returns RenderResult + cleanup combined
   it('reconcile result includes both render and cleanup data', async () => {
     const { db, outputDir } = await setupDb();
