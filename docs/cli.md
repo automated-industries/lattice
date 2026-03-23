@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `lattice` command-line tool for generating TypeScript types, SQL migrations, and scaffold files from a YAML config.
+The `lattice` command-line tool for generating TypeScript types, SQL migrations, scaffold files, and entity context directories from a YAML config.
 
 ---
 
@@ -9,6 +9,10 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
 - [Installation](#installation)
 - [Commands](#commands)
   - [`lattice generate`](#lattice-generate)
+  - [`lattice render`](#lattice-render)
+  - [`lattice reconcile`](#lattice-reconcile)
+  - [`lattice status`](#lattice-status)
+  - [`lattice watch`](#lattice-watch)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -80,6 +84,151 @@ lattice generate [options]
 | ---- | ----------------------------------------------------------------------- |
 | `0`  | Success                                                                 |
 | `1`  | Config file not found, YAML parse error, or missing required config key |
+
+---
+
+### `lattice render`
+
+One-shot context generation. Reads the config, connects to the database, and writes all entity context directories to the output directory.
+
+```sh
+lattice render [options]
+```
+
+**Options:**
+
+| Option            | Short | Default                | Description                                          |
+| ----------------- | ----- | ---------------------- | ---------------------------------------------------- |
+| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                         |
+| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files   |
+
+**Exit codes:**
+
+| Code | Meaning                               |
+| ---- | ------------------------------------- |
+| `0`  | Success                               |
+| `1`  | Config error or render failure        |
+
+**Example:**
+
+```sh
+lattice render --config ./lattice.config.yml --output ./context
+```
+
+```
+Rendered 6 files in 42ms
+  ✓ /project/context/agents/alpha/AGENT.md
+  ✓ /project/context/agents/alpha/SKILLS.md
+  ...
+```
+
+---
+
+### `lattice reconcile`
+
+Render + orphan cleanup. Writes entity context directories and then removes any orphaned entity directories and files that are no longer present in the database or declared in the config.
+
+```sh
+lattice reconcile [options]
+```
+
+**Options:**
+
+| Option               | Short | Default                | Description                                              |
+| -------------------- | ----- | ---------------------- | -------------------------------------------------------- |
+| `--config <path>`    | `-c`  | `./lattice.config.yml` | Path to the YAML config file                             |
+| `--output <dir>`     | –     | `./context`            | Output directory for rendered entity context files       |
+| `--dry-run`          | –     | off                    | Report orphans but do not delete anything                |
+| `--no-orphan-dirs`   | –     | off                    | Skip removal of orphaned entity directories              |
+| `--no-orphan-files`  | –     | off                    | Skip removal of orphaned files inside entity directories |
+| `--protected <csv>`  | –     | –                      | Comma-separated list of protected filenames              |
+
+**Exit codes:**
+
+| Code | Meaning                                    |
+| ---- | ------------------------------------------ |
+| `0`  | Success                                    |
+| `1`  | Config error, render failure, or warnings  |
+
+**Example:**
+
+```sh
+lattice reconcile --output ./context --protected SESSION.md
+```
+
+```
+Rendered 6 files in 38ms
+  ✓ /project/context/agents/alpha/AGENT.md
+Cleanup: removed 1 directories, 0 files
+  ✓ Removed /project/context/agents/beta
+```
+
+---
+
+### `lattice status`
+
+Dry-run reconcile — shows what would change without writing or deleting anything. Alias for `lattice reconcile --dry-run`.
+
+```sh
+lattice status [options]
+```
+
+**Options:**
+
+| Option            | Short | Default                | Description                                        |
+| ----------------- | ----- | ---------------------- | -------------------------------------------------- |
+| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                       |
+| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files |
+
+**Example:**
+
+```sh
+lattice status --output ./context
+```
+
+```
+DRY RUN — no changes made
+Rendered 6 files in 35ms
+Cleanup: removed 1 directories, 0 files
+```
+
+---
+
+### `lattice watch`
+
+Starts a polling loop that re-renders entity context directories on each interval. Optionally runs orphan cleanup after each render cycle.
+
+```sh
+lattice watch [options]
+```
+
+**Options:**
+
+| Option              | Short | Default                | Description                                                          |
+| ------------------- | ----- | ---------------------- | -------------------------------------------------------------------- |
+| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                                         |
+| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files                   |
+| `--interval <ms>`   | –     | `5000`                 | Poll interval in milliseconds                                        |
+| `--cleanup`         | –     | off                    | Enable orphan cleanup after each render cycle                        |
+| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories (requires `--cleanup`)   |
+| `--no-orphan-files` | –     | off                    | Skip removal of orphaned files inside entity dirs (requires `--cleanup`) |
+| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames (requires `--cleanup`)   |
+
+Sends `SIGINT` or `SIGTERM` to stop gracefully.
+
+**Example:**
+
+```sh
+lattice watch --config ./lattice.config.yml --output ./context --interval 3000 --cleanup --protected SESSION.md
+```
+
+```
+[10:42:00] Rendered 6 files in 41ms
+[10:42:03] Rendered 6 files in 38ms
+[10:42:06] Rendered 5 files in 39ms
+[10:42:06] Cleanup: removed 0 dirs, 1 files
+^C
+```
 
 ---
 
