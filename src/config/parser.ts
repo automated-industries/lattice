@@ -1,13 +1,24 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { parse } from 'yaml';
-import type { LatticeConfig, LatticeEntityDef, LatticeFieldDef } from './types.js';
+import type {
+  LatticeConfig,
+  LatticeEntityDef,
+  LatticeFieldDef,
+  LatticeEntityContextDef,
+  LatticeEntityContextSourceDef,
+} from './types.js';
 import type {
   TableDefinition,
   RenderSpec,
   BelongsToRelation,
   BuiltinTemplateName,
+  Row,
 } from '../types.js';
+import type {
+  EntityContextDefinition,
+  EntityFileSource,
+} from '../schema/entity-context.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -19,6 +30,8 @@ export interface ParsedConfig {
   dbPath: string;
   /** Table definitions in declaration order */
   tables: readonly { name: string; definition: TableDefinition }[];
+  /** Entity context definitions in declaration order */
+  entityContexts: readonly { table: string; definition: EntityContextDefinition }[];
 }
 
 /**
@@ -98,7 +111,9 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
     tables.push({ name: entityName, definition });
   }
 
-  return { dbPath, tables };
+  const entityContexts = parseEntityContexts(config.entityContexts);
+
+  return { dbPath, tables, entityContexts };
 }
 
 function entityToTableDef(
@@ -225,4 +240,136 @@ function parseEntityRender(render: LatticeEntityDef['render']): RenderSpec {
     };
   }
   return spec.template as BuiltinTemplateName;
+}
+
+// ---------------------------------------------------------------------------
+// Entity context parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a simple render function for a builtin template name.
+ * Used for entity context files where we don't have schema/adapter context.
+ */
+function renderFnForTemplate(templateName: string): (rows: Row[]) => string {
+  switch (templateName) {
+    case 'default-list':
+      return (rows: Row[]) => {
+        if (rows.length === 0) return '';
+        return rows
+          .map((row) =>
+            `- ${Object.entries(row)
+              .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
+              .join(', ')}`,
+          )
+          .join('\n');
+      };
+    case 'default-table':
+      return (rows: Row[]) => {
+        if (rows.length === 0) return '';
+        const firstRow = rows[0];
+        if (!firstRow) return '';
+        const headers = Object.keys(firstRow);
+        const headerRow = `| ${headers.join(' | ')} |`;
+        const separatorRow = `| ${headers.map(() => '---').join(' | ')} |`;
+        const bodyRows = rows
+          .map(
+            (row) =>
+              `| ${headers
+                .map((h) => {
+                  const v = row[h];
+                  return v == null ? '' : String(v as string | number | boolean);
+                })
+                .join(' | ')} |`,
+          )
+          .join('\n');
+        return [headerRow, separatorRow, bodyRows].join('\n');
+      };
+    case 'default-detail':
+      return (rows: Row[]) => {
+        if (rows.length === 0) return '';
+        return rows
+          .map((row) => {
+            const body = Object.entries(row)
+              .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
+              .join('\n');
+            return `## ${String(Object.values(row)[0] ?? '')}\n\n${body}`;
+          })
+          .join('\n\n---\n\n');
+      };
+    case 'default-json':
+      return (rows: Row[]) => JSON.stringify(rows, null, 2);
+    default:
+      return (rows: Row[]) => JSON.stringify(rows, null, 2);
+  }
+}
+
+/**
+ * Convert a YAML source spec to an EntityFileSource.
+ */
+function parseEntitySource(sourceDef: LatticeEntityContextSourceDef): EntityFileSource {
+  if (sourceDef === 'self') {
+    return { type: 'self' };
+  }
+  // Object forms already match the EntityFileSource interface
+  return sourceDef as EntityFileSource;
+}
+
+/**
+ * Extract the field name from a `{{fieldName}}` template string.
+ * Returns the raw string if it doesn't match the template pattern.
+ */
+function extractSlugField(slugTemplate: string): (row: Row) => string {
+  const match = /^\{\{(\w+)\}\}$/.exec(slugTemplate);
+  if (match?.[1]) {
+    const field = match[1];
+    return (row: Row) => row[field] as string;
+  }
+  // Fall back to using the whole string as a literal
+  return () => slugTemplate;
+}
+
+/**
+ * Parse the `entityContexts` section of a YAML config into
+ * `EntityContextDefinition` objects.
+ */
+export function parseEntityContexts(
+  entityContexts: Record<string, LatticeEntityContextDef> | undefined,
+): readonly { table: string; definition: EntityContextDefinition }[] {
+  if (!entityContexts) return [];
+
+  const result: { table: string; definition: EntityContextDefinition }[] = [];
+
+  for (const [tableName, ctxDef] of Object.entries(entityContexts)) {
+    const slugFn = extractSlugField(ctxDef.slug);
+
+    const files: EntityContextDefinition['files'] = {};
+    for (const [filename, fileDef] of Object.entries(ctxDef.files)) {
+      files[filename] = {
+        source: parseEntitySource(fileDef.source),
+        render: renderFnForTemplate(fileDef.template),
+        ...(fileDef.budget !== undefined ? { budget: fileDef.budget } : {}),
+        ...(fileDef.omitIfEmpty !== undefined ? { omitIfEmpty: fileDef.omitIfEmpty } : {}),
+      };
+    }
+
+    const definition: EntityContextDefinition = {
+      slug: slugFn,
+      files,
+      ...(ctxDef.directoryRoot !== undefined ? { directoryRoot: ctxDef.directoryRoot } : {}),
+      ...(ctxDef.protectedFiles !== undefined ? { protectedFiles: ctxDef.protectedFiles } : {}),
+      ...(ctxDef.index !== undefined
+        ? {
+            index: {
+              outputFile: ctxDef.index.outputFile,
+              render: renderFnForTemplate(ctxDef.index.render),
+            },
+          }
+        : {}),
+      ...(ctxDef.combined !== undefined ? { combined: ctxDef.combined } : {}),
+    };
+
+    result.push({ table: tableName, definition });
+  }
+
+  return result;
 }
