@@ -61,6 +61,9 @@ export class Lattice {
   private readonly _writeback: WritebackPipeline;
   private _initialized = false;
 
+  /** Cache of actual table columns (from PRAGMA), populated after init(). */
+  private readonly _columnCache = new Map<string, Set<string>>();
+
   private readonly _auditHandlers: EventHandler<AuditEvent>[] = [];
   private readonly _renderHandlers: EventHandler<RenderResult>[] = [];
   private readonly _writebackHandlers: EventHandler<{
@@ -142,6 +145,12 @@ export class Lattice {
     if (options.migrations?.length) {
       this._schema.applyMigrations(this._adapter, options.migrations);
     }
+    // Build column cache from actual PRAGMA after all migrations have run.
+    // This ensures migration-added columns are accepted by _filterToSchemaColumns.
+    for (const tableName of this._schema.getTables().keys()) {
+      const rows = this._adapter.all(`PRAGMA table_info("${tableName}")`);
+      this._columnCache.set(tableName, new Set(rows.map((r) => r.name as string)));
+    }
     this._initialized = true;
     return Promise.resolve();
   }
@@ -159,7 +168,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
 
-    const sanitized = this._sanitizer.sanitizeRow(row);
+    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
 
@@ -194,7 +203,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
 
-    const sanitized = this._sanitizer.sanitizeRow(row);
+    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
 
@@ -257,7 +266,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
-    const sanitized = this._sanitizer.sanitizeRow(row as Row);
+    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
     const setCols = Object.keys(sanitized)
       .map((c) => `"${c}" = ?`)
       .join(', ');
@@ -456,6 +465,21 @@ export class Lattice {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Filter a sanitized row to only include columns that actually exist in the
+   * table (verified via PRAGMA after init). Unregistered tables (accessed
+   * through the raw `.db` handle) are passed through unchanged.
+   *
+   * This is a defence-in-depth guard: column names from caller-supplied `row`
+   * objects are interpolated into SQL, so stripping unknown keys eliminates
+   * any theoretical injection vector from crafted object keys.
+   */
+  private _filterToSchemaColumns(table: string, row: Row): Row {
+    const cols = this._columnCache.get(table);
+    if (!cols) return row; // unregistered or pre-init — pass through
+    return Object.fromEntries(Object.entries(row).filter(([k]) => cols.has(k))) as Row;
+  }
 
   /**
    * Build the WHERE clause and params for a PK lookup.
