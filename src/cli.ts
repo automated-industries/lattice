@@ -22,6 +22,8 @@ interface ParsedArgs {
   noOrphanDirs: boolean;
   noOrphanFiles: boolean;
   protected: string[];
+  interval: number;
+  cleanup: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -36,6 +38,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   let noOrphanDirs = false;
   let noOrphanFiles = false;
   const protectedFiles: string[] = [];
+  let interval = 5000;
+  let cleanup = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -70,6 +74,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       i++;
       const csv = argv[i] ?? '';
       protectedFiles.push(...csv.split(',').filter(Boolean));
+    } else if (arg === '--interval' && i + 1 < argv.length) {
+      i++;
+      const parsed = parseInt(argv[i] ?? '5000', 10);
+      if (!isNaN(parsed)) interval = parsed;
+    } else if (arg === '--cleanup') {
+      cleanup = true;
     }
     i++;
   }
@@ -86,6 +96,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     noOrphanDirs,
     noOrphanFiles,
     protected: protectedFiles,
+    interval,
+    cleanup,
   };
 }
 
@@ -106,6 +118,7 @@ function printHelp(): void {
       '  render      One-shot context generation (writes entity context directories)',
       '  reconcile   Render + cleanup orphaned entity directories and files',
       '  status      Dry-run reconcile — show what would change without writing',
+      '  watch       Poll for changes and re-render on each cycle',
       '',
       'Options (generate):',
       '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
@@ -127,6 +140,15 @@ function printHelp(): void {
       'Options (status):',
       '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
       '  --output <dir>         Output directory for rendered context (default: ./context)',
+      '',
+      'Options (watch):',
+      '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
+      '  --output <dir>         Output directory for rendered context (default: ./context)',
+      '  --interval <ms>        Poll interval in milliseconds (default: 5000)',
+      '  --cleanup              Enable orphan cleanup after each render cycle',
+      '  --no-orphan-dirs       Skip removal of orphaned entity directories (with --cleanup)',
+      '  --no-orphan-files      Skip removal of orphaned files inside entity dirs (with --cleanup)',
+      '  --protected <csv>      Comma-separated list of protected filenames (with --cleanup)',
       '',
       'Options (global):',
       '  --help, -h             Show this help message',
@@ -283,6 +305,66 @@ async function runReconcile(args: ParsedArgs, isDryRun: boolean): Promise<void> 
   }
 }
 
+function formatTimestamp(): string {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+async function runWatch(args: ParsedArgs): Promise<void> {
+  const outputDir = resolve(args.output);
+
+  const db = new Lattice({ config: resolve(args.config) });
+
+  try {
+    await db.init();
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  }
+
+  const cleanupOpts: import('./types.js').CleanupOptions | undefined = args.cleanup
+    ? {
+        removeOrphanedDirectories: !args.noOrphanDirs,
+        removeOrphanedFiles: !args.noOrphanFiles,
+        ...(args.protected.length > 0 ? { protectedFiles: args.protected } : {}),
+      }
+    : undefined;
+
+  const stop = await db.watch(outputDir, {
+    interval: args.interval,
+    onRender: (result) => {
+      console.log(
+        `[${formatTimestamp()}] Rendered ${String(result.filesWritten.length)} files in ${String(result.durationMs)}ms`,
+      );
+    },
+    onError: (err) => {
+      console.error(`[${formatTimestamp()}] Error: ${err.message}`);
+    },
+    ...(cleanupOpts !== undefined ? { cleanup: cleanupOpts } : {}),
+    ...(cleanupOpts !== undefined
+      ? {
+          onCleanup: (result) => {
+            console.log(
+              `[${formatTimestamp()}] Cleanup: removed ${String(result.directoriesRemoved.length)} dirs, ${String(result.filesRemoved.length)} files`,
+            );
+          },
+        }
+      : {}),
+  });
+
+  const shutdown = (): void => {
+    stop();
+    db.close();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -312,6 +394,9 @@ function main(): void {
       break;
     case 'status':
       void runReconcile(args, true);
+      break;
+    case 'watch':
+      void runWatch(args);
       break;
     default:
       console.error(`Unknown command: ${args.command}`);
