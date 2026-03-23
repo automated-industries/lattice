@@ -37,4 +37,13 @@ export type {
   RenderHooks,
   TemplateRenderSpec,
   RenderSpec,
+  // v0.5 additions
+  SelfSource,
+  HasManySource,
+  ManyToManySource,
+  BelongsToSource,
+  CustomSource,
+  EntityFileSource,
+  EntityFileSpec,
+  EntityContextDefinition,
 } from './types.js';
