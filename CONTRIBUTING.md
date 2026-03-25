@@ -1,4 +1,4 @@
-# Contributing to @automated-industries/lattice
+# Contributing to latticesql
 
 Thank you for your interest in contributing. This document covers the development setup, workflow, and standards for the project.
 

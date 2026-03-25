@@ -135,7 +135,7 @@ Keep migrations in a dedicated file so they accumulate over time:
 
 ```ts
 // src/migrations.ts
-import type { Migration } from '@automated-industries/lattice';
+import type { Migration } from 'latticesql';
 
 export const migrations: Migration[] = [
   {
