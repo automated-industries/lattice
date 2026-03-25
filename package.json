@@ -1,5 +1,5 @@
 {
-  "name": "@m-flat/lattice",
+  "name": "@automated-industries/lattice",
   "version": "0.5.0",
   "description": "Persistent structured memory for AI agent systems — SQLite ↔ LLM context bridge",
   "type": "module",
@@ -68,11 +68,12 @@
     "sync"
   ],
   "license": "Apache-2.0",
+  "homepage": "https://latticeSQL.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/M-Flat-Inc/lattice.git"
+    "url": "https://github.com/automated-industries/lattice.git"
   },
   "bugs": {
-    "url": "https://github.com/M-Flat-Inc/lattice/issues"
+    "url": "https://github.com/automated-industries/lattice/issues"
   }
 }

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `@m-flat/lattice` are documented here.
+All notable changes to `@automated-industries/lattice` are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
@@ -112,7 +112,7 @@ After every render cycle that includes entity contexts, Lattice writes `.lattice
 - New `LatticeConfigInput` type: `{ config: string; options?: LatticeOptions }`
 - Constructor overload: `new Lattice({ config: './lattice.config.yml' })` reads the YAML file, resolves `dbPath`, and calls `define()` for each entity automatically
 
-**Exports added to `@m-flat/lattice`:**
+**Exports added to `@automated-industries/lattice`:**
 
 - `parseConfigFile`, `parseConfigString`, `ParsedConfig`
 - `LatticeConfigInput`
@@ -264,5 +264,5 @@ Initial release.
 
 **Exports**
 
-- All public types exported from `@m-flat/lattice`
+- All public types exported from `@automated-industries/lattice`
 - ESM + CJS dual build via tsup

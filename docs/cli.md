@@ -21,10 +21,10 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
 
 ## Installation
 
-The CLI is bundled with the `@m-flat/lattice` package:
+The CLI is bundled with the `@automated-industries/lattice` package:
 
 ```sh
-npm install @m-flat/lattice
+npm install @automated-industries/lattice
 ```
 
 After installation, the `lattice` binary is available via `npx`:
@@ -46,7 +46,7 @@ Or add it to `package.json` scripts:
 For global access:
 
 ```sh
-npm install -g @m-flat/lattice
+npm install -g @automated-industries/lattice
 lattice --help
 ```
 
