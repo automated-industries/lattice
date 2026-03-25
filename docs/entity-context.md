@@ -27,7 +27,7 @@ Without entity context directories, you'd build this with `defineMulti()` — on
 ## Basic Example
 
 ```ts
-import { Lattice } from '@automated-industries/lattice';
+import { Lattice } from 'latticesql';
 
 const db = new Lattice('./data/app.db');
 
@@ -358,7 +358,7 @@ Files listed in `protectedFiles` (at the definition level or passed via `Cleanup
 ## Reading the manifest directly
 
 ```ts
-import { readManifest, manifestPath } from '@automated-industries/lattice';
+import { readManifest, manifestPath } from 'latticesql';
 
 const manifest = readManifest('./context');
 if (manifest) {

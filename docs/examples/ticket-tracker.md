@@ -1,6 +1,6 @@
 # Example: Ticket Tracker
 
-A complete example showing how to build a simple ticket tracker with `@automated-industries/lattice` — users, tickets, comments, and automatic Markdown context generation.
+A complete example showing how to build a simple ticket tracker with `latticesql` — users, tickets, comments, and automatic Markdown context generation.
 
 ---
 
@@ -126,7 +126,7 @@ export interface Comment {
 
 ```ts
 // src/db.ts
-import { Lattice } from '@automated-industries/lattice';
+import { Lattice } from 'latticesql';
 
 export const db = new Lattice({
   config: './lattice.config.yml',
