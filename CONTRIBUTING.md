@@ -1,4 +1,4 @@
-# Contributing to latticesql
+# Contributing to @automated-industries/lattice
 
 Thank you for your interest in contributing. This document covers the development setup, workflow, and standards for the project.
 
@@ -165,4 +165,4 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 Breaking changes require a migration guide in `docs/` and a prominent `CHANGELOG.md` entry.
 
-Current version: **0.4.0** (YAML schema config + `lattice generate` CLI).
+Current version: **0.5.0** (entity context directories, lifecycle management, full CLI).
