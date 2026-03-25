@@ -108,7 +108,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 function printHelp(): void {
   console.log(
     [
-      'lattice — latticesql CLI',
+      'lattice — @automated-industries/lattice CLI',
       '',
       'Usage:',
       '  lattice <command> [options]',

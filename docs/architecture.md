@@ -1,6 +1,6 @@
 # Architecture Overview
 
-How `latticesql` is structured internally and the design decisions behind it.
+How `@automated-industries/lattice` is structured internally and the design decisions behind it.
 
 ---
 
