@@ -44,6 +44,7 @@ Lattice has no opinions about your schema, your agents, or your file format. You
   - [Lifecycle hooks](#lifecycle-hooks)
   - [Field interpolation](#field-interpolation)
 - [Entity context directories (v0.5+)](#entity-context-directories-v05)
+- [SESSION.md write pattern](#sessionmd-write-pattern)
 - [YAML config (v0.4+)](#yaml-config-v04)
   - [lattice.config.yml reference](#latticeconfigyml-reference)
   - [Init from config](#init-from-config)
@@ -997,6 +998,78 @@ const manifest = readManifest('./ctx');
 ```
 
 See [docs/entity-context.md](./docs/entity-context.md) for the complete reference.
+
+---
+
+## SESSION.md write pattern
+
+When agents run in a directory-based context system (e.g., one directory per agent with generated Markdown files), SESSION.md provides a **safe write interface** that enforces a clean read/write separation:
+
+```
+READ:  Lattice DB → render() → object MDs (READ ONLY for agents)
+WRITE: Agent → SESSION.md → processor → validates → Lattice DB
+```
+
+All generated context files carry a read-only header so agents know not to edit them directly. SESSION.md is the only writable file in the directory.
+
+### Write entry format
+
+```
+---
+id: 2026-03-25T10:30:00Z-agent-abc123
+type: write
+timestamp: 2026-03-25T10:30:00Z
+op: update
+table: agents
+target: agent-id-here
+reason: Updating status after deployment completed.
+---
+status: active
+last_task: piut-deploy
+===
+```
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `type` | Yes | Must be `write` |
+| `timestamp` | Yes | ISO 8601 |
+| `op` | Yes | `create`, `update`, or `delete` |
+| `table` | Yes | Target table name |
+| `target` | For update/delete | Record primary key |
+| `reason` | Encouraged | Human-readable reason (audit trail) |
+
+**Body**: `key: value` pairs — one field per line. Field names are validated against the table schema before any write is applied.
+
+### Library support
+
+`latticesql` exports a parser for the SESSION.md write format:
+
+```ts
+import { parseSessionWrites } from 'latticesql';
+
+const result = parseSessionWrites(sessionFileContent);
+// result.entries: SessionWriteEntry[]
+// result.errors:  Array<{ line: number; message: string }>
+
+for (const entry of result.entries) {
+  console.log(entry.op, entry.table, entry.target, entry.fields);
+}
+```
+
+**`SessionWriteEntry`:**
+```ts
+interface SessionWriteEntry {
+  id: string;                       // content-addressed ID
+  timestamp: string;                // ISO 8601
+  op: 'create' | 'update' | 'delete';
+  table: string;
+  target?: string;                  // required for update/delete
+  reason?: string;
+  fields: Record<string, string>;  // empty for delete
+}
+```
+
+The processor is responsible for applying the parsed entries to your DB and validating field names against your schema. The `parseSessionWrites` function is pure — no DB access, no side effects.
 
 ---
 
