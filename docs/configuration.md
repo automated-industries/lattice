@@ -310,7 +310,7 @@ entities:
 You can use the parser directly without going through the `Lattice` constructor:
 
 ```ts
-import { parseConfigFile, parseConfigString } from '@m-flat/lattice';
+import { parseConfigFile, parseConfigString } from '@automated-industries/lattice';
 
 // From a file:
 const { dbPath, tables } = parseConfigFile('./lattice.config.yml');
