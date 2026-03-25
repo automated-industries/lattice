@@ -330,6 +330,13 @@ export class Lattice {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
 
+    const colErr = this._invalidColumnError<Row[]>(table, [
+      ...Object.keys(opts.where ?? {}),
+      ...(opts.filters ?? []).map((f) => f.col),
+      ...(opts.orderBy ? [opts.orderBy] : []),
+    ]);
+    if (colErr) return colErr;
+
     let sql = `SELECT * FROM "${table}"`;
     const params: unknown[] = [];
     const whereClauses: string[] = [];
@@ -370,6 +377,12 @@ export class Lattice {
   count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
+
+    const colErr = this._invalidColumnError<number>(table, [
+      ...Object.keys(opts.where ?? {}),
+      ...(opts.filters ?? []).map((f) => f.col),
+    ]);
+    if (colErr) return colErr;
 
     let sql = `SELECT COUNT(*) as n FROM "${table}"`;
     const params: unknown[] = [];
@@ -614,6 +627,30 @@ export class Lattice {
       return Promise.reject(
         new Error('Lattice: call await db.init() before using CRUD or sync methods'),
       );
+    }
+    return null;
+  }
+
+  /**
+   * Returns a rejected Promise if any of the given column names are not present
+   * in the table's schema; null if all columns are valid.
+   *
+   * Applied on the read path (query/count) to validate WHERE and filter column
+   * names before they are interpolated into SQL. The write path strips unknown
+   * columns via _filterToSchemaColumns; the read path rejects instead to avoid
+   * silently discarding intended filter conditions.
+   *
+   * Unregistered tables (accessed via the raw `.db` handle) are passed through.
+   */
+  private _invalidColumnError<T>(table: string, cols: string[]): Promise<T> | null {
+    const known = this._columnCache.get(table);
+    if (!known) return null; // unregistered table — pass through
+    for (const col of cols) {
+      if (!known.has(col)) {
+        return Promise.reject(
+          new Error(`Lattice: unknown column "${col}" in table "${table}"`),
+        );
+      }
     }
     return null;
   }
