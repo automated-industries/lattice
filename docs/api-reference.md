@@ -1,6 +1,6 @@
 # API Reference
 
-Complete reference for all public classes, methods, and types exported by `@m-flat/lattice`.
+Complete reference for all public classes, methods, and types exported by `@automated-industries/lattice`.
 
 ---
 
@@ -611,7 +611,7 @@ function parseConfigFile(configPath: string): ParsedConfig;
 Read a `lattice.config.yml` file, validate it, and return a `ParsedConfig` with resolved paths and compiled `TableDefinition` objects ready to pass to `define()`.
 
 ```ts
-import { parseConfigFile } from '@m-flat/lattice';
+import { parseConfigFile } from '@automated-industries/lattice';
 
 const { dbPath, tables } = parseConfigFile('./lattice.config.yml');
 const db = new Lattice(dbPath);
@@ -640,7 +640,7 @@ function parseConfigString(yamlContent: string, configDir: string): ParsedConfig
 Parse a raw YAML string instead of reading a file. `configDir` is used to resolve relative paths for `db` and `outputFile`.
 
 ```ts
-import { parseConfigString } from '@m-flat/lattice';
+import { parseConfigString } from '@automated-industries/lattice';
 
 const yaml = `
 db: ./data/app.db
@@ -667,7 +667,7 @@ function readManifest(outputDir: string): LatticeManifest | null;
 Read the Lattice manifest from `{outputDir}/.lattice/manifest.json`. Returns `null` on first run (no manifest yet).
 
 ```ts
-import { readManifest } from '@m-flat/lattice';
+import { readManifest } from '@automated-industries/lattice';
 
 const manifest = readManifest('./context');
 if (manifest) {
@@ -1187,7 +1187,7 @@ Return the path to the manifest file: `{outputDir}/.lattice/manifest.json`.
 
 ### Internal exports (for testing)
 
-The following are exported from `@m-flat/lattice` to support integration testing but are not part of the stable public API:
+The following are exported from `@automated-industries/lattice` to support integration testing but are not part of the stable public API:
 
 ```ts
 function resolveEntitySource(
