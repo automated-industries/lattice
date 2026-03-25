@@ -176,4 +176,47 @@ describe('Expanded query filters', () => {
     const rows = await db.query('items', { where: { tag: 'bug' } });
     expect(rows).toHaveLength(2);
   });
+
+  // -------------------------------------------------------------------------
+  // Column name validation — read path security (MEDIUM finding, 2026-03-25)
+  // -------------------------------------------------------------------------
+
+  it('query() rejects unknown column in where', async () => {
+    await expect(db.query('items', { where: { nonexistent: 'x' } })).rejects.toThrow(
+      'unknown column "nonexistent" in table "items"',
+    );
+  });
+
+  it('query() rejects unknown column in filters', async () => {
+    await expect(
+      db.query('items', { filters: [{ col: 'ghost', op: 'eq', val: 1 }] }),
+    ).rejects.toThrow('unknown column "ghost" in table "items"');
+  });
+
+  it('query() rejects unknown column in orderBy', async () => {
+    await expect(db.query('items', { orderBy: 'missing' })).rejects.toThrow(
+      'unknown column "missing" in table "items"',
+    );
+  });
+
+  it('count() rejects unknown column in where', async () => {
+    await expect(db.count('items', { where: { nonexistent: 'x' } })).rejects.toThrow(
+      'unknown column "nonexistent" in table "items"',
+    );
+  });
+
+  it('count() rejects unknown column in filters', async () => {
+    await expect(
+      db.count('items', { filters: [{ col: 'ghost', op: 'gt', val: 0 }] }),
+    ).rejects.toThrow('unknown column "ghost" in table "items"');
+  });
+
+  it('query() with valid columns succeeds after column validation added', async () => {
+    const rows = await db.query('items', {
+      where: { tag: 'bug' },
+      filters: [{ col: 'score', op: 'gt', val: 5 }],
+      orderBy: 'name',
+    });
+    expect(rows).toHaveLength(2);
+  });
 });
