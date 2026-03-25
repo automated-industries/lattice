@@ -1,0 +1,338 @@
+import { createHash } from 'node:crypto';
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/**
+ * A single parsed SESSION.md entry. Covers all entry types:
+ * event, learning, status, correction, discovery, metric, handoff, write.
+ *
+ * When `type === 'write'`, the op/table/target/reason/fields fields are set.
+ */
+export interface SessionEntry {
+  id: string;
+  type: string;
+  timestamp: string;
+  body: string;
+  project?: string;
+  task?: string;
+  tags?: string[];
+  severity?: string;
+  target_agent?: string;
+  target_table?: string;
+  /** Only present when type === 'write' */
+  op?: 'create' | 'update' | 'delete';
+  table?: string;
+  target?: string;
+  reason?: string;
+  fields?: Record<string, string>;
+}
+
+export interface ParseError {
+  line: number;
+  message: string;
+}
+
+export interface ParseResult {
+  entries: SessionEntry[];
+  errors: ParseError[];
+  /** Byte offset after the last fully parsed entry — used for incremental parsing. */
+  lastOffset: number;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const VALID_TYPES = new Set([
+  'event', 'learning', 'status', 'correction', 'discovery', 'metric', 'handoff', 'write',
+]);
+
+/** Agents sometimes write non-standard type names — normalise them here. */
+const TYPE_ALIASES: Record<string, string> = {
+  task_completion: 'event',
+  completion: 'event',
+  heartbeat: 'status',
+  bug: 'discovery',
+  fix: 'event',
+  deploy: 'event',
+  note: 'event',
+};
+
+const FIELD_NAME_RE = /^[a-zA-Z0-9_]+$/;
+
+// ---------------------------------------------------------------------------
+// Public API — YAML block parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse SESSION.md YAML-delimited entries starting at `startOffset` bytes.
+ *
+ * Each entry looks like:
+ * ```
+ * ---
+ * id: 2026-03-12T15:30:42Z-cortex-a1b2c3
+ * type: event
+ * timestamp: 2026-03-12T15:30:42Z
+ * ---
+ * Entry body text here.
+ * ===
+ * ```
+ */
+export function parseSessionMD(content: string, startOffset = 0): ParseResult {
+  const entries: SessionEntry[] = [];
+  const errors: ParseError[] = [];
+
+  const text = content.slice(startOffset);
+  const lines = text.split('\n');
+
+  let i = 0;
+  let currentByteOffset = startOffset;
+
+  while (i < lines.length) {
+    if (lines[i]!.trim() !== '---') {
+      currentByteOffset += Buffer.byteLength(lines[i]! + '\n', 'utf-8');
+      i++;
+      continue;
+    }
+
+    const entryStartLine = i;
+    currentByteOffset += Buffer.byteLength(lines[i]! + '\n', 'utf-8');
+    i++;
+
+    const headers: Record<string, string> = {};
+    let foundHeaderClose = false;
+
+    while (i < lines.length) {
+      const line = lines[i]!;
+      currentByteOffset += Buffer.byteLength(line + '\n', 'utf-8');
+
+      if (line.trim() === '---') {
+        foundHeaderClose = true;
+        i++;
+        break;
+      }
+
+      const match = line.match(/^(\w+):\s*(.+)$/);
+      if (match) {
+        headers[match[1]!] = match[2]!.trim();
+      }
+      i++;
+    }
+
+    if (!foundHeaderClose) {
+      errors.push({ line: entryStartLine + 1, message: 'Entry header never closed (missing ---)' });
+      break;
+    }
+
+    const bodyLines: string[] = [];
+
+    while (i < lines.length) {
+      const line = lines[i]!;
+
+      if (line.trim() === '===') {
+        currentByteOffset += Buffer.byteLength(line + '\n', 'utf-8');
+        i++;
+        break;
+      }
+
+      if (line.trim() === '---' && bodyLines.length > 0) {
+        const nextLine = lines[i + 1];
+        if (nextLine && /^\w+:\s*.+$/.test(nextLine)) {
+          break;
+        }
+      }
+
+      bodyLines.push(line);
+      currentByteOffset += Buffer.byteLength(line + '\n', 'utf-8');
+      i++;
+    }
+
+    const body = bodyLines.join('\n').trim();
+
+    const rawType = headers['type'] ?? '';
+    const resolvedType = normalizeType(rawType);
+
+    if (!resolvedType) {
+      errors.push({ line: entryStartLine + 1, message: `Unknown entry type: ${rawType}` });
+      continue;
+    }
+    if (!headers['timestamp']) {
+      errors.push({ line: entryStartLine + 1, message: 'Missing required header: timestamp' });
+      continue;
+    }
+    if (!body) {
+      errors.push({ line: entryStartLine + 1, message: 'Entry has empty body' });
+      continue;
+    }
+
+    const entryId = headers['id'] ?? generateEntryId(headers['timestamp']!, 'agent', body);
+
+    let tags: string[] | undefined;
+    if (headers['tags']) {
+      const tagMatch = headers['tags'].match(/^\[(.+)\]$/);
+      if (tagMatch) {
+        tags = tagMatch[1]!.split(',').map(t => t.trim());
+      }
+    }
+
+    // For write entries, parse body as key:value field pairs
+    let writeFields: Record<string, string> | undefined;
+    if (resolvedType === 'write' && headers['op'] !== 'delete') {
+      writeFields = {};
+      for (const line of body.split('\n')) {
+        const m = line.match(/^([^:]+):\s*(.*)$/);
+        if (!m) continue;
+        const key = m[1]!.trim();
+        if (!FIELD_NAME_RE.test(key)) continue;
+        writeFields[key] = m[2]!.trim();
+      }
+    }
+
+    const newEntry: SessionEntry = { id: entryId, type: resolvedType, timestamp: headers['timestamp']!, body };
+    if (headers['project']) newEntry.project = headers['project'];
+    if (headers['task']) newEntry.task = headers['task'];
+    if (tags) newEntry.tags = tags;
+    if (headers['severity']) newEntry.severity = headers['severity'];
+    if (headers['target_agent']) newEntry.target_agent = headers['target_agent'];
+    if (headers['target_table']) newEntry.target_table = headers['target_table'];
+    if (resolvedType === 'write') {
+      if (headers['op']) newEntry.op = headers['op'] as 'create' | 'update' | 'delete';
+      if (headers['table']) newEntry.table = headers['table'];
+      if (headers['target']) newEntry.target = headers['target'];
+      if (headers['reason']) newEntry.reason = headers['reason'];
+      newEntry.fields = writeFields ?? {};
+    }
+    entries.push(newEntry);
+  }
+
+  return { entries, errors, lastOffset: currentByteOffset };
+}
+
+// ---------------------------------------------------------------------------
+// Public API — Markdown heading parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse free-form Markdown SESSION.md entries. Agents sometimes write entries
+ * as `## {timestamp} — {description}` headings rather than YAML blocks.
+ *
+ * Runs alongside `parseSessionMD`; the two parsers are merged by caller.
+ */
+export function parseMarkdownEntries(
+  content: string,
+  agentName: string,
+  startOffset = 0,
+): ParseResult {
+  const entries: SessionEntry[] = [];
+  const errors: ParseError[] = [];
+
+  const text = content.slice(startOffset);
+  const lines = text.split('\n');
+
+  const headingPattern = /^##\s+([\dT:.Z-]{10,})\s*(?:[—–\-]{1,2}\s*(.+))?$/;
+
+  let currentByteOffset = startOffset;
+  const entryStarts: Array<{
+    lineIdx: number;
+    timestamp: string;
+    headingType: string;
+    offset: number;
+  }> = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i]!.match(headingPattern);
+    if (match) {
+      entryStarts.push({
+        lineIdx: i,
+        timestamp: match[1]!,
+        headingType: (match[2] ?? '').trim(),
+        offset: currentByteOffset,
+      });
+    }
+    currentByteOffset += Buffer.byteLength(lines[i]! + '\n', 'utf-8');
+  }
+
+  for (let e = 0; e < entryStarts.length; e++) {
+    const start = entryStarts[e]!;
+    const nextStart = entryStarts[e + 1];
+    const bodyStartLine = start.lineIdx + 1;
+    const bodyEndLine = nextStart ? nextStart.lineIdx : lines.length;
+
+    const bodyLines = lines.slice(bodyStartLine, bodyEndLine);
+
+    let bodyType: string | null = null;
+    const filteredBody: string[] = [];
+    for (const line of bodyLines) {
+      const typeMatch = line.match(/^\*\*type:\*\*\s*(.+)/i);
+      if (typeMatch && !bodyType) {
+        bodyType = typeMatch[1]!.trim();
+      } else {
+        filteredBody.push(line);
+      }
+    }
+
+    const body = filteredBody.join('\n').trim();
+    if (!body) {
+      errors.push({ line: start.lineIdx + 1, message: 'Markdown entry has empty body' });
+      continue;
+    }
+
+    const rawType = bodyType ?? start.headingType ?? 'event';
+    const resolvedType = normalizeType(rawType) ?? 'event';
+
+    const id = generateEntryId(start.timestamp, agentName, body);
+
+    entries.push({
+      id,
+      type: resolvedType,
+      timestamp: start.timestamp,
+      body,
+    });
+  }
+
+  return { entries, errors, lastOffset: currentByteOffset };
+}
+
+// ---------------------------------------------------------------------------
+// Public API — ID helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a content-addressed entry ID.
+ * Format: `{timestamp}-{agentName}-{6-char-sha256-prefix}`
+ */
+export function generateEntryId(timestamp: string, agentName: string, body: string): string {
+  const hash = createHash('sha256').update(body).digest('hex').slice(0, 6);
+  return `${timestamp}-${agentName.toLowerCase()}-${hash}`;
+}
+
+/**
+ * Validate that an entry ID's hash suffix matches its body.
+ */
+export function validateEntryId(id: string, body: string): boolean {
+  const parts = id.split('-');
+  if (parts.length < 4) return false;
+
+  const hash = parts[parts.length - 1]!;
+  if (hash.length !== 6) return false;
+
+  const expectedHash = createHash('sha256').update(body).digest('hex').slice(0, 6);
+  return hash === expectedHash;
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function normalizeType(raw: string): string | null {
+  const lower = raw.toLowerCase().trim();
+  if (VALID_TYPES.has(lower)) return lower;
+  const normalized = lower.replace(/-/g, '_');
+  if (TYPE_ALIASES[normalized]) return TYPE_ALIASES[normalized]!;
+  for (const alias of Object.keys(TYPE_ALIASES)) {
+    if (normalized.startsWith(alias)) return TYPE_ALIASES[alias]!;
+  }
+  return null;
+}
