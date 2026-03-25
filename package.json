@@ -1,5 +1,5 @@
 {
-  "name": "@automated-industries/lattice",
+  "name": "latticesql",
   "version": "0.5.0",
   "description": "Persistent structured memory for AI agent systems — SQLite ↔ LLM context bridge",
   "type": "module",
