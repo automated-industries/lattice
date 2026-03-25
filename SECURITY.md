@@ -21,7 +21,7 @@ You should receive an acknowledgment within 48 hours. We will work with you to u
 
 ## Scope
 
-`@automated-industries/lattice` is a local-only SQLite library. It makes no network requests and handles no authentication. The primary security surface is:
+`latticesql` is a local-only SQLite library. It makes no network requests and handles no authentication. The primary security surface is:
 
 - **SQL injection** via crafted row object keys or values — mitigated by parameterized queries and schema-column validation
 - **Path traversal** via YAML config file paths — applicable only when the developer controls config files
