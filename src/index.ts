@@ -53,3 +53,5 @@ export type {
 } from './types.js';
 export { readManifest, writeManifest, manifestPath } from './lifecycle/manifest.js';
 export type { LatticeManifest, EntityContextManifestEntry } from './lifecycle/manifest.js';
+export { parseSessionWrites, generateWriteEntryId } from './session/index.js';
+export type { SessionWriteEntry, SessionWriteOp, SessionWriteParseResult } from './session/index.js';
