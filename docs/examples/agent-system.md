@@ -1,6 +1,6 @@
 # Example: AI Agent System
 
-A complete example showing how to use `@automated-industries/lattice` as the persistent memory layer for a multi-agent AI system.
+A complete example showing how to use `latticesql` as the persistent memory layer for a multi-agent AI system.
 
 ---
 
@@ -128,7 +128,7 @@ export interface Event {
 
 ```ts
 // src/db.ts
-import { Lattice } from '@automated-industries/lattice';
+import { Lattice } from 'latticesql';
 
 export const db = new Lattice({ config: './lattice.config.yml' });
 

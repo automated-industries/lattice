@@ -1,6 +1,6 @@
 # Example: Content Management System
 
-A complete example showing how to build a CMS with `@automated-industries/lattice` — authors, posts, tags, and generated context files for LLM-assisted content operations.
+A complete example showing how to build a CMS with `latticesql` — authors, posts, tags, and generated context files for LLM-assisted content operations.
 
 ---
 
@@ -98,7 +98,7 @@ The `post` entity uses the `default-detail` template with a `formatRow` hook fro
 
 ```ts
 // src/db.ts
-import { Lattice } from '@automated-industries/lattice';
+import { Lattice } from 'latticesql';
 
 export const db = new Lattice({
   config: './lattice.config.yml',
