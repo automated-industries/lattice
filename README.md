@@ -1,10 +1,12 @@
-# @m-flat/lattice
+# @automated-industries/lattice
 
 **SQLite ↔ LLM context bridge.** Keeps a database and a set of text files in sync so AI agents always start a session with accurate, up-to-date state.
 
-[![npm version](https://img.shields.io/npm/v/@m-flat/lattice.svg)](https://www.npmjs.com/package/@m-flat/lattice)
+[![npm version](https://img.shields.io/npm/v/@automated-industries/lattice.svg)](https://www.npmjs.com/package/@automated-industries/lattice)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 [![Node.js >=18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
+
+**[latticeSQL.com](https://latticeSQL.com)** — docs, examples, and guides
 
 ---
 
@@ -59,7 +61,7 @@ Lattice has no opinions about your schema, your agents, or your file format. You
 ## Installation
 
 ```bash
-npm install @m-flat/lattice
+npm install @automated-industries/lattice
 ```
 
 Requires **Node.js 18+**. Uses `better-sqlite3` — no external database process needed.
@@ -69,7 +71,7 @@ Requires **Node.js 18+**. Uses `better-sqlite3` — no external database process
 ## Quick start
 
 ```typescript
-import { Lattice } from '@m-flat/lattice';
+import { Lattice } from '@automated-industries/lattice';
 
 const db = new Lattice('./state.db');
 
@@ -987,7 +989,7 @@ If an entity is deleted and its directory still contains `SESSION.md`, Lattice r
 ### Reading the manifest
 
 ```typescript
-import { readManifest } from '@m-flat/lattice';
+import { readManifest } from '@automated-industries/lattice';
 
 const manifest = readManifest('./ctx');
 // manifest?.entityContexts.agents.entities['alpha']
@@ -1084,7 +1086,7 @@ render:
 ### Init from config
 
 ```typescript
-import { Lattice } from '@m-flat/lattice';
+import { Lattice } from '@automated-industries/lattice';
 
 const db = new Lattice({ config: './lattice.config.yml' });
 await db.init();
@@ -1114,7 +1116,7 @@ await db.init();
 Parse a config file or string without constructing a Lattice instance:
 
 ```typescript
-import { parseConfigFile, parseConfigString } from '@m-flat/lattice';
+import { parseConfigFile, parseConfigString } from '@automated-industries/lattice';
 
 // From a file (throws on missing/invalid file or YAML parse error)
 const { dbPath, tables } = parseConfigFile('./lattice.config.yml');
