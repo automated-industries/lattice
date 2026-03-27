@@ -153,7 +153,11 @@ export class RenderEngine {
         const renderedFiles = new Map<string, string>();
 
         for (const [filename, spec] of Object.entries(def.files)) {
-          const source = (def.sourceDefaults && spec.source.type !== 'self' && spec.source.type !== 'custom')
+          const mergeDefaults = def.sourceDefaults
+            && spec.source.type !== 'self'
+            && spec.source.type !== 'custom'
+            && spec.source.type !== 'enriched';
+          const source = mergeDefaults
             ? { ...def.sourceDefaults, ...spec.source }
             : spec.source;
           const rows = resolveEntitySource(source, entityRow, entityPk, this._adapter);
