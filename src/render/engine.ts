@@ -153,7 +153,10 @@ export class RenderEngine {
         const renderedFiles = new Map<string, string>();
 
         for (const [filename, spec] of Object.entries(def.files)) {
-          const rows = resolveEntitySource(spec.source, entityRow, entityPk, this._adapter);
+          const source = (def.sourceDefaults && spec.source.type !== 'self' && spec.source.type !== 'custom')
+            ? { ...def.sourceDefaults, ...spec.source }
+            : spec.source;
+          const rows = resolveEntitySource(source, entityRow, entityPk, this._adapter);
 
           if (spec.omitIfEmpty && rows.length === 0) continue;
 
