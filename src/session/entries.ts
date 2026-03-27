@@ -5,9 +5,10 @@ import { createHash } from 'node:crypto';
 // ---------------------------------------------------------------------------
 
 /**
- * A single parsed SESSION.md entry. Covers all entry types:
- * event, learning, status, correction, discovery, metric, handoff, write.
+ * A single parsed SESSION.md entry.
  *
+ * The `type` field holds the resolved entry type (from the built-in set or
+ * custom types supplied via {@link SessionParseOptions}).
  * When `type === 'write'`, the op/table/target/reason/fields fields are set.
  */
 export interface SessionEntry {
@@ -42,15 +43,51 @@ export interface ParseResult {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
+// Parse options
 // ---------------------------------------------------------------------------
 
-const VALID_TYPES = new Set([
+/**
+ * Options for {@link parseSessionMD} and {@link parseMarkdownEntries}.
+ *
+ * All fields are optional — omitting them preserves the default behaviour
+ * (built-in type set + built-in aliases), so existing callers are unaffected.
+ */
+export interface SessionParseOptions {
+  /**
+   * Set of valid entry type names.
+   * - Omit (or `undefined`) → use {@link DEFAULT_ENTRY_TYPES}.
+   * - `null` → accept **any** type string without validation.
+   * - Provide a custom `Set<string>` to restrict to your own taxonomy.
+   */
+  validTypes?: Set<string> | null;
+
+  /**
+   * Map of non-standard type names to their canonical form.
+   * - Omit (or `undefined`) → use {@link DEFAULT_TYPE_ALIASES}.
+   * - `null` → disable alias resolution.
+   * - Provide a custom `Record<string, string>` for your own aliases.
+   */
+  typeAliases?: Record<string, string> | null;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in defaults (exported so consumers can extend or reuse)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default set of valid entry types shipped with latticesql.
+ * Suitable for LLM-agent context systems; override via {@link SessionParseOptions.validTypes}.
+ */
+export const DEFAULT_ENTRY_TYPES: ReadonlySet<string> = new Set([
   'event', 'learning', 'status', 'correction', 'discovery', 'metric', 'handoff', 'write',
 ]);
 
-/** Agents sometimes write non-standard type names — normalise them here. */
-const TYPE_ALIASES: Record<string, string> = {
+/**
+ * Default type aliases shipped with latticesql.
+ * Maps commonly-seen alternative names to their canonical type.
+ * Override via {@link SessionParseOptions.typeAliases}.
+ */
+export const DEFAULT_TYPE_ALIASES: Readonly<Record<string, string>> = {
   task_completion: 'event',
   completion: 'event',
   heartbeat: 'status',
@@ -79,8 +116,11 @@ const FIELD_NAME_RE = /^[a-zA-Z0-9_]+$/;
  * Entry body text here.
  * ===
  * ```
+ *
+ * Pass {@link SessionParseOptions} to customise which entry types are accepted
+ * and how aliases are resolved. Defaults match the built-in type set.
  */
-export function parseSessionMD(content: string, startOffset = 0): ParseResult {
+export function parseSessionMD(content: string, startOffset = 0, options?: SessionParseOptions): ParseResult {
   const entries: SessionEntry[] = [];
   const errors: ParseError[] = [];
 
@@ -152,7 +192,7 @@ export function parseSessionMD(content: string, startOffset = 0): ParseResult {
     const body = bodyLines.join('\n').trim();
 
     const rawType = headers['type'] ?? '';
-    const resolvedType = normalizeType(rawType);
+    const resolvedType = normalizeType(rawType, options);
 
     if (!resolvedType) {
       errors.push({ line: entryStartLine + 1, message: `Unknown entry type: ${rawType}` });
@@ -215,8 +255,8 @@ export function parseSessionMD(content: string, startOffset = 0): ParseResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse free-form Markdown SESSION.md entries. Agents sometimes write entries
- * as `## {timestamp} — {description}` headings rather than YAML blocks.
+ * Parse free-form Markdown SESSION.md entries written as
+ * `## {timestamp} — {description}` headings rather than YAML blocks.
  *
  * Runs alongside `parseSessionMD`; the two parsers are merged by caller.
  */
@@ -224,6 +264,7 @@ export function parseMarkdownEntries(
   content: string,
   agentName: string,
   startOffset = 0,
+  options?: SessionParseOptions,
 ): ParseResult {
   const entries: SessionEntry[] = [];
   const errors: ParseError[] = [];
@@ -280,7 +321,7 @@ export function parseMarkdownEntries(
     }
 
     const rawType = bodyType ?? start.headingType ?? 'event';
-    const resolvedType = normalizeType(rawType) ?? 'event';
+    const resolvedType = normalizeType(rawType, options) ?? 'event';
 
     const id = generateEntryId(start.timestamp, agentName, body);
 
@@ -326,13 +367,32 @@ export function validateEntryId(id: string, body: string): boolean {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function normalizeType(raw: string): string | null {
+function normalizeType(raw: string, options?: SessionParseOptions): string | null {
   const lower = raw.toLowerCase().trim();
-  if (VALID_TYPES.has(lower)) return lower;
-  const normalized = lower.replace(/-/g, '_');
-  if (TYPE_ALIASES[normalized]) return TYPE_ALIASES[normalized]!;
-  for (const alias of Object.keys(TYPE_ALIASES)) {
-    if (normalized.startsWith(alias)) return TYPE_ALIASES[alias]!;
+  if (!lower) return null;
+
+  const validTypes = options?.validTypes === undefined ? DEFAULT_ENTRY_TYPES : options.validTypes;
+  const aliases = options?.typeAliases === undefined ? DEFAULT_TYPE_ALIASES : options.typeAliases;
+
+  // When validTypes is null, accept any type string
+  if (validTypes === null) {
+    // Still apply aliases if available
+    if (aliases) {
+      const normalized = lower.replace(/-/g, '_');
+      if (aliases[normalized]) return aliases[normalized]!;
+    }
+    return lower;
   }
+
+  if (validTypes.has(lower)) return lower;
+
+  if (aliases) {
+    const normalized = lower.replace(/-/g, '_');
+    if (aliases[normalized]) return aliases[normalized]!;
+    for (const alias of Object.keys(aliases)) {
+      if (normalized.startsWith(alias)) return aliases[alias]!;
+    }
+  }
+
   return null;
 }
