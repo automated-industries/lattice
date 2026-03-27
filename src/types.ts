@@ -361,6 +361,8 @@ export type {
   ManyToManySource,
   BelongsToSource,
   CustomSource,
+  EnrichmentLookup,
+  EnrichedSource,
   EntityFileSource,
   EntityFileSpec,
   EntityContextDefinition,
