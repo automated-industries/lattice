@@ -2,13 +2,14 @@
 export { parseSessionWrites, generateWriteEntryId } from './parser.js';
 export type { SessionWriteEntry, SessionWriteOp, SessionWriteParseResult } from './parser.js';
 
-// Full session entry parser (all types: event, learning, status, write, etc.)
-export { parseSessionMD, parseMarkdownEntries, generateEntryId, validateEntryId } from './entries.js';
-export type { SessionEntry, ParseResult, ParseError } from './entries.js';
+// Full session entry parser (all types — configurable via SessionParseOptions)
+export { parseSessionMD, parseMarkdownEntries, generateEntryId, validateEntryId, DEFAULT_ENTRY_TYPES, DEFAULT_TYPE_ALIASES } from './entries.js';
+export type { SessionEntry, ParseResult, ParseError, SessionParseOptions } from './entries.js';
 
-// Write-entry application (DB-agnostic — pass your better-sqlite3 Database)
+// Write-entry application (pass your better-sqlite3 Database)
 export { applyWriteEntry } from './apply.js';
 export type { ApplyWriteResult } from './apply.js';
 
-// Constants for Lattice-generated context files
-export { READ_ONLY_HEADER } from './constants.js';
+// Read-only header for Lattice-generated context files
+export { READ_ONLY_HEADER, createReadOnlyHeader } from './constants.js';
+export type { ReadOnlyHeaderOptions } from './constants.js';
