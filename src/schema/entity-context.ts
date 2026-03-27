@@ -1,5 +1,40 @@
-import type { Row } from '../types.js';
+import type { Row, Filter } from '../types.js';
 import type { StorageAdapter } from '../db/adapter.js';
+
+// ---------------------------------------------------------------------------
+// Shared source query options (v0.6+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Optional query refinements shared by `hasMany`, `manyToMany`, and
+ * `belongsTo` sources.  All fields are additive — omitting them preserves
+ * the v0.5 behaviour (bare `SELECT *`).
+ */
+export interface SourceQueryOptions {
+  /**
+   * Additional WHERE clauses applied after the relationship join condition.
+   * Uses the existing {@link Filter} type.
+   *
+   * @example `filters: [{ col: 'status', op: 'eq', val: 'active' }]`
+   */
+  filters?: Filter[];
+
+  /**
+   * Shorthand for `filters: [{ col: 'deleted_at', op: 'isNull' }]`.
+   * When `true`, soft-deleted rows are excluded.  If both `softDelete`
+   * and an explicit `deleted_at` filter are present, the explicit filter wins.
+   */
+  softDelete?: boolean;
+
+  /** Column to ORDER BY. Validated against `[a-zA-Z0-9_]`. */
+  orderBy?: string;
+
+  /** Sort direction. Defaults to `'asc'`. */
+  orderDir?: 'asc' | 'desc';
+
+  /** Maximum number of rows to return. */
+  limit?: number;
+}
 
 // ---------------------------------------------------------------------------
 // Source types — determine which rows are passed to each file's render fn
@@ -22,7 +57,7 @@ export interface SelfSource {
  * source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' }
  * ```
  */
-export interface HasManySource {
+export interface HasManySource extends SourceQueryOptions {
   type: 'hasMany';
   /** The related table to query */
   table: string;
@@ -50,7 +85,7 @@ export interface HasManySource {
  * }
  * ```
  */
-export interface ManyToManySource {
+export interface ManyToManySource extends SourceQueryOptions {
   type: 'manyToMany';
   /** The junction / association table */
   junctionTable: string;
@@ -78,7 +113,7 @@ export interface ManyToManySource {
  * source: { type: 'belongsTo', table: 'teams', foreignKey: 'team_id' }
  * ```
  */
-export interface BelongsToSource {
+export interface BelongsToSource extends SourceQueryOptions {
   type: 'belongsTo';
   /** The related table to look up */
   table: string;
@@ -240,4 +275,16 @@ export interface EntityContextDefinition {
    * Defaults to `[]`.
    */
   protectedFiles?: string[];
+
+  /**
+   * Default query options merged into every `hasMany`, `manyToMany`, and
+   * `belongsTo` source in this context.  Per-file source options override
+   * these defaults.  `custom` and `self` sources are unaffected.
+   *
+   * @example
+   * ```ts
+   * sourceDefaults: { softDelete: true }   // exclude soft-deleted rows everywhere
+   * ```
+   */
+  sourceDefaults?: SourceQueryOptions;
 }
