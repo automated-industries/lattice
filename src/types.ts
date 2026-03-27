@@ -355,6 +355,7 @@ export type LatticeEvent =
 // ---------------------------------------------------------------------------
 
 export type {
+  SourceQueryOptions,
   SelfSource,
   HasManySource,
   ManyToManySource,
