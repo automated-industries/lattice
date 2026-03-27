@@ -145,13 +145,54 @@ export interface CustomSource {
   query: (row: Row, adapter: StorageAdapter) => Row[];
 }
 
+/**
+ * Sub-lookup definition for an {@link EnrichedSource}.
+ * Each lookup resolves related rows and attaches them to the entity row
+ * as a `_key` JSON string field.
+ *
+ * Declarative lookups reuse the same types as file sources (with all
+ * query options). Custom lookups provide full control.
+ */
+export type EnrichmentLookup =
+  | ({ as?: string } & Omit<HasManySource, 'type'> & { type: 'hasMany' })
+  | ({ as?: string } & Omit<ManyToManySource, 'type'> & { type: 'manyToMany' })
+  | ({ as?: string } & Omit<BelongsToSource, 'type'> & { type: 'belongsTo' })
+  | { type: 'custom'; query: (row: Row, adapter: StorageAdapter) => Row[] };
+
+/**
+ * Start with the entity's own row (like `self`) and attach related data
+ * as JSON string fields.  Each key in `include` becomes a `_key` field
+ * on the returned row, containing `JSON.stringify(resolvedRows)`.
+ *
+ * Use when a single file needs the entity's own data plus related lists
+ * (e.g. an org profile that includes its agents and projects).
+ *
+ * @example
+ * ```ts
+ * source: {
+ *   type: 'enriched',
+ *   include: {
+ *     agents:   { type: 'hasMany', table: 'agents', foreignKey: 'org_id', softDelete: true },
+ *     projects: { type: 'hasMany', table: 'projects', foreignKey: 'org_id', softDelete: true },
+ *   },
+ * }
+ * // Result: [{ ...entityRow, _agents: '[...]', _projects: '[...]' }]
+ * ```
+ */
+export interface EnrichedSource {
+  type: 'enriched';
+  /** Named lookups whose results are attached as `_key` JSON fields. */
+  include: Record<string, EnrichmentLookup>;
+}
+
 /** Union of all supported source types for {@link EntityFileSpec}. */
 export type EntityFileSource =
   | SelfSource
   | HasManySource
   | ManyToManySource
   | BelongsToSource
-  | CustomSource;
+  | CustomSource
+  | EnrichedSource;
 
 // ---------------------------------------------------------------------------
 // File spec — one entry per file generated inside each entity directory
