@@ -166,6 +166,21 @@ export function resolveEntitySource(
 
     case 'custom':
       return source.query(entityRow, adapter);
+
+    case 'enriched': {
+      const enriched: Row = { ...entityRow };
+      for (const [key, lookup] of Object.entries(source.include)) {
+        const fieldName = `_${key}`;
+        if (lookup.type === 'custom') {
+          enriched[fieldName] = JSON.stringify(lookup.query(entityRow, adapter));
+        } else {
+          // Resolve using the same logic as top-level sources
+          const resolved = resolveEntitySource(lookup, entityRow, entityPk, adapter);
+          enriched[fieldName] = JSON.stringify(resolved);
+        }
+      }
+      return [enriched];
+    }
   }
 }
 
