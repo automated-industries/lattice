@@ -126,12 +126,22 @@ export class SchemaManager {
     }
   }
 
-  /** Query all rows from a registered table */
+  /**
+   * Query all rows from a table.
+   * Registered tables (via `define()`) are queried directly.
+   * Tables used only in entity contexts (schema managed externally) fall back
+   * to a raw SELECT with optional `deleted_at IS NULL` soft-delete filtering.
+   */
   queryTable(adapter: StorageAdapter, name: string): Row[] {
-    if (!this._tables.has(name)) {
-      throw new Error(`Unknown table: "${name}"`);
+    if (this._tables.has(name)) {
+      return adapter.all(`SELECT * FROM "${name}"`);
     }
-    return adapter.all(`SELECT * FROM "${name}"`);
+    if (this._entityContexts.has(name)) {
+      const cols = adapter.all(`PRAGMA table_info("${name}")`);
+      const hasDeletedAt = cols.some((c) => (c as Record<string, unknown>).name === 'deleted_at');
+      return adapter.all(`SELECT * FROM "${name}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`);
+    }
+    throw new Error(`Unknown table: "${name}"`);
   }
 
   private _ensureTable(

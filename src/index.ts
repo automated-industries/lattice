@@ -55,5 +55,5 @@ export { readManifest, writeManifest, manifestPath } from './lifecycle/manifest.
 export type { LatticeManifest, EntityContextManifestEntry } from './lifecycle/manifest.js';
 export { parseSessionWrites, generateWriteEntryId } from './session/index.js';
 export type { SessionWriteEntry, SessionWriteOp, SessionWriteParseResult } from './session/index.js';
-export { parseSessionMD, parseMarkdownEntries, generateEntryId, validateEntryId, applyWriteEntry, READ_ONLY_HEADER } from './session/index.js';
-export type { SessionEntry, ParseResult, ParseError, ApplyWriteResult } from './session/index.js';
+export { parseSessionMD, parseMarkdownEntries, generateEntryId, validateEntryId, DEFAULT_ENTRY_TYPES, DEFAULT_TYPE_ALIASES, applyWriteEntry, READ_ONLY_HEADER, createReadOnlyHeader } from './session/index.js';
+export type { SessionEntry, ParseResult, ParseError, SessionParseOptions, ApplyWriteResult, ReadOnlyHeaderOptions } from './session/index.js';
