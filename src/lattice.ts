@@ -147,7 +147,8 @@ export class Lattice {
   }
 
   defineEntityContext(table: string, def: EntityContextDefinition): this {
-    this._assertNotInit('defineEntityContext');
+    // No init guard — entity contexts only affect the render pipeline,
+    // not schema creation. Safe to register before or after init().
     this._schema.defineEntityContext(table, def);
     return this;
   }
