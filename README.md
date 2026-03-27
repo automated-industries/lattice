@@ -356,12 +356,15 @@ db.defineMulti('agent-context', {
 db.defineEntityContext(table: string, def: EntityContextDefinition): this
 ```
 
-Generate a **parallel file-system tree** for an entity type — one subdirectory per row, one file per declared relationship, and an optional combined context file. Must be called before `init()`.
+Generate a **parallel file-system tree** for an entity type — one subdirectory per row, one file per declared relationship, and an optional combined context file. Can be called before or after `init()`.
 
 ```typescript
 db.defineEntityContext('agents', {
   // Derive the subdirectory name for each entity
   slug: (row) => row.slug as string,
+
+  // Default query options for all relationship sources (v0.6+)
+  sourceDefaults: { softDelete: true },
 
   // Global index file listing all entities
   index: {
@@ -376,7 +379,8 @@ db.defineEntityContext('agents', {
       render: ([r]) => `# ${r.name as string}\n\n${r.bio as string ?? ''}`,
     },
     'TASKS.md': {
-      source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
+      source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id',
+                orderBy: 'created_at', orderDir: 'desc', limit: 20 },
       render: (rows) => rows.map((r) => `- ${r.title as string}`).join('\n'),
       omitIfEmpty: true,                               // skip if no tasks
       budget: 4000,                                    // truncate at 4 000 chars
@@ -388,6 +392,7 @@ db.defineEntityContext('agents', {
         localKey: 'agent_id',
         remoteKey: 'skill_id',
         remoteTable: 'skills',
+        orderBy: 'name',                               // softDelete inherited from sourceDefaults
       },
       render: (rows) => rows.map((r) => `- ${r.name as string}`).join('\n'),
       omitIfEmpty: true,
@@ -423,10 +428,81 @@ context/
 | Type | What it queries |
 |---|---|
 | `{ type: 'self' }` | The entity row itself |
-| `{ type: 'hasMany', table, foreignKey, references? }` | Rows in `table` where `foreignKey = entityPk` |
-| `{ type: 'manyToMany', junctionTable, localKey, remoteKey, remoteTable, references? }` | Remote rows via a junction table |
-| `{ type: 'belongsTo', table, foreignKey, references? }` | Single parent row via FK on this entity (`null` FK → empty) |
+| `{ type: 'hasMany', table, foreignKey, ... }` | Rows in `table` where `foreignKey = entityPk` |
+| `{ type: 'manyToMany', junctionTable, localKey, remoteKey, remoteTable, ... }` | Remote rows via a junction table |
+| `{ type: 'belongsTo', table, foreignKey, ... }` | Single parent row via FK on this entity (`null` FK → empty) |
+| `{ type: 'enriched', include: { ... } }` | Entity row + related data attached as `_key` JSON fields (v0.7+) |
 | `{ type: 'custom', query: (row, adapter) => Row[] }` | Fully custom synchronous query |
+
+#### Source query options (v0.6+)
+
+`hasMany`, `manyToMany`, and `belongsTo` sources accept optional query refinements:
+
+```typescript
+{
+  type: 'hasMany',
+  table: 'tasks',
+  foreignKey: 'agent_id',
+  // Query options (all optional):
+  softDelete: true,          // exclude rows where deleted_at IS NULL
+  filters: [                 // additional WHERE clauses (uses existing Filter type)
+    { col: 'status', op: 'eq', val: 'active' },
+  ],
+  orderBy: 'created_at',    // ORDER BY column
+  orderDir: 'desc',         // 'asc' (default) or 'desc'
+  limit: 20,                // LIMIT N
+}
+```
+
+The `softDelete: true` shorthand is equivalent to `filters: [{ col: 'deleted_at', op: 'isNull' }]`.
+
+#### sourceDefaults (v0.6+)
+
+Set default query options for all relationship sources in an entity context:
+
+```typescript
+db.defineEntityContext('agents', {
+  slug: (row) => row.slug as string,
+  sourceDefaults: { softDelete: true },  // applied to all hasMany/manyToMany/belongsTo
+  files: {
+    'TASKS.md': {
+      // softDelete: true is inherited from sourceDefaults
+      source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id', orderBy: 'created_at' },
+      render: (rows) => rows.map((r) => `- ${r.title as string}`).join('\n'),
+    },
+  },
+});
+```
+
+Per-file source options override defaults. `custom`, `self`, and `enriched` sources are unaffected.
+
+#### Enriched source (v0.7+)
+
+Starts with the entity's own row and attaches related data as JSON string fields. Each key in `include` becomes a `_key` field containing `JSON.stringify(resolvedRows)`.
+
+```typescript
+'PROFILE.md': {
+  source: {
+    type: 'enriched',
+    include: {
+      // Declarative sub-lookups (support all query options)
+      skills:   { type: 'manyToMany', junctionTable: 'agent_skills',
+                  localKey: 'agent_id', remoteKey: 'skill_id',
+                  remoteTable: 'skills', softDelete: true },
+      projects: { type: 'hasMany', table: 'projects', foreignKey: 'org_id',
+                  softDelete: true, orderBy: 'name' },
+      // Custom sub-lookup for complex queries
+      stats:    { type: 'custom', query: (row, adapter) =>
+                    adapter.all('SELECT COUNT(*) as cnt FROM events WHERE actor_id = ?', [row.id]) },
+    },
+  },
+  render: ([row]) => {
+    const skills = JSON.parse(row._skills as string);
+    const projects = JSON.parse(row._projects as string);
+    return `# ${row.name}\n\nSkills: ${skills.length}\nProjects: ${projects.length}`;
+  },
+}
+```
 
 See [docs/entity-context.md](./docs/entity-context.md) for the complete guide.
 
@@ -924,6 +1000,71 @@ db.define('tickets', {
 
 ---
 
+## Markdown utilities (v0.6+)
+
+Composable helper functions for building render functions. Use inside `render: (rows) => ...` callbacks to reduce boilerplate.
+
+### `frontmatter(fields)`
+
+Generate a YAML-style frontmatter block. Automatically includes `generated_at` with the current ISO timestamp.
+
+```typescript
+import { frontmatter } from 'latticesql';
+
+const header = frontmatter({ agent: 'Alice', skill_count: 5 });
+// ---
+// generated_at: "2026-03-27T..."
+// agent: "Alice"
+// skill_count: 5
+// ---
+```
+
+### `markdownTable(rows, columns)`
+
+Generate a GitHub-Flavoured Markdown table from rows with explicit column configuration and optional per-cell formatters.
+
+```typescript
+import { markdownTable } from 'latticesql';
+
+const md = markdownTable(rows, [
+  { key: 'name',   header: 'Name' },
+  { key: 'status', header: 'Status', format: (v) => String(v || '—') },
+  { key: 'name',   header: 'Detail', format: (v, row) => `[view](${row.slug}/DETAIL.md)` },
+]);
+// | Name | Status | Detail |
+// | --- | --- | --- |
+// | Alice | active | [view](alice/DETAIL.md) |
+```
+
+Returns empty string for zero rows. The `format` callback receives `(cellValue, fullRow)`.
+
+### `slugify(name)`
+
+Generate a URL-safe slug from a display name — lowercases, strips diacritics, replaces non-alphanumeric runs with hyphens.
+
+```typescript
+import { slugify } from 'latticesql';
+
+slugify('My Agent Name');  // 'my-agent-name'
+slugify('Jose Garcia');    // 'jose-garcia'
+```
+
+### `truncate(content, maxChars, notice?)`
+
+Truncate content at a character budget. Appends a notice when truncation occurs.
+
+```typescript
+import { truncate } from 'latticesql';
+
+const md = truncate(longContent, 4000);
+// Appends: "\n\n*[truncated — context budget exceeded]*"
+
+const md2 = truncate(longContent, 4000, '\n\n[...truncated]');
+// Custom notice
+```
+
+---
+
 ## Entity context directories (v0.5+)
 
 `defineEntityContext()` is the high-level API for per-entity file generation — the pattern where each entity type gets its own directory tree, with a separate file for each relationship type.
@@ -1070,6 +1211,74 @@ interface SessionWriteEntry {
 ```
 
 The processor is responsible for applying the parsed entries to your DB and validating field names against your schema. The `parseSessionWrites` function is pure — no DB access, no side effects.
+
+### Full session parser (v0.5.2+)
+
+For parsing **all** entry types (not just writes), use `parseSessionMD`:
+
+```ts
+import { parseSessionMD, parseMarkdownEntries } from 'latticesql';
+
+// Parse YAML-delimited entries (--- header --- body ===)
+const result = parseSessionMD(content, startOffset);
+// result.entries: SessionEntry[]  — all types: event, learning, status, write, etc.
+// result.errors:  ParseError[]
+// result.lastOffset: number       — for incremental parsing
+
+// Parse markdown heading entries (## timestamp — description)
+const mdResult = parseMarkdownEntries(content, 'agent-name', startOffset);
+```
+
+#### Configurable entry types (v0.5.5+)
+
+By default, the parser validates against a built-in set of entry types. Override via `SessionParseOptions`:
+
+```ts
+import { parseSessionMD, DEFAULT_ENTRY_TYPES, DEFAULT_TYPE_ALIASES } from 'latticesql';
+
+// Accept any type (no validation)
+parseSessionMD(content, 0, { validTypes: null });
+
+// Custom type set
+parseSessionMD(content, 0, {
+  validTypes: new Set(['alert', 'todo', 'write']),
+  typeAliases: { warning: 'alert', task: 'todo' },
+});
+```
+
+### Read-only header (v0.5.5+)
+
+All generated context files should carry a read-only header. Use the default or create a custom one:
+
+```ts
+import { READ_ONLY_HEADER, createReadOnlyHeader } from 'latticesql';
+
+// Default: "generated by Lattice"
+const header = READ_ONLY_HEADER;
+
+// Custom generator name and docs reference
+const custom = createReadOnlyHeader({
+  generator: 'my-sync-tool',
+  docsRef: 'https://example.com/docs/sessions',
+});
+```
+
+### Write applicator (v0.5.2+)
+
+Apply parsed write entries to a better-sqlite3 database with schema validation:
+
+```ts
+import { applyWriteEntry } from 'latticesql';
+
+const result = applyWriteEntry(db, writeEntry);
+if (result.ok) {
+  console.log(`Applied to ${result.table}, record ${result.recordId}`);
+} else {
+  console.error(result.reason);
+}
+```
+
+Validates table existence, field names against schema, and uses soft-delete when a `deleted_at` column exists.
 
 ---
 
