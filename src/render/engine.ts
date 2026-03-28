@@ -5,6 +5,7 @@ import type { StorageAdapter } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
 import { atomicWrite } from './writer.js';
 import { resolveEntitySource, truncateContent } from './entity-query.js';
+import { compileEntityRender } from './entity-templates.js';
 import type { EntityContextManifestEntry, LatticeManifest } from '../lifecycle/manifest.js';
 import { writeManifest } from '../lifecycle/manifest.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
@@ -164,7 +165,8 @@ export class RenderEngine {
 
           if (spec.omitIfEmpty && rows.length === 0) continue;
 
-          const content = truncateContent(spec.render(rows), spec.budget);
+          const renderFn = compileEntityRender(spec.render);
+          const content = truncateContent(renderFn(rows), spec.budget);
           renderedFiles.set(filename, content);
 
           const filePath = join(entityDir, filename);
