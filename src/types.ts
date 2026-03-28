@@ -351,6 +351,77 @@ export type LatticeEvent =
   | { type: 'error'; data: Error };
 
 // ---------------------------------------------------------------------------
+// Generic CRUD options (v0.11+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for {@link Lattice.upsertByNaturalKey}.
+ */
+export interface UpsertByNaturalKeyOptions {
+  /** Source file path for change tracking (stored in `source_file` column if present). */
+  sourceFile?: string;
+  /** Content hash of the source (stored in `source_hash` column if present). */
+  sourceHash?: string;
+  /** Organization ID — auto-set on insert when the table has an `org_id` column and data lacks it. */
+  orgId?: string;
+}
+
+/**
+ * Options for {@link Lattice.link}.
+ */
+export interface LinkOptions {
+  /** Use INSERT OR REPLACE instead of INSERT OR IGNORE. Set true when junction has updateable columns. */
+  upsert?: boolean;
+}
+
+/**
+ * Result from {@link Lattice.seed}.
+ */
+export interface SeedResult {
+  upserted: number;
+  linked: number;
+  softDeleted: number;
+}
+
+/**
+ * Link specification for {@link SeedConfig}.
+ */
+export interface SeedLinkSpec {
+  /** Junction table name. */
+  junction: string;
+  /** FK column in the junction that points to the linked entity. */
+  foreignKey: string;
+  /** Column on the target table used to resolve names to IDs. */
+  resolveBy: string;
+  /** Target table name (defaults to the link key). */
+  resolveTable?: string;
+  /** Additional static columns to set on each junction row. */
+  extras?: Record<string, unknown>;
+}
+
+/**
+ * Configuration for {@link Lattice.seed}.
+ */
+export interface SeedConfig {
+  /** Array of records to seed (caller loads from YAML/JSON). */
+  data: Record<string, unknown>[];
+  /** Target table. */
+  table: string;
+  /** Column used as the natural key for upserting. */
+  naturalKey: string;
+  /** Source file for soft-delete tracking. */
+  sourceFile?: string;
+  /** Content hash. */
+  sourceHash?: string;
+  /** Junction table links — key is the field name on each data record containing an array of names. */
+  linkTo?: Record<string, SeedLinkSpec>;
+  /** Soft-delete records not in data. */
+  softDeleteMissing?: boolean;
+  /** Organization ID for org-scoped tables. */
+  orgId?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Write hooks (v0.10+)
 // ---------------------------------------------------------------------------
 
