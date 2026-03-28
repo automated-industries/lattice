@@ -430,6 +430,65 @@ export interface SeedConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Report framework (v0.14+)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single section in a report.
+ */
+export interface ReportSection {
+  /** Section name (used as key in result). */
+  name: string;
+  /** Query configuration. */
+  query: {
+    /** Table to query. */
+    table: string;
+    /** Additional filters beyond the time window. */
+    filters?: Filter[];
+    /** Group results by column value prefix (e.g., type prefix). */
+    groupBy?: string;
+    /** Order results. */
+    orderBy?: string;
+    /** Sort direction. */
+    orderDir?: 'asc' | 'desc';
+    /** Max rows. */
+    limit?: number;
+  };
+  /** Output format. */
+  format: 'count_and_list' | 'counts' | 'list' | 'custom';
+  /** Custom formatter (when format='custom'). */
+  customFormat?: (rows: Row[]) => string;
+}
+
+/**
+ * Configuration for {@link Lattice.buildReport}.
+ */
+export interface ReportConfig {
+  /** Time window: ISO timestamp or shorthand ('8h', '24h', '7d'). */
+  since: string;
+  /** Report sections to generate. */
+  sections: ReportSection[];
+  /** Message when all sections are empty. */
+  emptyMessage?: string;
+}
+
+/**
+ * Result from {@link Lattice.buildReport}.
+ */
+export interface ReportSectionResult {
+  name: string;
+  rows: Row[];
+  count: number;
+  formatted: string;
+}
+
+export interface ReportResult {
+  sections: ReportSectionResult[];
+  isEmpty: boolean;
+  since: string;
+}
+
+// ---------------------------------------------------------------------------
 // Write hooks (v0.10+)
 // ---------------------------------------------------------------------------
 
