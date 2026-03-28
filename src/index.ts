@@ -59,6 +59,8 @@ export type {
   EntitySectionPerRow,
   EntityFileSpec,
   EntityContextDefinition,
+  WriteHook,
+  WriteHookContext,
   CleanupOptions,
   CleanupResult,
   ReconcileOptions,
