@@ -351,6 +351,50 @@ export type LatticeEvent =
   | { type: 'error'; data: Error };
 
 // ---------------------------------------------------------------------------
+// Write hooks (v0.10+)
+// ---------------------------------------------------------------------------
+
+/**
+ * Context passed to write hook handlers.
+ */
+export interface WriteHookContext {
+  /** Table that was modified. */
+  table: string;
+  /** The operation that triggered the hook. */
+  op: 'insert' | 'update' | 'delete';
+  /** The row data (for insert: full row; for update: changed fields; for delete: { id }). */
+  row: Row;
+  /** Primary key value(s) of the affected row. */
+  pk: string;
+  /** For updates: the column names that were changed. */
+  changedColumns?: string[];
+}
+
+/**
+ * A write hook fires after insert/update/delete operations.
+ *
+ * @example
+ * ```ts
+ * db.defineWriteHook({
+ *   table: 'agents',
+ *   on: ['insert', 'update'],
+ *   watchColumns: ['team_id'],
+ *   handler: (ctx) => { denormalizeTeamFields(ctx.pk); },
+ * });
+ * ```
+ */
+export interface WriteHook {
+  /** Table the hook fires on. */
+  table: string;
+  /** Operations that trigger the hook. */
+  on: Array<'insert' | 'update' | 'delete'>;
+  /** Only fire on update when these columns changed. Omit = fire on any change. */
+  watchColumns?: string[];
+  /** Handler function. Runs synchronously after the DB write. */
+  handler: (ctx: WriteHookContext) => void;
+}
+
+// ---------------------------------------------------------------------------
 // Entity context directories (v0.5+)
 // ---------------------------------------------------------------------------
 
