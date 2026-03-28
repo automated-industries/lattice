@@ -670,6 +670,118 @@ db.defineWriteback({
 
 ---
 
+### Generic CRUD (v0.11+)
+
+Methods that work on **any table** — including tables created via raw DDL (not `define()`). Uses PRAGMA introspection to discover columns at runtime.
+
+```typescript
+// Upsert by natural key (not just UUID). Auto-handles org_id, updated_at, deleted_at.
+const id = await db.upsertByNaturalKey('agents', 'name', 'Alice', {
+  role: 'engineer', status: 'active',
+}, { sourceFile: 'agents.md', orgId: 'org-1' });
+
+// Sparse update — only writes non-null fields.
+await db.enrichByNaturalKey('agents', 'name', 'Alice', { title: 'Senior Engineer' });
+
+// Soft-delete records NOT in a set (reconciliation).
+const deleted = await db.softDeleteMissing('agents', 'name', 'agents.md', ['Alice', 'Bob']);
+
+// Query helpers
+const agents = await db.getActive('agents', 'name');
+const count = await db.countActive('agents');
+const alice = await db.getByNaturalKey('agents', 'name', 'Alice');
+```
+
+### Junction table helpers (v0.11+)
+
+```typescript
+// Link (INSERT OR IGNORE — idempotent)
+await db.link('agent_skills', { agent_id: 'a1', skill_id: 's1', proficiency: 'expert' });
+
+// Link with upsert (INSERT OR REPLACE — updates existing)
+await db.link('agent_projects', { agent_id: 'a1', project_id: 'p1', role: 'lead' }, { upsert: true });
+
+// Unlink (DELETE matching rows)
+await db.unlink('agent_projects', { agent_id: 'a1', project_id: 'p1' });
+```
+
+### `seed()` (v0.13+)
+
+```typescript
+db.seed(config: SeedConfig): Promise<SeedResult>
+```
+
+Bulk seed records from structured data (YAML, JSON, etc.). Upserts by natural key, links to related entities via junction tables, and optionally soft-deletes removed entries.
+
+```typescript
+import { parse } from 'yaml';
+import { readFileSync } from 'fs';
+
+const rules = parse(readFileSync('rules.yaml', 'utf8'));
+
+await db.seed({
+  data: rules,
+  table: 'rules',
+  naturalKey: 'title',
+  sourceFile: 'rules.yaml',
+  orgId: 'org-1',
+  linkTo: {
+    targetAgents: {
+      junction: 'rule_agents',
+      foreignKey: 'agent_id',
+      resolveBy: 'name',
+      resolveTable: 'agents',
+    },
+  },
+  softDeleteMissing: true,
+});
+```
+
+### `buildReport()` (v0.14+)
+
+```typescript
+db.buildReport(config: ReportConfig): Promise<ReportResult>
+```
+
+Declarative report builder — queries data within a time window, groups into sections, formats for output.
+
+```typescript
+const report = await db.buildReport({
+  since: '8h',   // or '24h', '7d', or ISO timestamp
+  sections: [
+    { name: 'tasks', query: { table: 'tasks', orderBy: 'created_at', orderDir: 'desc' }, format: 'count_and_list' },
+    { name: 'events', query: { table: 'activity', groupBy: 'type' }, format: 'counts' },
+    { name: 'alerts', query: { table: 'activity', filters: [{ col: 'severity', op: 'lte', val: 2 }] }, format: 'list' },
+  ],
+});
+
+for (const section of report.sections) {
+  console.log(`${section.name}: ${section.count} items`);
+  console.log(section.formatted);
+}
+```
+
+### Writeback persistence (v0.12+)
+
+`WritebackDefinition` now accepts an optional `stateStore` for persistent offset/dedup tracking across restarts:
+
+```typescript
+import { createSQLiteStateStore } from 'latticesql';
+
+db.defineWriteback({
+  file: './agents/*/SESSION.md',
+  stateStore: createSQLiteStateStore(db.db),  // persists offsets in SQLite
+  parse: (content, offset) => myParser(content, offset),
+  persist: async (entry, filePath) => { /* ... */ },
+  dedupeKey: (entry) => entry.id,
+  onArchive: (filePath) => archiveFile(filePath),  // lifecycle hook
+});
+```
+
+Built-in implementations: `InMemoryStateStore` (default), `SQLiteStateStore` (persistent).
+
+---
+
 ### `init()` / `close()`
 
 ```typescript
