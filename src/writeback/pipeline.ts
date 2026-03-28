@@ -1,18 +1,17 @@
 import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import type { WritebackDefinition } from '../types.js';
-
-interface FileState {
-  offset: number;
-  size: number;
-}
+import { InMemoryStateStore } from './state-store.js';
+import type { WritebackStateStore } from './state-store.js';
 
 export class WritebackPipeline {
   private readonly _definitions: WritebackDefinition[] = [];
-  private readonly _fileState = new Map<string, FileState>();
-  private readonly _seen = new Map<string, Set<string>>();
+  private _stateStore: WritebackStateStore = new InMemoryStateStore();
 
   define(def: WritebackDefinition): void {
+    if (def.stateStore) {
+      this._stateStore = def.stateStore;
+    }
     this._definitions.push(def);
   }
 
@@ -27,39 +26,45 @@ export class WritebackPipeline {
   private async _processDef(def: WritebackDefinition): Promise<number> {
     const paths = this._expandGlob(def.file);
     let processed = 0;
+    const store = def.stateStore ?? this._stateStore;
 
     for (const filePath of paths) {
       if (!existsSync(filePath)) continue;
 
       const stat = statSync(filePath);
       const currentSize = stat.size;
-      const state = this._fileState.get(filePath) ?? { offset: 0, size: 0 };
+      const storedOffset = store.getOffset(filePath);
+      const storedSize = store.getSize(filePath);
+      let offset = storedOffset;
 
       // Detect truncation/rotation
-      if (currentSize < state.size) {
-        this._fileState.set(filePath, { offset: 0, size: 0 });
-        state.offset = 0;
+      if (currentSize < storedSize) {
+        offset = 0;
+        store.setOffset(filePath, 0, 0);
       }
 
-      if (currentSize === state.offset) continue;
+      if (currentSize === offset) continue;
 
       const content = readFileSync(filePath, 'utf8');
-      const { entries, nextOffset } = def.parse(content, state.offset);
+      const { entries, nextOffset } = def.parse(content, offset);
 
-      this._fileState.set(filePath, { offset: nextOffset, size: currentSize });
+      store.setOffset(filePath, nextOffset, currentSize);
 
       for (const entry of entries) {
         const key = def.dedupeKey ? def.dedupeKey(entry) : null;
 
         if (key !== null) {
-          const seenForFile = this._seen.get(filePath) ?? new Set<string>();
-          if (seenForFile.has(key)) continue;
-          seenForFile.add(key);
-          this._seen.set(filePath, seenForFile);
+          if (store.isSeen(filePath, key)) continue;
+          store.markSeen(filePath, key);
         }
 
         await def.persist(entry, filePath);
         processed++;
+      }
+
+      // Lifecycle hook: onArchive
+      if (def.onArchive && processed > 0) {
+        def.onArchive(filePath);
       }
     }
 
