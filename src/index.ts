@@ -76,6 +76,8 @@ export type { LatticeManifest, EntityContextManifestEntry } from './lifecycle/ma
 // v0.6 additions — markdown render utilities
 export { frontmatter, markdownTable, slugify, truncate } from './render/markdown.js';
 export type { MarkdownTableColumn } from './render/markdown.js';
+export { createSQLiteStateStore, InMemoryStateStore } from './writeback/state-store.js';
+export type { WritebackStateStore } from './writeback/state-store.js';
 export { parseSessionWrites, generateWriteEntryId } from './session/index.js';
 export type { SessionWriteEntry, SessionWriteOp, SessionWriteParseResult } from './session/index.js';
 export { parseSessionMD, parseMarkdownEntries, generateEntryId, validateEntryId, DEFAULT_ENTRY_TYPES, DEFAULT_TYPE_ALIASES, applyWriteEntry, READ_ONLY_HEADER, createReadOnlyHeader } from './session/index.js';
