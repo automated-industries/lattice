@@ -259,6 +259,14 @@ export interface WritebackDefinition {
   persist: (entry: unknown, filePath: string) => Promise<void>;
   /** Optional dedup key — if omitted, every entry is processed */
   dedupeKey?: (entry: unknown) => string;
+  /**
+   * Optional state store for persistent offset/dedup tracking.
+   * Default: in-memory (lost on process exit).
+   * Use `createSQLiteStateStore(db)` for persistence across restarts.
+   */
+  stateStore?: import('./writeback/state-store.js').WritebackStateStore;
+  /** Called after entries are processed for a file. Useful for archival. */
+  onArchive?: (filePath: string) => void;
 }
 
 // ---------------------------------------------------------------------------
