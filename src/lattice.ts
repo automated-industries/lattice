@@ -19,6 +19,11 @@ import type {
   WriteHookContext,
   UpsertByNaturalKeyOptions,
   LinkOptions,
+  SeedConfig,
+  SeedResult,
+  ReportConfig,
+  ReportResult,
+  ReportSectionResult,
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
@@ -545,8 +550,8 @@ export class Lattice {
    * Upserts each record by natural key, links to entities via junction tables,
    * and optionally soft-deletes records no longer in the data set.
    */
-  async seed(config: import('./types.js').SeedConfig): Promise<import('./types.js').SeedResult> {
-    const notInit = this._notInitError<import('./types.js').SeedResult>();
+  async seed(config: SeedConfig): Promise<SeedResult> {
+    const notInit = this._notInitError<SeedResult>();
     if (notInit) return notInit;
 
     let upserted = 0;
@@ -606,6 +611,106 @@ export class Lattice {
   /** Infer FK column name from table name (e.g., 'rule' → 'rule_id'). */
   private _inferFk(table: string): string {
     return `${table}_id`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Report framework (v0.14+)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build a report by querying data from tables within a time window.
+   * Each section runs a filtered query and formats the results.
+   */
+  async buildReport(config: ReportConfig): Promise<ReportResult> {
+    const notInit = this._notInitError<ReportResult>();
+    if (notInit) return notInit;
+
+    const since = this._resolveSince(config.since);
+    const sections: ReportSectionResult[] = [];
+    let allEmpty = true;
+
+    for (const section of config.sections) {
+      const cols = this._ensureColumnCache(section.query.table);
+      const hasTimestamp = cols.has('timestamp');
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+
+      // Time window filter
+      if (hasTimestamp) {
+        conditions.push('timestamp >= ?');
+        params.push(since);
+      }
+
+      // Soft-delete exclusion
+      if (cols.has('deleted_at')) {
+        conditions.push('deleted_at IS NULL');
+      }
+
+      // User filters
+      if (section.query.filters) {
+        for (const f of section.query.filters) {
+          switch (f.op) {
+            case 'eq': conditions.push(`"${f.col}" = ?`); params.push(f.val); break;
+            case 'ne': conditions.push(`"${f.col}" != ?`); params.push(f.val); break;
+            case 'gt': conditions.push(`"${f.col}" > ?`); params.push(f.val); break;
+            case 'gte': conditions.push(`"${f.col}" >= ?`); params.push(f.val); break;
+            case 'lt': conditions.push(`"${f.col}" < ?`); params.push(f.val); break;
+            case 'lte': conditions.push(`"${f.col}" <= ?`); params.push(f.val); break;
+            case 'like': conditions.push(`"${f.col}" LIKE ?`); params.push(f.val); break;
+            case 'isNull': conditions.push(`"${f.col}" IS NULL`); break;
+            case 'isNotNull': conditions.push(`"${f.col}" IS NOT NULL`); break;
+            case 'in': {
+              const arr = f.val as unknown[];
+              if (arr.length > 0) {
+                conditions.push(`"${f.col}" IN (${arr.map(() => '?').join(', ')})`);
+                params.push(...arr);
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+      const orderBy = section.query.orderBy ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}` : '';
+      const limit = section.query.limit ? ` LIMIT ${section.query.limit}` : '';
+
+      const rows = this._adapter.all(`SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`, params) as Row[];
+
+      if (rows.length > 0) allEmpty = false;
+
+      // Format
+      let formatted = '';
+      if (section.format === 'custom' && section.customFormat) {
+        formatted = section.customFormat(rows);
+      } else if (section.format === 'counts' && section.query.groupBy) {
+        const groups = new Map<string, number>();
+        for (const row of rows) {
+          const type = String(row[section.query.groupBy] ?? 'other');
+          const prefix = type.includes('.') ? type.split('.')[0]! : type;
+          groups.set(prefix, (groups.get(prefix) ?? 0) + 1);
+        }
+        formatted = [...groups.entries()].map(([k, v]) => `${k}: ${v}`).join('\n');
+      } else if (section.format === 'count_and_list') {
+        formatted = `Count: ${rows.length}\n` + rows.map(r => `- ${r.summary ?? r.name ?? r.title ?? JSON.stringify(r)}`).join('\n');
+      } else {
+        formatted = rows.map(r => `- ${r.summary ?? r.name ?? r.title ?? JSON.stringify(r)}`).join('\n');
+      }
+
+      sections.push({ name: section.name, rows, count: rows.length, formatted });
+    }
+
+    return { sections, isEmpty: allEmpty, since };
+  }
+
+  /** Parse duration shorthand ('8h', '24h', '7d') into ISO timestamp. */
+  private _resolveSince(since: string): string {
+    const match = since.match(/^(\d+)([hmd])$/);
+    if (!match) return since; // assume ISO timestamp
+    const [, numStr, unit] = match;
+    const num = parseInt(numStr!, 10);
+    const ms = unit === 'h' ? num * 3600000 : unit === 'd' ? num * 86400000 : num * 60000;
+    return new Date(Date.now() - ms).toISOString();
   }
 
   query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
