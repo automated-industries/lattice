@@ -17,6 +17,8 @@ import type {
   Filter,
   WriteHook,
   WriteHookContext,
+  UpsertByNaturalKeyOptions,
+  LinkOptions,
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
@@ -342,6 +344,198 @@ export class Lattice {
     );
   }
 
+  // -------------------------------------------------------------------------
+  // Generic CRUD — works on ANY table (v0.11+)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Upsert a record by natural key. If a non-deleted record with the given
+   * natural key exists, update it. Otherwise insert with a new UUID.
+   * Auto-handles `org_id`, `updated_at`, `deleted_at`, `source_file`, `source_hash`.
+   */
+  upsertByNaturalKey(
+    table: string,
+    naturalKeyCol: string,
+    naturalKeyVal: string,
+    data: Row,
+    opts?: import('./types.js').UpsertByNaturalKeyOptions,
+  ): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+
+    const cols = this._ensureColumnCache(table);
+    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
+
+    // Auto-set convention columns
+    const withConventions = { ...sanitized };
+    if (cols.has('updated_at')) withConventions.updated_at = new Date().toISOString();
+    if (opts?.sourceFile && cols.has('source_file')) withConventions.source_file = opts.sourceFile;
+    if (opts?.sourceHash && cols.has('source_hash')) withConventions.source_hash = opts.sourceHash;
+
+    // Check if record exists
+    const existing = this._adapter.get(
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+      [naturalKeyVal],
+    ) as Row | undefined;
+
+    if (existing) {
+      // Update existing
+      const entries = Object.entries(withConventions).filter(([k]) => k !== 'id');
+      if (entries.length === 0) return Promise.resolve(existing.id as string);
+      const setCols = entries.map(([k]) => `"${k}" = ?`).join(', ');
+      this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE id = ?`, [...entries.map(([, v]) => v), existing.id]);
+      this._fireWriteHooks(table, 'update', withConventions, existing.id as string, Object.keys(sanitized));
+      return Promise.resolve(existing.id as string);
+    }
+
+    // Insert new
+    const id = (sanitized.id as string | undefined) ?? uuidv4();
+    const insertData: Row = { ...withConventions, id, [naturalKeyCol]: naturalKeyVal };
+    if (opts?.orgId && cols.has('org_id') && !insertData.org_id) insertData.org_id = opts.orgId;
+    if (cols.has('deleted_at')) insertData.deleted_at = null;
+    if (cols.has('created_at') && !insertData.created_at) insertData.created_at = new Date().toISOString();
+
+    const filtered = this._filterToSchemaColumns(table, insertData);
+    const colNames = Object.keys(filtered).map(c => `"${c}"`).join(', ');
+    const placeholders = Object.keys(filtered).map(() => '?').join(', ');
+    this._adapter.run(`INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`, Object.values(filtered));
+    this._fireWriteHooks(table, 'insert', filtered, id);
+    return Promise.resolve(id);
+  }
+
+  /**
+   * Sparse update by natural key — only writes non-null fields on an existing record.
+   * Returns true if a row was found and updated.
+   */
+  enrichByNaturalKey(table: string, naturalKeyCol: string, naturalKeyVal: string, data: Row): Promise<boolean> {
+    const notInit = this._notInitError<boolean>();
+    if (notInit) return notInit;
+
+    const existing = this._adapter.get(
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+      [naturalKeyVal],
+    ) as Row | undefined;
+    if (!existing) return Promise.resolve(false);
+
+    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
+    const entries = Object.entries(sanitized).filter(([k, v]) => v !== null && v !== undefined && k !== 'id');
+    if (entries.length === 0) return Promise.resolve(true);
+
+    const cols = this._ensureColumnCache(table);
+    const withTs = [...entries];
+    if (cols.has('updated_at')) withTs.push(['updated_at', new Date().toISOString()]);
+
+    const setCols = withTs.map(([k]) => `"${k}" = ?`).join(', ');
+    this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE id = ?`, [...withTs.map(([, v]) => v), existing.id]);
+    this._fireWriteHooks(table, 'update', Object.fromEntries(entries), existing.id as string, entries.map(([k]) => k));
+    return Promise.resolve(true);
+  }
+
+  /**
+   * Soft-delete records from a source file whose natural key is NOT in the given set.
+   * Returns count of rows soft-deleted.
+   */
+  softDeleteMissing(table: string, naturalKeyCol: string, sourceFile: string, currentKeys: string[]): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+
+    if (currentKeys.length === 0) return Promise.resolve(0);
+
+    // Count rows that will be soft-deleted
+    const placeholders = currentKeys.map(() => '?').join(', ');
+    const countRow = this._adapter.get(
+      `SELECT COUNT(*) as cnt FROM "${table}"
+       WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
+       AND (deleted_at IS NULL OR deleted_at = '')`,
+      [sourceFile, ...currentKeys],
+    ) as { cnt: number } | undefined;
+    const count = countRow?.cnt ?? 0;
+
+    if (count > 0) {
+      this._adapter.run(
+        `UPDATE "${table}" SET deleted_at = datetime('now'), updated_at = datetime('now')
+         WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
+         AND (deleted_at IS NULL OR deleted_at = '')`,
+        [sourceFile, ...currentKeys],
+      );
+    }
+    return Promise.resolve(count);
+  }
+
+  /**
+   * Get all non-deleted rows from a table, ordered by the given column.
+   * Works on any table, not just defined ones.
+   */
+  getActive(table: string, orderBy = 'name'): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+
+    const cols = this._ensureColumnCache(table);
+    const hasDeletedAt = cols.has('deleted_at');
+    const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
+    const order = cols.has(orderBy) ? ` ORDER BY "${orderBy}"` : '';
+    return Promise.resolve(this._adapter.all(`SELECT * FROM "${table}"${where}${order}`));
+  }
+
+  /**
+   * Count non-deleted rows in a table.
+   */
+  countActive(table: string): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+
+    const cols = this._ensureColumnCache(table);
+    const hasDeletedAt = cols.has('deleted_at');
+    const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
+    const row = this._adapter.get(`SELECT COUNT(*) as cnt FROM "${table}"${where}`) as { cnt: number };
+    return Promise.resolve(row.cnt);
+  }
+
+  /**
+   * Lookup a single row by natural key (non-deleted).
+   */
+  getByNaturalKey(table: string, naturalKeyCol: string, naturalKeyVal: string): Promise<Row | null> {
+    const notInit = this._notInitError<Row | null>();
+    if (notInit) return notInit;
+
+    return Promise.resolve(
+      this._adapter.get(
+        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+        [naturalKeyVal],
+      ) ?? null,
+    );
+  }
+
+  /**
+   * Insert a row into a junction table. Uses INSERT OR IGNORE by default
+   * (idempotent). Pass `{ upsert: true }` for INSERT OR REPLACE.
+   */
+  link(junctionTable: string, data: Row, opts?: import('./types.js').LinkOptions): Promise<void> {
+    const notInit = this._notInitError<void>();
+    if (notInit) return notInit;
+
+    const filtered = this._filterToSchemaColumns(junctionTable, data);
+    const colNames = Object.keys(filtered).map(c => `"${c}"`).join(', ');
+    const placeholders = Object.keys(filtered).map(() => '?').join(', ');
+    const verb = opts?.upsert ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
+    this._adapter.run(`${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`, Object.values(filtered));
+    return Promise.resolve();
+  }
+
+  /**
+   * Delete rows from a junction table matching all given conditions.
+   */
+  unlink(junctionTable: string, conditions: Row): Promise<void> {
+    const notInit = this._notInitError<void>();
+    if (notInit) return notInit;
+
+    const entries = Object.entries(conditions);
+    if (entries.length === 0) return Promise.resolve();
+    const where = entries.map(([k]) => `"${k}" = ?`).join(' AND ');
+    this._adapter.run(`DELETE FROM "${junctionTable}" WHERE ${where}`, entries.map(([, v]) => v));
+    return Promise.resolve();
+  }
+
   query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
@@ -549,9 +743,20 @@ export class Lattice {
    * objects are interpolated into SQL, so stripping unknown keys eliminates
    * any theoretical injection vector from crafted object keys.
    */
+  /** Lazily populate column cache for tables not registered via define(). */
+  private _ensureColumnCache(table: string): Set<string> {
+    let cols = this._columnCache.get(table);
+    if (!cols) {
+      const rows = this._adapter.all(`PRAGMA table_info("${table}")`);
+      cols = new Set(rows.map((r) => r.name as string));
+      if (cols.size > 0) this._columnCache.set(table, cols);
+    }
+    return cols;
+  }
+
   private _filterToSchemaColumns(table: string, row: Row): Row {
-    const cols = this._columnCache.get(table);
-    if (!cols) return row; // unregistered table — pass through unchanged
+    const cols = this._ensureColumnCache(table);
+    if (!cols || cols.size === 0) return row; // unknown table — pass through
     const keys = Object.keys(row);
     if (keys.every((k) => cols.has(k))) return row; // common case: no unknown keys
     return Object.fromEntries(keys.filter((k) => cols.has(k)).map((k) => [k, row[k]])) as Row;
