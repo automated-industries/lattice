@@ -320,3 +320,91 @@ describe('sourceDefaults merging', () => {
     expect(customRows).toHaveLength(4); // custom query not affected by softDelete default
   });
 });
+
+// ---------------------------------------------------------------------------
+// Junction column projection (v0.8)
+// ---------------------------------------------------------------------------
+
+describe('manyToMany with junctionColumns', () => {
+  let db: Lattice;
+  let adapter: StorageAdapter;
+  const agentRow: Row = { id: 'a1', name: 'Alice', team_id: 't1' };
+
+  beforeEach(() => {
+    db = createTestDb();
+    adapter = getAdapter(db);
+  });
+
+  it('includes junction columns as string', () => {
+    // Add proficiency column to agent_skill junction for testing
+    (db as any)._adapter.run(`ALTER TABLE agent_skill ADD COLUMN proficiency TEXT DEFAULT 'standard'`);
+    (db as any)._adapter.run(`UPDATE agent_skill SET proficiency = 'expert' WHERE agent_id = 'a1' AND skill_id = 's1'`);
+
+    const rows = resolveEntitySource(
+      { type: 'manyToMany', junctionTable: 'agent_skill', localKey: 'agent_id',
+        remoteKey: 'skill_id', remoteTable: 'skill', softDelete: true,
+        junctionColumns: ['proficiency'] },
+      agentRow, 'id', adapter,
+    );
+    expect(rows).toHaveLength(2); // s1 + s2, not s3 (deleted)
+    const ts = rows.find(r => r.name === 'TypeScript');
+    expect(ts?.proficiency).toBe('expert');
+  });
+
+  it('includes junction columns with alias', () => {
+    (db as any)._adapter.run(`ALTER TABLE agent_skill ADD COLUMN proficiency TEXT DEFAULT 'standard'`);
+
+    const rows = resolveEntitySource(
+      { type: 'manyToMany', junctionTable: 'agent_skill', localKey: 'agent_id',
+        remoteKey: 'skill_id', remoteTable: 'skill', softDelete: true,
+        junctionColumns: [{ col: 'proficiency', as: 'skill_level' }] },
+      agentRow, 'id', adapter,
+    );
+    expect(rows[0]?.skill_level).toBeDefined();
+  });
+
+  it('works without junctionColumns (backward compat)', () => {
+    const rows = resolveEntitySource(
+      { type: 'manyToMany', junctionTable: 'agent_skill', localKey: 'agent_id',
+        remoteKey: 'skill_id', remoteTable: 'skill', softDelete: true },
+      agentRow, 'id', adapter,
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.proficiency).toBeUndefined(); // no junction columns without opt-in
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-column ORDER BY (v0.8)
+// ---------------------------------------------------------------------------
+
+describe('multi-column orderBy', () => {
+  let db: Lattice;
+  let adapter: StorageAdapter;
+  const teamRow: Row = { id: 't1', name: 'Alpha' };
+
+  beforeEach(() => {
+    db = createTestDb();
+    adapter = getAdapter(db);
+  });
+
+  it('sorts by multiple columns', () => {
+    const rows = resolveEntitySource(
+      { type: 'hasMany', table: 'agent', foreignKey: 'team_id', softDelete: true,
+        orderBy: [{ col: 'status' }, { col: 'name', dir: 'desc' }] },
+      teamRow, 'id', adapter,
+    );
+    // status: active, active, inactive → active first, then by name desc within same status
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.status).toBe('active');
+  });
+
+  it('string orderBy still works (backward compat)', () => {
+    const rows = resolveEntitySource(
+      { type: 'hasMany', table: 'agent', foreignKey: 'team_id', softDelete: true,
+        orderBy: 'name', orderDir: 'desc' },
+      teamRow, 'id', adapter,
+    );
+    expect(rows.map(r => r.name)).toEqual(['Charlie', 'Bob', 'Alice']);
+  });
+});
