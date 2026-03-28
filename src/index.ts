@@ -39,6 +39,7 @@ export type {
   RenderSpec,
   // v0.5 additions
   SourceQueryOptions,
+  OrderBySpec,
   SelfSource,
   HasManySource,
   ManyToManySource,
