@@ -244,14 +244,105 @@ export type EntityFileSource =
  * }
  * ```
  */
+// ---------------------------------------------------------------------------
+// Entity render templates (v0.9+)
+// ---------------------------------------------------------------------------
+
+/** Column spec for entity-table template (reuses MarkdownTableColumn). */
+export interface EntityTableColumn {
+  key: string;
+  header: string;
+  format?: (val: unknown, row: Row) => string;
+}
+
+/**
+ * Render a heading + GFM table. Auto-prepends read-only header + frontmatter.
+ */
+export interface EntityTableTemplate {
+  template: 'entity-table';
+  heading: string;
+  columns: EntityTableColumn[];
+  emptyMessage?: string;
+  frontmatter?: Record<string, string | number | boolean>;
+  beforeRender?: (rows: Row[]) => Row[];
+}
+
+/**
+ * Field spec for entity-profile template.
+ */
+export interface EntityProfileField {
+  key: string;
+  label: string;
+  format?: (val: unknown, row: Row) => string;
+}
+
+/**
+ * Section spec for entity-profile template (renders enriched JSON arrays).
+ */
+export interface EntityProfileSection {
+  /** Key of the enriched field (e.g. 'agents' → reads row._agents). */
+  key: string;
+  heading: string | ((row: Row) => string);
+  condition?: (row: Row) => boolean;
+  render: 'table' | 'list' | ((items: Row[]) => string);
+  columns?: EntityTableColumn[];
+  formatItem?: (item: Row) => string;
+}
+
+/**
+ * Render entity profile: heading + field-value pairs + optional enriched sections.
+ */
+export interface EntityProfileTemplate {
+  template: 'entity-profile';
+  heading: string | ((row: Row) => string);
+  fields: EntityProfileField[];
+  sections?: EntityProfileSection[];
+  frontmatter?: Record<string, string | number | boolean> | ((row: Row) => Record<string, string | number | boolean>);
+  beforeRender?: (rows: Row[]) => Row[];
+}
+
+/**
+ * Per-row section spec for entity-sections template.
+ */
+export interface EntitySectionPerRow {
+  heading: (row: Row) => string;
+  metadata?: Array<{ key: string; label: string; format?: (val: unknown) => string }>;
+  body?: (row: Row) => string;
+}
+
+/**
+ * Render per-row sections: heading + metadata key-value + body text per row.
+ */
+export interface EntitySectionsTemplate {
+  template: 'entity-sections';
+  heading: string;
+  perRow: EntitySectionPerRow;
+  emptyMessage?: string;
+  frontmatter?: Record<string, string | number | boolean>;
+  beforeRender?: (rows: Row[]) => Row[];
+}
+
+/** Union of all entity render template types. */
+export type EntityRenderTemplate =
+  | EntityTableTemplate
+  | EntityProfileTemplate
+  | EntitySectionsTemplate;
+
+/** Accepted values for EntityFileSpec.render — function or template object. */
+export type EntityRenderSpec = ((rows: Row[]) => string) | EntityRenderTemplate;
+
+// ---------------------------------------------------------------------------
+// File spec — one entry per file generated inside each entity directory
+// ---------------------------------------------------------------------------
+
 export interface EntityFileSpec {
   /** Determines what rows are passed to {@link render}. */
   source: EntityFileSource;
   /**
    * Converts the resolved rows into the file's markdown content.
-   * For `self` sources, `rows` is always a single-element array.
+   * Accepts a function `(rows) => string` or a declarative template object.
    */
-  render: (rows: Row[]) => string;
+  render: EntityRenderSpec;
   /**
    * Maximum number of characters allowed in the rendered output.
    * Content exceeding this limit is truncated with a notice appended.
