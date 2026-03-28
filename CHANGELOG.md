@@ -6,6 +6,66 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.14.0] — 2026-03-28
+
+### Added
+- **Report framework**: `buildReport()` with time-windowed sections, duration parsing ('8h','24h','7d'), four format types (count_and_list, counts, list, custom)
+
+## [0.13.0] — 2026-03-28
+
+### Added
+- **Seeding DSL**: `seed()` method for bulk upsert from structured data (YAML/JSON). Links to entities via junction tables, soft-deletes removed entries. SeedConfig, SeedLinkSpec types.
+
+## [0.12.0] — 2026-03-28
+
+### Added
+- **Writeback persistence**: Pluggable `WritebackStateStore` interface. `InMemoryStateStore` (default), `SQLiteStateStore` (persistent across restarts). `createSQLiteStateStore()` factory. `onArchive` lifecycle hook on WritebackDefinition.
+
+## [0.11.0] — 2026-03-28
+
+### Added
+- **Generic CRUD layer**: `upsertByNaturalKey()`, `enrichByNaturalKey()`, `softDeleteMissing()`, `getActive()`, `countActive()`, `getByNaturalKey()` — work on ANY table via PRAGMA introspection (no `define()` required)
+- **Junction table helpers**: `link()` (INSERT OR IGNORE/REPLACE), `unlink()` (DELETE matching)
+- Internal: `_ensureColumnCache()` lazily populates column cache for unregistered tables
+
+## [0.10.0] — 2026-03-27
+
+### Added
+- **Write hooks**: `defineWriteHook()` fires after insert/update/delete with table + column filtering. `WriteHook`, `WriteHookContext` types.
+
+## [0.9.0] — 2026-03-27
+
+### Added
+- **Entity render templates**: `entity-table`, `entity-profile`, `entity-sections` declarative templates for `EntityFileSpec.render`. Backward compatible with function form. Auto read-only header + frontmatter.
+
+## [0.8.0] — 2026-03-27
+
+### Added
+- **Junction column projection**: `junctionColumns` on `ManyToManySource` — include junction table columns in results with optional aliasing
+- **Multi-column ORDER BY**: `orderBy` accepts `OrderBySpec[]` array with per-column direction
+
+## [0.7.0] — 2026-03-27
+
+### Added
+- **Enriched source type**: `{ type: 'enriched', include: { ... } }` — starts with entity row, attaches related data as `_key` JSON string fields via declarative or custom sub-lookups
+
+## [0.6.0] — 2026-03-27
+
+### Added
+- **Source query options**: `filters`, `orderBy`, `orderDir`, `limit`, `softDelete` on `HasManySource`, `ManyToManySource`, `BelongsToSource`
+- **sourceDefaults**: `EntityContextDefinition.sourceDefaults` merges into all relationship sources
+- **Markdown utilities**: `frontmatter()`, `markdownTable()`, `slugify()`, `truncate()` — composable helpers for render functions
+
+## [0.5.5] — 2026-03-27
+
+### Fixed
+- Removed all consumer-specific references from source code and documentation
+- `READ_ONLY_HEADER` now uses generic text; `createReadOnlyHeader()` factory for custom headers
+- `parseSessionMD` / `parseMarkdownEntries` accept `SessionParseOptions` for configurable entry types/aliases
+- Added `scripts/check-generic.sh` guardrail wired into `prepublishOnly`
+
+---
+
 ## [0.5.0] — 2026-03-23
 
 ### Added
