@@ -356,6 +356,7 @@ export type LatticeEvent =
 
 export type {
   SourceQueryOptions,
+  OrderBySpec,
   SelfSource,
   HasManySource,
   ManyToManySource,
