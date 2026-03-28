@@ -456,6 +456,44 @@ context/
 
 The `softDelete: true` shorthand is equivalent to `filters: [{ col: 'deleted_at', op: 'isNull' }]`.
 
+#### Junction column projection (v0.8+)
+
+`manyToMany` sources can include columns from the junction table in results:
+
+```typescript
+{
+  type: 'manyToMany',
+  junctionTable: 'agent_projects',
+  localKey: 'agent_id',
+  remoteKey: 'project_id',
+  remoteTable: 'projects',
+  junctionColumns: [
+    'source',                            // included as-is
+    { col: 'role', as: 'agent_role' },   // aliased
+  ],
+}
+// Each result row includes both remote table columns AND junction columns
+```
+
+#### Multi-column ORDER BY (v0.8+)
+
+`orderBy` accepts an array for multi-column sorting:
+
+```typescript
+{
+  type: 'hasMany',
+  table: 'events',
+  foreignKey: 'project_id',
+  orderBy: [
+    { col: 'severity' },                  // ASC by default
+    { col: 'timestamp', dir: 'desc' },    // DESC
+  ],
+  limit: 20,
+}
+```
+
+The string form (`orderBy: 'name'`) still works for single-column sorting.
+
 #### sourceDefaults (v0.6+)
 
 Set default query options for all relationship sources in an entity context:
@@ -504,7 +542,97 @@ Starts with the entity's own row and attaches related data as JSON string fields
 }
 ```
 
+#### Entity render templates (v0.9+)
+
+`EntityFileSpec.render` accepts declarative template objects in addition to functions. Three built-in templates:
+
+**entity-table** — heading + GFM table:
+```typescript
+render: {
+  template: 'entity-table',
+  heading: 'Skills',
+  columns: [
+    { key: 'name', header: 'Name' },
+    { key: 'level', header: 'Level', format: (v) => String(v || '—') },
+  ],
+  emptyMessage: '*No skills assigned.*',
+  beforeRender: (rows) => rows.filter(r => r.active),  // optional
+}
+```
+
+**entity-profile** — heading + field-value pairs + enriched JSON sections:
+```typescript
+render: {
+  template: 'entity-profile',
+  heading: (r) => r.name as string,
+  fields: [
+    { key: 'status', label: 'Status' },
+    { key: 'role', label: 'Role' },
+  ],
+  sections: [
+    { key: 'skills', heading: 'Skills', render: 'table',
+      columns: [{ key: 'name', header: 'Name' }] },
+    { key: 'projects', heading: 'Projects', render: 'list',
+      formatItem: (p) => `${p.name} (${p.status})` },
+  ],
+  frontmatter: (r) => ({ agent: r.name as string }),
+}
+```
+
+**entity-sections** — per-row sections with metadata + body:
+```typescript
+render: {
+  template: 'entity-sections',
+  heading: 'Rules',
+  perRow: {
+    heading: (r) => r.title as string,
+    metadata: [
+      { key: 'scope', label: 'Scope' },
+      { key: 'category', label: 'Category' },
+    ],
+    body: (r) => r.rule_text as string,
+  },
+  emptyMessage: '*No rules defined.*',
+}
+```
+
+All templates auto-prepend a read-only header and YAML frontmatter. Functions still work — the union type is backward compatible.
+
 See [docs/entity-context.md](./docs/entity-context.md) for the complete guide.
+
+---
+
+### `defineWriteHook()` (v0.10+)
+
+```typescript
+db.defineWriteHook(hook: WriteHook): this
+```
+
+Register a post-write lifecycle hook that fires after `insert()`, `update()`, or `delete()` operations. Useful for denormalization, fan-out, computed fields, and audit logging.
+
+```typescript
+db.defineWriteHook({
+  table: 'agents',
+  on: ['insert', 'update'],
+  watchColumns: ['team_id', 'division'],  // only fire when these change
+  handler: (ctx) => {
+    // ctx.table, ctx.op, ctx.row, ctx.pk, ctx.changedColumns
+    console.log(`${ctx.op} on ${ctx.table}: ${ctx.pk}`);
+    denormalizeRelatedData(ctx.pk, ctx.row);
+  },
+});
+```
+
+**Options:**
+
+| Field | Type | Description |
+|---|---|---|
+| `table` | `string` | Table to watch |
+| `on` | `Array<'insert' \| 'update' \| 'delete'>` | Operations that trigger the hook |
+| `watchColumns` | `string[]` (optional) | Only fire on update when these columns changed |
+| `handler` | `(ctx: WriteHookContext) => void` | Synchronous handler |
+
+Hook errors are caught and routed to error handlers — they never crash the caller. Multiple hooks per table are supported.
 
 ---
 
