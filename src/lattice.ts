@@ -15,6 +15,8 @@ import type {
   AuditEvent,
   LatticeEvent,
   Filter,
+  WriteHook,
+  WriteHookContext,
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
@@ -75,6 +77,7 @@ export class Lattice {
     entriesProcessed: number;
   }>[] = [];
   private readonly _errorHandlers: EventHandler<Error>[] = [];
+  private readonly _writeHooks: WriteHook[] = [];
 
   constructor(pathOrConfig: string | LatticeConfigInput, options: LatticeOptions = {}) {
     // Resolve config-file form: read YAML, extract dbPath, collect table defs
@@ -153,6 +156,15 @@ export class Lattice {
     return this;
   }
 
+  /**
+   * Register a write hook that fires after insert/update/delete operations.
+   * Hooks run synchronously after the DB write and audit emit.
+   */
+  defineWriteHook(hook: WriteHook): this {
+    this._writeHooks.push(hook);
+    return this;
+  }
+
   defineWriteback(def: WritebackDefinition): this {
     this._writeback.define(def);
     return this;
@@ -220,6 +232,7 @@ export class Lattice {
     const rawPk = rowWithPk[pkCol];
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     this._sanitizer.emitAudit(table, 'insert', pkValue);
+    this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     return Promise.resolve(pkValue);
   }
 
@@ -302,6 +315,7 @@ export class Lattice {
 
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
     this._sanitizer.emitAudit(table, 'update', auditId);
+    this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     return Promise.resolve();
   }
 
@@ -314,6 +328,7 @@ export class Lattice {
 
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
     this._sanitizer.emitAudit(table, 'delete', auditId);
+    this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
     return Promise.resolve();
   }
 
@@ -623,6 +638,24 @@ export class Lattice {
   }
 
   /** Returns a rejected Promise if not initialized; null if ready. */
+  private _fireWriteHooks(table: string, op: 'insert' | 'update' | 'delete', row: Row, pk: string, changedColumns?: string[]): void {
+    for (const hook of this._writeHooks) {
+      if (hook.table !== table) continue;
+      if (!hook.on.includes(op)) continue;
+      if (op === 'update' && hook.watchColumns && changedColumns) {
+        if (!hook.watchColumns.some(c => changedColumns.includes(c))) continue;
+      }
+      try {
+        const ctx: WriteHookContext = { table, op, row, pk };
+        if (changedColumns) ctx.changedColumns = changedColumns;
+        hook.handler(ctx);
+      } catch (err) {
+        // Hook errors must not crash the caller
+        for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  }
+
   private _notInitError<T>(): Promise<T> | null {
     if (!this._initialized) {
       return Promise.reject(
