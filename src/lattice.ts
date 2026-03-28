@@ -536,6 +536,78 @@ export class Lattice {
     return Promise.resolve();
   }
 
+  // -------------------------------------------------------------------------
+  // Seeding DSL (v0.13+)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Seed records from structured data (e.g., loaded from YAML/JSON).
+   * Upserts each record by natural key, links to entities via junction tables,
+   * and optionally soft-deletes records no longer in the data set.
+   */
+  async seed(config: import('./types.js').SeedConfig): Promise<import('./types.js').SeedResult> {
+    const notInit = this._notInitError<import('./types.js').SeedResult>();
+    if (notInit) return notInit;
+
+    let upserted = 0;
+    let linked = 0;
+    let softDeleted = 0;
+    const keys: string[] = [];
+
+    for (const record of config.data) {
+      const naturalKeyVal = String(record[config.naturalKey] ?? '');
+      if (!naturalKeyVal) continue;
+
+      keys.push(naturalKeyVal);
+
+      // Upsert the record
+      const upsertOpts: import('./types.js').UpsertByNaturalKeyOptions = {};
+      if (config.sourceFile) upsertOpts.sourceFile = config.sourceFile;
+      if (config.sourceHash) upsertOpts.sourceHash = config.sourceHash;
+      if (config.orgId) upsertOpts.orgId = config.orgId;
+      await this.upsertByNaturalKey(config.table, config.naturalKey, naturalKeyVal, record as Row, upsertOpts);
+      upserted++;
+
+      // Process links
+      if (config.linkTo) {
+        const recordId = await this.getByNaturalKey(config.table, config.naturalKey, naturalKeyVal);
+        if (!recordId) continue;
+        const id = recordId.id as string;
+
+        for (const [field, spec] of Object.entries(config.linkTo)) {
+          const names = record[field] as string[] | undefined;
+          if (!Array.isArray(names)) continue;
+
+          const resolveTable = spec.resolveTable ?? field;
+          for (const name of names) {
+            const target = await this.getByNaturalKey(resolveTable, spec.resolveBy, name);
+            if (!target) continue;
+
+            const linkData: Row = {
+              [this._inferFk(config.table)]: id,
+              [spec.foreignKey]: target.id,
+              ...(spec.extras ?? {}),
+            };
+            await this.link(spec.junction, linkData);
+            linked++;
+          }
+        }
+      }
+    }
+
+    // Soft-delete missing
+    if (config.softDeleteMissing && config.sourceFile && keys.length > 0) {
+      softDeleted = await this.softDeleteMissing(config.table, config.naturalKey, config.sourceFile, keys);
+    }
+
+    return { upserted, linked, softDeleted };
+  }
+
+  /** Infer FK column name from table name (e.g., 'rule' → 'rule_id'). */
+  private _inferFk(table: string): string {
+    return `${table}_id`;
+  }
+
   query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
