@@ -1,6 +1,6 @@
 import type { Row, Filter } from '../types.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import type { EntityFileSource, SourceQueryOptions } from '../schema/entity-context.js';
+import type { EntityFileSource, SourceQueryOptions, OrderBySpec } from '../schema/entity-context.js';
 
 // ---------------------------------------------------------------------------
 // SQL clause builder for source query options
@@ -89,9 +89,21 @@ function appendQueryOptions(
     }
   }
 
-  if (opts.orderBy && SAFE_COL_RE.test(opts.orderBy)) {
-    const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
-    sql += ` ORDER BY ${prefix}"${opts.orderBy}" ${dir}`;
+  if (opts.orderBy) {
+    if (typeof opts.orderBy === 'string') {
+      if (SAFE_COL_RE.test(opts.orderBy)) {
+        const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
+        sql += ` ORDER BY ${prefix}"${opts.orderBy}" ${dir}`;
+      }
+    } else {
+      // Array form: multi-column ORDER BY
+      const clauses = (opts.orderBy as OrderBySpec[])
+        .filter(spec => SAFE_COL_RE.test(spec.col))
+        .map(spec => `${prefix}"${spec.col}" ${spec.dir === 'desc' ? 'DESC' : 'ASC'}`);
+      if (clauses.length > 0) {
+        sql += ` ORDER BY ${clauses.join(', ')}`;
+      }
+    }
   }
 
   if (opts.limit !== undefined && opts.limit > 0) {
@@ -138,7 +150,22 @@ export function resolveEntitySource(
       const pkVal = entityRow[entityPk];
       const remotePk = source.references ?? 'id';
       const params: unknown[] = [pkVal];
-      let sql = `SELECT r.* FROM "${source.remoteTable}" r
+
+      // Build SELECT clause with optional junction columns
+      let selectCols = 'r.*';
+      if (source.junctionColumns?.length) {
+        const jCols = source.junctionColumns.map(jc => {
+          if (typeof jc === 'string') {
+            if (!SAFE_COL_RE.test(jc)) return null;
+            return `j."${jc}"`;
+          }
+          if (!SAFE_COL_RE.test(jc.col) || !SAFE_COL_RE.test(jc.as)) return null;
+          return `j."${jc.col}" AS "${jc.as}"`;
+        }).filter(Boolean);
+        if (jCols.length > 0) selectCols += ', ' + jCols.join(', ');
+      }
+
+      let sql = `SELECT ${selectCols} FROM "${source.remoteTable}" r
          JOIN "${source.junctionTable}" j ON j."${source.remoteKey}" = r."${remotePk}"
          WHERE j."${source.localKey}" = ?`;
       sql = appendQueryOptions(sql, params, source, 'r');

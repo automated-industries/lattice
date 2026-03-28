@@ -26,14 +26,35 @@ export interface SourceQueryOptions {
    */
   softDelete?: boolean;
 
-  /** Column to ORDER BY. Validated against `[a-zA-Z0-9_]`. */
-  orderBy?: string;
+  /**
+   * Column(s) to ORDER BY. Validated against `[a-zA-Z0-9_]`.
+   * - `string` — single column (use `orderDir` for direction)
+   * - `OrderBySpec[]` — multi-column with per-column direction
+   *
+   * @example
+   * ```ts
+   * orderBy: 'name'                                  // single column
+   * orderBy: [{ col: 'severity' }, { col: 'timestamp', dir: 'desc' }]  // multi
+   * ```
+   */
+  orderBy?: string | OrderBySpec[];
 
-  /** Sort direction. Defaults to `'asc'`. */
+  /** Sort direction when `orderBy` is a string. Defaults to `'asc'`. */
   orderDir?: 'asc' | 'desc';
 
   /** Maximum number of rows to return. */
   limit?: number;
+}
+
+/**
+ * A single ORDER BY column with optional direction.
+ * Used in the array form of `SourceQueryOptions.orderBy`.
+ */
+export interface OrderBySpec {
+  /** Column name (validated against `[a-zA-Z0-9_]`). */
+  col: string;
+  /** Sort direction. Defaults to `'asc'`. */
+  dir?: 'asc' | 'desc';
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +121,17 @@ export interface ManyToManySource extends SourceQueryOptions {
    * Defaults to `'id'`.
    */
   references?: string;
+  /**
+   * Columns from the junction table to include in each result row.
+   * Use a string for the column name as-is, or `{ col, as }` to alias.
+   *
+   * @example
+   * ```ts
+   * junctionColumns: ['source', { col: 'role', as: 'agent_role' }]
+   * // Adds j."source" and j."role" AS "agent_role" to each row
+   * ```
+   */
+  junctionColumns?: Array<string | { col: string; as: string }>;
 }
 
 /**
