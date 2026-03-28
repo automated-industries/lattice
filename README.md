@@ -1,6 +1,6 @@
 # latticesql
 
-**SQLite ↔ LLM context bridge.** Keeps a database and a set of text files in sync so AI agents always start a session with accurate, up-to-date state.
+**Persistent memory for AI agents.** Keeps a SQLite database and a set of context files in sync — so every agent session starts with accurate state, and agent output becomes permanent data.
 
 [![npm version](https://img.shields.io/npm/v/latticesql.svg)](https://www.npmjs.com/package/latticesql)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
@@ -12,11 +12,12 @@
 
 ## What it does
 
-LLM context windows are ephemeral. Your application state lives in a database. Every agent session starts cold unless something bridges them. Lattice is that bridge — a minimal, generic engine that:
+Every AI agent session starts cold — no memory of what happened yesterday, what state the system is in, or what other agents have done. Lattice solves this with a minimal, generic engine that:
 
 1. **Renders** DB rows into agent-readable text files (Markdown, JSON, or any format you define)
 2. **Watches** for DB changes and re-renders automatically
 3. **Ingests** agent-written output back into the DB via the writeback pipeline
+4. **Manages** state with full CRUD, natural-key operations, seeding, and soft-delete
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
 
@@ -134,7 +135,7 @@ Agent output files
 Your DB (rows inserted/updated)
 ```
 
-Lattice never modifies your existing rows — it only reads for rendering and appends via the writeback pipeline.
+Lattice reads your database for rendering, provides a full CRUD API for managing state, and persists agent output back to the DB via the writeback pipeline.
 
 ---
 
