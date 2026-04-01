@@ -6,7 +6,11 @@ import type { RenderResult } from '../types.js';
 import { atomicWrite, contentHash } from './writer.js';
 import { resolveEntitySource, truncateContent } from './entity-query.js';
 import { compileEntityRender } from './entity-templates.js';
-import type { EntityContextManifestEntry, LatticeManifest, EntityFileManifestInfo } from '../lifecycle/manifest.js';
+import type {
+  EntityContextManifestEntry,
+  LatticeManifest,
+  EntityFileManifestInfo,
+} from '../lifecycle/manifest.js';
 import { writeManifest } from '../lifecycle/manifest.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
@@ -101,7 +105,14 @@ export class RenderEngine {
       const slugs = new Set(rows.map((row) => def.slug(row)));
       currentSlugsByTable.set(table, slugs);
     }
-    return cleanupEntityContexts(outputDir, entityContexts, currentSlugsByTable, prevManifest, options, newManifest);
+    return cleanupEntityContexts(
+      outputDir,
+      entityContexts,
+      currentSlugsByTable,
+      prevManifest,
+      options,
+      newManifest,
+    );
   }
 
   /**
@@ -157,13 +168,12 @@ export class RenderEngine {
         const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
 
         for (const [filename, spec] of Object.entries(def.files)) {
-          const mergeDefaults = def.sourceDefaults
-            && spec.source.type !== 'self'
-            && spec.source.type !== 'custom'
-            && spec.source.type !== 'enriched';
-          const source = mergeDefaults
-            ? { ...def.sourceDefaults, ...spec.source }
-            : spec.source;
+          const mergeDefaults =
+            def.sourceDefaults &&
+            spec.source.type !== 'self' &&
+            spec.source.type !== 'custom' &&
+            spec.source.type !== 'enriched';
+          const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
           const rows = resolveEntitySource(source, entityRow, entityPk, this._adapter);
 
           if (spec.omitIfEmpty && rows.length === 0) continue;

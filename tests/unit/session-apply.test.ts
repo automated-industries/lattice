@@ -48,30 +48,42 @@ describe('applyWriteEntry', () => {
     expect(result.table).toBe('agent');
     expect(result.recordId).toBe('agent-1');
 
-    const row = db.prepare("SELECT status FROM agent WHERE id = 'agent-1'").get() as { status: string };
+    const row = db.prepare("SELECT status FROM agent WHERE id = 'agent-1'").get() as {
+      status: string;
+    };
     expect(row.status).toBe('inactive');
   });
 
   it('inserts a new row for create', () => {
-    const result = applyWriteEntry(db, entry({
-      op: 'create',
-      target: undefined,
-      fields: { id: 'agent-new', name: 'Nova' },
-    }));
+    const result = applyWriteEntry(
+      db,
+      entry({
+        op: 'create',
+        target: undefined,
+        fields: { id: 'agent-new', name: 'Nova' },
+      }),
+    );
     expect(result.ok).toBe(true);
-    const row = db.prepare("SELECT name FROM agent WHERE id = 'agent-new'").get() as { name: string };
+    const row = db.prepare("SELECT name FROM agent WHERE id = 'agent-new'").get() as {
+      name: string;
+    };
     expect(row.name).toBe('Nova');
   });
 
   it('auto-generates id for create when not in fields', () => {
-    const result = applyWriteEntry(db, entry({
-      op: 'create',
-      target: undefined,
-      fields: { name: 'AutoId' },
-    }));
+    const result = applyWriteEntry(
+      db,
+      entry({
+        op: 'create',
+        target: undefined,
+        fields: { name: 'AutoId' },
+      }),
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const row = db.prepare("SELECT id FROM agent WHERE id = ?").get(result.recordId) as { id: string } | undefined;
+    const row = db.prepare('SELECT id FROM agent WHERE id = ?').get(result.recordId) as
+      | { id: string }
+      | undefined;
     expect(row).toBeDefined();
   });
 
@@ -79,13 +91,18 @@ describe('applyWriteEntry', () => {
     const result = applyWriteEntry(db, entry({ op: 'delete', fields: {} }));
     expect(result.ok).toBe(true);
 
-    const row = db.prepare("SELECT deleted_at FROM agent WHERE id = 'agent-1'").get() as { deleted_at: string | null };
+    const row = db.prepare("SELECT deleted_at FROM agent WHERE id = 'agent-1'").get() as {
+      deleted_at: string | null;
+    };
     expect(row.deleted_at).not.toBeNull();
   });
 
   it('hard-deletes when no deleted_at column', () => {
     db.prepare("INSERT INTO nosoft (id, value) VALUES ('r1', 'x')").run();
-    const result = applyWriteEntry(db, entry({ op: 'delete', table: 'nosoft', target: 'r1', fields: {} }));
+    const result = applyWriteEntry(
+      db,
+      entry({ op: 'delete', table: 'nosoft', target: 'r1', fields: {} }),
+    );
     expect(result.ok).toBe(true);
 
     const row = db.prepare("SELECT id FROM nosoft WHERE id = 'r1'").get();

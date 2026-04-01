@@ -118,7 +118,11 @@ export function cleanupEntityContexts(
 
         if (remaining.length === 0) {
           if (!options.dryRun) {
-            try { rmdirSync(entityDir); } catch { /* best-effort */ }
+            try {
+              rmdirSync(entityDir);
+            } catch {
+              /* best-effort */
+            }
           }
           options.onOrphan?.(entityDir, 'directory');
           result.directoriesRemoved.push(entityDir);
@@ -144,7 +148,7 @@ export function cleanupEntityContexts(
 
       for (const slug of currentSlugs) {
         const entityDir = def.directory
-          ? null  // Can't resolve path without the row — skip
+          ? null // Can't resolve path without the row — skip
           : join(rootPath, slug);
         if (!entityDir || !existsSync(entityDir)) continue;
 

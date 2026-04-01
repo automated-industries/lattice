@@ -90,33 +90,45 @@ export class SQLiteStateStore implements WritebackStateStore {
 
   getOffset(filePath: string): number {
     this._init();
-    const row = this._db.prepare('SELECT byte_offset FROM _lattice_writeback_offset WHERE file_path = ?').get(filePath) as { byte_offset: number } | undefined;
+    const row = this._db
+      .prepare('SELECT byte_offset FROM _lattice_writeback_offset WHERE file_path = ?')
+      .get(filePath) as { byte_offset: number } | undefined;
     return row?.byte_offset ?? 0;
   }
 
   getSize(filePath: string): number {
     this._init();
-    const row = this._db.prepare('SELECT file_size FROM _lattice_writeback_offset WHERE file_path = ?').get(filePath) as { file_size: number } | undefined;
+    const row = this._db
+      .prepare('SELECT file_size FROM _lattice_writeback_offset WHERE file_path = ?')
+      .get(filePath) as { file_size: number } | undefined;
     return row?.file_size ?? 0;
   }
 
   setOffset(filePath: string, offset: number, size: number): void {
     this._init();
-    this._db.prepare(`
+    this._db
+      .prepare(
+        `
       INSERT INTO _lattice_writeback_offset (file_path, byte_offset, file_size, updated_at)
       VALUES (?, ?, ?, datetime('now'))
       ON CONFLICT(file_path) DO UPDATE SET byte_offset = ?, file_size = ?, updated_at = datetime('now')
-    `).run(filePath, offset, size, offset, size);
+    `,
+      )
+      .run(filePath, offset, size, offset, size);
   }
 
   isSeen(filePath: string, key: string): boolean {
     this._init();
-    return !!this._db.prepare('SELECT 1 FROM _lattice_writeback_seen WHERE file_path = ? AND entry_key = ?').get(filePath, key);
+    return !!this._db
+      .prepare('SELECT 1 FROM _lattice_writeback_seen WHERE file_path = ? AND entry_key = ?')
+      .get(filePath, key);
   }
 
   markSeen(filePath: string, key: string): void {
     this._init();
-    this._db.prepare('INSERT OR IGNORE INTO _lattice_writeback_seen (file_path, entry_key) VALUES (?, ?)').run(filePath, key);
+    this._db
+      .prepare('INSERT OR IGNORE INTO _lattice_writeback_seen (file_path, entry_key) VALUES (?, ?)')
+      .run(filePath, key);
   }
 }
 

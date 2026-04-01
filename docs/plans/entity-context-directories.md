@@ -10,6 +10,7 @@
 ## Problem
 
 Lattice OSS has two render primitives:
+
 - `define(table, def)` — one table → one static output file
 - `defineMulti(name, def)` — anchor table → one file per entity (dynamic path)
 
@@ -53,6 +54,7 @@ orgs/ · users/ · channels/ · files/  (same pattern)
 ```
 
 Key behaviors:
+
 - **Index files** at the directory root list all entities
 - **Per-entity subdirectories** named by slug
 - **Per-entity relationship files** each rendered independently with size budgets
@@ -84,7 +86,7 @@ interface EntityContextDefinition {
    * Written once per render cycle (not per entity).
    */
   index?: {
-    outputFile: string;               // e.g., 'agents/AGENTS.md'
+    outputFile: string; // e.g., 'agents/AGENTS.md'
     render: (rows: Row[]) => string;
   };
 
@@ -100,8 +102,8 @@ interface EntityContextDefinition {
    * Files in `exclude` are omitted from the combined output.
    */
   combined?: {
-    outputFile: string;               // e.g., 'CONTEXT.md'
-    exclude?: string[];               // e.g., ['SESSION.md']
+    outputFile: string; // e.g., 'CONTEXT.md'
+    exclude?: string[]; // e.g., ['SESSION.md']
   };
 
   /**
@@ -136,21 +138,21 @@ type EntityFileSource =
   | {
       type: 'hasMany';
       table: string;
-      foreignKey: string;          // Column on related table pointing to this entity
-      references?: string;         // Column on this table (default: PK)
+      foreignKey: string; // Column on related table pointing to this entity
+      references?: string; // Column on this table (default: PK)
     }
   | {
       type: 'manyToMany';
       junctionTable: string;
-      localKey: string;            // FK in junction pointing to THIS entity
-      remoteKey: string;           // FK in junction pointing to RELATED entity
-      remoteTable: string;         // Table to JOIN through junction
+      localKey: string; // FK in junction pointing to THIS entity
+      remoteKey: string; // FK in junction pointing to RELATED entity
+      remoteTable: string; // Table to JOIN through junction
     }
   | {
       type: 'belongsTo';
       table: string;
-      foreignKey: string;          // Column on THIS table pointing to related
-      references?: string;         // Column on related table (default: PK)
+      foreignKey: string; // Column on THIS table pointing to related
+      references?: string; // Column on related table (default: PK)
     }
   | {
       type: 'custom';
@@ -171,7 +173,7 @@ db.define('agents', {
     bio: 'TEXT',
     team_id: 'TEXT',
   },
-  render: () => '',       // Still required for single-table render compatibility
+  render: () => '', // Still required for single-table render compatibility
   outputFile: '.lattice/agents-raw.md',
 });
 
@@ -193,7 +195,7 @@ db.defineEntityContext('agents', {
   files: {
     'AGENT.md': {
       source: { type: 'self' },
-      render: ([row]) => `# ${row.name as string}\n\n${row.bio as string ?? ''}`,
+      render: ([row]) => `# ${row.name as string}\n\n${(row.bio as string) ?? ''}`,
       budget: 8000,
     },
     'SKILLS.md': {
@@ -233,6 +235,7 @@ await db.watch('./context-output/', { interval: 5000 });
 ```
 
 This generates:
+
 ```
 context-output/
   agents/
@@ -253,17 +256,20 @@ context-output/
 ### Phase 1: Core Types + SchemaManager Extension
 
 **New file: `src/schema/entity-context.ts`**
+
 - `EntityContextDefinition` interface
 - `EntityFileSpec` interface
 - `EntityFileSource` union type (self | hasMany | manyToMany | belongsTo | custom)
 - `CompiledEntityContextDef` = resolved/compiled version stored in SchemaManager
 
 **Modify: `src/schema/manager.ts`**
+
 - Add `private readonly _entityContexts = new Map<string, CompiledEntityContextDef>();`
 - Add `defineEntityContext(table, def): void`
 - Add `getEntityContexts(): Map<string, CompiledEntityContextDef>`
 
 **Modify: `src/types.ts`**
+
 - Export `EntityContextDefinition`, `EntityFileSpec`, `EntityFileSource` from public API
 
 ### Phase 2: Render Engine — Entity Context Support
@@ -273,21 +279,22 @@ context-output/
 Add `_renderEntityContexts(outputDir: string): Promise<RenderResult>`
 
 Logic per entity context definition:
+
 1. Load all entity rows: `schema.queryTable(adapter, table)` → entity rows
 2. If `index` is defined: render index and write to `index.outputFile`
 3. For each entity row:
    a. Compute `entityDir = join(outputDir, def.directory ? def.directory(row) : '{table}/{slug}')`
    b. `mkdirSync(entityDir, { recursive: true })`
    c. For each file spec:
-      - Resolve source rows (SQL query based on source type)
-      - Skip if `omitIfEmpty && rows.length === 0`
-      - Apply `render(rows)` → content string
-      - Apply budget truncation if set
-      - `atomicWrite(join(entityDir, filename), content)`
-   d. If `combined` is set:
-      - Read all generated files in order (excluding those in `combined.exclude`)
-      - Join with `\n\n---\n\n`
-      - `atomicWrite(join(entityDir, combined.outputFile), joined)`
+   - Resolve source rows (SQL query based on source type)
+   - Skip if `omitIfEmpty && rows.length === 0`
+   - Apply `render(rows)` → content string
+   - Apply budget truncation if set
+   - `atomicWrite(join(entityDir, filename), content)`
+     d. If `combined` is set:
+   - Read all generated files in order (excluding those in `combined.exclude`)
+   - Join with `\n\n---\n\n`
+   - `atomicWrite(join(entityDir, combined.outputFile), joined)`
 
 Modify `render(outputDir)` to call `_renderEntityContexts()` after existing single + multi renders.
 
@@ -308,10 +315,9 @@ export function resolveEntitySource(
       return [entityRow];
     case 'hasMany':
       const pkVal = entityRow[source.references ?? entityPk];
-      return adapter.all(
-        `SELECT * FROM "${source.table}" WHERE "${source.foreignKey}" = ?`,
-        [pkVal],
-      );
+      return adapter.all(`SELECT * FROM "${source.table}" WHERE "${source.foreignKey}" = ?`, [
+        pkVal,
+      ]);
     case 'manyToMany':
       const pk = entityRow[entityPk];
       return adapter.all(
@@ -353,10 +359,10 @@ Add `entityContexts` key to YAML config:
 ```yaml
 entityContexts:
   agents:
-    slug: "{{slug}}"
+    slug: '{{slug}}'
     index:
       outputFile: agents/AGENTS.md
-      render: default-list  # or custom function
+      render: default-list # or custom function
     files:
       AGENT.md:
         source: self
@@ -391,6 +397,7 @@ Runs one-shot context generation (no watch loop).
 ### Phase 6: Tests
 
 New test files:
+
 - `tests/unit/entity-query.test.ts` — unit test `resolveEntitySource()` for all 5 source types
 - `tests/integration/entity-context.test.ts` — integration test for full `defineEntityContext()` flow:
   - Index file generated
@@ -413,14 +420,14 @@ New test files:
 The render system described in Phases 1–6 is **additive-only**: it writes and updates files
 every cycle, but it never removes anything. This is safe but creates drift:
 
-| Event | Current behaviour | Desired behaviour |
-|---|---|---|
-| Entity deleted from DB | Directory stays forever | Directory cleaned up |
-| Entity slug renamed | Old dir orphaned, new dir created | Old dir removed |
-| Relationship file added to definition | File appears on next cycle | ✓ (already works) |
-| Relationship file removed from definition | Old file stays forever | Old file removed |
-| Table renamed in definition | Old root dir orphaned | Old root dir removed |
-| Column dropped, render fn updated | File content updates | ✓ (already works) |
+| Event                                     | Current behaviour                 | Desired behaviour    |
+| ----------------------------------------- | --------------------------------- | -------------------- |
+| Entity deleted from DB                    | Directory stays forever           | Directory cleaned up |
+| Entity slug renamed                       | Old dir orphaned, new dir created | Old dir removed      |
+| Relationship file added to definition     | File appears on next cycle        | ✓ (already works)    |
+| Relationship file removed from definition | Old file stays forever            | Old file removed     |
+| Table renamed in definition               | Old root dir orphaned             | Old root dir removed |
+| Column dropped, render fn updated         | File content updates              | ✓ (already works)    |
 
 Without cleanup, a long-running system accumulates orphaned directories and files that LLMs
 read as if they still represent real entities — silently injecting stale, incorrect context.
@@ -502,6 +509,7 @@ interface EntityContextManifestEntry {
 ```
 
 **Manifest lifecycle:**
+
 - **Written** atomically (`.tmp` → `rename()`) at the end of every successful render cycle.
 - **Read** at the start of cleanup to know what was managed previously.
 - If no manifest exists (first run or output dir is new), cleanup skips orphan removal
@@ -644,6 +652,7 @@ export interface WatchOptions {
 ```
 
 When `cleanup` is set, the watch tick becomes:
+
 ```
 tick():
   1. render(outputDir)           → writes new manifest
@@ -651,11 +660,13 @@ tick():
 ```
 
 **New files:**
+
 - `src/lifecycle/manifest.ts` — manifest read/write + types
 - `src/lifecycle/cleanup.ts` — cleanup algorithm
 - `src/lifecycle/index.ts` — re-exports
 
 **Modified files:**
+
 - `src/render/engine.ts` — write manifest at end of `render()`
 - `src/sync/loop.ts` — accept `cleanup` option, call cleanup after each tick
 - `src/lattice.ts` — add `reconcile()` method
@@ -735,9 +746,7 @@ it('removes entity directory when entity is deleted from DB', async () => {
 
   // Reconcile removes the orphaned directory
   const result = await db.reconcile(outputDir, { removeOrphanedDirectories: true });
-  expect(result.cleanup.directoriesRemoved).toContain(
-    join(outputDir, 'agents/agent-b'),
-  );
+  expect(result.cleanup.directoriesRemoved).toContain(join(outputDir, 'agents/agent-b'));
   expect(existsSync(join(outputDir, 'agents/agent-b'))).toBe(false);
 
   // 'agent-a' directory is untouched
@@ -757,9 +766,7 @@ it('leaves entity directory in place if protected files exist', async () => {
   await db.delete('agents', 'agent-b-id');
 
   const result = await db.reconcile(outputDir, { removeOrphanedDirectories: true });
-  expect(result.cleanup.directoriesSkipped).toContain(
-    join(outputDir, 'agents/agent-b'),
-  );
+  expect(result.cleanup.directoriesSkipped).toContain(join(outputDir, 'agents/agent-b'));
   // SESSION.md survives
   expect(existsSync(join(outputDir, 'agents/agent-b/SESSION.md'))).toBe(true);
   // Lattice-managed files removed
@@ -807,9 +814,7 @@ it('removes old directory and creates new one when slug changes', async () => {
   const result = await db.reconcile(outputDir, { removeOrphanedDirectories: true });
 
   // Old directory removed
-  expect(result.cleanup.directoriesRemoved).toContain(
-    join(outputDir, 'agents/agent-b'),
-  );
+  expect(result.cleanup.directoriesRemoved).toContain(join(outputDir, 'agents/agent-b'));
   expect(existsSync(join(outputDir, 'agents/agent-b'))).toBe(false);
 
   // New directory created
@@ -857,9 +862,7 @@ it('removes stale relationship file when removed from definition', async () => {
 
   // reconcile removes the orphaned SKILLS.md
   const result = await db2.reconcile(outputDir, { removeOrphanedFiles: true });
-  expect(result.cleanup.filesRemoved).toContain(
-    join(outputDir, 'agents/agent-b/SKILLS.md'),
-  );
+  expect(result.cleanup.filesRemoved).toContain(join(outputDir, 'agents/agent-b/SKILLS.md'));
   expect(existsSync(join(outputDir, 'agents/agent-b/SKILLS.md'))).toBe(false);
 
   // AGENT.md (still declared) is untouched
@@ -911,9 +914,7 @@ it('dry run reports orphans without deleting anything', async () => {
   });
 
   // Orphan reported
-  expect(result.cleanup.directoriesRemoved).toContain(
-    join(outputDir, 'agents/agent-b'),
-  );
+  expect(result.cleanup.directoriesRemoved).toContain(join(outputDir, 'agents/agent-b'));
   // But nothing was actually deleted
   expect(existsSync(join(outputDir, 'agents/agent-b'))).toBe(true);
 });
@@ -947,17 +948,17 @@ it('manifest reflects what was written each cycle', async () => {
 
 ### Lifecycle Scenarios Reference
 
-| Scenario | Trigger | Detection method | Cleanup action |
-|---|---|---|---|
-| Entity deleted | `db.delete()` | Slug not in DB query | Remove entity dir (after stripping managed files) |
-| Entity slug changed | `db.update()` on slug field | Old slug not in DB query | Remove old dir; new dir created by render |
-| Relationship file added to definition | Code change in `defineEntityContext` | N/A — file is written by render | ✓ automatic |
-| Relationship file removed from definition | Code change in `defineEntityContext` | File in manifest but not in declared files | Remove orphan file |
-| `omitIfEmpty` file becomes empty | Related entities deleted | File in manifest but render skipped it | Remove orphan file |
-| Entity context table renamed | Code change (new `defineEntityContext` call) | Old root directory not owned by any context | Manual: `lattice reconcile` after code change |
-| New entity added | `db.insert()` | N/A — directory created by render | ✓ automatic |
-| Column added to schema | Migration | N/A — render output changes | ✓ automatic |
-| Column dropped from schema | Migration | N/A — render function must be updated by caller | ✓ caller's responsibility |
+| Scenario                                  | Trigger                                      | Detection method                                | Cleanup action                                    |
+| ----------------------------------------- | -------------------------------------------- | ----------------------------------------------- | ------------------------------------------------- |
+| Entity deleted                            | `db.delete()`                                | Slug not in DB query                            | Remove entity dir (after stripping managed files) |
+| Entity slug changed                       | `db.update()` on slug field                  | Old slug not in DB query                        | Remove old dir; new dir created by render         |
+| Relationship file added to definition     | Code change in `defineEntityContext`         | N/A — file is written by render                 | ✓ automatic                                       |
+| Relationship file removed from definition | Code change in `defineEntityContext`         | File in manifest but not in declared files      | Remove orphan file                                |
+| `omitIfEmpty` file becomes empty          | Related entities deleted                     | File in manifest but render skipped it          | Remove orphan file                                |
+| Entity context table renamed              | Code change (new `defineEntityContext` call) | Old root directory not owned by any context     | Manual: `lattice reconcile` after code change     |
+| New entity added                          | `db.insert()`                                | N/A — directory created by render               | ✓ automatic                                       |
+| Column added to schema                    | Migration                                    | N/A — render output changes                     | ✓ automatic                                       |
+| Column dropped from schema                | Migration                                    | N/A — render function must be updated by caller | ✓ caller's responsibility                         |
 
 ---
 
@@ -967,6 +968,7 @@ These are the cases where the library cannot auto-detect changes without explici
 action. Document these in the public API as expected manual steps.
 
 **Renaming an entity context (table renamed in DB + code):**
+
 ```bash
 # 1. Apply your DB migration (rename the table)
 # 2. Update defineEntityContext() call in code (new table name, possibly new directoryRoot)
@@ -975,6 +977,7 @@ lattice reconcile --output ./context/
 ```
 
 **Removing an entity context entirely (table dropped):**
+
 ```bash
 # 1. Apply your DB migration (drop the table)
 # 2. Remove the defineEntityContext() call from code
@@ -1034,37 +1037,38 @@ The following are intentionally NOT built into the library:
 
 ## What the Library Provides
 
-| Feature | Built-in | Phase |
-|---------|----------|-------|
-| Directory creation per entity | ✓ | 1–3 |
-| Global index file | ✓ | 1–3 |
-| Self source (entity's own row) | ✓ | 1–3 |
-| hasMany source (FK on other table) | ✓ | 1–3 |
-| manyToMany source (junction table) | ✓ | 1–3 |
-| belongsTo source (FK on this table) | ✓ | 1–3 |
-| Custom query source | ✓ | 1–3 |
-| Combined file generation | ✓ | 1–3 |
-| omitIfEmpty | ✓ | 1–3 |
-| Size budget + truncation | ✓ | 1–3 |
-| Atomic writes | ✓ (reuse existing `atomicWrite`) | 1–3 |
-| Content-hash skip (unchanged) | ✓ (reuse existing `atomicWrite`) | 1–3 |
-| Watch loop integration | ✓ (auto-included in `render()`) | 1–3 |
-| Manifest (tracks what was generated) | ✓ | 7 |
-| Orphan directory removal on entity delete | ✓ (opt-in via `cleanup`) | 7 |
-| Orphan file removal on relationship change | ✓ (opt-in via `cleanup`) | 7 |
-| Protected files (never deleted) | ✓ | 7 |
-| `reconcile()` method (full diff + fix) | ✓ | 7 |
-| Dry-run / status mode | ✓ | 7 |
-| `lattice reconcile` CLI command | ✓ | 8 |
-| `lattice status` CLI command (dry-run) | ✓ | 8 |
-| YAML config support | Phase 4 | 4 |
-| CLI `generate` / `watch` commands | Phase 5 | 5 |
+| Feature                                    | Built-in                         | Phase |
+| ------------------------------------------ | -------------------------------- | ----- |
+| Directory creation per entity              | ✓                                | 1–3   |
+| Global index file                          | ✓                                | 1–3   |
+| Self source (entity's own row)             | ✓                                | 1–3   |
+| hasMany source (FK on other table)         | ✓                                | 1–3   |
+| manyToMany source (junction table)         | ✓                                | 1–3   |
+| belongsTo source (FK on this table)        | ✓                                | 1–3   |
+| Custom query source                        | ✓                                | 1–3   |
+| Combined file generation                   | ✓                                | 1–3   |
+| omitIfEmpty                                | ✓                                | 1–3   |
+| Size budget + truncation                   | ✓                                | 1–3   |
+| Atomic writes                              | ✓ (reuse existing `atomicWrite`) | 1–3   |
+| Content-hash skip (unchanged)              | ✓ (reuse existing `atomicWrite`) | 1–3   |
+| Watch loop integration                     | ✓ (auto-included in `render()`)  | 1–3   |
+| Manifest (tracks what was generated)       | ✓                                | 7     |
+| Orphan directory removal on entity delete  | ✓ (opt-in via `cleanup`)         | 7     |
+| Orphan file removal on relationship change | ✓ (opt-in via `cleanup`)         | 7     |
+| Protected files (never deleted)            | ✓                                | 7     |
+| `reconcile()` method (full diff + fix)     | ✓                                | 7     |
+| Dry-run / status mode                      | ✓                                | 7     |
+| `lattice reconcile` CLI command            | ✓                                | 8     |
+| `lattice status` CLI command (dry-run)     | ✓                                | 8     |
+| YAML config support                        | Phase 4                          | 4     |
+| CLI `generate` / `watch` commands          | Phase 5                          | 5     |
 
 ---
 
 ## Migration Path for example-app
 
 Once this ships, `contextGenerator.ts` could be rewritten to use `defineEntityContext()`. The app would:
+
 1. Define entity contexts for agents, projects, orgs, users, skills, channels, files
 2. Use `custom` source for complex queries (agent report chain, event categorization)
 3. Use `hasMany` / `manyToMany` for simple relationship files
@@ -1075,17 +1079,17 @@ Once this ships, `contextGenerator.ts` could be rewritten to use `defineEntityCo
 
 ## Estimated Scope
 
-| Phase | Description | Files Added/Modified | Tests |
-|-------|-------------|---------------------|-------|
-| 1 | Types + SchemaManager extension | 2 new, 2 modified | — |
-| 2 | RenderEngine entity context support | 1 new, 1 modified | 15 unit |
-| 3 | Public `defineEntityContext()` API | 1 modified | — |
-| 4 | YAML config support | 1 modified | 5 unit |
-| 5 | CLI `generate` + `watch` commands | 1 modified | 3 integration |
-| 6 | Integration tests (render) | 2 new | 25 |
-| 7 | Manifest + cleanup + `reconcile()` | 3 new, 3 modified | 15 unit + 8 integration |
-| 8 | CLI `reconcile` + `status` commands | 1 modified | 4 integration |
-| 9 | Lifecycle integration tests | 1 new | 30 |
+| Phase | Description                         | Files Added/Modified | Tests                   |
+| ----- | ----------------------------------- | -------------------- | ----------------------- |
+| 1     | Types + SchemaManager extension     | 2 new, 2 modified    | —                       |
+| 2     | RenderEngine entity context support | 1 new, 1 modified    | 15 unit                 |
+| 3     | Public `defineEntityContext()` API  | 1 modified           | —                       |
+| 4     | YAML config support                 | 1 modified           | 5 unit                  |
+| 5     | CLI `generate` + `watch` commands   | 1 modified           | 3 integration           |
+| 6     | Integration tests (render)          | 2 new                | 25                      |
+| 7     | Manifest + cleanup + `reconcile()`  | 3 new, 3 modified    | 15 unit + 8 integration |
+| 8     | CLI `reconcile` + `status` commands | 1 modified           | 4 integration           |
+| 9     | Lifecycle integration tests         | 1 new                | 30                      |
 
 **Phase 1–3 + 6:** Core render path. Ship as v0.5.0-alpha.
 **Phase 7–9:** Lifecycle management. Ship as v0.5.0 stable.

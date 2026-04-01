@@ -139,7 +139,9 @@ export class SchemaManager {
     if (this._entityContexts.has(name)) {
       const cols = adapter.all(`PRAGMA table_info("${name}")`);
       const hasDeletedAt = cols.some((c) => (c as Record<string, unknown>).name === 'deleted_at');
-      return adapter.all(`SELECT * FROM "${name}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`);
+      return adapter.all(
+        `SELECT * FROM "${name}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`,
+      );
     }
     throw new Error(`Unknown table: "${name}"`);
   }

@@ -59,10 +59,10 @@ export function frontmatter(fields: Record<string, string | number | boolean>): 
 export function markdownTable(rows: Row[], columns: MarkdownTableColumn[]): string {
   if (rows.length === 0 || columns.length === 0) return '';
 
-  const header = '| ' + columns.map(c => c.header).join(' | ') + ' |';
+  const header = '| ' + columns.map((c) => c.header).join(' | ') + ' |';
   const separator = '| ' + columns.map(() => '---').join(' | ') + ' |';
-  const body = rows.map(row => {
-    const cells = columns.map(col => {
+  const body = rows.map((row) => {
+    const cells = columns.map((col) => {
       const raw = row[col.key];
       return col.format ? col.format(raw, row) : String((raw ?? '') as string | number | boolean);
     });
@@ -85,10 +85,10 @@ export function slugify(name: string): string {
   return name
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')   // strip combining diacritics
-    .replace(/\u0131/g, 'i')           // Turkish dotless i
-    .replace(/[^a-z0-9]+/g, '-')       // non-alphanumeric → hyphen
-    .replace(/(^-|-$)/g, '');          // trim leading/trailing hyphens
+    .replace(/[\u0300-\u036f]/g, '') // strip combining diacritics
+    .replace(/\u0131/g, 'i') // Turkish dotless i
+    .replace(/[^a-z0-9]+/g, '-') // non-alphanumeric → hyphen
+    .replace(/(^-|-$)/g, ''); // trim leading/trailing hyphens
 }
 
 /**

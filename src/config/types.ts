@@ -144,27 +144,34 @@ export interface LatticeConfig {
 export type LatticeEntityContextSourceDef =
   | 'self'
   | { type: 'hasMany'; table: string; foreignKey: string; references?: string }
-  | { type: 'manyToMany'; junctionTable: string; localKey: string; remoteKey: string; remoteTable: string; references?: string }
+  | {
+      type: 'manyToMany';
+      junctionTable: string;
+      localKey: string;
+      remoteKey: string;
+      remoteTable: string;
+      references?: string;
+    }
   | { type: 'belongsTo'; table: string; foreignKey: string; references?: string };
 
 /** A single per-entity file spec in YAML config */
 export interface LatticeEntityContextFileDef {
   source: LatticeEntityContextSourceDef;
-  template: string;          // builtin template name
+  template: string; // builtin template name
   budget?: number;
   omitIfEmpty?: boolean;
 }
 
 /** Entity context definition in YAML config */
 export interface LatticeEntityContextDef {
-  slug: string;              // template string e.g. "{{slug}}"
+  slug: string; // template string e.g. "{{slug}}"
   directoryRoot?: string;
   protectedFiles?: string[];
   index?: {
     outputFile: string;
-    render: string;          // builtin template name
+    render: string; // builtin template name
   };
-  files: Record<string, LatticeEntityContextFileDef>;  // filename → spec
+  files: Record<string, LatticeEntityContextFileDef>; // filename → spec
   combined?: {
     outputFile: string;
     exclude?: string[];

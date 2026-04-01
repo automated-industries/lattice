@@ -191,36 +191,36 @@ db.defineEntityContext('agent', {
 
 **`EntityContextDefinition`** fields:
 
-| Field            | Type                                       | Required | Description                                                                        |
-| ---------------- | ------------------------------------------ | -------- | ---------------------------------------------------------------------------------- |
-| `slug`           | `(row: Row) => string`                     | yes      | Derive the per-entity directory name from the entity row                           |
-| `index`          | `{ outputFile, render }`                   | no       | A single index file written at the `directoryRoot` level listing all entities      |
-| `files`          | `EntityFileSpec[]`                         | yes      | One or more per-entity files to generate inside each entity's subdirectory         |
-| `combined`       | `{ outputFile, exclude? }`                 | no       | Concatenate all rendered files into a single combined file per entity              |
-| `directory`      | `(row: Row) => string`                     | no       | Override the default `{directoryRoot}/{slug}` directory path for an entity         |
-| `directoryRoot`  | `string`                                   | no       | Root directory Lattice owns; defaults to the table name. Used by orphan cleanup    |
-| `protectedFiles` | `string[]`                                 | no       | Filenames Lattice must never delete during orphan cleanup (e.g. `'SESSION.md'`)    |
+| Field            | Type                       | Required | Description                                                                     |
+| ---------------- | -------------------------- | -------- | ------------------------------------------------------------------------------- |
+| `slug`           | `(row: Row) => string`     | yes      | Derive the per-entity directory name from the entity row                        |
+| `index`          | `{ outputFile, render }`   | no       | A single index file written at the `directoryRoot` level listing all entities   |
+| `files`          | `EntityFileSpec[]`         | yes      | One or more per-entity files to generate inside each entity's subdirectory      |
+| `combined`       | `{ outputFile, exclude? }` | no       | Concatenate all rendered files into a single combined file per entity           |
+| `directory`      | `(row: Row) => string`     | no       | Override the default `{directoryRoot}/{slug}` directory path for an entity      |
+| `directoryRoot`  | `string`                   | no       | Root directory Lattice owns; defaults to the table name. Used by orphan cleanup |
+| `protectedFiles` | `string[]`                 | no       | Filenames Lattice must never delete during orphan cleanup (e.g. `'SESSION.md'`) |
 
 **`EntityFileSpec`** fields:
 
-| Field         | Type                              | Required | Description                                                          |
-| ------------- | --------------------------------- | -------- | -------------------------------------------------------------------- |
-| `filename`    | `string`                          | yes      | Output filename within the entity's subdirectory                     |
-| `source`      | `EntitySource`                    | yes      | How to query rows for this file (see source types below)             |
-| `render`      | `(rows: Row[]) => string`         | yes      | Render resolved rows to a string                                     |
-| `budget`      | `number`                          | no       | Max character count; truncated with a notice if exceeded             |
-| `omitIfEmpty` | `boolean`                         | no       | Skip writing the file if the source returns zero rows                |
-| `reverseSync` | `(content: string, entityRow: Row) => ReverseSyncUpdate[]` | no | Parse external file edits back into DB updates (v0.16+). See [Reverse-Sync](./entity-context.md#reverse-sync-v016). |
+| Field         | Type                                                       | Required | Description                                                                                                         |
+| ------------- | ---------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| `filename`    | `string`                                                   | yes      | Output filename within the entity's subdirectory                                                                    |
+| `source`      | `EntitySource`                                             | yes      | How to query rows for this file (see source types below)                                                            |
+| `render`      | `(rows: Row[]) => string`                                  | yes      | Render resolved rows to a string                                                                                    |
+| `budget`      | `number`                                                   | no       | Max character count; truncated with a notice if exceeded                                                            |
+| `omitIfEmpty` | `boolean`                                                  | no       | Skip writing the file if the source returns zero rows                                                               |
+| `reverseSync` | `(content: string, entityRow: Row) => ReverseSyncUpdate[]` | no       | Parse external file edits back into DB updates (v0.16+). See [Reverse-Sync](./entity-context.md#reverse-sync-v016). |
 
 **Source types:**
 
-| Type          | Required fields                                           | Description                                            |
-| ------------- | --------------------------------------------------------- | ------------------------------------------------------ |
-| `self`        | _(none)_                                                  | The entity row itself (always exactly one row)         |
-| `hasMany`     | `table`, `foreignKey`                                     | Rows on a related table where `foreignKey = entity.PK` |
-| `manyToMany`  | `junctionTable`, `localKey`, `remoteKey`, `remoteTable`   | Rows from a remote table via a junction table          |
-| `belongsTo`   | `table`, `foreignKey`                                     | Single parent row: `related.PK = entity.foreignKey`    |
-| `custom`      | `query: (row, adapter) => Row[]`                          | Fully custom synchronous query                         |
+| Type         | Required fields                                         | Description                                            |
+| ------------ | ------------------------------------------------------- | ------------------------------------------------------ |
+| `self`       | _(none)_                                                | The entity row itself (always exactly one row)         |
+| `hasMany`    | `table`, `foreignKey`                                   | Rows on a related table where `foreignKey = entity.PK` |
+| `manyToMany` | `junctionTable`, `localKey`, `remoteKey`, `remoteTable` | Rows from a remote table via a junction table          |
+| `belongsTo`  | `table`, `foreignKey`                                   | Single parent row: `related.PK = entity.foreignKey`    |
+| `custom`     | `query: (row, adapter) => Row[]`                        | Fully custom synchronous query                         |
 
 All source types accept an optional `references` field to override the default primary key column.
 
@@ -494,13 +494,13 @@ console.log(`Removed ${result.cleanup.filesRemoved} stale files`);
 
 **`ReconcileOptions`** (all optional):
 
-| Option                        | Type                                       | Default | Description                                                        |
-| ----------------------------- | ------------------------------------------ | ------- | ------------------------------------------------------------------ |
-| `removeOrphanedDirectories`   | `boolean`                                  | `false` | Delete directories for entities no longer in the database          |
-| `removeOrphanedFiles`         | `boolean`                                  | `false` | Delete files within surviving directories that were not re-rendered |
-| `protectedFiles`              | `string[]`                                 | `[]`    | Filenames to never delete (merged with per-definition protections) |
-| `dryRun`                      | `boolean`                                  | `false` | Report what would be deleted without deleting anything             |
-| `onOrphan`                    | `(path: string, kind: string) => void`     | –       | Called for each orphaned path before it is deleted                 |
+| Option                      | Type                                   | Default | Description                                                         |
+| --------------------------- | -------------------------------------- | ------- | ------------------------------------------------------------------- |
+| `removeOrphanedDirectories` | `boolean`                              | `false` | Delete directories for entities no longer in the database           |
+| `removeOrphanedFiles`       | `boolean`                              | `false` | Delete files within surviving directories that were not re-rendered |
+| `protectedFiles`            | `string[]`                             | `[]`    | Filenames to never delete (merged with per-definition protections)  |
+| `dryRun`                    | `boolean`                              | `false` | Report what would be deleted without deleting anything              |
+| `onOrphan`                  | `(path: string, kind: string) => void` | –       | Called for each orphaned path before it is deleted                  |
 
 **`ReconcileResult`** extends `RenderResult` with:
 
@@ -536,13 +536,13 @@ stop();
 
 **`WatchOptions`:**
 
-| Option      | Type                                   | Default | Description                                                        |
-| ----------- | -------------------------------------- | ------- | ------------------------------------------------------------------ |
-| `interval`  | `number`                               | `5000`  | Poll interval in milliseconds                                      |
-| `onRender`  | `(result: RenderResult) => void`       | –       | Called after each successful render cycle                          |
-| `onError`   | `(err: Error) => void`                 | –       | Called on render errors                                            |
-| `cleanup`   | `CleanupOptions`                       | –       | If set, orphan cleanup runs after each render cycle                |
-| `onCleanup` | `(result: CleanupResult) => void`      | –       | Called after each cleanup cycle (requires `cleanup` to be set)     |
+| Option      | Type                              | Default | Description                                                    |
+| ----------- | --------------------------------- | ------- | -------------------------------------------------------------- |
+| `interval`  | `number`                          | `5000`  | Poll interval in milliseconds                                  |
+| `onRender`  | `(result: RenderResult) => void`  | –       | Called after each successful render cycle                      |
+| `onError`   | `(err: Error) => void`            | –       | Called on render errors                                        |
+| `cleanup`   | `CleanupOptions`                  | –       | If set, orphan cleanup runs after each render cycle            |
+| `onCleanup` | `(result: CleanupResult) => void` | –       | Called after each cleanup cycle (requires `cleanup` to be set) |
 
 ---
 
@@ -1053,12 +1053,7 @@ interface EntityFileSpec {
 #### `EntitySource`
 
 ```ts
-type EntitySource =
-  | SelfSource
-  | HasManySource
-  | ManyToManySource
-  | BelongsToSource
-  | CustomSource;
+type EntitySource = SelfSource | HasManySource | ManyToManySource | BelongsToSource | CustomSource;
 
 interface SelfSource {
   type: 'self';
@@ -1130,11 +1125,11 @@ interface ReconcileOptions extends CleanupOptions {
 }
 ```
 
-| Value | Behavior |
-|-------|----------|
+| Value            | Behavior                                                             |
+| ---------------- | -------------------------------------------------------------------- |
 | `true` (default) | Detect external file edits and sync them back to DB before rendering |
-| `'dry-run'` | Detect and count changes, but do not modify the database |
-| `false` | Skip reverse-sync entirely |
+| `'dry-run'`      | Detect and count changes, but do not modify the database             |
+| `false`          | Skip reverse-sync entirely                                           |
 
 #### `ReconcileResult`
 
@@ -1149,9 +1144,9 @@ interface ReconcileResult extends RenderResult {
 
 ```ts
 interface ReverseSyncResult {
-  filesScanned: number;    // Files with reverseSync checked for changes
-  filesChanged: number;    // Files that had been modified since last render
-  updatesApplied: number;  // Total DB updates applied
+  filesScanned: number; // Files with reverseSync checked for changes
+  filesChanged: number; // Files that had been modified since last render
+  updatesApplied: number; // Total DB updates applied
   errors: ReverseSyncError[];
 }
 ```
@@ -1170,8 +1165,8 @@ interface ReverseSyncUpdate {
 
 ```ts
 interface ReverseSyncError {
-  file: string;   // Absolute path to the file
-  error: string;  // Error description
+  file: string; // Absolute path to the file
+  error: string; // Error description
 }
 ```
 

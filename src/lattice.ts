@@ -90,9 +90,7 @@ export class Lattice {
     // Resolve config-file form: read YAML, extract dbPath, collect table defs
     let dbPath: string;
     let configTables: { name: string; definition: TableDefinition }[] | undefined;
-    let configEntityContexts:
-      | { table: string; definition: EntityContextDefinition }[]
-      | undefined;
+    let configEntityContexts: { table: string; definition: EntityContextDefinition }[] | undefined;
 
     if (typeof pathOrConfig === 'string') {
       dbPath = pathOrConfig;
@@ -389,8 +387,17 @@ export class Lattice {
       const entries = Object.entries(withConventions).filter(([k]) => k !== 'id');
       if (entries.length === 0) return Promise.resolve(existing.id as string);
       const setCols = entries.map(([k]) => `"${k}" = ?`).join(', ');
-      this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE id = ?`, [...entries.map(([, v]) => v), existing.id]);
-      this._fireWriteHooks(table, 'update', withConventions, existing.id as string, Object.keys(sanitized));
+      this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
+        ...entries.map(([, v]) => v),
+        existing.id,
+      ]);
+      this._fireWriteHooks(
+        table,
+        'update',
+        withConventions,
+        existing.id as string,
+        Object.keys(sanitized),
+      );
       return Promise.resolve(existing.id as string);
     }
 
@@ -399,12 +406,20 @@ export class Lattice {
     const insertData: Row = { ...withConventions, id, [naturalKeyCol]: naturalKeyVal };
     if (opts?.orgId && cols.has('org_id') && !insertData.org_id) insertData.org_id = opts.orgId;
     if (cols.has('deleted_at')) insertData.deleted_at = null;
-    if (cols.has('created_at') && !insertData.created_at) insertData.created_at = new Date().toISOString();
+    if (cols.has('created_at') && !insertData.created_at)
+      insertData.created_at = new Date().toISOString();
 
     const filtered = this._filterToSchemaColumns(table, insertData);
-    const colNames = Object.keys(filtered).map(c => `"${c}"`).join(', ');
-    const placeholders = Object.keys(filtered).map(() => '?').join(', ');
-    this._adapter.run(`INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`, Object.values(filtered));
+    const colNames = Object.keys(filtered)
+      .map((c) => `"${c}"`)
+      .join(', ');
+    const placeholders = Object.keys(filtered)
+      .map(() => '?')
+      .join(', ');
+    this._adapter.run(
+      `INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`,
+      Object.values(filtered),
+    );
     this._fireWriteHooks(table, 'insert', filtered, id);
     return Promise.resolve(id);
   }
@@ -413,7 +428,12 @@ export class Lattice {
    * Sparse update by natural key — only writes non-null fields on an existing record.
    * Returns true if a row was found and updated.
    */
-  enrichByNaturalKey(table: string, naturalKeyCol: string, naturalKeyVal: string, data: Row): Promise<boolean> {
+  enrichByNaturalKey(
+    table: string,
+    naturalKeyCol: string,
+    naturalKeyVal: string,
+    data: Row,
+  ): Promise<boolean> {
     const notInit = this._notInitError<boolean>();
     if (notInit) return notInit;
 
@@ -424,7 +444,9 @@ export class Lattice {
     if (!existing) return Promise.resolve(false);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
-    const entries = Object.entries(sanitized).filter(([k, v]) => v !== null && v !== undefined && k !== 'id');
+    const entries = Object.entries(sanitized).filter(
+      ([k, v]) => v !== null && v !== undefined && k !== 'id',
+    );
     if (entries.length === 0) return Promise.resolve(true);
 
     const cols = this._ensureColumnCache(table);
@@ -432,8 +454,17 @@ export class Lattice {
     if (cols.has('updated_at')) withTs.push(['updated_at', new Date().toISOString()]);
 
     const setCols = withTs.map(([k]) => `"${k}" = ?`).join(', ');
-    this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE id = ?`, [...withTs.map(([, v]) => v), existing.id]);
-    this._fireWriteHooks(table, 'update', Object.fromEntries(entries), existing.id as string, entries.map(([k]) => k));
+    this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
+      ...withTs.map(([, v]) => v),
+      existing.id,
+    ]);
+    this._fireWriteHooks(
+      table,
+      'update',
+      Object.fromEntries(entries),
+      existing.id as string,
+      entries.map(([k]) => k),
+    );
     return Promise.resolve(true);
   }
 
@@ -441,7 +472,12 @@ export class Lattice {
    * Soft-delete records from a source file whose natural key is NOT in the given set.
    * Returns count of rows soft-deleted.
    */
-  softDeleteMissing(table: string, naturalKeyCol: string, sourceFile: string, currentKeys: string[]): Promise<number> {
+  softDeleteMissing(
+    table: string,
+    naturalKeyCol: string,
+    sourceFile: string,
+    currentKeys: string[],
+  ): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
 
@@ -493,14 +529,20 @@ export class Lattice {
     const cols = this._ensureColumnCache(table);
     const hasDeletedAt = cols.has('deleted_at');
     const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
-    const row = this._adapter.get(`SELECT COUNT(*) as cnt FROM "${table}"${where}`) as { cnt: number };
+    const row = this._adapter.get(`SELECT COUNT(*) as cnt FROM "${table}"${where}`) as {
+      cnt: number;
+    };
     return Promise.resolve(row.cnt);
   }
 
   /**
    * Lookup a single row by natural key (non-deleted).
    */
-  getByNaturalKey(table: string, naturalKeyCol: string, naturalKeyVal: string): Promise<Row | null> {
+  getByNaturalKey(
+    table: string,
+    naturalKeyCol: string,
+    naturalKeyVal: string,
+  ): Promise<Row | null> {
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
 
@@ -521,10 +563,17 @@ export class Lattice {
     if (notInit) return notInit;
 
     const filtered = this._filterToSchemaColumns(junctionTable, data);
-    const colNames = Object.keys(filtered).map(c => `"${c}"`).join(', ');
-    const placeholders = Object.keys(filtered).map(() => '?').join(', ');
+    const colNames = Object.keys(filtered)
+      .map((c) => `"${c}"`)
+      .join(', ');
+    const placeholders = Object.keys(filtered)
+      .map(() => '?')
+      .join(', ');
     const verb = opts?.upsert ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
-    this._adapter.run(`${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`, Object.values(filtered));
+    this._adapter.run(
+      `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
+      Object.values(filtered),
+    );
     return Promise.resolve();
   }
 
@@ -538,7 +587,10 @@ export class Lattice {
     const entries = Object.entries(conditions);
     if (entries.length === 0) return Promise.resolve();
     const where = entries.map(([k]) => `"${k}" = ?`).join(' AND ');
-    this._adapter.run(`DELETE FROM "${junctionTable}" WHERE ${where}`, entries.map(([, v]) => v));
+    this._adapter.run(
+      `DELETE FROM "${junctionTable}" WHERE ${where}`,
+      entries.map(([, v]) => v),
+    );
     return Promise.resolve();
   }
 
@@ -562,7 +614,8 @@ export class Lattice {
 
     for (const record of config.data) {
       const rawKey = record[config.naturalKey];
-      const naturalKeyVal = typeof rawKey === 'string' ? rawKey : typeof rawKey === 'number' ? String(rawKey) : '';
+      const naturalKeyVal =
+        typeof rawKey === 'string' ? rawKey : typeof rawKey === 'number' ? String(rawKey) : '';
       if (!naturalKeyVal) continue;
 
       keys.push(naturalKeyVal);
@@ -572,7 +625,13 @@ export class Lattice {
       if (config.sourceFile) upsertOpts.sourceFile = config.sourceFile;
       if (config.sourceHash) upsertOpts.sourceHash = config.sourceHash;
       if (config.orgId) upsertOpts.orgId = config.orgId;
-      await this.upsertByNaturalKey(config.table, config.naturalKey, naturalKeyVal, record as Row, upsertOpts);
+      await this.upsertByNaturalKey(
+        config.table,
+        config.naturalKey,
+        naturalKeyVal,
+        record as Row,
+        upsertOpts,
+      );
       upserted++;
 
       // Process links
@@ -604,7 +663,12 @@ export class Lattice {
 
     // Soft-delete missing
     if (config.softDeleteMissing && config.sourceFile && keys.length > 0) {
-      softDeleted = await this.softDeleteMissing(config.table, config.naturalKey, config.sourceFile, keys);
+      softDeleted = await this.softDeleteMissing(
+        config.table,
+        config.naturalKey,
+        config.sourceFile,
+        keys,
+      );
     }
 
     return { upserted, linked, softDeleted };
@@ -652,15 +716,40 @@ export class Lattice {
       if (section.query.filters) {
         for (const f of section.query.filters) {
           switch (f.op) {
-            case 'eq': conditions.push(`"${f.col}" = ?`); params.push(f.val); break;
-            case 'ne': conditions.push(`"${f.col}" != ?`); params.push(f.val); break;
-            case 'gt': conditions.push(`"${f.col}" > ?`); params.push(f.val); break;
-            case 'gte': conditions.push(`"${f.col}" >= ?`); params.push(f.val); break;
-            case 'lt': conditions.push(`"${f.col}" < ?`); params.push(f.val); break;
-            case 'lte': conditions.push(`"${f.col}" <= ?`); params.push(f.val); break;
-            case 'like': conditions.push(`"${f.col}" LIKE ?`); params.push(f.val); break;
-            case 'isNull': conditions.push(`"${f.col}" IS NULL`); break;
-            case 'isNotNull': conditions.push(`"${f.col}" IS NOT NULL`); break;
+            case 'eq':
+              conditions.push(`"${f.col}" = ?`);
+              params.push(f.val);
+              break;
+            case 'ne':
+              conditions.push(`"${f.col}" != ?`);
+              params.push(f.val);
+              break;
+            case 'gt':
+              conditions.push(`"${f.col}" > ?`);
+              params.push(f.val);
+              break;
+            case 'gte':
+              conditions.push(`"${f.col}" >= ?`);
+              params.push(f.val);
+              break;
+            case 'lt':
+              conditions.push(`"${f.col}" < ?`);
+              params.push(f.val);
+              break;
+            case 'lte':
+              conditions.push(`"${f.col}" <= ?`);
+              params.push(f.val);
+              break;
+            case 'like':
+              conditions.push(`"${f.col}" LIKE ?`);
+              params.push(f.val);
+              break;
+            case 'isNull':
+              conditions.push(`"${f.col}" IS NULL`);
+              break;
+            case 'isNotNull':
+              conditions.push(`"${f.col}" IS NOT NULL`);
+              break;
             case 'in': {
               const arr = f.val as unknown[];
               if (arr.length > 0) {
@@ -674,10 +763,15 @@ export class Lattice {
       }
 
       const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
-      const orderBy = section.query.orderBy ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}` : '';
+      const orderBy = section.query.orderBy
+        ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}`
+        : '';
       const limit = section.query.limit ? ` LIMIT ${String(section.query.limit)}` : '';
 
-      const rows = this._adapter.all(`SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`, params);
+      const rows = this._adapter.all(
+        `SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`,
+        params,
+      );
 
       if (rows.length > 0) allEmpty = false;
 
@@ -689,17 +783,28 @@ export class Lattice {
         const groups = new Map<string, number>();
         for (const row of rows) {
           const rawGroupVal = row[section.query.groupBy];
-          const type = typeof rawGroupVal === 'string' ? rawGroupVal : typeof rawGroupVal === 'number' ? String(rawGroupVal) : 'other';
+          const type =
+            typeof rawGroupVal === 'string'
+              ? rawGroupVal
+              : typeof rawGroupVal === 'number'
+                ? String(rawGroupVal)
+                : 'other';
           const prefix = type.includes('.') ? (type.split('.')[0] ?? type) : type;
           groups.set(prefix, (groups.get(prefix) ?? 0) + 1);
         }
         formatted = [...groups.entries()].map(([k, v]) => `${k}: ${String(v)}`).join('\n');
       } else if (section.format === 'count_and_list') {
-        const label = (r: Row): string => { const v = r.summary ?? r.name ?? r.title; return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r); };
-        formatted = `Count: ${String(rows.length)}\n` + rows.map(r => `- ${label(r)}`).join('\n');
+        const label = (r: Row): string => {
+          const v = r.summary ?? r.name ?? r.title;
+          return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r);
+        };
+        formatted = `Count: ${String(rows.length)}\n` + rows.map((r) => `- ${label(r)}`).join('\n');
       } else {
-        const label = (r: Row): string => { const v = r.summary ?? r.name ?? r.title; return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r); };
-        formatted = rows.map(r => `- ${label(r)}`).join('\n');
+        const label = (r: Row): string => {
+          const v = r.summary ?? r.name ?? r.title;
+          return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r);
+        };
+        formatted = rows.map((r) => `- ${label(r)}`).join('\n');
       }
 
       sections.push({ name: section.name, rows, count: rows.length, formatted });
@@ -1034,12 +1139,18 @@ export class Lattice {
   }
 
   /** Returns a rejected Promise if not initialized; null if ready. */
-  private _fireWriteHooks(table: string, op: 'insert' | 'update' | 'delete', row: Row, pk: string, changedColumns?: string[]): void {
+  private _fireWriteHooks(
+    table: string,
+    op: 'insert' | 'update' | 'delete',
+    row: Row,
+    pk: string,
+    changedColumns?: string[],
+  ): void {
     for (const hook of this._writeHooks) {
       if (hook.table !== table) continue;
       if (!hook.on.includes(op)) continue;
       if (op === 'update' && hook.watchColumns && changedColumns) {
-        if (!hook.watchColumns.some(c => changedColumns.includes(c))) continue;
+        if (!hook.watchColumns.some((c) => changedColumns.includes(c))) continue;
       }
       try {
         const ctx: WriteHookContext = { table, op, row, pk };
@@ -1077,9 +1188,7 @@ export class Lattice {
     if (!known) return null; // unregistered table — pass through
     for (const col of cols) {
       if (!known.has(col)) {
-        return Promise.reject(
-          new Error(`Lattice: unknown column "${col}" in table "${table}"`),
-        );
+        return Promise.reject(new Error(`Lattice: unknown column "${col}" in table "${table}"`));
       }
     }
     return null;

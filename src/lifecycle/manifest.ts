@@ -62,9 +62,7 @@ export function normalizeEntityFiles(
 /**
  * Get the filenames from an entity files entry (works for both v1 and v2).
  */
-export function entityFileNames(
-  val: Record<string, EntityFileManifestInfo> | string[],
-): string[] {
+export function entityFileNames(val: Record<string, EntityFileManifestInfo> | string[]): string[] {
   return Array.isArray(val) ? val : Object.keys(val);
 }
 

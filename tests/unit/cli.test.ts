@@ -8,7 +8,7 @@
  * lets us inspect parsed args. Since parseArgs() is internal, we test via the
  * observable effects: help text output and command recognition.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -203,12 +203,15 @@ describe('parseArgs() — reconcile command', () => {
   it('parses all reconcile flags together', () => {
     const args = parseArgs([
       'reconcile',
-      '--config', './lattice.yml',
-      '--output', './ctx',
+      '--config',
+      './lattice.yml',
+      '--output',
+      './ctx',
       '--dry-run',
       '--no-orphan-dirs',
       '--no-orphan-files',
-      '--protected', 'SESSION.md,NOTES.md',
+      '--protected',
+      'SESSION.md,NOTES.md',
     ]);
     expect(args.command).toBe('reconcile');
     expect(args.config).toBe('./lattice.yml');
