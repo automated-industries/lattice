@@ -131,7 +131,7 @@ export interface ManyToManySource extends SourceQueryOptions {
    * // Adds j."source" and j."role" AS "agent_role" to each row
    * ```
    */
-  junctionColumns?: Array<string | { col: string; as: string }>;
+  junctionColumns?: (string | { col: string; as: string })[];
 }
 
 /**
@@ -306,7 +306,7 @@ export interface EntityProfileTemplate {
  */
 export interface EntitySectionPerRow {
   heading: (row: Row) => string;
-  metadata?: Array<{ key: string; label: string; format?: (val: unknown) => string }>;
+  metadata?: { key: string; label: string; format?: (val: unknown) => string }[];
   body?: (row: Row) => string;
 }
 

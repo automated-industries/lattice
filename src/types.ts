@@ -525,7 +525,7 @@ export interface WriteHook {
   /** Table the hook fires on. */
   table: string;
   /** Operations that trigger the hook. */
-  on: Array<'insert' | 'update' | 'delete'>;
+  on: ('insert' | 'update' | 'delete')[];
   /** Only fire on update when these columns changed. Omit = fire on any change. */
   watchColumns?: string[];
   /** Handler function. Runs synchronously after the DB write. */

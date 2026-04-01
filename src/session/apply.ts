@@ -58,7 +58,7 @@ export function applyWriteEntry(
   // Load schema columns
   const columnRows = db
     .prepare(`PRAGMA table_info("${table}")`)
-    .all() as Array<{ name: string }>;
+    .all() as { name: string }[];
   const knownColumns = new Set(columnRows.map(r => r.name));
 
   // Validate all field names against schema
@@ -75,7 +75,7 @@ export function applyWriteEntry(
     let recordId: string;
 
     if (op === 'create') {
-      const id = (fields['id'] as string | undefined) ?? crypto.randomUUID();
+      const id = (fields.id) ?? crypto.randomUUID();
       const allFields = { ...fields, id };
       const cols = Object.keys(allFields).map(c => `"${c}"`).join(', ');
       const placeholders = Object.keys(allFields).map(() => '?').join(', ');
