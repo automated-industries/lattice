@@ -376,15 +376,21 @@ db.defineEntityContext('agents', {
   // Files inside each entity's directory
   files: {
     'AGENT.md': {
-      source: { type: 'self' },                        // entity's own row
-      render: ([r]) => `# ${r.name as string}\n\n${r.bio as string ?? ''}`,
+      source: { type: 'self' }, // entity's own row
+      render: ([r]) => `# ${r.name as string}\n\n${(r.bio as string) ?? ''}`,
     },
     'TASKS.md': {
-      source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id',
-                orderBy: 'created_at', orderDir: 'desc', limit: 20 },
+      source: {
+        type: 'hasMany',
+        table: 'tasks',
+        foreignKey: 'agent_id',
+        orderBy: 'created_at',
+        orderDir: 'desc',
+        limit: 20,
+      },
       render: (rows) => rows.map((r) => `- ${r.title as string}`).join('\n'),
-      omitIfEmpty: true,                               // skip if no tasks
-      budget: 4000,                                    // truncate at 4 000 chars
+      omitIfEmpty: true, // skip if no tasks
+      budget: 4000, // truncate at 4 000 chars
     },
     'SKILLS.md': {
       source: {
@@ -393,7 +399,7 @@ db.defineEntityContext('agents', {
         localKey: 'agent_id',
         remoteKey: 'skill_id',
         remoteTable: 'skills',
-        orderBy: 'name',                               // softDelete inherited from sourceDefaults
+        orderBy: 'name', // softDelete inherited from sourceDefaults
       },
       render: (rows) => rows.map((r) => `- ${r.name as string}`).join('\n'),
       omitIfEmpty: true,
@@ -426,14 +432,14 @@ context/
 
 **Source types:**
 
-| Type | What it queries |
-|---|---|
-| `{ type: 'self' }` | The entity row itself |
-| `{ type: 'hasMany', table, foreignKey, ... }` | Rows in `table` where `foreignKey = entityPk` |
-| `{ type: 'manyToMany', junctionTable, localKey, remoteKey, remoteTable, ... }` | Remote rows via a junction table |
-| `{ type: 'belongsTo', table, foreignKey, ... }` | Single parent row via FK on this entity (`null` FK → empty) |
-| `{ type: 'enriched', include: { ... } }` | Entity row + related data attached as `_key` JSON fields (v0.7+) |
-| `{ type: 'custom', query: (row, adapter) => Row[] }` | Fully custom synchronous query |
+| Type                                                                           | What it queries                                                  |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `{ type: 'self' }`                                                             | The entity row itself                                            |
+| `{ type: 'hasMany', table, foreignKey, ... }`                                  | Rows in `table` where `foreignKey = entityPk`                    |
+| `{ type: 'manyToMany', junctionTable, localKey, remoteKey, remoteTable, ... }` | Remote rows via a junction table                                 |
+| `{ type: 'belongsTo', table, foreignKey, ... }`                                | Single parent row via FK on this entity (`null` FK → empty)      |
+| `{ type: 'enriched', include: { ... } }`                                       | Entity row + related data attached as `_key` JSON fields (v0.7+) |
+| `{ type: 'custom', query: (row, adapter) => Row[] }`                           | Fully custom synchronous query                                   |
 
 #### Source query options (v0.6+)
 
@@ -502,7 +508,7 @@ Set default query options for all relationship sources in an entity context:
 ```typescript
 db.defineEntityContext('agents', {
   slug: (row) => row.slug as string,
-  sourceDefaults: { softDelete: true },  // applied to all hasMany/manyToMany/belongsTo
+  sourceDefaults: { softDelete: true }, // applied to all hasMany/manyToMany/belongsTo
   files: {
     'TASKS.md': {
       // softDelete: true is inherited from sourceDefaults
@@ -548,6 +554,7 @@ Starts with the entity's own row and attaches related data as JSON string fields
 `EntityFileSpec.render` accepts declarative template objects in addition to functions. Three built-in templates:
 
 **entity-table** — heading + GFM table:
+
 ```typescript
 render: {
   template: 'entity-table',
@@ -562,6 +569,7 @@ render: {
 ```
 
 **entity-profile** — heading + field-value pairs + enriched JSON sections:
+
 ```typescript
 render: {
   template: 'entity-profile',
@@ -581,6 +589,7 @@ render: {
 ```
 
 **entity-sections** — per-row sections with metadata + body:
+
 ```typescript
 render: {
   template: 'entity-sections',
@@ -615,7 +624,7 @@ Register a post-write lifecycle hook that fires after `insert()`, `update()`, or
 db.defineWriteHook({
   table: 'agents',
   on: ['insert', 'update'],
-  watchColumns: ['team_id', 'division'],  // only fire when these change
+  watchColumns: ['team_id', 'division'], // only fire when these change
   handler: (ctx) => {
     // ctx.table, ctx.op, ctx.row, ctx.pk, ctx.changedColumns
     console.log(`${ctx.op} on ${ctx.table}: ${ctx.pk}`);
@@ -626,12 +635,12 @@ db.defineWriteHook({
 
 **Options:**
 
-| Field | Type | Description |
-|---|---|---|
-| `table` | `string` | Table to watch |
-| `on` | `Array<'insert' \| 'update' \| 'delete'>` | Operations that trigger the hook |
-| `watchColumns` | `string[]` (optional) | Only fire on update when these columns changed |
-| `handler` | `(ctx: WriteHookContext) => void` | Synchronous handler |
+| Field          | Type                                      | Description                                    |
+| -------------- | ----------------------------------------- | ---------------------------------------------- |
+| `table`        | `string`                                  | Table to watch                                 |
+| `on`           | `Array<'insert' \| 'update' \| 'delete'>` | Operations that trigger the hook               |
+| `watchColumns` | `string[]` (optional)                     | Only fire on update when these columns changed |
+| `handler`      | `(ctx: WriteHookContext) => void`         | Synchronous handler                            |
 
 Hook errors are caught and routed to error handlers — they never crash the caller. Multiple hooks per table are supported.
 
@@ -677,9 +686,16 @@ Methods that work on **any table** — including tables created via raw DDL (not
 
 ```typescript
 // Upsert by natural key (not just UUID). Auto-handles org_id, updated_at, deleted_at.
-const id = await db.upsertByNaturalKey('agents', 'name', 'Alice', {
-  role: 'engineer', status: 'active',
-}, { sourceFile: 'agents.md', orgId: 'org-1' });
+const id = await db.upsertByNaturalKey(
+  'agents',
+  'name',
+  'Alice',
+  {
+    role: 'engineer',
+    status: 'active',
+  },
+  { sourceFile: 'agents.md', orgId: 'org-1' },
+);
 
 // Sparse update — only writes non-null fields.
 await db.enrichByNaturalKey('agents', 'name', 'Alice', { title: 'Senior Engineer' });
@@ -700,7 +716,11 @@ const alice = await db.getByNaturalKey('agents', 'name', 'Alice');
 await db.link('agent_skills', { agent_id: 'a1', skill_id: 's1', proficiency: 'expert' });
 
 // Link with upsert (INSERT OR REPLACE — updates existing)
-await db.link('agent_projects', { agent_id: 'a1', project_id: 'p1', role: 'lead' }, { upsert: true });
+await db.link(
+  'agent_projects',
+  { agent_id: 'a1', project_id: 'p1', role: 'lead' },
+  { upsert: true },
+);
 
 // Unlink (DELETE matching rows)
 await db.unlink('agent_projects', { agent_id: 'a1', project_id: 'p1' });
@@ -748,11 +768,19 @@ Declarative report builder — queries data within a time window, groups into se
 
 ```typescript
 const report = await db.buildReport({
-  since: '8h',   // or '24h', '7d', or ISO timestamp
+  since: '8h', // or '24h', '7d', or ISO timestamp
   sections: [
-    { name: 'tasks', query: { table: 'tasks', orderBy: 'created_at', orderDir: 'desc' }, format: 'count_and_list' },
+    {
+      name: 'tasks',
+      query: { table: 'tasks', orderBy: 'created_at', orderDir: 'desc' },
+      format: 'count_and_list',
+    },
     { name: 'events', query: { table: 'activity', groupBy: 'type' }, format: 'counts' },
-    { name: 'alerts', query: { table: 'activity', filters: [{ col: 'severity', op: 'lte', val: 2 }] }, format: 'list' },
+    {
+      name: 'alerts',
+      query: { table: 'activity', filters: [{ col: 'severity', op: 'lte', val: 2 }] },
+      format: 'list',
+    },
   ],
 });
 
@@ -771,11 +799,13 @@ import { createSQLiteStateStore } from 'latticesql';
 
 db.defineWriteback({
   file: './agents/*/SESSION.md',
-  stateStore: createSQLiteStateStore(db.db),  // persists offsets in SQLite
+  stateStore: createSQLiteStateStore(db.db), // persists offsets in SQLite
   parse: (content, offset) => myParser(content, offset),
-  persist: async (entry, filePath) => { /* ... */ },
+  persist: async (entry, filePath) => {
+    /* ... */
+  },
   dedupeKey: (entry) => entry.id,
-  onArchive: (filePath) => archiveFile(filePath),  // lifecycle hook
+  onArchive: (filePath) => archiveFile(filePath), // lifecycle hook
 });
 ```
 
@@ -1046,9 +1076,9 @@ stop();
 const stop = await db.watch('./context', {
   interval: 10_000,
   cleanup: {
-    removeOrphanedDirectories: true,  // delete dirs for deleted entities
-    removeOrphanedFiles: true,        // delete stale relationship files
-    protectedFiles: ['SESSION.md'],   // never delete these
+    removeOrphanedDirectories: true, // delete dirs for deleted entities
+    removeOrphanedFiles: true, // delete stale relationship files
+    protectedFiles: ['SESSION.md'], // never delete these
     dryRun: false,
   },
   onCleanup: (r) => {
@@ -1074,15 +1104,15 @@ const result = await db.reconcile('./context', {
   removeOrphanedDirectories: true,
   removeOrphanedFiles: true,
   protectedFiles: ['SESSION.md'],
-  reverseSync: true,                    // default; set false to skip, 'dry-run' to preview
-  dryRun: false,                        // set true to preview without deleting
+  reverseSync: true, // default; set false to skip, 'dry-run' to preview
+  dryRun: false, // set true to preview without deleting
   onOrphan: (path, kind) => console.log(`would remove ${kind}: ${path}`),
 });
 
-console.log(result.filesWritten);           // files written this cycle
-console.log(result.cleanup.directoriesRemoved);  // orphaned dirs removed
-console.log(result.cleanup.warnings);            // dirs left in place (user files)
-console.log(result.reverseSync);                 // { filesScanned, filesChanged, updatesApplied, errors }
+console.log(result.filesWritten); // files written this cycle
+console.log(result.cleanup.directoriesRemoved); // orphaned dirs removed
+console.log(result.cleanup.warnings); // dirs left in place (user files)
+console.log(result.reverseSync); // { filesScanned, filesChanged, updatesApplied, errors }
 ```
 
 `ReconcileResult` extends `RenderResult` with `cleanup` and `reverseSync` fields:
@@ -1278,9 +1308,9 @@ Generate a GitHub-Flavoured Markdown table from rows with explicit column config
 import { markdownTable } from 'latticesql';
 
 const md = markdownTable(rows, [
-  { key: 'name',   header: 'Name' },
+  { key: 'name', header: 'Name' },
   { key: 'status', header: 'Status', format: (v) => String(v || '—') },
-  { key: 'name',   header: 'Detail', format: (v, row) => `[view](${row.slug}/DETAIL.md)` },
+  { key: 'name', header: 'Detail', format: (v, row) => `[view](${row.slug}/DETAIL.md)` },
 ]);
 // | Name | Status | Detail |
 // | --- | --- | --- |
@@ -1296,8 +1326,8 @@ Generate a URL-safe slug from a display name — lowercases, strips diacritics, 
 ```typescript
 import { slugify } from 'latticesql';
 
-slugify('My Agent Name');  // 'my-agent-name'
-slugify('Jose Garcia');    // 'jose-garcia'
+slugify('My Agent Name'); // 'my-agent-name'
+slugify('Jose Garcia'); // 'jose-garcia'
 ```
 
 ### `truncate(content, maxChars, notice?)`
@@ -1332,7 +1362,7 @@ db.defineEntityContext('projects', {
   files: {
     'PROJECT.md': {
       source: { type: 'self' },
-      render: ([r]) => `# ${r.name as string}\n\n${r.description as string ?? ''}`,
+      render: ([r]) => `# ${r.name as string}\n\n${(r.description as string) ?? ''}`,
     },
   },
 });
@@ -1358,7 +1388,7 @@ await db.delete('projects', 'old-id');
 
 const result = await db.reconcile('./ctx', {
   removeOrphanedDirectories: true,
-  protectedFiles: ['NOTES.md'],   // agents wrote these — keep them
+  protectedFiles: ['NOTES.md'], // agents wrote these — keep them
 });
 // result.cleanup.directoriesRemoved → ['/.../ctx/projects/old-project']
 ```
@@ -1373,7 +1403,9 @@ Declare files that agents write inside entity directories. Lattice will never de
 db.defineEntityContext('agents', {
   slug: (r) => r.slug as string,
   protectedFiles: ['SESSION.md', 'NOTES.md'],
-  files: { /* ... */ },
+  files: {
+    /* ... */
+  },
 });
 ```
 
@@ -1421,14 +1453,14 @@ last_task: api-deploy
 ===
 ```
 
-| Header | Required | Description |
-|--------|----------|-------------|
-| `type` | Yes | Must be `write` |
-| `timestamp` | Yes | ISO 8601 |
-| `op` | Yes | `create`, `update`, or `delete` |
-| `table` | Yes | Target table name |
-| `target` | For update/delete | Record primary key |
-| `reason` | Encouraged | Human-readable reason (audit trail) |
+| Header      | Required          | Description                         |
+| ----------- | ----------------- | ----------------------------------- |
+| `type`      | Yes               | Must be `write`                     |
+| `timestamp` | Yes               | ISO 8601                            |
+| `op`        | Yes               | `create`, `update`, or `delete`     |
+| `table`     | Yes               | Target table name                   |
+| `target`    | For update/delete | Record primary key                  |
+| `reason`    | Encouraged        | Human-readable reason (audit trail) |
 
 **Body**: `key: value` pairs — one field per line. Field names are validated against the table schema before any write is applied.
 
@@ -1449,15 +1481,16 @@ for (const entry of result.entries) {
 ```
 
 **`SessionWriteEntry`:**
+
 ```ts
 interface SessionWriteEntry {
-  id: string;                       // content-addressed ID
-  timestamp: string;                // ISO 8601
+  id: string; // content-addressed ID
+  timestamp: string; // ISO 8601
   op: 'create' | 'update' | 'delete';
   table: string;
-  target?: string;                  // required for update/delete
+  target?: string; // required for update/delete
   reason?: string;
-  fields: Record<string, string>;  // empty for delete
+  fields: Record<string, string>; // empty for delete
 }
 ```
 

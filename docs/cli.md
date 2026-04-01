@@ -97,17 +97,17 @@ lattice render [options]
 
 **Options:**
 
-| Option            | Short | Default                | Description                                          |
-| ----------------- | ----- | ---------------------- | ---------------------------------------------------- |
-| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                         |
-| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files   |
+| Option            | Short | Default                | Description                                        |
+| ----------------- | ----- | ---------------------- | -------------------------------------------------- |
+| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                       |
+| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files |
 
 **Exit codes:**
 
-| Code | Meaning                               |
-| ---- | ------------------------------------- |
-| `0`  | Success                               |
-| `1`  | Config error or render failure        |
+| Code | Meaning                        |
+| ---- | ------------------------------ |
+| `0`  | Success                        |
+| `1`  | Config error or render failure |
 
 **Example:**
 
@@ -134,21 +134,21 @@ lattice reconcile [options]
 
 **Options:**
 
-| Option               | Short | Default                | Description                                              |
-| -------------------- | ----- | ---------------------- | -------------------------------------------------------- |
-| `--config <path>`    | `-c`  | `./lattice.config.yml` | Path to the YAML config file                             |
-| `--output <dir>`     | –     | `./context`            | Output directory for rendered entity context files       |
-| `--dry-run`          | –     | off                    | Report orphans but do not delete anything                |
-| `--no-orphan-dirs`   | –     | off                    | Skip removal of orphaned entity directories              |
-| `--no-orphan-files`  | –     | off                    | Skip removal of orphaned files inside entity directories |
-| `--protected <csv>`  | –     | –                      | Comma-separated list of protected filenames              |
+| Option              | Short | Default                | Description                                              |
+| ------------------- | ----- | ---------------------- | -------------------------------------------------------- |
+| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                             |
+| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files       |
+| `--dry-run`         | –     | off                    | Report orphans but do not delete anything                |
+| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories              |
+| `--no-orphan-files` | –     | off                    | Skip removal of orphaned files inside entity directories |
+| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames              |
 
 **Exit codes:**
 
-| Code | Meaning                                    |
-| ---- | ------------------------------------------ |
-| `0`  | Success                                    |
-| `1`  | Config error, render failure, or warnings  |
+| Code | Meaning                                   |
+| ---- | ----------------------------------------- |
+| `0`  | Success                                   |
+| `1`  | Config error, render failure, or warnings |
 
 **Example:**
 
@@ -204,15 +204,15 @@ lattice watch [options]
 
 **Options:**
 
-| Option              | Short | Default                | Description                                                          |
-| ------------------- | ----- | ---------------------- | -------------------------------------------------------------------- |
-| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                                         |
-| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files                   |
-| `--interval <ms>`   | –     | `5000`                 | Poll interval in milliseconds                                        |
-| `--cleanup`         | –     | off                    | Enable orphan cleanup after each render cycle                        |
-| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories (requires `--cleanup`)   |
+| Option              | Short | Default                | Description                                                              |
+| ------------------- | ----- | ---------------------- | ------------------------------------------------------------------------ |
+| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                                             |
+| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files                       |
+| `--interval <ms>`   | –     | `5000`                 | Poll interval in milliseconds                                            |
+| `--cleanup`         | –     | off                    | Enable orphan cleanup after each render cycle                            |
+| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories (requires `--cleanup`)       |
 | `--no-orphan-files` | –     | off                    | Skip removal of orphaned files inside entity dirs (requires `--cleanup`) |
-| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames (requires `--cleanup`)   |
+| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames (requires `--cleanup`)       |
 
 Sends `SIGINT` or `SIGTERM` to stop gracefully.
 
