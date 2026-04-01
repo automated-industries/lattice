@@ -384,7 +384,7 @@ export class Lattice {
     const existing = this._adapter.get(
       `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
       [naturalKeyVal],
-    ) as Row | undefined;
+    );
 
     if (existing) {
       // Update existing
@@ -422,7 +422,7 @@ export class Lattice {
     const existing = this._adapter.get(
       `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
       [naturalKeyVal],
-    ) as Row | undefined;
+    );
     if (!existing) return Promise.resolve(false);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
@@ -678,7 +678,7 @@ export class Lattice {
       const orderBy = section.query.orderBy ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}` : '';
       const limit = section.query.limit ? ` LIMIT ${section.query.limit}` : '';
 
-      const rows = this._adapter.all(`SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`, params) as Row[];
+      const rows = this._adapter.all(`SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`, params);
 
       if (rows.length > 0) allEmpty = false;
 
@@ -708,7 +708,7 @@ export class Lattice {
 
   /** Parse duration shorthand ('8h', '24h', '7d') into ISO timestamp. */
   private _resolveSince(since: string): string {
-    const match = since.match(/^(\d+)([hmd])$/);
+    const match = /^(\d+)([hmd])$/.exec(since);
     if (!match) return since; // assume ISO timestamp
     const [, numStr, unit] = match;
     const num = parseInt(numStr!, 10);
