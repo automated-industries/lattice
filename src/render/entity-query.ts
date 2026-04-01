@@ -97,7 +97,7 @@ function appendQueryOptions(
       }
     } else {
       // Array form: multi-column ORDER BY
-      const clauses = (opts.orderBy as OrderBySpec[])
+      const clauses = (opts.orderBy)
         .filter(spec => SAFE_COL_RE.test(spec.col))
         .map(spec => `${prefix}"${spec.col}" ${spec.dir === 'desc' ? 'DESC' : 'ASC'}`);
       if (clauses.length > 0) {

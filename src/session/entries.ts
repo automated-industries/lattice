@@ -131,21 +131,22 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
   let currentByteOffset = startOffset;
 
   while (i < lines.length) {
-    if (lines[i]!.trim() !== '---') {
-      currentByteOffset += Buffer.byteLength(lines[i]! + '\n', 'utf-8');
+    const currentLine = lines[i] ?? '';
+    if (currentLine.trim() !== '---') {
+      currentByteOffset += Buffer.byteLength(currentLine + '\n', 'utf-8');
       i++;
       continue;
     }
 
     const entryStartLine = i;
-    currentByteOffset += Buffer.byteLength(lines[i]! + '\n', 'utf-8');
+    currentByteOffset += Buffer.byteLength((lines[i] ?? '') + '\n', 'utf-8');
     i++;
 
     const headers: Record<string, string> = {};
     let foundHeaderClose = false;
 
     while (i < lines.length) {
-      const line = lines[i]!;
+      const line = lines[i] ?? '';
       currentByteOffset += Buffer.byteLength(line + '\n', 'utf-8');
 
       if (line.trim() === '---') {
@@ -154,9 +155,9 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
         break;
       }
 
-      const match = line.match(/^(\w+):\s*(.+)$/);
+      const match = /^(\w+):\s*(.+)$/.exec(line);
       if (match) {
-        headers[match[1]!] = match[2]!.trim();
+        headers[match[1] ?? ''] = (match[2] ?? '').trim();
       }
       i++;
     }
@@ -169,7 +170,7 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
     const bodyLines: string[] = [];
 
     while (i < lines.length) {
-      const line = lines[i]!;
+      const line = lines[i] ?? '';
 
       if (line.trim() === '===') {
         currentByteOffset += Buffer.byteLength(line + '\n', 'utf-8');
@@ -191,14 +192,14 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
 
     const body = bodyLines.join('\n').trim();
 
-    const rawType = headers['type'] ?? '';
+    const rawType = headers.type ?? '';
     const resolvedType = normalizeType(rawType, options);
 
     if (!resolvedType) {
       errors.push({ line: entryStartLine + 1, message: `Unknown entry type: ${rawType}` });
       continue;
     }
-    if (!headers['timestamp']) {
+    if (!headers.timestamp) {
       errors.push({ line: entryStartLine + 1, message: 'Missing required header: timestamp' });
       continue;
     }
@@ -207,11 +208,11 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
       continue;
     }
 
-    const entryId = headers['id'] ?? generateEntryId(headers['timestamp']!, 'agent', body);
+    const entryId = headers.id ?? generateEntryId(headers.timestamp, 'agent', body);
 
     let tags: string[] | undefined;
-    if (headers['tags']) {
-      const tagMatch = headers['tags'].match(/^\[(.+)\]$/);
+    if (headers.tags) {
+      const tagMatch = /^\[(.+)\]$/.exec(headers.tags);
       if (tagMatch) {
         tags = tagMatch[1]!.split(',').map(t => t.trim());
       }
@@ -219,10 +220,10 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
 
     // For write entries, parse body as key:value field pairs
     let writeFields: Record<string, string> | undefined;
-    if (resolvedType === 'write' && headers['op'] !== 'delete') {
+    if (resolvedType === 'write' && headers.op !== 'delete') {
       writeFields = {};
       for (const line of body.split('\n')) {
-        const m = line.match(/^([^:]+):\s*(.*)$/);
+        const m = /^([^:]+):\s*(.*)$/.exec(line);
         if (!m) continue;
         const key = m[1]!.trim();
         if (!FIELD_NAME_RE.test(key)) continue;
@@ -230,18 +231,18 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
       }
     }
 
-    const newEntry: SessionEntry = { id: entryId, type: resolvedType, timestamp: headers['timestamp']!, body };
-    if (headers['project']) newEntry.project = headers['project'];
-    if (headers['task']) newEntry.task = headers['task'];
+    const newEntry: SessionEntry = { id: entryId, type: resolvedType, timestamp: headers.timestamp, body };
+    if (headers.project) newEntry.project = headers.project;
+    if (headers.task) newEntry.task = headers.task;
     if (tags) newEntry.tags = tags;
-    if (headers['severity']) newEntry.severity = headers['severity'];
-    if (headers['target_agent']) newEntry.target_agent = headers['target_agent'];
-    if (headers['target_table']) newEntry.target_table = headers['target_table'];
+    if (headers.severity) newEntry.severity = headers.severity;
+    if (headers.target_agent) newEntry.target_agent = headers.target_agent;
+    if (headers.target_table) newEntry.target_table = headers.target_table;
     if (resolvedType === 'write') {
-      if (headers['op']) newEntry.op = headers['op'] as 'create' | 'update' | 'delete';
-      if (headers['table']) newEntry.table = headers['table'];
-      if (headers['target']) newEntry.target = headers['target'];
-      if (headers['reason']) newEntry.reason = headers['reason'];
+      if (headers.op) newEntry.op = headers.op as 'create' | 'update' | 'delete';
+      if (headers.table) newEntry.table = headers.table;
+      if (headers.target) newEntry.target = headers.target;
+      if (headers.reason) newEntry.reason = headers.reason;
       newEntry.fields = writeFields ?? {};
     }
     entries.push(newEntry);
@@ -275,15 +276,15 @@ export function parseMarkdownEntries(
   const headingPattern = /^##\s+([\dT:.Z-]{10,})\s*(?:[—–\-]{1,2}\s*(.+))?$/;
 
   let currentByteOffset = startOffset;
-  const entryStarts: Array<{
+  const entryStarts: {
     lineIdx: number;
     timestamp: string;
     headingType: string;
     offset: number;
-  }> = [];
+  }[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const match = lines[i]!.match(headingPattern);
+    const match = headingPattern.exec((lines[i]!));
     if (match) {
       entryStarts.push({
         lineIdx: i,
@@ -306,7 +307,7 @@ export function parseMarkdownEntries(
     let bodyType: string | null = null;
     const filteredBody: string[] = [];
     for (const line of bodyLines) {
-      const typeMatch = line.match(/^\*\*type:\*\*\s*(.+)/i);
+      const typeMatch = /^\*\*type:\*\*\s*(.+)/i.exec(line);
       if (typeMatch && !bodyType) {
         bodyType = typeMatch[1]!.trim();
       } else {
@@ -379,7 +380,7 @@ function normalizeType(raw: string, options?: SessionParseOptions): string | nul
     // Still apply aliases if available
     if (aliases) {
       const normalized = lower.replace(/-/g, '_');
-      if (aliases[normalized]) return aliases[normalized]!;
+      if (aliases[normalized]) return aliases[normalized];
     }
     return lower;
   }
@@ -388,7 +389,7 @@ function normalizeType(raw: string, options?: SessionParseOptions): string | nul
 
   if (aliases) {
     const normalized = lower.replace(/-/g, '_');
-    if (aliases[normalized]) return aliases[normalized]!;
+    if (aliases[normalized]) return aliases[normalized];
     for (const alias of Object.keys(aliases)) {
       if (normalized.startsWith(alias)) return aliases[alias]!;
     }

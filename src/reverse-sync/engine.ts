@@ -37,7 +37,7 @@ export class ReverseSyncEngine {
   process(
     outputDir: string,
     prevManifest: LatticeManifest | null,
-    dryRun: boolean = false,
+    dryRun = false,
   ): ReverseSyncResult {
     const result: ReverseSyncResult = {
       filesScanned: 0,
