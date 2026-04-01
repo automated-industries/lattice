@@ -72,11 +72,14 @@ export type {
   ReportResult,
   CleanupOptions,
   CleanupResult,
+  ReverseSyncUpdate,
+  ReverseSyncError,
+  ReverseSyncResult,
   ReconcileOptions,
   ReconcileResult,
 } from './types.js';
-export { readManifest, writeManifest, manifestPath } from './lifecycle/manifest.js';
-export type { LatticeManifest, EntityContextManifestEntry } from './lifecycle/manifest.js';
+export { readManifest, writeManifest, manifestPath, entityFileNames, normalizeEntityFiles, isV1EntityFiles } from './lifecycle/manifest.js';
+export type { LatticeManifest, EntityContextManifestEntry, EntityFileManifestInfo } from './lifecycle/manifest.js';
 // v0.6 additions — markdown render utilities
 export { frontmatter, markdownTable, slugify, truncate } from './render/markdown.js';
 export type { MarkdownTableColumn } from './render/markdown.js';

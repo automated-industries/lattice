@@ -1065,13 +1065,16 @@ const stop = await db.watch('./context', {
 await db.reconcile(outputDir: string, options?: ReconcileOptions): Promise<ReconcileResult>
 ```
 
-One-shot render + orphan cleanup. Reads the previous manifest, renders all tables and entity contexts (writing a new manifest), then removes orphaned directories and files.
+One-shot reverse-sync + render + orphan cleanup. Reads the previous manifest, detects external file edits (reverse-sync), renders all tables and entity contexts (writing a new manifest), then removes orphaned directories and files.
+
+**Reverse-sync (v0.15+):** If any `EntityFileSpec` defines a `reverseSync` function, Lattice detects files modified since the last render (via SHA-256 hashes in the manifest) and sweeps those changes back into the database before re-rendering. See [docs/entity-context.md](./docs/entity-context.md#reverse-sync-v015).
 
 ```typescript
 const result = await db.reconcile('./context', {
   removeOrphanedDirectories: true,
   removeOrphanedFiles: true,
   protectedFiles: ['SESSION.md'],
+  reverseSync: true,                    // default; set false to skip, 'dry-run' to preview
   dryRun: false,                        // set true to preview without deleting
   onOrphan: (path, kind) => console.log(`would remove ${kind}: ${path}`),
 });
@@ -1079,9 +1082,10 @@ const result = await db.reconcile('./context', {
 console.log(result.filesWritten);           // files written this cycle
 console.log(result.cleanup.directoriesRemoved);  // orphaned dirs removed
 console.log(result.cleanup.warnings);            // dirs left in place (user files)
+console.log(result.reverseSync);                 // { filesScanned, filesChanged, updatesApplied, errors }
 ```
 
-`ReconcileResult` extends `RenderResult` with a `cleanup: CleanupResult` field:
+`ReconcileResult` extends `RenderResult` with `cleanup` and `reverseSync` fields:
 
 ```typescript
 interface ReconcileResult {
@@ -1089,11 +1093,17 @@ interface ReconcileResult {
   filesSkipped: number;
   durationMs: number;
   cleanup: {
-    directoriesRemoved: string[];   // absolute paths
+    directoriesRemoved: string[];
     filesRemoved: string[];
-    directoriesSkipped: string[];   // had user files — left in place
+    directoriesSkipped: string[];
     warnings: string[];
   };
+  reverseSync: {
+    filesScanned: number;
+    filesChanged: number;
+    updatesApplied: number;
+    errors: Array<{ file: string; error: string }>;
+  } | null;
 }
 ```
 

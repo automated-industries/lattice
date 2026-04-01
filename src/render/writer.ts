@@ -29,6 +29,6 @@ function existingHash(filePath: string): string | null {
   }
 }
 
-function contentHash(content: string): string {
+export function contentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
