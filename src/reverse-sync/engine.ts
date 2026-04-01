@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import type { ReverseSyncResult, ReverseSyncError } from '../types.js';
+import type { ReverseSyncResult } from '../types.js';
 import type { LatticeManifest, EntityFileManifestInfo } from '../lifecycle/manifest.js';
 import { isV1EntityFiles, normalizeEntityFiles } from '../lifecycle/manifest.js';
 import { contentHash } from '../render/writer.js';
@@ -62,7 +62,6 @@ export class ReverseSyncEngine {
       if (reverseSyncFiles.size === 0) continue;
 
       // Build slug → entityRow map for this table
-      const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
       const allRows = this._schema.queryTable(this._adapter, table);
       const slugToRow = new Map<string, import('../types.js').Row>();
       for (const row of allRows) {
@@ -115,7 +114,7 @@ export class ReverseSyncEngine {
             if (updates.length === 0) continue;
 
             if (!dryRun) {
-              this._applyUpdates(updates, entityPk);
+              this._applyUpdates(updates);
             }
             result.updatesApplied += updates.length;
           } catch (err) {
@@ -139,7 +138,7 @@ export class ReverseSyncEngine {
    * Each update is an independent UPDATE statement.
    * Wrapped in a transaction for atomicity.
    */
-  private _applyUpdates(updates: ReverseSyncUpdate[], _defaultPk: string): void {
+  private _applyUpdates(updates: ReverseSyncUpdate[]): void {
     this._adapter.run('BEGIN');
     try {
       for (const update of updates) {
