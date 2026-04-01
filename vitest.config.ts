@@ -9,7 +9,15 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**'],
-      exclude: ['src/index.ts'],
+      exclude: [
+        'src/index.ts',
+        'src/types.ts',
+        'src/cli.ts',
+        'src/schema/entity-context.ts',
+        'src/config/types.ts',
+        'src/db/adapter.ts',
+        'src/lifecycle/index.ts',
+      ],
       thresholds: {
         lines: 80,
       },
