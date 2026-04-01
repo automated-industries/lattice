@@ -109,7 +109,7 @@ const FIELD_NAME_RE = /^[a-zA-Z0-9_]+$/;
  * Each entry looks like:
  * ```
  * ---
- * id: 2026-03-12T15:30:42Z-agent-b-a1b2c3
+ * id: 2026-03-12T15:30:42Z-agent1-a1b2c3
  * type: event
  * timestamp: 2026-03-12T15:30:42Z
  * ---
