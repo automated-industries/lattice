@@ -169,12 +169,12 @@ function parseBlock(block: RawBlock): BlockParseResult {
   }
 
   // Validate target for update/delete
-  const target = header.target ?? undefined;
+  const target = header.target || undefined;
   if ((op === 'update' || op === 'delete') && !target) {
     return { error: { line, message: `Field "target" is required for op "${op}"` } };
   }
 
-  const reason = header.reason ?? undefined;
+  const reason = header.reason || undefined;
 
   // Parse body fields (skip for delete)
   const fields: Record<string, string> = {};
@@ -182,8 +182,8 @@ function parseBlock(block: RawBlock): BlockParseResult {
     for (const line of block.bodyLines) {
       const m = KEY_VALUE_RE.exec(line);
       if (!m) continue;
-      const key = m[1]!.trim();
-      const value = m[2]!.trim();
+      const key = (m[1] ?? '').trim();
+      const value = (m[2] ?? '').trim();
       if (!FIELD_NAME_RE.test(key)) continue; // invalid field name — ignore
       fields[key] = value;
     }
