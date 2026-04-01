@@ -155,7 +155,9 @@ function parseBlock(block: RawBlock): BlockParseResult {
     return { error: { line, message: 'Missing required field: op' } };
   }
   if (rawOp !== 'create' && rawOp !== 'update' && rawOp !== 'delete') {
-    return { error: { line, message: `Invalid op: "${rawOp}". Must be create, update, or delete` } };
+    return {
+      error: { line, message: `Invalid op: "${rawOp}". Must be create, update, or delete` },
+    };
   }
   const op = rawOp as SessionWriteOp;
 
@@ -165,7 +167,9 @@ function parseBlock(block: RawBlock): BlockParseResult {
     return { error: { line, message: 'Missing required field: table' } };
   }
   if (!TABLE_NAME_RE.test(table)) {
-    return { error: { line, message: `Invalid table name: "${table}". Only [a-zA-Z0-9_] allowed` } };
+    return {
+      error: { line, message: `Invalid table name: "${table}". Only [a-zA-Z0-9_] allowed` },
+    };
   }
 
   // Validate target for update/delete
@@ -192,8 +196,7 @@ function parseBlock(block: RawBlock): BlockParseResult {
   }
 
   // Resolve or auto-generate ID
-  const id =
-    header.id ?? generateWriteEntryId(timestamp, 'agent', op, table, target);
+  const id = header.id ?? generateWriteEntryId(timestamp, 'agent', op, table, target);
 
   const entry: SessionWriteEntry = {
     id,

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { readManifest, entityFileNames } from '../../src/lifecycle/manifest.js';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { readManifest, type LatticeManifest } from '../../src/lifecycle/manifest.js';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -50,39 +50,40 @@ async function setupDb(opts?: {
     outputFile: 'tasks.md',
   });
 
-  const reverseSyncAgent = opts?.withReverseSync !== false
-    ? (content: string, entityRow: import('../../src/types.js').Row) => {
-        const updates: import('../../src/schema/entity-context.js').ReverseSyncUpdate[] = [];
-        const nameMatch = content.match(/^# (.+)$/m);
-        if (nameMatch && nameMatch[1] !== entityRow.name) {
-          updates.push({
-            table: 'agents',
-            pk: { id: entityRow.id },
-            set: { name: nameMatch[1] },
-          });
-        }
-        const roleMatch = content.match(/^\*\*Role:\*\* (.+)$/m);
-        if (roleMatch && roleMatch[1] !== entityRow.role) {
-          updates.push({
-            table: 'agents',
-            pk: { id: entityRow.id },
-            set: { role: roleMatch[1] },
-          });
-        }
-        const soulMatch = content.match(/## Soul\n([\s\S]*?)(?:\n##|$)/);
-        if (soulMatch) {
-          const soul = soulMatch[1].trim();
-          if (soul && soul !== entityRow.soul) {
+  const reverseSyncAgent =
+    opts?.withReverseSync !== false
+      ? (content: string, entityRow: import('../../src/types.js').Row) => {
+          const updates: import('../../src/schema/entity-context.js').ReverseSyncUpdate[] = [];
+          const nameMatch = /^# (.+)$/m.exec(content);
+          if (nameMatch && nameMatch[1] !== entityRow.name) {
             updates.push({
               table: 'agents',
               pk: { id: entityRow.id },
-              set: { soul },
+              set: { name: nameMatch[1] },
             });
           }
+          const roleMatch = /^\*\*Role:\*\* (.+)$/m.exec(content);
+          if (roleMatch && roleMatch[1] !== entityRow.role) {
+            updates.push({
+              table: 'agents',
+              pk: { id: entityRow.id },
+              set: { role: roleMatch[1] },
+            });
+          }
+          const soulMatch = /## Soul\n([\s\S]*?)(?:\n##|$)/.exec(content);
+          if (soulMatch) {
+            const soul = soulMatch[1].trim();
+            if (soul && soul !== entityRow.soul) {
+              updates.push({
+                table: 'agents',
+                pk: { id: entityRow.id },
+                set: { soul },
+              });
+            }
+          }
+          return updates;
         }
-        return updates;
-      }
-    : undefined;
+      : undefined;
 
   db.defineEntityContext('agents', {
     slug: (r) => r.slug as string,
@@ -91,7 +92,7 @@ async function setupDb(opts?: {
       'AGENT.md': {
         source: { type: 'self' },
         render: ([r]) => {
-          let md = `# ${(r ?? {}).name as string}\n`;
+          let md = `# ${(r?.name as string) ?? ''}\n`;
           if (r?.role) md += `**Role:** ${r.role as string}\n`;
           if (r?.soul) md += `\n## Soul\n${r.soul as string}\n`;
           return md;
@@ -114,7 +115,11 @@ async function setupDb(opts?: {
 
 afterEach(() => {
   for (const d of tmpDirs) {
-    try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      rmSync(d, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
   tmpDirs.length = 0;
 });
@@ -124,7 +129,6 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('reverse-sync', () => {
-
   // --- Core round-trip ---
 
   it('detects file modification and syncs change back to DB', async () => {
@@ -284,8 +288,10 @@ describe('reverse-sync', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}\n`,
-          reverseSync: () => { throw new Error('Parse failed!'); },
+          render: ([r]) => `# ${(r?.name as string) ?? ''}\n`,
+          reverseSync: () => {
+            throw new Error('Parse failed!');
+          },
         },
       },
     });
@@ -328,7 +334,7 @@ describe('reverse-sync', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}\n`,
+          render: ([r]) => `# ${(r?.name as string) ?? ''}\n`,
           reverseSync: () => [], // Always returns empty
         },
       },
@@ -387,13 +393,13 @@ describe('reverse-sync', () => {
 
     // Manually downgrade the manifest to v1 format
     const manifestFile = join(outputDir, '.lattice', 'manifest.json');
-    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as LatticeManifest;
     manifest.version = 1;
     // Convert entities to v1 string[] format
     for (const table of Object.keys(manifest.entityContexts)) {
-      for (const slug of Object.keys(manifest.entityContexts[table].entities)) {
-        const v2Entry = manifest.entityContexts[table].entities[slug];
-        manifest.entityContexts[table].entities[slug] = Object.keys(v2Entry);
+      for (const slug of Object.keys(manifest.entityContexts[table]!.entities)) {
+        const v2Entry = manifest.entityContexts[table]!.entities[slug]!;
+        manifest.entityContexts[table]!.entities[slug] = Object.keys(v2Entry);
       }
     }
     writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
@@ -416,7 +422,13 @@ describe('reverse-sync', () => {
   it('applies multiple updates from a single file change', async () => {
     const { db, outputDir } = await setupDb();
 
-    await db.insert('agents', { id: 'a1', name: 'Alpha', slug: 'alpha', role: 'Scout', soul: 'Original soul text' });
+    await db.insert('agents', {
+      id: 'a1',
+      name: 'Alpha',
+      slug: 'alpha',
+      role: 'Scout',
+      soul: 'Original soul text',
+    });
 
     await db.reconcile(outputDir);
 
@@ -499,7 +511,7 @@ describe('reverse-sync', () => {
     expect(manifest).not.toBeNull();
     expect(manifest!.version).toBe(2);
 
-    const entityEntry = manifest!.entityContexts['agents']!.entities['alpha'];
+    const entityEntry = manifest!.entityContexts.agents!.entities.alpha;
     // v2 format: Record<string, EntityFileManifestInfo>
     expect(entityEntry).not.toBeInstanceOf(Array);
     expect(typeof entityEntry).toBe('object');

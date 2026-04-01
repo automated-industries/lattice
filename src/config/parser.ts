@@ -15,10 +15,7 @@ import type {
   BuiltinTemplateName,
   Row,
 } from '../types.js';
-import type {
-  EntityContextDefinition,
-  EntityFileSource,
-} from '../schema/entity-context.js';
+import type { EntityContextDefinition, EntityFileSource } from '../schema/entity-context.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -256,10 +253,11 @@ function renderFnForTemplate(templateName: string): (rows: Row[]) => string {
       return (rows: Row[]) => {
         if (rows.length === 0) return '';
         return rows
-          .map((row) =>
-            `- ${Object.entries(row)
-              .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
-              .join(', ')}`,
+          .map(
+            (row) =>
+              `- ${Object.entries(row)
+                .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
+                .join(', ')}`,
           )
           .join('\n');
       };

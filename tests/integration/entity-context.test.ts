@@ -80,7 +80,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
       },
     });
@@ -123,7 +123,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
       },
     });
@@ -150,7 +150,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
       },
     });
@@ -172,7 +172,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
       },
     });
@@ -192,7 +192,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
       },
     });
@@ -354,7 +354,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
         'TASKS.md': {
           source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
@@ -431,7 +431,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
         'TASKS.md': {
           source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
@@ -459,7 +459,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
         'TASKS.md': {
           source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
@@ -486,7 +486,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
         'TASKS.md': {
           source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
@@ -519,7 +519,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
       },
     });
@@ -549,7 +549,7 @@ describe('defineEntityContext (integration)', () => {
       files: {
         'AGENT.md': {
           source: { type: 'self' },
-          render: ([r]) => `# ${(r ?? {}).name as string}`,
+          render: ([r]) => `# ${r?.name as string}`,
         },
         'TASKS.md': {
           source: { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },

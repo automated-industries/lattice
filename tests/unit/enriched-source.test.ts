@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
 import type { Row } from '../../src/types.js';
 
-function createTestDb() {
+async function createTestDb() {
   const db = new Lattice(':memory:');
   db.define('org', {
     columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', type: 'TEXT', deleted_at: 'TEXT' },
@@ -10,12 +10,24 @@ function createTestDb() {
     outputFile: '/dev/null',
   });
   db.define('agent', {
-    columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', org_id: 'TEXT', status: 'TEXT', deleted_at: 'TEXT' },
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      name: 'TEXT NOT NULL',
+      org_id: 'TEXT',
+      status: 'TEXT',
+      deleted_at: 'TEXT',
+    },
     render: () => '',
     outputFile: '/dev/null',
   });
   db.define('project', {
-    columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', org_id: 'TEXT', status: 'TEXT', deleted_at: 'TEXT' },
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      name: 'TEXT NOT NULL',
+      org_id: 'TEXT',
+      status: 'TEXT',
+      deleted_at: 'TEXT',
+    },
     render: () => '',
     outputFile: '/dev/null',
   });
@@ -31,18 +43,18 @@ function createTestDb() {
     render: () => '',
     outputFile: '/dev/null',
   });
-  db.init();
+  await db.init();
 
-  db.insert('org', { id: 'o1', name: 'Acme Corp', type: 'company' });
-  db.insert('agent', { id: 'a1', name: 'Alice', org_id: 'o1', status: 'active' });
-  db.insert('agent', { id: 'a2', name: 'Bob', org_id: 'o1', status: 'active' });
-  db.insert('agent', { id: 'a3', name: 'Deleted', org_id: 'o1', status: 'active' });
-  db.update('agent', 'a3', { deleted_at: '2026-01-01' });
-  db.insert('project', { id: 'p1', name: 'Alpha', org_id: 'o1', status: 'active' });
-  db.insert('project', { id: 'p2', name: 'Beta', org_id: 'o1', status: 'paused' });
-  db.insert('user', { id: 'u1', name: 'Alice', role: 'owner' });
-  db.insert('user_project', { user_id: 'u1', project_id: 'p1' });
-  db.insert('user_project', { user_id: 'u1', project_id: 'p2' });
+  await db.insert('org', { id: 'o1', name: 'Acme Corp', type: 'company' });
+  await db.insert('agent', { id: 'a1', name: 'Alice', org_id: 'o1', status: 'active' });
+  await db.insert('agent', { id: 'a2', name: 'Bob', org_id: 'o1', status: 'active' });
+  await db.insert('agent', { id: 'a3', name: 'Deleted', org_id: 'o1', status: 'active' });
+  await db.update('agent', 'a3', { deleted_at: '2026-01-01' });
+  await db.insert('project', { id: 'p1', name: 'Alpha', org_id: 'o1', status: 'active' });
+  await db.insert('project', { id: 'p2', name: 'Beta', org_id: 'o1', status: 'paused' });
+  await db.insert('user', { id: 'u1', name: 'Alice', role: 'owner' });
+  await db.insert('user_project', { user_id: 'u1', project_id: 'p1' });
+  await db.insert('user_project', { user_id: 'u1', project_id: 'p2' });
 
   return db;
 }
@@ -50,11 +62,11 @@ function createTestDb() {
 describe('enriched source type', () => {
   let db: Lattice;
 
-  beforeEach(() => {
-    db = createTestDb();
+  beforeEach(async () => {
+    db = await createTestDb();
   });
 
-  it('attaches hasMany lookups as _key JSON fields', () => {
+  it('attaches hasMany lookups as _key JSON fields', async () => {
     const rendered: Row[][] = [];
 
     db.defineEntityContext('org', {
@@ -64,17 +76,32 @@ describe('enriched source type', () => {
           source: {
             type: 'enriched',
             include: {
-              agents: { type: 'hasMany', table: 'agent', foreignKey: 'org_id', softDelete: true, orderBy: 'name' },
-              projects: { type: 'hasMany', table: 'project', foreignKey: 'org_id', softDelete: true, orderBy: 'name' },
+              agents: {
+                type: 'hasMany',
+                table: 'agent',
+                foreignKey: 'org_id',
+                softDelete: true,
+                orderBy: 'name',
+              },
+              projects: {
+                type: 'hasMany',
+                table: 'project',
+                foreignKey: 'org_id',
+                softDelete: true,
+                orderBy: 'name',
+              },
             },
           },
-          render: (rows) => { rendered.push(rows); return 'ok'; },
+          render: (rows) => {
+            rendered.push(rows);
+            return 'ok';
+          },
         },
       },
     });
 
-    const tmpDir = '/tmp/lattice-test-enriched-' + Date.now();
-    db.reconcile(tmpDir);
+    const tmpDir = `/tmp/lattice-test-enriched-${String(Date.now())}`;
+    await db.reconcile(tmpDir);
 
     expect(rendered).toHaveLength(1);
     const row = rendered[0]![0]!;
@@ -84,16 +111,16 @@ describe('enriched source type', () => {
     expect(row.type).toBe('company');
 
     // Enriched fields are JSON strings keyed with _prefix
-    const agents = JSON.parse(row._agents as string);
+    const agents = JSON.parse(row._agents as string) as Row[];
     expect(agents).toHaveLength(2); // softDelete excluded a3
     expect(agents.map((a: Row) => a.name)).toEqual(['Alice', 'Bob']);
 
-    const projects = JSON.parse(row._projects as string);
+    const projects = JSON.parse(row._projects as string) as Row[];
     expect(projects).toHaveLength(2);
     expect(projects.map((p: Row) => p.name)).toEqual(['Alpha', 'Beta']);
   });
 
-  it('attaches manyToMany lookups', () => {
+  it('attaches manyToMany lookups', async () => {
     const rendered: Row[][] = [];
 
     db.defineEntityContext('user', {
@@ -113,22 +140,25 @@ describe('enriched source type', () => {
               },
             },
           },
-          render: (rows) => { rendered.push(rows); return 'ok'; },
+          render: (rows) => {
+            rendered.push(rows);
+            return 'ok';
+          },
         },
       },
     });
 
-    const tmpDir = '/tmp/lattice-test-enriched-m2m-' + Date.now();
-    db.reconcile(tmpDir);
+    const tmpDir = `/tmp/lattice-test-enriched-m2m-${String(Date.now())}`;
+    await db.reconcile(tmpDir);
 
     const row = rendered[0]![0]!;
     expect(row.name).toBe('Alice');
 
-    const projects = JSON.parse(row._projects as string);
+    const projects = JSON.parse(row._projects as string) as Row[];
     expect(projects).toHaveLength(2);
   });
 
-  it('attaches belongsTo lookups', () => {
+  it('attaches belongsTo lookups', async () => {
     // Add org_id to agent for belongsTo test
     const rendered: Row[][] = [];
 
@@ -142,23 +172,26 @@ describe('enriched source type', () => {
               org: { type: 'belongsTo', table: 'org', foreignKey: 'org_id', softDelete: true },
             },
           },
-          render: (rows) => { rendered.push(rows); return 'ok'; },
+          render: (rows) => {
+            rendered.push(rows);
+            return 'ok';
+          },
         },
       },
     });
 
-    const tmpDir = '/tmp/lattice-test-enriched-bt-' + Date.now();
-    db.reconcile(tmpDir);
+    const tmpDir = `/tmp/lattice-test-enriched-bt-${String(Date.now())}`;
+    await db.reconcile(tmpDir);
 
     // Alice (active) should have org enrichment
-    const aliceRow = rendered.find(r => r[0]?.name === 'Alice')?.[0];
+    const aliceRow = rendered.find((r) => r[0]?.name === 'Alice')?.[0];
     expect(aliceRow).toBeDefined();
-    const org = JSON.parse(aliceRow!._org as string);
+    const org = JSON.parse(aliceRow!._org as string) as Row[];
     expect(org).toHaveLength(1);
-    expect(org[0].name).toBe('Acme Corp');
+    expect(org[0]!.name).toBe('Acme Corp');
   });
 
-  it('supports custom sub-lookups for complex queries', () => {
+  it('supports custom sub-lookups for complex queries', async () => {
     const rendered: Row[][] = [];
 
     db.defineEntityContext('org', {
@@ -180,20 +213,23 @@ describe('enriched source type', () => {
               },
             },
           },
-          render: (rows) => { rendered.push(rows); return 'ok'; },
+          render: (rows) => {
+            rendered.push(rows);
+            return 'ok';
+          },
         },
       },
     });
 
-    const tmpDir = '/tmp/lattice-test-enriched-custom-' + Date.now();
-    db.reconcile(tmpDir);
+    const tmpDir = `/tmp/lattice-test-enriched-custom-${String(Date.now())}`;
+    await db.reconcile(tmpDir);
 
     const row = rendered[0]![0]!;
-    const result = JSON.parse(row._agent_count as string);
-    expect(result[0].cnt).toBe(2);
+    const result = JSON.parse(row._agent_count as string) as Row[];
+    expect(result[0]!.cnt).toBe(2);
   });
 
-  it('returns single-element array (like self)', () => {
+  it('returns single-element array (like self)', async () => {
     const rendered: Row[][] = [];
 
     db.defineEntityContext('org', {
@@ -204,13 +240,16 @@ describe('enriched source type', () => {
             type: 'enriched',
             include: {},
           },
-          render: (rows) => { rendered.push(rows); return 'ok'; },
+          render: (rows) => {
+            rendered.push(rows);
+            return 'ok';
+          },
         },
       },
     });
 
-    const tmpDir = '/tmp/lattice-test-enriched-empty-' + Date.now();
-    db.reconcile(tmpDir);
+    const tmpDir = `/tmp/lattice-test-enriched-empty-${String(Date.now())}`;
+    await db.reconcile(tmpDir);
 
     expect(rendered[0]).toHaveLength(1);
     expect(rendered[0]![0]!.name).toBe('Acme Corp');

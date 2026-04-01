@@ -297,7 +297,9 @@ export interface EntityProfileTemplate {
   heading: string | ((row: Row) => string);
   fields: EntityProfileField[];
   sections?: EntityProfileSection[];
-  frontmatter?: Record<string, string | number | boolean> | ((row: Row) => Record<string, string | number | boolean>);
+  frontmatter?:
+    | Record<string, string | number | boolean>
+    | ((row: Row) => Record<string, string | number | boolean>);
   beforeRender?: (rows: Row[]) => Row[];
 }
 

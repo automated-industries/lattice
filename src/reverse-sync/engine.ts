@@ -53,7 +53,10 @@ export class ReverseSyncEngine {
       if (!manifestEntry) continue;
 
       // Check if any file spec in this entity context has reverseSync
-      const reverseSyncFiles = new Map<string, NonNullable<(typeof def.files)[string]['reverseSync']>>();
+      const reverseSyncFiles = new Map<
+        string,
+        NonNullable<(typeof def.files)[string]['reverseSync']>
+      >();
       for (const [filename, spec] of Object.entries(def.files)) {
         if (spec.reverseSync) {
           reverseSyncFiles.set(filename, spec.reverseSync);
@@ -160,10 +163,7 @@ export class ReverseSyncEngine {
         const whereClause = pkCols.map((c) => `"${c}" = ?`).join(' AND ');
         const sql = `UPDATE "${update.table}" SET ${setClause} WHERE ${whereClause}`;
 
-        const params = [
-          ...setCols.map((c) => update.set[c]),
-          ...pkCols.map((c) => update.pk[c]),
-        ];
+        const params = [...setCols.map((c) => update.set[c]), ...pkCols.map((c) => update.pk[c])];
 
         this._adapter.run(sql, params);
       }

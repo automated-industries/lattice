@@ -36,10 +36,7 @@ const FIELD_NAME_RE = /^[a-zA-Z0-9_]+$/;
  * `{ ok: false, reason }` if validation or the DB operation fails.
  * The caller is responsible for logging and audit events.
  */
-export function applyWriteEntry(
-  db: Database.Database,
-  entry: SessionWriteEntry,
-): ApplyWriteResult {
+export function applyWriteEntry(db: Database.Database, entry: SessionWriteEntry): ApplyWriteResult {
   const { op, table, target, fields } = entry;
 
   // Validate table name format
@@ -56,10 +53,8 @@ export function applyWriteEntry(
   }
 
   // Load schema columns
-  const columnRows = db
-    .prepare(`PRAGMA table_info("${table}")`)
-    .all() as { name: string }[];
-  const knownColumns = new Set(columnRows.map(r => r.name));
+  const columnRows = db.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[];
+  const knownColumns = new Set(columnRows.map((r) => r.name));
 
   // Validate all field names against schema
   for (const fieldName of Object.keys(fields)) {
@@ -75,36 +70,41 @@ export function applyWriteEntry(
     let recordId: string;
 
     if (op === 'create') {
-      const id = (fields.id) ?? crypto.randomUUID();
+      const id = fields.id ?? crypto.randomUUID();
       const allFields = { ...fields, id };
-      const cols = Object.keys(allFields).map(c => `"${c}"`).join(', ');
-      const placeholders = Object.keys(allFields).map(() => '?').join(', ');
-      db
-        .prepare(`INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`)
-        .run(...Object.values(allFields));
+      const cols = Object.keys(allFields)
+        .map((c) => `"${c}"`)
+        .join(', ');
+      const placeholders = Object.keys(allFields)
+        .map(() => '?')
+        .join(', ');
+      db.prepare(`INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`).run(
+        ...Object.values(allFields),
+      );
       recordId = id;
     } else if (op === 'update') {
       if (!target) {
         return { ok: false, reason: 'Field "target" is required for op "update"' };
       }
-      const pkCol = columnRows.find(r => r.name === 'id') ? 'id' : (columnRows[0]?.name ?? 'id');
+      const pkCol = columnRows.find((r) => r.name === 'id') ? 'id' : (columnRows[0]?.name ?? 'id');
       const setCols = Object.keys(fields)
-        .map(c => `"${c}" = ?`)
+        .map((c) => `"${c}" = ?`)
         .join(', ');
-      db
-        .prepare(`UPDATE "${table}" SET ${setCols} WHERE "${pkCol}" = ?`)
-        .run(...Object.values(fields), target);
+      db.prepare(`UPDATE "${table}" SET ${setCols} WHERE "${pkCol}" = ?`).run(
+        ...Object.values(fields),
+        target,
+      );
       recordId = target;
     } else {
       // delete
       if (!target) {
         return { ok: false, reason: 'Field "target" is required for op "delete"' };
       }
-      const pkCol = columnRows.find(r => r.name === 'id') ? 'id' : (columnRows[0]?.name ?? 'id');
+      const pkCol = columnRows.find((r) => r.name === 'id') ? 'id' : (columnRows[0]?.name ?? 'id');
       if (knownColumns.has('deleted_at')) {
-        db
-          .prepare(`UPDATE "${table}" SET deleted_at = datetime('now') WHERE "${pkCol}" = ?`)
-          .run(target);
+        db.prepare(`UPDATE "${table}" SET deleted_at = datetime('now') WHERE "${pkCol}" = ?`).run(
+          target,
+        );
       } else {
         db.prepare(`DELETE FROM "${table}" WHERE "${pkCol}" = ?`).run(target);
       }
