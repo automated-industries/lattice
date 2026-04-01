@@ -9,6 +9,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [0.16.1] — 2026-04-01
 
 ### Fixed
+
 - Export `contentHash()` from package index (documented but previously inaccessible)
 - Resolve all 282 ESLint errors blocking CI (floating promises, non-null assertions, template expressions, unused imports)
 - Update feature-parity matrix for v0.16.0 features
@@ -16,6 +17,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [0.16.0] — 2026-04-01
 
 ### Added
+
 - **Reverse-sync**: Detects external modifications to rendered entity context files and sweeps changes back into the database before re-rendering. Opt-in per file via `reverseSync` function on `EntityFileSpec`. Supports dry-run mode (`reverseSync: 'dry-run'`).
 - **Manifest v2**: Per-file SHA-256 content hashes stored in `.lattice/manifest.json` for change detection. v1 manifests are auto-migrated (reverse-sync skips files with no hash baseline).
 - New types: `ReverseSyncUpdate`, `ReverseSyncResult`, `ReverseSyncError`, `EntityFileManifestInfo`
@@ -23,6 +25,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `contentHash()` exported from `render/writer`
 
 ### Changed
+
 - `ReconcileResult` now includes `reverseSync: ReverseSyncResult | null`
 - `ReconcileOptions` accepts `reverseSync?: boolean | 'dry-run'` (default: `true`)
 - Manifest `version` bumped from `1` to `2`; `entities` field changed from `string[]` to `Record<string, EntityFileManifestInfo>`
@@ -30,21 +33,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [0.14.0] — 2026-03-28
 
 ### Added
+
 - **Report framework**: `buildReport()` with time-windowed sections, duration parsing ('8h','24h','7d'), four format types (count_and_list, counts, list, custom)
 
 ## [0.13.0] — 2026-03-28
 
 ### Added
+
 - **Seeding DSL**: `seed()` method for bulk upsert from structured data (YAML/JSON). Links to entities via junction tables, soft-deletes removed entries. SeedConfig, SeedLinkSpec types.
 
 ## [0.12.0] — 2026-03-28
 
 ### Added
+
 - **Writeback persistence**: Pluggable `WritebackStateStore` interface. `InMemoryStateStore` (default), `SQLiteStateStore` (persistent across restarts). `createSQLiteStateStore()` factory. `onArchive` lifecycle hook on WritebackDefinition.
 
 ## [0.11.0] — 2026-03-28
 
 ### Added
+
 - **Generic CRUD layer**: `upsertByNaturalKey()`, `enrichByNaturalKey()`, `softDeleteMissing()`, `getActive()`, `countActive()`, `getByNaturalKey()` — work on ANY table via PRAGMA introspection (no `define()` required)
 - **Junction table helpers**: `link()` (INSERT OR IGNORE/REPLACE), `unlink()` (DELETE matching)
 - Internal: `_ensureColumnCache()` lazily populates column cache for unregistered tables
@@ -52,27 +59,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [0.10.0] — 2026-03-27
 
 ### Added
+
 - **Write hooks**: `defineWriteHook()` fires after insert/update/delete with table + column filtering. `WriteHook`, `WriteHookContext` types.
 
 ## [0.9.0] — 2026-03-27
 
 ### Added
+
 - **Entity render templates**: `entity-table`, `entity-profile`, `entity-sections` declarative templates for `EntityFileSpec.render`. Backward compatible with function form. Auto read-only header + frontmatter.
 
 ## [0.8.0] — 2026-03-27
 
 ### Added
+
 - **Junction column projection**: `junctionColumns` on `ManyToManySource` — include junction table columns in results with optional aliasing
 - **Multi-column ORDER BY**: `orderBy` accepts `OrderBySpec[]` array with per-column direction
 
 ## [0.7.0] — 2026-03-27
 
 ### Added
+
 - **Enriched source type**: `{ type: 'enriched', include: { ... } }` — starts with entity row, attaches related data as `_key` JSON string fields via declarative or custom sub-lookups
 
 ## [0.6.0] — 2026-03-27
 
 ### Added
+
 - **Source query options**: `filters`, `orderBy`, `orderDir`, `limit`, `softDelete` on `HasManySource`, `ManyToManySource`, `BelongsToSource`
 - **sourceDefaults**: `EntityContextDefinition.sourceDefaults` merges into all relationship sources
 - **Markdown utilities**: `frontmatter()`, `markdownTable()`, `slugify()`, `truncate()` — composable helpers for render functions
@@ -80,6 +92,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [0.5.5] — 2026-03-27
 
 ### Fixed
+
 - Removed all consumer-specific references from source code and documentation
 - `READ_ONLY_HEADER` now uses generic text; `createReadOnlyHeader()` factory for custom headers
 - `parseSessionMD` / `parseMarkdownEntries` accept `SessionParseOptions` for configurable entry types/aliases
