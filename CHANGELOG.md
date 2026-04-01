@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.15.0] — 2026-04-01
+
+### Added
+- **Reverse-sync**: Detects external modifications to rendered entity context files and sweeps changes back into the database before re-rendering. Opt-in per file via `reverseSync` function on `EntityFileSpec`. Supports dry-run mode (`reverseSync: 'dry-run'`).
+- **Manifest v2**: Per-file SHA-256 content hashes stored in `.lattice/manifest.json` for change detection. v1 manifests are auto-migrated (reverse-sync skips files with no hash baseline).
+- New types: `ReverseSyncUpdate`, `ReverseSyncResult`, `ReverseSyncError`, `EntityFileManifestInfo`
+- New exports: `entityFileNames()`, `normalizeEntityFiles()`, `isV1EntityFiles()` manifest helpers
+- `contentHash()` exported from `render/writer`
+
+### Changed
+- `ReconcileResult` now includes `reverseSync: ReverseSyncResult | null`
+- `ReconcileOptions` accepts `reverseSync?: boolean | 'dry-run'` (default: `true`)
+- Manifest `version` bumped from `1` to `2`; `entities` field changed from `string[]` to `Record<string, EntityFileManifestInfo>`
+
 ## [0.14.0] — 2026-03-28
 
 ### Added
