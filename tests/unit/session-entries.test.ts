@@ -354,7 +354,7 @@ describe('DEFAULT_ENTRY_TYPES / DEFAULT_TYPE_ALIASES', () => {
   });
 
   it('DEFAULT_TYPE_ALIASES maps known aliases', () => {
-    expect(DEFAULT_TYPE_ALIASES['task_completion']).toBe('event');
-    expect(DEFAULT_TYPE_ALIASES['heartbeat']).toBe('status');
+    expect(DEFAULT_TYPE_ALIASES.task_completion).toBe('event');
+    expect(DEFAULT_TYPE_ALIASES.heartbeat).toBe('status');
   });
 });

@@ -9,7 +9,7 @@ describe('entity-table template', () => {
       heading: 'Skills',
       columns: [
         { key: 'name', header: 'Name' },
-        { key: 'level', header: 'Level', format: (v) => String(v || '—') },
+        { key: 'level', header: 'Level', format: (v) => String(v ?? '—') },
       ],
     });
 
@@ -41,7 +41,7 @@ describe('entity-table template', () => {
       template: 'entity-table',
       heading: 'Active',
       columns: [{ key: 'name', header: 'Name' }],
-      beforeRender: (rows) => rows.filter(r => r.status === 'active'),
+      beforeRender: (rows) => rows.filter((r) => r.status === 'active'),
     });
 
     const md = render([
@@ -64,19 +64,26 @@ describe('entity-profile template', () => {
         { key: 'role', label: 'Role' },
       ],
       sections: [
-        { key: 'skills', heading: 'Skills', render: 'list', formatItem: (item) => `${item.name} (${item.level})` },
+        {
+          key: 'skills',
+          heading: 'Skills',
+          render: 'list',
+          formatItem: (item) => `${String(item.name)} (${String(item.level)})`,
+        },
       ],
     });
 
-    const md = render([{
-      name: 'Alice',
-      status: 'active',
-      role: 'engineer',
-      _skills: JSON.stringify([
-        { name: 'TypeScript', level: 'expert' },
-        { name: 'Go', level: 'intermediate' },
-      ]),
-    }]);
+    const md = render([
+      {
+        name: 'Alice',
+        status: 'active',
+        role: 'engineer',
+        _skills: JSON.stringify([
+          { name: 'TypeScript', level: 'expert' },
+          { name: 'Go', level: 'intermediate' },
+        ]),
+      },
+    ]);
 
     expect(md).toContain('# Alice');
     expect(md).toContain('**Status:** active');
@@ -106,7 +113,7 @@ describe('entity-sections template', () => {
         heading: (r) => r.title as string,
         metadata: [
           { key: 'scope', label: 'Scope' },
-          { key: 'priority', label: 'Priority', format: (v) => `P${v}` },
+          { key: 'priority', label: 'Priority', format: (v) => `P${String(v)}` },
         ],
         body: (r) => r.text as string,
       },
@@ -138,7 +145,7 @@ describe('entity-sections template', () => {
 
 describe('function passthrough', () => {
   it('returns function unchanged', () => {
-    const fn = (rows: Row[]) => `count: ${rows.length}`;
+    const fn = (rows: Row[]) => `count: ${String(rows.length)}`;
     expect(compileEntityRender(fn)).toBe(fn);
   });
 });

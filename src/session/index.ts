@@ -3,7 +3,14 @@ export { parseSessionWrites, generateWriteEntryId } from './parser.js';
 export type { SessionWriteEntry, SessionWriteOp, SessionWriteParseResult } from './parser.js';
 
 // Full session entry parser (all types — configurable via SessionParseOptions)
-export { parseSessionMD, parseMarkdownEntries, generateEntryId, validateEntryId, DEFAULT_ENTRY_TYPES, DEFAULT_TYPE_ALIASES } from './entries.js';
+export {
+  parseSessionMD,
+  parseMarkdownEntries,
+  generateEntryId,
+  validateEntryId,
+  DEFAULT_ENTRY_TYPES,
+  DEFAULT_TYPE_ALIASES,
+} from './entries.js';
 export type { SessionEntry, ParseResult, ParseError, SessionParseOptions } from './entries.js';
 
 // Write-entry application (pass your better-sqlite3 Database)

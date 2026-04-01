@@ -79,7 +79,14 @@ export interface SessionParseOptions {
  * Suitable for LLM-agent context systems; override via {@link SessionParseOptions.validTypes}.
  */
 export const DEFAULT_ENTRY_TYPES: ReadonlySet<string> = new Set([
-  'event', 'learning', 'status', 'correction', 'discovery', 'metric', 'handoff', 'write',
+  'event',
+  'learning',
+  'status',
+  'correction',
+  'discovery',
+  'metric',
+  'handoff',
+  'write',
 ]);
 
 /**
@@ -120,7 +127,11 @@ const FIELD_NAME_RE = /^[a-zA-Z0-9_]+$/;
  * Pass {@link SessionParseOptions} to customise which entry types are accepted
  * and how aliases are resolved. Defaults match the built-in type set.
  */
-export function parseSessionMD(content: string, startOffset = 0, options?: SessionParseOptions): ParseResult {
+export function parseSessionMD(
+  content: string,
+  startOffset = 0,
+  options?: SessionParseOptions,
+): ParseResult {
   const entries: SessionEntry[] = [];
   const errors: ParseError[] = [];
 
@@ -214,7 +225,7 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
     if (headers.tags) {
       const tagMatch = /^\[(.+)\]$/.exec(headers.tags);
       if (tagMatch) {
-        tags = (tagMatch[1] ?? '').split(',').map(t => t.trim());
+        tags = (tagMatch[1] ?? '').split(',').map((t) => t.trim());
       }
     }
 
@@ -231,7 +242,12 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
       }
     }
 
-    const newEntry: SessionEntry = { id: entryId, type: resolvedType, timestamp: headers.timestamp, body };
+    const newEntry: SessionEntry = {
+      id: entryId,
+      type: resolvedType,
+      timestamp: headers.timestamp,
+      body,
+    };
     if (headers.project) newEntry.project = headers.project;
     if (headers.task) newEntry.task = headers.task;
     if (tags) newEntry.tags = tags;
