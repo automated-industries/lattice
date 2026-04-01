@@ -292,7 +292,7 @@ function renderFnForTemplate(templateName: string): (rows: Row[]) => string {
             const body = Object.entries(row)
               .map(([k, v]) => `${k}: ${v == null ? '' : String(v as string | number | boolean)}`)
               .join('\n');
-            return `## ${String(Object.values(row)[0] ?? '')}\n\n${body}`;
+            return `## ${String((Object.values(row)[0] ?? '') as string | number | boolean)}\n\n${body}`;
           })
           .join('\n\n---\n\n');
       };

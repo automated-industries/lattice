@@ -1417,7 +1417,7 @@ target: agent-id-here
 reason: Updating status after deployment completed.
 ---
 status: active
-last_task: my-project-deploy
+last_task: api-deploy
 ===
 ```
 

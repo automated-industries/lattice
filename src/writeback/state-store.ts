@@ -48,8 +48,12 @@ export class InMemoryStateStore implements WritebackStateStore {
   }
 
   markSeen(filePath: string, key: string): void {
-    if (!this._seen.has(filePath)) this._seen.set(filePath, new Set());
-    this._seen.get(filePath)!.add(key);
+    let seenSet = this._seen.get(filePath);
+    if (!seenSet) {
+      seenSet = new Set();
+      this._seen.set(filePath, seenSet);
+    }
+    seenSet.add(key);
   }
 }
 
