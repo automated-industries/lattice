@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
+import type { StorageAdapter } from '../../src/db/adapter.js';
+import type { Row } from '../../src/types.js';
 
 /**
  * Tests for generic CRUD methods (v0.11) that work on any table,
  * including tables created via raw DDL (not define()).
  */
 
-function createTestDb() {
+async function createTestDb() {
   const db = new Lattice(':memory:');
   // Define one table via latticesql (for contrast)
   db.define('managed', {
@@ -14,10 +16,12 @@ function createTestDb() {
     render: () => '',
     outputFile: '/dev/null',
   });
-  db.init();
+  await db.init();
+
+  const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
 
   // Create a table via raw DDL (NOT define()) — this is how SB works
-  (db as any)._adapter.run(`
+  adapter.run(`
     CREATE TABLE agent (
       id TEXT PRIMARY KEY,
       org_id TEXT,
@@ -31,7 +35,7 @@ function createTestDb() {
       deleted_at TEXT
     )
   `);
-  (db as any)._adapter.run(`
+  adapter.run(`
     CREATE TABLE agent_project (
       agent_id TEXT NOT NULL,
       project_id TEXT NOT NULL,
@@ -40,7 +44,7 @@ function createTestDb() {
       PRIMARY KEY (agent_id, project_id)
     )
   `);
-  (db as any)._adapter.run(`
+  adapter.run(`
     CREATE TABLE project (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -55,10 +59,15 @@ function createTestDb() {
 describe('upsertByNaturalKey', () => {
   let db: Lattice;
 
-  beforeEach(() => { db = createTestDb(); });
+  beforeEach(async () => {
+    db = await createTestDb();
+  });
 
   it('inserts a new record with generated UUID', async () => {
-    const id = await db.upsertByNaturalKey('agent', 'name', 'Alice', { role: 'engineer', status: 'active' });
+    const id = await db.upsertByNaturalKey('agent', 'name', 'Alice', {
+      role: 'engineer',
+      status: 'active',
+    });
     expect(id).toBeTruthy();
     const row = await db.getByNaturalKey('agent', 'name', 'Alice');
     expect(row?.name).toBe('Alice');
@@ -79,7 +88,13 @@ describe('upsertByNaturalKey', () => {
   });
 
   it('sets source_file and source_hash', async () => {
-    await db.upsertByNaturalKey('agent', 'name', 'Carol', { role: 'pm' }, { sourceFile: 'agents.md', sourceHash: 'abc123' });
+    await db.upsertByNaturalKey(
+      'agent',
+      'name',
+      'Carol',
+      { role: 'pm' },
+      { sourceFile: 'agents.md', sourceHash: 'abc123' },
+    );
     const row = await db.getByNaturalKey('agent', 'name', 'Carol');
     expect(row?.source_file).toBe('agents.md');
     expect(row?.source_hash).toBe('abc123');
@@ -90,12 +105,15 @@ describe('enrichByNaturalKey', () => {
   let db: Lattice;
 
   beforeEach(async () => {
-    db = createTestDb();
+    db = await createTestDb();
     await db.upsertByNaturalKey('agent', 'name', 'Alice', { role: 'engineer', status: 'active' });
   });
 
   it('updates only non-null fields', async () => {
-    const result = await db.enrichByNaturalKey('agent', 'name', 'Alice', { role: 'qa', status: null });
+    const result = await db.enrichByNaturalKey('agent', 'name', 'Alice', {
+      role: 'qa',
+      status: null,
+    });
     expect(result).toBe(true);
     const row = await db.getByNaturalKey('agent', 'name', 'Alice');
     expect(row?.role).toBe('qa');
@@ -112,17 +130,35 @@ describe('softDeleteMissing', () => {
   let db: Lattice;
 
   beforeEach(async () => {
-    db = createTestDb();
-    await db.upsertByNaturalKey('agent', 'name', 'Alice', { role: 'eng' }, { sourceFile: 'agents.md' });
-    await db.upsertByNaturalKey('agent', 'name', 'Bob', { role: 'qa' }, { sourceFile: 'agents.md' });
-    await db.upsertByNaturalKey('agent', 'name', 'Carol', { role: 'pm' }, { sourceFile: 'agents.md' });
+    db = await createTestDb();
+    await db.upsertByNaturalKey(
+      'agent',
+      'name',
+      'Alice',
+      { role: 'eng' },
+      { sourceFile: 'agents.md' },
+    );
+    await db.upsertByNaturalKey(
+      'agent',
+      'name',
+      'Bob',
+      { role: 'qa' },
+      { sourceFile: 'agents.md' },
+    );
+    await db.upsertByNaturalKey(
+      'agent',
+      'name',
+      'Carol',
+      { role: 'pm' },
+      { sourceFile: 'agents.md' },
+    );
   });
 
   it('soft-deletes records not in the current set', async () => {
     const count = await db.softDeleteMissing('agent', 'name', 'agents.md', ['Alice', 'Bob']);
     expect(count).toBe(1); // Carol soft-deleted
     const active = await db.getActive('agent');
-    expect(active.map(r => r.name)).toEqual(['Alice', 'Bob']);
+    expect(active.map((r) => r.name)).toEqual(['Alice', 'Bob']);
   });
 });
 
@@ -130,7 +166,7 @@ describe('getActive / countActive', () => {
   let db: Lattice;
 
   beforeEach(async () => {
-    db = createTestDb();
+    db = await createTestDb();
     await db.upsertByNaturalKey('agent', 'name', 'Alice', { role: 'eng' });
     await db.upsertByNaturalKey('agent', 'name', 'Bob', { role: 'qa' });
   });
@@ -147,7 +183,8 @@ describe('getActive / countActive', () => {
   it('excludes soft-deleted rows', async () => {
     await db.softDeleteMissing('agent', 'name', '', ['Alice']);
     // Note: softDeleteMissing only deletes from source_file match — use direct SQL for this test
-    (db as any)._adapter.run("UPDATE agent SET deleted_at = datetime('now') WHERE name = 'Bob'");
+    const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+    adapter.run("UPDATE agent SET deleted_at = datetime('now') WHERE name = 'Bob'");
     expect(await db.countActive('agent')).toBe(1);
   });
 });
@@ -155,35 +192,45 @@ describe('getActive / countActive', () => {
 describe('link / unlink', () => {
   let db: Lattice;
 
-  beforeEach(() => { db = createTestDb(); });
+  beforeEach(async () => {
+    db = await createTestDb();
+  });
 
   it('inserts a junction row', async () => {
     await db.link('agent_project', { agent_id: 'a1', project_id: 'p1', role: 'lead' });
-    const rows = (db as any)._adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
+    const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+    const rows: Row[] = adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
     expect(rows).toHaveLength(1);
-    expect(rows[0].role).toBe('lead');
+    expect(rows[0]?.role).toBe('lead');
   });
 
   it('is idempotent (INSERT OR IGNORE)', async () => {
     await db.link('agent_project', { agent_id: 'a1', project_id: 'p1' });
     await db.link('agent_project', { agent_id: 'a1', project_id: 'p1' });
-    const rows = (db as any)._adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
+    const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+    const rows: Row[] = adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
     expect(rows).toHaveLength(1);
   });
 
   it('upsert mode uses INSERT OR REPLACE', async () => {
     await db.link('agent_project', { agent_id: 'a1', project_id: 'p1', role: 'contrib' });
-    await db.link('agent_project', { agent_id: 'a1', project_id: 'p1', role: 'lead' }, { upsert: true });
-    const rows = (db as any)._adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
-    expect(rows[0].role).toBe('lead');
+    await db.link(
+      'agent_project',
+      { agent_id: 'a1', project_id: 'p1', role: 'lead' },
+      { upsert: true },
+    );
+    const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+    const rows: Row[] = adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
+    expect(rows[0]?.role).toBe('lead');
   });
 
   it('unlink removes matching rows', async () => {
     await db.link('agent_project', { agent_id: 'a1', project_id: 'p1' });
     await db.link('agent_project', { agent_id: 'a1', project_id: 'p2' });
     await db.unlink('agent_project', { agent_id: 'a1', project_id: 'p1' });
-    const rows = (db as any)._adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
+    const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+    const rows: Row[] = adapter.all("SELECT * FROM agent_project WHERE agent_id = 'a1'");
     expect(rows).toHaveLength(1);
-    expect(rows[0].project_id).toBe('p2');
+    expect(rows[0]?.project_id).toBe('p2');
   });
 });
