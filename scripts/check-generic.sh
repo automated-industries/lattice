@@ -24,6 +24,14 @@ BANNED_TERMS=(
   "agents/shared"
   "com\.mflat"
   "/Users/example-app"
+  # Go implementation references — latticesql is TypeScript-only; Go port is private
+  "lattice-go"
+  "lattice_go"
+  "go port"
+  "go sdk"
+  "go implementation"
+  "feature.parity"
+  "feature_parity"
 )
 
 EXIT_CODE=0
