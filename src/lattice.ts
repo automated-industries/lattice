@@ -17,8 +17,6 @@ import type {
   Filter,
   WriteHook,
   WriteHookContext,
-  UpsertByNaturalKeyOptions,
-  LinkOptions,
   SeedConfig,
   SeedResult,
   ReportConfig,
@@ -519,7 +517,7 @@ export class Lattice {
    * (idempotent). Pass `{ upsert: true }` for INSERT OR REPLACE.
    */
   link(junctionTable: string, data: Row, opts?: import('./types.js').LinkOptions): Promise<void> {
-    const notInit = this._notInitError<void>();
+    const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
 
     const filtered = this._filterToSchemaColumns(junctionTable, data);
@@ -534,7 +532,7 @@ export class Lattice {
    * Delete rows from a junction table matching all given conditions.
    */
   unlink(junctionTable: string, conditions: Row): Promise<void> {
-    const notInit = this._notInitError<void>();
+    const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
 
     const entries = Object.entries(conditions);
@@ -563,7 +561,8 @@ export class Lattice {
     const keys: string[] = [];
 
     for (const record of config.data) {
-      const naturalKeyVal = String(record[config.naturalKey] ?? '');
+      const rawKey = record[config.naturalKey];
+      const naturalKeyVal = typeof rawKey === 'string' ? rawKey : typeof rawKey === 'number' ? String(rawKey) : '';
       if (!naturalKeyVal) continue;
 
       keys.push(naturalKeyVal);
@@ -676,7 +675,7 @@ export class Lattice {
 
       const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
       const orderBy = section.query.orderBy ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}` : '';
-      const limit = section.query.limit ? ` LIMIT ${section.query.limit}` : '';
+      const limit = section.query.limit ? ` LIMIT ${String(section.query.limit)}` : '';
 
       const rows = this._adapter.all(`SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`, params);
 
@@ -689,15 +688,18 @@ export class Lattice {
       } else if (section.format === 'counts' && section.query.groupBy) {
         const groups = new Map<string, number>();
         for (const row of rows) {
-          const type = String(row[section.query.groupBy] ?? 'other');
-          const prefix = type.includes('.') ? type.split('.')[0]! : type;
+          const rawGroupVal = row[section.query.groupBy];
+          const type = typeof rawGroupVal === 'string' ? rawGroupVal : typeof rawGroupVal === 'number' ? String(rawGroupVal) : 'other';
+          const prefix = type.includes('.') ? (type.split('.')[0] ?? type) : type;
           groups.set(prefix, (groups.get(prefix) ?? 0) + 1);
         }
-        formatted = [...groups.entries()].map(([k, v]) => `${k}: ${v}`).join('\n');
+        formatted = [...groups.entries()].map(([k, v]) => `${k}: ${String(v)}`).join('\n');
       } else if (section.format === 'count_and_list') {
-        formatted = `Count: ${rows.length}\n` + rows.map(r => `- ${r.summary ?? r.name ?? r.title ?? JSON.stringify(r)}`).join('\n');
+        const label = (r: Row): string => { const v = r.summary ?? r.name ?? r.title; return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r); };
+        formatted = `Count: ${String(rows.length)}\n` + rows.map(r => `- ${label(r)}`).join('\n');
       } else {
-        formatted = rows.map(r => `- ${r.summary ?? r.name ?? r.title ?? JSON.stringify(r)}`).join('\n');
+        const label = (r: Row): string => { const v = r.summary ?? r.name ?? r.title; return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r); };
+        formatted = rows.map(r => `- ${label(r)}`).join('\n');
       }
 
       sections.push({ name: section.name, rows, count: rows.length, formatted });
@@ -711,7 +713,7 @@ export class Lattice {
     const match = /^(\d+)([hmd])$/.exec(since);
     if (!match) return since; // assume ISO timestamp
     const [, numStr, unit] = match;
-    const num = parseInt(numStr!, 10);
+    const num = parseInt(numStr ?? '0', 10);
     const ms = unit === 'h' ? num * 3600000 : unit === 'd' ? num * 86400000 : num * 60000;
     return new Date(Date.now() - ms).toISOString();
   }
@@ -945,7 +947,7 @@ export class Lattice {
 
   private _filterToSchemaColumns(table: string, row: Row): Row {
     const cols = this._ensureColumnCache(table);
-    if (!cols || cols.size === 0) return row; // unknown table — pass through
+    if (cols.size === 0) return row; // unknown table — pass through
     const keys = Object.keys(row);
     if (keys.every((k) => cols.has(k))) return row; // common case: no unknown keys
     return Object.fromEntries(keys.filter((k) => cols.has(k)).map((k) => [k, row[k]])) as Row;

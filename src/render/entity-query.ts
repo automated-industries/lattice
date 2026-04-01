@@ -1,6 +1,6 @@
 import type { Row, Filter } from '../types.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import type { EntityFileSource, SourceQueryOptions, OrderBySpec } from '../schema/entity-context.js';
+import type { EntityFileSource, SourceQueryOptions } from '../schema/entity-context.js';
 
 // ---------------------------------------------------------------------------
 // SQL clause builder for source query options
@@ -107,7 +107,7 @@ function appendQueryOptions(
   }
 
   if (opts.limit !== undefined && opts.limit > 0) {
-    sql += ` LIMIT ${Math.floor(opts.limit)}`;
+    sql += ` LIMIT ${String(Math.floor(opts.limit))}`;
   }
 
   return sql;
@@ -175,7 +175,7 @@ export function resolveEntitySource(
     case 'belongsTo': {
       const fkVal = entityRow[source.foreignKey];
       if (fkVal == null) return [];
-      const hasOptions = source.filters?.length || source.softDelete || source.orderBy || source.limit;
+      const hasOptions = Boolean(source.filters?.length) || Boolean(source.softDelete) || Boolean(source.orderBy) || Boolean(source.limit);
       if (!hasOptions) {
         // Fast path: simple get (preserves v0.5 adapter.get() contract)
         const related = adapter.get(
@@ -188,7 +188,8 @@ export function resolveEntitySource(
       let sql = `SELECT * FROM "${source.table}" WHERE "${source.references ?? 'id'}" = ?`;
       sql = appendQueryOptions(sql, params, source);
       const rows = adapter.all(sql, params);
-      return rows.length > 0 ? [rows[0]!] : [];
+      const first = rows[0];
+      return first ? [first] : [];
     }
 
     case 'custom':

@@ -7,7 +7,7 @@ import { atomicWrite, contentHash } from './writer.js';
 import { resolveEntitySource, truncateContent } from './entity-query.js';
 import { compileEntityRender } from './entity-templates.js';
 import type { EntityContextManifestEntry, LatticeManifest, EntityFileManifestInfo } from '../lifecycle/manifest.js';
-import { entityFileNames, writeManifest } from '../lifecycle/manifest.js';
+import { writeManifest } from '../lifecycle/manifest.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
 
@@ -188,7 +188,7 @@ export class RenderEngine {
 
           for (const filename of Object.keys(def.files)) {
             if (!excluded.has(filename) && renderedFiles.has(filename)) {
-              parts.push(renderedFiles.get(filename)!);
+              parts.push(renderedFiles.get(filename) ?? '');
             }
           }
 

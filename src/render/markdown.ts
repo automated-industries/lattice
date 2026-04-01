@@ -64,7 +64,7 @@ export function markdownTable(rows: Row[], columns: MarkdownTableColumn[]): stri
   const body = rows.map(row => {
     const cells = columns.map(col => {
       const raw = row[col.key];
-      return col.format ? col.format(raw, row) : String(raw ?? '');
+      return col.format ? col.format(raw, row) : String((raw ?? '') as string | number | boolean);
     });
     return '| ' + cells.join(' | ') + ' |';
   });
