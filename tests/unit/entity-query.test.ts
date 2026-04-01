@@ -7,9 +7,7 @@ import type { Row } from '../../src/types.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeAdapter(
-  overrides: Partial<Pick<StorageAdapter, 'all' | 'get'>> = {},
-): StorageAdapter {
+function makeAdapter(overrides: Partial<Pick<StorageAdapter, 'all' | 'get'>> = {}): StorageAdapter {
   return {
     run: vi.fn(),
     get: vi.fn().mockReturnValue(undefined),
@@ -29,17 +27,19 @@ const entityRow: Row = { id: 'agent-1', name: 'Alpha' };
 
 describe('resolveEntitySource — self', () => {
   it('returns the entity row wrapped in an array', () => {
-    const adapter = makeAdapter();
+    const allFn = vi.fn().mockReturnValue([]);
+    const adapter = makeAdapter({ all: allFn });
     const rows = resolveEntitySource({ type: 'self' }, entityRow, 'id', adapter);
     expect(rows).toEqual([entityRow]);
-    expect(adapter.all).not.toHaveBeenCalled();
+    expect(allFn).not.toHaveBeenCalled();
   });
 });
 
 describe('resolveEntitySource — hasMany', () => {
   it('queries related table by foreignKey', () => {
     const related: Row[] = [{ id: 't1', agent_id: 'agent-1', title: 'Task 1' }];
-    const adapter = makeAdapter({ all: vi.fn().mockReturnValue(related) });
+    const allFn = vi.fn().mockReturnValue(related);
+    const adapter = makeAdapter({ all: allFn });
 
     const rows = resolveEntitySource(
       { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
@@ -49,14 +49,12 @@ describe('resolveEntitySource — hasMany', () => {
     );
 
     expect(rows).toEqual(related);
-    expect(adapter.all).toHaveBeenCalledWith(
-      'SELECT * FROM "tasks" WHERE "agent_id" = ?',
-      ['agent-1'],
-    );
+    expect(allFn).toHaveBeenCalledWith('SELECT * FROM "tasks" WHERE "agent_id" = ?', ['agent-1']);
   });
 
   it('uses custom references column when specified', () => {
-    const adapter = makeAdapter({ all: vi.fn().mockReturnValue([]) });
+    const allFn = vi.fn().mockReturnValue([]);
+    const adapter = makeAdapter({ all: allFn });
 
     resolveEntitySource(
       { type: 'hasMany', table: 'tasks', foreignKey: 'owner_ref', references: 'slug' },
@@ -65,14 +63,12 @@ describe('resolveEntitySource — hasMany', () => {
       adapter,
     );
 
-    expect(adapter.all).toHaveBeenCalledWith(
-      'SELECT * FROM "tasks" WHERE "owner_ref" = ?',
-      ['alpha'],
-    );
+    expect(allFn).toHaveBeenCalledWith('SELECT * FROM "tasks" WHERE "owner_ref" = ?', ['alpha']);
   });
 
   it('falls back to entityPk when references is omitted', () => {
-    const adapter = makeAdapter({ all: vi.fn().mockReturnValue([]) });
+    const allFn = vi.fn().mockReturnValue([]);
+    const adapter = makeAdapter({ all: allFn });
 
     resolveEntitySource(
       { type: 'hasMany', table: 'items', foreignKey: 'parent_id' },
@@ -81,17 +77,17 @@ describe('resolveEntitySource — hasMany', () => {
       adapter,
     );
 
-    expect(adapter.all).toHaveBeenCalledWith(
-      'SELECT * FROM "items" WHERE "parent_id" = ?',
-      ['my-entity'],
-    );
+    expect(allFn).toHaveBeenCalledWith('SELECT * FROM "items" WHERE "parent_id" = ?', [
+      'my-entity',
+    ]);
   });
 });
 
 describe('resolveEntitySource — manyToMany', () => {
   it('joins junction and remote table', () => {
     const skills: Row[] = [{ id: 's1', name: 'TypeScript' }];
-    const adapter = makeAdapter({ all: vi.fn().mockReturnValue(skills) });
+    const allFn = vi.fn().mockReturnValue(skills);
+    const adapter = makeAdapter({ all: allFn });
 
     const rows = resolveEntitySource(
       {
@@ -107,18 +103,18 @@ describe('resolveEntitySource — manyToMany', () => {
     );
 
     expect(rows).toEqual(skills);
-    expect(adapter.all).toHaveBeenCalledWith(
+    expect(allFn).toHaveBeenCalledWith(
       expect.stringContaining('JOIN "agent_skills" j ON j."skill_id" = r."id"'),
       ['agent-1'],
     );
-    expect(adapter.all).toHaveBeenCalledWith(
-      expect.stringContaining('WHERE j."agent_id" = ?'),
-      ['agent-1'],
-    );
+    expect(allFn).toHaveBeenCalledWith(expect.stringContaining('WHERE j."agent_id" = ?'), [
+      'agent-1',
+    ]);
   });
 
   it('uses custom references column on remote table', () => {
-    const adapter = makeAdapter({ all: vi.fn().mockReturnValue([]) });
+    const allFn = vi.fn().mockReturnValue([]);
+    const adapter = makeAdapter({ all: allFn });
 
     resolveEntitySource(
       {
@@ -134,17 +130,15 @@ describe('resolveEntitySource — manyToMany', () => {
       adapter,
     );
 
-    expect(adapter.all).toHaveBeenCalledWith(
-      expect.stringContaining('j."tag_id" = r."tag_key"'),
-      ['p1'],
-    );
+    expect(allFn).toHaveBeenCalledWith(expect.stringContaining('j."tag_id" = r."tag_key"'), ['p1']);
   });
 });
 
 describe('resolveEntitySource — belongsTo', () => {
   it('looks up the parent row by FK value', () => {
     const team: Row = { id: 'team-1', name: 'Team Alpha' };
-    const adapter = makeAdapter({ get: vi.fn().mockReturnValue(team) });
+    const getFn = vi.fn().mockReturnValue(team);
+    const adapter = makeAdapter({ get: getFn });
 
     const rows = resolveEntitySource(
       { type: 'belongsTo', table: 'teams', foreignKey: 'team_id' },
@@ -154,14 +148,12 @@ describe('resolveEntitySource — belongsTo', () => {
     );
 
     expect(rows).toEqual([team]);
-    expect(adapter.get).toHaveBeenCalledWith(
-      'SELECT * FROM "teams" WHERE "id" = ?',
-      ['team-1'],
-    );
+    expect(getFn).toHaveBeenCalledWith('SELECT * FROM "teams" WHERE "id" = ?', ['team-1']);
   });
 
   it('returns [] when FK is null', () => {
-    const adapter = makeAdapter();
+    const getFn = vi.fn().mockReturnValue(undefined);
+    const adapter = makeAdapter({ get: getFn });
 
     const rows = resolveEntitySource(
       { type: 'belongsTo', table: 'teams', foreignKey: 'team_id' },
@@ -171,7 +163,7 @@ describe('resolveEntitySource — belongsTo', () => {
     );
 
     expect(rows).toEqual([]);
-    expect(adapter.get).not.toHaveBeenCalled();
+    expect(getFn).not.toHaveBeenCalled();
   });
 
   it('returns [] when parent row is not found', () => {
@@ -188,7 +180,8 @@ describe('resolveEntitySource — belongsTo', () => {
   });
 
   it('uses custom references column', () => {
-    const adapter = makeAdapter({ get: vi.fn().mockReturnValue(undefined) });
+    const getFn = vi.fn().mockReturnValue(undefined);
+    const adapter = makeAdapter({ get: getFn });
 
     resolveEntitySource(
       { type: 'belongsTo', table: 'orgs', foreignKey: 'org_slug', references: 'slug' },
@@ -197,10 +190,7 @@ describe('resolveEntitySource — belongsTo', () => {
       adapter,
     );
 
-    expect(adapter.get).toHaveBeenCalledWith(
-      'SELECT * FROM "orgs" WHERE "slug" = ?',
-      ['acme'],
-    );
+    expect(getFn).toHaveBeenCalledWith('SELECT * FROM "orgs" WHERE "slug" = ?', ['acme']);
   });
 });
 
@@ -210,12 +200,7 @@ describe('resolveEntitySource — custom', () => {
     const query = vi.fn().mockReturnValue(customRows);
     const adapter = makeAdapter();
 
-    const rows = resolveEntitySource(
-      { type: 'custom', query },
-      entityRow,
-      'id',
-      adapter,
-    );
+    const rows = resolveEntitySource({ type: 'custom', query }, entityRow, 'id', adapter);
 
     expect(rows).toEqual(customRows);
     expect(query).toHaveBeenCalledWith(entityRow, adapter);

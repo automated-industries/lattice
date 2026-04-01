@@ -15,7 +15,7 @@ const SAFE_COL_RE = /^[a-zA-Z0-9_]+$/;
  */
 function effectiveFilters(opts: SourceQueryOptions): Filter[] {
   const filters = opts.filters ? [...opts.filters] : [];
-  if (opts.softDelete && !filters.some(f => f.col === 'deleted_at')) {
+  if (opts.softDelete && !filters.some((f) => f.col === 'deleted_at')) {
     filters.unshift({ col: 'deleted_at', op: 'isNull' });
   }
   return filters;
@@ -97,9 +97,9 @@ function appendQueryOptions(
       }
     } else {
       // Array form: multi-column ORDER BY
-      const clauses = (opts.orderBy)
-        .filter(spec => SAFE_COL_RE.test(spec.col))
-        .map(spec => `${prefix}"${spec.col}" ${spec.dir === 'desc' ? 'DESC' : 'ASC'}`);
+      const clauses = opts.orderBy
+        .filter((spec) => SAFE_COL_RE.test(spec.col))
+        .map((spec) => `${prefix}"${spec.col}" ${spec.dir === 'desc' ? 'DESC' : 'ASC'}`);
       if (clauses.length > 0) {
         sql += ` ORDER BY ${clauses.join(', ')}`;
       }
@@ -154,14 +154,16 @@ export function resolveEntitySource(
       // Build SELECT clause with optional junction columns
       let selectCols = 'r.*';
       if (source.junctionColumns?.length) {
-        const jCols = source.junctionColumns.map(jc => {
-          if (typeof jc === 'string') {
-            if (!SAFE_COL_RE.test(jc)) return null;
-            return `j."${jc}"`;
-          }
-          if (!SAFE_COL_RE.test(jc.col) || !SAFE_COL_RE.test(jc.as)) return null;
-          return `j."${jc.col}" AS "${jc.as}"`;
-        }).filter(Boolean);
+        const jCols = source.junctionColumns
+          .map((jc) => {
+            if (typeof jc === 'string') {
+              if (!SAFE_COL_RE.test(jc)) return null;
+              return `j."${jc}"`;
+            }
+            if (!SAFE_COL_RE.test(jc.col) || !SAFE_COL_RE.test(jc.as)) return null;
+            return `j."${jc.col}" AS "${jc.as}"`;
+          })
+          .filter(Boolean);
         if (jCols.length > 0) selectCols += ', ' + jCols.join(', ');
       }
 
@@ -175,7 +177,11 @@ export function resolveEntitySource(
     case 'belongsTo': {
       const fkVal = entityRow[source.foreignKey];
       if (fkVal == null) return [];
-      const hasOptions = Boolean(source.filters?.length) || Boolean(source.softDelete) || Boolean(source.orderBy) || Boolean(source.limit);
+      const hasOptions =
+        Boolean(source.filters?.length) ||
+        Boolean(source.softDelete) ||
+        Boolean(source.orderBy) ||
+        Boolean(source.limit);
       if (!hasOptions) {
         // Fast path: simple get (preserves v0.5 adapter.get() contract)
         const related = adapter.get(
