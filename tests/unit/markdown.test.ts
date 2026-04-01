@@ -58,8 +58,11 @@ describe('markdownTable', () => {
 
   it('format callback receives full row', () => {
     const result = markdownTable(rows, [
-      { key: 'name', header: 'Link',
-        format: (_, row) => `[${String(row.name)}](${String(row.name).toLowerCase()}/DETAIL.md)` },
+      {
+        key: 'name',
+        header: 'Link',
+        format: (_, row) => `[${String(row.name)}](${String(row.name).toLowerCase()}/DETAIL.md)`,
+      },
     ]);
     expect(result).toContain('| [Alice](alice/DETAIL.md) |');
   });
