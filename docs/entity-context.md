@@ -283,7 +283,7 @@ db.defineEntityContext('agent', {
 
 Protected files are recorded in the manifest so the protection survives across restarts.
 
-## Reverse-Sync (v0.15+)
+## Reverse-Sync (v0.16+)
 
 In agentic systems, AI agents frequently edit rendered context files directly. Without reverse-sync, those edits are destroyed on the next render cycle because Lattice overwrites files from DB state.
 
@@ -354,7 +354,7 @@ await db.reconcile(outputDir, { reverseSync: false });
 - **File deleted externally**: Skipped (no content to parse).
 - **`reverseSync` throws**: Error captured in `result.reverseSync.errors`; other files still processed. DB transaction for that file is rolled back.
 - **No manifest yet (first render)**: Reverse-sync has no baseline hashes — all files skipped.
-- **v1 manifest (pre-0.15)**: Empty hashes — reverse-sync skips gracefully. After the first v2 render, hashes are populated and reverse-sync activates.
+- **v1 manifest (pre-0.16)**: Empty hashes — reverse-sync skips gracefully. After the first v2 render, hashes are populated and reverse-sync activates.
 - **Files without `reverseSync`**: Not scanned. Agent edits to those files are still overwritten on render.
 
 ## Lifecycle Management
