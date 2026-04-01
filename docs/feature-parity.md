@@ -3,7 +3,7 @@
 Tracks which features exist in each Lattice package and whether they are documented
 on the website. **This file must be updated with every release.**
 
-Last updated: 2026-03-30 (v0.14.0)
+Last updated: 2026-04-01 (v0.16.0)
 
 ---
 
@@ -66,6 +66,8 @@ Last updated: 2026-03-30 (v0.14.0)
 | Per-row context directories | ✓ | ✗ | ✓ | v0.5.0 |
 | Relation-joined context files | ✓ | ✗ | ✓ | v0.5.0 |
 | `cleanup()` on deleted rows | ✓ | ✗ | ✓ | v0.5.0 |
+| Reverse-sync (file → DB) | ✓ | ✗ | ✓ | v0.16.0 |
+| Manifest v2 (per-file content hashes) | ✓ | ✗ | ✓ | v0.16.0 |
 
 ## Writeback (SESSION.md → DB)
 
@@ -132,14 +134,14 @@ Last updated: 2026-03-30 (v0.14.0)
 
 ---
 
-## Parity Summary (v0.14.0)
+## Parity Summary (v0.16.0)
 
 | Package | Core | Schema | Render | Entity Ctx | Writeback | Security | Lifecycle |
 |---------|------|--------|--------|------------|-----------|----------|-----------|
 | NPM (`latticesql`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Go (`lattice-go`) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
-**Go parity status: 0% — repo not yet created. Target: v0.15.0 with core + schema + basic render.**
+**Go parity status: 0% — repo not yet created.**
 
 ---
 
