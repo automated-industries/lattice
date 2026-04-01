@@ -335,6 +335,19 @@ export type EntityRenderSpec = ((rows: Row[]) => string) | EntityRenderTemplate;
 // File spec — one entry per file generated inside each entity directory
 // ---------------------------------------------------------------------------
 
+/**
+ * A single database mutation returned by a {@link EntityFileSpec.reverseSync} function.
+ * Describes one row-level update to apply when file content has been modified externally.
+ */
+export interface ReverseSyncUpdate {
+  /** Target table name. */
+  table: string;
+  /** Primary key column(s) identifying the row to update. */
+  pk: Record<string, unknown>;
+  /** Column values to SET on the matched row. */
+  set: Record<string, unknown>;
+}
+
 export interface EntityFileSpec {
   /** Determines what rows are passed to {@link render}. */
   source: EntityFileSource;
@@ -353,6 +366,27 @@ export interface EntityFileSpec {
    * Defaults to `false`.
    */
   omitIfEmpty?: boolean;
+  /**
+   * Optional reverse-sync function. When provided, Lattice will detect
+   * external modifications to this file (by comparing content hashes) and
+   * call this function to parse the changes back into database updates.
+   *
+   * Called with the current file content and the entity's own row.
+   * Return an array of {@link ReverseSyncUpdate} describing the DB mutations.
+   * Return an empty array if no updates are needed.
+   *
+   * @example
+   * ```ts
+   * reverseSync: (content, entityRow) => {
+   *   const match = content.match(/^# (.+)$/m);
+   *   if (match && match[1] !== entityRow.name) {
+   *     return [{ table: 'agents', pk: { id: entityRow.id }, set: { name: match[1] } }];
+   *   }
+   *   return [];
+   * }
+   * ```
+   */
+  reverseSync?: (content: string, entityRow: Row) => ReverseSyncUpdate[];
 }
 
 // ---------------------------------------------------------------------------

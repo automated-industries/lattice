@@ -35,6 +35,7 @@ import { SchemaManager } from './schema/manager.js';
 import type { CompiledTableDef } from './schema/manager.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine } from './render/engine.js';
+import { ReverseSyncEngine } from './reverse-sync/engine.js';
 import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
@@ -70,6 +71,7 @@ export class Lattice {
   private readonly _schema: SchemaManager;
   private readonly _sanitizer: Sanitizer;
   private readonly _render: RenderEngine;
+  private readonly _reverseSync: ReverseSyncEngine;
   private readonly _loop: SyncLoop;
   private readonly _writeback: WritebackPipeline;
   private _initialized = false;
@@ -114,6 +116,7 @@ export class Lattice {
     this._schema = new SchemaManager();
     this._sanitizer = new Sanitizer(options.security);
     this._render = new RenderEngine(this._schema, this._adapter);
+    this._reverseSync = new ReverseSyncEngine(this._schema, this._adapter);
     this._loop = new SyncLoop(this._render);
     this._writeback = new WritebackPipeline();
 
@@ -828,7 +831,16 @@ export class Lattice {
     // Read previous manifest BEFORE render so cleanup can detect orphans
     const prevManifest = readManifest(outputDir);
 
-    // Render first (writes new manifest)
+    // Reverse-sync phase: detect external file edits and sweep them back into DB.
+    // Runs before render so the render phase writes from the now-updated DB state.
+    // Disabled by `reverseSync: false`. Dry-run with `reverseSync: 'dry-run'`.
+    let reverseSyncResult: import('./types.js').ReverseSyncResult | null = null;
+    if (options.reverseSync !== false) {
+      const dryRun = options.reverseSync === 'dry-run';
+      reverseSyncResult = this._reverseSync.process(outputDir, prevManifest, dryRun);
+    }
+
+    // Render (writes new manifest with updated hashes)
     const renderResult = await this._render.render(outputDir);
     for (const h of this._renderHandlers) h(renderResult);
 
@@ -840,7 +852,7 @@ export class Lattice {
     // New manifest: detects stale files in surviving entities (omitIfEmpty, removed files).
     const cleanup = this._render.cleanup(outputDir, prevManifest, options, newManifest);
 
-    return { ...renderResult, cleanup };
+    return { ...renderResult, cleanup, reverseSync: reverseSyncResult };
   }
 
   watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {
