@@ -24,6 +24,14 @@ BANNED_TERMS=(
   "redacted"
   "com\.example"
   "/Users/example-app"
+  # Go implementation references — latticesql is TypeScript-only; Go port is private
+  "redacted"
+  "redacted"
+  "redacted"
+  "redacted"
+  "redacted"
+  "redacted"
+  "redacted"
 )
 
 EXIT_CODE=0
