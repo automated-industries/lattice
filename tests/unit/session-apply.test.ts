@@ -38,7 +38,7 @@ describe('applyWriteEntry', () => {
 
   beforeEach(() => {
     db = makeDb();
-    db.prepare("INSERT INTO agent (id, name) VALUES ('agent-1', 'Cortex')").run();
+    db.prepare("INSERT INTO agent (id, name) VALUES ('agent-1', 'Alpha')").run();
   });
 
   it('applies an update', () => {

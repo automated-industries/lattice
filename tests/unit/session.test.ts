@@ -11,7 +11,7 @@ function makeEntry(overrides: Record<string, string> = {}, body = ''): string {
     timestamp: '2026-03-25T10:30:00Z',
     op: 'update',
     table: 'agent',
-    target: 'agent-b',
+    target: 'agent1',
     ...overrides,
   };
   const headerLines = Object.entries(header)
@@ -33,7 +33,7 @@ describe('parseSessionWrites — valid update entry', () => {
     const entry = result.entries[0]!;
     expect(entry.op).toBe('update');
     expect(entry.table).toBe('agent');
-    expect(entry.target).toBe('agent-b');
+    expect(entry.target).toBe('agent1');
     expect(entry.fields).toEqual({ status: 'active', tags: 'deploy, production' });
     expect(entry.timestamp).toBe('2026-03-25T10:30:00Z');
   });
@@ -90,7 +90,7 @@ describe('parseSessionWrites — mixed content', () => {
 
 describe('parseSessionWrites — missing op', () => {
   it('returns a parse error', () => {
-    const content = `---\ntype: write\ntimestamp: 2026-03-25T10:30:00Z\ntable: agent\ntarget: agent-b\n---\n\n===\n`;
+    const content = `---\ntype: write\ntimestamp: 2026-03-25T10:30:00Z\ntable: agent\ntarget: agent1\n---\n\n===\n`;
     const result = parseSessionWrites(content);
     expect(result.entries).toHaveLength(0);
     expect(result.errors).toHaveLength(1);
@@ -100,7 +100,7 @@ describe('parseSessionWrites — missing op', () => {
 
 describe('parseSessionWrites — missing table', () => {
   it('returns a parse error', () => {
-    const content = `---\ntype: write\ntimestamp: 2026-03-25T10:30:00Z\nop: update\ntarget: agent-b\n---\n\n===\n`;
+    const content = `---\ntype: write\ntimestamp: 2026-03-25T10:30:00Z\nop: update\ntarget: agent1\n---\n\n===\n`;
     const result = parseSessionWrites(content);
     expect(result.entries).toHaveLength(0);
     expect(result.errors).toHaveLength(1);
@@ -110,7 +110,7 @@ describe('parseSessionWrites — missing table', () => {
 
 describe('parseSessionWrites — missing timestamp', () => {
   it('returns a parse error', () => {
-    const content = `---\ntype: write\nop: update\ntable: agent\ntarget: agent-b\n---\n\n===\n`;
+    const content = `---\ntype: write\nop: update\ntable: agent\ntarget: agent1\n---\n\n===\n`;
     const result = parseSessionWrites(content);
     expect(result.entries).toHaveLength(0);
     expect(result.errors).toHaveLength(1);
@@ -164,12 +164,12 @@ describe('parseSessionWrites — invalid field name', () => {
 
 describe('parseSessionWrites — multiple write entries', () => {
   it('parses all entries correctly', () => {
-    const entry1 = makeEntry({ target: 'agent-b' }, 'status: active');
+    const entry1 = makeEntry({ target: 'agent1' }, 'status: active');
     const entry2 = makeEntry({ target: 'hal', table: 'agent', timestamp: '2026-03-25T11:00:00Z' }, 'status: idle');
     const result = parseSessionWrites(entry1 + entry2);
     expect(result.errors).toHaveLength(0);
     expect(result.entries).toHaveLength(2);
-    expect(result.entries[0]!.target).toBe('agent-b');
+    expect(result.entries[0]!.target).toBe('agent1');
     expect(result.entries[1]!.target).toBe('hal');
   });
 });
@@ -197,19 +197,19 @@ describe('parseSessionWrites — body with multi-word values', () => {
 
 describe('generateWriteEntryId — deterministic', () => {
   it('produces the same ID for the same inputs', () => {
-    const id1 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent-b', 'update', 'agent', 'hal');
-    const id2 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent-b', 'update', 'agent', 'hal');
+    const id1 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent1', 'update', 'agent', 'hal');
+    const id2 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent1', 'update', 'agent', 'hal');
     expect(id1).toBe(id2);
   });
 });
 
 describe('generateWriteEntryId — different inputs produce different IDs', () => {
   it('produces different IDs when inputs differ', () => {
-    const id1 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent-b', 'update', 'agent', 'hal');
-    const id2 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent-b', 'create', 'agent', 'hal');
+    const id1 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent1', 'update', 'agent', 'hal');
+    const id2 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent1', 'create', 'agent', 'hal');
     expect(id1).not.toBe(id2);
 
-    const id3 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent-b', 'update', 'agent', 'agent-b');
+    const id3 = generateWriteEntryId('2026-03-25T10:30:00Z', 'agent1', 'update', 'agent', 'agent1');
     expect(id1).not.toBe(id3);
   });
 });

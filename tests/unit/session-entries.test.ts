@@ -15,13 +15,13 @@ import { createReadOnlyHeader, READ_ONLY_HEADER } from '../../src/session/consta
 
 describe('parseSessionMD', () => {
   const VALID_ENTRY = `---
-id: 2026-03-12T15:30:42Z-agent-b-a1b2c3
+id: 2026-03-12T15:30:42Z-agent1-a1b2c3
 type: event
 timestamp: 2026-03-12T15:30:42Z
-project: my-project
+project: myproject
 tags: [deploy, production]
 ---
-Deployed my-project v2.4.1 to production. Build succeeded in 47s.
+Deployed myproject v2.4.1 to production. Build succeeded in 47s.
 ===`;
 
   it('parses a single valid entry', () => {
@@ -30,12 +30,12 @@ Deployed my-project v2.4.1 to production. Build succeeded in 47s.
     expect(result.entries).toHaveLength(1);
 
     const entry = result.entries[0]!;
-    expect(entry.id).toBe('2026-03-12T15:30:42Z-agent-b-a1b2c3');
+    expect(entry.id).toBe('2026-03-12T15:30:42Z-agent1-a1b2c3');
     expect(entry.type).toBe('event');
     expect(entry.timestamp).toBe('2026-03-12T15:30:42Z');
-    expect(entry.project).toBe('my-project');
+    expect(entry.project).toBe('myproject');
     expect(entry.tags).toEqual(['deploy', 'production']);
-    expect(entry.body).toContain('Deployed my-project v2.4.1');
+    expect(entry.body).toContain('Deployed myproject v2.4.1');
   });
 
   it('parses multiple entries', () => {
@@ -62,7 +62,7 @@ Second event body.
   });
 
   it('skips preamble text before first entry', () => {
-    const content = `# SESSION — Cortex\n\nWrite entries below.\n\n---
+    const content = `# SESSION — Agent1\n\nWrite entries below.\n\n---
 id: entry-1
 type: status
 timestamp: 2026-03-12T10:00:00Z
@@ -174,7 +174,7 @@ Completed the daily report generation.
 **type:** status
 System running normally.
 `;
-    const result = parseMarkdownEntries(content, 'agent-b');
+    const result = parseMarkdownEntries(content, 'agent1');
     expect(result.errors).toHaveLength(0);
     expect(result.entries).toHaveLength(2);
     expect(result.entries[0]!.type).toBe('event'); // task_completion alias
@@ -182,7 +182,7 @@ System running normally.
   });
 
   it('returns empty for content with no headings', () => {
-    const result = parseMarkdownEntries('no headings here', 'agent-b');
+    const result = parseMarkdownEntries('no headings here', 'agent1');
     expect(result.entries).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
   });
@@ -194,42 +194,42 @@ System running normally.
 
 describe('generateEntryId', () => {
   it('generates deterministic id', () => {
-    const id1 = generateEntryId('2026-03-12T10:00:00Z', 'agent-b', 'body text');
-    const id2 = generateEntryId('2026-03-12T10:00:00Z', 'agent-b', 'body text');
+    const id1 = generateEntryId('2026-03-12T10:00:00Z', 'agent1', 'body text');
+    const id2 = generateEntryId('2026-03-12T10:00:00Z', 'agent1', 'body text');
     expect(id1).toBe(id2);
   });
 
   it('differs for different bodies', () => {
-    const id1 = generateEntryId('2026-03-12T10:00:00Z', 'agent-b', 'body A');
-    const id2 = generateEntryId('2026-03-12T10:00:00Z', 'agent-b', 'body B');
+    const id1 = generateEntryId('2026-03-12T10:00:00Z', 'agent1', 'body A');
+    const id2 = generateEntryId('2026-03-12T10:00:00Z', 'agent1', 'body B');
     expect(id1).not.toBe(id2);
   });
 
   it('has format {timestamp}-{agent}-{6-char-hash}', () => {
-    const id = generateEntryId('2026-03-12T10:00:00Z', 'agent-b', 'body');
-    expect(id).toMatch(/^2026-03-12T10:00:00Z-agent-b-[a-f0-9]{6}$/);
+    const id = generateEntryId('2026-03-12T10:00:00Z', 'agent1', 'body');
+    expect(id).toMatch(/^2026-03-12T10:00:00Z-agent1-[a-f0-9]{6}$/);
   });
 
   it('lowercases agent name', () => {
-    const id = generateEntryId('2026-03-12T10:00:00Z', 'CORTEX', 'body');
-    expect(id).toContain('agent-b');
+    const id = generateEntryId('2026-03-12T10:00:00Z', 'AGENT1', 'body');
+    expect(id).toContain('agent1');
   });
 });
 
 describe('validateEntryId', () => {
   it('validates a correct id', () => {
     const body = 'some body content';
-    const id = generateEntryId('2026-03-12T10:00:00Z', 'agent-b', body);
+    const id = generateEntryId('2026-03-12T10:00:00Z', 'agent1', body);
     expect(validateEntryId(id, body)).toBe(true);
   });
 
   it('rejects tampered body', () => {
-    const id = generateEntryId('2026-03-12T10:00:00Z', 'agent-b', 'original body');
+    const id = generateEntryId('2026-03-12T10:00:00Z', 'agent1', 'original body');
     expect(validateEntryId(id, 'modified body')).toBe(false);
   });
 
   it('rejects id with wrong hash length', () => {
-    expect(validateEntryId('2026-03-12T10:00:00Z-agent-b-ab', 'body')).toBe(false);
+    expect(validateEntryId('2026-03-12T10:00:00Z-agent1-ab', 'body')).toBe(false);
   });
 });
 

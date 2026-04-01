@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.16.1] — 2026-04-01
+
+### Fixed
+- Export `contentHash()` from package index (documented but previously inaccessible)
+- Resolve all 282 ESLint errors blocking CI (floating promises, non-null assertions, template expressions, unused imports)
+- Update compatibility matrix for v0.16.0 features
+
 ## [0.16.0] — 2026-04-01
 
 ### Added
