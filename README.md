@@ -1067,7 +1067,7 @@ await db.reconcile(outputDir: string, options?: ReconcileOptions): Promise<Recon
 
 One-shot reverse-sync + render + orphan cleanup. Reads the previous manifest, detects external file edits (reverse-sync), renders all tables and entity contexts (writing a new manifest), then removes orphaned directories and files.
 
-**Reverse-sync (v0.15+):** If any `EntityFileSpec` defines a `reverseSync` function, Lattice detects files modified since the last render (via SHA-256 hashes in the manifest) and sweeps those changes back into the database before re-rendering. See [docs/entity-context.md](./docs/entity-context.md#reverse-sync-v015).
+**Reverse-sync (v0.16+):** If any `EntityFileSpec` defines a `reverseSync` function, Lattice detects files modified since the last render (via SHA-256 hashes in the manifest) and sweeps those changes back into the database before re-rendering. See [docs/entity-context.md](./docs/entity-context.md#reverse-sync-v016).
 
 ```typescript
 const result = await db.reconcile('./context', {

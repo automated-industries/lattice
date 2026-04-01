@@ -210,7 +210,7 @@ db.defineEntityContext('agent', {
 | `render`      | `(rows: Row[]) => string`         | yes      | Render resolved rows to a string                                     |
 | `budget`      | `number`                          | no       | Max character count; truncated with a notice if exceeded             |
 | `omitIfEmpty` | `boolean`                         | no       | Skip writing the file if the source returns zero rows                |
-| `reverseSync` | `(content: string, entityRow: Row) => ReverseSyncUpdate[]` | no | Parse external file edits back into DB updates (v0.15+). See [Reverse-Sync](./entity-context.md#reverse-sync-v015). |
+| `reverseSync` | `(content: string, entityRow: Row) => ReverseSyncUpdate[]` | no | Parse external file edits back into DB updates (v0.16+). See [Reverse-Sync](./entity-context.md#reverse-sync-v016). |
 
 **Source types:**
 
@@ -1191,7 +1191,7 @@ interface LatticeManifest {
 
 Written to `.lattice/manifest.json` inside `outputDir` after every render cycle that includes entity contexts. The manifest is the authoritative record of what Lattice generated — it enables safe orphan cleanup and reverse-sync change detection across restarts.
 
-v2 (0.15+) adds per-file content hashes. v1 manifests are auto-migrated.
+v2 (0.16+) adds per-file content hashes. v1 manifests are auto-migrated.
 
 #### `EntityContextManifestEntry`
 
