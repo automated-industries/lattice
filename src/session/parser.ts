@@ -169,11 +169,13 @@ function parseBlock(block: RawBlock): BlockParseResult {
   }
 
   // Validate target for update/delete
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string must become undefined
   const target = header.target || undefined;
   if ((op === 'update' || op === 'delete') && !target) {
     return { error: { line, message: `Field "target" is required for op "${op}"` } };
   }
 
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string must become undefined
   const reason = header.reason || undefined;
 
   // Parse body fields (skip for delete)
