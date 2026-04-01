@@ -210,6 +210,7 @@ db.defineEntityContext('agent', {
 | `render`      | `(rows: Row[]) => string`         | yes      | Render resolved rows to a string                                     |
 | `budget`      | `number`                          | no       | Max character count; truncated with a notice if exceeded             |
 | `omitIfEmpty` | `boolean`                         | no       | Skip writing the file if the source returns zero rows                |
+| `reverseSync` | `(content: string, entityRow: Row) => ReverseSyncUpdate[]` | no | Parse external file edits back into DB updates (v0.15+). See [Reverse-Sync](./entity-context.md#reverse-sync-v015). |
 
 **Source types:**
 
@@ -1121,13 +1122,56 @@ interface CleanupResult {
 
 #### `ReconcileOptions`
 
-Identical to `CleanupOptions` — all fields are optional. Passed directly to the cleanup step inside `reconcile()`.
+Extends `CleanupOptions` with reverse-sync control:
+
+```ts
+interface ReconcileOptions extends CleanupOptions {
+  reverseSync?: boolean | 'dry-run'; // default: true
+}
+```
+
+| Value | Behavior |
+|-------|----------|
+| `true` (default) | Detect external file edits and sync them back to DB before rendering |
+| `'dry-run'` | Detect and count changes, but do not modify the database |
+| `false` | Skip reverse-sync entirely |
 
 #### `ReconcileResult`
 
 ```ts
 interface ReconcileResult extends RenderResult {
   cleanup: CleanupResult;
+  reverseSync: ReverseSyncResult | null;
+}
+```
+
+#### `ReverseSyncResult`
+
+```ts
+interface ReverseSyncResult {
+  filesScanned: number;    // Files with reverseSync checked for changes
+  filesChanged: number;    // Files that had been modified since last render
+  updatesApplied: number;  // Total DB updates applied
+  errors: ReverseSyncError[];
+}
+```
+
+#### `ReverseSyncUpdate`
+
+```ts
+interface ReverseSyncUpdate {
+  table: string;
+  pk: Record<string, unknown>;
+  set: Record<string, unknown>;
+}
+```
+
+#### `ReverseSyncError`
+
+```ts
+interface ReverseSyncError {
+  file: string;   // Absolute path to the file
+  error: string;  // Error description
 }
 ```
 
@@ -1139,13 +1183,15 @@ interface ReconcileResult extends RenderResult {
 
 ```ts
 interface LatticeManifest {
-  version: 1;
+  version: 1 | 2;
   generated_at: string; // ISO 8601
   entityContexts: Record<string, EntityContextManifestEntry>;
 }
 ```
 
-Written to `.lattice/manifest.json` inside `outputDir` after every render cycle that includes entity contexts. The manifest is the authoritative record of what Lattice generated — it enables safe orphan cleanup across restarts.
+Written to `.lattice/manifest.json` inside `outputDir` after every render cycle that includes entity contexts. The manifest is the authoritative record of what Lattice generated — it enables safe orphan cleanup and reverse-sync change detection across restarts.
+
+v2 (0.15+) adds per-file content hashes. v1 manifests are auto-migrated.
 
 #### `EntityContextManifestEntry`
 
@@ -1155,7 +1201,15 @@ interface EntityContextManifestEntry {
   indexFile?: string;
   declaredFiles: string[];
   protectedFiles: string[];
-  entities: Record<string, string[]>; // slug → [filenames written]
+  entities: Record<string, Record<string, EntityFileManifestInfo> | string[]>;
+}
+```
+
+#### `EntityFileManifestInfo`
+
+```ts
+interface EntityFileManifestInfo {
+  hash: string; // SHA-256 hex digest of last-rendered content
 }
 ```
 

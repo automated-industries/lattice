@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { existsSync, readdirSync, unlinkSync, rmdirSync, statSync } from 'node:fs';
 import type { LatticeManifest } from './manifest.js';
+import { entityFileNames } from './manifest.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 
 export interface CleanupOptions {
@@ -93,7 +94,7 @@ export function cleanupEntityContexts(
         if (!Object.prototype.hasOwnProperty.call(entry.entities, dirName)) continue;
 
         const entityDir = join(rootPath, dirName);
-        const managedFiles = entry.entities[dirName] ?? [];
+        const managedFiles = entityFileNames(entry.entities[dirName] ?? []);
 
         // Remove Lattice-managed files from the orphaned directory
         for (const filename of managedFiles) {
@@ -147,8 +148,8 @@ export function cleanupEntityContexts(
           : join(rootPath, slug);
         if (!entityDir || !existsSync(entityDir)) continue;
 
-        const previouslyWritten = entry.entities[slug] ?? [];
-        const currentlyWritten = new Set(newEntry?.entities[slug] ?? []);
+        const previouslyWritten = entityFileNames(entry.entities[slug] ?? []);
+        const currentlyWritten = new Set(entityFileNames(newEntry?.entities[slug] ?? []));
 
         for (const filename of previouslyWritten) {
           // Skip if still written in the new manifest (when available)
