@@ -556,6 +556,7 @@ export type {
   EntitySectionsTemplate,
   EntityRenderTemplate,
   EntityRenderSpec,
+  ReverseSyncUpdate,
   EntityFileSpec,
   EntityContextDefinition,
 } from './schema/entity-context.js';
@@ -566,6 +567,34 @@ export type {
 
 export type { CleanupOptions, CleanupResult } from './lifecycle/cleanup.js';
 import type { CleanupResult } from './lifecycle/cleanup.js';
+
+// ---------------------------------------------------------------------------
+// Reverse-sync (v0.15+)
+// ---------------------------------------------------------------------------
+
+/**
+ * An error encountered while reverse-syncing a single file.
+ */
+export interface ReverseSyncError {
+  /** Absolute path to the file that failed. */
+  file: string;
+  /** Error description. */
+  error: string;
+}
+
+/**
+ * Result of the reverse-sync phase in {@link Lattice.reconcile}.
+ */
+export interface ReverseSyncResult {
+  /** Number of files checked for modifications. */
+  filesScanned: number;
+  /** Number of files that had been modified since last render. */
+  filesChanged: number;
+  /** Total number of DB updates applied from modified files. */
+  updatesApplied: number;
+  /** Errors encountered (file-level — other files still processed). */
+  errors: ReverseSyncError[];
+}
 
 export interface ReconcileOptions {
   /** Remove entity directories whose slug is no longer in the DB. Default: true. */
@@ -578,8 +607,23 @@ export interface ReconcileOptions {
   dryRun?: boolean;
   /** Called for each orphan before removal. */
   onOrphan?: (path: string, kind: 'directory' | 'file') => void;
+  /**
+   * Enable reverse-sync: detect external file edits and sync them back to the DB
+   * before rendering. Only applies to entity context files that define a
+   * `reverseSync` function on their file spec.
+   *
+   * - `true` — run reverse-sync (default when any file spec has `reverseSync`)
+   * - `false` — skip reverse-sync entirely
+   * - `'dry-run'` — detect changes and report what would be synced, but do not
+   *   modify the database
+   *
+   * Default: `true`
+   */
+  reverseSync?: boolean | 'dry-run';
 }
 
 export interface ReconcileResult extends RenderResult {
   cleanup: CleanupResult;
+  /** Result of the reverse-sync phase. `null` when `reverseSync: false`. */
+  reverseSync: ReverseSyncResult | null;
 }
