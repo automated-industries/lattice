@@ -18,7 +18,7 @@ export interface SessionWriteEntry {
 
 export interface SessionWriteParseResult {
   entries: SessionWriteEntry[];
-  errors: Array<{ line: number; message: string }>;
+  errors: { line: number; message: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ export function generateWriteEntryId(
  */
 export function parseSessionWrites(content: string): SessionWriteParseResult {
   const entries: SessionWriteEntry[] = [];
-  const errors: Array<{ line: number; message: string }> = [];
+  const errors: { line: number; message: string }[] = [];
 
   // Split into raw blocks delimited by `---` … `---` … `===`
   const blocks = splitIntoBlocks(content);
@@ -134,23 +134,23 @@ function parseBlock(block: RawBlock): BlockParseResult {
   for (const line of block.headerLines) {
     const m = KEY_VALUE_RE.exec(line);
     if (m) {
-      header[m[1]!.trim()] = m[2]!.trim();
+      header[(m[1] ?? '').trim()] = (m[2] ?? '').trim();
     }
   }
 
   // Only handle write entries
-  if (header['type'] !== 'write') return null;
+  if (header.type !== 'write') return null;
 
   const line = block.startLine;
 
   // Validate timestamp
-  const timestamp = header['timestamp'];
+  const timestamp = header.timestamp;
   if (!timestamp) {
     return { error: { line, message: 'Missing required field: timestamp' } };
   }
 
   // Validate op
-  const rawOp = header['op'];
+  const rawOp = header.op;
   if (!rawOp) {
     return { error: { line, message: 'Missing required field: op' } };
   }
@@ -160,7 +160,7 @@ function parseBlock(block: RawBlock): BlockParseResult {
   const op = rawOp as SessionWriteOp;
 
   // Validate table
-  const table = header['table'];
+  const table = header.table;
   if (!table) {
     return { error: { line, message: 'Missing required field: table' } };
   }
@@ -169,12 +169,12 @@ function parseBlock(block: RawBlock): BlockParseResult {
   }
 
   // Validate target for update/delete
-  const target = header['target'] || undefined;
+  const target = header.target ?? undefined;
   if ((op === 'update' || op === 'delete') && !target) {
     return { error: { line, message: `Field "target" is required for op "${op}"` } };
   }
 
-  const reason = header['reason'] || undefined;
+  const reason = header.reason ?? undefined;
 
   // Parse body fields (skip for delete)
   const fields: Record<string, string> = {};
@@ -191,7 +191,7 @@ function parseBlock(block: RawBlock): BlockParseResult {
 
   // Resolve or auto-generate ID
   const id =
-    header['id'] ?? generateWriteEntryId(timestamp, 'agent', op, table, target);
+    header.id ?? generateWriteEntryId(timestamp, 'agent', op, table, target);
 
   const entry: SessionWriteEntry = {
     id,
