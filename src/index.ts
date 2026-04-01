@@ -78,6 +78,7 @@ export type {
   ReconcileOptions,
   ReconcileResult,
 } from './types.js';
+export { contentHash } from './render/writer.js';
 export { readManifest, writeManifest, manifestPath, entityFileNames, normalizeEntityFiles, isV1EntityFiles } from './lifecycle/manifest.js';
 export type { LatticeManifest, EntityContextManifestEntry, EntityFileManifestInfo } from './lifecycle/manifest.js';
 // v0.6 additions — markdown render utilities
