@@ -214,7 +214,7 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
     if (headers.tags) {
       const tagMatch = /^\[(.+)\]$/.exec(headers.tags);
       if (tagMatch) {
-        tags = tagMatch[1]!.split(',').map(t => t.trim());
+        tags = (tagMatch[1] ?? '').split(',').map(t => t.trim());
       }
     }
 
@@ -225,9 +225,9 @@ export function parseSessionMD(content: string, startOffset = 0, options?: Sessi
       for (const line of body.split('\n')) {
         const m = /^([^:]+):\s*(.*)$/.exec(line);
         if (!m) continue;
-        const key = m[1]!.trim();
+        const key = (m[1] ?? '').trim();
         if (!FIELD_NAME_RE.test(key)) continue;
-        writeFields[key] = m[2]!.trim();
+        writeFields[key] = (m[2] ?? '').trim();
       }
     }
 
@@ -273,7 +273,7 @@ export function parseMarkdownEntries(
   const text = content.slice(startOffset);
   const lines = text.split('\n');
 
-  const headingPattern = /^##\s+([\dT:.Z-]{10,})\s*(?:[—–\-]{1,2}\s*(.+))?$/;
+  const headingPattern = /^##\s+([\dT:.Z-]{10,})\s*(?:[—–-]{1,2}\s*(.+))?$/;
 
   let currentByteOffset = startOffset;
   const entryStarts: {
@@ -284,20 +284,21 @@ export function parseMarkdownEntries(
   }[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const match = headingPattern.exec((lines[i]!));
+    const match = headingPattern.exec(lines[i] ?? '');
     if (match) {
       entryStarts.push({
         lineIdx: i,
-        timestamp: match[1]!,
+        timestamp: match[1] ?? '',
         headingType: (match[2] ?? '').trim(),
         offset: currentByteOffset,
       });
     }
-    currentByteOffset += Buffer.byteLength(lines[i]! + '\n', 'utf-8');
+    currentByteOffset += Buffer.byteLength((lines[i] ?? '') + '\n', 'utf-8');
   }
 
   for (let e = 0; e < entryStarts.length; e++) {
-    const start = entryStarts[e]!;
+    const start = entryStarts[e];
+    if (!start) continue;
     const nextStart = entryStarts[e + 1];
     const bodyStartLine = start.lineIdx + 1;
     const bodyEndLine = nextStart ? nextStart.lineIdx : lines.length;
@@ -309,7 +310,7 @@ export function parseMarkdownEntries(
     for (const line of bodyLines) {
       const typeMatch = /^\*\*type:\*\*\s*(.+)/i.exec(line);
       if (typeMatch && !bodyType) {
-        bodyType = typeMatch[1]!.trim();
+        bodyType = (typeMatch[1] ?? '').trim();
       } else {
         filteredBody.push(line);
       }
@@ -321,7 +322,7 @@ export function parseMarkdownEntries(
       continue;
     }
 
-    const rawType = bodyType ?? start.headingType ?? 'event';
+    const rawType = bodyType ?? (start.headingType || 'event');
     const resolvedType = normalizeType(rawType, options) ?? 'event';
 
     const id = generateEntryId(start.timestamp, agentName, body);
@@ -357,7 +358,7 @@ export function validateEntryId(id: string, body: string): boolean {
   const parts = id.split('-');
   if (parts.length < 4) return false;
 
-  const hash = parts[parts.length - 1]!;
+  const hash = parts[parts.length - 1] ?? '';
   if (hash.length !== 6) return false;
 
   const expectedHash = createHash('sha256').update(body).digest('hex').slice(0, 6);
@@ -391,7 +392,7 @@ function normalizeType(raw: string, options?: SessionParseOptions): string | nul
     const normalized = lower.replace(/-/g, '_');
     if (aliases[normalized]) return aliases[normalized];
     for (const alias of Object.keys(aliases)) {
-      if (normalized.startsWith(alias)) return aliases[alias]!;
+      if (normalized.startsWith(alias)) return aliases[alias] ?? null;
     }
   }
 
