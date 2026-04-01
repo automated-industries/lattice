@@ -7,7 +7,7 @@
 
 import type { Row } from '../types.js';
 import type { EntityRenderSpec, EntityRenderTemplate, EntityTableTemplate, EntityProfileTemplate, EntitySectionsTemplate } from '../schema/entity-context.js';
-import { frontmatter, markdownTable, truncate } from './markdown.js';
+import { frontmatter, markdownTable } from './markdown.js';
 import { createReadOnlyHeader } from '../session/constants.js';
 
 const DEFAULT_HEADER = createReadOnlyHeader();
@@ -73,7 +73,7 @@ function compileEntityProfile(tmpl: EntityProfileTemplate): (rows: Row[]) => str
     for (const field of tmpl.fields) {
       const val = r[field.key];
       if (val === null || val === undefined) continue;
-      const formatted = field.format ? field.format(val, r) : String(val);
+      const formatted = field.format ? field.format(val, r) : String(val as string | number | boolean);
       if (formatted) {
         md += `**${field.label}:** ${formatted}\n`;
       }
@@ -129,7 +129,7 @@ function compileEntitySections(tmpl: EntitySectionsTemplate): (rows: Row[]) => s
         const parts = tmpl.perRow.metadata
           .map(m => {
             const val = row[m.key];
-            const formatted = m.format ? m.format(val) : String(val ?? '');
+            const formatted = m.format ? m.format(val) : String((val ?? '') as string | number | boolean);
             return `**${m.label}:** ${formatted}`;
           })
           .filter(Boolean);
