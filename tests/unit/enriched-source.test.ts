@@ -40,7 +40,7 @@ function createTestDb() {
   db.update('agent', 'a3', { deleted_at: '2026-01-01' });
   db.insert('project', { id: 'p1', name: 'Alpha', org_id: 'o1', status: 'active' });
   db.insert('project', { id: 'p2', name: 'Beta', org_id: 'o1', status: 'paused' });
-  db.insert('user', { id: 'u1', name: 'Brian', role: 'owner' });
+  db.insert('user', { id: 'u1', name: 'Alice', role: 'owner' });
   db.insert('user_project', { user_id: 'u1', project_id: 'p1' });
   db.insert('user_project', { user_id: 'u1', project_id: 'p2' });
 
@@ -122,7 +122,7 @@ describe('enriched source type', () => {
     db.reconcile(tmpDir);
 
     const row = rendered[0]![0]!;
-    expect(row.name).toBe('Brian');
+    expect(row.name).toBe('Alice');
 
     const projects = JSON.parse(row._projects as string);
     expect(projects).toHaveLength(2);
