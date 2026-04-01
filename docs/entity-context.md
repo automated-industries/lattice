@@ -325,11 +325,11 @@ db.defineEntityContext('agent', {
 
 Each `ReverseSyncUpdate` describes a single row-level mutation:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `table` | `string` | Target table name |
-| `pk` | `Record<string, unknown>` | Primary key columns identifying the row |
-| `set` | `Record<string, unknown>` | Columns to update |
+| Field   | Type                      | Description                             |
+| ------- | ------------------------- | --------------------------------------- |
+| `table` | `string`                  | Target table name                       |
+| `pk`    | `Record<string, unknown>` | Primary key columns identifying the row |
+| `set`   | `Record<string, unknown>` | Columns to update                       |
 
 ### Controlling reverse-sync behavior
 

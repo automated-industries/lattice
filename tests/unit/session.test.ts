@@ -155,8 +155,8 @@ describe('parseSessionWrites — invalid field name', () => {
     expect(result.errors).toHaveLength(0);
     expect(result.entries).toHaveLength(1);
     const fields = result.entries[0]!.fields;
-    expect(fields['valid_field']).toBe('ok');
-    expect(fields['another']).toBe('fine');
+    expect(fields.valid_field).toBe('ok');
+    expect(fields.another).toBe('fine');
     // invalid field should not appear
     expect(Object.keys(fields)).not.toContain('invalid field!');
   });
@@ -165,7 +165,10 @@ describe('parseSessionWrites — invalid field name', () => {
 describe('parseSessionWrites — multiple write entries', () => {
   it('parses all entries correctly', () => {
     const entry1 = makeEntry({ target: 'agent1' }, 'status: active');
-    const entry2 = makeEntry({ target: 'hal', table: 'agent', timestamp: '2026-03-25T11:00:00Z' }, 'status: idle');
+    const entry2 = makeEntry(
+      { target: 'hal', table: 'agent', timestamp: '2026-03-25T11:00:00Z' },
+      'status: idle',
+    );
     const result = parseSessionWrites(entry1 + entry2);
     expect(result.errors).toHaveLength(0);
     expect(result.entries).toHaveLength(2);
@@ -187,7 +190,7 @@ describe('parseSessionWrites — body with multi-word values', () => {
     const content = makeEntry({}, 'status: in progress');
     const result = parseSessionWrites(content);
     expect(result.errors).toHaveLength(0);
-    expect(result.entries[0]!.fields['status']).toBe('in progress');
+    expect(result.entries[0]!.fields.status).toBe('in progress');
   });
 });
 
