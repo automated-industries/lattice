@@ -3,11 +3,11 @@ import { mkdirSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
-import { atomicWrite } from './writer.js';
+import { atomicWrite, contentHash } from './writer.js';
 import { resolveEntitySource, truncateContent } from './entity-query.js';
 import { compileEntityRender } from './entity-templates.js';
-import type { EntityContextManifestEntry, LatticeManifest } from '../lifecycle/manifest.js';
-import { writeManifest } from '../lifecycle/manifest.js';
+import type { EntityContextManifestEntry, LatticeManifest, EntityFileManifestInfo } from '../lifecycle/manifest.js';
+import { entityFileNames, writeManifest } from '../lifecycle/manifest.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
 
@@ -66,7 +66,7 @@ export class RenderEngine {
     // Write manifest if there are any entity contexts
     if (this._schema.getEntityContexts().size > 0) {
       writeManifest(outputDir, {
-        version: 1,
+        version: 2,
         generated_at: new Date().toISOString(),
         entityContexts: entityContextManifest,
       });
@@ -153,6 +153,9 @@ export class RenderEngine {
         // Only entries for files that were not omitted are present.
         const renderedFiles = new Map<string, string>();
 
+        // v2 manifest: track per-file hashes
+        const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
+
         for (const [filename, spec] of Object.entries(def.files)) {
           const mergeDefaults = def.sourceDefaults
             && spec.source.type !== 'self'
@@ -168,6 +171,7 @@ export class RenderEngine {
           const renderFn = compileEntityRender(spec.render);
           const content = truncateContent(renderFn(rows), spec.budget);
           renderedFiles.set(filename, content);
+          entityFileHashes[filename] = { hash: contentHash(content) };
 
           const filePath = join(entityDir, filename);
           if (atomicWrite(filePath, content)) {
@@ -189,18 +193,20 @@ export class RenderEngine {
           }
 
           if (parts.length > 0) {
+            const combinedContent = parts.join('\n\n---\n\n');
             const combinedPath = join(entityDir, def.combined.outputFile);
-            if (atomicWrite(combinedPath, parts.join('\n\n---\n\n'))) {
+            if (atomicWrite(combinedPath, combinedContent)) {
               filesWritten.push(combinedPath);
             } else {
               counters.skipped++;
             }
-            renderedFiles.set(def.combined.outputFile, parts.join('\n\n---\n\n'));
+            renderedFiles.set(def.combined.outputFile, combinedContent);
+            entityFileHashes[def.combined.outputFile] = { hash: contentHash(combinedContent) };
           }
         }
 
-        // Track what was written for this entity in the manifest
-        manifestEntry.entities[slug] = [...renderedFiles.keys()];
+        // Track what was written for this entity in the manifest (v2: with hashes)
+        manifestEntry.entities[slug] = entityFileHashes;
       }
 
       manifestData[table] = manifestEntry;

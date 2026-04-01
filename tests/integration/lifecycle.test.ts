@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { readManifest } from '../../src/lifecycle/manifest.js';
+import { readManifest, entityFileNames } from '../../src/lifecycle/manifest.js';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -285,10 +285,10 @@ describe('lifecycle: manifest + orphan cleanup', () => {
 
     const manifest1 = readManifest(outputDir);
     expect(manifest1).not.toBeNull();
-    expect(manifest1!.version).toBe(1);
+    expect(manifest1!.version).toBe(2);
     expect(manifest1!.entityContexts['agents']).toBeDefined();
 
-    const alphaFiles1 = manifest1!.entityContexts['agents']!.entities['alpha'] ?? [];
+    const alphaFiles1 = entityFileNames(manifest1!.entityContexts['agents']!.entities['alpha'] ?? []);
     expect(alphaFiles1).toContain('AGENT.md');
     expect(alphaFiles1).not.toContain('TASKS.md');
     expect(alphaFiles1).toContain('CONTEXT.md');
@@ -299,7 +299,7 @@ describe('lifecycle: manifest + orphan cleanup', () => {
 
     const manifest2 = readManifest(outputDir);
     expect(manifest2).not.toBeNull();
-    const alphaFiles2 = manifest2!.entityContexts['agents']!.entities['alpha'] ?? [];
+    const alphaFiles2 = entityFileNames(manifest2!.entityContexts['agents']!.entities['alpha'] ?? []);
     expect(alphaFiles2).toContain('AGENT.md');
     expect(alphaFiles2).toContain('TASKS.md');
     expect(alphaFiles2).toContain('CONTEXT.md');
@@ -318,7 +318,7 @@ describe('lifecycle: manifest + orphan cleanup', () => {
     expect(existsSync(manifestFile)).toBe(true);
 
     const raw = JSON.parse(readFileSync(manifestFile, 'utf8')) as Record<string, unknown>;
-    expect(raw['version']).toBe(1);
+    expect(raw['version']).toBe(2);
     expect(typeof raw['generated_at']).toBe('string');
 
     db.close();
@@ -440,6 +440,13 @@ describe('lifecycle: manifest + orphan cleanup', () => {
     expect(Array.isArray(result.cleanup.filesRemoved)).toBe(true);
     expect(Array.isArray(result.cleanup.directoriesSkipped)).toBe(true);
     expect(Array.isArray(result.cleanup.warnings)).toBe(true);
+
+    // ReverseSyncResult fields (no reverseSync functions defined, but still runs)
+    expect(result.reverseSync).not.toBeNull();
+    expect(result.reverseSync!.filesScanned).toBe(0);
+    expect(result.reverseSync!.filesChanged).toBe(0);
+    expect(result.reverseSync!.updatesApplied).toBe(0);
+    expect(result.reverseSync!.errors).toEqual([]);
 
     db.close();
   });

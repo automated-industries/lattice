@@ -283,6 +283,80 @@ db.defineEntityContext('agent', {
 
 Protected files are recorded in the manifest so the protection survives across restarts.
 
+## Reverse-Sync (v0.15+)
+
+In agentic systems, AI agents frequently edit rendered context files directly. Without reverse-sync, those edits are destroyed on the next render cycle because Lattice overwrites files from DB state.
+
+Reverse-sync solves this by running **before** the render phase inside `reconcile()`:
+
+1. For each entity file with a `reverseSync` function, reads the current file from disk
+2. Compares its SHA-256 hash against the last-rendered hash stored in the manifest
+3. If the file was modified, calls the `reverseSync` function to parse changes back into DB updates
+4. Applies those updates to the database
+5. The subsequent render writes from the now-updated DB — preserving the agent's edits
+
+### Defining a reverse-sync function
+
+Add an optional `reverseSync` function to any `EntityFileSpec`:
+
+```ts
+db.defineEntityContext('agent', {
+  slug: (row) => row.slug as string,
+  files: {
+    'AGENT.md': {
+      source: { type: 'self' },
+      render: ([r]) => `# ${r.name}\n**Role:** ${r.role}\n`,
+      reverseSync: (content, entityRow) => {
+        const updates: ReverseSyncUpdate[] = [];
+        const nameMatch = content.match(/^# (.+)$/m);
+        if (nameMatch && nameMatch[1] !== entityRow.name) {
+          updates.push({
+            table: 'agent',
+            pk: { id: entityRow.id },
+            set: { name: nameMatch[1] },
+          });
+        }
+        return updates;
+      },
+    },
+  },
+});
+```
+
+Each `ReverseSyncUpdate` describes a single row-level mutation:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `table` | `string` | Target table name |
+| `pk` | `Record<string, unknown>` | Primary key columns identifying the row |
+| `set` | `Record<string, unknown>` | Columns to update |
+
+### Controlling reverse-sync behavior
+
+Pass the `reverseSync` option to `reconcile()`:
+
+```ts
+// Default: reverse-sync enabled
+await db.reconcile(outputDir);
+
+// Dry-run: detect changes, count updates, but don't modify DB
+const result = await db.reconcile(outputDir, { reverseSync: 'dry-run' });
+console.log(result.reverseSync);
+// { filesScanned: 5, filesChanged: 2, updatesApplied: 3, errors: [] }
+
+// Disabled: skip reverse-sync entirely
+await db.reconcile(outputDir, { reverseSync: false });
+// result.reverseSync is null
+```
+
+### Edge cases
+
+- **File deleted externally**: Skipped (no content to parse).
+- **`reverseSync` throws**: Error captured in `result.reverseSync.errors`; other files still processed. DB transaction for that file is rolled back.
+- **No manifest yet (first render)**: Reverse-sync has no baseline hashes — all files skipped.
+- **v1 manifest (pre-0.15)**: Empty hashes — reverse-sync skips gracefully. After the first v2 render, hashes are populated and reverse-sync activates.
+- **Files without `reverseSync`**: Not scanned. Agent edits to those files are still overwritten on render.
+
 ## Lifecycle Management
 
 Over time entities are created, renamed, and deleted. Without cleanup, Lattice leaves behind directories and files for entities that no longer exist. The lifecycle system uses a manifest to track what was generated and remove orphans.
