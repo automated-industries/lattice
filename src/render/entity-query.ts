@@ -118,26 +118,47 @@ function appendQueryOptions(
 // ---------------------------------------------------------------------------
 
 /**
+ * Options for protected-entity filtering during source resolution.
+ */
+export interface ProtectionContext {
+  /** Set of table names that are marked as protected entity contexts. */
+  protectedTables: ReadonlySet<string>;
+  /** The table name of the entity context currently being rendered. */
+  currentTable: string;
+}
+
+/**
  * Resolve an {@link EntityFileSource} to rows for a given entity row.
  *
  * All queries use the synchronous better-sqlite3 adapter — no async required.
+ *
+ * When a {@link ProtectionContext} is provided, sources that reference a
+ * protected table are filtered:
+ * - Same table as `currentTable`: returns only the current entity's own row.
+ * - Different protected table: returns `[]` (no cross-entity leakage).
  *
  * @param source     - The source descriptor from an {@link EntityFileSpec}
  * @param entityRow  - The anchor entity row being rendered
  * @param entityPk   - The primary key column name for the entity's table
  * @param adapter    - The raw storage adapter for direct SQL access
+ * @param protection - Optional protection context for filtering
  */
 export function resolveEntitySource(
   source: EntityFileSource,
   entityRow: Row,
   entityPk: string,
   adapter: StorageAdapter,
+  protection?: ProtectionContext,
 ): Row[] {
   switch (source.type) {
     case 'self':
       return [entityRow];
 
     case 'hasMany': {
+      if (protection && protection.protectedTables.has(source.table)) {
+        if (source.table === protection.currentTable) return [entityRow];
+        return [];
+      }
       const ref = source.references ?? entityPk;
       const pkVal = entityRow[ref];
       const params: unknown[] = [pkVal];
@@ -147,6 +168,10 @@ export function resolveEntitySource(
     }
 
     case 'manyToMany': {
+      if (protection && protection.protectedTables.has(source.remoteTable)) {
+        if (source.remoteTable === protection.currentTable) return [entityRow];
+        return [];
+      }
       const pkVal = entityRow[entityPk];
       const remotePk = source.references ?? 'id';
       const params: unknown[] = [pkVal];
@@ -175,6 +200,10 @@ export function resolveEntitySource(
     }
 
     case 'belongsTo': {
+      if (protection && protection.protectedTables.has(source.table)) {
+        if (source.table === protection.currentTable) return [entityRow];
+        return [];
+      }
       const fkVal = entityRow[source.foreignKey];
       if (fkVal == null) return [];
       const hasOptions =
@@ -208,8 +237,8 @@ export function resolveEntitySource(
         if (lookup.type === 'custom') {
           enriched[fieldName] = JSON.stringify(lookup.query(entityRow, adapter));
         } else {
-          // Resolve using the same logic as top-level sources
-          const resolved = resolveEntitySource(lookup, entityRow, entityPk, adapter);
+          // Resolve using the same logic as top-level sources (with protection)
+          const resolved = resolveEntitySource(lookup, entityRow, entityPk, adapter, protection);
           enriched[fieldName] = JSON.stringify(resolved);
         }
       }

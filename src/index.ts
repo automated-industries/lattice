@@ -92,6 +92,8 @@ export type {
   EntityContextManifestEntry,
   EntityFileManifestInfo,
 } from './lifecycle/manifest.js';
+// v0.18 additions — encryption utilities
+export { encrypt, decrypt, deriveKey, isEncrypted } from './security/encryption.js';
 // v0.6 additions — markdown render utilities
 export { frontmatter, markdownTable, slugify, truncate } from './render/markdown.js';
 export type { MarkdownTableColumn } from './render/markdown.js';
