@@ -106,7 +106,7 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
 
   const tables: { name: string; definition: TableDefinition }[] = [];
   for (const [entityName, entityDef] of Object.entries(config.entities)) {
-    const definition = entityToTableDef(entityName, entityDef, configDir);
+    const definition = entityToTableDef(entityName, entityDef);
     tables.push({ name: entityName, definition });
   }
 
@@ -118,7 +118,6 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
 function entityToTableDef(
   entityName: string,
   entity: LatticeEntityDef,
-  configDir: string,
 ): TableDefinition {
   const rawFields = (entity as { fields?: unknown }).fields;
   if (!rawFields || typeof rawFields !== 'object' || Array.isArray(rawFields)) {
