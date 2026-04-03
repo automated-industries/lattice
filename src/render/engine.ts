@@ -4,7 +4,7 @@ import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
 import { atomicWrite, contentHash } from './writer.js';
-import { resolveEntitySource, truncateContent } from './entity-query.js';
+import { resolveEntitySource, truncateContent, type ProtectionContext } from './entity-query.js';
 import { compileEntityRender } from './entity-templates.js';
 import type {
   EntityContextManifestEntry,
@@ -127,6 +127,12 @@ export class RenderEngine {
   ): Record<string, EntityContextManifestEntry> {
     const manifestData: Record<string, EntityContextManifestEntry> = {};
 
+    // Build set of protected table names for source filtering
+    const protectedTables = new Set<string>();
+    for (const [t, d] of this._schema.getEntityContexts()) {
+      if (d.protected) protectedTables.add(t);
+    }
+
     for (const [table, def] of this._schema.getEntityContexts()) {
       const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
       const allRows = this._schema.queryTable(this._adapter, table);
@@ -167,6 +173,11 @@ export class RenderEngine {
         // v2 manifest: track per-file hashes
         const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
 
+        const protection: ProtectionContext | undefined =
+          protectedTables.size > 0
+            ? { protectedTables, currentTable: table }
+            : undefined;
+
         for (const [filename, spec] of Object.entries(def.files)) {
           const mergeDefaults =
             def.sourceDefaults &&
@@ -174,7 +185,7 @@ export class RenderEngine {
             spec.source.type !== 'custom' &&
             spec.source.type !== 'enriched';
           const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
-          const rows = resolveEntitySource(source, entityRow, entityPk, this._adapter);
+          const rows = resolveEntitySource(source, entityRow, entityPk, this._adapter, protection);
 
           if (spec.omitIfEmpty && rows.length === 0) continue;
 

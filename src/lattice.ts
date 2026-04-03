@@ -40,6 +40,7 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
 import { parseConfigFile } from './config/parser.js';
+import { deriveKey, encrypt as encryptValue, decrypt as decryptValue, resolveEncryptedColumns } from './security/encryption.js';
 
 /**
  * Initialise Lattice from a YAML config file instead of an explicit path.
@@ -79,6 +80,13 @@ export class Lattice {
   /** Cache of actual table columns (from PRAGMA), populated after init(). */
   private readonly _columnCache = new Map<string, Set<string>>();
 
+  /** Derived encryption key (from options.encryptionKey via scrypt). */
+  private _encryptionKey?: Buffer;
+  /** Map of table → set of column names that should be encrypted at rest. */
+  private readonly _encryptedTableColumns = new Map<string, Set<string>>();
+  /** Raw encryption key passphrase from constructor options. */
+  private readonly _encryptionKeyRaw?: string;
+
   private readonly _auditHandlers: EventHandler<AuditEvent>[] = [];
   private readonly _renderHandlers: EventHandler<RenderResult>[] = [];
   private readonly _writebackHandlers: EventHandler<{
@@ -117,6 +125,8 @@ export class Lattice {
     this._reverseSync = new ReverseSyncEngine(this._schema, this._adapter);
     this._loop = new SyncLoop(this._render);
     this._writeback = new WritebackPipeline();
+
+    if (options.encryptionKey) this._encryptionKeyRaw = options.encryptionKey;
 
     this._sanitizer.onAudit((event) => {
       for (const h of this._auditHandlers) h(event);
@@ -197,6 +207,10 @@ export class Lattice {
       const rows = this._adapter.all(`PRAGMA table_info("${tableName}")`);
       this._columnCache.set(tableName, new Set(rows.map((r) => r.name as string)));
     }
+
+    // Set up encryption for entity contexts that declare encrypted: true|{columns}
+    this._setupEncryption();
+
     this._initialized = true;
     return Promise.resolve();
   }
@@ -223,7 +237,66 @@ export class Lattice {
   close(): void {
     this._adapter.close();
     this._columnCache.clear();
+    this._encryptedTableColumns.clear();
+    delete this._encryptionKey;
     this._initialized = false;
+  }
+
+  // -------------------------------------------------------------------------
+  // Encryption helpers
+  // -------------------------------------------------------------------------
+
+  private _setupEncryption(): void {
+    for (const [table, def] of this._schema.getEntityContexts()) {
+      if (!def.encrypted) continue;
+      if (!this._encryptionKeyRaw) {
+        throw new Error(
+          `Entity context "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
+        );
+      }
+      if (!this._encryptionKey) {
+        this._encryptionKey = deriveKey(this._encryptionKeyRaw);
+      }
+      // Get actual column names from the DB
+      const pragmaRows = this._adapter.all(`PRAGMA table_info("${table}")`);
+      const allCols = pragmaRows.map((r) => r.name as string);
+      const encCols = resolveEncryptedColumns(def.encrypted, allCols);
+      this._encryptedTableColumns.set(table, encCols);
+    }
+  }
+
+  /** Encrypt applicable columns in a row before writing. Returns a new row. */
+  private _encryptRow(table: string, row: Row): Row {
+    const encCols = this._encryptedTableColumns.get(table);
+    if (!encCols || !this._encryptionKey) return row;
+    const result = { ...row };
+    for (const col of encCols) {
+      const val = result[col];
+      if (typeof val === 'string' && val.length > 0) {
+        result[col] = encryptValue(val, this._encryptionKey);
+      }
+    }
+    return result;
+  }
+
+  /** Decrypt applicable columns in a row after reading. Mutates in place. */
+  private _decryptRow(table: string, row: Row): Row {
+    const encCols = this._encryptedTableColumns.get(table);
+    if (!encCols || !this._encryptionKey) return row;
+    for (const col of encCols) {
+      const val = row[col];
+      if (typeof val === 'string' && val.length > 0) {
+        row[col] = decryptValue(val, this._encryptionKey);
+      }
+    }
+    return row;
+  }
+
+  /** Decrypt applicable columns in multiple rows. Mutates in place. */
+  private _decryptRows(table: string, rows: Row[]): Row[] {
+    if (!this._encryptedTableColumns.has(table)) return rows;
+    for (const row of rows) this._decryptRow(table, row);
+    return rows;
   }
 
   // -------------------------------------------------------------------------
@@ -247,13 +320,15 @@ export class Lattice {
       rowWithPk = sanitized;
     }
 
-    const cols = Object.keys(rowWithPk)
+    const encrypted = this._encryptRow(table, rowWithPk);
+
+    const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
       .join(', ');
-    const placeholders = Object.keys(rowWithPk)
+    const placeholders = Object.keys(encrypted)
       .map(() => '?')
       .join(', ');
-    const values = Object.values(rowWithPk);
+    const values = Object.values(encrypted);
 
     this._adapter.run(`INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`, values);
 
@@ -294,20 +369,22 @@ export class Lattice {
       rowWithPk = sanitized;
     }
 
-    const cols = Object.keys(rowWithPk)
+    const encrypted = this._encryptRow(table, rowWithPk);
+
+    const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
       .join(', ');
-    const placeholders = Object.keys(rowWithPk)
+    const placeholders = Object.keys(encrypted)
       .map(() => '?')
       .join(', ');
     // Conflict target uses all PK columns
     const conflictCols = pkCols.map((c) => `"${c}"`).join(', ');
     // Exclude all PK columns from the UPDATE SET clause
-    const updateCols = Object.keys(rowWithPk)
+    const updateCols = Object.keys(encrypted)
       .filter((c) => !pkCols.includes(c))
       .map((c) => `"${c}" = excluded."${c}"`)
       .join(', ');
-    const values = Object.values(rowWithPk);
+    const values = Object.values(encrypted);
 
     this._adapter.run(
       `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`,
@@ -346,12 +423,13 @@ export class Lattice {
     if (notInit) return notInit;
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
-    const setCols = Object.keys(sanitized)
+    const encrypted = this._encryptRow(table, sanitized);
+    const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
       .join(', ');
 
     const { clause, params: pkParams } = this._pkWhere(table, id);
-    const values = [...Object.values(sanitized), ...pkParams];
+    const values = [...Object.values(encrypted), ...pkParams];
 
     this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
 
@@ -391,9 +469,8 @@ export class Lattice {
     if (notInit) return notInit;
 
     const { clause, params } = this._pkWhere(table, id);
-    return Promise.resolve(
-      this._adapter.get(`SELECT * FROM "${table}" WHERE ${clause}`, params) ?? null,
-    );
+    const row = this._adapter.get(`SELECT * FROM "${table}" WHERE ${clause}`, params) ?? null;
+    return Promise.resolve(row ? this._decryptRow(table, row) : null);
   }
 
   // -------------------------------------------------------------------------
@@ -432,7 +509,8 @@ export class Lattice {
 
     if (existing) {
       // Update existing
-      const entries = Object.entries(withConventions).filter(([k]) => k !== 'id');
+      const encUpdated = this._encryptRow(table, withConventions);
+      const entries = Object.entries(encUpdated).filter(([k]) => k !== 'id');
       if (entries.length === 0) return Promise.resolve(existing.id as string);
       const setCols = entries.map(([k]) => `"${k}" = ?`).join(', ');
       this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
@@ -458,15 +536,16 @@ export class Lattice {
       insertData.created_at = new Date().toISOString();
 
     const filtered = this._filterToSchemaColumns(table, insertData);
-    const colNames = Object.keys(filtered)
+    const encInserted = this._encryptRow(table, filtered);
+    const colNames = Object.keys(encInserted)
       .map((c) => `"${c}"`)
       .join(', ');
-    const placeholders = Object.keys(filtered)
+    const placeholders = Object.keys(encInserted)
       .map(() => '?')
       .join(', ');
     this._adapter.run(
       `INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`,
-      Object.values(filtered),
+      Object.values(encInserted),
     );
     this._fireWriteHooks(table, 'insert', filtered, id);
     return Promise.resolve(id);
@@ -916,7 +995,7 @@ export class Lattice {
       sql += ` OFFSET ${opts.offset.toString()}`;
     }
 
-    return Promise.resolve(this._adapter.all(sql, params));
+    return Promise.resolve(this._decryptRows(table, this._adapter.all(sql, params)));
   }
 
   count(table: string, opts: CountOptions = {}): Promise<number> {
