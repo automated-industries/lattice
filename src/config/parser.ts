@@ -34,8 +34,9 @@ export interface ParsedConfig {
 /**
  * Read, parse, and validate a `lattice.config.yml` file.
  *
- * Paths inside the config (e.g. `db`, `outputFile`) are resolved relative to
- * the config file's directory.
+ * The `db` path is resolved relative to the config file's directory.
+ * `outputFile` values are kept as-is (they are relative to the `outputDir`
+ * passed to `render()`, not to the config file location).
  *
  * @throws If the file cannot be read, the YAML is malformed, or required
  *         keys are missing.
@@ -64,7 +65,8 @@ export function parseConfigFile(configPath: string): ParsedConfig {
 /**
  * Parse and validate a raw YAML string as a Lattice config.
  *
- * `configDir` is used to resolve relative `db` and `outputFile` paths.
+ * `configDir` is used to resolve the `db` path. `outputFile` values are kept
+ * as-is (relative to the `outputDir` passed to `render()`).
  * Typically this should be the directory that contains `lattice.config.yml`.
  *
  * Useful for testing without touching the filesystem.
@@ -150,8 +152,12 @@ function entityToTableDef(
 
   const render = parseEntityRender(entity.render);
 
-  // outputFile is resolved relative to configDir at runtime
-  const outputFile = resolve(configDir, entity.outputFile);
+  // outputFile is kept as-is (relative to the outputDir passed to render()).
+  // Do NOT resolve it against configDir here — path.join(outputDir, relativeFile)
+  // in the render engine produces the correct path. Resolving here would create
+  // an absolute path that, when joined with outputDir, produces a doubled path
+  // like /outputDir/configDir/relative instead of /outputDir/relative.
+  const outputFile = entity.outputFile;
 
   return {
     columns,
