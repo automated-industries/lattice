@@ -4,7 +4,6 @@ import type {
   RenderSpec,
   RenderHooks,
   BuiltinTemplateName,
-  RenderSpec,
 } from '../types.js';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
