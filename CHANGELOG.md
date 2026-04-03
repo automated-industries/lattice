@@ -6,6 +6,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.16.2] — 2026-04-03
+
+### Fixed
+
+- Removed internal build-process file that was accidentally committed to the public repo
+- Lint errors: unused `configDir` parameter in `config/parser.ts`, `let` → `const` in integration test
+- `outputFile` path doubling when using config-parsed entity tables with relative paths
+
 ## [0.16.1] — 2026-04-01
 
 ### Fixed
