@@ -17,8 +17,9 @@ export interface RegisteredMulti {
  * been compiled down to a plain function by `Lattice.define()`.
  * This is what SchemaManager and RenderEngine always work with.
  */
-export type CompiledTableDef = Omit<TableDefinition, 'render'> & {
+export type CompiledTableDef = Omit<TableDefinition, 'render' | 'outputFile'> & {
   render: (rows: Row[]) => string;
+  outputFile: string;
 };
 
 export class SchemaManager {
