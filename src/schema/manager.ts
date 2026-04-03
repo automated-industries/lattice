@@ -187,6 +187,9 @@ export class SchemaManager {
 
     for (const [col, type] of Object.entries(columns)) {
       if (!existing.includes(col)) {
+        // SQLite does not allow adding PRIMARY KEY columns via ALTER TABLE.
+        // Skip PK columns — if the table already exists, it has its own PK.
+        if (type.toUpperCase().includes('PRIMARY KEY')) continue;
         adapter.run(`ALTER TABLE "${table}" ADD COLUMN "${col}" ${type}`);
       }
     }
