@@ -35,6 +35,7 @@ Lattice has no opinions about your schema, your agents, or your file format. You
   - [defineEntityContext()](#defineentitycontext-v05)
   - [defineWriteback()](#definewriteback)
   - [init() / close()](#init--close)
+  - [migrate()](#migrate-v017)
   - [CRUD operations](#crud-operations)
   - [Query operators](#query-operators)
   - [Render, sync, watch, and reconcile](#render-sync-watch-and-reconcile)
@@ -202,11 +203,12 @@ interface TableDefinition {
    * - A render function: (rows: Row[]) => string
    * - A built-in template name: 'default-list' | 'default-table' | 'default-detail' | 'default-json'
    * - A template spec with hooks: { template: BuiltinTemplateName, hooks?: RenderHooks }
+   * Optional (v0.17+) — omit render and outputFile for schema-only tables.
    */
-  render: RenderSpec;
+  render?: RenderSpec;
 
-  /** Output file path, relative to the outputDir passed to render()/watch() */
-  outputFile: string;
+  /** Output file path, relative to the outputDir passed to render()/watch(). Optional (v0.17+). */
+  outputFile?: string;
 
   /** Optional row filter applied before rendering */
   filter?: (rows: Row[]) => Row[];
@@ -215,10 +217,12 @@ interface TableDefinition {
    * Primary key column name or [col1, col2] for composite PKs.
    * Defaults to 'id'. When 'id' is the PK and the field is absent on insert,
    * a UUID v4 is generated automatically.
+   * Composite PKs (v0.17+): auto-generates a PRIMARY KEY(...) constraint —
+   * no need to add it manually via tableConstraints.
    */
   primaryKey?: string | string[];
 
-  /** Additional SQL constraints (required for composite PKs) */
+  /** Additional SQL constraints (e.g., UNIQUE, CHECK). No longer required for composite PKs (v0.17+). */
   tableConstraints?: string[];
 
   /** Declared relationships used by template rendering */
@@ -267,6 +271,22 @@ await db.update('pages', 'about-us', { title: 'About' });
 await db.delete('pages', 'about-us');
 ```
 
+**Schema-only table (v0.17+):**
+
+Tables without `render` and `outputFile` get full schema support (columns, indexes, constraints, CRUD) but produce no output files during `render()` or `watch()`. Useful for junction tables, internal tracking tables, or any table that doesn't need a context file.
+
+```typescript
+db.define('agent_skills', {
+  columns: {
+    agent_id: 'TEXT NOT NULL',
+    skill_id: 'TEXT NOT NULL',
+    proficiency: 'TEXT DEFAULT "basic"',
+  },
+  primaryKey: ['agent_id', 'skill_id'],
+  // No render, no outputFile — schema-only
+});
+```
+
 **Composite primary key:**
 
 ```typescript
@@ -276,7 +296,6 @@ db.define('event_seats', {
     seat_no: 'INTEGER NOT NULL',
     holder: 'TEXT',
   },
-  tableConstraints: ['PRIMARY KEY (event_id, seat_no)'],
   primaryKey: ['event_id', 'seat_no'],
   render: 'default-table',
   outputFile: 'seats.md',
@@ -835,6 +854,26 @@ Migrations are idempotent — each `version` number is applied exactly once, tra
 
 `close()` closes the SQLite connection. Call it when the process shuts down.
 
+### `migrate()` (v0.17+)
+
+```typescript
+await db.migrate(migrations: Migration[]): Promise<void>
+```
+
+Run migrations after `init()`. Works exactly like `init({ migrations })` but callable any time — useful when migrations are loaded dynamically or added by plugins after startup.
+
+```typescript
+await db.init();
+
+// Later — e.g., after loading a plugin that needs new columns
+await db.migrate([
+  { version: 'plugin-v1', sql: 'ALTER TABLE tasks ADD COLUMN tags TEXT' },
+  { version: 'plugin-v2', sql: 'CREATE INDEX IF NOT EXISTS idx_tasks_tags ON tasks (tags)' },
+]);
+```
+
+`Migration.version` accepts `number | string` — use numbers for sequential migrations, or strings for named/namespaced versions (e.g., `'plugin-v1'`). Each version is applied at most once, tracked in the same `__lattice_migrations` table used by `init()`.
+
 ---
 
 ### CRUD operations
@@ -858,6 +897,24 @@ await db.insert('pages', { slug: 'about', title: 'About Us' });
 
 // With explicit id
 await db.insert('tasks', { id: 'task-001', title: 'Specific task' });
+```
+
+#### `insertReturning()` (v0.17+)
+
+```typescript
+await db.insertReturning(table: string, row: Row): Promise<Row>
+```
+
+Insert a row and get the full row back — including the auto-generated `id`, defaults, and any other columns. Equivalent to `insert()` + `get()` in a single call.
+
+```typescript
+const task = await db.insertReturning('tasks', { title: 'Write docs', status: 'open' });
+// task → { id: 'f47ac10b-...', title: 'Write docs', status: 'open', priority: 0, ... }
+
+// Useful when you need the generated id or default values immediately
+const agent = await db.insertReturning('agents', { name: 'Gamma' });
+console.log(agent.id); // auto-generated UUID
+console.log(agent.active); // default value from schema
 ```
 
 #### `upsert()`
@@ -897,6 +954,23 @@ await db.update('tasks', 'task-001', { status: 'done' });
 
 // Composite PK
 await db.update('event_seats', { event_id: 'e-1', seat_no: 3 }, { holder: 'Bob' });
+```
+
+#### `updateReturning()` (v0.17+)
+
+```typescript
+await db.updateReturning(table: string, id: PkLookup, row: Partial<Row>): Promise<Row>
+```
+
+Update specific columns and get the full updated row back. Equivalent to `update()` + `get()` in a single call.
+
+```typescript
+const task = await db.updateReturning('tasks', 'task-001', { status: 'done' });
+// task → { id: 'task-001', title: 'Write docs', status: 'done', priority: 3, ... }
+
+// Composite PK
+const seat = await db.updateReturning('event_seats', { event_id: 'e-1', seat_no: 3 }, { holder: 'Bob' });
+// seat → { event_id: 'e-1', seat_no: 3, holder: 'Bob' }
 ```
 
 #### `delete()`
