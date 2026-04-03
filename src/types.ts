@@ -4,6 +4,12 @@ export interface LatticeOptions {
   wal?: boolean;
   busyTimeout?: number;
   security?: SecurityOptions;
+  /**
+   * Master key for at-rest encryption of protected entity contexts.
+   * Required when any entity context has `encrypted: true`.
+   * The key is derived via scrypt before use — provide a strong passphrase.
+   */
+  encryptionKey?: string;
 }
 
 export interface SecurityOptions {
