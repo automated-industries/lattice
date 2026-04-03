@@ -1,6 +1,7 @@
 import type {
   Row,
   TableDefinition,
+  RenderSpec,
   RenderHooks,
   BuiltinTemplateName,
   RenderSpec,
@@ -25,7 +26,7 @@ import { interpolate } from './interpolate.js';
  *   corresponding built-in template is compiled.
  */
 export function compileRender(
-  def: TableDefinition,
+  def: TableDefinition & { render: RenderSpec },
   tableName: string,
   schema: SchemaManager,
   adapter: StorageAdapter,
