@@ -287,7 +287,11 @@ entities:
   // outputFile resolution
   // -------------------------------------------------------------------------
 
-  it('resolves outputFile relative to configDir', () => {
+  it('keeps outputFile as-is (relative path, not resolved against configDir)', () => {
+    // outputFile is relative to the outputDir passed to render(), not to configDir.
+    // Resolving against configDir here produces an absolute path which, when
+    // path.join(outputDir, absolutePath) is called in the render engine, creates
+    // a doubled path like /outputDir/configDir/relative instead of /outputDir/relative.
     const yaml = `
 db: ./app.db
 entities:
@@ -298,7 +302,21 @@ entities:
     outputFile: context/items.md
 `;
     const { tables } = parseConfigString(yaml, '/project');
-    expect(tables[0]!.definition.outputFile).toBe('/project/context/items.md');
+    expect(tables[0]!.definition.outputFile).toBe('context/items.md');
+  });
+
+  it('outputFile at top-level (no subdirectory) stays as-is', () => {
+    const yaml = `
+db: ./app.db
+entities:
+  item:
+    fields:
+      id: { type: uuid, primaryKey: true }
+    render: default-list
+    outputFile: items.md
+`;
+    const { tables } = parseConfigString(yaml, '/some/deep/config/dir');
+    expect(tables[0]!.definition.outputFile).toBe('items.md');
   });
 
   // -------------------------------------------------------------------------
