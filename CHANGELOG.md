@@ -392,3 +392,9 @@ Initial release.
 
 - All public types exported from `latticesql`
 - ESM + CJS dual build via tsup
+
+## [0.18.2] — 2026-04-03
+
+### Added
+
+- **`fixSchemaConflicts(db, checks)`** — Pre-init utility to resolve legacy schema conflicts. Renames tables with incompatible columns to `_legacy_{name}` so `init()` can create fresh tables. Also handles `__lattice_migrations` INTEGER→TEXT PK migration.
