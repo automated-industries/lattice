@@ -115,10 +115,7 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
   return { dbPath, tables, entityContexts };
 }
 
-function entityToTableDef(
-  entityName: string,
-  entity: LatticeEntityDef,
-): TableDefinition {
+function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDefinition {
   const rawFields = (entity as { fields?: unknown }).fields;
   if (!rawFields || typeof rawFields !== 'object' || Array.isArray(rawFields)) {
     throw new Error(`Lattice: entity "${entityName}" must have a "fields" object`);
