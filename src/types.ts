@@ -193,9 +193,9 @@ export interface TableDefinition {
    *   `'default-detail'`, `'default-json'`) to use a built-in template.
    * - Pass a `TemplateRenderSpec` to use a built-in template with lifecycle hooks.
    */
-  render: RenderSpec;
+  render?: RenderSpec;
   /** Output path relative to the outputDir passed to render/watch */
-  outputFile: string;
+  outputFile?: string;
   /** Optional pre-filter applied before render */
   filter?: (rows: Row[]) => Row[];
   /**
@@ -315,7 +315,7 @@ export interface InitOptions {
 }
 
 export interface Migration {
-  version: number;
+  version: number | string;
   sql: string;
 }
 

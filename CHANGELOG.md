@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.17.0] — 2026-04-03
+
+### Added
+
+- **`insertReturning(table, row)`** — Insert a row and return the full inserted row (including auto-generated id and default values). Equivalent to `insert()` + `get()` in a single call.
+- **`updateReturning(table, id, row)`** — Update a row and return the full updated row. Equivalent to `update()` + `get()`.
+- **`migrate(migrations)`** — Run versioned migrations after `init()`. Useful for package-level schema changes applied at runtime. Supports string-based version identifiers (e.g. `"@mypackage:1.0.0"`).
+- **Schema-only tables** — `render` and `outputFile` are now optional in `TableDefinition`. Tables defined without rendering produce schema but no output files.
+- **Composite primary key auto-constraint** — When `primaryKey` is an array (e.g. `['user_id', 'tag_id']`), a `PRIMARY KEY(...)` table constraint is now automatically generated in the CREATE TABLE statement.
+
+### Changed
+
+- **Migration version type** — `Migration.version` now accepts `number | string` (was `number` only). The `__lattice_migrations` table uses `TEXT PRIMARY KEY` instead of `INTEGER PRIMARY KEY` to support both numeric and string-based versions. Existing integer versions continue to work (backward compatible).
+- Migration sort order uses locale-aware numeric comparison (`localeCompare` with `{ numeric: true }`) instead of arithmetic subtraction.
+
 ## [0.16.2] — 2026-04-03
 
 ### Fixed
