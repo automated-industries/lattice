@@ -6,6 +6,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.18.0] — 2026-04-03
+
+### Added
+
+- **Protected entity contexts** — Set `protected: true` on an entity context to prevent its data from leaking into other entities' rendered context files. Sources referencing a protected table return empty results; within the same protected table, sources return self-only. Access protected data via direct database queries.
+- **At-rest encryption** — Set `encrypted: true` (all text columns) or `encrypted: { columns: ['value'] }` (specific columns) on an entity context for transparent AES-256-GCM encryption. Requires `encryptionKey` in `LatticeOptions`. Encrypted values stored as `enc:<base64>`, plaintext values pass through unchanged (migration-safe).
+- **`encryptionKey`** option in `LatticeOptions` — master key for deriving AES-256 encryption keys via scrypt.
+- **Encryption utilities** — `encrypt()`, `decrypt()`, `deriveKey()`, `isEncrypted()` exported for direct use.
+
 ## [0.17.0] — 2026-04-03
 
 ### Added

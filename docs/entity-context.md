@@ -446,6 +446,64 @@ if (manifest) {
 }
 ```
 
+## Protected Entity Contexts (v0.18+)
+
+Protected entity contexts prevent data from leaking across context windows. When an entity context is marked `protected: true`, its data is **never auto-rendered** into other entities' files.
+
+```ts
+db.defineEntityContext('agents', {
+  slug: (r) => r.slug,
+  protected: true,   // ← agents can't see each other's context
+  files: {
+    'AGENT.md': { source: { type: 'self' }, render: ... },
+  },
+});
+
+db.defineEntityContext('projects', {
+  slug: (r) => r.slug,
+  files: {
+    'PROJECT.md': { source: { type: 'self' }, render: ... },
+    // This would normally list all agents — but agents is protected,
+    // so it returns empty results:
+    'AGENTS.md': {
+      source: { type: 'hasMany', table: 'agents', foreignKey: 'project_id' },
+      render: (rows) => `Found ${rows.length} agents`,  // always 0
+      omitIfEmpty: true,
+    },
+  },
+});
+```
+
+**Rules:**
+- Protected entity's own files render normally (agent A gets its own `AGENT.md`)
+- Sources from other entity contexts referencing a protected table → empty `[]`
+- Sources within the same protected entity referencing itself → self-only (current row)
+- `self` sources are never affected
+- `custom` sources bypass protection (caller has full control)
+
+## At-Rest Encryption (v0.18+)
+
+Entity contexts can enable transparent at-rest encryption for their table's columns.
+
+```ts
+const db = new Lattice('./secrets.db', {
+  encryptionKey: process.env.MASTER_KEY,  // required
+});
+
+db.defineEntityContext('secrets', {
+  slug: (r) => r.name,
+  protected: true,
+  encrypted: { columns: ['value'] },  // only encrypt the 'value' column
+  files: { ... },
+});
+```
+
+- **`encrypted: true`** — Encrypt all text columns except structural ones (`id`, `created_at`, `updated_at`, `deleted_at`)
+- **`encrypted: { columns: ['value', 'notes'] }`** — Encrypt only named columns
+- Values stored as `enc:<base64(iv + authTag + ciphertext)>` using AES-256-GCM
+- Plaintext values pass through unchanged on read (migration-safe)
+- Rendered files contain decrypted content (encryption is at the DB layer)
+
 ## Full API reference
 
 See [API Reference — Entity Context types](./api-reference.md#entity-context-types) for complete type signatures.
