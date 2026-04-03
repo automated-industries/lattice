@@ -1495,6 +1495,35 @@ const manifest = readManifest('./ctx');
 // → ['AGENT.md', 'TASKS.md', 'CONTEXT.md']  (files written last cycle for agent 'alpha')
 ```
 
+### Protected entity contexts (v0.18+)
+
+Mark an entity context as `protected: true` to prevent its data from leaking into other entities' context files:
+
+```typescript
+db.defineEntityContext('agents', {
+  slug: (r) => r.slug,
+  protected: true,  // Other entity contexts cannot pull agent data
+  files: { ... },
+});
+```
+
+Protected entities render their own files normally, but sources from other entities referencing a protected table return empty results.
+
+### At-rest encryption (v0.18+)
+
+Enable transparent AES-256-GCM encryption on entity context columns:
+
+```typescript
+const db = new Lattice('./secrets.db', { encryptionKey: 'master-key' });
+
+db.defineEntityContext('secrets', {
+  slug: (r) => r.name,
+  protected: true,
+  encrypted: { columns: ['value'] },  // or true for all text columns
+  files: { ... },
+});
+```
+
 See [docs/entity-context.md](./docs/entity-context.md) for the complete reference.
 
 ---
