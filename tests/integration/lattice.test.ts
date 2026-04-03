@@ -207,7 +207,7 @@ describe('seed()', () => {
 // ---------------------------------------------------------------------------
 
 describe('render() outputFile path', () => {
-  let dirs: string[] = [];
+  const dirs: string[] = [];
 
   function tempDir(): string {
     const d = mkdtempSync(join(tmpdir(), 'lattice-render-'));
