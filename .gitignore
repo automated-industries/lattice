@@ -13,3 +13,4 @@ docs-generated/
 *.pem
 *.secret
 *.p12
+CLAUDE.md
