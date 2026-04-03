@@ -1,5 +1,5 @@
-import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { join, basename, isAbsolute, resolve } from 'node:path';
+import { mkdirSync, existsSync, copyFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
@@ -164,6 +164,25 @@ export class RenderEngine {
           : join(outputDir, directoryRoot, slug);
 
         mkdirSync(entityDir, { recursive: true });
+
+        // Copy attached file into entity dir (v0.18.3+)
+        if (def.attachFileColumn) {
+          const filePath = entityRow[def.attachFileColumn] as string | undefined;
+          if (filePath && typeof filePath === 'string' && filePath.length > 0) {
+            const absPath = isAbsolute(filePath) ? filePath : resolve(outputDir, filePath);
+            if (existsSync(absPath)) {
+              const destPath = join(entityDir, basename(absPath));
+              if (!existsSync(destPath)) {
+                try {
+                  copyFileSync(absPath, destPath);
+                  filesWritten.push(destPath);
+                } catch {
+                  // Silently skip copy failures (permission, disk space, etc.)
+                }
+              }
+            }
+          }
+        }
 
         // Track rendered content strings in definition order.
         // Used for combined file assembly without disk re-reads.
