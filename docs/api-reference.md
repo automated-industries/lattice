@@ -720,8 +720,16 @@ interface LatticeOptions {
   wal?: boolean;
   busyTimeout?: number;
   security?: SecurityOptions;
+  encryptionKey?: string;       // v0.18+ — master key for at-rest encryption
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `wal` | `boolean` | Enable WAL mode (default: `true`) |
+| `busyTimeout` | `number` | SQLite busy timeout in ms |
+| `security` | `SecurityOptions` | Sanitization and audit options |
+| `encryptionKey` | `string` | Master key for at-rest encryption. Required when any entity context has `encrypted: true`. Derived via scrypt before use. |
 
 ---
 
@@ -1035,8 +1043,14 @@ interface EntityContextDefinition {
   directory?: (row: Row) => string;
   directoryRoot?: string;
   protectedFiles?: string[];
+  protected?: boolean;                          // v0.18+
+  encrypted?: boolean | { columns: string[] };  // v0.18+
 }
 ```
+
+**`protected`** *(v0.18+)* — When `true`, this entity's data is never rendered into other entities' context files. Sources referencing a protected table from a different entity context return empty results. Within the same protected table, sources return only the current entity's own row. The entity's own files are still rendered normally.
+
+**`encrypted`** *(v0.18+)* — Enable at-rest encryption for this entity's table. Requires `encryptionKey` in `LatticeOptions`. Set to `true` to encrypt all text columns (except `id`, timestamps), or `{ columns: ['value', 'notes'] }` for specific columns. Values are stored as `enc:<base64(iv+tag+ciphertext)>` using AES-256-GCM and transparently decrypted on read.
 
 #### `EntityFileSpec`
 
