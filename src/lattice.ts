@@ -8,6 +8,7 @@ import type {
   QueryOptions,
   CountOptions,
   InitOptions,
+  Migration,
   WatchOptions,
   RenderResult,
   SyncResult,
@@ -15,6 +16,7 @@ import type {
   AuditEvent,
   LatticeEvent,
   Filter,
+  RenderSpec,
   WriteHook,
   WriteHookContext,
   SeedConfig,
@@ -143,7 +145,10 @@ export class Lattice {
     this._assertNotInit('define');
     const compiledDef: CompiledTableDef = {
       ...def,
-      render: compileRender(def, table, this._schema, this._adapter),
+      render: def.render
+        ? compileRender(def as TableDefinition & { render: RenderSpec }, table, this._schema, this._adapter)
+        : () => '',
+      outputFile: def.outputFile ?? `.schema-only/${table}.md`,
     };
     this._schema.define(table, compiledDef);
     return this;
@@ -196,6 +201,25 @@ export class Lattice {
     return Promise.resolve();
   }
 
+  /**
+   * Run additional migrations after init(). Useful for package-level schema
+   * changes applied at runtime (e.g. update hooks that add columns).
+   *
+   * @since 0.17.0
+   */
+  migrate(migrations: Migration[]): Promise<void> {
+    if (!this._initialized) {
+      return Promise.reject(new Error('Lattice: not initialized — call init() first'));
+    }
+    this._schema.applyMigrations(this._adapter, migrations);
+    // Refresh column cache for any tables affected by migrations
+    for (const tableName of this._schema.getTables().keys()) {
+      const rows = this._adapter.all(`PRAGMA table_info("${tableName}")`);
+      this._columnCache.set(tableName, new Set(rows.map((r) => r.name as string)));
+    }
+    return Promise.resolve();
+  }
+
   close(): void {
     this._adapter.close();
     this._columnCache.clear();
@@ -240,6 +264,18 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     return Promise.resolve(pkValue);
+  }
+
+  /**
+   * Insert a row and return the full inserted row (including auto-generated
+   * fields and defaults). Equivalent to `insert()` followed by `get()`.
+   *
+   * @since 0.17.0
+   */
+  insertReturning(table: string, row: Row): Promise<Row> {
+    return this.insert(table, row).then((pk) =>
+      this.get(table, pk).then((result) => result ?? { ...row, id: pk }),
+    );
   }
 
   upsert(table: string, row: Row): Promise<string> {
@@ -323,6 +359,18 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'update', auditId);
     this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     return Promise.resolve();
+  }
+
+  /**
+   * Update a row and return the full updated row. Equivalent to `update()`
+   * followed by `get()`.
+   *
+   * @since 0.17.0
+   */
+  updateReturning(table: string, id: PkLookup, row: Partial<Row>): Promise<Row> {
+    return this.update(table, id, row).then(() =>
+      this.get(table, id).then((result) => result ?? (row as Row)),
+    );
   }
 
   delete(table: string, id: PkLookup): Promise<void> {

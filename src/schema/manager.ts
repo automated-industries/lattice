@@ -100,26 +100,42 @@ export class SchemaManager {
    */
   applySchema(adapter: StorageAdapter): void {
     for (const [name, def] of this._tables) {
-      this._ensureTable(adapter, name, def.columns, def.tableConstraints);
+      // For composite primary keys, inject a PRIMARY KEY(...) table constraint
+      // if the caller hasn't already provided one.
+      const pkCols = this._tablePK.get(name) ?? ['id'];
+      let constraints = def.tableConstraints ? [...def.tableConstraints] : [];
+      if (pkCols.length > 1) {
+        const alreadyHasPK = constraints.some((c) => c.toUpperCase().startsWith('PRIMARY KEY'));
+        if (!alreadyHasPK) {
+          constraints.unshift(`PRIMARY KEY (${pkCols.map((c) => `"${c}"`).join(', ')})`);
+        }
+      }
+      this._ensureTable(adapter, name, def.columns, constraints.length ? constraints : undefined);
     }
-    // Internal migrations tracking table
+    // Internal migrations tracking table — uses TEXT version for both numeric
+    // and string-based version identifiers (e.g. "1", "pkg:1.0.0").
     this._ensureTable(adapter, '__lattice_migrations', {
-      version: 'INTEGER PRIMARY KEY',
+      version: 'TEXT PRIMARY KEY',
       applied_at: 'TEXT NOT NULL',
     });
   }
 
   /** Run explicit versioned migrations in order, idempotently */
   applyMigrations(adapter: StorageAdapter, migrations: Migration[]): void {
-    const sorted = [...migrations].sort((a, b) => a.version - b.version);
+    const sorted = [...migrations].sort((a, b) => {
+      const va = String(a.version);
+      const vb = String(b.version);
+      return va.localeCompare(vb, undefined, { numeric: true });
+    });
     for (const m of sorted) {
+      const versionStr = String(m.version);
       const exists = adapter.get('SELECT 1 FROM __lattice_migrations WHERE version = ?', [
-        m.version,
+        versionStr,
       ]);
       if (!exists) {
         adapter.run(m.sql);
         adapter.run('INSERT INTO __lattice_migrations (version, applied_at) VALUES (?, ?)', [
-          m.version,
+          versionStr,
           new Date().toISOString(),
         ]);
       }
