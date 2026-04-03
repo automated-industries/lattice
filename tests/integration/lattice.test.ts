@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseConfigString } from '../../src/config/parser.js';
 
 describe('Lattice (integration)', () => {
   let db: Lattice;
@@ -47,6 +48,28 @@ describe('Lattice (integration)', () => {
     await db.insert('bots', { id: 'b2', name: 'Beta' });
     const rows = await db.query('bots');
     expect(rows).toHaveLength(2);
+  });
+
+  it('query() returns rows with correct field values, not empty objects', async () => {
+    await db.init();
+    await db.insert('bots', { id: 'b1', name: 'Alpha', active: 1 });
+    const rows = await db.query('bots');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'b1', name: 'Alpha', active: 1 });
+  });
+
+  it('get() returns row with correct field values, not empty object', async () => {
+    await db.init();
+    await db.insert('bots', { id: 'b1', name: 'Alpha', active: 1 });
+    const row = await db.get('bots', 'b1');
+    expect(row).not.toBeNull();
+    expect(row).toMatchObject({ id: 'b1', name: 'Alpha', active: 1 });
+  });
+
+  it('get() returns null for missing row, not empty object', async () => {
+    await db.init();
+    const row = await db.get('bots', 'nonexistent');
+    expect(row).toBeNull();
   });
 
   it('upsert updates existing row', async () => {
@@ -119,5 +142,114 @@ describe('Lattice (integration)', () => {
     // Re-running init on a new instance with same :memory: isn't possible,
     // but we can verify schema application doesn't throw on existing tables
     await expect(db.init()).rejects.toThrow(); // already initialized
+  });
+});
+
+// ---------------------------------------------------------------------------
+// seed() integration
+// ---------------------------------------------------------------------------
+
+describe('seed()', () => {
+  let db: Lattice;
+
+  beforeEach(async () => {
+    db = new Lattice(':memory:');
+    db.define('agents', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        name: 'TEXT NOT NULL',
+        role: 'TEXT',
+        deleted_at: 'TEXT',
+      },
+      render: () => '',
+      outputFile: 'agents.md',
+    });
+    await db.init();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('seed() + query() returns rows with correct field values', async () => {
+    await db.seed({
+      table: 'agents',
+      naturalKey: 'name',
+      data: [
+        { name: 'Alice', role: 'engineer' },
+        { name: 'Bob', role: 'devops' },
+      ],
+    });
+    const rows = await db.query('agents');
+    expect(rows).toHaveLength(2);
+    const alice = rows.find((r) => r.name === 'Alice');
+    expect(alice).toBeDefined();
+    expect(alice?.role).toBe('engineer');
+  });
+
+  it('seed() + get() returns correct row, not empty object', async () => {
+    await db.seed({
+      table: 'agents',
+      naturalKey: 'name',
+      data: [{ name: 'Alice', role: 'engineer' }],
+    });
+    const rows = await db.query('agents');
+    const id = rows[0]?.id as string;
+    const row = await db.get('agents', id);
+    expect(row).not.toBeNull();
+    expect(row?.name).toBe('Alice');
+    expect(row?.role).toBe('engineer');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// render() path — config-parsed outputFile must not be doubled
+// ---------------------------------------------------------------------------
+
+describe('render() outputFile path', () => {
+  let dirs: string[] = [];
+
+  function tempDir(): string {
+    const d = mkdtempSync(join(tmpdir(), 'lattice-render-'));
+    dirs.push(d);
+    return d;
+  }
+
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  it('config-parsed outputFile renders to outputDir/relative, not doubled path', async () => {
+    // outputFile: 'context/bots.md' should resolve to outputDir/context/bots.md
+    // Bug: the parser resolved it against configDir, so render got
+    //      join(outputDir, '/configDir/context/bots.md') = '/outputDir/configDir/context/bots.md'
+    const yaml = `
+db: ./test.db
+entities:
+  bot:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      name: { type: text }
+    render: default-list
+    outputFile: context/bots.md
+`;
+    const { tables } = parseConfigString(yaml, '/some/config/dir');
+    const db = new Lattice(':memory:');
+    for (const { name, definition } of tables) {
+      db.define(name, definition);
+    }
+    await db.init();
+    await db.insert('bot', { id: 'b1', name: 'Alpha' });
+
+    const outputDir = tempDir();
+    const result = await db.render(outputDir);
+    db.close();
+
+    // Correct path: <outputDir>/context/bots.md
+    const expectedPath = join(outputDir, 'context/bots.md');
+    expect(result.filesWritten).toHaveLength(1);
+    expect(result.filesWritten[0]).toBe(expectedPath);
+    expect(existsSync(expectedPath)).toBe(true);
   });
 });
