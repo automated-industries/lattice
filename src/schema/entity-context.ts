@@ -426,6 +426,21 @@ export interface EntityContextDefinition {
   slug: (row: Row) => string;
 
   /**
+   * When `true`, this entity context is **protected**: its data is never
+   * auto-rendered into other entities' context files.
+   *
+   * - Other entity contexts referencing this table via `hasMany`, `manyToMany`,
+   *   or `belongsTo` sources will receive empty results.
+   * - Within this entity context, sources referencing the same protected table
+   *   return only the current entity's own row (self-only).
+   * - The entity's own files are rendered normally.
+   * - Access protected entity data only via direct database query.
+   *
+   * @default false
+   */
+  protected?: boolean;
+
+  /**
    * Optional global index file written once per render cycle (not per entity).
    * Lists all entities of this type.
    */
@@ -487,4 +502,19 @@ export interface EntityContextDefinition {
    * ```
    */
   sourceDefaults?: SourceQueryOptions;
+
+  /**
+   * Enable at-rest encryption for this entity context's table.
+   * Requires `encryptionKey` to be set in Lattice options.
+   *
+   * - `true` — encrypt all text columns except structural ones (id, timestamps).
+   * - `{ columns: ['value', 'notes'] }` — encrypt only the named columns.
+   *
+   * Encrypted values are stored as `enc:<base64(iv+tag+ciphertext)>` and
+   * transparently decrypted on read. Plaintext values pass through unchanged
+   * (migration-safe).
+   *
+   * @default false
+   */
+  encrypted?: boolean | { columns: string[] };
 }
