@@ -517,4 +517,23 @@ export interface EntityContextDefinition {
    * @default false
    */
   encrypted?: boolean | { columns: string[] };
+
+  /**
+   * Column name containing a file path. When set, the render pipeline
+   * copies the referenced file into each entity's rendered directory.
+   *
+   * If the path is relative, it's resolved from `outputDir`.
+   * If the file doesn't exist, it's silently skipped.
+   * The column value is updated to the new relative path after copy.
+   *
+   * @example
+   * ```ts
+   * db.defineEntityContext('files', {
+   *   slug: (r) => r.name,
+   *   attachFileColumn: 'file_path',  // copies file at row.file_path into entity dir
+   *   files: { 'FILE.md': { ... } },
+   * });
+   * ```
+   */
+  attachFileColumn?: string;
 }
