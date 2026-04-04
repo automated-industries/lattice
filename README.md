@@ -2012,6 +2012,14 @@ Three complete, commented examples are in [docs/examples/](./docs/examples/):
 
 ---
 
+## Staying up to date
+
+**CLI users:** The `lattice` CLI checks for new versions automatically and prints a notice when an update is available. Run `lattice update` to upgrade in place. Alternatively, use `npx lattice` to always run the latest version without a global install.
+
+**Library consumers:** By default, `npm install latticesql` adds a `^` semver range to your `package.json`, so patch and minor updates are picked up on your next `npm install`. For fully automated dependency updates, set up [Dependabot](https://docs.github.com/en/code-security/dependabot) or [Renovate](https://github.com/renovatebot/renovate) — they'll create PRs in your repo whenever a new version is published.
+
+---
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, test commands, and contribution guidelines.

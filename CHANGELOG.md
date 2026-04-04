@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.18.4] — 2026-04-04
+
+### Added
+
+- **CLI update checker** — `lattice` CLI now checks for new versions in the background and prints a notice when an update is available. Cached for 24 hours.
+- **`lattice update` command** — self-update to the latest version from npm.
+
 ## [0.18.0] — 2026-04-03
 
 ### Added
