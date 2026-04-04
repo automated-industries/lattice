@@ -421,7 +421,7 @@ function main(): void {
           });
         }
       })
-      .catch(() => {});
+      .catch(() => undefined);
   }
 
   switch (args.command) {
