@@ -1,10 +1,12 @@
 import { resolve, dirname } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { parse } from 'yaml';
 import type { LatticeConfig } from './config/types.js';
 import { generateAll } from './codegen/generate.js';
 import { parseConfigFile } from './config/parser.js';
 import { Lattice } from './lattice.js';
+import { checkForUpdate } from './update-check.js';
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -119,6 +121,7 @@ function printHelp(): void {
       '  reconcile   Render + cleanup orphaned entity directories and files',
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
+      '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
       '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
@@ -157,14 +160,37 @@ function printHelp(): void {
   );
 }
 
-function printVersion(): void {
-  // Replaced at build time by tsup via define or resolved at runtime
+function getVersion(): string {
   try {
     const pkgPath = new URL('../package.json', import.meta.url).pathname;
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version: string };
-    console.log(pkg.version);
+    return pkg.version;
   } catch {
-    console.log('unknown');
+    return 'unknown';
+  }
+}
+
+function printVersion(): void {
+  console.log(getVersion());
+}
+
+async function runUpdate(): Promise<void> {
+  const currentVersion = getVersion();
+  console.log(`Current version: ${currentVersion}`);
+
+  const latest = await checkForUpdate('latticesql', currentVersion);
+  if (!latest) {
+    console.log('Already up to date.');
+    return;
+  }
+
+  console.log(`Updating to ${latest}...`);
+  try {
+    execSync('npm install -g latticesql@latest', { stdio: 'inherit' });
+    console.log(`Updated latticesql ${currentVersion} → ${latest}`);
+  } catch {
+    console.error('Update failed. Try running manually: npm install -g latticesql@latest');
+    process.exit(1);
   }
 }
 
@@ -382,6 +408,22 @@ function main(): void {
     process.exit(args.command === undefined && !args.help ? 1 : 0);
   }
 
+  // Fire-and-forget update check — prints notice on exit
+  const version = getVersion();
+  if (version !== 'unknown') {
+    checkForUpdate('latticesql', version)
+      .then((latest) => {
+        if (latest) {
+          process.on('exit', () => {
+            console.log(
+              `\nUpdate available: ${version} → ${latest} — run "lattice update" to upgrade`,
+            );
+          });
+        }
+      })
+      .catch(() => {});
+  }
+
   switch (args.command) {
     case 'generate':
       runGenerate(args);
@@ -397,6 +439,9 @@ function main(): void {
       break;
     case 'watch':
       void runWatch(args);
+      break;
+    case 'update':
+      void runUpdate();
       break;
     default:
       console.error(`Unknown command: ${args.command}`);
