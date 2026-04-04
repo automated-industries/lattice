@@ -29,7 +29,7 @@ import type Database from "better-sqlite3";
  */
 export function fixSchemaConflicts(
   db: Database.Database,
-  checks: Array<{ table: string; requiredColumns: string[] }>,
+  checks: { table: string; requiredColumns: string[] }[],
 ): void {
   for (const { table, requiredColumns } of checks) {
     if (!tableExists(db, table)) continue;
@@ -45,9 +45,9 @@ export function fixSchemaConflicts(
     const versionCol = (
       db
         .prepare('PRAGMA table_info("__lattice_migrations")')
-        .all() as Array<{ name: string; type: string }>
+        .all() as { name: string; type: string }[]
     ).find((c) => c.name === "version");
-    if (versionCol && versionCol.type.toUpperCase().includes("INTEGER")) {
+    if (versionCol?.type.toUpperCase().includes("INTEGER")) {
       db.exec(
         'ALTER TABLE "__lattice_migrations" RENAME TO "__lattice_migrations_v1"',
       );
@@ -63,9 +63,9 @@ function tableExists(db: Database.Database, name: string): boolean {
 
 function getColumns(db: Database.Database, table: string): string[] {
   return (
-    db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{
+    db.prepare(`PRAGMA table_info("${table}")`).all() as {
       name: string;
-    }>
+    }[]
   ).map((c) => c.name);
 }
 
