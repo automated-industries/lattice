@@ -151,8 +151,11 @@ export class ReverseSyncEngine {
         const pkCols = Object.keys(update.pk);
         if (pkCols.length === 0) continue;
 
-        // Validate column names (prevent injection)
+        // Validate column and table names (prevent injection)
         const colPattern = /^[a-zA-Z0-9_]+$/;
+        if (!colPattern.test(update.table)) {
+          throw new Error(`Invalid table name in reverse-sync update: ${update.table}`);
+        }
         for (const col of [...setCols, ...pkCols]) {
           if (!colPattern.test(col)) {
             throw new Error(`Invalid column name in reverse-sync update: ${col}`);

@@ -158,10 +158,28 @@ export class RenderEngine {
 
       // --- per-entity files ---
       for (const entityRow of allRows) {
-        const slug = def.slug(entityRow);
+        // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
+        // U+202F in screenshot filenames) with regular space, strip control characters.
+        const rawSlug = def.slug(entityRow);
+        const slug = rawSlug.replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ').replace(/[\x00-\x1F\x7F]/g, '');
+
+        // Validate slug against path traversal
+        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~\[\]]/.test(slug)) {
+          throw new Error(
+            `Invalid slug "${slug}": contains characters outside the allowed set`,
+          );
+        }
+
         const entityDir = def.directory
           ? join(outputDir, def.directory(entityRow))
           : join(outputDir, directoryRoot, slug);
+
+        // Verify the resolved path stays within outputDir
+        const resolvedDir = resolve(entityDir);
+        const resolvedBase = resolve(outputDir);
+        if (!resolvedDir.startsWith(resolvedBase + '/') && resolvedDir !== resolvedBase) {
+          throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
+        }
 
         mkdirSync(entityDir, { recursive: true });
 
@@ -220,8 +238,15 @@ export class RenderEngine {
         }
 
         // --- combined file ---
-        if (def.combined && renderedFiles.size > 0) {
-          const excluded = new Set(def.combined.exclude ?? []);
+        // Default behavior: when an entity has multiple rendered files, the first
+        // declared file (e.g., PROJECT.md, AGENT.md) becomes the combined output
+        // containing all connected context. This can be overridden or disabled
+        // via explicit `combined` config.
+        const fileKeys = Object.keys(def.files);
+        const effectiveCombined = def.combined ??
+          (fileKeys.length > 1 && renderedFiles.size > 1 ? { outputFile: fileKeys[0]! } : undefined);
+        if (effectiveCombined && renderedFiles.size > 0) {
+          const excluded = new Set(effectiveCombined.exclude ?? []);
           const parts: string[] = [];
 
           for (const filename of Object.keys(def.files)) {
@@ -232,14 +257,14 @@ export class RenderEngine {
 
           if (parts.length > 0) {
             const combinedContent = parts.join('\n\n---\n\n');
-            const combinedPath = join(entityDir, def.combined.outputFile);
+            const combinedPath = join(entityDir, effectiveCombined.outputFile);
             if (atomicWrite(combinedPath, combinedContent)) {
               filesWritten.push(combinedPath);
             } else {
               counters.skipped++;
             }
-            renderedFiles.set(def.combined.outputFile, combinedContent);
-            entityFileHashes[def.combined.outputFile] = { hash: contentHash(combinedContent) };
+            renderedFiles.set(effectiveCombined.outputFile, combinedContent);
+            entityFileHashes[effectiveCombined.outputFile] = { hash: contentHash(combinedContent) };
           }
         }
 

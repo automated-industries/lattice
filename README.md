@@ -56,6 +56,8 @@ Lattice has no opinions about your schema, your agents, or your file format. You
 - [Security](#security)
 - [Architecture](#architecture)
 - [Examples](#examples)
+- [Staying up to date](#staying-up-to-date)
+  - [Auto-update](#auto-update-v11)
 - [Contributing](#contributing)
 - [Changelog](#changelog)
 
@@ -2021,6 +2023,32 @@ Three complete, commented examples are in [docs/examples/](./docs/examples/):
 **CLI users:** The `lattice` CLI checks for new versions automatically and prints a notice when an update is available. Run `lattice update` to upgrade in place. Alternatively, use `npx lattice` to always run the latest version without a global install.
 
 **Library consumers:** By default, `npm install latticesql` adds a `^` semver range to your `package.json`, so patch and minor updates are picked up on your next `npm install`. For fully automated dependency updates, set up [Dependabot](https://docs.github.com/en/code-security/dependabot) or [Renovate](https://github.com/renovatebot/renovate) — they'll create PRs in your repo whenever a new version is published.
+
+### Auto-update (v1.1+)
+
+For applications that manage their own updates at runtime, `autoUpdate()` checks npm for a newer version and installs it automatically. Call it once at startup, before initializing Lattice:
+
+```typescript
+import { autoUpdate } from 'latticesql';
+
+// Call at app startup — checks npm, installs if outdated
+const result = await autoUpdate();
+if (result.restartRequired) {
+  process.exit(0); // Let process manager restart
+}
+```
+
+`autoUpdate()` is safe to call on every startup — it skips if already on the latest version. Pass `{ quiet: true }` to suppress console output.
+
+**`AutoUpdateResult`**
+
+```typescript
+interface AutoUpdateResult {
+  updated: boolean;
+  packages: Array<{ name: string; from: string; to: string }>;
+  restartRequired: boolean;
+}
+```
 
 ---
 

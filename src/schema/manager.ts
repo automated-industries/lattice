@@ -195,7 +195,32 @@ export class SchemaManager {
         // SQLite does not allow adding PRIMARY KEY columns via ALTER TABLE.
         // Skip PK columns — if the table already exists, it has its own PK.
         if (type.toUpperCase().includes('PRIMARY KEY')) continue;
-        adapter.run(`ALTER TABLE "${table}" ADD COLUMN "${col}" ${type}`);
+
+        // SQLite ALTER TABLE ADD COLUMN requires constant defaults.
+        // CURRENT_TIMESTAMP, datetime('now'), etc. are non-constant and will error.
+        // Strip NOT NULL and replace non-constant defaults for the ALTER statement,
+        // then backfill existing rows with the intended default.
+        const upperType = type.toUpperCase();
+        const hasNonConstantDefault =
+          upperType.includes('CURRENT_TIMESTAMP') ||
+          upperType.includes("DATETIME('NOW')") ||
+          upperType.includes('RANDOM()');
+
+        if (hasNonConstantDefault) {
+          // Remove NOT NULL and replace DEFAULT <non-constant> with no default
+          const safeType = type
+            .replace(/\bNOT\s+NULL\b/gi, '')
+            .replace(/\bDEFAULT\s+CURRENT_TIMESTAMP\b/gi, '')
+            .replace(/\bDEFAULT\s+datetime\([^)]*\)/gi, '')
+            .replace(/\bDEFAULT\s+RANDOM\(\)/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          adapter.run(`ALTER TABLE "${table}" ADD COLUMN "${col}" ${safeType || 'TEXT'}`);
+          // Backfill existing rows with the intended default
+          adapter.run(`UPDATE "${table}" SET "${col}" = CURRENT_TIMESTAMP WHERE "${col}" IS NULL`);
+        } else {
+          adapter.run(`ALTER TABLE "${table}" ADD COLUMN "${col}" ${type}`);
+        }
       }
     }
   }
