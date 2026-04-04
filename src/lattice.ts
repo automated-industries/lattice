@@ -40,7 +40,12 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
 import { parseConfigFile } from './config/parser.js';
-import { deriveKey, encrypt as encryptValue, decrypt as decryptValue, resolveEncryptedColumns } from './security/encryption.js';
+import {
+  deriveKey,
+  encrypt as encryptValue,
+  decrypt as decryptValue,
+  resolveEncryptedColumns,
+} from './security/encryption.js';
 
 /**
  * Initialise Lattice from a YAML config file instead of an explicit path.
@@ -156,7 +161,12 @@ export class Lattice {
     const compiledDef: CompiledTableDef = {
       ...def,
       render: def.render
-        ? compileRender(def as TableDefinition & { render: RenderSpec }, table, this._schema, this._adapter)
+        ? compileRender(
+            def as TableDefinition & { render: RenderSpec },
+            table,
+            this._schema,
+            this._adapter,
+          )
         : () => '',
       outputFile: def.outputFile ?? `.schema-only/${table}.md`,
     };
