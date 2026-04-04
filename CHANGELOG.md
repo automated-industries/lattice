@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.0.0] — 2026-04-04
+
+### Changed
+
+- **Stable release** — latticesql is now 1.0.0. The API is considered stable. Consumers using `^1.0.0` will automatically receive all non-breaking updates.
+
 ## [0.18.4] — 2026-04-04
 
 ### Added
