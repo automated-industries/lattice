@@ -4,7 +4,7 @@ import { Lattice } from '../../src/lattice.js';
 describe('v0.17 features', () => {
   let db: Lattice;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     db = new Lattice(':memory:');
   });
 

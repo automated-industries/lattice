@@ -155,7 +155,7 @@ export function resolveEntitySource(
       return [entityRow];
 
     case 'hasMany': {
-      if (protection && protection.protectedTables.has(source.table)) {
+      if (protection?.protectedTables.has(source.table)) {
         if (source.table === protection.currentTable) return [entityRow];
         return [];
       }
@@ -168,7 +168,7 @@ export function resolveEntitySource(
     }
 
     case 'manyToMany': {
-      if (protection && protection.protectedTables.has(source.remoteTable)) {
+      if (protection?.protectedTables.has(source.remoteTable)) {
         if (source.remoteTable === protection.currentTable) return [entityRow];
         return [];
       }
@@ -200,7 +200,7 @@ export function resolveEntitySource(
     }
 
     case 'belongsTo': {
-      if (protection && protection.protectedTables.has(source.table)) {
+      if (protection?.protectedTables.has(source.table)) {
         if (source.table === protection.currentTable) return [entityRow];
         return [];
       }
