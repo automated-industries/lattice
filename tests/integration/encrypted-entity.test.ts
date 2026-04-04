@@ -96,7 +96,7 @@ describe('encrypted entity context — integration', () => {
 });
 
 describe('encrypted entity context — error handling', () => {
-  it('throws when encrypted entity defined without encryptionKey', async () => {
+  it('throws when encrypted entity defined without encryptionKey', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'lattice-enc-err-'));
     const db = new Lattice(join(tmpDir, 'test.db'));
 

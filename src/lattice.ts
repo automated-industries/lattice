@@ -254,9 +254,7 @@ export class Lattice {
           `Entity context "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
         );
       }
-      if (!this._encryptionKey) {
-        this._encryptionKey = deriveKey(this._encryptionKeyRaw);
-      }
+      this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
       // Get actual column names from the DB
       const pragmaRows = this._adapter.all(`PRAGMA table_info("${table}")`);
       const allCols = pragmaRows.map((r) => r.name as string);
