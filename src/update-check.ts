@@ -35,7 +35,7 @@ export async function checkForUpdate(
   // Check cache first
   try {
     if (existsSync(cachePath)) {
-      const cached: CachedCheck = JSON.parse(readFileSync(cachePath, 'utf-8'));
+      const cached = JSON.parse(readFileSync(cachePath, 'utf-8')) as CachedCheck;
       if (Date.now() - cached.checked < ONE_DAY_MS) {
         return isNewer(cached.latest, currentVersion) ? cached.latest : null;
       }

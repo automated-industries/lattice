@@ -104,7 +104,7 @@ export class SchemaManager {
       // For composite primary keys, inject a PRIMARY KEY(...) table constraint
       // if the caller hasn't already provided one.
       const pkCols = this._tablePK.get(name) ?? ['id'];
-      let constraints = def.tableConstraints ? [...def.tableConstraints] : [];
+      const constraints = def.tableConstraints ? [...def.tableConstraints] : [];
       if (pkCols.length > 1) {
         const alreadyHasPK = constraints.some((c) => c.toUpperCase().startsWith('PRIMARY KEY'));
         if (!alreadyHasPK) {
@@ -152,8 +152,8 @@ export class SchemaManager {
   queryTable(adapter: StorageAdapter, name: string): Row[] {
     if (this._tables.has(name)) {
       // Auto-filter soft-deleted rows when the table has a deleted_at column
-      const def = this._tables.get(name)!;
-      if (def.columns && 'deleted_at' in def.columns) {
+      const def = this._tables.get(name);
+      if (def?.columns && 'deleted_at' in def.columns) {
         return adapter.all(`SELECT * FROM "${name}" WHERE deleted_at IS NULL`);
       }
       return adapter.all(`SELECT * FROM "${name}"`);
