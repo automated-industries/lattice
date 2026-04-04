@@ -18,7 +18,7 @@ BANNED_TERMS=(
   "example-app"
   "second.brain"
   "second brain"
-  "agent-a"
+  "\\bagent-a\\b"
   "lattice-sync"
   "SESSION-FORMAT.md"
   "agents/shared"
