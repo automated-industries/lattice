@@ -126,3 +126,5 @@ export type {
   ApplyWriteResult,
   ReadOnlyHeaderOptions,
 } from './session/index.js';
+export { autoUpdate } from './auto-update.js';
+export type { AutoUpdateResult } from './auto-update.js';
