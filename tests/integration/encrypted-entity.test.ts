@@ -60,7 +60,9 @@ describe('encrypted entity context — integration', () => {
 
     // Read raw via SQLite — should be encrypted
     const raw = new Database(dbPath);
-    const rawRow = raw.prepare('SELECT value, description FROM secrets WHERE id = ?').get(pk) as Record<string, string>;
+    const rawRow = raw
+      .prepare('SELECT value, description FROM secrets WHERE id = ?')
+      .get(pk) as Record<string, string>;
     raw.close();
 
     expect(rawRow.value).toMatch(/^enc:/);
@@ -78,7 +80,10 @@ describe('encrypted entity context — integration', () => {
 
     // Raw check
     const raw = new Database(dbPath);
-    const rawRow = raw.prepare('SELECT value FROM secrets WHERE id = ?').get(pk) as Record<string, string>;
+    const rawRow = raw.prepare('SELECT value FROM secrets WHERE id = ?').get(pk) as Record<
+      string,
+      string
+    >;
     raw.close();
     expect(rawRow.value).toMatch(/^enc:/);
   });
@@ -86,7 +91,11 @@ describe('encrypted entity context — integration', () => {
   it('handles plaintext passthrough for migration safety', async () => {
     // Insert raw plaintext directly (simulating pre-encryption data)
     const raw = new Database(dbPath);
-    raw.prepare("INSERT INTO secrets (id, name, value, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))").run('legacy-1', 'OLD_KEY', 'plaintext-value');
+    raw
+      .prepare(
+        "INSERT INTO secrets (id, name, value, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+      )
+      .run('legacy-1', 'OLD_KEY', 'plaintext-value');
     raw.close();
 
     // Lattice should read it fine (plaintext passthrough)
