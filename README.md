@@ -969,7 +969,11 @@ const task = await db.updateReturning('tasks', 'task-001', { status: 'done' });
 // task → { id: 'task-001', title: 'Write docs', status: 'done', priority: 3, ... }
 
 // Composite PK
-const seat = await db.updateReturning('event_seats', { event_id: 'e-1', seat_no: 3 }, { holder: 'Bob' });
+const seat = await db.updateReturning(
+  'event_seats',
+  { event_id: 'e-1', seat_no: 3 },
+  { holder: 'Bob' },
+);
 // seat → { event_id: 'e-1', seat_no: 3, holder: 'Bob' }
 ```
 

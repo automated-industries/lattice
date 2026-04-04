@@ -475,6 +475,7 @@ db.defineEntityContext('projects', {
 ```
 
 **Rules:**
+
 - Protected entity's own files render normally (agent A gets its own `AGENT.md`)
 - Sources from other entity contexts referencing a protected table → empty `[]`
 - Sources within the same protected entity referencing itself → self-only (current row)

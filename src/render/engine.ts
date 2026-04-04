@@ -193,9 +193,7 @@ export class RenderEngine {
         const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
 
         const protection: ProtectionContext | undefined =
-          protectedTables.size > 0
-            ? { protectedTables, currentTable: table }
-            : undefined;
+          protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
 
         for (const [filename, spec] of Object.entries(def.files)) {
           const mergeDefaults =
