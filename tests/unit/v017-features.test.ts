@@ -67,9 +67,7 @@ describe('v0.17 features', () => {
       });
       await db.init();
 
-      await db.migrate([
-        { version: '001', sql: 'ALTER TABLE items ADD COLUMN color TEXT' },
-      ]);
+      await db.migrate([{ version: '001', sql: 'ALTER TABLE items ADD COLUMN color TEXT' }]);
 
       // New column should be usable
       const id = await db.insert('items', { name: 'pen', color: 'blue' });
@@ -83,9 +81,7 @@ describe('v0.17 features', () => {
       });
       await db.init();
 
-      const migrations = [
-        { version: 'add-color', sql: 'ALTER TABLE items ADD COLUMN color TEXT' },
-      ];
+      const migrations = [{ version: 'add-color', sql: 'ALTER TABLE items ADD COLUMN color TEXT' }];
 
       await db.migrate(migrations);
       // Running again should not throw
@@ -111,7 +107,9 @@ describe('v0.17 features', () => {
     });
 
     it('rejects when called before init', async () => {
-      await expect(db.migrate([{ version: 1, sql: 'SELECT 1' }])).rejects.toThrow(/not initialized/);
+      await expect(db.migrate([{ version: 1, sql: 'SELECT 1' }])).rejects.toThrow(
+        /not initialized/,
+      );
     });
   });
 
@@ -195,7 +193,9 @@ describe('v0.17 features', () => {
       });
 
       // Should have created the extras table
-      const row = db.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='extras'").get();
+      const row = db.db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='extras'")
+        .get();
       expect(row).toBeDefined();
     });
   });
