@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from 'better-sqlite3';
 
 /**
  * Fix legacy schema conflicts before Lattice init().
@@ -41,24 +41,21 @@ export function fixSchemaConflicts(
   }
 
   // Fix __lattice_migrations table if version column type changed
-  if (tableExists(db, "__lattice_migrations")) {
+  if (tableExists(db, '__lattice_migrations')) {
     const versionCol = (
-      db
-        .prepare('PRAGMA table_info("__lattice_migrations")')
-        .all() as { name: string; type: string }[]
-    ).find((c) => c.name === "version");
-    if (versionCol?.type.toUpperCase().includes("INTEGER")) {
-      db.exec(
-        'ALTER TABLE "__lattice_migrations" RENAME TO "__lattice_migrations_v1"',
-      );
+      db.prepare('PRAGMA table_info("__lattice_migrations")').all() as {
+        name: string;
+        type: string;
+      }[]
+    ).find((c) => c.name === 'version');
+    if (versionCol?.type.toUpperCase().includes('INTEGER')) {
+      db.exec('ALTER TABLE "__lattice_migrations" RENAME TO "__lattice_migrations_v1"');
     }
   }
 }
 
 function tableExists(db: Database.Database, name: string): boolean {
-  return !!db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
-    .get(name);
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
 }
 
 function getColumns(db: Database.Database, table: string): string[] {

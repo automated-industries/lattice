@@ -51,8 +51,12 @@ export function isEncrypted(value: string): boolean {
 
 /** Columns that are never encrypted (structural, not user data). */
 const SKIP_COLUMNS = new Set([
-  'id', 'created_at', 'updated_at', 'deleted_at',
-  'source_file', 'source_hash',
+  'id',
+  'created_at',
+  'updated_at',
+  'deleted_at',
+  'source_file',
+  'source_hash',
 ]);
 
 /**

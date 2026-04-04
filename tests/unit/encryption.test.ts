@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { encrypt, decrypt, deriveKey, isEncrypted, resolveEncryptedColumns } from '../../src/security/encryption.js';
+import {
+  encrypt,
+  decrypt,
+  deriveKey,
+  isEncrypted,
+  resolveEncryptedColumns,
+} from '../../src/security/encryption.js';
 
 describe('encryption utilities', () => {
   const key = deriveKey('test-master-key');
@@ -48,7 +54,15 @@ describe('encryption utilities', () => {
 });
 
 describe('resolveEncryptedColumns', () => {
-  const allColumns = ['id', 'name', 'value', 'description', 'created_at', 'updated_at', 'deleted_at'];
+  const allColumns = [
+    'id',
+    'name',
+    'value',
+    'description',
+    'created_at',
+    'updated_at',
+    'deleted_at',
+  ];
 
   it('with true: encrypts all columns except structural', () => {
     const cols = resolveEncryptedColumns(true, allColumns);
