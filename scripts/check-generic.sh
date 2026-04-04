@@ -18,7 +18,7 @@ BANNED_TERMS=(
   "example-app"
   "redacted-term"
   "redacted term"
-  "agent-a"
+  "\\bagent-a\\b"
   "Lattice"
   "redacted"
   "redacted"
