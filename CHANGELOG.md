@@ -6,6 +6,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.2.3] — 2026-04-04
+
+### Security
+
+- **CRITICAL**: Fixed command injection in `autoUpdate()` — replaced `execSync` with `execFileSync` + semver validation
+- **HIGH**: Fixed path traversal in entity slug rendering — validates slug characters and verifies resolved paths stay within output directory
+- **MEDIUM**: Fixed SQL injection in reverse-sync — validates table names with same pattern as column names
+
+## [1.2.0] — 2026-04-04
+
+### Changed
+
+- **Auto-combined entity context** — When an entity has multiple rendered files, the first declared file automatically becomes the combined output containing all connected context. No `combined` config needed — the primary entity file (e.g., PROJECT.md) always includes the full assembled context by default. Explicit `combined` config still works for custom output filenames or exclusions.
+
+## [1.1.1] — 2026-04-04
+
+### Fixed
+
+- **ALTER TABLE with non-constant defaults** — `_addMissingColumns` now handles columns with `DEFAULT CURRENT_TIMESTAMP`, `datetime('now')`, or `RANDOM()` defaults. SQLite rejects non-constant defaults in ALTER TABLE ADD COLUMN. The fix strips the non-constant default for the ALTER statement, then backfills existing rows with `CURRENT_TIMESTAMP`. This resolves crash-on-startup when upgrading to a schema that adds new timestamp columns to existing tables.
+
+## [1.1.0] — 2026-04-04
+
+### Added
+
+- **`autoUpdate()` export** — Call at app startup to automatically check npm for a newer version of `latticesql` and install it. Returns `AutoUpdateResult` with `updated`, `packages`, and `restartRequired` fields. Safe to call on every startup — skips if already on latest. Pass `{ quiet: true }` to suppress console output.
+
 ## [1.0.0] — 2026-04-04
 
 ### Changed
