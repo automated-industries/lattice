@@ -27,6 +27,8 @@ import type {
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
+  SearchOptions,
+  SearchResult,
 } from './types.js';
 import { readManifest } from './lifecycle/manifest.js';
 import type Database from 'better-sqlite3';
@@ -46,6 +48,12 @@ import {
   decrypt as decryptValue,
   resolveEncryptedColumns,
 } from './security/encryption.js';
+import {
+  ensureEmbeddingsTable,
+  storeEmbedding,
+  removeEmbedding,
+  searchByEmbedding,
+} from './search/embeddings.js';
 
 /**
  * Initialise Lattice from a YAML config file instead of an explicit path.
@@ -92,6 +100,9 @@ export class Lattice {
   /** Raw encryption key passphrase from constructor options. */
   private readonly _encryptionKeyRaw?: string;
 
+  /** Current task context string for relevance filtering. */
+  private _taskContext = '';
+
   private readonly _auditHandlers: EventHandler<AuditEvent>[] = [];
   private readonly _renderHandlers: EventHandler<RenderResult>[] = [];
   private readonly _writebackHandlers: EventHandler<{
@@ -126,7 +137,7 @@ export class Lattice {
     this._adapter = new SQLiteAdapter(dbPath, adapterOpts);
     this._schema = new SchemaManager();
     this._sanitizer = new Sanitizer(options.security);
-    this._render = new RenderEngine(this._schema, this._adapter);
+    this._render = new RenderEngine(this._schema, this._adapter, () => this._taskContext);
     this._reverseSync = new ReverseSyncEngine(this._schema, this._adapter);
     this._loop = new SyncLoop(this._render);
     this._writeback = new WritebackPipeline();
@@ -158,8 +169,15 @@ export class Lattice {
 
   define(table: string, def: TableDefinition): this {
     this._assertNotInit('define');
+
+    // Auto-inject reward tracking columns
+    const columns = def.rewardTracking
+      ? { ...def.columns, _reward_total: 'REAL DEFAULT 0', _reward_count: 'INTEGER DEFAULT 0' }
+      : def.columns;
+
     const compiledDef: CompiledTableDef = {
       ...def,
+      columns,
       render: def.render
         ? compileRender(
             def as TableDefinition & { render: RenderSpec },
@@ -218,6 +236,12 @@ export class Lattice {
       this._columnCache.set(tableName, new Set(rows.map((r) => r.name as string)));
     }
 
+    // Create embeddings table if any table uses embeddings
+    const hasEmbeddings = [...this._schema.getTables().values()].some((d) => d.embeddings);
+    if (hasEmbeddings) {
+      ensureEmbeddingsTable(this._adapter);
+    }
+
     // Set up encryption for entity contexts that declare encrypted: true|{columns}
     this._setupEncryption();
 
@@ -250,6 +274,24 @@ export class Lattice {
     this._encryptedTableColumns.clear();
     delete this._encryptionKey;
     this._initialized = false;
+  }
+
+  // -------------------------------------------------------------------------
+  // Task context (for relevance filtering)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Set the current task context string. Tables with a `relevanceFilter`
+   * will use this value to filter rows before rendering.
+   */
+  setTaskContext(context: string): this {
+    this._taskContext = context;
+    return this;
+  }
+
+  /** Return the current task context string. */
+  getTaskContext(): string {
+    return this._taskContext;
   }
 
   // -------------------------------------------------------------------------
@@ -346,6 +388,7 @@ export class Lattice {
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
+    this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
     return Promise.resolve(pkValue);
   }
 
@@ -444,6 +487,12 @@ export class Lattice {
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
     this._sanitizer.emitAudit(table, 'update', auditId);
     this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
+    // Re-fetch full row for embedding recomputation
+    const def = this._schema.getTables().get(table);
+    if (def?.embeddings) {
+      const fullRow = this._adapter.get(`SELECT * FROM "${table}" WHERE ${clause}`, pkParams);
+      if (fullRow) this._syncEmbedding(table, 'update', fullRow, auditId);
+    }
     return Promise.resolve();
   }
 
@@ -469,6 +518,7 @@ export class Lattice {
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
     this._sanitizer.emitAudit(table, 'delete', auditId);
     this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
+    this._syncEmbedding(table, 'delete', {}, auditId);
     return Promise.resolve();
   }
 
@@ -958,6 +1008,80 @@ export class Lattice {
     return new Date(Date.now() - ms).toISOString();
   }
 
+  // -------------------------------------------------------------------------
+  // Reward tracking
+  // -------------------------------------------------------------------------
+
+  /**
+   * Update reward scores for a row. The total reward is recalculated as
+   * the running average across all reward calls. Requires `rewardTracking`
+   * on the table definition.
+   */
+  reward(table: string, id: PkLookup, scores: import('./types.js').RewardScores): Promise<void> {
+    const notInit = this._notInitError<void>();
+    if (notInit) return notInit;
+
+    const def = this._schema.getTables().get(table);
+    if (!def?.rewardTracking) {
+      return Promise.reject(
+        new Error(`Table "${table}" does not have rewardTracking enabled`),
+      );
+    }
+
+    // Compute the average of provided dimension scores
+    const vals = Object.values(scores);
+    if (vals.length === 0) return Promise.resolve();
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+
+    const { clause, params: pkParams } = this._pkWhere(table, id);
+    // Incremental running average: new_total = (old_total * old_count + avg) / (old_count + 1)
+    this._adapter.run(
+      `UPDATE "${table}" SET "_reward_total" = ("_reward_total" * "_reward_count" + ?) / ("_reward_count" + 1), "_reward_count" = "_reward_count" + 1 WHERE ${clause}`,
+      [avg, ...pkParams],
+    );
+    return Promise.resolve();
+  }
+
+  // -------------------------------------------------------------------------
+  // Semantic search
+  // -------------------------------------------------------------------------
+
+  /**
+   * Search for rows by semantic similarity. Requires `embeddings` config
+   * on the table definition.
+   *
+   * @param table  - Table to search
+   * @param query  - Natural-language query text
+   * @param opts   - Search options (topK, minScore)
+   * @returns Matching rows with similarity scores, sorted best-first.
+   */
+  async search(
+    table: string,
+    query: string,
+    opts: SearchOptions = {},
+  ): Promise<SearchResult[]> {
+    const notInit = this._notInitError<SearchResult[]>();
+    if (notInit) return notInit;
+
+    const def = this._schema.getTables().get(table);
+    if (!def?.embeddings) {
+      return Promise.reject(
+        new Error(`Table "${table}" does not have embeddings configured`),
+      );
+    }
+
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    return searchByEmbedding(
+      this._adapter,
+      table,
+      query,
+      def.embeddings,
+      opts.topK ?? 10,
+      opts.minScore ?? 0,
+      pkCol,
+    );
+  }
+
   query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
@@ -1296,6 +1420,33 @@ export class Lattice {
         for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
       }
     }
+  }
+
+  /**
+   * Update or remove the embedding for a row.
+   * No-op if the table doesn't have `embeddings` configured.
+   */
+  private _syncEmbedding(
+    table: string,
+    op: 'insert' | 'update' | 'delete',
+    row: Row,
+    pk: string,
+  ): void {
+    const def = this._schema.getTables().get(table);
+    if (!def?.embeddings) return;
+
+    if (op === 'delete') {
+      removeEmbedding(this._adapter, table, pk);
+      return;
+    }
+
+    // For insert/update, compute and store embedding asynchronously.
+    // Errors are emitted via the error handlers, never thrown.
+    storeEmbedding(this._adapter, table, pk, row, def.embeddings).catch((err) => {
+      for (const h of this._errorHandlers) {
+        h(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
   }
 
   private _notInitError<T>(): Promise<T> | null {
