@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.3.0] — 2026-04-04
+
+### Added
+
+- **Token-budget-aware rendering** — New `tokenBudget` and `prioritizeBy` options on `TableDefinition`. When rendered output exceeds the token budget, rows are pruned by priority and a truncation footer is appended. Token count estimated at ~4 characters per token.
+- **Writeback validation** — New `validate`, `rejectBelow`, and `onReject` options on `WritebackDefinition`. Validate agent-written data before persisting — entries that fail validation or score below threshold are rejected. Supports sync and async validators.
+- **Relevance-filtered rendering** — New `relevanceFilter` on `TableDefinition` and `setTaskContext()`/`getTaskContext()` on Lattice. Dynamically filter rows by relevance to the current task context before rendering.
+- **Context enrichment pipeline** — New `enrich` option on `TableDefinition`. Array of transform functions applied to rows after filtering but before rendering — use for clustering, annotation, summarization, or cross-referencing.
+- **Reward-scored memory** — New `rewardTracking` and `pruneBelow` options on `TableDefinition`, and `reward()` method on Lattice. Auto-adds `_reward_total` and `_reward_count` columns. Rows sorted by reward during render. Low-scoring rows auto-pruned via soft-delete.
+- **Semantic search via embeddings** — New `embeddings` option on `TableDefinition` and `search()` method on Lattice. Bring your own embedding function. Embeddings stored in a companion table, cosine similarity computed in JS. Supports `topK` and `minScore` options.
+- Exported new types: `WritebackValidationResult`, `RewardScores`, `EmbeddingsConfig`, `SearchOptions`, `SearchResult`.
+- Exported new utilities: `estimateTokens()`, `applyTokenBudget()`.
+
 ## [1.2.3] — 2026-04-04
 
 ### Security

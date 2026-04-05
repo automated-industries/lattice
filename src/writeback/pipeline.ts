@@ -58,6 +58,16 @@ export class WritebackPipeline {
           store.markSeen(filePath, key);
         }
 
+        // Validation gate
+        if (def.validate) {
+          const result = await def.validate(entry);
+          const threshold = def.rejectBelow ?? 0;
+          if (!result.pass || result.score < threshold) {
+            def.onReject?.(entry, result);
+            continue;
+          }
+        }
+
         await def.persist(entry, filePath);
         processed++;
       }
