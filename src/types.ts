@@ -243,6 +243,90 @@ export interface TableDefinition {
    * ```
    */
   relations?: Record<string, Relation>;
+  /**
+   * Enable semantic search for this table via embeddings.
+   *
+   * When configured, Lattice computes and stores vector embeddings for
+   * the specified text fields. Use `lattice.search(table, query, opts)`
+   * to retrieve rows by semantic similarity.
+   *
+   * The `embed` function is called to generate vectors — bring your own
+   * embedding model (OpenAI, local model, etc.).
+   *
+   * @example
+   * ```ts
+   * embeddings: {
+   *   fields: ['title', 'body'],
+   *   embed: async (text) => openai.embeddings.create({ input: text, model: 'text-embedding-3-small' }).then(r => r.data[0].embedding),
+   * }
+   * ```
+   */
+  embeddings?: EmbeddingsConfig;
+  /**
+   * Enable reward tracking for this table. When `true`, Lattice
+   * auto-adds `_reward_total REAL DEFAULT 0` and `_reward_count INTEGER
+   * DEFAULT 0` columns. Rows are sorted by `_reward_total DESC` before
+   * rendering (unless overridden by `prioritizeBy`).
+   *
+   * Use `lattice.reward(table, id, scores)` to update reward values.
+   */
+  rewardTracking?: boolean;
+  /**
+   * When `rewardTracking` is enabled, automatically soft-delete rows
+   * whose `_reward_total` falls below this threshold during rendering.
+   * Requires a `deleted_at` column on the table. Default: no pruning.
+   */
+  pruneBelow?: number;
+  /**
+   * Pipeline of enrichment functions applied to rows after query and
+   * filtering but before rendering. Each function receives the row
+   * array and returns a (possibly transformed) row array.
+   *
+   * Use enrichment hooks to cluster, annotate, summarize, or
+   * cross-reference rows without modifying the underlying data.
+   *
+   * @example
+   * ```ts
+   * enrich: [
+   *   (rows) => rows.map(r => ({ ...r, _age: Date.now() - new Date(r.created_at as string).getTime() })),
+   *   (rows) => rows.length > 50 ? [{ summary: `${rows.length} items` }] : rows,
+   * ]
+   * ```
+   */
+  enrich?: ((rows: Row[]) => Row[])[];
+  /**
+   * Dynamic filter that scores rows against the current task context
+   * (set via `lattice.setTaskContext()`). Called before `filter` and
+   * before rendering. Only rows for which the function returns `true`
+   * are included.
+   *
+   * The second argument is the current task-context string (empty string
+   * when none has been set).
+   *
+   * @example
+   * ```ts
+   * relevanceFilter: (row, ctx) =>
+   *   ctx ? String(row.body).toLowerCase().includes(ctx.toLowerCase()) : true
+   * ```
+   */
+  relevanceFilter?: (row: Row, taskContext: string) => boolean;
+  /**
+   * Maximum estimated token count for the rendered output.
+   * When the rendered content exceeds this budget, rows are pruned
+   * (lowest-priority first) and re-rendered with a truncation notice.
+   *
+   * Token count is estimated at ~4 characters per token.
+   */
+  tokenBudget?: number;
+  /**
+   * Controls row priority when `tokenBudget` forces pruning.
+   *
+   * - `string` — column name to sort by descending (highest value = highest priority).
+   * - `(a, b) => number` — custom comparator (positive = a has higher priority).
+   *
+   * When omitted, rows at the end of the query result are pruned first.
+   */
+  prioritizeBy?: string | ((a: Row, b: Row) => number);
 }
 
 export interface MultiTableDefinition {
@@ -254,6 +338,67 @@ export interface MultiTableDefinition {
   render: (key: Row, tables: Record<string, Row[]>) => string;
   /** Additional table names to query and pass into render */
   tables?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Embeddings / semantic search
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for embedding-based semantic search on a table.
+ */
+export interface EmbeddingsConfig {
+  /** Column names whose values are concatenated and embedded. */
+  fields: string[];
+  /**
+   * Function that converts text into a numeric vector.
+   * Bring your own model — Lattice does not bundle an embedding provider.
+   */
+  embed: (text: string) => Promise<number[]>;
+}
+
+/**
+ * Options for `Lattice.search()`.
+ */
+export interface SearchOptions {
+  /** Maximum number of results to return. Default: 10. */
+  topK?: number;
+  /**
+   * Minimum cosine similarity threshold (0–1). Results below this
+   * score are excluded. Default: 0.
+   */
+  minScore?: number;
+}
+
+/**
+ * A single search result returned by `Lattice.search()`.
+ */
+export interface SearchResult {
+  /** The matched row from the source table. */
+  row: Row;
+  /** Cosine similarity score (0–1). */
+  score: number;
+}
+
+/**
+ * Dimension scores passed to `Lattice.reward()`.
+ * Values should be between 0 and 1. The total reward is the average
+ * of all provided dimension scores, accumulated over multiple calls.
+ */
+export interface RewardScores {
+  [dimension: string]: number;
+}
+
+/**
+ * Result of a writeback validation check.
+ */
+export interface WritebackValidationResult {
+  /** Whether the entry passed validation. */
+  pass: boolean;
+  /** Overall quality score (0–1). */
+  score: number;
+  /** Human-readable reason when validation fails. */
+  reason?: string;
 }
 
 export interface WritebackDefinition {
@@ -273,6 +418,25 @@ export interface WritebackDefinition {
   stateStore?: import('./writeback/state-store.js').WritebackStateStore;
   /** Called after entries are processed for a file. Useful for archival. */
   onArchive?: (filePath: string) => void;
+  /**
+   * Optional validation hook. Called before `persist` for each entry.
+   * Return `{ pass: true, score }` to allow the write, or
+   * `{ pass: false, score, reason }` to reject it.
+   *
+   * When omitted, all parsed entries are persisted without validation.
+   */
+  validate?: (entry: unknown) => WritebackValidationResult | Promise<WritebackValidationResult>;
+  /**
+   * Minimum score threshold. Entries with `score < rejectBelow` are
+   * automatically rejected even if `validate` returns `pass: true`.
+   * Only meaningful when `validate` is set. Default: 0 (no threshold).
+   */
+  rejectBelow?: number;
+  /**
+   * Called for each entry that fails validation.
+   * Useful for logging or auditing rejected writes.
+   */
+  onReject?: (entry: unknown, result: WritebackValidationResult) => void;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,8 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 2. **Watches** for DB changes and re-renders automatically
 3. **Ingests** agent-written output back into the DB via the writeback pipeline
 4. **Manages** state with full CRUD, natural-key operations, seeding, and soft-delete
+5. **Optimizes** context with token budgets, relevance filtering, enrichment pipelines, and reward-scored memory
+6. **Searches** semantically via bring-your-own embeddings and cosine similarity
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
 
@@ -41,6 +43,9 @@ Lattice has no opinions about your schema, your agents, or your file format. You
   - [Render, sync, watch, and reconcile](#render-sync-watch-and-reconcile)
   - [Events](#events)
   - [Raw DB access](#raw-db-access)
+  - [Context optimization](#context-optimization-v13)
+  - [Semantic search](#semantic-search-v13)
+  - [Writeback validation](#writeback-validation-v13)
 - [Template rendering](#template-rendering)
   - [Built-in templates](#built-in-templates)
   - [Lifecycle hooks](#lifecycle-hooks)
@@ -1257,6 +1262,140 @@ const rows = db.db
 `,
   )
   .all('open');
+```
+
+---
+
+### Context optimization (v1.3+)
+
+Lattice provides several options on `TableDefinition` to optimize what gets rendered into context files.
+
+#### Token budget
+
+Limit the token count of rendered output. When content exceeds the budget, rows are pruned by priority:
+
+```typescript
+db.define('tickets', {
+  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', updated_at: 'TEXT' },
+  render: (rows) => rows.map((r) => `- ${r.title}`).join('\n'),
+  outputFile: 'TICKETS.md',
+  tokenBudget: 4000,            // max estimated tokens (~4 chars/token)
+  prioritizeBy: 'updated_at',   // keep most recent rows when pruning
+});
+```
+
+A truncation footer is appended: `[truncated: 47 of 123 rows rendered, ~3800 tokens]`
+
+#### Relevance filtering
+
+Dynamically filter rows based on a task context string:
+
+```typescript
+db.define('knowledge', {
+  columns: { id: 'TEXT PRIMARY KEY', topic: 'TEXT', body: 'TEXT' },
+  render: (rows) => rows.map((r) => `## ${r.topic}\n${r.body}`).join('\n\n'),
+  outputFile: 'KNOWLEDGE.md',
+  relevanceFilter: (row, ctx) =>
+    ctx ? String(row.body).toLowerCase().includes(ctx.toLowerCase()) : true,
+});
+
+// Set the current task context — only matching rows are rendered
+db.setTaskContext('deployment');
+await db.render('./context');
+```
+
+#### Enrichment pipeline
+
+Transform rows between filtering and rendering — add computed fields, cluster, summarize:
+
+```typescript
+db.define('incidents', {
+  columns: { id: 'TEXT PRIMARY KEY', severity: 'TEXT', title: 'TEXT', created_at: 'TEXT' },
+  render: (rows) => JSON.stringify(rows, null, 2),
+  outputFile: 'incidents.json',
+  enrich: [
+    (rows) => rows.map((r) => ({
+      ...r,
+      _age_hours: Math.round((Date.now() - new Date(r.created_at as string).getTime()) / 3600000),
+    })),
+    (rows) => rows.length > 100 ? [{ _summary: `${rows.length} incidents` }] : rows,
+  ],
+});
+```
+
+#### Reward-scored memory
+
+Track which data is useful. High-reward rows are prioritized in rendering; low-scoring rows can be auto-pruned:
+
+```typescript
+db.define('tips', {
+  columns: { id: 'TEXT PRIMARY KEY', tip: 'TEXT', deleted_at: 'TEXT' },
+  render: (rows) => rows.map((r) => `- ${r.tip}`).join('\n'),
+  outputFile: 'TIPS.md',
+  rewardTracking: true,   // auto-adds _reward_total, _reward_count columns
+  pruneBelow: 0.3,         // soft-delete rows with reward < 0.3 (requires deleted_at column)
+});
+
+await db.init();
+const id = await db.insert('tips', { tip: 'Use batch inserts for bulk data' });
+
+// After the agent confirms this tip was useful:
+await db.reward('tips', id, { relevance: 0.9, accuracy: 1.0 });
+```
+
+### Semantic search (v1.3+)
+
+Enable embedding-based search on any table. Bring your own embedding function:
+
+```typescript
+db.define('docs', {
+  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', body: 'TEXT' },
+  render: (rows) => rows.map((r) => `## ${r.title}\n${r.body}`).join('\n\n---\n\n'),
+  outputFile: 'DOCS.md',
+  embeddings: {
+    fields: ['title', 'body'],
+    embed: async (text) => {
+      const res = await openai.embeddings.create({ input: text, model: 'text-embedding-3-small' });
+      return res.data[0].embedding;
+    },
+  },
+});
+
+await db.init();
+await db.insert('docs', { title: 'Deploy guide', body: 'How to deploy to production...' });
+
+// Search by meaning, not keywords
+const results = await db.search('docs', 'ship to prod', { topK: 5, minScore: 0.7 });
+for (const { row, score } of results) {
+  console.log(`${score.toFixed(2)} — ${row.title}`);
+}
+```
+
+Embeddings are stored in a companion SQLite table and cosine similarity is computed in JS — no external vector database required.
+
+### Writeback validation (v1.3+)
+
+Validate agent-written data before persisting. Reject low-quality or hallucinated writes:
+
+```typescript
+db.defineWriteback({
+  file: './agent-output/*.md',
+  parse: (content, offset) => ({ entries: [content.slice(offset)], nextOffset: content.length }),
+  persist: async (entry) => { /* save to DB */ },
+  validate: async (entry) => {
+    const text = entry as string;
+    const hasRequiredFields = text.includes('## Title') && text.includes('## Body');
+    return {
+      pass: hasRequiredFields,
+      score: hasRequiredFields ? 0.9 : 0.1,
+      reason: hasRequiredFields ? undefined : 'Missing required sections',
+    };
+  },
+  rejectBelow: 0.5,
+  onReject: (entry, result) => {
+    console.warn(`Rejected write: ${result.reason} (score: ${result.score})`);
+  },
+});
 ```
 
 ---

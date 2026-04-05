@@ -4,6 +4,7 @@ import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
 import { atomicWrite, contentHash } from './writer.js';
+import { applyTokenBudget } from './token-budget.js';
 import { resolveEntitySource, truncateContent, type ProtectionContext } from './entity-query.js';
 import { compileEntityRender } from './entity-templates.js';
 import type {
@@ -18,10 +19,12 @@ import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
 export class RenderEngine {
   private readonly _schema: SchemaManager;
   private readonly _adapter: StorageAdapter;
+  private readonly _getTaskContext: () => string;
 
-  constructor(schema: SchemaManager, adapter: StorageAdapter) {
+  constructor(schema: SchemaManager, adapter: StorageAdapter, getTaskContext?: () => string) {
     this._schema = schema;
     this._adapter = adapter;
+    this._getTaskContext = getTaskContext ?? (() => '');
   }
 
   async render(outputDir: string): Promise<RenderResult> {
@@ -32,8 +35,46 @@ export class RenderEngine {
     // Single-table renders
     for (const [name, def] of this._schema.getTables()) {
       let rows = this._schema.queryTable(this._adapter, name);
+      if (def.relevanceFilter) {
+        const ctx = this._getTaskContext();
+        rows = rows.filter((row) => def.relevanceFilter!(row, ctx));
+      }
       if (def.filter) rows = def.filter(rows);
-      const content = def.render(rows);
+      // Reward tracking: prune low-scoring rows and sort by reward
+      if (def.rewardTracking) {
+        if (def.pruneBelow !== undefined) {
+          const threshold = def.pruneBelow;
+          const toPrune = rows.filter(
+            (r) =>
+              (r._reward_count as number) > 0 &&
+              (r._reward_total as number) < threshold,
+          );
+          if (toPrune.length > 0) {
+            for (const r of toPrune) {
+              const pkCol = this._schema.getPrimaryKey(name)[0] ?? 'id';
+              this._adapter.run(
+                `UPDATE "${name}" SET deleted_at = datetime('now') WHERE "${pkCol}" = ?`,
+                [r[pkCol]],
+              );
+            }
+            rows = rows.filter(
+              (r) =>
+                (r._reward_count as number) === 0 ||
+                (r._reward_total as number) >= threshold,
+            );
+          }
+        }
+        // Sort by reward descending (unless prioritizeBy overrides)
+        if (!def.prioritizeBy) {
+          rows.sort((a, b) => ((b._reward_total as number) ?? 0) - ((a._reward_total as number) ?? 0));
+        }
+      }
+      if (def.enrich) {
+        for (const fn of def.enrich) rows = fn(rows);
+      }
+      const content = def.tokenBudget
+        ? applyTokenBudget(rows, def.render, def.tokenBudget, def.prioritizeBy)
+        : def.render(rows);
       const filePath = join(outputDir, def.outputFile);
       if (atomicWrite(filePath, content)) {
         filesWritten.push(filePath);
