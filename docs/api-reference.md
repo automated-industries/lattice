@@ -115,6 +115,13 @@ Must be called **before** `init()`. Throws if called after `init()`.
 | `primaryKey`       | `PrimaryKey`               | no       | Primary key column(s); defaults to `'id'`                          |
 | `tableConstraints` | `string[]`                 | no       | Table-level SQL constraints (e.g. composite PK)                    |
 | `relations`        | `Record<string, Relation>` | no       | Declared foreign-key relationships                                 |
+| `embeddings`       | `EmbeddingsConfig`         | no       | Enable semantic search via embeddings (v1.3+)                      |
+| `rewardTracking`   | `boolean`                  | no       | Auto-add `_reward_total`/`_reward_count` columns (v1.3+)          |
+| `pruneBelow`       | `number`                   | no       | Soft-delete rows with reward below threshold (v1.3+)               |
+| `enrich`           | `((rows: Row[]) => Row[])[]` | no     | Row transform pipeline before rendering (v1.3+)                    |
+| `relevanceFilter`  | `(row, ctx) => boolean`    | no       | Filter by task context before rendering (v1.3+)                    |
+| `tokenBudget`      | `number`                   | no       | Max estimated tokens for rendered output (v1.3+)                   |
+| `prioritizeBy`     | `string \| comparator`     | no       | Row priority when token budget prunes (v1.3+)                      |
 
 ---
 
@@ -426,6 +433,52 @@ const highPriority = await db.count('tasks', {
 ```
 
 Accepts the same `where` and `filters` options as `query()`.
+
+---
+
+### Context & Search Methods (v1.3+)
+
+#### `setTaskContext(context): this`
+
+Set the current task context string. Tables with a `relevanceFilter` use this value to filter rows before rendering.
+
+```ts
+db.setTaskContext('deployment issues');
+await db.render('./context'); // only relevant rows rendered
+db.setTaskContext('');        // clear — all rows rendered
+```
+
+#### `getTaskContext(): string`
+
+Return the current task context string.
+
+#### `reward(table, id, scores): Promise<void>`
+
+Update reward scores for a row. Requires `rewardTracking: true` on the table. The total reward is the running average across all `reward()` calls.
+
+```ts
+await db.reward('knowledge', rowId, { relevance: 0.9, accuracy: 1.0 });
+// _reward_total = avg(0.9, 1.0) = 0.95, _reward_count = 1
+```
+
+**`RewardScores`**: `Record<string, number>` — dimension names are arbitrary; values should be 0–1.
+
+#### `search(table, query, options?): Promise<SearchResult[]>`
+
+Search for rows by semantic similarity. Requires `embeddings` on the table definition.
+
+```ts
+const results = await db.search('docs', 'deploy to production', { topK: 5, minScore: 0.7 });
+```
+
+**`SearchOptions`**:
+
+| Field      | Type     | Default | Description                          |
+| ---------- | -------- | ------- | ------------------------------------ |
+| `topK`     | `number` | `10`    | Max results to return                |
+| `minScore` | `number` | `0`     | Minimum cosine similarity threshold  |
+
+**`SearchResult`**: `{ row: Row, score: number }`
 
 ---
 
