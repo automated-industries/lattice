@@ -1,10 +1,10 @@
-import { writeFileSync, mkdirSync, renameSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, renameSync, copyFileSync, unlinkSync, existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 
-/** Write content to path atomically (tmp + rename). Returns true if file was written. */
+/** Write content to path atomically (tmp + rename, fallback to copy for cross-device). Returns true if file was written. */
 export function atomicWrite(filePath: string, content: string): boolean {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
@@ -16,7 +16,18 @@ export function atomicWrite(filePath: string, content: string): boolean {
 
   const tmp = join(tmpdir(), `lattice-${randomBytes(8).toString('hex')}.tmp`);
   writeFileSync(tmp, content, 'utf8');
-  renameSync(tmp, filePath);
+  try {
+    renameSync(tmp, filePath);
+  } catch (err: unknown) {
+    // EXDEV: cross-device link — tmp and target are on different filesystems
+    // (e.g. Docker volume mounts). Fall back to copy + unlink.
+    if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
+      copyFileSync(tmp, filePath);
+      unlinkSync(tmp);
+    } else {
+      throw err;
+    }
+  }
   return true;
 }
 
