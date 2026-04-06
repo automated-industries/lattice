@@ -14,3 +14,4 @@ docs-generated/
 *.secret
 *.p12
 CLAUDE.md
+scripts/
