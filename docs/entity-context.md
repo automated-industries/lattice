@@ -10,9 +10,9 @@ When an agent system manages many entities (agents, projects, users, tickets…)
 context/
 ├── agents/
 │   ├── AGENTS.md           ← index listing all agents
-│   ├── alpha/
+│   ├── agent-1/
 │   │   ├── AGENT.md        ← the agent row itself
-│   │   ├── TASKS.md        ← tasks assigned to Alpha
+│   │   ├── TASKS.md        ← tasks assigned to this agent
 │   │   ├── SKILLS.md       ← skills via junction table
 │   │   └── CONTEXT.md      ← combined file (all of the above)
 │   └── craft/
