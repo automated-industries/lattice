@@ -6,6 +6,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.4.0] — 2026-04-06
+
+### Added
+
+- **Prepared statement cache** — `SQLiteAdapter` now caches compiled prepared statements keyed by SQL string. Reuses statements across repeated `run()`/`get()`/`all()` calls instead of recompiling on every invocation. DDL statements (`CREATE`/`ALTER`/`DROP`/`PRAGMA`) bypass the cache. Cache clears automatically on `close()` and after schema/migration changes. Configurable max size (default 500).
+- **Batch entity query resolution** — Entity context rendering now pre-fetches related rows for all entities in a single `WHERE IN (...)` query per source, replacing the previous N+1 query pattern. `hasMany`, `manyToMany`, and `belongsTo` sources are batched; `custom` and `enriched` sources fall back to per-entity resolution. IN clauses are chunked at 500 params to stay under SQLite's limit.
+- **Render change detection** — New `isDirty()` and `markDirty(table?)` methods on `Lattice`. Per-table write version counters track mutations so consumers can skip redundant render cycles in custom polling loops. Call `markDirty()` after writing via the `db` escape hatch.
+- **Migration validation hook** — New optional `validateMigrationSQL` in `InitOptions`. Provide a `MigrationValidator` function to validate all pending migration SQL before any migrations execute.
+- **`exec()` on StorageAdapter** — New method for executing raw multi-statement SQL.
+- **`clearStatementCache()` on StorageAdapter** — Clears cached prepared statements after DDL changes.
+- Exported new types: `MigrationValidator`, `MigrationValidatorResult`.
+
+### Fixed
+
+- **Multi-statement migrations** — Migrations now use `exec()` instead of `prepare().run()`, correctly executing all statements in multi-statement migration SQL. Previously, only the first statement was executed and the rest were silently dropped.
+
+### Changed
+
+- **GitHub branch protection** — `main` branch now requires CI to pass and 1 PR approval before merging. Force pushes and branch deletion are blocked.
+
 ## [1.3.0] — 2026-04-04
 
 ### Added

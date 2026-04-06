@@ -103,6 +103,11 @@ export class Lattice {
   /** Current task context string for relevance filtering. */
   private _taskContext = '';
 
+  /** Per-table write version counter, incremented on every mutation. */
+  private readonly _tableWriteVersion = new Map<string, number>();
+  /** Snapshot of write versions at the last successful render. */
+  private readonly _lastRenderedVersions = new Map<string, number>();
+
   private readonly _auditHandlers: EventHandler<AuditEvent>[] = [];
   private readonly _renderHandlers: EventHandler<RenderResult>[] = [];
   private readonly _writebackHandlers: EventHandler<{
@@ -226,8 +231,10 @@ export class Lattice {
     this._adapter.open();
     this._schema.applySchema(this._adapter);
     if (options.migrations?.length) {
-      this._schema.applyMigrations(this._adapter, options.migrations);
+      this._schema.applyMigrations(this._adapter, options.migrations, options.validateMigrationSQL);
     }
+    // DDL is done — clear any stale cached statements so DML picks up new schema.
+    this._adapter.clearStatementCache();
     // Snapshot actual columns post-migration: schema state only includes declared
     // columns, so migration-added columns would be stripped by _filterToSchemaColumns
     // without this PRAGMA-based cache.
@@ -260,6 +267,8 @@ export class Lattice {
       return Promise.reject(new Error('Lattice: not initialized — call init() first'));
     }
     this._schema.applyMigrations(this._adapter, migrations);
+    // DDL may have changed schema — clear cached statements.
+    this._adapter.clearStatementCache();
     // Refresh column cache for any tables affected by migrations
     for (const tableName of this._schema.getTables().keys()) {
       const rows = this._adapter.all(`PRAGMA table_info("${tableName}")`);
@@ -286,6 +295,22 @@ export class Lattice {
    */
   setTaskContext(context: string): this {
     this._taskContext = context;
+    return this;
+  }
+
+  /**
+   * Mark one or all tables as dirty so the next render() will run a full cycle.
+   * Use this after writing directly via the `db` escape hatch.
+   */
+  markDirty(table?: string): this {
+    if (table) {
+      this._bumpWriteVersion(table);
+    } else {
+      // Mark all registered tables dirty
+      for (const t of this._schema.getTables().keys()) {
+        this._bumpWriteVersion(t);
+      }
+    }
     return this;
   }
 
@@ -447,6 +472,7 @@ export class Lattice {
     const rawPk = rowWithPk[pkCol];
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     this._sanitizer.emitAudit(table, 'update', pkValue);
+    this._bumpWriteVersion(table);
     return Promise.resolve(pkValue);
   }
 
@@ -685,6 +711,7 @@ export class Lattice {
          AND (deleted_at IS NULL OR deleted_at = '')`,
         [sourceFile, ...currentKeys],
       );
+      this._bumpWriteVersion(table);
     }
     return Promise.resolve(count);
   }
@@ -759,6 +786,7 @@ export class Lattice {
       `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
       Object.values(filtered),
     );
+    this._bumpWriteVersion(junctionTable);
     return Promise.resolve();
   }
 
@@ -776,6 +804,7 @@ export class Lattice {
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
+    this._bumpWriteVersion(junctionTable);
     return Promise.resolve();
   }
 
@@ -1023,9 +1052,7 @@ export class Lattice {
 
     const def = this._schema.getTables().get(table);
     if (!def?.rewardTracking) {
-      return Promise.reject(
-        new Error(`Table "${table}" does not have rewardTracking enabled`),
-      );
+      return Promise.reject(new Error(`Table "${table}" does not have rewardTracking enabled`));
     }
 
     // Compute the average of provided dimension scores
@@ -1039,6 +1066,7 @@ export class Lattice {
       `UPDATE "${table}" SET "_reward_total" = ("_reward_total" * "_reward_count" + ?) / ("_reward_count" + 1), "_reward_count" = "_reward_count" + 1 WHERE ${clause}`,
       [avg, ...pkParams],
     );
+    this._bumpWriteVersion(table);
     return Promise.resolve();
   }
 
@@ -1055,19 +1083,13 @@ export class Lattice {
    * @param opts   - Search options (topK, minScore)
    * @returns Matching rows with similarity scores, sorted best-first.
    */
-  async search(
-    table: string,
-    query: string,
-    opts: SearchOptions = {},
-  ): Promise<SearchResult[]> {
+  async search(table: string, query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
     const notInit = this._notInitError<SearchResult[]>();
     if (notInit) return notInit;
 
     const def = this._schema.getTables().get(table);
     if (!def?.embeddings) {
-      return Promise.reject(
-        new Error(`Table "${table}" does not have embeddings configured`),
-      );
+      return Promise.reject(new Error(`Table "${table}" does not have embeddings configured`));
     }
 
     const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
@@ -1174,8 +1196,21 @@ export class Lattice {
     if (notInit) return notInit;
 
     const result = await this._render.render(outputDir);
+    // Snapshot write versions so subsequent dirty checks can detect changes.
+    for (const [t, v] of this._tableWriteVersion) {
+      this._lastRenderedVersions.set(t, v);
+    }
     for (const h of this._renderHandlers) h(result);
     return result;
+  }
+
+  /**
+   * Returns `true` when no table has been written to since the last render.
+   * Useful for consumers implementing their own polling/watch loops to skip
+   * redundant render cycles.
+   */
+  isDirty(): boolean {
+    return !this._isClean();
   }
 
   async sync(outputDir: string): Promise<SyncResult> {
@@ -1183,6 +1218,9 @@ export class Lattice {
     if (notInit) return notInit;
 
     const renderResult = await this._render.render(outputDir);
+    for (const [t, v] of this._tableWriteVersion) {
+      this._lastRenderedVersions.set(t, v);
+    }
     for (const h of this._renderHandlers) h(renderResult);
 
     const writebackProcessed = await this._writeback.process();
@@ -1397,6 +1435,20 @@ export class Lattice {
     return { clauses, params };
   }
 
+  /** Increment the write version for a table, marking it dirty for render. */
+  private _bumpWriteVersion(table: string): void {
+    this._tableWriteVersion.set(table, (this._tableWriteVersion.get(table) ?? 0) + 1);
+  }
+
+  /** True when no table has been written to since the last render. */
+  private _isClean(): boolean {
+    if (this._lastRenderedVersions.size === 0) return false; // never rendered
+    for (const [table, version] of this._tableWriteVersion) {
+      if (version !== (this._lastRenderedVersions.get(table) ?? -1)) return false;
+    }
+    return true;
+  }
+
   /** Returns a rejected Promise if not initialized; null if ready. */
   private _fireWriteHooks(
     table: string,
@@ -1405,6 +1457,7 @@ export class Lattice {
     pk: string,
     changedColumns?: string[],
   ): void {
+    this._bumpWriteVersion(table);
     for (const hook of this._writeHooks) {
       if (hook.table !== table) continue;
       if (!hook.on.includes(op)) continue;

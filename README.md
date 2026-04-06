@@ -861,6 +861,22 @@ Migrations are idempotent — each `version` number is applied exactly once, tra
 
 `close()` closes the SQLite connection. Call it when the process shuts down.
 
+#### Migration validation (v1.4+)
+
+Pass a `validateMigrationSQL` function in `InitOptions` to validate migration SQL before any migrations execute. If validation fails, no migrations run and an error is thrown.
+
+```typescript
+await db.init({
+  migrations: [{ version: 1, sql: 'ALTER TABLE tasks ADD COLUMN due_date TEXT' }],
+  validateMigrationSQL: (sql) => {
+    if (sql.trim().length === 0) return { valid: false, errors: ['Empty SQL'] };
+    return { valid: true };
+  },
+});
+```
+
+Multi-statement migrations are fully supported — each migration's SQL can contain multiple semicolon-separated statements, all of which are executed.
+
 ### `migrate()` (v0.17+)
 
 ```typescript
@@ -1050,6 +1066,30 @@ await db.count(table: string, opts?: CountOptions): Promise<number>
 
 ```typescript
 const n = await db.count('tasks', { where: { status: 'open' } });
+```
+
+#### `isDirty()` / `markDirty()` (v1.4+)
+
+```typescript
+db.isDirty(): boolean
+db.markDirty(table?: string): this
+```
+
+Lattice tracks a per-table write version counter. `isDirty()` returns `true` when any table has been written to since the last `render()` call — useful for consumers implementing custom polling loops to skip redundant render cycles.
+
+`markDirty()` forces one or all tables to be considered changed. Call it after writing directly via the `db` escape hatch.
+
+```typescript
+// Custom watch loop that skips redundant renders
+setInterval(async () => {
+  if (db.isDirty()) {
+    await db.render(outputDir);
+  }
+}, 5000);
+
+// After direct DB writes, mark dirty so next render picks up changes
+db.db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run('done', taskId);
+db.markDirty('tasks');
 ```
 
 ---
@@ -1264,6 +1304,18 @@ const rows = db.db
   .all('open');
 ```
 
+After direct writes via the escape hatch, call `db.markDirty('table')` so `isDirty()` reflects the change.
+
+---
+
+### Performance (v1.4+)
+
+Lattice v1.4 includes two internal performance improvements that require no API changes:
+
+- **Prepared statement cache** — `SQLiteAdapter` caches compiled `better-sqlite3` statements. Repeated calls with the same SQL string reuse the compiled statement instead of recompiling. DDL statements bypass the cache. The cache clears automatically after schema changes and on `close()`.
+
+- **Batch entity query resolution** — Entity context rendering pre-fetches related rows for all entities in a single `WHERE IN (...)` query per source, replacing the previous per-entity query pattern. `hasMany`, `manyToMany`, and `belongsTo` sources are batched automatically. `custom` and `enriched` sources fall back to per-entity resolution.
+
 ---
 
 ### Context optimization (v1.3+)
@@ -1279,8 +1331,8 @@ db.define('tickets', {
   columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', updated_at: 'TEXT' },
   render: (rows) => rows.map((r) => `- ${r.title}`).join('\n'),
   outputFile: 'TICKETS.md',
-  tokenBudget: 4000,            // max estimated tokens (~4 chars/token)
-  prioritizeBy: 'updated_at',   // keep most recent rows when pruning
+  tokenBudget: 4000, // max estimated tokens (~4 chars/token)
+  prioritizeBy: 'updated_at', // keep most recent rows when pruning
 });
 ```
 
@@ -1314,11 +1366,12 @@ db.define('incidents', {
   render: (rows) => JSON.stringify(rows, null, 2),
   outputFile: 'incidents.json',
   enrich: [
-    (rows) => rows.map((r) => ({
-      ...r,
-      _age_hours: Math.round((Date.now() - new Date(r.created_at as string).getTime()) / 3600000),
-    })),
-    (rows) => rows.length > 100 ? [{ _summary: `${rows.length} incidents` }] : rows,
+    (rows) =>
+      rows.map((r) => ({
+        ...r,
+        _age_hours: Math.round((Date.now() - new Date(r.created_at as string).getTime()) / 3600000),
+      })),
+    (rows) => (rows.length > 100 ? [{ _summary: `${rows.length} incidents` }] : rows),
   ],
 });
 ```
@@ -1332,8 +1385,8 @@ db.define('tips', {
   columns: { id: 'TEXT PRIMARY KEY', tip: 'TEXT', deleted_at: 'TEXT' },
   render: (rows) => rows.map((r) => `- ${r.tip}`).join('\n'),
   outputFile: 'TIPS.md',
-  rewardTracking: true,   // auto-adds _reward_total, _reward_count columns
-  pruneBelow: 0.3,         // soft-delete rows with reward < 0.3 (requires deleted_at column)
+  rewardTracking: true, // auto-adds _reward_total, _reward_count columns
+  pruneBelow: 0.3, // soft-delete rows with reward < 0.3 (requires deleted_at column)
 });
 
 await db.init();
@@ -1381,7 +1434,9 @@ Validate agent-written data before persisting. Reject low-quality or hallucinate
 db.defineWriteback({
   file: './agent-output/*.md',
   parse: (content, offset) => ({ entries: [content.slice(offset)], nextOffset: content.length }),
-  persist: async (entry) => { /* save to DB */ },
+  persist: async (entry) => {
+    /* save to DB */
+  },
   validate: async (entry) => {
     const text = entry as string;
     const hasRequiredFields = text.includes('## Title') && text.includes('## Body');
@@ -2117,7 +2172,7 @@ const db = new Lattice('./app.db', {
 │                  │ entity contexts  │                               │
 ├──────────────────┴──────────────────┴───────────────────────────────┤
 │                         SQLiteAdapter                                │
-│              (better-sqlite3 — synchronous I/O)                     │
+│       (better-sqlite3 — synchronous I/O, statement cache)           │
 └──────────────────────────────────────────────────────────────────────┘
         │                              │
         │ compileRender()              │ lifecycle/
@@ -2135,7 +2190,7 @@ const db = new Lattice('./app.db', {
 
 **Key design decisions:**
 
-- **Synchronous SQLite** — `better-sqlite3` gives synchronous reads; all Lattice CRUD methods return Promises for API consistency but resolve synchronously under the hood.
+- **Synchronous SQLite** — `better-sqlite3` gives synchronous reads; all Lattice CRUD methods return Promises for API consistency but resolve synchronously under the hood. Prepared statements are cached and reused automatically (v1.4+).
 - **Compile-time render** — `RenderSpec` is compiled to a plain `(rows: Row[]) => string` function at `define()`-time, not at render-time. `RenderEngine` stays unchanged.
 - **Atomic writes** — files are written to a `.tmp` sibling then renamed. No partial writes, no reader sees incomplete content.
 - **Schema-additive only** — Lattice never drops tables or columns automatically; it only adds missing ones.

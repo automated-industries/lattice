@@ -256,3 +256,312 @@ export function truncateContent(content: string, budget: number | undefined): st
   if (budget === undefined || content.length <= budget) return content;
   return content.slice(0, budget) + '\n\n*[truncated — context budget exceeded]*';
 }
+
+// ---------------------------------------------------------------------------
+// Batch entity source resolution (v1.4+)
+// ---------------------------------------------------------------------------
+
+/** Maximum parameters per SQLite IN clause to stay under SQLITE_MAX_VARIABLE_NUMBER. */
+const BATCH_CHUNK_SIZE = 500;
+
+/**
+ * Result of a batch prefetch. Maps `filename → entityPkValue → Row[]`.
+ * Sources that cannot be batched are listed in `unbatched`.
+ */
+export interface BatchPrefetchResult {
+  results: Map<string, Map<string, Row[]>>;
+  unbatched: Set<string>;
+}
+
+/**
+ * Group an array of rows by a key column, returning a Map from key value to rows.
+ */
+function groupBy(rows: Row[], keyCol: string): Map<string, Row[]> {
+  const map = new Map<string, Row[]>();
+  for (const row of rows) {
+    const key = String(row[keyCol] ?? '');
+    let arr = map.get(key);
+    if (!arr) {
+      arr = [];
+      map.set(key, arr);
+    }
+    arr.push(row);
+  }
+  return map;
+}
+
+/**
+ * Build filter + orderBy clauses from SourceQueryOptions (no LIMIT — applied post-group).
+ * Returns SQL fragment starting with " AND ..." and pushes params.
+ */
+function buildBatchClauses(
+  params: unknown[],
+  opts: SourceQueryOptions,
+  tableAlias?: string,
+): string {
+  let sql = '';
+  const prefix = tableAlias ? `${tableAlias}.` : '';
+
+  for (const f of effectiveFilters(opts)) {
+    if (!SAFE_COL_RE.test(f.col)) continue;
+    switch (f.op) {
+      case 'eq':
+        sql += ` AND ${prefix}"${f.col}" = ?`;
+        params.push(f.val);
+        break;
+      case 'ne':
+        sql += ` AND ${prefix}"${f.col}" != ?`;
+        params.push(f.val);
+        break;
+      case 'gt':
+        sql += ` AND ${prefix}"${f.col}" > ?`;
+        params.push(f.val);
+        break;
+      case 'gte':
+        sql += ` AND ${prefix}"${f.col}" >= ?`;
+        params.push(f.val);
+        break;
+      case 'lt':
+        sql += ` AND ${prefix}"${f.col}" < ?`;
+        params.push(f.val);
+        break;
+      case 'lte':
+        sql += ` AND ${prefix}"${f.col}" <= ?`;
+        params.push(f.val);
+        break;
+      case 'like':
+        sql += ` AND ${prefix}"${f.col}" LIKE ?`;
+        params.push(f.val);
+        break;
+      case 'in': {
+        const arr = f.val as unknown[];
+        if (arr.length === 0) {
+          sql += ' AND 0';
+        } else {
+          sql += ` AND ${prefix}"${f.col}" IN (${arr.map(() => '?').join(', ')})`;
+          params.push(...arr);
+        }
+        break;
+      }
+      case 'isNull':
+        sql += ` AND ${prefix}"${f.col}" IS NULL`;
+        break;
+      case 'isNotNull':
+        sql += ` AND ${prefix}"${f.col}" IS NOT NULL`;
+        break;
+    }
+  }
+
+  if (opts.orderBy) {
+    if (typeof opts.orderBy === 'string') {
+      if (SAFE_COL_RE.test(opts.orderBy)) {
+        const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
+        sql += ` ORDER BY ${prefix}"${opts.orderBy}" ${dir}`;
+      }
+    } else {
+      const clauses = opts.orderBy
+        .filter((spec) => SAFE_COL_RE.test(spec.col))
+        .map((spec) => `${prefix}"${spec.col}" ${spec.dir === 'desc' ? 'DESC' : 'ASC'}`);
+      if (clauses.length > 0) {
+        sql += ` ORDER BY ${clauses.join(', ')}`;
+      }
+    }
+  }
+
+  // NOTE: limit is intentionally omitted — applied per-entity after grouping.
+  return sql;
+}
+
+/**
+ * Execute a batched query with an IN clause, chunking to stay under SQLite's
+ * parameter limit. Returns all rows across all chunks.
+ */
+function batchQuery(
+  adapter: StorageAdapter,
+  buildSql: (placeholders: string) => string,
+  inValues: unknown[],
+  extraParams: unknown[],
+): Row[] {
+  if (inValues.length === 0) return [];
+  const allRows: Row[] = [];
+  for (let i = 0; i < inValues.length; i += BATCH_CHUNK_SIZE) {
+    const chunk = inValues.slice(i, i + BATCH_CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(', ');
+    const sql = buildSql(placeholders);
+    allRows.push(...adapter.all(sql, [...chunk, ...extraParams]));
+  }
+  return allRows;
+}
+
+/**
+ * Pre-fetch rows for all batchable entity sources in a single pass.
+ *
+ * For each file in the entity context, this runs one (or a few chunked) queries
+ * instead of one per entity. Results are grouped by entity PK value so the
+ * render loop can look them up in O(1).
+ *
+ * Sources of type `custom` and `enriched` cannot be batched and are returned
+ * in the `unbatched` set for per-entity fallback.
+ */
+export function batchPrefetchEntitySources(
+  files: Record<string, { source: EntityFileSource; limit?: number | undefined }>,
+  allEntityRows: Row[],
+  entityPk: string,
+  adapter: StorageAdapter,
+  protection?: ProtectionContext,
+): BatchPrefetchResult {
+  const results = new Map<string, Map<string, Row[]>>();
+  const unbatched = new Set<string>();
+
+  // Collect all entity PK values
+  const allPkValues = allEntityRows.map((r) => r[entityPk]);
+
+  for (const [filename, spec] of Object.entries(files)) {
+    const source = spec.source;
+
+    if (source.type === 'self') {
+      // No query needed — handled inline
+      continue;
+    }
+
+    if (source.type === 'custom' || source.type === 'enriched') {
+      unbatched.add(filename);
+      continue;
+    }
+
+    if (source.type === 'hasMany') {
+      if (protection?.protectedTables.has(source.table)) {
+        // Protected: per-entity fallback for same-table self-only, or empty for cross-table
+        unbatched.add(filename);
+        continue;
+      }
+      const ref = source.references ?? entityPk;
+      const pkValues = allEntityRows.map((r) => r[ref]);
+      const extraParams: unknown[] = [];
+      const clauses = buildBatchClauses(extraParams, source);
+
+      const rows = batchQuery(
+        adapter,
+        (ph) => `SELECT * FROM "${source.table}" WHERE "${source.foreignKey}" IN (${ph})${clauses}`,
+        pkValues,
+        extraParams,
+      );
+
+      const grouped = groupBy(rows, source.foreignKey);
+      // Apply per-entity limit if set
+      if (source.limit !== undefined && source.limit > 0) {
+        for (const [key, arr] of grouped) {
+          if (arr.length > source.limit) grouped.set(key, arr.slice(0, source.limit));
+        }
+      }
+      results.set(filename, grouped);
+      continue;
+    }
+
+    if (source.type === 'manyToMany') {
+      if (protection?.protectedTables.has(source.remoteTable)) {
+        unbatched.add(filename);
+        continue;
+      }
+      const remotePk = source.references ?? 'id';
+      const extraParams: unknown[] = [];
+      const clauses = buildBatchClauses(extraParams, source, 'r');
+
+      // Build SELECT clause with optional junction columns
+      let selectCols = 'r.*';
+      if (source.junctionColumns?.length) {
+        const jCols = source.junctionColumns
+          .map((jc) => {
+            if (typeof jc === 'string') {
+              if (!SAFE_COL_RE.test(jc)) return null;
+              return `j."${jc}"`;
+            }
+            if (!SAFE_COL_RE.test(jc.col) || !SAFE_COL_RE.test(jc.as)) return null;
+            return `j."${jc.col}" AS "${jc.as}"`;
+          })
+          .filter(Boolean);
+        if (jCols.length > 0) selectCols += ', ' + jCols.join(', ');
+      }
+
+      const batchKeyCol = '__lattice_batch_key';
+      const rows = batchQuery(
+        adapter,
+        (ph) =>
+          `SELECT ${selectCols}, j."${source.localKey}" AS "${batchKeyCol}" FROM "${source.remoteTable}" r` +
+          ` JOIN "${source.junctionTable}" j ON j."${source.remoteKey}" = r."${remotePk}"` +
+          ` WHERE j."${source.localKey}" IN (${ph})${clauses}`,
+        allPkValues,
+        extraParams,
+      );
+
+      // Strip the synthetic batch key column before grouping
+      const grouped = new Map<string, Row[]>();
+      for (const row of rows) {
+        const key = String(row[batchKeyCol] ?? '');
+        delete row[batchKeyCol];
+        let arr = grouped.get(key);
+        if (!arr) {
+          arr = [];
+          grouped.set(key, arr);
+        }
+        arr.push(row);
+      }
+      if (source.limit !== undefined && source.limit > 0) {
+        for (const [key, arr] of grouped) {
+          if (arr.length > source.limit) grouped.set(key, arr.slice(0, source.limit));
+        }
+      }
+      results.set(filename, grouped);
+      continue;
+    }
+
+    if (source.type === 'belongsTo') {
+      if (protection?.protectedTables.has(source.table)) {
+        unbatched.add(filename);
+        continue;
+      }
+      // Collect distinct FK values across all entities
+      const fkValues = [
+        ...new Set(allEntityRows.map((r) => r[source.foreignKey]).filter((v) => v != null)),
+      ];
+      if (fkValues.length === 0) {
+        results.set(filename, new Map());
+        continue;
+      }
+
+      const refCol = source.references ?? 'id';
+      const extraParams: unknown[] = [];
+      const clauses = buildBatchClauses(extraParams, source);
+
+      const rows = batchQuery(
+        adapter,
+        (ph) => `SELECT * FROM "${source.table}" WHERE "${refCol}" IN (${ph})${clauses}`,
+        fkValues,
+        extraParams,
+      );
+
+      // Build FK value → row lookup (belongsTo returns at most one row per FK)
+      const lookup = new Map<string, Row>();
+      for (const row of rows) {
+        lookup.set(String(row[refCol] ?? ''), row);
+      }
+
+      // Map each entity's FK value to the matching row(s)
+      const grouped = new Map<string, Row[]>();
+      for (const entityRow of allEntityRows) {
+        const fkVal = entityRow[source.foreignKey];
+        const pkVal = String(entityRow[entityPk] ?? '');
+        if (fkVal == null) {
+          grouped.set(pkVal, []);
+        } else {
+          const related = lookup.get(String(fkVal));
+          grouped.set(pkVal, related ? [related] : []);
+        }
+      }
+      results.set(filename, grouped);
+      continue;
+    }
+  }
+
+  return { results, unbatched };
+}

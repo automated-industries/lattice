@@ -45,15 +45,11 @@ export async function storeEmbedding(
 /**
  * Remove a stored embedding.
  */
-export function removeEmbedding(
-  adapter: StorageAdapter,
-  table: string,
-  pk: string,
-): void {
-  adapter.run(
-    `DELETE FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`,
-    [table, pk],
-  );
+export function removeEmbedding(adapter: StorageAdapter, table: string, pk: string): void {
+  adapter.run(`DELETE FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`, [
+    table,
+    pk,
+  ]);
 }
 
 /**

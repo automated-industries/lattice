@@ -482,12 +482,23 @@ export interface CountOptions {
 
 export interface InitOptions {
   migrations?: Migration[];
+  /** Optional validator called on each migration's SQL before execution. */
+  validateMigrationSQL?: MigrationValidator;
 }
 
 export interface Migration {
   version: number | string;
   sql: string;
 }
+
+/** Result returned by a migration validator function. */
+export interface MigrationValidatorResult {
+  valid: boolean;
+  errors?: string[];
+}
+
+/** Validates migration SQL before execution. Return `{ valid: false, errors }` to abort. */
+export type MigrationValidator = (sql: string) => MigrationValidatorResult;
 
 export interface WatchOptions {
   /** Poll interval in milliseconds (default: 5000) */

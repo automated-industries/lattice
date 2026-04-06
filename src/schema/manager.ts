@@ -1,5 +1,12 @@
 import type { StorageAdapter } from '../db/adapter.js';
-import type { TableDefinition, MultiTableDefinition, Migration, Relation, Row } from '../types.js';
+import type {
+  TableDefinition,
+  MultiTableDefinition,
+  Migration,
+  MigrationValidator,
+  Relation,
+  Row,
+} from '../types.js';
 import type { EntityContextDefinition } from './entity-context.js';
 
 export interface RegisteredTable {
@@ -122,19 +129,47 @@ export class SchemaManager {
   }
 
   /** Run explicit versioned migrations in order, idempotently */
-  applyMigrations(adapter: StorageAdapter, migrations: Migration[]): void {
+  applyMigrations(
+    adapter: StorageAdapter,
+    migrations: Migration[],
+    validator?: MigrationValidator,
+  ): void {
     const sorted = [...migrations].sort((a, b) => {
       const va = String(a.version);
       const vb = String(b.version);
       return va.localeCompare(vb, undefined, { numeric: true });
     });
+
+    // Validate all pending migrations before executing any.
+    if (validator) {
+      const errors: string[] = [];
+      for (const m of sorted) {
+        const versionStr = String(m.version);
+        const exists = adapter.get('SELECT 1 FROM __lattice_migrations WHERE version = ?', [
+          versionStr,
+        ]);
+        if (!exists) {
+          const result = validator(m.sql);
+          if (!result.valid) {
+            errors.push(
+              `Migration ${versionStr}: ${(result.errors ?? ['invalid SQL']).join('; ')}`,
+            );
+          }
+        }
+      }
+      if (errors.length > 0) {
+        throw new Error(`Migration validation failed:\n${errors.join('\n')}`);
+      }
+    }
+
     for (const m of sorted) {
       const versionStr = String(m.version);
       const exists = adapter.get('SELECT 1 FROM __lattice_migrations WHERE version = ?', [
         versionStr,
       ]);
       if (!exists) {
-        adapter.run(m.sql);
+        // Use exec() to correctly handle multi-statement migration SQL.
+        adapter.exec(m.sql);
         adapter.run('INSERT INTO __lattice_migrations (version, applied_at) VALUES (?, ?)', [
           versionStr,
           new Date().toISOString(),

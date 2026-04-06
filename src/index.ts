@@ -25,6 +25,8 @@ export type {
   CountOptions,
   InitOptions,
   Migration,
+  MigrationValidator,
+  MigrationValidatorResult,
   WatchOptions,
   RenderResult,
   SyncResult,

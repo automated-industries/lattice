@@ -5,7 +5,12 @@ import type { StorageAdapter } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
 import { atomicWrite, contentHash } from './writer.js';
 import { applyTokenBudget } from './token-budget.js';
-import { resolveEntitySource, truncateContent, type ProtectionContext } from './entity-query.js';
+import {
+  resolveEntitySource,
+  truncateContent,
+  batchPrefetchEntitySources,
+  type ProtectionContext,
+} from './entity-query.js';
 import { compileEntityRender } from './entity-templates.js';
 import type {
   EntityContextManifestEntry,
@@ -45,9 +50,7 @@ export class RenderEngine {
         if (def.pruneBelow !== undefined) {
           const threshold = def.pruneBelow;
           const toPrune = rows.filter(
-            (r) =>
-              (r._reward_count as number) > 0 &&
-              (r._reward_total as number) < threshold,
+            (r) => (r._reward_count as number) > 0 && (r._reward_total as number) < threshold,
           );
           if (toPrune.length > 0) {
             for (const r of toPrune) {
@@ -58,15 +61,15 @@ export class RenderEngine {
               );
             }
             rows = rows.filter(
-              (r) =>
-                (r._reward_count as number) === 0 ||
-                (r._reward_total as number) >= threshold,
+              (r) => (r._reward_count as number) === 0 || (r._reward_total as number) >= threshold,
             );
           }
         }
         // Sort by reward descending (unless prioritizeBy overrides)
         if (!def.prioritizeBy) {
-          rows.sort((a, b) => ((b._reward_total as number) ?? 0) - ((a._reward_total as number) ?? 0));
+          rows.sort(
+            (a, b) => ((b._reward_total as number) ?? 0) - ((a._reward_total as number) ?? 0),
+          );
         }
       }
       if (def.enrich) {
@@ -197,18 +200,48 @@ export class RenderEngine {
         }
       }
 
+      // --- batch prefetch for entity sources ---
+      const protection: ProtectionContext | undefined =
+        protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
+
+      // Merge sourceDefaults into each source before batching
+      const mergedFiles: Record<
+        string,
+        {
+          source: import('../schema/entity-context.js').EntityFileSource;
+          limit?: number | undefined;
+        }
+      > = {};
+      for (const [filename, spec] of Object.entries(def.files)) {
+        const mergeDefaults =
+          def.sourceDefaults &&
+          spec.source.type !== 'self' &&
+          spec.source.type !== 'custom' &&
+          spec.source.type !== 'enriched';
+        const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
+        mergedFiles[filename] = { source, limit: spec.budget };
+      }
+
+      const batch = batchPrefetchEntitySources(
+        mergedFiles,
+        allRows,
+        entityPk,
+        this._adapter,
+        protection,
+      );
+
       // --- per-entity files ---
       for (const entityRow of allRows) {
         // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
         // U+202F in screenshot filenames) with regular space, strip control characters.
         const rawSlug = def.slug(entityRow);
-        const slug = rawSlug.replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ').replace(/[\x00-\x1F\x7F]/g, '');
+        const slug = rawSlug
+          .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+          .replace(/[\x00-\x1F\x7F]/g, '');
 
         // Validate slug against path traversal
         if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~\[\]]/.test(slug)) {
-          throw new Error(
-            `Invalid slug "${slug}": contains characters outside the allowed set`,
-          );
+          throw new Error(`Invalid slug "${slug}": contains characters outside the allowed set`);
         }
 
         const entityDir = def.directory
@@ -251,17 +284,22 @@ export class RenderEngine {
         // v2 manifest: track per-file hashes
         const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
 
-        const protection: ProtectionContext | undefined =
-          protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
+        const entityPkVal = String(entityRow[entityPk] ?? '');
 
         for (const [filename, spec] of Object.entries(def.files)) {
-          const mergeDefaults =
-            def.sourceDefaults &&
-            spec.source.type !== 'self' &&
-            spec.source.type !== 'custom' &&
-            spec.source.type !== 'enriched';
-          const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
-          const rows = resolveEntitySource(source, entityRow, entityPk, this._adapter, protection);
+          let rows: import('../types.js').Row[];
+
+          if (spec.source.type === 'self') {
+            rows = [entityRow];
+          } else if (batch.unbatched.has(filename)) {
+            // Fall back to per-entity resolution for custom/enriched/protected sources
+            const source = mergedFiles[filename]!.source;
+            rows = resolveEntitySource(source, entityRow, entityPk, this._adapter, protection);
+          } else if (batch.results.has(filename)) {
+            rows = batch.results.get(filename)!.get(entityPkVal) ?? [];
+          } else {
+            rows = [];
+          }
 
           if (spec.omitIfEmpty && rows.length === 0) continue;
 
@@ -284,8 +322,11 @@ export class RenderEngine {
         // containing all connected context. This can be overridden or disabled
         // via explicit `combined` config.
         const fileKeys = Object.keys(def.files);
-        const effectiveCombined = def.combined ??
-          (fileKeys.length > 1 && renderedFiles.size > 1 ? { outputFile: fileKeys[0]! } : undefined);
+        const effectiveCombined =
+          def.combined ??
+          (fileKeys.length > 1 && renderedFiles.size > 1
+            ? { outputFile: fileKeys[0]! }
+            : undefined);
         if (effectiveCombined && renderedFiles.size > 0) {
           const excluded = new Set(effectiveCombined.exclude ?? []);
           const parts: string[] = [];
