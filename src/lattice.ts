@@ -1047,7 +1047,7 @@ export class Lattice {
    * on the table definition.
    */
   reward(table: string, id: PkLookup, scores: import('./types.js').RewardScores): Promise<void> {
-    const notInit = this._notInitError<void>();
+    const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
 
     const def = this._schema.getTables().get(table);
@@ -1495,7 +1495,7 @@ export class Lattice {
 
     // For insert/update, compute and store embedding asynchronously.
     // Errors are emitted via the error handlers, never thrown.
-    storeEmbedding(this._adapter, table, pk, row, def.embeddings).catch((err) => {
+    storeEmbedding(this._adapter, table, pk, row, def.embeddings).catch((err: unknown) => {
       for (const h of this._errorHandlers) {
         h(err instanceof Error ? err : new Error(String(err)));
       }

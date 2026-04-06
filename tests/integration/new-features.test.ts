@@ -297,12 +297,6 @@ describe('Semantic search via embeddings', () => {
   let db: Lattice;
   const dirs: string[] = [];
 
-  function tempDir() {
-    const d = mkdtempSync(join(tmpdir(), 'lattice-embed-'));
-    dirs.push(d);
-    return d;
-  }
-
   afterEach(() => {
     db.close();
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
@@ -324,7 +318,7 @@ describe('Semantic search via embeddings', () => {
     db = new Lattice(':memory:');
     db.define('docs', {
       columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', body: 'TEXT' },
-      render: (rows) => '',
+      render: () => '',
       outputFile: 'docs.md',
       embeddings: {
         fields: ['title', 'body'],

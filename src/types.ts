@@ -385,9 +385,7 @@ export interface SearchResult {
  * Values should be between 0 and 1. The total reward is the average
  * of all provided dimension scores, accumulated over multiple calls.
  */
-export interface RewardScores {
-  [dimension: string]: number;
-}
+export type RewardScores = Record<string, number>;
 
 /**
  * Result of a writeback validation check.

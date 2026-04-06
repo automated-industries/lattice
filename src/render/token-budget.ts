@@ -73,6 +73,7 @@ export function applyTokenBudget(
 
   const tokens = estimateTokens(bestContent);
   return (
-    bestContent + `\n\n[truncated: ${bestCount} of ${rows.length} rows rendered, ~${tokens} tokens]`
+    bestContent +
+    `\n\n[truncated: ${String(bestCount)} of ${String(rows.length)} rows rendered, ~${String(tokens)} tokens]`
   );
 }

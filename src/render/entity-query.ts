@@ -279,7 +279,8 @@ export interface BatchPrefetchResult {
 function groupBy(rows: Row[], keyCol: string): Map<string, Row[]> {
   const map = new Map<string, Row[]>();
   for (const row of rows) {
-    const key = String(row[keyCol] ?? '');
+    const val = row[keyCol];
+    const key = val != null ? String(val as string | number) : '';
     let arr = map.get(key);
     if (!arr) {
       arr = [];
@@ -497,14 +498,17 @@ export function batchPrefetchEntitySources(
       // Strip the synthetic batch key column before grouping
       const grouped = new Map<string, Row[]>();
       for (const row of rows) {
-        const key = String(row[batchKeyCol] ?? '');
-        delete row[batchKeyCol];
+        const batchVal = row[batchKeyCol];
+        const key = batchVal != null ? String(batchVal as string | number) : '';
+        // Remove synthetic column without dynamic delete
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { [batchKeyCol]: _batchKey, ...clean } = row;
         let arr = grouped.get(key);
         if (!arr) {
           arr = [];
           grouped.set(key, arr);
         }
-        arr.push(row);
+        arr.push(clean);
       }
       if (source.limit !== undefined && source.limit > 0) {
         for (const [key, arr] of grouped) {
@@ -515,52 +519,52 @@ export function batchPrefetchEntitySources(
       continue;
     }
 
-    if (source.type === 'belongsTo') {
-      if (protection?.protectedTables.has(source.table)) {
-        unbatched.add(filename);
-        continue;
-      }
-      // Collect distinct FK values across all entities
-      const fkValues = [
-        ...new Set(allEntityRows.map((r) => r[source.foreignKey]).filter((v) => v != null)),
-      ];
-      if (fkValues.length === 0) {
-        results.set(filename, new Map());
-        continue;
-      }
-
-      const refCol = source.references ?? 'id';
-      const extraParams: unknown[] = [];
-      const clauses = buildBatchClauses(extraParams, source);
-
-      const rows = batchQuery(
-        adapter,
-        (ph) => `SELECT * FROM "${source.table}" WHERE "${refCol}" IN (${ph})${clauses}`,
-        fkValues,
-        extraParams,
-      );
-
-      // Build FK value → row lookup (belongsTo returns at most one row per FK)
-      const lookup = new Map<string, Row>();
-      for (const row of rows) {
-        lookup.set(String(row[refCol] ?? ''), row);
-      }
-
-      // Map each entity's FK value to the matching row(s)
-      const grouped = new Map<string, Row[]>();
-      for (const entityRow of allEntityRows) {
-        const fkVal = entityRow[source.foreignKey];
-        const pkVal = String(entityRow[entityPk] ?? '');
-        if (fkVal == null) {
-          grouped.set(pkVal, []);
-        } else {
-          const related = lookup.get(String(fkVal));
-          grouped.set(pkVal, related ? [related] : []);
-        }
-      }
-      results.set(filename, grouped);
+    // belongsTo — only remaining batchable type
+    if (protection?.protectedTables.has(source.table)) {
+      unbatched.add(filename);
       continue;
     }
+    // Collect distinct FK values across all entities
+    const fkValues = [
+      ...new Set(allEntityRows.map((r) => r[source.foreignKey]).filter((v) => v != null)),
+    ];
+    if (fkValues.length === 0) {
+      results.set(filename, new Map());
+      continue;
+    }
+
+    const refCol = source.references ?? 'id';
+    const extraParams: unknown[] = [];
+    const clauses = buildBatchClauses(extraParams, source);
+
+    const rows = batchQuery(
+      adapter,
+      (ph) => `SELECT * FROM "${source.table}" WHERE "${refCol}" IN (${ph})${clauses}`,
+      fkValues,
+      extraParams,
+    );
+
+    // Build FK value → row lookup (belongsTo returns at most one row per FK)
+    const lookup = new Map<string, Row>();
+    for (const row of rows) {
+      const refVal = row[refCol] as string | number | null | undefined;
+      lookup.set(refVal != null ? String(refVal) : '', row);
+    }
+
+    // Map each entity's FK value to the matching row(s)
+    const grouped = new Map<string, Row[]>();
+    for (const entityRow of allEntityRows) {
+      const fkVal = entityRow[source.foreignKey];
+      const pkVal = entityRow[entityPk] as string | number | null | undefined;
+      const pkStr = pkVal != null ? String(pkVal) : '';
+      if (fkVal == null) {
+        grouped.set(pkStr, []);
+      } else {
+        const related = lookup.get(String(fkVal as string | number));
+        grouped.set(pkStr, related ? [related] : []);
+      }
+    }
+    results.set(filename, grouped);
   }
 
   return { results, unbatched };

@@ -42,7 +42,7 @@ export class RenderEngine {
       let rows = this._schema.queryTable(this._adapter, name);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
-        rows = rows.filter((row) => def.relevanceFilter!(row, ctx));
+        rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
       }
       if (def.filter) rows = def.filter(rows);
       // Reward tracking: prune low-scoring rows and sort by reward
@@ -67,9 +67,7 @@ export class RenderEngine {
         }
         // Sort by reward descending (unless prioritizeBy overrides)
         if (!def.prioritizeBy) {
-          rows.sort(
-            (a, b) => ((b._reward_total as number) ?? 0) - ((a._reward_total as number) ?? 0),
-          );
+          rows.sort((a, b) => (b._reward_total as number) - (a._reward_total as number));
         }
       }
       if (def.enrich) {
@@ -237,10 +235,11 @@ export class RenderEngine {
         const rawSlug = def.slug(entityRow);
         const slug = rawSlug
           .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+          // eslint-disable-next-line no-control-regex
           .replace(/[\x00-\x1F\x7F]/g, '');
 
         // Validate slug against path traversal
-        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~\[\]]/.test(slug)) {
+        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~[\]]/.test(slug)) {
           throw new Error(`Invalid slug "${slug}": contains characters outside the allowed set`);
         }
 
@@ -284,7 +283,8 @@ export class RenderEngine {
         // v2 manifest: track per-file hashes
         const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
 
-        const entityPkVal = String(entityRow[entityPk] ?? '');
+        const rawPkVal = entityRow[entityPk] as string | number | null | undefined;
+        const entityPkVal = rawPkVal != null ? String(rawPkVal) : '';
 
         for (const [filename, spec] of Object.entries(def.files)) {
           let rows: import('../types.js').Row[];
@@ -293,10 +293,13 @@ export class RenderEngine {
             rows = [entityRow];
           } else if (batch.unbatched.has(filename)) {
             // Fall back to per-entity resolution for custom/enriched/protected sources
-            const source = mergedFiles[filename]!.source;
-            rows = resolveEntitySource(source, entityRow, entityPk, this._adapter, protection);
+            const merged = mergedFiles[filename];
+            rows = merged
+              ? resolveEntitySource(merged.source, entityRow, entityPk, this._adapter, protection)
+              : [];
           } else if (batch.results.has(filename)) {
-            rows = batch.results.get(filename)!.get(entityPkVal) ?? [];
+            const batchMap = batch.results.get(filename);
+            rows = batchMap?.get(entityPkVal) ?? [];
           } else {
             rows = [];
           }
@@ -325,7 +328,7 @@ export class RenderEngine {
         const effectiveCombined =
           def.combined ??
           (fileKeys.length > 1 && renderedFiles.size > 1
-            ? { outputFile: fileKeys[0]! }
+            ? { outputFile: fileKeys[0] ?? '' }
             : undefined);
         if (effectiveCombined && renderedFiles.size > 0) {
           const excluded = new Set(effectiveCombined.exclude ?? []);
