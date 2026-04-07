@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -375,7 +375,13 @@ describe('Reverse-seed', () => {
             const row: Record<string, unknown> = {};
             for (const line of content.split('\n')) {
               const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith('#') || trimmed === '---' || trimmed.startsWith('<!--')) continue;
+              if (
+                !trimmed ||
+                trimmed.startsWith('#') ||
+                trimmed === '---' ||
+                trimmed.startsWith('<!--')
+              )
+                continue;
               const colonIdx = trimmed.indexOf(': ');
               if (colonIdx > 0) {
                 const key = trimmed.slice(0, colonIdx);
@@ -417,7 +423,13 @@ describe('Reverse-seed', () => {
             const row: Record<string, unknown> = {};
             for (const line of content.split('\n')) {
               const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith('#') || trimmed === '---' || trimmed.startsWith('<!--')) continue;
+              if (
+                !trimmed ||
+                trimmed.startsWith('#') ||
+                trimmed === '---' ||
+                trimmed.startsWith('<!--')
+              )
+                continue;
               const colonIdx = trimmed.indexOf(': ');
               if (colonIdx > 0) {
                 const key = trimmed.slice(0, colonIdx);
@@ -460,7 +472,13 @@ describe('Reverse-seed', () => {
         const row: Record<string, unknown> = {};
         for (const line of content.split('\n')) {
           const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#') || trimmed === '---' || trimmed.startsWith('<!--')) continue;
+          if (
+            !trimmed ||
+            trimmed.startsWith('#') ||
+            trimmed === '---' ||
+            trimmed.startsWith('<!--')
+          )
+            continue;
           const colonIdx = trimmed.indexOf(': ');
           if (colonIdx > 0) {
             row[trimmed.slice(0, colonIdx)] = trimmed.slice(colonIdx + 2);
@@ -526,7 +544,13 @@ describe('Reverse-seed', () => {
         const row: Record<string, unknown> = {};
         for (const line of content.split('\n')) {
           const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#') || trimmed === '---' || trimmed.startsWith('<!--')) continue;
+          if (
+            !trimmed ||
+            trimmed.startsWith('#') ||
+            trimmed === '---' ||
+            trimmed.startsWith('<!--')
+          )
+            continue;
           const colonIdx = trimmed.indexOf(': ');
           if (colonIdx > 0) {
             row[trimmed.slice(0, colonIdx)] = trimmed.slice(colonIdx + 2);
