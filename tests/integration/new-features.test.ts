@@ -109,7 +109,7 @@ describe('Relevance-filtered rendering', () => {
     db = new Lattice(':memory:');
     db.define('notes', {
       columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT' },
-      render: (rows) => rows.map((r) => (r.body as string)).join('\n'),
+      render: (rows) => rows.map((r) => r.body as string).join('\n'),
       outputFile: 'notes.md',
       relevanceFilter: (row, ctx) =>
         ctx ? (row.body as string).toLowerCase().includes(ctx.toLowerCase()) : true,
@@ -131,7 +131,7 @@ describe('Relevance-filtered rendering', () => {
     db = new Lattice(':memory:');
     db.define('notes', {
       columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT' },
-      render: (rows) => rows.map((r) => (r.body as string)).join('\n'),
+      render: (rows) => rows.map((r) => r.body as string).join('\n'),
       outputFile: 'notes.md',
       relevanceFilter: (row, ctx) => (ctx ? (row.body as string).includes(ctx) : true),
     });
@@ -224,7 +224,7 @@ describe('Reward-scored memory', () => {
     db = new Lattice(':memory:');
     db.define('knowledge', {
       columns: { id: 'TEXT PRIMARY KEY', fact: 'TEXT' },
-      render: (rows) => rows.map((r) => (r.fact as string)).join('\n'),
+      render: (rows) => rows.map((r) => r.fact as string).join('\n'),
       outputFile: 'knowledge.md',
       rewardTracking: true,
     });
@@ -240,7 +240,7 @@ describe('Reward-scored memory', () => {
     db = new Lattice(':memory:');
     db.define('knowledge', {
       columns: { id: 'TEXT PRIMARY KEY', fact: 'TEXT' },
-      render: (rows) => rows.map((r) => (r.fact as string)).join('\n'),
+      render: (rows) => rows.map((r) => r.fact as string).join('\n'),
       outputFile: 'knowledge.md',
       rewardTracking: true,
     });
@@ -274,7 +274,7 @@ describe('Reward-scored memory', () => {
     db = new Lattice(':memory:');
     db.define('tips', {
       columns: { id: 'TEXT PRIMARY KEY', tip: 'TEXT' },
-      render: (rows) => rows.map((r) => (r.tip as string)).join('\n'),
+      render: (rows) => rows.map((r) => r.tip as string).join('\n'),
       outputFile: 'tips.md',
       rewardTracking: true,
     });
@@ -297,7 +297,8 @@ describe('Semantic search via embeddings', () => {
   let db: Lattice;
   const dirs: string[] = [];
 
-  function tempDir() {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  function _tempDir() {
     const d = mkdtempSync(join(tmpdir(), 'lattice-embed-'));
     dirs.push(d);
     return d;
@@ -324,7 +325,8 @@ describe('Semantic search via embeddings', () => {
     db = new Lattice(':memory:');
     db.define('docs', {
       columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', body: 'TEXT' },
-      render: (rows) => '',
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      render: (_rows) => '',
       outputFile: 'docs.md',
       embeddings: {
         fields: ['title', 'body'],
