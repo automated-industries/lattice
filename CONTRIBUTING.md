@@ -133,6 +133,17 @@ npm run format:check  # Prettier check (CI)
 - Internal modules use explicit return types
 - No `console.log` in library code — only in `src/cli.ts`
 
+### Code examples & documentation
+
+All examples in code, docs, and tests must use **generic, fictional names**:
+
+- People: `Alice`, `Bob`, `John`, `user-1`
+- Companies: `Acme Corp`, `Example Inc`
+- Emails: `alice@example.com`, `admin@test.com`
+- Projects: `Project X`, `my-app`
+
+Do not use real people, companies, clients, or internal system names in any public-facing content. When in doubt, use a placeholder.
+
 ---
 
 ## Submitting a change
