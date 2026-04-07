@@ -553,7 +553,13 @@ export class Lattice {
     this._adapter.run(`DELETE FROM "${table}" WHERE ${clause}`, params);
 
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
-    this._appendChangelog(table, auditId, 'delete', null, previousRow as Record<string, unknown> | null);
+    this._appendChangelog(
+      table,
+      auditId,
+      'delete',
+      null,
+      previousRow as Record<string, unknown> | null,
+    );
     this._sanitizer.emitAudit(table, 'delete', auditId);
     this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
     this._syncEmbedding(table, 'delete', {}, auditId);
@@ -1592,11 +1598,7 @@ export class Lattice {
   /**
    * Get change history for a specific row, newest first.
    */
-  history(
-    table: string,
-    id: string,
-    opts?: { limit?: number },
-  ): Promise<ChangeEntry[]> {
+  history(table: string, id: string, opts?: { limit?: number }): Promise<ChangeEntry[]> {
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
@@ -1614,11 +1616,7 @@ export class Lattice {
   /**
    * Get recent changes across tables.
    */
-  recentChanges(opts?: {
-    table?: string;
-    since?: string;
-    limit?: number;
-  }): Promise<ChangeEntry[]> {
+  recentChanges(opts?: { table?: string; since?: string; limit?: number }): Promise<ChangeEntry[]> {
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
@@ -1654,10 +1652,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
-    const entry = this._adapter.get(
-      `SELECT * FROM __lattice_changelog WHERE id = ?`,
-      [changeId],
-    );
+    const entry = this._adapter.get(`SELECT * FROM __lattice_changelog WHERE id = ?`, [changeId]);
     if (!entry) {
       return Promise.reject(new Error(`Lattice: changelog entry "${changeId}" not found`));
     }
@@ -1682,10 +1677,10 @@ export class Lattice {
           const setCols = Object.keys(parsed.previous)
             .map((c) => `"${c}" = ?`)
             .join(', ');
-          this._adapter.run(
-            `UPDATE "${parsed.table}" SET ${setCols} WHERE ${clause}`,
-            [...Object.values(parsed.previous), ...pkParams],
-          );
+          this._adapter.run(`UPDATE "${parsed.table}" SET ${setCols} WHERE ${clause}`, [
+            ...Object.values(parsed.previous),
+            ...pkParams,
+          ]);
         }
         break;
 
@@ -1722,7 +1717,7 @@ export class Lattice {
       parsed.rowId,
       'rollback',
       parsed.previous, // The values we restored to become the "changes"
-      parsed.changes,   // The values we undid become the "previous"
+      parsed.changes, // The values we undid become the "previous"
       'system',
       `rollback of ${changeId}`,
     );
@@ -1763,19 +1758,14 @@ export class Lattice {
    * Reconstruct the row state at a specific changelog entry by replaying
    * all operations up to and including that entry.
    */
-  snapshot(
-    table: string,
-    id: string,
-    changeId: string,
-  ): Promise<Record<string, unknown>> {
+  snapshot(table: string, id: string, changeId: string): Promise<Record<string, unknown>> {
     const notInit = this._notInitError<Record<string, unknown>>();
     if (notInit) return notInit;
 
     // Get the target entry's rowid for reliable ordering
-    const target = this._adapter.get(
-      `SELECT rowid FROM __lattice_changelog WHERE id = ?`,
-      [changeId],
-    );
+    const target = this._adapter.get(`SELECT rowid FROM __lattice_changelog WHERE id = ?`, [
+      changeId,
+    ]);
     if (!target) {
       return Promise.reject(new Error(`Lattice: changelog entry "${changeId}" not found`));
     }
