@@ -17,6 +17,7 @@ import type {
   LatticeEvent,
   Filter,
   RenderSpec,
+  BuiltinTemplateName,
   WriteHook,
   WriteHookContext,
   SeedConfig,
@@ -27,6 +28,7 @@ import type {
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
+  ReverseSeedResult,
   SearchOptions,
   SearchResult,
   ChangelogOptions,
@@ -40,6 +42,7 @@ import type { CompiledTableDef } from './schema/manager.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine } from './render/engine.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
+import { ReverseSeedEngine } from './reverse-seed/engine.js';
 import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
@@ -88,6 +91,7 @@ export class Lattice {
   private readonly _sanitizer: Sanitizer;
   private readonly _render: RenderEngine;
   private readonly _reverseSync: ReverseSyncEngine;
+  private readonly _reverseSeedEngine: ReverseSeedEngine;
   private readonly _loop: SyncLoop;
   private readonly _writeback: WritebackPipeline;
   private _initialized = false;
@@ -117,6 +121,11 @@ export class Lattice {
     entriesProcessed: number;
   }>[] = [];
   private readonly _errorHandlers: EventHandler<Error>[] = [];
+  private readonly _reverseSeedHandlers: EventHandler<{
+    table: string;
+    rowCount: number;
+    source: 'files';
+  }>[] = [];
   private readonly _writeHooks: WriteHook[] = [];
 
   constructor(pathOrConfig: string | LatticeConfigInput, options: LatticeOptions = {}) {
@@ -146,6 +155,7 @@ export class Lattice {
     this._sanitizer = new Sanitizer(options.security);
     this._render = new RenderEngine(this._schema, this._adapter, () => this._taskContext);
     this._reverseSync = new ReverseSyncEngine(this._schema, this._adapter);
+    this._reverseSeedEngine = new ReverseSeedEngine(this._schema, this._adapter);
     this._loop = new SyncLoop(this._render);
     this._writeback = new WritebackPipeline();
 
@@ -183,6 +193,9 @@ export class Lattice {
       ? { ...def.columns, _reward_total: 'REAL DEFAULT 0', _reward_count: 'INTEGER DEFAULT 0' }
       : def.columns;
 
+    // Resolve the built-in template name (if any) for reverse-seed parsing
+    const renderTemplateName = _resolveTemplateName(def.render);
+
     const compiledDef: CompiledTableDef = {
       ...def,
       columns,
@@ -195,6 +208,7 @@ export class Lattice {
           )
         : () => '',
       outputFile: def.outputFile ?? `.schema-only/${table}.md`,
+      ...(renderTemplateName ? { _renderTemplateName: renderTemplateName } : {}),
     };
     this._schema.define(table, compiledDef);
     if (def.changelog) this._changelogTables.add(table);
@@ -1226,12 +1240,59 @@ export class Lattice {
     return { ...renderResult, writebackProcessed };
   }
 
+  /**
+   * Recover rows from rendered files into empty database tables.
+   *
+   * For each registered table where `reverseSeed !== false`, checks if the
+   * table has zero rows and rendered files exist. If so, parses the files
+   * back into rows using the built-in template parser or a custom parser.
+   *
+   * Safe to call multiple times — uses INSERT OR IGNORE and only activates
+   * on truly empty tables.
+   *
+   * @since 0.20.0
+   */
+  async reverseSeed(outputDir: string): Promise<ReverseSeedResult> {
+    const notInit = this._notInitError<ReverseSeedResult>();
+    if (notInit) return notInit;
+
+    const result = this._reverseSeedEngine.process(outputDir);
+
+    // Emit events for each recovered table
+    for (const tableResult of result.tables) {
+      for (const h of this._reverseSeedHandlers) {
+        h({ table: tableResult.table, rowCount: tableResult.rowsRecovered, source: 'files' });
+      }
+    }
+
+    return result;
+  }
+
   async reconcile(outputDir: string, options: ReconcileOptions = {}): Promise<ReconcileResult> {
     const notInit = this._notInitError<ReconcileResult>();
     if (notInit) return notInit;
 
     // Read previous manifest BEFORE render so cleanup can detect orphans
     const prevManifest = readManifest(outputDir);
+
+    // Reverse-seed phase: detect or recover rows from files into empty tables.
+    // Default: detect only (flag to human). With `reverseSeed: 'auto'`: auto-recover.
+    let reverseSeedResult: ReverseSeedResult | null = null;
+    let reverseSeedRequired: import('./types.js').ReverseSeedDetection[] = [];
+
+    if (options.reverseSeed === 'auto') {
+      // Auto-recovery mode: parse files and insert rows
+      const result = this._reverseSeedEngine.process(outputDir);
+      for (const tableResult of result.tables) {
+        for (const h of this._reverseSeedHandlers) {
+          h({ table: tableResult.table, rowCount: tableResult.rowsRecovered, source: 'files' });
+        }
+      }
+      reverseSeedResult = result.totalRowsRecovered > 0 ? result : null;
+    } else {
+      // Detect-only mode: report which tables need attention
+      reverseSeedRequired = this._reverseSeedEngine.detect(outputDir);
+    }
 
     // Reverse-sync phase: detect external file edits and sweep them back into DB.
     // Runs before render so the render phase writes from the now-updated DB state.
@@ -1254,7 +1315,13 @@ export class Lattice {
     // New manifest: detects stale files in surviving entities (omitIfEmpty, removed files).
     const cleanup = this._render.cleanup(outputDir, prevManifest, options, newManifest);
 
-    return { ...renderResult, cleanup, reverseSync: reverseSyncResult };
+    return {
+      ...renderResult,
+      cleanup,
+      reverseSync: reverseSyncResult,
+      reverseSeed: reverseSeedResult,
+      reverseSeedRequired,
+    };
   }
 
   watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {
@@ -1285,6 +1352,10 @@ export class Lattice {
     event: 'writeback',
     handler: EventHandler<{ filePath: string; entriesProcessed: number }>,
   ): this;
+  on(
+    event: 'reverseSeed',
+    handler: EventHandler<{ table: string; rowCount: number; source: 'files' }>,
+  ): this;
   on(event: 'error', handler: EventHandler<Error>): this;
   on(
     event: LatticeEvent['type'],
@@ -1292,6 +1363,7 @@ export class Lattice {
       | EventHandler<AuditEvent>
       | EventHandler<RenderResult>
       | EventHandler<{ filePath: string; entriesProcessed: number }>
+      | EventHandler<{ table: string; rowCount: number; source: 'files' }>
       | EventHandler<Error>,
   ): this {
     switch (event) {
@@ -1304,6 +1376,11 @@ export class Lattice {
       case 'writeback':
         this._writebackHandlers.push(
           handler as EventHandler<{ filePath: string; entriesProcessed: number }>,
+        );
+        break;
+      case 'reverseSeed':
+        this._reverseSeedHandlers.push(
+          handler as EventHandler<{ table: string; rowCount: number; source: 'files' }>,
         );
         break;
       case 'error':
@@ -1849,4 +1926,16 @@ export class Lattice {
       throw new Error(`Lattice: ${method}() must be called before init()`);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level helpers
+// ---------------------------------------------------------------------------
+
+/** Extract the built-in template name from a RenderSpec, if any. */
+function _resolveTemplateName(render?: RenderSpec): BuiltinTemplateName | undefined {
+  if (!render) return undefined;
+  if (typeof render === 'string') return render;
+  if (typeof render === 'function') return undefined;
+  return render.template;
 }
