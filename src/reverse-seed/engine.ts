@@ -2,7 +2,13 @@ import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import type { Row, BuiltinTemplateName, ReverseSeedResult, ReverseSeedTableResult, ReverseSeedDetection } from '../types.js';
+import type {
+  Row,
+  BuiltinTemplateName,
+  ReverseSeedResult,
+  ReverseSeedTableResult,
+  ReverseSeedDetection,
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Built-in template parsers
@@ -22,7 +28,8 @@ function parseDefaultTable(content: string): Record<string, unknown>[] {
   const lines = content.split('\n').filter((l) => l.trim().length > 0);
   if (lines.length < 3) return []; // need header + separator + at least one data row
 
-  const headerLine = lines[0]!;
+  const headerLine = lines[0];
+  if (!headerLine) return [];
   const headers = headerLine
     .split('|')
     .map((h) => h.trim())
@@ -32,8 +39,8 @@ function parseDefaultTable(content: string): Record<string, unknown>[] {
   // Skip separator line (index 1)
   const rows: Record<string, unknown>[] = [];
   for (let i = 2; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (!line.includes('|')) continue;
+    const line = lines[i];
+    if (!line?.includes('|')) continue;
     const values = line
       .split('|')
       .map((v) => v.trim())
@@ -42,7 +49,8 @@ function parseDefaultTable(content: string): Record<string, unknown>[] {
     const row: Record<string, unknown> = {};
     for (let j = 0; j < headers.length; j++) {
       const val = values[j] ?? '';
-      row[headers[j]!] = coerceValue(val);
+      const header = headers[j];
+      if (header) row[header] = coerceValue(val);
     }
     rows.push(row);
   }
@@ -125,8 +133,8 @@ function parseDefaultDetail(content: string): Record<string, unknown>[] {
  */
 function parseDefaultJson(content: string): Record<string, unknown>[] {
   try {
-    const parsed = JSON.parse(content);
-    if (Array.isArray(parsed)) return parsed;
+    const parsed: unknown = JSON.parse(content);
+    if (Array.isArray(parsed)) return parsed as Record<string, unknown>[];
     return [];
   } catch {
     return [];
@@ -320,7 +328,7 @@ export class ReverseSeedEngine {
       // Determine parser
       let parser: ((content: string) => Record<string, unknown>[]) | null = null;
 
-      if (typeof def.reverseSeed === 'object' && def.reverseSeed?.parser) {
+      if (typeof def.reverseSeed === 'object') {
         parser = def.reverseSeed.parser;
       } else if (def._renderTemplateName) {
         parser = getTemplateParser(def._renderTemplateName);
@@ -366,7 +374,7 @@ export class ReverseSeedEngine {
 
       // Determine parser for entity contexts
       let entityParser: ((content: string) => Record<string, unknown>[]) | null = null;
-      if (typeof tableDef?.reverseSeed === 'object' && tableDef.reverseSeed?.parser) {
+      if (typeof tableDef?.reverseSeed === 'object') {
         entityParser = tableDef.reverseSeed.parser;
       }
 
@@ -428,9 +436,7 @@ export class ReverseSeedEngine {
           try {
             content = readFileSync(filePath, 'utf8');
           } catch {
-            result.warnings.push(
-              `Entity "${table}/${entry}": could not read ${filePath}`,
-            );
+            result.warnings.push(`Entity "${table}/${entry}": could not read ${filePath}`);
             continue;
           }
 
