@@ -1,4 +1,4 @@
-import { join, basename, isAbsolute, resolve } from 'node:path';
+import { join, basename, isAbsolute, resolve, sep } from 'node:path';
 import { mkdirSync, existsSync, copyFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
@@ -218,7 +218,7 @@ export class RenderEngine {
         // Verify the resolved path stays within outputDir
         const resolvedDir = resolve(entityDir);
         const resolvedBase = resolve(outputDir);
-        if (!resolvedDir.startsWith(resolvedBase + '/') && resolvedDir !== resolvedBase) {
+        if (!resolvedDir.startsWith(resolvedBase + sep) && resolvedDir !== resolvedBase) {
           throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
         }
 
