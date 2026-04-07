@@ -37,7 +37,7 @@ export class RenderEngine {
       let rows = this._schema.queryTable(this._adapter, name);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
-        rows = rows.filter((row) => def.relevanceFilter!(row, ctx));
+        rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
       }
       if (def.filter) rows = def.filter(rows);
       // Reward tracking: prune low-scoring rows and sort by reward
@@ -66,7 +66,7 @@ export class RenderEngine {
         }
         // Sort by reward descending (unless prioritizeBy overrides)
         if (!def.prioritizeBy) {
-          rows.sort((a, b) => ((b._reward_total as number) ?? 0) - ((a._reward_total as number) ?? 0));
+          rows.sort((a, b) => Number(b._reward_total) - Number(a._reward_total));
         }
       }
       if (def.enrich) {
@@ -202,10 +202,11 @@ export class RenderEngine {
         // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
         // U+202F in screenshot filenames) with regular space, strip control characters.
         const rawSlug = def.slug(entityRow);
+        // eslint-disable-next-line no-control-regex
         const slug = rawSlug.replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ').replace(/[\x00-\x1F\x7F]/g, '');
 
         // Validate slug against path traversal
-        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~\[\]]/.test(slug)) {
+        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~[\]]/.test(slug)) {
           throw new Error(
             `Invalid slug "${slug}": contains characters outside the allowed set`,
           );
@@ -285,7 +286,7 @@ export class RenderEngine {
         // via explicit `combined` config.
         const fileKeys = Object.keys(def.files);
         const effectiveCombined = def.combined ??
-          (fileKeys.length > 1 && renderedFiles.size > 1 ? { outputFile: fileKeys[0]! } : undefined);
+          (fileKeys.length > 1 && renderedFiles.size > 1 ? { outputFile: fileKeys[0] ?? 'index' } : undefined);
         if (effectiveCombined && renderedFiles.size > 0) {
           const excluded = new Set(effectiveCombined.exclude ?? []);
           const parts: string[] = [];

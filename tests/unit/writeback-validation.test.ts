@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { WritebackPipeline } from '../../src/writeback/pipeline.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,7 +30,7 @@ describe('Writeback validation', () => {
         entries: content.trim().split('\n'),
         nextOffset: content.length,
       }),
-      persist: async (entry) => {
+      persist: (entry) => {
         persisted.push(entry);
       },
       validate: (entry) => {
@@ -70,7 +70,7 @@ describe('Writeback validation', () => {
         entries: content.trim().split('\n'),
         nextOffset: content.length,
       }),
-      persist: async (entry) => {
+      persist: (entry) => {
         persisted.push(entry);
       },
       validate: (entry) => ({
@@ -101,7 +101,7 @@ describe('Writeback validation', () => {
         entries: content.trim().split('\n'),
         nextOffset: content.length,
       }),
-      persist: async (entry) => {
+      persist: (entry) => {
         persisted.push(entry);
       },
     });
@@ -127,11 +127,10 @@ describe('Writeback validation', () => {
         entries: content.trim().split('\n'),
         nextOffset: content.length,
       }),
-      persist: async (entry) => {
+      persist: (entry) => {
         persisted.push(entry);
       },
-      validate: async (entry) => {
-        // Simulate async validation
+      validate: () => {
         return { pass: true, score: 1.0 };
       },
     });

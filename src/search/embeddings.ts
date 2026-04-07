@@ -28,7 +28,7 @@ export async function storeEmbedding(
   const text = config.fields
     .map((f) => {
       const v = row[f];
-      return v == null ? '' : String(v);
+      return v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
     })
     .filter((s) => s.length > 0)
     .join(' ');
@@ -65,9 +65,9 @@ function cosineSimilarity(a: number[], b: number[]): number {
   let magA = 0;
   let magB = 0;
   for (let i = 0; i < len; i++) {
-    dot += a[i]! * b[i]!;
-    magA += a[i]! * a[i]!;
-    magB += b[i]! * b[i]!;
+    dot += (a[i] ?? 0) * (b[i] ?? 0);
+    magA += (a[i] ?? 0) * (a[i] ?? 0);
+    magB += (b[i] ?? 0) * (b[i] ?? 0);
   }
   const denom = Math.sqrt(magA) * Math.sqrt(magB);
   return denom === 0 ? 0 : dot / denom;
