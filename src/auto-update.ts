@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 export interface AutoUpdateResult {
   updated: boolean;
-  packages: Array<{ name: string; from: string; to: string }>;
+  packages: { name: string; from: string; to: string }[];
   restartRequired: boolean;
 }
 
@@ -55,7 +55,11 @@ function isNewer(latest: string, current: string): boolean {
  * Safe to call on every startup — skips if already on latest.
  */
 export async function autoUpdate(opts?: { quiet?: boolean }): Promise<AutoUpdateResult> {
-  const log = opts?.quiet ? () => {} : console.log;
+  const log = opts?.quiet
+    ? () => {
+        /* no-op */
+      }
+    : console.log;
   const result: AutoUpdateResult = { updated: false, packages: [], restartRequired: false };
 
   const installed = getInstalledVersion('latticesql');
