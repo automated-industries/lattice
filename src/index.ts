@@ -85,6 +85,8 @@ export type {
   ReverseSeedResult,
   ReconcileOptions,
   ReconcileResult,
+  ChangelogOptions,
+  ChangeEntry,
 } from './types.js';
 export { contentHash } from './render/writer.js';
 export { estimateTokens, applyTokenBudget } from './render/token-budget.js';

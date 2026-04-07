@@ -36,6 +36,8 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
 
       - name: Verify ESM import
         run: node -e "import('./dist/index.js').then(m => { if (!m.Lattice) throw new Error('ESM export missing'); console.log('ESM OK'); })"
