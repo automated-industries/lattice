@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 export interface AutoUpdateResult {
   updated: boolean;
-  packages: Array<{ name: string; from: string; to: string }>;
+  packages: { name: string; from: string; to: string }[];
   restartRequired: boolean;
 }
 
@@ -57,6 +57,7 @@ function isNewer(latest: string, current: string): boolean {
 export async function autoUpdate(
   opts?: { quiet?: boolean },
 ): Promise<AutoUpdateResult> {
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
   const log = opts?.quiet ? () => {} : console.log;
   const result: AutoUpdateResult = { updated: false, packages: [], restartRequired: false };
 
