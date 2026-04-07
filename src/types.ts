@@ -327,6 +327,22 @@ export interface TableDefinition {
    * When omitted, rows at the end of the query result are pruned first.
    */
   prioritizeBy?: string | ((a: Row, b: Row) => number);
+  /**
+   * Control reverse-seed behaviour for this table.
+   *
+   * When the database table is empty but rendered files still exist on disk,
+   * reverse-seed parses those files back into database rows to recover data
+   * after a DB reset/wipe.
+   *
+   * - `undefined` / `true` — enabled with auto-detection of built-in template parser.
+   * - `false` — disabled (e.g. junction tables, computed tables).
+   * - `{ parser }` — enabled with a custom parser function.
+   *
+   * @since 0.20.0
+   */
+  reverseSeed?: boolean | {
+    parser: (fileContent: string) => Record<string, unknown>[];
+  };
 }
 
 export interface MultiTableDefinition {
@@ -524,6 +540,7 @@ export type LatticeEvent =
   | { type: 'audit'; data: AuditEvent }
   | { type: 'render'; data: RenderResult }
   | { type: 'writeback'; data: { filePath: string; entriesProcessed: number } }
+  | { type: 'reverseSeed'; data: { table: string; rowCount: number; source: 'files' } }
   | { type: 'error'; data: Error };
 
 // ---------------------------------------------------------------------------
@@ -764,6 +781,53 @@ export interface ReverseSyncResult {
   errors: ReverseSyncError[];
 }
 
+// ---------------------------------------------------------------------------
+// Reverse-seed (v0.20+)
+// ---------------------------------------------------------------------------
+
+/**
+ * A missing row detected during reconcile: rendered files exist on disk
+ * but the corresponding database row is absent.
+ *
+ * For entity contexts, each detection represents a single missing entity
+ * (e.g., one agent directory exists but no DB row). For regular tables
+ * (no entity context), a detection means the entire table is empty but
+ * a rendered file exists.
+ */
+export interface ReverseSeedDetection {
+  /** Table the missing data belongs to. */
+  table: string;
+  /**
+   * Entity slug (for entity context tables). Identifies which specific
+   * entity is missing from the DB. Absent for table-level detections.
+   */
+  entity?: string;
+  /** Path to the rendered file or entity directory containing recoverable data. */
+  filePath: string;
+}
+
+/**
+ * Result for a single table's reverse-seed recovery.
+ */
+export interface ReverseSeedTableResult {
+  /** Table name that was reverse-seeded. */
+  table: string;
+  /** Number of rows recovered from files. */
+  rowsRecovered: number;
+}
+
+/**
+ * Aggregate result of the reverse-seed phase.
+ */
+export interface ReverseSeedResult {
+  /** Per-table results. */
+  tables: ReverseSeedTableResult[];
+  /** Total rows recovered across all tables. */
+  totalRowsRecovered: number;
+  /** Warnings (e.g. unparseable files). */
+  warnings: string[];
+}
+
 export interface ReconcileOptions {
   /** Remove entity directories whose slug is no longer in the DB. Default: true. */
   removeOrphanedDirectories?: boolean;
@@ -788,10 +852,36 @@ export interface ReconcileOptions {
    * Default: `true`
    */
   reverseSync?: boolean | 'dry-run';
+  /**
+   * Control reverse-seed behaviour during reconcile.
+   *
+   * When a table is empty but rendered files exist on disk, this controls
+   * whether reconcile automatically recovers data or just flags the condition.
+   *
+   * - `undefined` / omitted — **detect only**: reports empty tables with existing
+   *   files in `result.reverseSeedRequired` but does NOT auto-recover.
+   *   The caller should surface this to a human and let them call
+   *   `db.reverseSeed(outputDir)` explicitly.
+   * - `'auto'` — silently recover data from files into empty tables.
+   *   Useful for daemon/unattended processes that want self-healing.
+   *
+   * Default: detect only (no auto-recovery).
+   */
+  reverseSeed?: 'auto';
 }
 
 export interface ReconcileResult extends RenderResult {
   cleanup: CleanupResult;
   /** Result of the reverse-sync phase. `null` when `reverseSync: false`. */
   reverseSync: ReverseSyncResult | null;
+  /** Result of the reverse-seed phase. `null` when not run or no tables recovered. */
+  reverseSeed: ReverseSeedResult | null;
+  /**
+   * Tables detected as empty while rendered files exist on disk.
+   * Present when `reverseSeed` option is NOT `'auto'` and at least one
+   * table is in this state. The caller should surface this to a human.
+   *
+   * Empty array when all tables have data or no files exist.
+   */
+  reverseSeedRequired: ReverseSeedDetection[];
 }

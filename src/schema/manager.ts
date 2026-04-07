@@ -1,5 +1,5 @@
 import type { StorageAdapter } from '../db/adapter.js';
-import type { TableDefinition, MultiTableDefinition, Migration, Relation, Row } from '../types.js';
+import type { TableDefinition, MultiTableDefinition, Migration, Relation, Row, BuiltinTemplateName } from '../types.js';
 import type { EntityContextDefinition } from './entity-context.js';
 
 export interface RegisteredTable {
@@ -20,6 +20,8 @@ export interface RegisteredMulti {
 export type CompiledTableDef = Omit<TableDefinition, 'render' | 'outputFile'> & {
   render: (rows: Row[]) => string;
   outputFile: string;
+  /** Preserved built-in template name (if any) for reverse-seed parsing. */
+  _renderTemplateName?: BuiltinTemplateName;
 };
 
 export class SchemaManager {
