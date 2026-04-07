@@ -297,8 +297,12 @@ describe('Semantic search via embeddings', () => {
   let db: Lattice;
   const dirs: string[] = [];
 
-  // Helper available for tests that need on-disk DB
-  // function tempDir() { const d = mkdtempSync(join(tmpdir(), 'lattice-embed-')); dirs.push(d); return d; }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  function _tempDir() {
+    const d = mkdtempSync(join(tmpdir(), 'lattice-embed-'));
+    dirs.push(d);
+    return d;
+  }
 
   afterEach(() => {
     db.close();
@@ -321,7 +325,8 @@ describe('Semantic search via embeddings', () => {
     db = new Lattice(':memory:');
     db.define('docs', {
       columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', body: 'TEXT' },
-      render: () => '',
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      render: (_rows) => '',
       outputFile: 'docs.md',
       embeddings: {
         fields: ['title', 'body'],
