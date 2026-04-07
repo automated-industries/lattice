@@ -1,5 +1,12 @@
 import type { StorageAdapter } from '../db/adapter.js';
-import type { TableDefinition, MultiTableDefinition, Migration, Relation, Row, BuiltinTemplateName } from '../types.js';
+import type {
+  TableDefinition,
+  MultiTableDefinition,
+  Migration,
+  Relation,
+  Row,
+  BuiltinTemplateName,
+} from '../types.js';
 import type { EntityContextDefinition } from './entity-context.js';
 
 export interface RegisteredTable {
