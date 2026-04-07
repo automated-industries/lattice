@@ -28,7 +28,6 @@ import type {
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
-  ReverseSeedDetection,
   ReverseSeedResult,
   SearchOptions,
   SearchResult,
