@@ -1018,14 +1018,12 @@ export class Lattice {
    * on the table definition.
    */
   reward(table: string, id: PkLookup, scores: import('./types.js').RewardScores): Promise<void> {
-    const notInit = this._notInitError<void>();
+    const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
 
     const def = this._schema.getTables().get(table);
     if (!def?.rewardTracking) {
-      return Promise.reject(
-        new Error(`Table "${table}" does not have rewardTracking enabled`),
-      );
+      return Promise.reject(new Error(`Table "${table}" does not have rewardTracking enabled`));
     }
 
     // Compute the average of provided dimension scores
@@ -1055,19 +1053,13 @@ export class Lattice {
    * @param opts   - Search options (topK, minScore)
    * @returns Matching rows with similarity scores, sorted best-first.
    */
-  async search(
-    table: string,
-    query: string,
-    opts: SearchOptions = {},
-  ): Promise<SearchResult[]> {
+  async search(table: string, query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
     const notInit = this._notInitError<SearchResult[]>();
     if (notInit) return notInit;
 
     const def = this._schema.getTables().get(table);
     if (!def?.embeddings) {
-      return Promise.reject(
-        new Error(`Table "${table}" does not have embeddings configured`),
-      );
+      return Promise.reject(new Error(`Table "${table}" does not have embeddings configured`));
     }
 
     const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
@@ -1442,7 +1434,7 @@ export class Lattice {
 
     // For insert/update, compute and store embedding asynchronously.
     // Errors are emitted via the error handlers, never thrown.
-    storeEmbedding(this._adapter, table, pk, row, def.embeddings).catch((err) => {
+    storeEmbedding(this._adapter, table, pk, row, def.embeddings).catch((err: unknown) => {
       for (const h of this._errorHandlers) {
         h(err instanceof Error ? err : new Error(String(err)));
       }
