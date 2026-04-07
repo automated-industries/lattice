@@ -1279,8 +1279,8 @@ db.define('tickets', {
   columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', updated_at: 'TEXT' },
   render: (rows) => rows.map((r) => `- ${r.title}`).join('\n'),
   outputFile: 'TICKETS.md',
-  tokenBudget: 4000,            // max estimated tokens (~4 chars/token)
-  prioritizeBy: 'updated_at',   // keep most recent rows when pruning
+  tokenBudget: 4000, // max estimated tokens (~4 chars/token)
+  prioritizeBy: 'updated_at', // keep most recent rows when pruning
 });
 ```
 
@@ -1314,11 +1314,12 @@ db.define('incidents', {
   render: (rows) => JSON.stringify(rows, null, 2),
   outputFile: 'incidents.json',
   enrich: [
-    (rows) => rows.map((r) => ({
-      ...r,
-      _age_hours: Math.round((Date.now() - new Date(r.created_at as string).getTime()) / 3600000),
-    })),
-    (rows) => rows.length > 100 ? [{ _summary: `${rows.length} incidents` }] : rows,
+    (rows) =>
+      rows.map((r) => ({
+        ...r,
+        _age_hours: Math.round((Date.now() - new Date(r.created_at as string).getTime()) / 3600000),
+      })),
+    (rows) => (rows.length > 100 ? [{ _summary: `${rows.length} incidents` }] : rows),
   ],
 });
 ```
@@ -1332,8 +1333,8 @@ db.define('tips', {
   columns: { id: 'TEXT PRIMARY KEY', tip: 'TEXT', deleted_at: 'TEXT' },
   render: (rows) => rows.map((r) => `- ${r.tip}`).join('\n'),
   outputFile: 'TIPS.md',
-  rewardTracking: true,   // auto-adds _reward_total, _reward_count columns
-  pruneBelow: 0.3,         // soft-delete rows with reward < 0.3 (requires deleted_at column)
+  rewardTracking: true, // auto-adds _reward_total, _reward_count columns
+  pruneBelow: 0.3, // soft-delete rows with reward < 0.3 (requires deleted_at column)
 });
 
 await db.init();
@@ -1381,7 +1382,9 @@ Validate agent-written data before persisting. Reject low-quality or hallucinate
 db.defineWriteback({
   file: './agent-output/*.md',
   parse: (content, offset) => ({ entries: [content.slice(offset)], nextOffset: content.length }),
-  persist: async (entry) => { /* save to DB */ },
+  persist: async (entry) => {
+    /* save to DB */
+  },
   validate: async (entry) => {
     const text = entry as string;
     const hasRequiredFields = text.includes('## Title') && text.includes('## Body');
