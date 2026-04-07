@@ -3,6 +3,7 @@
 > Last updated: 2026-04-07
 
 Items are classified as:
+
 - **ROADMAP** — architectural decisions, planned infrastructure changes
 - **FEATURE** — specific capabilities to build, can be scoped into tickets
 
@@ -27,6 +28,7 @@ Items are classified as:
 **Problem:** If the DB is reset/wiped but rendered files exist on disk, all data is lost. There's no mechanism to re-seed from the files that Lattice itself generated.
 
 **Proposed behavior:**
+
 - DB has data → render to files (current behavior)
 - DB table is empty + rendered files exist → parse files back into DB rows
 - Both exist → DB wins (source of truth)
@@ -43,12 +45,14 @@ Items are classified as:
 **Problem:** The learning loop (feedback → playbook → skill) only adds knowledge. There is no process to prune stale context, detect contradictions, or classify conflicts. Context only grows — agent context sizes already hit 225KB for some agents.
 
 **The gap:**
+
 1. **Prune stale context** — old skills, outdated memory entries, superseded playbooks accumulate forever
 2. **Reconcile contradictions** — when new info conflicts with existing knowledge, nobody flags it
 3. **Classify conflicts** — is it idiosyncratic (one-off exception) or systematic (the old rule was wrong)?
 4. **Detect oscillation** — the system flip-flops between two contradictory rules over time
 
 **Proposed reconciliation step in the learning loop:**
+
 ```
 New information arrives
   → Compare against existing knowledge (skills, playbooks, memory)
@@ -61,22 +65,24 @@ New information arrives
 ```
 
 **Three-agent architecture needed:**
+
 1. **Consigliere** — catches point-in-time drift and contradictions
 2. **Knowledge Hygiene agent** — catches temporal patterns (flip-flopping, decay, oscillation)
 3. **Lattice infrastructure** — timestamps + confidence scores on every entry
 
 **Prior art research (2026-04-07):**
 
-| Capability | Best existing implementation | Gap? |
-|---|---|---|
-| Temporal fact tracking | Graphiti (Zep, open source) — 4 timestamps per fact | No |
-| Contradiction detection | Graphiti + AGM Cognitive Memory paper — LLM-based comparison | Partial — brittle on subtle conflicts |
-| Confidence decay on disuse | TTL/recency weighting only | **Yes — nobody has continuous decay** |
-| Anti-oscillation (flip-flop) | Robotics only ("The Irrational Machine") | **Yes — nothing for learning loops** |
-| Exception vs rule change classification | Nobody | **Yes — biggest gap in the field** |
-| Truth Maintenance Systems | Classical AI (1980s) — nobody has integrated with modern agents | **Yes — nobody since the 80s** |
+| Capability                              | Best existing implementation                                    | Gap?                                  |
+| --------------------------------------- | --------------------------------------------------------------- | ------------------------------------- |
+| Temporal fact tracking                  | Graphiti (Zep, open source) — 4 timestamps per fact             | No                                    |
+| Contradiction detection                 | Graphiti + AGM Cognitive Memory paper — LLM-based comparison    | Partial — brittle on subtle conflicts |
+| Confidence decay on disuse              | TTL/recency weighting only                                      | **Yes — nobody has continuous decay** |
+| Anti-oscillation (flip-flop)            | Robotics only ("The Irrational Machine")                        | **Yes — nothing for learning loops**  |
+| Exception vs rule change classification | Nobody                                                          | **Yes — biggest gap in the field**    |
+| Truth Maintenance Systems               | Classical AI (1980s) — nobody has integrated with modern agents | **Yes — nobody since the 80s**        |
 
 **Key papers:**
+
 1. [Graph-Native Cognitive Memory for AI Agents](https://arxiv.org/html/2603.17244v1) (March 2026) — AGM belief revision applied to agent memory
 2. [BeliefShift benchmark](https://arxiv.org/html/2603.23848v1) (March 2026) — metrics for temporal belief consistency and contradiction detection
 3. [Zep/Graphiti](https://arxiv.org/html/2501.13956v1) (January 2025) — temporal knowledge graph, closest production implementation
@@ -95,6 +101,7 @@ New information arrives
 **Problem:** Current writes are full row overwrites. Last-write-wins, no merge, no history. When a skill is updated, the previous version is gone.
 
 **Proposed behavior:**
+
 - Each write to skills/playbooks/feedback is a versioned operation with a flag: `add`, `replace`, `delete`
 - Operations are appended to a change log (not overwriting the row directly)
 - The current state is the result of replaying the log (or a materialized view)
@@ -113,6 +120,7 @@ New information arrives
 **Problem:** Knowledge items (skills, playbooks) are binary — active or deleted. There's no signal for "this skill hasn't been exercised in 3 months and conflicts with 2 newer playbooks."
 
 **Proposed:**
+
 - Every knowledge item gets a `confidence` score (0.0–1.0) and `last_exercised_at` timestamp
 - Confidence decays over time if the item isn't used/validated
 - Low-confidence items are flagged for review (not auto-deleted — Sarah decides)
@@ -130,6 +138,7 @@ New information arrives
 **Problem:** The system might flip-flop between contradictory rules — add rule A, then evidence suggests B, then back to A. The Consigliere catches point-in-time drift but not temporal oscillation patterns.
 
 **Proposed:**
+
 - Track the history of changes to each knowledge item (requires event log, #4)
 - Detect when an item has been updated > N times with alternating content
 - Apply "margin-to-switch" threshold — don't change a rule unless the new evidence is significantly stronger than the current rule
@@ -156,6 +165,7 @@ ALTER TABLE skills ADD COLUMN confidence REAL DEFAULT 1.0;     -- 0.0 to 1.0, de
 Same for playbooks and feedback. That's it — no graph databases, no RL, no embeddings.
 
 **Contradiction detection** is a simple query:
+
 ```sql
 -- Find skills with overlapping scope that were updated close together with different content
 SELECT a.slug, b.slug, a.updated_at, b.updated_at
@@ -167,12 +177,15 @@ AND ABS(julianday(a.updated_at) - julianday(b.updated_at)) < 7;
 **Oscillation detection** is just `change_count` — if a skill has been edited > N times in M days, flag it.
 
 **Pruning score** (when ready):
+
 ```
 score = (usage_frequency * 0.4) + (recency * 0.3) + (consistency * 0.3)
 ```
+
 Low score → flag for Sarah's review. Never auto-delete.
 
 **Reference links from ChatGPT research (useful ones only):**
+
 - [OpenAI Cookbook: Temporal agents with knowledge graphs](https://cookbook.openai.com/examples/temporal_agents) — foundation for time-aware facts
 - [Claude Code issue: Temporal context graph](https://github.com/anthropics/claude-code/issues) — aligned proposal for facts + constraints + events
 - [Awesome TKGC repo](https://github.com/nhutnamhee/awesome-temporal-knowledge-graph-completion) — reading list for temporal KG patterns

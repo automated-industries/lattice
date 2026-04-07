@@ -381,9 +381,11 @@ export interface TableDefinition {
    *
    * @since 0.20.0
    */
-  reverseSeed?: boolean | {
-    parser: (fileContent: string) => Record<string, unknown>[];
-  };
+  reverseSeed?:
+    | boolean
+    | {
+        parser: (fileContent: string) => Record<string, unknown>[];
+      };
   /**
    * Enable automatic change tracking for this table. When `true`, every
    * insert, update, and delete is recorded in `__lattice_changelog` with
