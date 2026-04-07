@@ -28,7 +28,10 @@ export async function storeEmbedding(
   const text = config.fields
     .map((f) => {
       const v = row[f];
-      return v == null ? '' : String(v);
+      if (v == null) return '';
+      if (typeof v === 'string') return v;
+      if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+      return JSON.stringify(v);
     })
     .filter((s) => s.length > 0)
     .join(' ');
@@ -45,15 +48,11 @@ export async function storeEmbedding(
 /**
  * Remove a stored embedding.
  */
-export function removeEmbedding(
-  adapter: StorageAdapter,
-  table: string,
-  pk: string,
-): void {
-  adapter.run(
-    `DELETE FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`,
-    [table, pk],
-  );
+export function removeEmbedding(adapter: StorageAdapter, table: string, pk: string): void {
+  adapter.run(`DELETE FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`, [
+    table,
+    pk,
+  ]);
 }
 
 /**
@@ -65,9 +64,11 @@ function cosineSimilarity(a: number[], b: number[]): number {
   let magA = 0;
   let magB = 0;
   for (let i = 0; i < len; i++) {
-    dot += a[i]! * b[i]!;
-    magA += a[i]! * a[i]!;
-    magB += b[i]! * b[i]!;
+    const ai = a[i] ?? 0;
+    const bi = b[i] ?? 0;
+    dot += ai * bi;
+    magA += ai * ai;
+    magB += bi * bi;
   }
   const denom = Math.sqrt(magA) * Math.sqrt(magB);
   return denom === 0 ? 0 : dot / denom;

@@ -37,7 +37,7 @@ export class RenderEngine {
       let rows = this._schema.queryTable(this._adapter, name);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
-        rows = rows.filter((row) => def.relevanceFilter!(row, ctx));
+        rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
       }
       if (def.filter) rows = def.filter(rows);
       // Reward tracking: prune low-scoring rows and sort by reward
@@ -45,9 +45,7 @@ export class RenderEngine {
         if (def.pruneBelow !== undefined) {
           const threshold = def.pruneBelow;
           const toPrune = rows.filter(
-            (r) =>
-              (r._reward_count as number) > 0 &&
-              (r._reward_total as number) < threshold,
+            (r) => (r._reward_count as number) > 0 && (r._reward_total as number) < threshold,
           );
           if (toPrune.length > 0) {
             for (const r of toPrune) {
@@ -58,15 +56,13 @@ export class RenderEngine {
               );
             }
             rows = rows.filter(
-              (r) =>
-                (r._reward_count as number) === 0 ||
-                (r._reward_total as number) >= threshold,
+              (r) => (r._reward_count as number) === 0 || (r._reward_total as number) >= threshold,
             );
           }
         }
         // Sort by reward descending (unless prioritizeBy overrides)
         if (!def.prioritizeBy) {
-          rows.sort((a, b) => ((b._reward_total as number) ?? 0) - ((a._reward_total as number) ?? 0));
+          rows.sort((a, b) => (b._reward_total as number) - (a._reward_total as number));
         }
       }
       if (def.enrich) {
@@ -202,13 +198,14 @@ export class RenderEngine {
         // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
         // U+202F in screenshot filenames) with regular space, strip control characters.
         const rawSlug = def.slug(entityRow);
-        const slug = rawSlug.replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ').replace(/[\x00-\x1F\x7F]/g, '');
+        const slug = rawSlug
+          .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+          // eslint-disable-next-line no-control-regex
+          .replace(/[\u0000-\u001F\u007F]/g, '');
 
         // Validate slug against path traversal
-        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~\[\]]/.test(slug)) {
-          throw new Error(
-            `Invalid slug "${slug}": contains characters outside the allowed set`,
-          );
+        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~[\]]/.test(slug)) {
+          throw new Error(`Invalid slug "${slug}": contains characters outside the allowed set`);
         }
 
         const entityDir = def.directory
@@ -284,8 +281,12 @@ export class RenderEngine {
         // containing all connected context. This can be overridden or disabled
         // via explicit `combined` config.
         const fileKeys = Object.keys(def.files);
-        const effectiveCombined = def.combined ??
-          (fileKeys.length > 1 && renderedFiles.size > 1 ? { outputFile: fileKeys[0]! } : undefined);
+        const effectiveCombined =
+          def.combined ??
+          (fileKeys.length > 1 && renderedFiles.size > 1
+            ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+              { outputFile: fileKeys[0]! }
+            : undefined);
         if (effectiveCombined && renderedFiles.size > 0) {
           const excluded = new Set(effectiveCombined.exclude ?? []);
           const parts: string[] = [];
