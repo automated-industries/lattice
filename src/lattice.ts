@@ -29,6 +29,8 @@ import type {
   ReconcileResult,
   SearchOptions,
   SearchResult,
+  ChangelogOptions,
+  ChangeEntry,
 } from './types.js';
 import { readManifest } from './lifecycle/manifest.js';
 import type Database from 'better-sqlite3';
@@ -100,6 +102,11 @@ export class Lattice {
   /** Raw encryption key passphrase from constructor options. */
   private readonly _encryptionKeyRaw?: string;
 
+  /** Changelog retention options. */
+  private readonly _changelogOptions?: ChangelogOptions;
+  /** Set of table names that have changelog: true. */
+  private readonly _changelogTables = new Set<string>();
+
   /** Current task context string for relevance filtering. */
   private _taskContext = '';
 
@@ -143,6 +150,7 @@ export class Lattice {
     this._writeback = new WritebackPipeline();
 
     if (options.encryptionKey) this._encryptionKeyRaw = options.encryptionKey;
+    if (options.changelog) this._changelogOptions = options.changelog;
 
     this._sanitizer.onAudit((event) => {
       for (const h of this._auditHandlers) h(event);
@@ -189,6 +197,7 @@ export class Lattice {
       outputFile: def.outputFile ?? `.schema-only/${table}.md`,
     };
     this._schema.define(table, compiledDef);
+    if (def.changelog) this._changelogTables.add(table);
     return this;
   }
 
@@ -240,6 +249,12 @@ export class Lattice {
     const hasEmbeddings = [...this._schema.getTables().values()].some((d) => d.embeddings);
     if (hasEmbeddings) {
       ensureEmbeddingsTable(this._adapter);
+    }
+
+    // Create changelog table if any table uses changelog tracking
+    if (this._changelogTables.size > 0) {
+      this._ensureChangelogTable();
+      this._pruneChangelog();
     }
 
     // Set up encryption for entity contexts that declare encrypted: true|{columns}
@@ -386,6 +401,7 @@ export class Lattice {
     const pkCol = pkCols[0] ?? 'id';
     const rawPk = rowWithPk[pkCol];
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
+    this._appendChangelog(table, pkValue, 'insert', rowWithPk, null);
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
@@ -480,11 +496,25 @@ export class Lattice {
       .join(', ');
 
     const { clause, params: pkParams } = this._pkWhere(table, id);
+
+    // Capture previous values before the write for changelog
+    let previousValues: Record<string, unknown> | null = null;
+    if (this._changelogTables.has(table)) {
+      const current = this._adapter.get(`SELECT * FROM "${table}" WHERE ${clause}`, pkParams);
+      if (current) {
+        previousValues = {};
+        for (const col of Object.keys(sanitized)) {
+          previousValues[col] = current[col];
+        }
+      }
+    }
+
     const values = [...Object.values(encrypted), ...pkParams];
 
     this._adapter.run(`UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
 
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
+    this._appendChangelog(table, auditId, 'update', sanitized, previousValues);
     this._sanitizer.emitAudit(table, 'update', auditId);
     this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     // Re-fetch full row for embedding recomputation
@@ -513,9 +543,17 @@ export class Lattice {
     if (notInit) return notInit;
 
     const { clause, params } = this._pkWhere(table, id);
+
+    // Capture full row before deletion for changelog
+    let previousRow: Row | null = null;
+    if (this._changelogTables.has(table)) {
+      previousRow = this._adapter.get(`SELECT * FROM "${table}" WHERE ${clause}`, params) ?? null;
+    }
+
     this._adapter.run(`DELETE FROM "${table}" WHERE ${clause}`, params);
 
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
+    this._appendChangelog(table, auditId, 'delete', null, previousRow as Record<string, unknown> | null);
     this._sanitizer.emitAudit(table, 'delete', auditId);
     this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
     this._syncEmbedding(table, 'delete', {}, auditId);
@@ -1439,6 +1477,350 @@ export class Lattice {
         h(err instanceof Error ? err : new Error(String(err)));
       }
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Changelog internals
+  // -------------------------------------------------------------------------
+
+  /** Create the __lattice_changelog table and index. */
+  private _ensureChangelogTable(): void {
+    this._adapter.run(`
+      CREATE TABLE IF NOT EXISTS __lattice_changelog (
+        id TEXT PRIMARY KEY,
+        table_name TEXT NOT NULL,
+        row_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        changes TEXT,
+        previous TEXT,
+        source TEXT,
+        reason TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      )
+    `);
+    this._adapter.run(`
+      CREATE INDEX IF NOT EXISTS idx_changelog_row
+      ON __lattice_changelog (table_name, row_id, created_at)
+    `);
+  }
+
+  /** Append a changelog entry if the table has changelog enabled. */
+  private _appendChangelog(
+    table: string,
+    rowId: string,
+    operation: 'insert' | 'update' | 'delete' | 'rollback',
+    changes: Record<string, unknown> | null,
+    previous: Record<string, unknown> | null,
+    source?: string,
+    reason?: string,
+  ): void {
+    if (!this._changelogTables.has(table)) return;
+    const id = uuidv4();
+    this._adapter.run(
+      `INSERT INTO __lattice_changelog (id, table_name, row_id, operation, changes, previous, source, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        table,
+        rowId,
+        operation,
+        changes ? JSON.stringify(changes) : null,
+        previous ? JSON.stringify(previous) : null,
+        source ?? null,
+        reason ?? null,
+      ],
+    );
+  }
+
+  /** Prune changelog entries based on retention policy. */
+  private _pruneChangelog(): void {
+    const opts = this._changelogOptions;
+    if (!opts) return;
+
+    if (opts.retentionDays != null && opts.retentionDays > 0) {
+      this._adapter.run(
+        `DELETE FROM __lattice_changelog
+         WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)`,
+        [`-${String(opts.retentionDays)} days`],
+      );
+    }
+
+    if (opts.maxEntriesPerRow != null && opts.maxEntriesPerRow > 0) {
+      // Delete entries beyond the max per (table_name, row_id), keeping the newest
+      this._adapter.run(
+        `DELETE FROM __lattice_changelog WHERE id IN (
+           SELECT c.id FROM __lattice_changelog c
+           INNER JOIN (
+             SELECT table_name, row_id, COUNT(*) as cnt
+             FROM __lattice_changelog
+             GROUP BY table_name, row_id
+             HAVING cnt > ?
+           ) g ON c.table_name = g.table_name AND c.row_id = g.row_id
+           WHERE c.created_at <= (
+             SELECT created_at FROM __lattice_changelog c2
+             WHERE c2.table_name = c.table_name AND c2.row_id = c.row_id
+             ORDER BY c2.created_at DESC
+             LIMIT 1 OFFSET ?
+           )
+         )`,
+        [opts.maxEntriesPerRow, opts.maxEntriesPerRow],
+      );
+    }
+  }
+
+  /** Parse a raw changelog DB row into a ChangeEntry. */
+  private _parseChangeEntry(row: Row): ChangeEntry {
+    return {
+      id: row.id as string,
+      table: row.table_name as string,
+      rowId: row.row_id as string,
+      operation: row.operation as ChangeEntry['operation'],
+      changes: row.changes ? (JSON.parse(row.changes as string) as Record<string, unknown>) : null,
+      previous: row.previous
+        ? (JSON.parse(row.previous as string) as Record<string, unknown>)
+        : null,
+      source: row.source != null ? (row.source as string) : null,
+      reason: row.reason != null ? (row.reason as string) : null,
+      createdAt: row.created_at as string,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Changelog public API
+  // -------------------------------------------------------------------------
+
+  /**
+   * Get change history for a specific row, newest first.
+   */
+  history(
+    table: string,
+    id: string,
+    opts?: { limit?: number },
+  ): Promise<ChangeEntry[]> {
+    const notInit = this._notInitError<ChangeEntry[]>();
+    if (notInit) return notInit;
+
+    const limit = opts?.limit ?? 100;
+    const rows = this._adapter.all(
+      `SELECT *, rowid AS _rowid FROM __lattice_changelog
+       WHERE table_name = ? AND row_id = ?
+       ORDER BY rowid DESC
+       LIMIT ?`,
+      [table, id, limit],
+    );
+    return Promise.resolve(rows.map((r) => this._parseChangeEntry(r)));
+  }
+
+  /**
+   * Get recent changes across tables.
+   */
+  recentChanges(opts?: {
+    table?: string;
+    since?: string;
+    limit?: number;
+  }): Promise<ChangeEntry[]> {
+    const notInit = this._notInitError<ChangeEntry[]>();
+    if (notInit) return notInit;
+
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+
+    if (opts?.table) {
+      clauses.push('table_name = ?');
+      params.push(opts.table);
+    }
+    if (opts?.since) {
+      clauses.push('created_at >= ?');
+      params.push(opts.since);
+    }
+
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const limit = opts?.limit ?? 100;
+
+    const rows = this._adapter.all(
+      `SELECT *, rowid AS _rowid FROM __lattice_changelog ${where}
+       ORDER BY rowid DESC
+       LIMIT ?`,
+      [...params, limit],
+    );
+    return Promise.resolve(rows.map((r) => this._parseChangeEntry(r)));
+  }
+
+  /**
+   * Rollback a specific change by applying the inverse operation.
+   * The rollback itself is recorded as a new changelog entry.
+   */
+  rollback(changeId: string): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+
+    const entry = this._adapter.get(
+      `SELECT * FROM __lattice_changelog WHERE id = ?`,
+      [changeId],
+    );
+    if (!entry) {
+      return Promise.reject(new Error(`Lattice: changelog entry "${changeId}" not found`));
+    }
+
+    const parsed = this._parseChangeEntry(entry);
+    const { clause, params: pkParams } = this._pkWhere(parsed.table, parsed.rowId);
+
+    switch (parsed.operation) {
+      case 'insert':
+        // Undo insert → delete the row
+        this._adapter.run(`DELETE FROM "${parsed.table}" WHERE ${clause}`, pkParams);
+        break;
+
+      case 'update':
+        // Undo update → restore previous values
+        if (!parsed.previous) {
+          return Promise.reject(
+            new Error(`Lattice: changelog entry "${changeId}" has no previous values to restore`),
+          );
+        }
+        {
+          const setCols = Object.keys(parsed.previous)
+            .map((c) => `"${c}" = ?`)
+            .join(', ');
+          this._adapter.run(
+            `UPDATE "${parsed.table}" SET ${setCols} WHERE ${clause}`,
+            [...Object.values(parsed.previous), ...pkParams],
+          );
+        }
+        break;
+
+      case 'delete':
+        // Undo delete → re-insert the row
+        if (!parsed.previous) {
+          return Promise.reject(
+            new Error(`Lattice: changelog entry "${changeId}" has no previous row to restore`),
+          );
+        }
+        {
+          const cols = Object.keys(parsed.previous)
+            .map((c) => `"${c}"`)
+            .join(', ');
+          const placeholders = Object.keys(parsed.previous)
+            .map(() => '?')
+            .join(', ');
+          this._adapter.run(
+            `INSERT INTO "${parsed.table}" (${cols}) VALUES (${placeholders})`,
+            Object.values(parsed.previous),
+          );
+        }
+        break;
+
+      default:
+        return Promise.reject(
+          new Error(`Lattice: cannot rollback operation "${parsed.operation}"`),
+        );
+    }
+
+    // Record the rollback as a new changelog entry
+    this._appendChangelog(
+      parsed.table,
+      parsed.rowId,
+      'rollback',
+      parsed.previous, // The values we restored to become the "changes"
+      parsed.changes,   // The values we undid become the "previous"
+      'system',
+      `rollback of ${changeId}`,
+    );
+
+    return Promise.resolve();
+  }
+
+  /**
+   * Show field-level diff between two changelog entries for the same row.
+   */
+  diff(
+    table: string,
+    id: string,
+    fromChangeId: string,
+    toChangeId: string,
+  ): Promise<Record<string, { old: unknown; new: unknown }>> {
+    const notInit = this._notInitError<Record<string, { old: unknown; new: unknown }>>();
+    if (notInit) return notInit;
+
+    const fromSnap = this.snapshot(table, id, fromChangeId);
+    const toSnap = this.snapshot(table, id, toChangeId);
+
+    return Promise.all([fromSnap, toSnap]).then(([fromState, toState]) => {
+      const result: Record<string, { old: unknown; new: unknown }> = {};
+      const allKeys = new Set([...Object.keys(fromState), ...Object.keys(toState)]);
+      for (const key of allKeys) {
+        const oldVal = fromState[key];
+        const newVal = toState[key];
+        if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+          result[key] = { old: oldVal ?? null, new: newVal ?? null };
+        }
+      }
+      return result;
+    });
+  }
+
+  /**
+   * Reconstruct the row state at a specific changelog entry by replaying
+   * all operations up to and including that entry.
+   */
+  snapshot(
+    table: string,
+    id: string,
+    changeId: string,
+  ): Promise<Record<string, unknown>> {
+    const notInit = this._notInitError<Record<string, unknown>>();
+    if (notInit) return notInit;
+
+    // Get the target entry's rowid for reliable ordering
+    const target = this._adapter.get(
+      `SELECT rowid FROM __lattice_changelog WHERE id = ?`,
+      [changeId],
+    );
+    if (!target) {
+      return Promise.reject(new Error(`Lattice: changelog entry "${changeId}" not found`));
+    }
+
+    // Get all entries for this row up to and including the target, in insertion order
+    const entries = this._adapter.all(
+      `SELECT * FROM __lattice_changelog
+       WHERE table_name = ? AND row_id = ? AND rowid <= ?
+       ORDER BY rowid ASC`,
+      [table, id, target.rowid],
+    );
+
+    // Replay to build state
+    let state: Record<string, unknown> = {};
+    for (const raw of entries) {
+      const entry = this._parseChangeEntry(raw);
+      switch (entry.operation) {
+        case 'insert':
+          state = { ...state, ...(entry.changes ?? {}) };
+          break;
+        case 'update':
+          state = { ...state, ...(entry.changes ?? {}) };
+          break;
+        case 'delete':
+          state = {};
+          break;
+        case 'rollback':
+          // Rollback restores the "changes" field (which holds what was restored)
+          state = { ...state, ...(entry.changes ?? {}) };
+          break;
+      }
+    }
+    return Promise.resolve(state);
+  }
+
+  /**
+   * Manually prune changelog entries based on the configured retention policy.
+   * Also callable directly for on-demand cleanup.
+   */
+  pruneChangelog(): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+
+    this._pruneChangelog();
+    return Promise.resolve();
   }
 
   private _notInitError<T>(): Promise<T> | null {
