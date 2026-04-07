@@ -10,6 +10,47 @@ export interface LatticeOptions {
    * The key is derived via scrypt before use — provide a strong passphrase.
    */
   encryptionKey?: string;
+  /**
+   * Configuration for the change log. When provided, tables with
+   * `changelog: true` automatically record every insert, update, and
+   * delete to `__lattice_changelog`.
+   */
+  changelog?: ChangelogOptions;
+}
+
+/**
+ * Retention policy for the change log.
+ */
+export interface ChangelogOptions {
+  /** Auto-prune entries older than this many days. */
+  retentionDays?: number;
+  /** Keep at most this many entries per row. */
+  maxEntriesPerRow?: number;
+}
+
+/**
+ * A single entry in the change log returned by `history()` and
+ * `recentChanges()`.
+ */
+export interface ChangeEntry {
+  /** Unique ID of this changelog entry. */
+  id: string;
+  /** Table that was modified. */
+  table: string;
+  /** Primary key of the affected row. */
+  rowId: string;
+  /** The operation that was performed. */
+  operation: 'insert' | 'update' | 'delete' | 'rollback';
+  /** JSON object of the fields that changed (null for deletes). */
+  changes: Record<string, unknown> | null;
+  /** Previous values of changed fields (null for inserts). */
+  previous: Record<string, unknown> | null;
+  /** Who made the change (from caller context). */
+  source: string | null;
+  /** Why the change was made (optional). */
+  reason: string | null;
+  /** ISO timestamp of when the change was recorded. */
+  createdAt: string;
 }
 
 export interface SecurityOptions {
@@ -327,6 +368,14 @@ export interface TableDefinition {
    * When omitted, rows at the end of the query result are pruned first.
    */
   prioritizeBy?: string | ((a: Row, b: Row) => number);
+  /**
+   * Enable automatic change tracking for this table. When `true`, every
+   * insert, update, and delete is recorded in `__lattice_changelog` with
+   * full field-level diffs and rollback capability.
+   *
+   * @default false
+   */
+  changelog?: boolean;
 }
 
 export interface MultiTableDefinition {
