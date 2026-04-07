@@ -106,22 +106,22 @@ Must be called **before** `init()`. Throws if called after `init()`.
 
 **`TableDefinition`** fields:
 
-| Field              | Type                       | Required | Description                                                        |
-| ------------------ | -------------------------- | -------- | ------------------------------------------------------------------ |
-| `columns`          | `Record<string, string>`   | yes      | Column name → SQLite column spec                                   |
-| `render`           | `RenderSpec`               | yes      | How to render rows into context text                               |
-| `outputFile`       | `string`                   | yes      | Output file path (relative to `outputDir` in `render()`/`watch()`) |
-| `filter`           | `(rows: Row[]) => Row[]`   | no       | Pre-filter applied before render                                   |
-| `primaryKey`       | `PrimaryKey`               | no       | Primary key column(s); defaults to `'id'`                          |
-| `tableConstraints` | `string[]`                 | no       | Table-level SQL constraints (e.g. composite PK)                    |
-| `relations`        | `Record<string, Relation>` | no       | Declared foreign-key relationships                                 |
-| `embeddings`       | `EmbeddingsConfig`         | no       | Enable semantic search via embeddings (v1.3+)                      |
-| `rewardTracking`   | `boolean`                  | no       | Auto-add `_reward_total`/`_reward_count` columns (v1.3+)          |
-| `pruneBelow`       | `number`                   | no       | Soft-delete rows with reward below threshold (v1.3+)               |
-| `enrich`           | `((rows: Row[]) => Row[])[]` | no     | Row transform pipeline before rendering (v1.3+)                    |
-| `relevanceFilter`  | `(row, ctx) => boolean`    | no       | Filter by task context before rendering (v1.3+)                    |
-| `tokenBudget`      | `number`                   | no       | Max estimated tokens for rendered output (v1.3+)                   |
-| `prioritizeBy`     | `string \| comparator`     | no       | Row priority when token budget prunes (v1.3+)                      |
+| Field              | Type                         | Required | Description                                                        |
+| ------------------ | ---------------------------- | -------- | ------------------------------------------------------------------ |
+| `columns`          | `Record<string, string>`     | yes      | Column name → SQLite column spec                                   |
+| `render`           | `RenderSpec`                 | yes      | How to render rows into context text                               |
+| `outputFile`       | `string`                     | yes      | Output file path (relative to `outputDir` in `render()`/`watch()`) |
+| `filter`           | `(rows: Row[]) => Row[]`     | no       | Pre-filter applied before render                                   |
+| `primaryKey`       | `PrimaryKey`                 | no       | Primary key column(s); defaults to `'id'`                          |
+| `tableConstraints` | `string[]`                   | no       | Table-level SQL constraints (e.g. composite PK)                    |
+| `relations`        | `Record<string, Relation>`   | no       | Declared foreign-key relationships                                 |
+| `embeddings`       | `EmbeddingsConfig`           | no       | Enable semantic search via embeddings (v1.3+)                      |
+| `rewardTracking`   | `boolean`                    | no       | Auto-add `_reward_total`/`_reward_count` columns (v1.3+)           |
+| `pruneBelow`       | `number`                     | no       | Soft-delete rows with reward below threshold (v1.3+)               |
+| `enrich`           | `((rows: Row[]) => Row[])[]` | no       | Row transform pipeline before rendering (v1.3+)                    |
+| `relevanceFilter`  | `(row, ctx) => boolean`      | no       | Filter by task context before rendering (v1.3+)                    |
+| `tokenBudget`      | `number`                     | no       | Max estimated tokens for rendered output (v1.3+)                   |
+| `prioritizeBy`     | `string \| comparator`       | no       | Row priority when token budget prunes (v1.3+)                      |
 
 ---
 
@@ -445,7 +445,7 @@ Set the current task context string. Tables with a `relevanceFilter` use this va
 ```ts
 db.setTaskContext('deployment issues');
 await db.render('./context'); // only relevant rows rendered
-db.setTaskContext('');        // clear — all rows rendered
+db.setTaskContext(''); // clear — all rows rendered
 ```
 
 #### `getTaskContext(): string`
@@ -473,10 +473,10 @@ const results = await db.search('docs', 'deploy to production', { topK: 5, minSc
 
 **`SearchOptions`**:
 
-| Field      | Type     | Default | Description                          |
-| ---------- | -------- | ------- | ------------------------------------ |
-| `topK`     | `number` | `10`    | Max results to return                |
-| `minScore` | `number` | `0`     | Minimum cosine similarity threshold  |
+| Field      | Type     | Default | Description                         |
+| ---------- | -------- | ------- | ----------------------------------- |
+| `topK`     | `number` | `10`    | Max results to return               |
+| `minScore` | `number` | `0`     | Minimum cosine similarity threshold |
 
 **`SearchResult`**: `{ row: Row, score: number }`
 
