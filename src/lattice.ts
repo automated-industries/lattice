@@ -36,7 +36,9 @@ import type {
 } from './types.js';
 import { readManifest } from './lifecycle/manifest.js';
 import type Database from 'better-sqlite3';
+import type { StorageAdapter } from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
+import { PostgresAdapter } from './db/postgres.js';
 import { SchemaManager } from './schema/manager.js';
 import type { CompiledTableDef } from './schema/manager.js';
 import { Sanitizer } from './security/sanitize.js';
@@ -85,8 +87,31 @@ type EventHandler<T> = (data: T) => void;
  */
 export type PkLookup = string | Record<string, unknown>;
 
+/**
+ * Pick the right adapter based on the connection string's scheme.
+ *
+ * Supported forms:
+ * - `postgres://...`, `postgresql://...` → PostgresAdapter
+ * - `file:...` → SQLiteAdapter (strips the `file:` prefix; useful for explicit disambiguation)
+ * - `:memory:` → SQLiteAdapter (in-memory, current behavior)
+ * - any other plain path → SQLiteAdapter (current default; preserves backward compat)
+ *
+ * Override via `options.adapter` to bring your own adapter or to inject a
+ * pre-opened connection.
+ */
+function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
+  if (/^postgres(ql)?:\/\//i.test(dbPath)) {
+    return new PostgresAdapter(dbPath);
+  }
+  const sqlitePath = dbPath.startsWith('file:') ? dbPath.slice('file:'.length) : dbPath;
+  const adapterOpts: { wal?: boolean; busyTimeout?: number } = {};
+  if (options.wal !== undefined) adapterOpts.wal = options.wal;
+  if (options.busyTimeout !== undefined) adapterOpts.busyTimeout = options.busyTimeout;
+  return new SQLiteAdapter(sqlitePath, adapterOpts);
+}
+
 export class Lattice {
-  private readonly _adapter: SQLiteAdapter;
+  private readonly _adapter: StorageAdapter;
   private readonly _schema: SchemaManager;
   private readonly _sanitizer: Sanitizer;
   private readonly _render: RenderEngine;
@@ -147,10 +172,7 @@ export class Lattice {
       }
     }
 
-    const adapterOpts: { wal?: boolean; busyTimeout?: number } = {};
-    if (options.wal !== undefined) adapterOpts.wal = options.wal;
-    if (options.busyTimeout !== undefined) adapterOpts.busyTimeout = options.busyTimeout;
-    this._adapter = new SQLiteAdapter(dbPath, adapterOpts);
+    this._adapter = options.adapter ?? buildAdapter(dbPath, options);
     this._schema = new SchemaManager();
     this._sanitizer = new Sanitizer(options.security);
     this._render = new RenderEngine(this._schema, this._adapter, () => this._taskContext);
@@ -253,10 +275,9 @@ export class Lattice {
     }
     // Snapshot actual columns post-migration: schema state only includes declared
     // columns, so migration-added columns would be stripped by _filterToSchemaColumns
-    // without this PRAGMA-based cache.
+    // without this introspection-based cache.
     for (const tableName of this._schema.getTables().keys()) {
-      const rows = this._adapter.all(`PRAGMA table_info("${tableName}")`);
-      this._columnCache.set(tableName, new Set(rows.map((r) => r.name as string)));
+      this._columnCache.set(tableName, new Set(this._adapter.introspectColumns(tableName)));
     }
 
     // Create embeddings table if any table uses embeddings
@@ -291,8 +312,7 @@ export class Lattice {
     this._schema.applyMigrations(this._adapter, migrations);
     // Refresh column cache for any tables affected by migrations
     for (const tableName of this._schema.getTables().keys()) {
-      const rows = this._adapter.all(`PRAGMA table_info("${tableName}")`);
-      this._columnCache.set(tableName, new Set(rows.map((r) => r.name as string)));
+      this._columnCache.set(tableName, new Set(this._adapter.introspectColumns(tableName)));
     }
     return Promise.resolve();
   }
@@ -337,8 +357,7 @@ export class Lattice {
       }
       this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
       // Get actual column names from the DB
-      const pragmaRows = this._adapter.all(`PRAGMA table_info("${table}")`);
-      const allCols = pragmaRows.map((r) => r.name as string);
+      const allCols = this._adapter.introspectColumns(table);
       const encCols = resolveEncryptedColumns(def.encrypted, allCols);
       this._encryptedTableColumns.set(table, encCols);
     }
@@ -1394,8 +1413,25 @@ export class Lattice {
   // Escape hatch
   // -------------------------------------------------------------------------
 
+  /**
+   * Direct access to the underlying better-sqlite3 handle. SQLite-only — throws
+   * if the configured adapter isn't a SQLiteAdapter (e.g. when running on
+   * Postgres). Use `.adapter` for portable access.
+   */
   get db(): Database.Database {
+    if (!(this._adapter instanceof SQLiteAdapter)) {
+      throw new Error(
+        '.db is only available on SQLiteAdapter. The current adapter is ' +
+          this._adapter.constructor.name +
+          ' — use .adapter for portable access or switch to a SQLite connection string.',
+      );
+    }
     return this._adapter.db;
+  }
+
+  /** Direct access to the configured StorageAdapter. Portable across backends. */
+  get adapter(): StorageAdapter {
+    return this._adapter;
   }
 
   // -------------------------------------------------------------------------
@@ -1415,8 +1451,7 @@ export class Lattice {
   private _ensureColumnCache(table: string): Set<string> {
     let cols = this._columnCache.get(table);
     if (!cols) {
-      const rows = this._adapter.all(`PRAGMA table_info("${table}")`);
-      cols = new Set(rows.map((r) => r.name as string));
+      cols = new Set(this._adapter.introspectColumns(table));
       if (cols.size > 0) this._columnCache.set(table, cols);
     }
     return cols;
