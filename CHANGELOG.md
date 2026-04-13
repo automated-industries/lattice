@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.3] — 2026-04-13
+
+### Fixed
+
+- **PostgresAdapter worker now runs.** 1.6.2 emitted `dist/postgres-worker.js` but the published `package.json` has `"type": "module"`, so Node 18+ treats every `.js` file in the package as ESM. The worker is built as CJS (it `require()`s `pg` and `synckit`), so loading it failed with `require is not defined in ES module scope`. The synckit `try/catch` masked this as the misleading "requires 'pg' and 'synckit'" message. Worker now ships as `dist/postgres-worker.cjs`; `PostgresAdapter` constructor resolves the `.cjs` extension. End-to-end Postgres connection now works under Node 18 / 20 / 22 / 24.
+
+### Note
+
+If you tried 1.6.2 and got the same misleading "requires 'pg' and 'synckit'" error, this is the actual fix. 1.6.0 / 1.6.1 / 1.6.2 should not be used with the Postgres backend.
+
 ## [1.6.2] — 2026-04-13
 
 ### Fixed
