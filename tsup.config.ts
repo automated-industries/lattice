@@ -28,4 +28,26 @@ export default defineConfig([
     outDir: 'dist',
     banner: { js: '#!/usr/bin/env node' },
   },
+
+  // -------------------------------------------------------------------------
+  // PostgresAdapter worker — must be a standalone CJS file alongside the
+  // bundled library at `dist/postgres-worker.js` because synckit loads it
+  // via `new Worker(workerPath)` and PostgresAdapter resolves the path with
+  // `path.join(__dirname, 'postgres-worker.js')` — and after bundling,
+  // `__dirname` is `dist/` (the location of `dist/index.js`), not
+  // `dist/db/`. CJS so the worker can `require('pg')` and `require('synckit')`
+  // from the consumer app's node_modules at runtime (these are
+  // optionalDependencies of latticesql).
+  // -------------------------------------------------------------------------
+  {
+    entry: { 'postgres-worker': 'src/db/postgres-worker.ts' },
+    format: ['cjs'],
+    dts: false,
+    splitting: false,
+    sourcemap: false,
+    target: 'node18',
+    outDir: 'dist',
+    outExtension: () => ({ js: '.js' }),
+    external: ['pg', 'synckit'],
+  },
 ]);
