@@ -47,7 +47,11 @@ export default defineConfig([
     sourcemap: false,
     target: 'node18',
     outDir: 'dist',
-    outExtension: () => ({ js: '.js' }),
+    // .cjs extension is REQUIRED. The published package.json has
+    // `"type": "module"`, so a `.js` file is treated as ESM and Node
+    // refuses to run our CJS-built worker (`require is not defined`).
+    // The .cjs extension forces CJS treatment regardless of `type`.
+    outExtension: () => ({ js: '.cjs' }),
     external: ['pg', 'synckit'],
   },
 ]);
