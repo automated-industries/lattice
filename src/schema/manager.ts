@@ -168,8 +168,8 @@ export class SchemaManager {
       return adapter.all(`SELECT * FROM "${name}"`);
     }
     if (this._entityContexts.has(name)) {
-      const cols = adapter.all(`PRAGMA table_info("${name}")`);
-      const hasDeletedAt = cols.some((c) => (c as Record<string, unknown>).name === 'deleted_at');
+      const cols = adapter.introspectColumns(name);
+      const hasDeletedAt = cols.includes('deleted_at');
       return adapter.all(
         `SELECT * FROM "${name}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`,
       );
@@ -197,40 +197,12 @@ export class SchemaManager {
     table: string,
     columns: Record<string, string>,
   ): void {
-    const existing = adapter.all(`PRAGMA table_info("${table}")`).map((r) => r.name as string);
-
+    const existing = adapter.introspectColumns(table);
     for (const [col, type] of Object.entries(columns)) {
-      if (!existing.includes(col)) {
-        // SQLite does not allow adding PRIMARY KEY columns via ALTER TABLE.
-        // Skip PK columns — if the table already exists, it has its own PK.
-        if (type.toUpperCase().includes('PRIMARY KEY')) continue;
-
-        // SQLite ALTER TABLE ADD COLUMN requires constant defaults.
-        // CURRENT_TIMESTAMP, datetime('now'), etc. are non-constant and will error.
-        // Strip NOT NULL and replace non-constant defaults for the ALTER statement,
-        // then backfill existing rows with the intended default.
-        const upperType = type.toUpperCase();
-        const hasNonConstantDefault =
-          upperType.includes('CURRENT_TIMESTAMP') ||
-          upperType.includes("DATETIME('NOW')") ||
-          upperType.includes('RANDOM()');
-
-        if (hasNonConstantDefault) {
-          // Remove NOT NULL and replace DEFAULT <non-constant> with no default
-          const safeType = type
-            .replace(/\bNOT\s+NULL\b/gi, '')
-            .replace(/\bDEFAULT\s+CURRENT_TIMESTAMP\b/gi, '')
-            .replace(/\bDEFAULT\s+datetime\([^)]*\)/gi, '')
-            .replace(/\bDEFAULT\s+RANDOM\(\)/gi, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-          adapter.run(`ALTER TABLE "${table}" ADD COLUMN "${col}" ${safeType || 'TEXT'}`);
-          // Backfill existing rows with the intended default
-          adapter.run(`UPDATE "${table}" SET "${col}" = CURRENT_TIMESTAMP WHERE "${col}" IS NULL`);
-        } else {
-          adapter.run(`ALTER TABLE "${table}" ADD COLUMN "${col}" ${type}`);
-        }
-      }
+      if (existing.includes(col)) continue;
+      // Adapter handles dialect-specific quirks (SQLite non-constant default
+      // workarounds, Postgres native DEFAULT NOW(), PK skip, etc.).
+      adapter.addColumn(table, col, type);
     }
   }
 }
