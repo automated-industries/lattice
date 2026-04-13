@@ -36,7 +36,10 @@ export class PostgresAdapter implements StorageAdapter {
 
   constructor(connectionString: string, options: PostgresAdapterOptions = {}) {
     this._connectionString = connectionString;
-    this._workerPath = options.workerPath ?? path.join(__dirname, 'postgres-worker.js');
+    // .cjs extension because the published package.json has `"type": "module"`
+    // and the worker is built as CJS — Node refuses to run a `.js` CJS file
+    // under `type: module`. tsup emits the worker as `dist/postgres-worker.cjs`.
+    this._workerPath = options.workerPath ?? path.join(__dirname, 'postgres-worker.cjs');
   }
 
   open(): void {
