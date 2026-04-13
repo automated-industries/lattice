@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.2] — 2026-04-13
+
+### Fixed
+
+- **`PostgresAdapter` worker file now ships in the published tarball.** The 1.6.0 / 1.6.1 dist included the bundled library + CLI but not the `postgres-worker.js` file that `synckit` loads via `new Worker(workerPath)`. Result: any consumer that called `new Lattice('postgres://…').init()` got an immediate `"PostgresAdapter requires 'pg' and 'synckit'"` error even when both were installed — the catch block masked the real `Cannot find module 'postgres-worker.js'` error from synckit. `tsup.config.ts` now emits `dist/postgres-worker.js` as a standalone CJS bundle alongside the main library, with `pg` + `synckit` declared external so they resolve from the consumer app's `node_modules` at runtime.
+
+### Note
+
+If you tried 1.6.0 or 1.6.1 with a Postgres connection string and got the misleading "requires pg and synckit" error, upgrade to 1.6.2 — `pg` and `synckit` were correctly installed; the worker file just wasn't there to load them.
+
 ## [1.6.1] — 2026-04-13
 
 ### Added — extra `PostgresAdapter` dialect translations
