@@ -6,6 +6,56 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.0] — 2026-04-13
+
+### Added
+
+- **Pluggable database backend.** Lattice now supports either SQLite (the existing default) or any Postgres-compatible database via a new `PostgresAdapter`. Pass a connection string and Lattice picks the right adapter:
+  - `new Lattice('/path/to/db.sqlite')` — SQLite (unchanged).
+  - `new Lattice(':memory:')` — in-memory SQLite (unchanged).
+  - `new Lattice('file:/path/to/db.sqlite')` — explicit SQLite via `file:` scheme.
+  - `new Lattice('postgres://user:pass@host:5432/db')` — Postgres.
+  - `new Lattice('postgresql://...')` — Postgres (alternate scheme).
+  - `new Lattice(anyPath, { adapter: myAdapter })` — bring your own adapter.
+- **`StorageAdapter` interface gains two methods:** `introspectColumns(table)` and `addColumn(table, col, typeSpec)`. Implementations dispatch on their own dialect (SQLite uses `PRAGMA table_info`, Postgres uses `information_schema`; SQLite handles non-constant defaults via backfill, Postgres natively).
+- **Public exports** for advanced consumers: `StorageAdapter`, `PreparedStatement`, `SQLiteAdapter`, `PostgresAdapter`, `PostgresAdapterOptions`.
+- **`Lattice.adapter`** getter — portable accessor for the configured `StorageAdapter`. The existing `Lattice.db` getter still returns the better-sqlite3 handle but throws when the adapter isn't a `SQLiteAdapter`.
+
+### Changed
+
+- `Lattice` constructor signature is unchanged for SQLite users — the same `new Lattice(path)` form continues to work, with the same `wal` / `busyTimeout` options.
+- `_addMissingColumns` and the four `PRAGMA table_info(…)` call sites in `Lattice` and `SchemaManager` now go through `adapter.introspectColumns(table)` and `adapter.addColumn(table, col, type)`. Behavior under SQLite is identical; the refactor enables the Postgres path.
+
+### Implementation notes
+
+- `PostgresAdapter` runs `pg` inside a `synckit` worker thread so the synchronous `StorageAdapter` interface can wrap an inherently async client. Each query pays ~1–3 ms of message-passing overhead — fine for Lattice's batch-insert + periodic-render workload, not OLTP-grade. If/when a workload genuinely needs async throughput, an async `StorageAdapter` variant can be added without breaking SQLite consumers.
+- `?` placeholders are translated to `$N` automatically. The translator skips over single-quoted strings, double-quoted identifiers, and SQL comments, so `?` characters inside those are left alone.
+- `BLOB` column types are translated to `BYTEA` automatically inside `addColumn`. `datetime('now')` and `RANDOM()` are translated to `NOW()` and `random()` respectively.
+- `pg` and `synckit` ship as `optionalDependencies` — SQLite-only consumers don't pay the install cost. The `PostgresAdapter` constructor throws a clear error message if either is missing.
+
+### Provider notes
+
+- Any Postgres-compatible database that speaks the standard wire protocol on port 5432 should work — including managed providers like Supabase, Neon, and RDS.
+- When using a connection pooler, prefer **session-mode pooling**. Transaction-mode poolers typically do not support prepared statements across transactions, which would break Lattice's `adapter.prepare()` pattern.
+
+### Limitations (out of scope for this release)
+
+- `lastInsertRowid` is `0` on the Postgres path. Use `TEXT PRIMARY KEY` (UUIDs) for portable schemas; if you need a fresh integer ID after insert on Postgres, write your own `INSERT … RETURNING id` query.
+- Two SQLite-only paths remain: `fixSchemaConflicts(db)` (lifecycle helper) and the writeback session-apply machinery both take a raw better-sqlite3 handle. Postgres consumers shouldn't call them.
+- A migration tool that dumps an existing SQLite Lattice DB into Postgres is not included. Use a generic SQLite → Postgres migration tool, or `INSERT … SELECT` row-by-row.
+
+## [1.5.0] — 2026-04-08
+
+### Note
+
+Published to npm without a corresponding `CHANGELOG.md` entry. Reconstructed from `git log` between v1.3.1 and v1.5.0 — primarily formatting / tooling fixes (incremental changelog writes, Windows path-separator handling, prettier formatting, lint cleanup). No public API changes.
+
+## [1.4.0] — 2026-04-08
+
+### Note
+
+Published to npm without a corresponding `CHANGELOG.md` entry. Reconstructed from `git log` — see notes for 1.5.0.
+
 ## [1.3.0] — 2026-04-04
 
 ### Added
