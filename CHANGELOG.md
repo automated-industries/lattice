@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.5] — 2026-04-13
+
+### Fixed
+
+- **`PostgresAdapter` now uses `createRequire(import.meta.url)` to load `pg` and `synckit`.** The bundler's `__require` shim throws "Dynamic require of '…' is not supported" under ESM, which fell into the catch block and surfaced as the misleading "requires 'pg' and 'synckit'" error even when both packages were installed and reachable. Switched to `createRequire(import.meta.url)` rooted at this file's URL, which builds a real CJS require that walks up from `latticesql/dist/` and finds the consumer's `node_modules` entries. Error messages now include the underlying require error so future failures are diagnosable.
+
+### Note
+
+This is the fourth attempt at making the Postgres backend actually work end-to-end (1.6.0 missed the worker file, 1.6.2 added it as `.js` under `type: module` so Node refused to load it, 1.6.3 fixed the extension, 1.6.4 marked deps external, 1.6.5 fixes the require shim). With this version, `new Lattice('postgres://...').init()` succeeds against a real Supabase project.
+
 ## [1.6.4] — 2026-04-13
 
 ### Fixed
