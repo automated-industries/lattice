@@ -6,6 +6,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.1] — 2026-04-13
+
+### Added — extra `PostgresAdapter` dialect translations
+
+The `PostgresAdapter` rewriter (introduced in 1.6.0) gains four more SQLite → Postgres translations so existing migration code that uses common SQLite idioms keeps working unchanged when pointed at a Postgres connection string:
+
+| SQLite | Postgres translation | Notes |
+|---|---|---|
+| `INSERT OR IGNORE INTO …` | `INSERT INTO … ON CONFLICT DO NOTHING` | Strips `OR IGNORE`, appends `ON CONFLICT DO NOTHING` to the statement tail. Skipped if the user already wrote an explicit `ON CONFLICT` clause. Requires at least one unique constraint on the target table. |
+| `INSERT OR REPLACE INTO …` | (intentionally not translated — throws) | The correct `ON CONFLICT (col) DO UPDATE SET …` form depends on the conflict target, which the translator can't infer. Surface the error so the operator picks the right form. |
+| `randomblob(N)` | `gen_random_bytes(N)` | Requires `pgcrypto`. `PostgresAdapter.open()` now runs `CREATE EXTENSION IF NOT EXISTS pgcrypto` idempotently — succeeds on Supabase / Neon / RDS, warns (non-fatally) on hosted Postgres providers that restrict CREATE EXTENSION. |
+| `hex(<expr>)` | `encode(<expr>, 'hex')` | Postgres lacks the SQLite `hex()` shorthand. Composite `lower(hex(randomblob(16)))` (a common 32-char hex-id pattern) translates to `lower(encode(gen_random_bytes(16), 'hex'))`. |
+
+`INSERT OR IGNORE` translation is **string-literal aware** — the keywords are not rewritten if they appear inside quoted user data. `randomblob` / `hex` translations are not string-aware (the alternative breaks the common `hex('abc')` literal-argument case); the documented limitation is that storing the literal text `"hex(...)"` inside a single-quoted user data string will get the function name rewritten. Real migrations virtually never store SQL function names inside user data.
+
+### Changed
+
+- `PostgresAdapter.open()` now runs `CREATE EXTENSION IF NOT EXISTS pgcrypto` once per connection. Failures are warned (`console.warn`) but non-fatal — providers that restrict CREATE EXTENSION can still use the adapter as long as `pgcrypto` is enabled out-of-band.
+- `_translateDialectForTest` exported from `src/db/postgres.ts` for unit testing of the new translation passes.
+
+### Tests
+
+12 new unit tests in `tests/unit/postgres-rewrite.test.ts` — `INSERT OR IGNORE` (5), `randomblob` / `hex` (5), `INSERT OR REPLACE` rejection (1), composite end-to-end (1). All 551 tests pass.
+
 ## [1.6.0] — 2026-04-13
 
 ### Added
