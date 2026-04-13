@@ -529,8 +529,7 @@ export class ReverseSeedEngine {
    */
   private _insertOrIgnore(table: string, row: Record<string, unknown>): boolean {
     // Get actual columns from the table
-    const colInfoRows = this._adapter.all(`PRAGMA table_info("${table}")`);
-    const validColumns = new Set(colInfoRows.map((r) => r.name as string));
+    const validColumns = new Set(this._adapter.introspectColumns(table));
 
     // Filter row to valid columns only
     const filtered: Record<string, unknown> = {};
