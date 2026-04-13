@@ -14,6 +14,20 @@ export interface StorageAdapter {
   open(): void;
   /** Close the connection */
   close(): void;
+  /**
+   * Return the column names of a table. Used by the schema layer to detect
+   * missing columns and to drive entity-context queries. Implementations
+   * dispatch on their own dialect (SQLite uses `PRAGMA table_info`, Postgres
+   * uses `information_schema.columns`).
+   */
+  introspectColumns(table: string): string[];
+  /**
+   * Add a column to an existing table. Implementations handle dialect quirks:
+   * SQLite cannot use non-constant defaults in `ALTER TABLE ADD COLUMN` and
+   * must backfill them; Postgres handles `DEFAULT NOW()`/`DEFAULT random()`
+   * natively.
+   */
+  addColumn(table: string, column: string, typeSpec: string): void;
 }
 
 export interface PreparedStatement {
