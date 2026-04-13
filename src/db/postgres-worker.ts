@@ -37,6 +37,23 @@ runAsWorker(async (action: Action): Promise<Result> => {
         if (client) return { ok: true };
         client = new Client({ connectionString: action.connectionString });
         await client.connect();
+        // Idempotently enable pgcrypto for gen_random_bytes() — needed by the
+        // randomblob() translation. Schema lookup defaults to whatever the
+        // server already uses (Supabase puts it in `extensions`); re-running
+        // is a no-op when the extension is already present.
+        try {
+          await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+        } catch (extErr) {
+          // Some hosted Postgres providers restrict CREATE EXTENSION. Surface
+          // as a warning, not a fatal — the extension may already be enabled
+          // in another schema, in which case gen_random_bytes will resolve at
+          // call time and we're fine.
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[PostgresAdapter] CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
+            extErr instanceof Error ? extErr.message : extErr,
+          );
+        }
         return { ok: true };
       }
       case 'close': {
