@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.4] — 2026-04-13
+
+### Fixed
+
+- **`pg`, `synckit`, and `@pkgr/core` are now external in the bundle.** 1.6.0 through 1.6.3 inadvertently bundled all three into `dist/index.js`. That broke under ESM consumers because `@pkgr/core` (a transitive dep of synckit) calls `createRequire(import.meta.url)` at module init — which throws when `import.meta` is the bundler's stub object (`{}`). The error fell into `PostgresAdapter.open()`'s catch and surfaced as the misleading `"requires 'pg' and 'synckit'"` message even though both were installed.
+- After this fix, `pg` and `synckit` resolve from the consumer's `node_modules` at runtime (where they belong as `optionalDependencies`). End-to-end Postgres now works from ESM consumers.
+
+### Note
+
+Versions 1.6.0 / 1.6.1 / 1.6.2 / 1.6.3 are all affected by the bundling bug. 1.6.4 is the first version where `new Lattice('postgres://…').init()` actually succeeds.
+
 ## [1.6.3] — 2026-04-13
 
 ### Fixed
