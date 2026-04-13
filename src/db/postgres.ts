@@ -1,10 +1,19 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import type { StorageAdapter, PreparedStatement } from './adapter.js';
 import type { Row } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// In an ESM bundle, the global `require` is not defined and tsup's `__require`
+// shim throws "Dynamic require of '...' is not supported". We need a real
+// runtime `require` to load `pg` and `synckit` (which are optionalDependencies
+// the consumer installs into their node_modules). createRequire solves this:
+// it builds a CommonJS `require` rooted at the URL of this file, so it walks
+// up from `latticesql/dist/` and finds the consumer's `node_modules` entries.
+const requireFromHere = createRequire(import.meta.url);
 
 /**
  * Pluggable Postgres backend for Lattice.
@@ -46,20 +55,24 @@ export class PostgresAdapter implements StorageAdapter {
     if (this._opened) return;
     let createSyncFn: (worker: string) => (action: unknown) => unknown;
     try {
-      // Dynamic require so SQLite-only consumers don't need synckit installed.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      ({ createSyncFn } = require('synckit') as typeof import('synckit'));
-    } catch {
+      // requireFromHere = createRequire(import.meta.url). Lets us load
+      // optionalDependencies from the consumer's node_modules without relying
+      // on the bundler's `__require` shim (which throws under ESM).
+      ({ createSyncFn } = requireFromHere('synckit') as typeof import('synckit'));
+    } catch (err) {
       throw new Error(
-        "PostgresAdapter requires 'pg' and 'synckit'. Install with:\n  npm install pg synckit",
+        "PostgresAdapter requires 'synckit'. Install with: npm install synckit\n" +
+          'Underlying error: ' +
+          (err instanceof Error ? err.message : String(err)),
       );
     }
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('pg');
-    } catch {
+      requireFromHere('pg');
+    } catch (err) {
       throw new Error(
-        "PostgresAdapter requires 'pg' and 'synckit'. Install with:\n  npm install pg synckit",
+        "PostgresAdapter requires 'pg'. Install with: npm install pg\n" +
+          'Underlying error: ' +
+          (err instanceof Error ? err.message : String(err)),
       );
     }
     this._syncFn = createSyncFn(this._workerPath);
