@@ -13,6 +13,12 @@ export default defineConfig([
     clean: true,
     target: 'node18',
     outDir: 'dist',
+    // pg + synckit are optionalDependencies. They MUST be external — bundling
+    // them breaks under ESM consumers because @pkgr/core (synckit's dep)
+    // calls createRequire(import.meta.url) which throws when bundled inline.
+    // Leaving them external lets Node resolve them from the consumer's
+    // node_modules at runtime, which works in both ESM and CJS contexts.
+    external: ['pg', 'synckit', '@pkgr/core'],
   },
 
   // -------------------------------------------------------------------------
