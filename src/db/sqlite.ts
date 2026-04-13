@@ -53,4 +53,39 @@ export class SQLiteAdapter implements StorageAdapter {
       all: (...params: unknown[]) => stmt.all(...params) as Row[],
     };
   }
+
+  introspectColumns(table: string): string[] {
+    const rows = this.all(`PRAGMA table_info("${table}")`);
+    return rows.map((r) => r.name as string);
+  }
+
+  /**
+   * SQLite ALTER TABLE ADD COLUMN requires constant defaults. CURRENT_TIMESTAMP,
+   * datetime('now'), and RANDOM() are non-constant and reject. Strip them for
+   * the ALTER, then backfill existing rows. Skip PRIMARY KEY columns — SQLite
+   * cannot add those via ALTER, and if the table exists it has its own PK.
+   */
+  addColumn(table: string, column: string, typeSpec: string): void {
+    const upperType = typeSpec.toUpperCase();
+    if (upperType.includes('PRIMARY KEY')) return;
+
+    const hasNonConstantDefault =
+      upperType.includes('CURRENT_TIMESTAMP') ||
+      /DATETIME\s*\(\s*'NOW'\s*\)/i.test(typeSpec) ||
+      upperType.includes('RANDOM()');
+
+    if (hasNonConstantDefault) {
+      const safeType = typeSpec
+        .replace(/\bNOT\s+NULL\b/gi, '')
+        .replace(/\bDEFAULT\s+CURRENT_TIMESTAMP\b/gi, '')
+        .replace(/\bDEFAULT\s+datetime\([^)]*\)/gi, '')
+        .replace(/\bDEFAULT\s+RANDOM\(\)/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      this.run(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${safeType || 'TEXT'}`);
+      this.run(`UPDATE "${table}" SET "${column}" = CURRENT_TIMESTAMP WHERE "${column}" IS NULL`);
+    } else {
+      this.run(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${typeSpec}`);
+    }
+  }
 }

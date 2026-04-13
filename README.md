@@ -1,6 +1,6 @@
 # latticesql
 
-**Persistent memory for AI agents.** Keeps a SQLite database and a set of context files in sync — so every agent session starts with accurate state, and agent output becomes permanent data.
+**Persistent memory for AI agents.** Keeps a SQLite **or Postgres** database and a set of context files in sync — so every agent session starts with accurate state, and agent output becomes permanent data.
 
 [![npm version](https://img.shields.io/npm/v/latticesql.svg)](https://www.npmjs.com/package/latticesql)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
@@ -59,6 +59,7 @@ Lattice has no opinions about your schema, your agents, or your file format. You
 - [CLI — lattice generate](#cli--lattice-generate)
 - [Schema migrations](#schema-migrations)
 - [Security](#security)
+- [Pluggable backends (v1.6+)](#pluggable-backends-v16)
 - [Architecture](#architecture)
 - [Examples](#examples)
 - [Staying up to date](#staying-up-to-date)
@@ -74,7 +75,24 @@ Lattice has no opinions about your schema, your agents, or your file format. You
 npm install latticesql
 ```
 
-Requires **Node.js 18+**. Uses `better-sqlite3` — no external database process needed.
+Requires **Node.js 18+**. The default backend is SQLite (`better-sqlite3`) — no external database process needed.
+
+To use the Postgres backend (for Supabase, Neon, RDS, or any other Postgres-compatible database), install the optional dependencies:
+
+```bash
+npm install latticesql pg synckit
+```
+
+Then pass a connection string instead of a file path:
+
+```ts
+import { Lattice } from 'latticesql';
+
+const lattice = new Lattice('postgres://user:pass@host:5432/db');
+// rest of your setup is identical to the SQLite path
+```
+
+See [Pluggable backends](#pluggable-backends-v16) below for full details.
 
 ---
 
@@ -2098,6 +2116,100 @@ const db = new Lattice('./app.db', {
 ```
 
 **SQL injection** — all values are passed as bound parameters; no user input is ever interpolated into SQL strings.
+
+---
+
+## Pluggable backends (v1.6+)
+
+Lattice ships with two storage adapters and a pluggable interface so you can bring your own.
+
+### Picking a backend by connection string
+
+The `Lattice` constructor inspects the first argument and picks the right adapter:
+
+| First argument | Adapter | When to use |
+|---|---|---|
+| `'/abs/path/to/db.sqlite'` (or any plain path) | `SQLiteAdapter` | Default. Local file, no server. |
+| `':memory:'` | `SQLiteAdapter` | In-memory SQLite. Great for tests. |
+| `'file:/abs/path/to/db.sqlite'` | `SQLiteAdapter` | Same as the plain path form, with the scheme spelled out. |
+| `'postgres://user:pass@host:5432/db'` | `PostgresAdapter` | Postgres-compatible cloud DB (Supabase, Neon, RDS, …). |
+| `'postgresql://user:pass@host:5432/db'` | `PostgresAdapter` | Same as `postgres://`. |
+| any string + `{ adapter: myAdapter }` | your adapter | Bring your own implementation. |
+
+```ts
+import { Lattice } from 'latticesql';
+
+// SQLite (default)
+const local = new Lattice('./data/lattice.db');
+
+// Postgres (Supabase / Neon / RDS / etc.)
+const cloud = new Lattice('postgres://postgres:secret@db.example.com:5432/agent');
+
+// Bring your own
+const custom = new Lattice('ignored', { adapter: new MyCustomAdapter() });
+```
+
+The rest of the API — `define()`, `init()`, `query()`, `insert()`, `render()`, `migrate()`, `watch()`, `reverseSync()`, `reverseSeed()` — is unchanged across both backends.
+
+### Postgres setup
+
+`PostgresAdapter` depends on `pg` and `synckit`. Both are listed as `optionalDependencies`, so SQLite-only consumers don't pay the install cost. Install them when you actually use Postgres:
+
+```bash
+npm install pg synckit
+```
+
+Then point Lattice at any Postgres-compatible database that speaks the standard wire protocol on port 5432:
+
+```ts
+const lattice = new Lattice('postgres://user:pass@host:5432/db');
+await lattice.init();
+```
+
+**Connection pooler note:** if you put a pooler (e.g. PgBouncer, Supabase pooler) in front of your database, prefer **session-mode pooling**. Transaction-mode poolers do not support prepared statements across transactions, which would break Lattice's `adapter.prepare()` pattern.
+
+**Why a worker thread under the hood:** the `StorageAdapter` interface is synchronous because `better-sqlite3` is sync. Every Node Postgres client is async. `PostgresAdapter` runs `pg` inside a `synckit` worker thread and blocks the main thread on `Atomics.wait` until the worker posts its reply. Each query pays ~1–3 ms of message-passing overhead — fine for Lattice's batch-insert + periodic-render workload. If you ever need OLTP-grade throughput, the interface can grow an async variant without breaking SQLite consumers.
+
+**Schema portability:** Lattice's table definitions are mostly portable SQL. The adapter handles the few dialect differences automatically:
+
+- `?` placeholders are translated to `$1, $2, …` for Postgres. Single-quoted strings, double-quoted identifiers, and SQL comments are skipped — `?` characters inside those are left alone.
+- `BLOB` column types are translated to `BYTEA` inside `addColumn`. Use `BLOB` in your `TableDefinition` and it works on both backends.
+- `datetime('now')` and `RANDOM()` defaults are translated to `NOW()` and `random()` for Postgres.
+- Use `TEXT PRIMARY KEY` (UUIDs) for portable primary keys. `INTEGER PRIMARY KEY` auto-increments on SQLite but not Postgres — if you need it on Postgres, use a sequence or `GENERATED ALWAYS AS IDENTITY`.
+
+### Bring your own adapter
+
+The interface is small enough to implement against any backend:
+
+```ts
+export interface StorageAdapter {
+  run(sql: string, params?: unknown[]): void;
+  get(sql: string, params?: unknown[]): Row | undefined;
+  all(sql: string, params?: unknown[]): Row[];
+  prepare(sql: string): PreparedStatement;
+  open(): void;
+  close(): void;
+  introspectColumns(table: string): string[];
+  addColumn(table: string, column: string, typeSpec: string): void;
+}
+```
+
+Pass your implementation via `options.adapter`:
+
+```ts
+import { Lattice } from 'latticesql';
+import type { StorageAdapter } from 'latticesql';
+
+class MyMySQLAdapter implements StorageAdapter { /* … */ }
+
+const lattice = new Lattice('ignored', { adapter: new MyMySQLAdapter() });
+```
+
+### Limitations
+
+- `PreparedStatement.run()` returns `lastInsertRowid: 0` on the Postgres path. SQLite consumers that rely on `lastInsertRowid` should switch to `TEXT PRIMARY KEY` (UUIDs) for portability, or write `INSERT … RETURNING id` queries explicitly.
+- Two SQLite-only paths remain: `fixSchemaConflicts(db)` (the lifecycle helper that takes a raw `Database.Database` argument) and the writeback session-apply machinery. Postgres consumers shouldn't call them.
+- A built-in migration tool (SQLite → Postgres) is not included. Use a generic SQLite → Postgres migration tool, or `INSERT … SELECT` row-by-row.
 
 ---
 

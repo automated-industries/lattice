@@ -1,5 +1,7 @@
 export type Row = Record<string, unknown>;
 
+import type { StorageAdapter } from './db/adapter.js';
+
 export interface LatticeOptions {
   wal?: boolean;
   busyTimeout?: number;
@@ -16,6 +18,12 @@ export interface LatticeOptions {
    * delete to `__lattice_changelog`.
    */
   changelog?: ChangelogOptions;
+  /**
+   * Bring-your-own adapter override. When set, the connection-string scheme
+   * is ignored and this adapter is used directly. Useful for tests, custom
+   * backends, or pre-opened connections.
+   */
+  adapter?: StorageAdapter;
 }
 
 /**
