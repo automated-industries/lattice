@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.6] — 2026-04-14
+
+### Fixed
+
+- **`INSERT OR IGNORE ... SELECT ...` with string literals in the SELECT body now translates correctly.** Previously the `ON CONFLICT DO NOTHING` clause was appended per code region in `translateDialect`, which put it directly after the column list when the SELECT body contained string literals (they split the SQL into multiple code regions in the tokenizer). The resulting SQL had the clause before the `SELECT ... FROM ... LIMIT N` tail, which Postgres rejected with `syntax error near '<string literal>'`. Fix: track the `INSERT OR IGNORE` flag across the whole statement and append `ON CONFLICT DO NOTHING` once at the END of the full SQL. Regression test added for the canonical `INSERT OR IGNORE INTO file ... SELECT 'uuid', id, 'name', ... FROM org LIMIT 1` pattern that the Automated Industries app's migrations use.
+
 ## [1.6.5] — 2026-04-13
 
 ### Fixed
