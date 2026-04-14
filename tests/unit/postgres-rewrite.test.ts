@@ -145,4 +145,23 @@ describe('PostgresAdapter — composite end-to-end (translateDialect + rewritePa
       "INSERT INTO agent_project (id, agent_id, project_id) VALUES (lower(encode(gen_random_bytes(16), 'hex')), $1, $2) ON CONFLICT DO NOTHING",
     );
   });
+
+  // Regression test for the mid-statement ON CONFLICT bug: the SELECT body
+  // of an INSERT OR IGNORE ... SELECT contains string literals, which split
+  // the SQL into multiple code regions in mapCodeRegions. The per-region
+  // append would put ON CONFLICT DO NOTHING BEFORE the SELECT body, which
+  // Postgres rejects with "syntax error near '<string literal>'". Fix: the
+  // append runs at the whole-statement level, after all regions are walked.
+  it('appends ON CONFLICT at the END of the full statement, not per code region', () => {
+    const sql = `INSERT OR IGNORE INTO file (id, org_id, name, file_path, created_at)
+      SELECT 'cee71dd7-6656-42b6-855d-9986210f5b43', id, 'Industry City Consulting Agreement (Final)', 'files/cee71dd7-.../name.docx', CURRENT_TIMESTAMP FROM org LIMIT 1`;
+    const out = translateDialect(sql);
+    // The last non-whitespace tokens should be FROM org LIMIT 1 ON CONFLICT DO NOTHING
+    expect(out.trim().endsWith('FROM org LIMIT 1 ON CONFLICT DO NOTHING')).toBe(true);
+    // And OR IGNORE should be gone
+    expect(out).not.toMatch(/OR\s+IGNORE/i);
+    // And the string literals should be preserved verbatim
+    expect(out).toContain("'cee71dd7-6656-42b6-855d-9986210f5b43'");
+    expect(out).toContain("'Industry City Consulting Agreement (Final)'");
+  });
 });
