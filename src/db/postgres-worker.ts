@@ -38,20 +38,37 @@ runAsWorker(async (action: Action): Promise<Result> => {
         client = new Client({ connectionString: action.connectionString });
         await client.connect();
         // Idempotently enable pgcrypto for gen_random_bytes() — needed by the
-        // randomblob() translation. Schema lookup defaults to whatever the
-        // server already uses (Supabase puts it in `extensions`); re-running
-        // is a no-op when the extension is already present.
+        // randomblob() translation. Non-fatal on providers that restrict
+        // CREATE EXTENSION (the extension may already be enabled elsewhere).
         try {
           await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
         } catch (extErr) {
-          // Some hosted Postgres providers restrict CREATE EXTENSION. Surface
-          // as a warning, not a fatal — the extension may already be enabled
-          // in another schema, in which case gen_random_bytes will resolve at
-          // call time and we're fine.
           // eslint-disable-next-line no-console
           console.warn(
             '[PostgresAdapter] CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
             extErr instanceof Error ? extErr.message : extErr,
+          );
+        }
+        // Register a SQLite-compatible `json_extract(doc, path)` polyfill so
+        // migrations written against SQLite's JSON syntax work on Postgres
+        // unchanged. Path is the SQLite-flavored `$.a.b.c` form — strip the
+        // leading `$.` and split on `.` to feed Postgres's `jsonb #>> array`
+        // operator. Non-fatal if CREATE FUNCTION is permission-restricted.
+        try {
+          await client.query(
+            `CREATE OR REPLACE FUNCTION json_extract(doc text, path text)
+             RETURNS text
+             LANGUAGE sql
+             IMMUTABLE
+             AS $fn$
+               SELECT doc::jsonb #>> string_to_array(regexp_replace(path, '^\\$\\.?', ''), '.')
+             $fn$;`,
+          );
+        } catch (jeErr) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[PostgresAdapter] could not register json_extract polyfill:',
+            jeErr instanceof Error ? jeErr.message : jeErr,
           );
         }
         return { ok: true };
