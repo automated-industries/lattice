@@ -204,6 +204,17 @@ function translateDialect(sql: string): string {
     s = s.replace(/(\s*;?\s*)$/, ' ON CONFLICT DO NOTHING$1');
   }
 
+  // CREATE VIEW IF NOT EXISTS → CREATE OR REPLACE VIEW. SQLite supports
+  // `IF NOT EXISTS` on views; Postgres does not (the parser rejects it as
+  // "syntax error at or near 'NOT'"). CREATE OR REPLACE VIEW is the
+  // Postgres-native idempotent form and works in SQLite too (though we
+  // only fire this translation on the Postgres path).
+  s = mapCodeRegions(s, (code) =>
+    code.replace(/CREATE(\s+)VIEW(\s+)IF\s+NOT\s+EXISTS/gi, (_m, w1, _w2) => {
+      return `CREATE${w1}OR REPLACE VIEW`;
+    }),
+  );
+
   // Function-call translations: hex(<expr>) → encode(<expr>, 'hex'), and
   // randomblob(N) → gen_random_bytes(N). These need to match across string
   // boundaries (the argument may be a string literal), so they don't go
