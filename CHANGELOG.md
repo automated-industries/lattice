@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.8] — 2026-04-14
+
+### Added
+
+- **`datetime('now')` translation** — Lattice internally emits `UPDATE ... SET deleted_at = datetime('now')` for soft-deletes and `DEFAULT (datetime('now'))` in some core schemas. Now translated to `NOW()` when the adapter is Postgres. `datetime()` with any other argument throws loudly.
+
 ## [1.6.7] — 2026-04-14
 
 ### Added — `CREATE VIEW IF NOT EXISTS` translation

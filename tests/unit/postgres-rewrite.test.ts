@@ -129,6 +129,24 @@ describe('PostgresAdapter — randomblob and hex translations', () => {
   // migrations virtually never store SQL function names inside data strings.
 });
 
+describe('PostgresAdapter — datetime() translation', () => {
+  it("translates datetime('now') to NOW()", () => {
+    expect(translateDialect("SELECT datetime('now')")).toBe('SELECT NOW()');
+  });
+
+  it('translates datetime inside UPDATE SET', () => {
+    expect(
+      translateDialect("UPDATE t SET deleted_at = datetime('now') WHERE id = ?"),
+    ).toBe('UPDATE t SET deleted_at = NOW() WHERE id = ?');
+  });
+
+  it('throws on any datetime() form other than now', () => {
+    expect(() => translateDialect("SELECT datetime('2024-01-01', '+1 day')")).toThrowError(
+      /not auto-translated/,
+    );
+  });
+});
+
 describe('PostgresAdapter — CREATE VIEW IF NOT EXISTS translation', () => {
   it('rewrites CREATE VIEW IF NOT EXISTS to CREATE OR REPLACE VIEW', () => {
     expect(
