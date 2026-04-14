@@ -129,6 +129,31 @@ describe('PostgresAdapter — randomblob and hex translations', () => {
   // migrations virtually never store SQL function names inside data strings.
 });
 
+describe('PostgresAdapter — CREATE VIEW IF NOT EXISTS translation', () => {
+  it('rewrites CREATE VIEW IF NOT EXISTS to CREATE OR REPLACE VIEW', () => {
+    expect(
+      translateDialect(
+        "CREATE VIEW IF NOT EXISTS memory_entries AS SELECT * FROM knowledge_entries",
+      ),
+    ).toBe('CREATE OR REPLACE VIEW memory_entries AS SELECT * FROM knowledge_entries');
+  });
+
+  it('normalizes to uppercase CREATE OR REPLACE VIEW regardless of input case', () => {
+    // Same case-normalization policy as INSERT OR IGNORE — the translated
+    // fragment uses canonical SQL keyword case.
+    expect(
+      translateDialect("create view if not exists v AS SELECT 1"),
+    ).toBe('CREATE OR REPLACE VIEW v AS SELECT 1');
+  });
+
+  it('does not touch CREATE TABLE IF NOT EXISTS', () => {
+    // Only VIEWs are affected; TABLEs work fine in both dialects.
+    expect(
+      translateDialect("CREATE TABLE IF NOT EXISTS t (id TEXT PRIMARY KEY)"),
+    ).toBe('CREATE TABLE IF NOT EXISTS t (id TEXT PRIMARY KEY)');
+  });
+});
+
 describe('PostgresAdapter — INSERT OR REPLACE rejection', () => {
   it('throws a clear error rather than silently mistranslating', () => {
     expect(() => translateDialect('INSERT OR REPLACE INTO t (a) VALUES (1)')).toThrowError(
