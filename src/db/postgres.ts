@@ -215,13 +215,29 @@ function translateDialect(sql: string): string {
     }),
   );
 
-  // Function-call translations: hex(<expr>) → encode(<expr>, 'hex'), and
-  // randomblob(N) → gen_random_bytes(N). These need to match across string
-  // boundaries (the argument may be a string literal), so they don't go
-  // through mapCodeRegions. Order matters: hex() wraps randomblob() in our
-  // common UUID pattern, so translate hex first.
+  // Function-call translations: hex(<expr>) → encode(<expr>, 'hex'),
+  // randomblob(N) → gen_random_bytes(N), datetime('now') → NOW(). These
+  // need to match across string boundaries (the argument may be a string
+  // literal), so they don't go through mapCodeRegions. Order matters: hex()
+  // wraps randomblob() in our common UUID pattern, so translate hex first.
+  // datetime('now') is emitted by Lattice itself (soft-delete, defaults),
+  // not just user migrations — the translation lives here so it runs
+  // against adapter.run() calls too.
   s = replaceFunction(s, 'hex', (arg) => `encode(${arg}, 'hex')`);
   s = replaceFunction(s, 'randomblob', (arg) => `gen_random_bytes(${arg})`);
+  s = replaceFunction(s, 'datetime', (arg) => {
+    // Only translate the 'now' shortcut. Other datetime() forms (e.g.
+    // `datetime('2024-01-01', '+1 day')`) need a hand-written Postgres
+    // equivalent — we throw so the operator notices.
+    const trimmed = arg.trim();
+    if (trimmed === "'now'" || trimmed === '"now"') return 'NOW()';
+    throw new Error(
+      "PostgresAdapter: datetime(" +
+        arg +
+        ") is not auto-translated. Only datetime('now') is supported. " +
+        'Use NOW() or an equivalent Postgres expression in your migration.',
+    );
+  });
 
   return s;
 }
