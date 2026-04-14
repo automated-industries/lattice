@@ -178,27 +178,31 @@ function translateDialect(sql: string): string {
     );
   }
 
-  // INSERT OR IGNORE → INSERT INTO + trailing ON CONFLICT DO NOTHING. We
-  // protect string literals here because user data containing those keywords
-  // is plausible (e.g. agent prompt text). The function-call translations
-  // below span string boundaries (hex('abc')), so they intentionally don't
-  // get the same protection.
+  // INSERT OR IGNORE → INSERT INTO + trailing ON CONFLICT DO NOTHING.
+  //
+  // Two passes:
+  //   1. mapCodeRegions walks code regions (skipping string literals and
+  //      comments) and strips `OR IGNORE` from every INSERT it sees,
+  //      recording whether at least one was found.
+  //   2. If the original statement had an INSERT OR IGNORE and no explicit
+  //      ON CONFLICT clause, append `ON CONFLICT DO NOTHING` at the very end
+  //      of the WHOLE SQL (before any trailing semicolon).
+  //
+  // Appending at the statement level — not per-code-region — is what lets
+  // an `INSERT OR IGNORE INTO t (...) SELECT '<string>', ... FROM x LIMIT 1`
+  // translate correctly. A per-region append would insert the clause after
+  // the column list (and before the SELECT body) because the string literals
+  // split the statement into multiple code regions.
+  let hadInsertOrIgnore = false;
   let s = mapCodeRegions(sql, (code) => {
-    let mutated = code;
-    let needsOnConflict = false;
-    mutated = mutated.replace(/INSERT(\s+)OR\s+IGNORE(\s+)INTO/gi, (_m, w1, _w2) => {
-      needsOnConflict = true;
+    return code.replace(/INSERT(\s+)OR\s+IGNORE(\s+)INTO/gi, (_m, w1, _w2) => {
+      hadInsertOrIgnore = true;
       return `INSERT${w1}INTO`;
     });
-    if (needsOnConflict && !/ON\s+CONFLICT/i.test(mutated)) {
-      // Append ON CONFLICT DO NOTHING — but only if the user hasn't already
-      // written an explicit ON CONFLICT clause (which would conflict with
-      // ours). For a single-statement migration this is straightforward; for
-      // multi-statement scripts the user should split before passing in.
-      mutated = mutated.replace(/(\s*;?\s*)$/, ' ON CONFLICT DO NOTHING$1');
-    }
-    return mutated;
   });
+  if (hadInsertOrIgnore && !hasOnConflictInCode(s)) {
+    s = s.replace(/(\s*;?\s*)$/, ' ON CONFLICT DO NOTHING$1');
+  }
 
   // Function-call translations: hex(<expr>) → encode(<expr>, 'hex'), and
   // randomblob(N) → gen_random_bytes(N). These need to match across string
@@ -222,6 +226,20 @@ function translateDialect(sql: string): string {
  * by this helper. All of our current translations are local — they don't
  * span quoted regions — so this is fine.
  */
+/**
+ * Check for an `ON CONFLICT` clause in the code regions of the SQL (skipping
+ * string literals and comments). Used to decide whether to append our own
+ * `ON CONFLICT DO NOTHING` or leave the user's explicit clause alone.
+ */
+function hasOnConflictInCode(sql: string): boolean {
+  let found = false;
+  mapCodeRegions(sql, (code) => {
+    if (/ON\s+CONFLICT/i.test(code)) found = true;
+    return code;
+  });
+  return found;
+}
+
 function mapCodeRegions(sql: string, xform: (code: string) => string): string {
   let out = '';
   let codeStart = 0;
