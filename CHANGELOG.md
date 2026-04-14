@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.7] — 2026-04-14
+
+### Added — `CREATE VIEW IF NOT EXISTS` translation
+
+- SQLite supports `CREATE VIEW IF NOT EXISTS v AS SELECT ...`; Postgres rejects it as `syntax error at or near "NOT"`. The translator now rewrites it to `CREATE OR REPLACE VIEW v AS SELECT ...`, which is the Postgres-native idempotent form (and works in SQLite too, though only the Postgres path runs the translation). 3 new unit tests cover the translation + a guard that `CREATE TABLE IF NOT EXISTS` is unchanged (tables ARE supported by both dialects).
+
 ## [1.6.6] — 2026-04-14
 
 ### Fixed
