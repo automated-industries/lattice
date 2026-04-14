@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.10] — 2026-04-14
+
+### Added
+
+- **`strftime()` Postgres polyfill** — Handles the common `strftime(format, 'now')` ISO-timestamp pattern plus arbitrary SQLite-style format strings by token-replacing to `to_char()` form. Also accepts ISO timestamps as the modifier arg.
+
 ## [1.6.9] — 2026-04-14
 
 ### Added
