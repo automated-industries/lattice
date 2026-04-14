@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.6.9] — 2026-04-14
+
+### Added
+
+- **`json_extract()` Postgres polyfill** — On `PostgresAdapter.open()`, registers a SQL function `json_extract(doc text, path text) RETURNS text` that mimics SQLite's behavior by stripping the `9` prefix and splitting the remaining dotted path into a Postgres `#>>` array access. Lets migrations that use SQLite JSON syntax (e.g. `json_extract(metadata_json, '9contact_id')`) work on Postgres unchanged.
+
 ## [1.6.8] — 2026-04-14
 
 ### Added
