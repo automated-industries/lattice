@@ -71,6 +71,47 @@ runAsWorker(async (action: Action): Promise<Result> => {
             jeErr instanceof Error ? jeErr.message : jeErr,
           );
         }
+        // strftime polyfill — handles the common `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
+        // pattern used for ISO-with-milliseconds timestamps. Other format strings
+        // fall through to a best-effort token replacement. The `modifier`
+        // argument supports 'now' and ISO-formatted strings.
+        try {
+          await client.query(
+            `CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
+             RETURNS text
+             LANGUAGE plpgsql
+             IMMUTABLE
+             AS $fn$
+             DECLARE ts timestamptz;
+             BEGIN
+               IF modifier = 'now' THEN
+                 ts := now();
+               ELSE
+                 ts := modifier::timestamptz;
+               END IF;
+               RETURN to_char(
+                 ts AT TIME ZONE 'UTC',
+                 replace(replace(replace(replace(replace(replace(replace(replace(
+                   format,
+                   '%Y', 'YYYY'),
+                   '%m', 'MM'),
+                   '%d', 'DD'),
+                   '%H', 'HH24'),
+                   '%M', 'MI'),
+                   '%S', 'SS'),
+                   '%f', 'MS'),
+                   'T', '"T"')
+               );
+             END;
+             $fn$;`,
+          );
+        } catch (sfErr) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[PostgresAdapter] could not register strftime polyfill:',
+            sfErr instanceof Error ? sfErr.message : sfErr,
+          );
+        }
         return { ok: true };
       }
       case 'close': {
