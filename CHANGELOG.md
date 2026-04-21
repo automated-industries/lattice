@@ -6,6 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **`better-sqlite3` is now a `peerDependency` with range `>=11 <13`** (previously a regular `dependency` pinned to `^12.8.0`). Lattice only uses the stable, long-standing subset of the better-sqlite3 API (`new Database()`, `prepare`, `exec`, `pragma`, `transaction`, `function`, `close`), which is unchanged across 11.x → 12.x. Pinning a single major forced downstream projects already on `better-sqlite3@^11` to either upgrade in lockstep or hit `ETARGET` / peer-conflict errors on `npm install latticesql`. Moving it to `peerDependencies` also matches the library pattern (the host app owns the native sqlite driver build). Kept as a `devDependency` at `^12.8.0` so local tests still run.
+
 ## [1.6.10] — 2026-04-14
 
 ### Added
