@@ -14,6 +14,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **`require('latticesql')` from a CJS consumer no longer crashes at module load.** `src/db/postgres.ts` used to call `fileURLToPath(import.meta.url)` and `createRequire(import.meta.url)` at the top level. Under tsup's dual-bundle CJS output, `import.meta` is rewritten to `{}` so `.url` is `undefined` — loading `dist/index.cjs` threw `TypeError [ERR_INVALID_ARG_TYPE]: The "path" argument must be of type string or an instance of URL. Received undefined` before any user code ran. Fix: lazy-resolve the module directory and local `require` via a small `moduleContext()` helper that prefers `import.meta.url` under ESM and falls back to Node's CJS-injected `__dirname` / `require` globals when `import.meta.url` is unavailable. The CI workflow's "Verify CJS require" step now passes.
 - **Lint cleanups in the Postgres dialect translator (`src/db/postgres.ts`) and worker (`src/db/postgres-worker.ts`).** No runtime behavior change — replaces bare `sql[i]` indexed reads (flagged under `noUncheckedIndexedAccess`) with `sql.charAt(i)`, tightens regex-callback signatures so template-literal expressions are `string` rather than `any`, widens `hadInsertOrIgnore` to `boolean` so TypeScript doesn't narrow it to literal `false`, removes now-redundant `eslint-disable no-console` directives, and types `pg.Client.query<Record<string, unknown>>(...)` to propagate row-shape through to the worker's `Result` type. Restores green CI on `main`.
 
 ## [1.6.10] — 2026-04-14

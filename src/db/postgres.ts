@@ -4,16 +4,37 @@ import { createRequire } from 'node:module';
 import type { StorageAdapter, PreparedStatement } from './adapter.js';
 import type { Row } from '../types.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// In an ESM bundle, the global `require` is not defined and tsup's `__require`
-// shim throws "Dynamic require of '...' is not supported". We need a real
-// runtime `require` to load `pg` and `synckit` (which are optionalDependencies
-// the consumer installs into their node_modules). createRequire solves this:
-// it builds a CommonJS `require` rooted at the URL of this file, so it walks
-// up from `latticesql/dist/` and finds the consumer's `node_modules` entries.
-const requireFromHere = createRequire(import.meta.url);
+// Resolve this module's directory and a working CJS `require`. Works under
+// both ESM (uses import.meta.url) and CJS (falls back to the __dirname /
+// require globals Node injects into every CJS module).
+//
+// Under tsup's CJS bundling, `import.meta` is rewritten to `{}` so its `.url`
+// is undefined — loading dist/index.cjs would crash at module init if we
+// unconditionally called fileURLToPath(import.meta.url). Detect the branch
+// and use the CJS-side globals instead.
+//
+// In an ESM bundle, the global `require` is not defined and tsup's
+// `__require` shim throws "Dynamic require of '...' is not supported". We
+// need a real runtime `require` to load `pg` and `synckit` (which are
+// optionalDependencies the consumer installs into their node_modules).
+// createRequire solves this: it builds a CommonJS `require` rooted at the
+// URL of this file, so it walks up from `latticesql/dist/` and finds the
+// consumer's `node_modules` entries.
+let _moduleContext: { dir: string; require: NodeJS.Require } | null = null;
+function moduleContext(): { dir: string; require: NodeJS.Require } {
+  if (_moduleContext) return _moduleContext;
+  const importMetaUrl = (import.meta as { url?: string }).url;
+  if (importMetaUrl) {
+    _moduleContext = {
+      dir: path.dirname(fileURLToPath(importMetaUrl)),
+      require: createRequire(importMetaUrl),
+    };
+  } else {
+    // CJS path: __dirname and require are module-scope globals Node provides.
+    _moduleContext = { dir: __dirname, require };
+  }
+  return _moduleContext;
+}
 
 /**
  * Pluggable Postgres backend for Lattice.
@@ -48,17 +69,19 @@ export class PostgresAdapter implements StorageAdapter {
     // .cjs extension because the published package.json has `"type": "module"`
     // and the worker is built as CJS — Node refuses to run a `.js` CJS file
     // under `type: module`. tsup emits the worker as `dist/postgres-worker.cjs`.
-    this._workerPath = options.workerPath ?? path.join(__dirname, 'postgres-worker.cjs');
+    this._workerPath = options.workerPath ?? path.join(moduleContext().dir, 'postgres-worker.cjs');
   }
 
   open(): void {
     if (this._opened) return;
+    const ctxRequire = moduleContext().require;
     let createSyncFn: (worker: string) => (action: unknown) => unknown;
     try {
-      // requireFromHere = createRequire(import.meta.url). Lets us load
-      // optionalDependencies from the consumer's node_modules without relying
-      // on the bundler's `__require` shim (which throws under ESM).
-      ({ createSyncFn } = requireFromHere('synckit') as typeof import('synckit'));
+      // moduleContext().require bridges ESM → CJS (via createRequire) or is
+      // the native CJS require under the dual-bundle CJS output. Lets us
+      // load optionalDependencies from the consumer's node_modules without
+      // relying on the bundler's `__require` shim (which throws under ESM).
+      ({ createSyncFn } = ctxRequire('synckit') as typeof import('synckit'));
     } catch (err) {
       throw new Error(
         "PostgresAdapter requires 'synckit'. Install with: npm install synckit\n" +
@@ -67,7 +90,7 @@ export class PostgresAdapter implements StorageAdapter {
       );
     }
     try {
-      requireFromHere('pg');
+      ctxRequire('pg');
     } catch (err) {
       throw new Error(
         "PostgresAdapter requires 'pg'. Install with: npm install pg\n" +
