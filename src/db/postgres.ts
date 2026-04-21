@@ -193,9 +193,9 @@ function translateDialect(sql: string): string {
   // translate correctly. A per-region append would insert the clause after
   // the column list (and before the SELECT body) because the string literals
   // split the statement into multiple code regions.
-  let hadInsertOrIgnore = false;
+  let hadInsertOrIgnore = false as boolean;
   let s = mapCodeRegions(sql, (code) => {
-    return code.replace(/INSERT(\s+)OR\s+IGNORE(\s+)INTO/gi, (_m, w1, _w2) => {
+    return code.replace(/INSERT(\s+)OR\s+IGNORE(\s+)INTO/gi, (_m: string, w1: string) => {
       hadInsertOrIgnore = true;
       return `INSERT${w1}INTO`;
     });
@@ -210,7 +210,7 @@ function translateDialect(sql: string): string {
   // Postgres-native idempotent form and works in SQLite too (though we
   // only fire this translation on the Postgres path).
   s = mapCodeRegions(s, (code) =>
-    code.replace(/CREATE(\s+)VIEW(\s+)IF\s+NOT\s+EXISTS/gi, (_m, w1, _w2) => {
+    code.replace(/CREATE(\s+)VIEW(\s+)IF\s+NOT\s+EXISTS/gi, (_m: string, w1: string) => {
       return `CREATE${w1}OR REPLACE VIEW`;
     }),
   );
@@ -286,7 +286,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
           i += 2;
           continue;
         }
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === "'") {
           i++;
           break;
@@ -301,7 +301,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
       out += '"';
       i++;
       while (i < sql.length) {
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === '"') {
           i++;
           break;
@@ -314,7 +314,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
     if (ch === '-' && sql[i + 1] === '-') {
       flushCode(i);
       while (i < sql.length && sql[i] !== '\n') {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       codeStart = i;
@@ -325,7 +325,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
       out += '/*';
       i += 2;
       while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       if (i < sql.length) {
@@ -417,7 +417,7 @@ function rewriteParams(sql: string): string {
           i += 2;
           continue;
         }
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === "'") {
           i++;
           break;
@@ -431,7 +431,7 @@ function rewriteParams(sql: string): string {
       out += ch;
       i++;
       while (i < sql.length) {
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === '"') {
           i++;
           break;
@@ -443,7 +443,7 @@ function rewriteParams(sql: string): string {
     // Single-line comment
     if (ch === '-' && sql[i + 1] === '-') {
       while (i < sql.length && sql[i] !== '\n') {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       continue;
@@ -453,7 +453,7 @@ function rewriteParams(sql: string): string {
       out += '/*';
       i += 2;
       while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       if (i < sql.length) {
@@ -467,7 +467,7 @@ function rewriteParams(sql: string): string {
       i++;
       continue;
     }
-    out += ch;
+    out += ch ?? '';
     i++;
   }
   return out;

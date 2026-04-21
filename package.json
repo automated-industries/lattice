@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "1.6.10",
+  "version": "1.7.0",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
