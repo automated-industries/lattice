@@ -4,16 +4,37 @@ import { createRequire } from 'node:module';
 import type { StorageAdapter, PreparedStatement } from './adapter.js';
 import type { Row } from '../types.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// In an ESM bundle, the global `require` is not defined and tsup's `__require`
-// shim throws "Dynamic require of '...' is not supported". We need a real
-// runtime `require` to load `pg` and `synckit` (which are optionalDependencies
-// the consumer installs into their node_modules). createRequire solves this:
-// it builds a CommonJS `require` rooted at the URL of this file, so it walks
-// up from `latticesql/dist/` and finds the consumer's `node_modules` entries.
-const requireFromHere = createRequire(import.meta.url);
+// Resolve this module's directory and a working CJS `require`. Works under
+// both ESM (uses import.meta.url) and CJS (falls back to the __dirname /
+// require globals Node injects into every CJS module).
+//
+// Under tsup's CJS bundling, `import.meta` is rewritten to `{}` so its `.url`
+// is undefined — loading dist/index.cjs would crash at module init if we
+// unconditionally called fileURLToPath(import.meta.url). Detect the branch
+// and use the CJS-side globals instead.
+//
+// In an ESM bundle, the global `require` is not defined and tsup's
+// `__require` shim throws "Dynamic require of '...' is not supported". We
+// need a real runtime `require` to load `pg` and `synckit` (which are
+// optionalDependencies the consumer installs into their node_modules).
+// createRequire solves this: it builds a CommonJS `require` rooted at the
+// URL of this file, so it walks up from `latticesql/dist/` and finds the
+// consumer's `node_modules` entries.
+let _moduleContext: { dir: string; require: NodeJS.Require } | null = null;
+function moduleContext(): { dir: string; require: NodeJS.Require } {
+  if (_moduleContext) return _moduleContext;
+  const importMetaUrl = (import.meta as { url?: string }).url;
+  if (importMetaUrl) {
+    _moduleContext = {
+      dir: path.dirname(fileURLToPath(importMetaUrl)),
+      require: createRequire(importMetaUrl),
+    };
+  } else {
+    // CJS path: __dirname and require are module-scope globals Node provides.
+    _moduleContext = { dir: __dirname, require };
+  }
+  return _moduleContext;
+}
 
 /**
  * Pluggable Postgres backend for Lattice.
@@ -48,17 +69,19 @@ export class PostgresAdapter implements StorageAdapter {
     // .cjs extension because the published package.json has `"type": "module"`
     // and the worker is built as CJS — Node refuses to run a `.js` CJS file
     // under `type: module`. tsup emits the worker as `dist/postgres-worker.cjs`.
-    this._workerPath = options.workerPath ?? path.join(__dirname, 'postgres-worker.cjs');
+    this._workerPath = options.workerPath ?? path.join(moduleContext().dir, 'postgres-worker.cjs');
   }
 
   open(): void {
     if (this._opened) return;
+    const ctxRequire = moduleContext().require;
     let createSyncFn: (worker: string) => (action: unknown) => unknown;
     try {
-      // requireFromHere = createRequire(import.meta.url). Lets us load
-      // optionalDependencies from the consumer's node_modules without relying
-      // on the bundler's `__require` shim (which throws under ESM).
-      ({ createSyncFn } = requireFromHere('synckit') as typeof import('synckit'));
+      // moduleContext().require bridges ESM → CJS (via createRequire) or is
+      // the native CJS require under the dual-bundle CJS output. Lets us
+      // load optionalDependencies from the consumer's node_modules without
+      // relying on the bundler's `__require` shim (which throws under ESM).
+      ({ createSyncFn } = ctxRequire('synckit') as typeof import('synckit'));
     } catch (err) {
       throw new Error(
         "PostgresAdapter requires 'synckit'. Install with: npm install synckit\n" +
@@ -67,7 +90,7 @@ export class PostgresAdapter implements StorageAdapter {
       );
     }
     try {
-      requireFromHere('pg');
+      ctxRequire('pg');
     } catch (err) {
       throw new Error(
         "PostgresAdapter requires 'pg'. Install with: npm install pg\n" +
@@ -193,9 +216,9 @@ function translateDialect(sql: string): string {
   // translate correctly. A per-region append would insert the clause after
   // the column list (and before the SELECT body) because the string literals
   // split the statement into multiple code regions.
-  let hadInsertOrIgnore = false;
+  let hadInsertOrIgnore = false as boolean;
   let s = mapCodeRegions(sql, (code) => {
-    return code.replace(/INSERT(\s+)OR\s+IGNORE(\s+)INTO/gi, (_m, w1, _w2) => {
+    return code.replace(/INSERT(\s+)OR\s+IGNORE(\s+)INTO/gi, (_m: string, w1: string) => {
       hadInsertOrIgnore = true;
       return `INSERT${w1}INTO`;
     });
@@ -210,7 +233,7 @@ function translateDialect(sql: string): string {
   // Postgres-native idempotent form and works in SQLite too (though we
   // only fire this translation on the Postgres path).
   s = mapCodeRegions(s, (code) =>
-    code.replace(/CREATE(\s+)VIEW(\s+)IF\s+NOT\s+EXISTS/gi, (_m, w1, _w2) => {
+    code.replace(/CREATE(\s+)VIEW(\s+)IF\s+NOT\s+EXISTS/gi, (_m: string, w1: string) => {
       return `CREATE${w1}OR REPLACE VIEW`;
     }),
   );
@@ -232,7 +255,7 @@ function translateDialect(sql: string): string {
     const trimmed = arg.trim();
     if (trimmed === "'now'" || trimmed === '"now"') return 'NOW()';
     throw new Error(
-      "PostgresAdapter: datetime(" +
+      'PostgresAdapter: datetime(' +
         arg +
         ") is not auto-translated. Only datetime('now') is supported. " +
         'Use NOW() or an equivalent Postgres expression in your migration.',
@@ -286,7 +309,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
           i += 2;
           continue;
         }
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === "'") {
           i++;
           break;
@@ -301,7 +324,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
       out += '"';
       i++;
       while (i < sql.length) {
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === '"') {
           i++;
           break;
@@ -314,7 +337,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
     if (ch === '-' && sql[i + 1] === '-') {
       flushCode(i);
       while (i < sql.length && sql[i] !== '\n') {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       codeStart = i;
@@ -325,7 +348,7 @@ function mapCodeRegions(sql: string, xform: (code: string) => string): string {
       out += '/*';
       i += 2;
       while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       if (i < sql.length) {
@@ -417,7 +440,7 @@ function rewriteParams(sql: string): string {
           i += 2;
           continue;
         }
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === "'") {
           i++;
           break;
@@ -431,7 +454,7 @@ function rewriteParams(sql: string): string {
       out += ch;
       i++;
       while (i < sql.length) {
-        out += sql[i];
+        out += sql.charAt(i);
         if (sql[i] === '"') {
           i++;
           break;
@@ -443,7 +466,7 @@ function rewriteParams(sql: string): string {
     // Single-line comment
     if (ch === '-' && sql[i + 1] === '-') {
       while (i < sql.length && sql[i] !== '\n') {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       continue;
@@ -453,7 +476,7 @@ function rewriteParams(sql: string): string {
       out += '/*';
       i += 2;
       while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) {
-        out += sql[i];
+        out += sql.charAt(i);
         i++;
       }
       if (i < sql.length) {
@@ -467,7 +490,7 @@ function rewriteParams(sql: string): string {
       i++;
       continue;
     }
-    out += ch;
+    out += ch ?? '';
     i++;
   }
   return out;

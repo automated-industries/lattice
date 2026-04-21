@@ -49,9 +49,7 @@ describe('PostgresAdapter — ?→$N rewrite', () => {
   it('handles 10+ placeholders without overflow', () => {
     const params = Array.from({ length: 12 }, () => '?').join(', ');
     const expected = Array.from({ length: 12 }, (_, i) => '$' + String(i + 1)).join(', ');
-    expect(rewrite(`INSERT INTO t VALUES (${params})`)).toBe(
-      `INSERT INTO t VALUES (${expected})`,
-    );
+    expect(rewrite(`INSERT INTO t VALUES (${params})`)).toBe(`INSERT INTO t VALUES (${expected})`);
   });
 });
 
@@ -135,9 +133,9 @@ describe('PostgresAdapter — datetime() translation', () => {
   });
 
   it('translates datetime inside UPDATE SET', () => {
-    expect(
-      translateDialect("UPDATE t SET deleted_at = datetime('now') WHERE id = ?"),
-    ).toBe('UPDATE t SET deleted_at = NOW() WHERE id = ?');
+    expect(translateDialect("UPDATE t SET deleted_at = datetime('now') WHERE id = ?")).toBe(
+      'UPDATE t SET deleted_at = NOW() WHERE id = ?',
+    );
   });
 
   it('throws on any datetime() form other than now', () => {
@@ -151,7 +149,7 @@ describe('PostgresAdapter — CREATE VIEW IF NOT EXISTS translation', () => {
   it('rewrites CREATE VIEW IF NOT EXISTS to CREATE OR REPLACE VIEW', () => {
     expect(
       translateDialect(
-        "CREATE VIEW IF NOT EXISTS memory_entries AS SELECT * FROM knowledge_entries",
+        'CREATE VIEW IF NOT EXISTS memory_entries AS SELECT * FROM knowledge_entries',
       ),
     ).toBe('CREATE OR REPLACE VIEW memory_entries AS SELECT * FROM knowledge_entries');
   });
@@ -159,16 +157,16 @@ describe('PostgresAdapter — CREATE VIEW IF NOT EXISTS translation', () => {
   it('normalizes to uppercase CREATE OR REPLACE VIEW regardless of input case', () => {
     // Same case-normalization policy as INSERT OR IGNORE — the translated
     // fragment uses canonical SQL keyword case.
-    expect(
-      translateDialect("create view if not exists v AS SELECT 1"),
-    ).toBe('CREATE OR REPLACE VIEW v AS SELECT 1');
+    expect(translateDialect('create view if not exists v AS SELECT 1')).toBe(
+      'CREATE OR REPLACE VIEW v AS SELECT 1',
+    );
   });
 
   it('does not touch CREATE TABLE IF NOT EXISTS', () => {
     // Only VIEWs are affected; TABLEs work fine in both dialects.
-    expect(
-      translateDialect("CREATE TABLE IF NOT EXISTS t (id TEXT PRIMARY KEY)"),
-    ).toBe('CREATE TABLE IF NOT EXISTS t (id TEXT PRIMARY KEY)');
+    expect(translateDialect('CREATE TABLE IF NOT EXISTS t (id TEXT PRIMARY KEY)')).toBe(
+      'CREATE TABLE IF NOT EXISTS t (id TEXT PRIMARY KEY)',
+    );
   });
 });
 
@@ -183,7 +181,7 @@ describe('PostgresAdapter — INSERT OR REPLACE rejection', () => {
 describe('PostgresAdapter — composite end-to-end (translateDialect + rewriteParams)', () => {
   it('handles INSERT OR IGNORE + ? placeholders + randomblob default in one SQL', () => {
     const sql =
-      "INSERT OR IGNORE INTO agent_project (id, agent_id, project_id) VALUES (lower(hex(randomblob(16))), ?, ?)";
+      'INSERT OR IGNORE INTO agent_project (id, agent_id, project_id) VALUES (lower(hex(randomblob(16))), ?, ?)';
     expect(rewrite(sql)).toBe(
       "INSERT INTO agent_project (id, agent_id, project_id) VALUES (lower(encode(gen_random_bytes(16), 'hex')), $1, $2) ON CONFLICT DO NOTHING",
     );
