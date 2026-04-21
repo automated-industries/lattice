@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "1.6.10",
+  "version": "1.7.0",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -42,9 +42,11 @@
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
-    "better-sqlite3": "^12.8.0",
     "uuid": "^13.0.0",
     "yaml": "^2.8.3"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=11 <13"
   },
   "optionalDependencies": {
     "pg": "^8.11.0",
@@ -56,6 +58,7 @@
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "@vitest/coverage-v8": "^2.1.9",
+    "better-sqlite3": "^12.8.0",
     "eslint": "^9.0.0",
     "pg": "^8.11.0",
     "prettier": "^3.3.0",
