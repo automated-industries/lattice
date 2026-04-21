@@ -232,7 +232,7 @@ function translateDialect(sql: string): string {
     const trimmed = arg.trim();
     if (trimmed === "'now'" || trimmed === '"now"') return 'NOW()';
     throw new Error(
-      "PostgresAdapter: datetime(" +
+      'PostgresAdapter: datetime(' +
         arg +
         ") is not auto-translated. Only datetime('now') is supported. " +
         'Use NOW() or an equivalent Postgres expression in your migration.',
