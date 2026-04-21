@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.7.0] — 2026-04-20
+
+### Changed
+
+- **`better-sqlite3` is now a `peerDependency` with range `>=11 <13`** (previously a regular `dependency` pinned to `^12.8.0`). Lattice only uses the stable, long-standing subset of the better-sqlite3 API (`new Database()`, `prepare`, `exec`, `pragma`, `transaction`, `function`, `close`), which is unchanged across 11.x → 12.x. Pinning a single major forced downstream projects already on `better-sqlite3@^11` to either upgrade in lockstep or hit `ETARGET` / peer-conflict errors on `npm install latticesql`. Moving it to `peerDependencies` also matches the library pattern (the host app owns the native sqlite driver build). Kept as a `devDependency` at `^12.8.0` so local tests still run.
+
+### Fixed
+
+- **`require('latticesql')` from a CJS consumer no longer crashes at module load.** `src/db/postgres.ts` used to call `fileURLToPath(import.meta.url)` and `createRequire(import.meta.url)` at the top level. Under tsup's dual-bundle CJS output, `import.meta` is rewritten to `{}` so `.url` is `undefined` — loading `dist/index.cjs` threw `TypeError [ERR_INVALID_ARG_TYPE]: The "path" argument must be of type string or an instance of URL. Received undefined` before any user code ran. Fix: lazy-resolve the module directory and local `require` via a small `moduleContext()` helper that prefers `import.meta.url` under ESM and falls back to Node's CJS-injected `__dirname` / `require` globals when `import.meta.url` is unavailable. The CI workflow's "Verify CJS require" step now passes.
+- **Lint cleanups in the Postgres dialect translator (`src/db/postgres.ts`) and worker (`src/db/postgres-worker.ts`).** No runtime behavior change — replaces bare `sql[i]` indexed reads (flagged under `noUncheckedIndexedAccess`) with `sql.charAt(i)`, tightens regex-callback signatures so template-literal expressions are `string` rather than `any`, widens `hadInsertOrIgnore` to `boolean` so TypeScript doesn't narrow it to literal `false`, removes now-redundant `eslint-disable no-console` directives, and types `pg.Client.query<Record<string, unknown>>(...)` to propagate row-shape through to the worker's `Result` type. Restores green CI on `main`.
+
 ## [1.6.10] — 2026-04-14
 
 ### Added
@@ -83,12 +94,12 @@ If you tried 1.6.0 or 1.6.1 with a Postgres connection string and got the mislea
 
 The `PostgresAdapter` rewriter (introduced in 1.6.0) gains four more SQLite → Postgres translations so existing migration code that uses common SQLite idioms keeps working unchanged when pointed at a Postgres connection string:
 
-| SQLite | Postgres translation | Notes |
-|---|---|---|
-| `INSERT OR IGNORE INTO …` | `INSERT INTO … ON CONFLICT DO NOTHING` | Strips `OR IGNORE`, appends `ON CONFLICT DO NOTHING` to the statement tail. Skipped if the user already wrote an explicit `ON CONFLICT` clause. Requires at least one unique constraint on the target table. |
-| `INSERT OR REPLACE INTO …` | (intentionally not translated — throws) | The correct `ON CONFLICT (col) DO UPDATE SET …` form depends on the conflict target, which the translator can't infer. Surface the error so the operator picks the right form. |
-| `randomblob(N)` | `gen_random_bytes(N)` | Requires `pgcrypto`. `PostgresAdapter.open()` now runs `CREATE EXTENSION IF NOT EXISTS pgcrypto` idempotently — succeeds on Supabase / Neon / RDS, warns (non-fatally) on hosted Postgres providers that restrict CREATE EXTENSION. |
-| `hex(<expr>)` | `encode(<expr>, 'hex')` | Postgres lacks the SQLite `hex()` shorthand. Composite `lower(hex(randomblob(16)))` (a common 32-char hex-id pattern) translates to `lower(encode(gen_random_bytes(16), 'hex'))`. |
+| SQLite                     | Postgres translation                    | Notes                                                                                                                                                                                                                               |
+| -------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INSERT OR IGNORE INTO …`  | `INSERT INTO … ON CONFLICT DO NOTHING`  | Strips `OR IGNORE`, appends `ON CONFLICT DO NOTHING` to the statement tail. Skipped if the user already wrote an explicit `ON CONFLICT` clause. Requires at least one unique constraint on the target table.                        |
+| `INSERT OR REPLACE INTO …` | (intentionally not translated — throws) | The correct `ON CONFLICT (col) DO UPDATE SET …` form depends on the conflict target, which the translator can't infer. Surface the error so the operator picks the right form.                                                      |
+| `randomblob(N)`            | `gen_random_bytes(N)`                   | Requires `pgcrypto`. `PostgresAdapter.open()` now runs `CREATE EXTENSION IF NOT EXISTS pgcrypto` idempotently — succeeds on Supabase / Neon / RDS, warns (non-fatally) on hosted Postgres providers that restrict CREATE EXTENSION. |
+| `hex(<expr>)`              | `encode(<expr>, 'hex')`                 | Postgres lacks the SQLite `hex()` shorthand. Composite `lower(hex(randomblob(16)))` (a common 32-char hex-id pattern) translates to `lower(encode(gen_random_bytes(16), 'hex'))`.                                                   |
 
 `INSERT OR IGNORE` translation is **string-literal aware** — the keywords are not rewritten if they appear inside quoted user data. `randomblob` / `hex` translations are not string-aware (the alternative breaks the common `hex('abc')` literal-argument case); the documented limitation is that storing the literal text `"hex(...)"` inside a single-quoted user data string will get the function name rewritten. Real migrations virtually never store SQL function names inside user data.
 
