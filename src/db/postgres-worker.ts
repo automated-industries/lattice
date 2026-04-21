@@ -43,7 +43,6 @@ runAsWorker(async (action: Action): Promise<Result> => {
         try {
           await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
         } catch (extErr) {
-          // eslint-disable-next-line no-console
           console.warn(
             '[PostgresAdapter] CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
             extErr instanceof Error ? extErr.message : extErr,
@@ -65,7 +64,6 @@ runAsWorker(async (action: Action): Promise<Result> => {
              $fn$;`,
           );
         } catch (jeErr) {
-          // eslint-disable-next-line no-console
           console.warn(
             '[PostgresAdapter] could not register json_extract polyfill:',
             jeErr instanceof Error ? jeErr.message : jeErr,
@@ -106,7 +104,6 @@ runAsWorker(async (action: Action): Promise<Result> => {
              $fn$;`,
           );
         } catch (sfErr) {
-          // eslint-disable-next-line no-console
           console.warn(
             '[PostgresAdapter] could not register strftime polyfill:',
             sfErr instanceof Error ? sfErr.message : sfErr,
@@ -126,15 +123,15 @@ runAsWorker(async (action: Action): Promise<Result> => {
         return { ok: true, rowCount: r.rowCount ?? 0 };
       }
       case 'get': {
-        const r = await ensureClient().query(action.sql, action.params);
+        const r = await ensureClient().query<Record<string, unknown>>(action.sql, action.params);
         return { ok: true, rows: r.rows.slice(0, 1) };
       }
       case 'all': {
-        const r = await ensureClient().query(action.sql, action.params);
+        const r = await ensureClient().query<Record<string, unknown>>(action.sql, action.params);
         return { ok: true, rows: r.rows };
       }
       case 'introspectColumns': {
-        const r = await ensureClient().query(
+        const r = await ensureClient().query<Record<string, unknown>>(
           `SELECT column_name FROM information_schema.columns
            WHERE table_schema = current_schema() AND table_name = $1
            ORDER BY ordinal_position`,
