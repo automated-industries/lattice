@@ -2127,14 +2127,14 @@ Lattice ships with two storage adapters and a pluggable interface so you can bri
 
 The `Lattice` constructor inspects the first argument and picks the right adapter:
 
-| First argument | Adapter | When to use |
-|---|---|---|
-| `'/abs/path/to/db.sqlite'` (or any plain path) | `SQLiteAdapter` | Default. Local file, no server. |
-| `':memory:'` | `SQLiteAdapter` | In-memory SQLite. Great for tests. |
-| `'file:/abs/path/to/db.sqlite'` | `SQLiteAdapter` | Same as the plain path form, with the scheme spelled out. |
-| `'postgres://user:pass@host:5432/db'` | `PostgresAdapter` | Postgres-compatible cloud DB (Supabase, Neon, RDS, …). |
-| `'postgresql://user:pass@host:5432/db'` | `PostgresAdapter` | Same as `postgres://`. |
-| any string + `{ adapter: myAdapter }` | your adapter | Bring your own implementation. |
+| First argument                                 | Adapter           | When to use                                               |
+| ---------------------------------------------- | ----------------- | --------------------------------------------------------- |
+| `'/abs/path/to/db.sqlite'` (or any plain path) | `SQLiteAdapter`   | Default. Local file, no server.                           |
+| `':memory:'`                                   | `SQLiteAdapter`   | In-memory SQLite. Great for tests.                        |
+| `'file:/abs/path/to/db.sqlite'`                | `SQLiteAdapter`   | Same as the plain path form, with the scheme spelled out. |
+| `'postgres://user:pass@host:5432/db'`          | `PostgresAdapter` | Postgres-compatible cloud DB (Supabase, Neon, RDS, …).    |
+| `'postgresql://user:pass@host:5432/db'`        | `PostgresAdapter` | Same as `postgres://`.                                    |
+| any string + `{ adapter: myAdapter }`          | your adapter      | Bring your own implementation.                            |
 
 ```ts
 import { Lattice } from 'latticesql';
@@ -2200,7 +2200,9 @@ Pass your implementation via `options.adapter`:
 import { Lattice } from 'latticesql';
 import type { StorageAdapter } from 'latticesql';
 
-class MyMySQLAdapter implements StorageAdapter { /* … */ }
+class MyMySQLAdapter implements StorageAdapter {
+  /* … */
+}
 
 const lattice = new Lattice('ignored', { adapter: new MyMySQLAdapter() });
 ```
