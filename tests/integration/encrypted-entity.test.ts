@@ -122,6 +122,10 @@ describe('encrypted entity context — error handling', () => {
     });
 
     expect(() => db.init()).toThrow(/encryptionKey/);
+    // The adapter opens its SQLite handle before _setupEncryption throws,
+    // so the file is still locked on Windows when the test reaches rmSync.
+    // close() releases the handle so the cleanup can unlink test.db.
+    db.close();
     rmSync(tmpDir, { recursive: true, force: true });
   });
 });
