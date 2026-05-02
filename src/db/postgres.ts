@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import type { StorageAdapter, PreparedStatement } from './adapter.js';
+import type {
+  StorageAdapter,
+  PreparedStatement,
+  PreparedStatementAsync,
+  TxClient,
+} from './adapter.js';
 import type { Row } from '../types.js';
 
 // Resolve this module's directory and a working CJS `require`. Works under
@@ -39,15 +44,42 @@ function moduleContext(): { dir: string; require: NodeJS.Require } {
 /**
  * Pluggable Postgres backend for Lattice.
  *
- * Implementation note: the StorageAdapter interface is synchronous (because
- * better-sqlite3 is sync), but every Node Postgres client is async. We bridge
- * that gap with a synckit worker thread — the worker owns the pg.Client and
- * runs each query asynchronously; the main thread blocks on Atomics.wait via
- * synckit's createSyncFn. Each query pays ~1-3 ms of message-passing overhead,
- * which is fine for Lattice's batch-insert + periodic-render workload.
+ * Two surfaces, one adapter:
+ *   - Sync surface (`run` / `get` / `all` / `prepare`): bridged via a synckit
+ *     worker thread that owns a single pg.Client. The main thread blocks on
+ *     Atomics.wait until the worker posts its reply. Used by callers that
+ *     haven't migrated to the async surface; preserved for back-compat so
+ *     consumers can adopt the async surface incrementally.
+ *   - Async surface (`runAsync` / `getAsync` / `allAsync` / `prepareAsync` /
+ *     `withClient`): native against a `pg.Pool` in the main thread. No
+ *     synckit, no Atomics.wait. The Node event loop is free to serve other
+ *     work between awaited DB roundtrips — exactly the property normal Node
+ *     async I/O is supposed to have. Required for any workload that runs
+ *     long sync bursts on the main thread (the original motivation for this
+ *     adapter rewrite).
  *
- * If/when a workload genuinely needs OLTP-grade throughput, we can introduce
- * an async StorageAdapter variant without breaking SQLite consumers.
+ * The two surfaces share the same underlying database but use different
+ * upstream connections: the synckit worker owns one pg.Client, the pool owns
+ * up to `poolSize` connections. Total upstream connection demand per
+ * adapter instance is `1 + poolSize` while both surfaces are alive. Once
+ * all consumers have migrated to the async surface, the synckit worker
+ * (and its single connection) can be removed in a future release.
+ *
+ * Transactional contract:
+ *   - Sync `adapter.run('BEGIN')` / `adapter.run('COMMIT')` is no longer a
+ *     safe idiom. The synckit worker's single pg.Client still happens to
+ *     pin those calls to one connection (so existing call sites keep
+ *     working), but new transaction boundaries MUST go through `withClient(fn)`
+ *     because the async surface is pool-backed and raw BEGIN/COMMIT can
+ *     land on different upstream connections under transaction-mode pooling.
+ *   - `withClient(fn)` checks out a single pool client, runs `fn` against
+ *     a `TxClient` whose run/get/all are pinned to that client, and
+ *     commits or rolls back automatically.
+ *
+ * Polyfills (json_extract, strftime, pgcrypto extension): registered by
+ * the synckit worker on open(). Kept there for PR 1 since synckit always
+ * runs first; when synckit is removed in a later release the pool will
+ * need its own one-shot registration on first checkout.
  *
  * Optional dependencies: `pg` and `synckit` are listed in `optionalDependencies`
  * — SQLite-only consumers don't pay the install cost. The constructor throws
@@ -56,12 +88,49 @@ function moduleContext(): { dir: string; require: NodeJS.Require } {
 export interface PostgresAdapterOptions {
   /** Override the worker file path. Useful in test setups. */
   workerPath?: string;
+  /**
+   * Maximum number of pool connections used by the async surface
+   * (`runAsync` / `getAsync` / `allAsync` / `withClient`). Default 10.
+   *
+   * Under pgbouncer transaction-mode pooling (the recommended pooler for
+   * `pg.Pool` clients), each pool slot consumes one upstream pgbouncer
+   * connection only while a query or `withClient` block is in flight, so a
+   * pool of 10 gives meaningful concurrency without exhausting a typical
+   * Supabase project budget. Tune down for memory- or budget-constrained
+   * environments; tune up if you observe pool waits in production.
+   */
+  poolSize?: number;
+}
+
+// Subset of the `pg` package we actually use. Keeping a local alias avoids
+// having to import types from `pg` (an optionalDependency) at the top level —
+// the SQLite-only path would otherwise pay the type cost. The runtime
+// `requireFromHere('pg')` returns a value compatible with the real `pg.Pool`,
+// and we cast to this subset.
+interface PgQueryResult {
+  rows: Row[];
+  rowCount: number | null;
+}
+interface PgPoolClient {
+  query(sql: string, params?: unknown[]): Promise<PgQueryResult>;
+  release(err?: unknown): void;
+}
+interface PgPool {
+  query(sql: string, params?: unknown[]): Promise<PgQueryResult>;
+  connect(): Promise<PgPoolClient>;
+  end(): Promise<void>;
+}
+interface PgModule {
+  Pool: new (config: { connectionString: string; max?: number }) => PgPool;
 }
 
 export class PostgresAdapter implements StorageAdapter {
+  readonly dialect = 'postgres' as const;
   private readonly _connectionString: string;
   private readonly _workerPath: string;
+  private readonly _poolSize: number;
   private _syncFn: ((action: unknown) => unknown) | null = null;
+  private _pool: PgPool | null = null;
   private _opened = false;
 
   constructor(connectionString: string, options: PostgresAdapterOptions = {}) {
@@ -70,6 +139,7 @@ export class PostgresAdapter implements StorageAdapter {
     // and the worker is built as CJS — Node refuses to run a `.js` CJS file
     // under `type: module`. tsup emits the worker as `dist/postgres-worker.cjs`.
     this._workerPath = options.workerPath ?? path.join(moduleContext().dir, 'postgres-worker.cjs');
+    this._poolSize = options.poolSize ?? 10;
   }
 
   open(): void {
@@ -89,8 +159,9 @@ export class PostgresAdapter implements StorageAdapter {
           (err instanceof Error ? err.message : String(err)),
       );
     }
+    let pgMod: PgModule;
     try {
-      ctxRequire('pg');
+      pgMod = ctxRequire('pg') as PgModule;
     } catch (err) {
       throw new Error(
         "PostgresAdapter requires 'pg'. Install with: npm install pg\n" +
@@ -100,12 +171,27 @@ export class PostgresAdapter implements StorageAdapter {
     }
     this._syncFn = createSyncFn(this._workerPath);
     this._call({ type: 'open', connectionString: this._connectionString });
+    // Pool is opened lazily on first async use to keep the upstream-connection
+    // footprint minimal for callers that only use the sync surface today.
+    this._pool = new pgMod.Pool({
+      connectionString: this._connectionString,
+      max: this._poolSize,
+    });
     this._opened = true;
   }
 
   close(): void {
     if (!this._opened) return;
     this._call({ type: 'close' });
+    if (this._pool) {
+      // Fire-and-forget — pool.end() is async, but close() is the sync
+      // contract; existing in-flight async queries on the pool will still
+      // settle, and the upstream connections will close as they drain.
+      void this._pool.end().catch(() => {
+        // Pool teardown failures don't affect close() semantics.
+      });
+      this._pool = null;
+    }
     this._opened = false;
     this._syncFn = null;
   }
@@ -156,6 +242,122 @@ export class PostgresAdapter implements StorageAdapter {
 
   addColumn(table: string, column: string, typeSpec: string): void {
     this._call({ type: 'addColumn', table, column, typeSpec });
+  }
+
+  // ── Async surface ───────────────────────────────────────────────────
+  // Native against pg.Pool. No synckit, no Atomics.wait. The Node event
+  // loop is free to handle other work (HTTP requests, Slack socket pings,
+  // scheduler timers, etc.) while these calls await DB I/O.
+
+  async runAsync(sql: string, params: unknown[] = []): Promise<void> {
+    const pool = this._requirePool();
+    await pool.query(rewrite(sql), params);
+  }
+
+  async getAsync(sql: string, params: unknown[] = []): Promise<Row | undefined> {
+    const pool = this._requirePool();
+    const r = await pool.query(rewrite(sql), params);
+    return r.rows[0];
+  }
+
+  async allAsync(sql: string, params: unknown[] = []): Promise<Row[]> {
+    const pool = this._requirePool();
+    const r = await pool.query(rewrite(sql), params);
+    return r.rows;
+  }
+
+  /**
+   * Async prepared-statement-shaped helper.
+   *
+   * Important: under transaction-mode pooling (the recommended pooler for
+   * pg.Pool callers), server-side prepared statements cannot persist across
+   * calls — pgbouncer returns the upstream connection to the pool at
+   * COMMIT, which invalidates any per-connection prepared-statement cache.
+   * This implementation therefore stores the rewritten SQL once and
+   * re-executes it per call. It shares the surface of a real prepared
+   * statement (so consumers can write the same code as for SQLite) but
+   * not the binding cost amortization. Inside a `withClient(fn)` block,
+   * prefer `tx.run`/`tx.get`/`tx.all` — they share the same checked-out
+   * client for the transaction lifetime and avoid the per-call setup.
+   */
+  prepareAsync(sql: string): PreparedStatementAsync {
+    const rewritten = rewrite(sql);
+    return {
+      run: async (...params: unknown[]) => {
+        const pool = this._requirePool();
+        const r = await pool.query(rewritten, params);
+        return { changes: r.rowCount ?? 0, lastInsertRowid: 0 };
+      },
+      get: async (...params: unknown[]) => {
+        const pool = this._requirePool();
+        const r = await pool.query(rewritten, params);
+        return r.rows[0];
+      },
+      all: async (...params: unknown[]) => {
+        const pool = this._requirePool();
+        const r = await pool.query(rewritten, params);
+        return r.rows;
+      },
+    };
+  }
+
+  /**
+   * Run `fn` against a single checked-out pool client wrapped in BEGIN/COMMIT.
+   * The TxClient handed to `fn` runs every query against the same upstream
+   * connection for the full transaction lifetime — pgbouncer transaction-mode
+   * cannot multiplex away mid-transaction, so atomicity holds.
+   *
+   * Throws inside `fn` cause an automatic ROLLBACK; otherwise COMMIT.
+   * The client is always released back to the pool in `finally`, with the
+   * captured error passed to `release(err)` on failure so pg.Pool destroys
+   * the connection rather than recycling a known-bad one.
+   */
+  async withClient<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+    const pool = this._requirePool();
+    const client = await pool.connect();
+    const tx: TxClient = {
+      run: async (sql: string, params?: unknown[]) => {
+        const r = await client.query(rewrite(sql), params ?? []);
+        return { changes: r.rowCount ?? 0 };
+      },
+      get: async (sql: string, params?: unknown[]) => {
+        const r = await client.query(rewrite(sql), params ?? []);
+        return r.rows[0];
+      },
+      all: async (sql: string, params?: unknown[]) => {
+        const r = await client.query(rewrite(sql), params ?? []);
+        return r.rows;
+      },
+    };
+
+    let releaseErr: unknown;
+    try {
+      await client.query('BEGIN');
+      try {
+        const result = await fn(tx);
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        releaseErr = err;
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // ROLLBACK on an already-aborted connection can fail; we surface
+          // the original error and let the `release(err)` in `finally`
+          // destroy the connection.
+        }
+        throw err;
+      }
+    } finally {
+      client.release(releaseErr);
+    }
+  }
+
+  private _requirePool(): PgPool {
+    if (!this._pool) {
+      throw new Error('PostgresAdapter: not open — call open() first');
+    }
+    return this._pool;
   }
 
   private _call(action: unknown): { rows?: Row[]; rowCount?: number } {
