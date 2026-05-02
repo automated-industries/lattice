@@ -2166,9 +2166,24 @@ const lattice = new Lattice('postgres://user:pass@host:5432/db');
 await lattice.init();
 ```
 
-**Connection pooler note:** if you put a pooler (e.g. PgBouncer, Supabase pooler) in front of your database, prefer **session-mode pooling**. Transaction-mode poolers do not support prepared statements across transactions, which would break Lattice's `adapter.prepare()` pattern.
+**Connection pooler note:** the `PostgresAdapter` exposes both a synckit-bridged sync surface and a native `pg.Pool`-backed async surface (since 1.8.0). Pick your pooler endpoint based on which surface you primarily use:
 
-**Why a worker thread under the hood:** the `StorageAdapter` interface is synchronous because `better-sqlite3` is sync. Every Node Postgres client is async. `PostgresAdapter` runs `pg` inside a `synckit` worker thread and blocks the main thread on `Atomics.wait` until the worker posts its reply. Each query pays ~1–3 ms of message-passing overhead — fine for Lattice's batch-insert + periodic-render workload. If you ever need OLTP-grade throughput, the interface can grow an async variant without breaking SQLite consumers.
+- **Transaction-mode pooling** (e.g. PgBouncer transaction-mode, Supabase port `6543`) — recommended for `pg.Pool`-backed callers. The async surface (`runAsync`/`getAsync`/`allAsync`/`withClient`) is designed for transaction-mode: server-side prepared statements aren't kept across calls (because the upstream connection returns to the pool at `COMMIT`), and `prepareAsync` re-binds per call, so the prepared-statement-incompatibility caveat doesn't apply. Migrations are wrapped in `withClient(fn)` and acquire a transaction-scoped advisory lock so concurrent app boots serialize cleanly.
+- **Session-mode pooling** (e.g. PgBouncer session-mode, Supabase port `5432`) — required if you rely on the synckit-bridged sync surface (`adapter.run`/`adapter.prepare`) for transactional code. The synckit worker owns a single `pg.Client`, so session-mode preserves the per-connection guarantees that raw `BEGIN`/`COMMIT` calls assume.
+
+**Two surfaces, one adapter (since 1.8.0):**
+
+- **Sync surface** (`run` / `get` / `all` / `prepare`) — bridged via a synckit worker thread that owns a single `pg.Client`. The main thread blocks on `Atomics.wait` until the worker replies. Each query pays ~1–3 ms of message-passing overhead. Used by callers that haven't migrated to the async surface yet; preserved for back-compat.
+- **Async surface** (`runAsync` / `getAsync` / `allAsync` / `prepareAsync` / `withClient`) — native against a `pg.Pool` in the main thread. No synckit, no `Atomics.wait`. The Node event loop is free to handle other work between awaited DB roundtrips. Required for any workload that runs long sync bursts on the main thread; `pool.max` is configurable via `PostgresAdapterOptions.poolSize` (default 10).
+- **Transactional contract**: any code that issues `BEGIN`/`COMMIT` should use `withClient(fn)` rather than raw `adapter.run('BEGIN')`. The pool checks out a single connection for the lifetime of `fn` and the `TxClient` handed to `fn` pins every query to that connection. Raw `adapter.run('BEGIN')` is only safe under the synckit worker (single-connection by construction); the next major release will remove the synckit worker entirely.
+
+```ts
+// Recommended pattern for transactional writes
+await adapter.withClient(async (tx) => {
+  await tx.run('UPDATE accounts SET balance = balance - ? WHERE id = ?', [50, 'a']);
+  await tx.run('UPDATE accounts SET balance = balance + ? WHERE id = ?', [50, 'b']);
+});
+```
 
 **Schema portability:** Lattice's table definitions are mostly portable SQL. The adapter handles the few dialect differences automatically:
 
@@ -2183,6 +2198,11 @@ The interface is small enough to implement against any backend:
 
 ```ts
 export interface StorageAdapter {
+  // Identifies the dialect for the few cross-dialect branches in lattice
+  // core. Most application code never needs to read this.
+  readonly dialect: 'sqlite' | 'postgres';
+
+  // Sync surface — required.
   run(sql: string, params?: unknown[]): void;
   get(sql: string, params?: unknown[]): Row | undefined;
   all(sql: string, params?: unknown[]): Row[];
@@ -2191,6 +2211,13 @@ export interface StorageAdapter {
   close(): void;
   introspectColumns(table: string): string[];
   addColumn(table: string, column: string, typeSpec: string): void;
+
+  // Async surface — optional, preferred by lattice when present.
+  runAsync?(sql: string, params?: unknown[]): Promise<void>;
+  getAsync?(sql: string, params?: unknown[]): Promise<Row | undefined>;
+  allAsync?(sql: string, params?: unknown[]): Promise<Row[]>;
+  prepareAsync?(sql: string): PreparedStatementAsync;
+  withClient?<T>(fn: (tx: TxClient) => Promise<T>): Promise<T>;
 }
 ```
 

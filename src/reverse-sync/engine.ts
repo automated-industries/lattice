@@ -34,11 +34,11 @@ export class ReverseSyncEngine {
    * @param dryRun - When true, detect changes but do not modify the database.
    * @returns Summary of what was scanned, changed, and applied.
    */
-  process(
+  async process(
     outputDir: string,
     prevManifest: LatticeManifest | null,
     dryRun = false,
-  ): ReverseSyncResult {
+  ): Promise<ReverseSyncResult> {
     const result: ReverseSyncResult = {
       filesScanned: 0,
       filesChanged: 0,
@@ -117,7 +117,7 @@ export class ReverseSyncEngine {
             if (updates.length === 0) continue;
 
             if (!dryRun) {
-              this._applyUpdates(updates);
+              await this._applyUpdates(updates);
             }
             result.updatesApplied += updates.length;
           } catch (err) {
@@ -139,11 +139,18 @@ export class ReverseSyncEngine {
   /**
    * Apply a batch of ReverseSyncUpdate to the database.
    * Each update is an independent UPDATE statement.
-   * Wrapped in a transaction for atomicity.
+   * Wrapped in a transaction for atomicity via `adapter.withClient(fn)` so
+   * every UPDATE in the batch lands on the same upstream connection — under
+   * `pg.Pool`-backed adapters, raw `adapter.run('BEGIN')` calls would
+   * otherwise land on different pool connections and break atomicity.
    */
-  private _applyUpdates(updates: ReverseSyncUpdate[]): void {
-    this._adapter.run('BEGIN');
-    try {
+  private async _applyUpdates(updates: ReverseSyncUpdate[]): Promise<void> {
+    if (!this._adapter.withClient) {
+      throw new Error(
+        'ReverseSyncEngine: adapter does not implement withClient — cannot guarantee transactional atomicity for reverse-sync updates',
+      );
+    }
+    await this._adapter.withClient(async (tx) => {
       for (const update of updates) {
         const setCols = Object.keys(update.set);
         if (setCols.length === 0) continue;
@@ -168,12 +175,8 @@ export class ReverseSyncEngine {
 
         const params = [...setCols.map((c) => update.set[c]), ...pkCols.map((c) => update.pk[c])];
 
-        this._adapter.run(sql, params);
+        await tx.run(sql, params);
       }
-      this._adapter.run('COMMIT');
-    } catch (err) {
-      this._adapter.run('ROLLBACK');
-      throw err;
-    }
+    });
   }
 }

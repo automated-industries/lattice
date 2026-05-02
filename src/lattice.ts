@@ -265,13 +265,29 @@ export class Lattice {
   }
 
   init(options: InitOptions = {}): Promise<void> {
+    // Synchronous validation phase — anything that should fail loudly with
+    // a thrown Error (rather than a rejected Promise) goes here. Existing
+    // callers do `expect(() => db.init()).toThrow(...)` to assert config
+    // misuse, so the throw must originate from a non-async function.
     if (this._initialized) {
       return Promise.reject(new Error('Lattice: init() has already been called'));
     }
     this._adapter.open();
     this._schema.applySchema(this._adapter);
+    // Validate encryption keys before any async work — preserves the
+    // pre-async-init throw semantic for `encrypted: true without key`.
+    this._setupEncryption();
+    return this._initAsync(options);
+  }
+
+  /** Async tail of init(). See {@link init} for the sync-validation phase. */
+  private async _initAsync(options: InitOptions): Promise<void> {
     if (options.migrations?.length) {
-      this._schema.applyMigrations(this._adapter, options.migrations);
+      // applyMigrationsAsync uses adapter.withClient when available
+      // (Postgres path acquires pg_xact_advisory_lock for concurrent-boot
+      // serialization; SQLite path is a plain BEGIN/COMMIT). Falls back to
+      // the sync runner when an older adapter doesn't implement withClient.
+      await this._schema.applyMigrationsAsync(this._adapter, options.migrations);
     }
     // Snapshot actual columns post-migration: schema state only includes declared
     // columns, so migration-added columns would be stripped by _filterToSchemaColumns
@@ -292,11 +308,11 @@ export class Lattice {
       this._pruneChangelog();
     }
 
-    // Set up encryption for entity contexts that declare encrypted: true|{columns}
-    this._setupEncryption();
+    // Encryption setup runs in the synchronous validation phase of init();
+    // see init() for the move rationale (preserves throw semantics for
+    // `encrypted: true without encryptionKey` config errors).
 
     this._initialized = true;
-    return Promise.resolve();
   }
 
   /**
@@ -305,16 +321,15 @@ export class Lattice {
    *
    * @since 0.17.0
    */
-  migrate(migrations: Migration[]): Promise<void> {
+  async migrate(migrations: Migration[]): Promise<void> {
     if (!this._initialized) {
-      return Promise.reject(new Error('Lattice: not initialized — call init() first'));
+      throw new Error('Lattice: not initialized — call init() first');
     }
-    this._schema.applyMigrations(this._adapter, migrations);
+    await this._schema.applyMigrationsAsync(this._adapter, migrations);
     // Refresh column cache for any tables affected by migrations
     for (const tableName of this._schema.getTables().keys()) {
       this._columnCache.set(tableName, new Set(this._adapter.introspectColumns(tableName)));
     }
-    return Promise.resolve();
   }
 
   close(): void {
@@ -1275,7 +1290,7 @@ export class Lattice {
     const notInit = this._notInitError<ReverseSeedResult>();
     if (notInit) return notInit;
 
-    const result = this._reverseSeedEngine.process(outputDir);
+    const result = await this._reverseSeedEngine.process(outputDir);
 
     // Emit events for each recovered table
     for (const tableResult of result.tables) {
@@ -1301,7 +1316,7 @@ export class Lattice {
 
     if (options.reverseSeed === 'auto') {
       // Auto-recovery mode: parse files and insert rows
-      const result = this._reverseSeedEngine.process(outputDir);
+      const result = await this._reverseSeedEngine.process(outputDir);
       for (const tableResult of result.tables) {
         for (const h of this._reverseSeedHandlers) {
           h({ table: tableResult.table, rowCount: tableResult.rowsRecovered, source: 'files' });
@@ -1319,7 +1334,7 @@ export class Lattice {
     let reverseSyncResult: import('./types.js').ReverseSyncResult | null = null;
     if (options.reverseSync !== false) {
       const dryRun = options.reverseSync === 'dry-run';
-      reverseSyncResult = this._reverseSync.process(outputDir, prevManifest, dryRun);
+      reverseSyncResult = await this._reverseSync.process(outputDir, prevManifest, dryRun);
     }
 
     // Render (writes new manifest with updated hashes)
