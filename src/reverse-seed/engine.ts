@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
-import type { StorageAdapter } from '../db/adapter.js';
+import type { StorageAdapter, TxClient } from '../db/adapter.js';
 import type {
   Row,
   BuiltinTemplateName,
@@ -308,7 +308,13 @@ export class ReverseSeedEngine {
    * @param outputDir - Root output directory where rendered files live.
    * @returns Summary of what was recovered.
    */
-  process(outputDir: string): ReverseSeedResult {
+  async process(outputDir: string): Promise<ReverseSeedResult> {
+    const withClient = this._adapter.withClient?.bind(this._adapter);
+    if (!withClient) {
+      throw new Error(
+        'ReverseSeedEngine: adapter does not implement withClient — cannot guarantee transactional atomicity for reverse-seed inserts',
+      );
+    }
     const result: ReverseSeedResult = {
       tables: [],
       totalRowsRecovered: 0,
@@ -359,7 +365,7 @@ export class ReverseSeedEngine {
       if (!content.trim()) continue;
 
       // Parse and insert
-      const tableResult = this._seedFromParsedRows(name, content, parser, result.warnings);
+      const tableResult = await this._seedFromParsedRows(name, content, parser, result.warnings);
       if (tableResult) {
         result.tables.push(tableResult);
         result.totalRowsRecovered += tableResult.rowsRecovered;
@@ -412,60 +418,58 @@ export class ReverseSeedEngine {
 
       let rowsRecovered = 0;
 
-      this._adapter.run('BEGIN');
       try {
-        for (const entry of entries) {
-          if (entry.startsWith('.')) continue;
-          const entityDir = join(rootPath, entry);
-          try {
-            if (!statSync(entityDir).isDirectory()) continue;
-          } catch {
-            continue;
-          }
-
-          // Skip entities that already exist in the DB
-          if (dbSlugs.has(entry)) continue;
-
-          const targetFile = selfFilename ?? Object.keys(ecDef.files)[0];
-          if (!targetFile) continue;
-
-          const filePath = join(entityDir, targetFile);
-          if (!existsSync(filePath)) continue;
-
-          let content: string;
-          try {
-            content = readFileSync(filePath, 'utf8');
-          } catch {
-            result.warnings.push(`Entity "${table}/${entry}": could not read ${filePath}`);
-            continue;
-          }
-
-          if (!content.trim()) continue;
-
-          let rows: Record<string, unknown>[];
-          try {
-            if (entityParser) {
-              rows = entityParser(content);
-            } else {
-              rows = [parseEntityProfileContent(content)];
+        await withClient(async (tx) => {
+          for (const entry of entries) {
+            if (entry.startsWith('.')) continue;
+            const entityDir = join(rootPath, entry);
+            try {
+              if (!statSync(entityDir).isDirectory()) continue;
+            } catch {
+              continue;
             }
-          } catch (err) {
-            result.warnings.push(
-              `Entity "${table}/${entry}": parse error — ${err instanceof Error ? err.message : String(err)}`,
-            );
-            continue;
-          }
 
-          for (const row of rows) {
-            if (Object.keys(row).length === 0) continue;
-            const inserted = this._insertOrIgnore(table, row);
-            if (inserted) rowsRecovered++;
-          }
-        }
+            // Skip entities that already exist in the DB
+            if (dbSlugs.has(entry)) continue;
 
-        this._adapter.run('COMMIT');
+            const targetFile = selfFilename ?? Object.keys(ecDef.files)[0];
+            if (!targetFile) continue;
+
+            const filePath = join(entityDir, targetFile);
+            if (!existsSync(filePath)) continue;
+
+            let content: string;
+            try {
+              content = readFileSync(filePath, 'utf8');
+            } catch {
+              result.warnings.push(`Entity "${table}/${entry}": could not read ${filePath}`);
+              continue;
+            }
+
+            if (!content.trim()) continue;
+
+            let rows: Record<string, unknown>[];
+            try {
+              if (entityParser) {
+                rows = entityParser(content);
+              } else {
+                rows = [parseEntityProfileContent(content)];
+              }
+            } catch (err) {
+              result.warnings.push(
+                `Entity "${table}/${entry}": parse error — ${err instanceof Error ? err.message : String(err)}`,
+              );
+              continue;
+            }
+
+            for (const row of rows) {
+              if (Object.keys(row).length === 0) continue;
+              const inserted = await this._insertOrIgnore(tx, table, row);
+              if (inserted) rowsRecovered++;
+            }
+          }
+        });
       } catch (err) {
-        this._adapter.run('ROLLBACK');
         result.warnings.push(
           `Entity context "${table}": transaction error — ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -484,12 +488,12 @@ export class ReverseSeedEngine {
   /**
    * Parse file content and seed rows into a table.
    */
-  private _seedFromParsedRows(
+  private async _seedFromParsedRows(
     table: string,
     content: string,
     parser: (content: string) => Record<string, unknown>[],
     warnings: string[],
-  ): ReverseSeedTableResult | null {
+  ): Promise<ReverseSeedTableResult | null> {
     let rows: Record<string, unknown>[];
     try {
       rows = parser(content);
@@ -504,16 +508,22 @@ export class ReverseSeedEngine {
 
     let rowsRecovered = 0;
 
-    this._adapter.run('BEGIN');
+    const withClient = this._adapter.withClient?.bind(this._adapter);
+    if (!withClient) {
+      throw new Error(
+        'ReverseSeedEngine: adapter does not implement withClient — cannot guarantee transactional atomicity for reverse-seed inserts',
+      );
+    }
+
     try {
-      for (const row of rows) {
-        if (Object.keys(row).length === 0) continue;
-        const inserted = this._insertOrIgnore(table, row);
-        if (inserted) rowsRecovered++;
-      }
-      this._adapter.run('COMMIT');
+      await withClient(async (tx) => {
+        for (const row of rows) {
+          if (Object.keys(row).length === 0) continue;
+          const inserted = await this._insertOrIgnore(tx, table, row);
+          if (inserted) rowsRecovered++;
+        }
+      });
     } catch (err) {
-      this._adapter.run('ROLLBACK');
       warnings.push(
         `Table "${table}": insert error — ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -526,9 +536,20 @@ export class ReverseSeedEngine {
   /**
    * Insert a row using INSERT OR IGNORE semantics.
    * Filters to valid columns and returns true if a row was actually inserted.
+   *
+   * Runs on a `TxClient` so the count-before / insert / count-after sequence
+   * lands on the same upstream connection — under `pg.Pool` adapters, the
+   * three statements would otherwise potentially split across connections
+   * and the "did the insert actually add a row" check would be racy.
    */
-  private _insertOrIgnore(table: string, row: Record<string, unknown>): boolean {
-    // Get actual columns from the table
+  private async _insertOrIgnore(
+    tx: TxClient,
+    table: string,
+    row: Record<string, unknown>,
+  ): Promise<boolean> {
+    // Get actual columns from the table. introspectColumns is read-only
+    // metadata that does not need to participate in the transaction; the
+    // schema is stable for the life of the boot.
     const validColumns = new Set(this._adapter.introspectColumns(table));
 
     // Filter row to valid columns only
@@ -549,15 +570,15 @@ export class ReverseSeedEngine {
       .join(', ');
     const values = Object.values(filtered);
 
-    const before = this._adapter.get(`SELECT COUNT(*) AS n FROM "${table}"`);
+    const before = await tx.get(`SELECT COUNT(*) AS n FROM "${table}"`);
     const countBefore = Number(before?.n ?? 0);
 
-    this._adapter.run(
+    await tx.run(
       `INSERT OR IGNORE INTO "${table}" (${cols}) VALUES (${placeholders})`,
       values,
     );
 
-    const after = this._adapter.get(`SELECT COUNT(*) AS n FROM "${table}"`);
+    const after = await tx.get(`SELECT COUNT(*) AS n FROM "${table}"`);
     const countAfter = Number(after?.n ?? 0);
 
     return countAfter > countBefore;
