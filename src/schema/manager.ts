@@ -1,4 +1,5 @@
-import type { StorageAdapter } from '../db/adapter.js';
+import type { StorageAdapter, TxClient } from '../db/adapter.js';
+import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
 import type {
   TableDefinition,
   MultiTableDefinition,
@@ -130,7 +131,14 @@ export class SchemaManager {
     });
   }
 
-  /** Run explicit versioned migrations in order, idempotently */
+  /**
+   * Run explicit versioned migrations in order, idempotently.
+   *
+   * Synchronous path. Used by SQLite consumers and any caller that hasn't
+   * migrated to the async surface yet. Postgres consumers should call
+   * `applyMigrationsAsync` so concurrent boots serialize on a transaction-
+   * scoped advisory lock instead of racing.
+   */
   applyMigrations(adapter: StorageAdapter, migrations: Migration[]): void {
     const sorted = [...migrations].sort((a, b) => {
       const va = String(a.version);
@@ -150,6 +158,62 @@ export class SchemaManager {
         ]);
       }
     }
+  }
+
+  /**
+   * Async migration runner. Wraps the migration loop in a single
+   * `withClient(fn)` block — pinning every statement to the same upstream
+   * connection so the BEGIN/COMMIT lifecycle is atomic against pgbouncer
+   * transaction-mode pooling.
+   *
+   * On Postgres, also acquires `pg_xact_advisory_lock` at the top of the
+   * transaction so concurrent app boots (Railway rolling deploys, two
+   * developer laptops booting against a shared dev DB) queue on the lock
+   * and apply migrations serially. The lock is transaction-scoped so it
+   * auto-releases at COMMIT — no explicit unlock needed and no risk of a
+   * leaked lock surviving a crashed boot.
+   *
+   * On SQLite, the advisory-lock branch is skipped (better-sqlite3's
+   * single-writer guarantee plus WAL + busy_timeout already handle
+   * concurrent boots). The withClient block reduces to a plain
+   * BEGIN/COMMIT pair — semantically the same as the sync path.
+   *
+   * Falls back to the sync `applyMigrations` if the adapter doesn't
+   * implement `withClient`. That path covers the period when an adapter
+   * has been upgraded but the consumer hasn't yet adopted the async
+   * surface end-to-end.
+   */
+  async applyMigrationsAsync(adapter: StorageAdapter, migrations: Migration[]): Promise<void> {
+    if (!adapter.withClient) {
+      this.applyMigrations(adapter, migrations);
+      return;
+    }
+    const sorted = [...migrations].sort((a, b) => {
+      const va = String(a.version);
+      const vb = String(b.version);
+      return va.localeCompare(vb, undefined, { numeric: true });
+    });
+    await adapter.withClient(async (tx: TxClient) => {
+      if (adapter.dialect === 'postgres') {
+        // Transaction-scoped — auto-released at COMMIT. Serializes any
+        // concurrent boot that reaches this same withClient block.
+        await tx.run('SELECT pg_xact_advisory_lock($1)', [LATTICE_MIGRATION_LOCK_ID.toString()]);
+      }
+      for (const m of sorted) {
+        const versionStr = String(m.version);
+        const exists = await tx.get(
+          'SELECT 1 FROM __lattice_migrations WHERE version = ?',
+          [versionStr],
+        );
+        if (!exists) {
+          await tx.run(m.sql);
+          await tx.run(
+            'INSERT INTO __lattice_migrations (version, applied_at) VALUES (?, ?)',
+            [versionStr, new Date().toISOString()],
+          );
+        }
+      }
+    });
   }
 
   /**
