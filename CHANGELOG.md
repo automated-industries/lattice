@@ -6,6 +6,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.8.0] — Unreleased
+
+### Added
+
+- **Optional async surface on `StorageAdapter`** — `runAsync` / `getAsync` / `allAsync` / `prepareAsync` / `withClient`, plus a `dialect: 'sqlite' | 'postgres'` discriminator and a new `TxClient` interface for transaction-scoped query handles. Existing sync methods (`run` / `get` / `all` / `prepare`) are unchanged and still authoritative for SQLite consumers; the async surface is preferred by lattice itself when present. Adapters that don't implement async methods continue to work via the sync surface.
+- **`PostgresAdapter` now exposes a native async surface backed by `pg.Pool`** alongside the existing synckit-bridged sync surface. New `PostgresAdapterOptions.poolSize` (default 10) controls the pool. The async path runs on the Node main thread without `Atomics.wait`, so the event loop is free to serve other work between awaited DB roundtrips. The synckit worker is kept alive for back-compat — sync `run`/`get`/`all` callers see no behavioral change. Total upstream connection demand per adapter instance is `1 + poolSize` while both surfaces are in use; in a future release the synckit path will be removed.
+- **`SQLiteAdapter.withClient(fn)`** — wraps an async `fn(tx: TxClient)` in a `BEGIN`/`COMMIT` block on the single SQLite connection. Throws inside `fn` cause `ROLLBACK`. Provided for cross-dialect parity with `PostgresAdapter.withClient` so transactional callers don't need to branch on adapter type.
+- **`SchemaManager.applyMigrationsAsync`** — runs the migration loop inside a single `withClient(fn)` block. On Postgres, also acquires `pg_xact_advisory_lock(LATTICE_MIGRATION_LOCK_ID)` at the top of the transaction so concurrent app boots queue and apply migrations serially instead of racing on `CREATE TABLE` / seed inserts. The lock is transaction-scoped, so it auto-releases at `COMMIT` — no explicit unlock and no risk of a leaked lock surviving a crashed boot. SQLite path uses the same withClient block but skips the advisory-lock branch (better-sqlite3's single-writer guarantee plus WAL + busy_timeout already cover concurrent boots). Falls back to the synchronous `applyMigrations` when the adapter doesn't implement `withClient`.
+- **`Lattice.init()` and `Lattice.migrate()` now drive migrations through `applyMigrationsAsync`.** The synchronous validation phase of `init()` (encryption-key config check, etc.) is preserved as a non-async function so existing `expect(() => db.init()).toThrow(...)` patterns continue to surface config errors as synchronous throws, not promise rejections.
+
+### Changed
+
+- **Internal raw `BEGIN`/`COMMIT`/`ROLLBACK` call sites in `reverse-seed/engine.ts` and `reverse-sync/engine.ts` migrated to `withClient(fn)`.** Previously these relied on the synckit worker's single `pg.Client` to incidentally pin BEGIN/COMMIT to one connection. Under the new pool-backed async surface, raw BEGIN/COMMIT can land on different upstream connections and break atomicity silently. `withClient(fn)` checks out a single client for the full transaction — the surface is identical on SQLite and Postgres so the migration is mechanical.
+- **`ReverseSeedEngine.process` and `ReverseSyncEngine.process` are now async** (return `Promise<ReverseSeedResult>` / `Promise<ReverseSyncResult>`). Callers inside lattice's own render loop are already inside async methods; downstream consumers awaiting the previous sync return value see no behavioral change since both engines were always invoked from `Lattice.render()` and `Lattice.reverseSeed()`, which already return Promises.
+
+### Fixed
+
+- **Migration runner is now safe under transaction-mode connection pooling.** Before this release, if a Postgres consumer pointed `PostgresAdapter` at a transaction-mode pgbouncer endpoint (e.g. Supabase port 6543), there was no upstream connection guarantee across the migration loop's individual `adapter.run` calls and concurrent boots could race on `CREATE TABLE IF NOT EXISTS` + seed inserts. The new `pg_xact_advisory_lock` inside `withClient(fn)` serializes concurrent migration runs.
+
+### Notes for upgraders
+
+- This release is **additive** at the `StorageAdapter` interface level — existing third-party adapters that implement only the sync surface continue to work unchanged. Lattice will use the sync path when `withClient` is undefined on the adapter.
+- Postgres consumers gain real async DB I/O on the new `runAsync`/`getAsync`/`allAsync`/`withClient` methods. To benefit, downstream code should adopt the async surface (e.g. `await db.query(...)` already routes through the async path via the consumer's `DataStore` async wrappers in most cases).
+- Raw `adapter.run('BEGIN')` / `adapter.run('COMMIT')` is **no longer a safe transaction idiom** if you call it on a future Postgres release where the synckit worker has been removed. Migrate now to `await adapter.withClient(async (tx) => { ... })` — the surface is the same on SQLite and Postgres.
+
 ## [1.7.0] — 2026-04-20
 
 ### Changed
