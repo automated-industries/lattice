@@ -284,7 +284,7 @@ export class Lattice {
   private async _initAsync(options: InitOptions): Promise<void> {
     if (options.migrations?.length) {
       // applyMigrationsAsync uses adapter.withClient when available
-      // (Postgres path acquires pg_xact_advisory_lock for concurrent-boot
+      // (Postgres path acquires pg_advisory_xact_lock for concurrent-boot
       // serialization; SQLite path is a plain BEGIN/COMMIT). Falls back to
       // the sync runner when an older adapter doesn't implement withClient.
       await this._schema.applyMigrationsAsync(this._adapter, options.migrations);

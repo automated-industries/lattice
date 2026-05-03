@@ -166,7 +166,7 @@ export class SchemaManager {
    * connection so the BEGIN/COMMIT lifecycle is atomic against pgbouncer
    * transaction-mode pooling.
    *
-   * On Postgres, also acquires `pg_xact_advisory_lock` at the top of the
+   * On Postgres, also acquires `pg_advisory_xact_lock` at the top of the
    * transaction so concurrent app boots (Railway rolling deploys, two
    * developer laptops booting against a shared dev DB) queue on the lock
    * and apply migrations serially. The lock is transaction-scoped so it
@@ -195,9 +195,24 @@ export class SchemaManager {
     });
     await adapter.withClient(async (tx: TxClient) => {
       if (adapter.dialect === 'postgres') {
-        // Transaction-scoped — auto-released at COMMIT. Serializes any
-        // concurrent boot that reaches this same withClient block.
-        await tx.run('SELECT pg_xact_advisory_lock($1)', [LATTICE_MIGRATION_LOCK_ID.toString()]);
+        // Transaction-scoped advisory lock — auto-released at COMMIT.
+        // Serializes any concurrent boot that reaches this same withClient
+        // block, so two app instances coming up at once apply migrations
+        // sequentially instead of racing on CREATE TABLE / seed inserts.
+        //
+        // The function is `pg_advisory_xact_lock(bigint)`, not
+        // `pg_xact_advisory_lock`. The 1.8.0 release shipped with the
+        // wrong word order — boot crashed with "function
+        // pg_xact_advisory_lock(unknown) does not exist", which read like a
+        // type-cast issue but was actually the function name. The
+        // `::bigint` cast is kept as belt-and-suspenders documentation —
+        // pg currently sends bigint params correctly without it, but the
+        // explicit cast is cheap and immune to future driver behavior
+        // changes. Regression test:
+        // tests/integration/apply-migrations-async-postgres.test.ts.
+        await tx.run('SELECT pg_advisory_xact_lock($1::bigint)', [
+          LATTICE_MIGRATION_LOCK_ID.toString(),
+        ]);
       }
       for (const m of sorted) {
         const versionStr = String(m.version);

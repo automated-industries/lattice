@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.8.1] — 2026-05-02
+
+### Fixed
+
+- **`SchemaManager.applyMigrationsAsync` now uses the correct Postgres advisory-lock function name.** 1.8.0 shipped with the function name typoed as `pg_xact_advisory_lock` (advisory and xact swapped) — that function does not exist in Postgres. Every fresh boot crashed with `Fatal: error: function pg_xact_advisory_lock(unknown) does not exist`. The misleading `(unknown)` made it look like a parameter-typing problem; adding an `::bigint` cast reproduced as `function pg_xact_advisory_lock(bigint) does not exist`, surfacing that the function name itself was wrong. The actual Postgres function is `pg_advisory_xact_lock(bigint)` — advisory first, xact second. Fixed in `src/schema/manager.ts`. The `::bigint` cast is kept as belt-and-suspenders documentation.
+
+### Added
+
+- **Postgres integration test for `applyMigrationsAsync`** (`tests/integration/apply-migrations-async-postgres.test.ts`). Skips when `LATTICE_TEST_PG_URL` is unset; otherwise exercises the full end-to-end migration runner against a real Postgres. Covers: basic apply, idempotency, rollback on failure, and concurrent-boot serialization on the transaction-scoped advisory lock. Catches the regression that 1.8.0 shipped — the SQLite-only unit tests passed because they skip the advisory-lock branch entirely; this test runs the exact code path that broke.
+- **Postgres service container in CI** (`.github/workflows/ci.yml`). Provisions a `postgres:16` service container and sets `LATTICE_TEST_PG_URL` on the test job so the new integration suite always runs in CI.
+
 ## [1.8.0] — 2026-05-02
 
 ### Added

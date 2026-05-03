@@ -2,7 +2,7 @@ import type { Row } from '../types.js';
 
 /**
  * Adapter dialect identifier. Used by callers that need to issue
- * dialect-specific SQL (e.g. the migration runner's `pg_xact_advisory_lock`
+ * dialect-specific SQL (e.g. the migration runner's `pg_advisory_xact_lock`
  * on Postgres). Lattice itself uses this only for cross-dialect concerns
  * the dialect-translation layer can't paper over — most application code
  * should never need to branch on it.
