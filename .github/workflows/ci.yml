@@ -11,6 +11,27 @@ jobs:
     name: Lint, typecheck, test, build
     runs-on: ubuntu-latest
 
+    services:
+      # Postgres service for the integration tests in tests/integration/.
+      # Tests gate on LATTICE_TEST_PG_URL so they skip on local SQLite-only
+      # contributors, but always run in CI.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lattice
+          POSTGRES_PASSWORD: lattice
+          POSTGRES_DB: lattice_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lattice -d lattice_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      LATTICE_TEST_PG_URL: postgres://lattice:lattice@localhost:5432/lattice_test
+
     steps:
       - uses: actions/checkout@v4
 
