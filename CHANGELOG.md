@@ -6,6 +6,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.9.0] — 2026-05-04
+
+### Changed
+
+- **Lattice core now prefers the adapter's async surface over the sync surface at every internal call site.** Previously, even after 1.8.0 added `runAsync` / `getAsync` / `allAsync` to `StorageAdapter`, lattice itself still routed every read and write through the sync methods — meaning Postgres consumers were paying the synckit `Atomics.wait` cost on the Node main thread for every `lattice.query`, `lattice.insert`, `lattice.render`, and so on, even though `pg.Pool` was already available. This release flips that: `Lattice.{insert,upsert,upsertBy,update,updateReturning,delete,get,query,count,upsertByNaturalKey,enrichByNaturalKey,softDeleteMissing,getActive,countActive,getByNaturalKey,link,unlink,reward,history,recentChanges,rollback,snapshot,pruneChangelog,buildReport}`, the `RenderEngine` walk (single-table renders, multi-table renders, entity-context renders, cleanup), `SchemaManager.applySchema` / `queryTable`, `ReverseSyncEngine.process`, `ReverseSeedEngine.detect` / `process`, and the embeddings store/load helpers all consume DB I/O via three new internal helpers — `runAsyncOrSync(adapter, sql, params)`, `getAsyncOrSync(...)`, `allAsyncOrSync(...)` — exported from `src/db/adapter.ts`. Each helper prefers the async surface when present and falls back to sync when an adapter doesn't implement it. SQLite consumers see no behavioral change: SQLite has no `allAsync` / `getAsync` / `runAsync`, so every call falls through to the existing sync path. Postgres consumers now keep the Node event loop free during DB roundtrips — no more `Atomics.wait` on request-handling threads.
+- **Several previously-synchronous internal helpers now return Promises.** `Lattice._appendChangelog`, `_pruneChangelog`, `_ensureChangelogTable`, plus `RenderEngine.cleanup` and `SchemaManager.applySchema` / `queryTable` are now async. The public CRUD methods that wrap them were already returning Promises; the change is internal-only for direct lattice consumers. The `Lattice.cleanup(...)` callsite inside `Lattice.reconcile` is now awaited.
+- **`Lattice.init()` async tail reordering.** The synchronous validation phase of `init()` is preserved (encryption-key config check still throws synchronously, so `expect(() => db.init()).toThrow(...)` patterns remain green). What changed: `applySchema` moved into the async tail (`_initAsync`) because it now performs async DB I/O. Encryption setup was split into a sync `_validateEncryptionConfig` (throw-only, no DB access) and an async `_finalizeEncryptionSetup` (resolves columns via `introspectColumns`, runs after `applySchema`).
+- **`removeEmbedding` and `ensureEmbeddingsTable` are now async.** `Lattice._syncEmbedding` continues to fire-and-forget — both branches (insert/update via `storeEmbedding` and delete via `removeEmbedding`) now route their rejection through the existing error handler chain, preserving the "embedding errors don't break the write" semantic.
+
+### Fixed
+
+- **`Lattice.softDeleteMissing` and `Lattice.countActive` now correctly return `number` on Postgres.** Both methods declared `Promise<number>` but returned the raw `cnt` field from a `SELECT COUNT(*) as cnt` query. SQLite returns `COUNT(*)` as a JS number, but the Postgres wire protocol returns it as a string for arbitrary-precision safety. Pre-1.9.0 the contract was honored on SQLite and silently violated on Postgres. Both methods now wrap the result in `Number(...)`, matching the behavior `Lattice.count` already had. Surfaced by the new `insert-update-async-postgres.test.ts` smoke against a real Postgres.
+
+### Added
+
+- **Postgres integration tests covering the four hottest call paths:**
+  - `tests/integration/query-async-postgres.test.ts` — `Lattice.query` covering eq / in / like / isNull / isNotNull / numeric / orderBy / limit and the unknown-column rejection path.
+  - `tests/integration/insert-update-async-postgres.test.ts` — `insert` / `upsert` / `upsertBy` / `update` / `updateReturning` / `delete` / `softDeleteMissing` / `link` / `unlink` end-to-end.
+  - `tests/integration/render-async-postgres.test.ts` — full `Lattice.render(outputDir)` walk against a Postgres-backed schema with both table-level and entity-context renders. Asserts manifest contents and per-entity files.
+  - `tests/integration/parallel-pool-query-postgres.test.ts` — fires 10 concurrent `Lattice.count` calls and asserts wall time is sub-linear in the batch size, proving `pg.Pool` concurrency. Regression test for the original symptom that motivated this whole rewrite (sync queries serializing through the synckit worker).
+
+  All four follow the `describe.skipIf(!process.env.LATTICE_TEST_PG_URL, ...)` pattern; CI's existing `postgres:16` service container provides the env var so they always run on `main`.
+
+### Notes for upgraders
+
+- **No public-API breakage.** Methods that returned `Promise<T>` before still return `Promise<T>`; methods that were sync (e.g. `Lattice.close`) stay sync. The change is internal: lattice now routes through the async surface when the adapter offers one.
+- **Postgres consumers should observe a substantial reduction in event-loop stalls.** Previously, a request that triggered a `db.query(...)` on the main thread blocked the event loop on `Atomics.wait` for the duration of the synckit roundtrip — typically tens to hundreds of ms per call, and serialized across concurrent requests. Post-1.9.0, those calls suspend cleanly via `await` and the event loop is free to handle other work. The original motivating symptom — a `~25-30s` health-probe stall during sync bursts — should drop to single-digit-second probes.
+- **SQLite consumers see zero behavioral change.** The sync path is untouched and authoritative for any adapter that doesn't implement `allAsync` / `getAsync` / `runAsync`. The new helpers add a single microtask boundary on each call (`async` wrappers around `Promise.resolve(adapter.all(...))`) but no real overhead.
+- **Internal-only async cascade.** Anyone subclassing `RenderEngine` or `SchemaManager` and overriding `cleanup` / `applySchema` / `queryTable` will see the return type change from `T` to `Promise<T>`. Update overrides to be `async` and await internal helpers — the parameter shapes are unchanged.
+
 ## [1.8.1] — 2026-05-02
 
 ### Fixed

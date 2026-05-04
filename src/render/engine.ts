@@ -2,6 +2,7 @@ import { join, basename, isAbsolute, resolve, sep } from 'node:path';
 import { mkdirSync, existsSync, copyFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
+import { runAsyncOrSync } from '../db/adapter.js';
 import type { RenderResult } from '../types.js';
 import { atomicWrite, contentHash } from './writer.js';
 import { applyTokenBudget } from './token-budget.js';
@@ -34,7 +35,7 @@ export class RenderEngine {
 
     // Single-table renders
     for (const [name, def] of this._schema.getTables()) {
-      let rows = this._schema.queryTable(this._adapter, name);
+      let rows = await this._schema.queryTable(this._adapter, name);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
         rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
@@ -50,7 +51,8 @@ export class RenderEngine {
           if (toPrune.length > 0) {
             for (const r of toPrune) {
               const pkCol = this._schema.getPrimaryKey(name)[0] ?? 'id';
-              this._adapter.run(
+              await runAsyncOrSync(
+                this._adapter,
                 `UPDATE "${name}" SET deleted_at = datetime('now') WHERE "${pkCol}" = ?`,
                 [r[pkCol]],
               );
@@ -86,7 +88,7 @@ export class RenderEngine {
 
       if (def.tables) {
         for (const t of def.tables) {
-          tables[t] = this._schema.queryTable(this._adapter, t);
+          tables[t] = await this._schema.queryTable(this._adapter, t);
         }
       }
 
@@ -102,7 +104,11 @@ export class RenderEngine {
     }
 
     // Entity context renders
-    const entityContextManifest = this._renderEntityContexts(outputDir, filesWritten, counters);
+    const entityContextManifest = await this._renderEntityContexts(
+      outputDir,
+      filesWritten,
+      counters,
+    );
 
     // Write manifest if there are any entity contexts
     if (this._schema.getEntityContexts().size > 0) {
@@ -129,16 +135,16 @@ export class RenderEngine {
    *   old vs new manifest entries, catching omitIfEmpty files that were written
    *   before but skipped in the current render cycle.
    */
-  cleanup(
+  async cleanup(
     outputDir: string,
     prevManifest: LatticeManifest | null,
     options: CleanupOptions = {},
     newManifest?: LatticeManifest | null,
-  ): CleanupResult {
+  ): Promise<CleanupResult> {
     const entityContexts = this._schema.getEntityContexts();
     const currentSlugsByTable = new Map<string, Set<string>>();
     for (const [table, def] of entityContexts) {
-      const rows = this._schema.queryTable(this._adapter, table);
+      const rows = await this._schema.queryTable(this._adapter, table);
       const slugs = new Set(rows.map((row) => def.slug(row)));
       currentSlugsByTable.set(table, slugs);
     }
@@ -157,11 +163,11 @@ export class RenderEngine {
    * Mutates `filesWritten` and `counters` in place.
    * Returns manifest data for the entity contexts rendered this cycle.
    */
-  private _renderEntityContexts(
+  private async _renderEntityContexts(
     outputDir: string,
     filesWritten: string[],
     counters: { skipped: number },
-  ): Record<string, EntityContextManifestEntry> {
+  ): Promise<Record<string, EntityContextManifestEntry>> {
     const manifestData: Record<string, EntityContextManifestEntry> = {};
 
     // Build set of protected table names for source filtering
@@ -172,7 +178,7 @@ export class RenderEngine {
 
     for (const [table, def] of this._schema.getEntityContexts()) {
       const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
-      const allRows = this._schema.queryTable(this._adapter, table);
+      const allRows = await this._schema.queryTable(this._adapter, table);
       const directoryRoot = def.directoryRoot ?? table;
 
       const manifestEntry: EntityContextManifestEntry = {
@@ -258,7 +264,13 @@ export class RenderEngine {
             spec.source.type !== 'custom' &&
             spec.source.type !== 'enriched';
           const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
-          const rows = resolveEntitySource(source, entityRow, entityPk, this._adapter, protection);
+          const rows = await resolveEntitySource(
+            source,
+            entityRow,
+            entityPk,
+            this._adapter,
+            protection,
+          );
 
           if (spec.omitIfEmpty && rows.length === 0) continue;
 

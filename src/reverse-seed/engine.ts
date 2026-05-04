@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter, TxClient } from '../db/adapter.js';
+import { getAsyncOrSync } from '../db/adapter.js';
 import type {
   Row,
   BuiltinTemplateName,
@@ -227,7 +228,7 @@ export class ReverseSeedEngine {
    * @param outputDir - Root output directory where rendered files live.
    * @returns List of missing entities/tables that need reverse-seed attention.
    */
-  detect(outputDir: string): ReverseSeedDetection[] {
+  async detect(outputDir: string): Promise<ReverseSeedDetection[]> {
     const detections: ReverseSeedDetection[] = [];
     const entityContextTables = new Set<string>();
 
@@ -244,7 +245,7 @@ export class ReverseSeedEngine {
       // Build set of slugs that exist in the DB
       let dbRows: Row[];
       try {
-        dbRows = this._schema.queryTable(this._adapter, table);
+        dbRows = await this._schema.queryTable(this._adapter, table);
       } catch {
         continue;
       }
@@ -280,7 +281,10 @@ export class ReverseSeedEngine {
       // Skip tables that have entity contexts — those are handled above per-entity
       if (entityContextTables.has(name)) continue;
 
-      const countRow = this._adapter.get(`SELECT COUNT(*) AS n FROM "${name}"`);
+      const countRow = await getAsyncOrSync(
+        this._adapter,
+        `SELECT COUNT(*) AS n FROM "${name}"`,
+      );
       const count = Number(countRow?.n ?? 0);
       if (count > 0) continue;
 
@@ -327,7 +331,10 @@ export class ReverseSeedEngine {
       if (def.reverseSeed === false) continue;
 
       // Check if table is empty
-      const countRow = this._adapter.get(`SELECT COUNT(*) AS n FROM "${name}"`);
+      const countRow = await getAsyncOrSync(
+        this._adapter,
+        `SELECT COUNT(*) AS n FROM "${name}"`,
+      );
       const count = Number(countRow?.n ?? 0);
       if (count > 0) continue;
 
@@ -410,7 +417,7 @@ export class ReverseSeedEngine {
       // Build set of existing slugs in DB to find missing entities
       let dbRows: Row[];
       try {
-        dbRows = this._schema.queryTable(this._adapter, table);
+        dbRows = await this._schema.queryTable(this._adapter, table);
       } catch {
         continue;
       }
