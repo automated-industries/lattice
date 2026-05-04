@@ -90,6 +90,32 @@ export class SQLiteAdapter implements StorageAdapter {
     }
   }
 
+  // ── Async surface ───────────────────────────────────────────────────
+  // SQLite is fundamentally synchronous (better-sqlite3 by design), so the
+  // async methods just wrap the sync versions in resolved Promises. They
+  // exist so callers can write a single async-preferring code path that
+  // works against both backends without branching on dialect.
+
+  async runAsync(sql: string, params?: unknown[]): Promise<void> {
+    this.run(sql, params);
+  }
+
+  async getAsync(sql: string, params?: unknown[]): Promise<Row | undefined> {
+    return this.get(sql, params);
+  }
+
+  async allAsync(sql: string, params?: unknown[]): Promise<Row[]> {
+    return this.all(sql, params);
+  }
+
+  async introspectColumnsAsync(table: string): Promise<string[]> {
+    return this.introspectColumns(table);
+  }
+
+  async addColumnAsync(table: string, column: string, typeSpec: string): Promise<void> {
+    this.addColumn(table, column, typeSpec);
+  }
+
   /**
    * Run `fn` inside a BEGIN/COMMIT block on the single SQLite connection.
    * The TxClient surface delegates to the same underlying database as the

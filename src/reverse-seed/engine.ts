@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter, TxClient } from '../db/adapter.js';
-import { getAsyncOrSync } from '../db/adapter.js';
+import { getAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
 import type {
   Row,
   BuiltinTemplateName,
@@ -557,7 +557,7 @@ export class ReverseSeedEngine {
     // Get actual columns from the table. introspectColumns is read-only
     // metadata that does not need to participate in the transaction; the
     // schema is stable for the life of the boot.
-    const validColumns = new Set(this._adapter.introspectColumns(table));
+    const validColumns = new Set(await introspectColumnsAsyncOrSync(this._adapter, table));
 
     // Filter row to valid columns only
     const filtered: Record<string, unknown> = {};
