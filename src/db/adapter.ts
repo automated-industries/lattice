@@ -104,6 +104,49 @@ export interface PreparedStatement {
   all(...params: unknown[]): Row[];
 }
 
+/**
+ * Prefer the adapter's async surface when present, fall back to sync. Sites
+ * that previously called `adapter.all(...)` synchronously and wrapped the
+ * result in `Promise.resolve(...)` collapse to a single `await
+ * allAsyncOrSync(adapter, ...)`.
+ *
+ * On Postgres, the async path goes through `pg.Pool` and never blocks the
+ * Node main thread on `synckit`'s `Atomics.wait`. On SQLite, the sync path
+ * runs synchronously in the helper and the returned Promise resolves on the
+ * next microtask — local SQLite is fast and this overhead is negligible.
+ *
+ * Removing these helpers in PR 3 (synckit retirement) is a one-line change
+ * per helper: drop the sync branch, narrow the type to require the async
+ * surface.
+ */
+export async function runAsyncOrSync(
+  adapter: StorageAdapter,
+  sql: string,
+  params?: unknown[],
+): Promise<void> {
+  if (adapter.runAsync) {
+    await adapter.runAsync(sql, params);
+  } else {
+    adapter.run(sql, params);
+  }
+}
+
+export async function getAsyncOrSync(
+  adapter: StorageAdapter,
+  sql: string,
+  params?: unknown[],
+): Promise<Row | undefined> {
+  return adapter.getAsync ? adapter.getAsync(sql, params) : adapter.get(sql, params);
+}
+
+export async function allAsyncOrSync(
+  adapter: StorageAdapter,
+  sql: string,
+  params?: unknown[],
+): Promise<Row[]> {
+  return adapter.allAsync ? adapter.allAsync(sql, params) : adapter.all(sql, params);
+}
+
 /** Async equivalent of {@link PreparedStatement}. */
 export interface PreparedStatementAsync {
   run(...params: unknown[]): Promise<{ changes: number; lastInsertRowid: number | bigint }>;

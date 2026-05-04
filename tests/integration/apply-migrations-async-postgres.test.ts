@@ -55,11 +55,11 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
   // can't collide on table names.
   const runId = randomBytes(4).toString('hex');
 
-  beforeAll(() => {
+  beforeAll(async () => {
     adapter = new PostgresAdapter(PG_URL!);
     adapter.open();
     mgr = new SchemaManager();
-    mgr.applySchema(adapter); // creates __lattice_migrations if missing
+    await mgr.applySchema(adapter); // creates __lattice_migrations if missing
   });
 
   afterAll(async () => {
@@ -210,7 +210,7 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
     adapterB.open();
     try {
       const mgrB = new SchemaManager();
-      mgrB.applySchema(adapterB);
+      await mgrB.applySchema(adapterB);
 
       const startA = Date.now();
       const startB = Date.now();
