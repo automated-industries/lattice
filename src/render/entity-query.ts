@@ -1,5 +1,6 @@
 import type { Row, Filter } from '../types.js';
 import type { StorageAdapter } from '../db/adapter.js';
+import { allAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
 import type { EntityFileSource, SourceQueryOptions } from '../schema/entity-context.js';
 
 // ---------------------------------------------------------------------------
@@ -130,7 +131,10 @@ export interface ProtectionContext {
 /**
  * Resolve an {@link EntityFileSource} to rows for a given entity row.
  *
- * All queries use the synchronous better-sqlite3 adapter — no async required.
+ * Prefers the adapter's async surface when present (Postgres pool); falls
+ * back to the sync adapter (SQLite). User-provided `custom.query` functions
+ * remain synchronous — they're invoked directly inside the async resolver
+ * and their `Row[]` result is used as-is.
  *
  * When a {@link ProtectionContext} is provided, sources that reference a
  * protected table are filtered:
@@ -143,13 +147,13 @@ export interface ProtectionContext {
  * @param adapter    - The raw storage adapter for direct SQL access
  * @param protection - Optional protection context for filtering
  */
-export function resolveEntitySource(
+export async function resolveEntitySource(
   source: EntityFileSource,
   entityRow: Row,
   entityPk: string,
   adapter: StorageAdapter,
   protection?: ProtectionContext,
-): Row[] {
+): Promise<Row[]> {
   switch (source.type) {
     case 'self':
       return [entityRow];
@@ -164,7 +168,7 @@ export function resolveEntitySource(
       const params: unknown[] = [pkVal];
       let sql = `SELECT * FROM "${source.table}" WHERE "${source.foreignKey}" = ?`;
       sql = appendQueryOptions(sql, params, source);
-      return adapter.all(sql, params);
+      return allAsyncOrSync(adapter, sql, params);
     }
 
     case 'manyToMany': {
@@ -196,7 +200,7 @@ export function resolveEntitySource(
          JOIN "${source.junctionTable}" j ON j."${source.remoteKey}" = r."${remotePk}"
          WHERE j."${source.localKey}" = ?`;
       sql = appendQueryOptions(sql, params, source, 'r');
-      return adapter.all(sql, params);
+      return allAsyncOrSync(adapter, sql, params);
     }
 
     case 'belongsTo': {
@@ -212,8 +216,9 @@ export function resolveEntitySource(
         Boolean(source.orderBy) ||
         Boolean(source.limit);
       if (!hasOptions) {
-        // Fast path: simple get (preserves v0.5 adapter.get() contract)
-        const related = adapter.get(
+        // Fast path: simple get
+        const related = await getAsyncOrSync(
+          adapter,
           `SELECT * FROM "${source.table}" WHERE "${source.references ?? 'id'}" = ?`,
           [fkVal],
         );
@@ -222,7 +227,7 @@ export function resolveEntitySource(
       const params: unknown[] = [fkVal];
       let sql = `SELECT * FROM "${source.table}" WHERE "${source.references ?? 'id'}" = ?`;
       sql = appendQueryOptions(sql, params, source);
-      const rows = adapter.all(sql, params);
+      const rows = await allAsyncOrSync(adapter, sql, params);
       const first = rows[0];
       return first ? [first] : [];
     }
@@ -238,7 +243,13 @@ export function resolveEntitySource(
           enriched[fieldName] = JSON.stringify(lookup.query(entityRow, adapter));
         } else {
           // Resolve using the same logic as top-level sources (with protection)
-          const resolved = resolveEntitySource(lookup, entityRow, entityPk, adapter, protection);
+          const resolved = await resolveEntitySource(
+            lookup,
+            entityRow,
+            entityPk,
+            adapter,
+            protection,
+          );
           enriched[fieldName] = JSON.stringify(resolved);
         }
       }
