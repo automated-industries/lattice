@@ -1,5 +1,10 @@
 import type { StorageAdapter, TxClient } from '../db/adapter.js';
-import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
+import {
+  runAsyncOrSync,
+  allAsyncOrSync,
+  introspectColumnsAsyncOrSync,
+  addColumnAsyncOrSync,
+} from '../db/adapter.js';
 import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
 import type {
   TableDefinition,
@@ -253,7 +258,7 @@ export class SchemaManager {
       return allAsyncOrSync(adapter, `SELECT * FROM "${name}"`);
     }
     if (this._entityContexts.has(name)) {
-      const cols = adapter.introspectColumns(name);
+      const cols = await introspectColumnsAsyncOrSync(adapter, name);
       const hasDeletedAt = cols.includes('deleted_at');
       return allAsyncOrSync(
         adapter,
@@ -278,20 +283,20 @@ export class SchemaManager {
       adapter,
       `CREATE TABLE IF NOT EXISTS "${name}" (${colDefs}${constraintDefs})`,
     );
-    this._addMissingColumns(adapter, name, columns);
+    await this._addMissingColumns(adapter, name, columns);
   }
 
-  private _addMissingColumns(
+  private async _addMissingColumns(
     adapter: StorageAdapter,
     table: string,
     columns: Record<string, string>,
-  ): void {
-    const existing = adapter.introspectColumns(table);
+  ): Promise<void> {
+    const existing = await introspectColumnsAsyncOrSync(adapter, table);
     for (const [col, type] of Object.entries(columns)) {
       if (existing.includes(col)) continue;
       // Adapter handles dialect-specific quirks (SQLite non-constant default
       // workarounds, Postgres native DEFAULT NOW(), PK skip, etc.).
-      adapter.addColumn(table, col, type);
+      await addColumnAsyncOrSync(adapter, table, col, type);
     }
   }
 }
