@@ -1,4 +1,5 @@
 import type { StorageAdapter, TxClient } from '../db/adapter.js';
+import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
 import type {
   TableDefinition,
@@ -109,7 +110,7 @@ export class SchemaManager {
    * Apply schema: create missing tables, add missing columns.
    * Never drops tables or columns.
    */
-  applySchema(adapter: StorageAdapter): void {
+  async applySchema(adapter: StorageAdapter): Promise<void> {
     for (const [name, def] of this._tables) {
       // For composite primary keys, inject a PRIMARY KEY(...) table constraint
       // if the caller hasn't already provided one.
@@ -121,11 +122,16 @@ export class SchemaManager {
           constraints.unshift(`PRIMARY KEY (${pkCols.map((c) => `"${c}"`).join(', ')})`);
         }
       }
-      this._ensureTable(adapter, name, def.columns, constraints.length ? constraints : undefined);
+      await this._ensureTable(
+        adapter,
+        name,
+        def.columns,
+        constraints.length ? constraints : undefined,
+      );
     }
     // Internal migrations tracking table — uses TEXT version for both numeric
     // and string-based version identifiers (e.g. "1", "pkg:1.0.0").
-    this._ensureTable(adapter, '__lattice_migrations', {
+    await this._ensureTable(adapter, '__lattice_migrations', {
       version: 'TEXT PRIMARY KEY',
       applied_at: 'TEXT NOT NULL',
     });
@@ -237,37 +243,41 @@ export class SchemaManager {
    * Tables used only in entity contexts (schema managed externally) fall back
    * to a raw SELECT with optional `deleted_at IS NULL` soft-delete filtering.
    */
-  queryTable(adapter: StorageAdapter, name: string): Row[] {
+  async queryTable(adapter: StorageAdapter, name: string): Promise<Row[]> {
     if (this._tables.has(name)) {
       // Auto-filter soft-deleted rows when the table has a deleted_at column
       const def = this._tables.get(name);
       if (def?.columns && 'deleted_at' in def.columns) {
-        return adapter.all(`SELECT * FROM "${name}" WHERE deleted_at IS NULL`);
+        return allAsyncOrSync(adapter, `SELECT * FROM "${name}" WHERE deleted_at IS NULL`);
       }
-      return adapter.all(`SELECT * FROM "${name}"`);
+      return allAsyncOrSync(adapter, `SELECT * FROM "${name}"`);
     }
     if (this._entityContexts.has(name)) {
       const cols = adapter.introspectColumns(name);
       const hasDeletedAt = cols.includes('deleted_at');
-      return adapter.all(
+      return allAsyncOrSync(
+        adapter,
         `SELECT * FROM "${name}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`,
       );
     }
     throw new Error(`Unknown table: "${name}"`);
   }
 
-  private _ensureTable(
+  private async _ensureTable(
     adapter: StorageAdapter,
     name: string,
     columns: Record<string, string>,
     tableConstraints?: string[],
-  ): void {
+  ): Promise<void> {
     const colDefs = Object.entries(columns)
       .map(([col, type]) => `"${col}" ${type}`)
       .join(', ');
     const constraintDefs =
       tableConstraints && tableConstraints.length > 0 ? ', ' + tableConstraints.join(', ') : '';
-    adapter.run(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs}${constraintDefs})`);
+    await runAsyncOrSync(
+      adapter,
+      `CREATE TABLE IF NOT EXISTS "${name}" (${colDefs}${constraintDefs})`,
+    );
     this._addMissingColumns(adapter, name, columns);
   }
 
