@@ -60,6 +60,10 @@ export interface StorageAdapter {
   getAsync?(sql: string, params?: unknown[]): Promise<Row | undefined>;
   /** Async equivalent of all(). */
   allAsync?(sql: string, params?: unknown[]): Promise<Row[]>;
+  /** Async equivalent of introspectColumns(). Used by the boot-path schema apply. */
+  introspectColumnsAsync?(table: string): Promise<string[]>;
+  /** Async equivalent of addColumn(). Used by the boot-path schema apply. */
+  addColumnAsync?(table: string, column: string, typeSpec: string): Promise<void>;
   /**
    * Async equivalent of prepare().
    *
@@ -105,19 +109,16 @@ export interface PreparedStatement {
 }
 
 /**
- * Prefer the adapter's async surface when present, fall back to sync. Sites
- * that previously called `adapter.all(...)` synchronously and wrapped the
- * result in `Promise.resolve(...)` collapse to a single `await
- * allAsyncOrSync(adapter, ...)`.
+ * Prefer the adapter's async surface when present, fall back to sync. Both
+ * the SQLite (sync-native) and Postgres (async-native) adapters now implement
+ * the async surface, so the sync fallback is reached only by hypothetical
+ * third-party adapters that haven't migrated. Lattice itself always hits
+ * the async path against either built-in adapter.
  *
- * On Postgres, the async path goes through `pg.Pool` and never blocks the
- * Node main thread on `synckit`'s `Atomics.wait`. On SQLite, the sync path
- * runs synchronously in the helper and the returned Promise resolves on the
- * next microtask — local SQLite is fast and this overhead is negligible.
- *
- * Removing these helpers in PR 3 (synckit retirement) is a one-line change
- * per helper: drop the sync branch, narrow the type to require the async
- * surface.
+ * On Postgres, the async path goes through `pg.Pool` natively. On SQLite,
+ * the async methods just wrap the sync calls in resolved Promises — the
+ * one-microtask cost is negligible relative to the value of a single
+ * cross-dialect code path.
  */
 export async function runAsyncOrSync(
   adapter: StorageAdapter,
@@ -145,6 +146,28 @@ export async function allAsyncOrSync(
   params?: unknown[],
 ): Promise<Row[]> {
   return adapter.allAsync ? adapter.allAsync(sql, params) : adapter.all(sql, params);
+}
+
+export async function introspectColumnsAsyncOrSync(
+  adapter: StorageAdapter,
+  table: string,
+): Promise<string[]> {
+  return adapter.introspectColumnsAsync
+    ? adapter.introspectColumnsAsync(table)
+    : adapter.introspectColumns(table);
+}
+
+export async function addColumnAsyncOrSync(
+  adapter: StorageAdapter,
+  table: string,
+  column: string,
+  typeSpec: string,
+): Promise<void> {
+  if (adapter.addColumnAsync) {
+    await adapter.addColumnAsync(table, column, typeSpec);
+  } else {
+    adapter.addColumn(table, column, typeSpec);
+  }
 }
 
 /** Async equivalent of {@link PreparedStatement}. */
