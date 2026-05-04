@@ -6,6 +6,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.10.0] — 2026-05-04
+
+### BREAKING
+
+- **`PostgresAdapter` no longer supports the synchronous `StorageAdapter` methods.** `run` / `get` / `all` / `prepare` / `introspectColumns` / `addColumn` now throw on Postgres with a clear error pointing callers at the async equivalents. `pg.Pool` is fundamentally async — there is no synchronous path on the Node main thread that doesn't go through a worker thread + `Atomics.wait`, and the `synckit`-bridged sync surface that 1.8.x/1.9.0 kept alive for back-compat has been removed. **Lattice core methods (`Lattice.query`, `.insert`, `.update`, `.delete`, `.count`, `.render`, `.reconcile`, `.search`, `.history`, `.rollback`, etc.) already route through the async surface as of 1.9.0** — typical consumers of `latticesql` see zero impact. Only callers that escape into `db.lattice.adapter.run/get/all` directly (rare — e.g. raw-SQL routes that reach into the adapter for one-off metadata queries) need to migrate to `runAsync` / `getAsync` / `allAsync` / `withClient`. The error message points the way.
+- **`synckit` is no longer an `optionalDependency`.** Drop it from your install if you had it pinned via this package — `latticesql` no longer references it. `pg` remains an `optionalDependency` for Postgres consumers.
+- **`postgres-worker.cjs` is no longer in the published tarball.** The synckit worker file that 1.6.2–1.9.0 shipped at `dist/postgres-worker.cjs` is gone (it served the now-removed sync surface). Anything that imported it directly will break — but nothing should have been doing that; it was an internal implementation detail.
+- **`Lattice._ensureColumnCache` no longer lazy-populates via `introspectColumns` on cache miss.** Pre-1.10.0 it would call `adapter.introspectColumns(table)` synchronously and cache the result on first access. With sync introspect gone on Postgres, the lazy fallback is gone too. The method now returns the pre-populated cache (built at the end of `_initAsync` for every `define()`d table) or an empty `Set` for unregistered tables. Effective behavior change: code paths that mix raw `adapter.run('CREATE TABLE foo …')` (bypassing `define()`) with `Lattice.upsertByNaturalKey('foo', …)` no longer get column-detection on the unregistered table — you need to `define()` it. Production code using the documented `define()` workflow sees zero change. (The `crud-generic` integration test was the only call site that depended on the lazy fallback; it's been updated to use `define()` instead of raw DDL — which is the production-shape pattern anyway.)
+
+### Changed
+
+- **`PostgresAdapter` is now native against `pg.Pool`** with no worker thread. The previously-synckit-bridged `introspectColumns` and `addColumn` surfaces are now exposed as `introspectColumnsAsync(table)` and `addColumnAsync(table, column, typeSpec)` on the adapter, implemented natively against `pg.Pool`. The async surface (`runAsync` / `getAsync` / `allAsync` / `prepareAsync` / `introspectColumnsAsync` / `addColumnAsync` / `withClient`) is the only path that does work on Postgres now. `SQLiteAdapter` adds the same async methods as one-microtask wrappers around the sync versions so consumers can write a single async-preferring code path that works against both backends without branching on dialect.
+- **Postgres polyfills (`pgcrypto` extension, `json_extract` SQL function, `strftime` SQL function) now register lazily on first pool use.** Previously the synckit worker registered them synchronously inside `open()`. With the worker gone, registration kicks off as a Promise (`_polyfillsReady`) when `open()` is called, and every async method awaits that Promise before its first query. By the time any user query runs, the polyfills are guaranteed to be in place. Net effect: `randomblob(N)`, `json_extract(doc, '$.a.b')`, and `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` keep working unchanged in user migrations on Postgres.
+- **`StorageAdapter` interface gains optional `introspectColumnsAsync` and `addColumnAsync` methods**, mirroring the existing optional `runAsync` / `getAsync` / `allAsync`. Both built-in adapters implement them. Helper functions `introspectColumnsAsyncOrSync(adapter, table)` and `addColumnAsyncOrSync(adapter, table, column, typeSpec)` are exported from `db/adapter.ts` (mirroring the existing `runAsyncOrSync` family) for third-party adapters that haven't yet adopted the async surface.
+
+### Removed
+
+- **`synckit` import + worker bridge** from `PostgresAdapter`. The `_call(action)` synckit gateway, the `_workerPath` field, the `_syncFn` field, and the entire `dist/postgres-worker.cjs` build target are gone. `PostgresAdapter` shrinks from 482 LOC to ~370 LOC, plus the entire 168-line `postgres-worker.ts` source file is deleted. The third tsup build target (the worker CJS bundle) is removed.
+
+### Notes for upgraders
+
+- **Most consumers see zero impact.** Lattice 1.9.0 already routed all its internal DB I/O through the async surface. If your code calls `db.query(...)`, `db.insert(...)`, `db.render(...)`, etc., this release is a transparent upgrade.
+- **If you escape into `db.lattice.adapter` for raw SQL**, audit those sites: replace `adapter.run` / `adapter.get` / `adapter.all` with `await adapter.runAsync(...)` / `await adapter.getAsync(...)` / `await adapter.allAsync(...)`, and replace any raw `adapter.run('BEGIN')` / `adapter.run('COMMIT')` blocks with `await adapter.withClient(async (tx) => { … })`. The thrown error surfaces the same advice.
+- **If you registered a third-party `StorageAdapter`**, you'll want to add `runAsync` / `getAsync` / `allAsync` / `introspectColumnsAsync` / `addColumnAsync` / `withClient` implementations. The async-or-sync helper pattern (`runAsyncOrSync` etc.) means a third-party adapter that *only* implements the sync surface still works — lattice falls back. But Postgres-style third-party adapters should expose async natively.
+- **Connection budget on Postgres drops by 1 per adapter instance.** The synckit worker owned a separate `pg.Client` outside the pool. With the worker gone, a `PostgresAdapter` instance consumes only `poolSize` upstream connections (default 10). For the canonical setup (3 service replicas across dev + prod = 6 instances × 10 pool = 60 connections), that's a 6-connection reduction.
+
 ## [1.9.0] — 2026-05-04
 
 ### Changed

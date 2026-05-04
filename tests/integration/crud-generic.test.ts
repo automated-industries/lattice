@@ -10,49 +10,54 @@ import type { Row } from '../../src/types.js';
 
 async function createTestDb() {
   const db = new Lattice(':memory:');
-  // Define one table via latticesql (for contrast)
   db.define('managed', {
     columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT NOT NULL', deleted_at: 'TEXT' },
     render: () => '',
     outputFile: '/dev/null',
   });
+  // 1.10.0 dropped the lazy `introspectColumns` fallback in `_ensureColumnCache`
+  // (synckit removal — there's no synchronous Postgres introspection path on
+  // `pg.Pool`). All tables that the generic CRUD methods operate on must now
+  // be `define()`d so their column cache is pre-populated at init.
+  db.define('agent', {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      org_id: 'TEXT',
+      name: 'TEXT NOT NULL UNIQUE',
+      role: 'TEXT',
+      status: "TEXT DEFAULT 'active'",
+      source_file: 'TEXT',
+      source_hash: 'TEXT',
+      created_at: "TEXT DEFAULT (datetime('now'))",
+      updated_at: "TEXT DEFAULT (datetime('now'))",
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '/dev/null',
+  });
+  db.define('agent_project', {
+    columns: {
+      agent_id: 'TEXT NOT NULL',
+      project_id: 'TEXT NOT NULL',
+      role: "TEXT DEFAULT 'contributor'",
+      source: "TEXT DEFAULT 'direct'",
+    },
+    primaryKey: ['agent_id', 'project_id'],
+    tableConstraints: ['PRIMARY KEY (agent_id, project_id)'],
+    render: () => '',
+    outputFile: '/dev/null',
+  });
+  db.define('project', {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      name: 'TEXT NOT NULL',
+      status: 'TEXT',
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '/dev/null',
+  });
   await db.init();
-
-  const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
-
-  // Create a table via raw DDL (NOT define()) — this is how SB works
-  adapter.run(`
-    CREATE TABLE agent (
-      id TEXT PRIMARY KEY,
-      org_id TEXT,
-      name TEXT NOT NULL UNIQUE,
-      role TEXT,
-      status TEXT DEFAULT 'active',
-      source_file TEXT,
-      source_hash TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      deleted_at TEXT
-    )
-  `);
-  adapter.run(`
-    CREATE TABLE agent_project (
-      agent_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      role TEXT DEFAULT 'contributor',
-      source TEXT DEFAULT 'direct',
-      PRIMARY KEY (agent_id, project_id)
-    )
-  `);
-  adapter.run(`
-    CREATE TABLE project (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      status TEXT,
-      deleted_at TEXT
-    )
-  `);
-
   return db;
 }
 
