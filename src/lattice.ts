@@ -37,7 +37,12 @@ import type {
 import { readManifest } from './lifecycle/manifest.js';
 import type Database from 'better-sqlite3';
 import type { StorageAdapter } from './db/adapter.js';
-import { runAsyncOrSync, getAsyncOrSync, allAsyncOrSync } from './db/adapter.js';
+import {
+  runAsyncOrSync,
+  getAsyncOrSync,
+  allAsyncOrSync,
+  introspectColumnsAsyncOrSync,
+} from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { PostgresAdapter } from './db/postgres.js';
 import { SchemaManager } from './schema/manager.js';
@@ -294,11 +299,12 @@ export class Lattice {
     // columns, so migration-added columns would be stripped by _filterToSchemaColumns
     // without this introspection-based cache.
     for (const tableName of this._schema.getTables().keys()) {
-      this._columnCache.set(tableName, new Set(this._adapter.introspectColumns(tableName)));
+      const cols = await introspectColumnsAsyncOrSync(this._adapter, tableName);
+      this._columnCache.set(tableName, new Set(cols));
     }
 
     // Resolve encrypted columns (needs introspectColumns to see post-migration schema)
-    this._finalizeEncryptionSetup();
+    await this._finalizeEncryptionSetup();
 
     // Create embeddings table if any table uses embeddings
     const hasEmbeddings = [...this._schema.getTables().values()].some((d) => d.embeddings);
@@ -328,7 +334,8 @@ export class Lattice {
     await this._schema.applyMigrationsAsync(this._adapter, migrations);
     // Refresh column cache for any tables affected by migrations
     for (const tableName of this._schema.getTables().keys()) {
-      this._columnCache.set(tableName, new Set(this._adapter.introspectColumns(tableName)));
+      const cols = await introspectColumnsAsyncOrSync(this._adapter, tableName);
+      this._columnCache.set(tableName, new Set(cols));
     }
   }
 
@@ -386,12 +393,12 @@ export class Lattice {
    * see the post-migration schema. Runs in the async tail of init() after
    * applySchema/applyMigrationsAsync.
    */
-  private _finalizeEncryptionSetup(): void {
+  private async _finalizeEncryptionSetup(): Promise<void> {
     for (const [table, def] of this._schema.getEntityContexts()) {
       if (!def.encrypted) continue;
       if (!this._encryptionKeyRaw) continue; // already validated above
       this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
-      const allCols = this._adapter.introspectColumns(table);
+      const allCols = await introspectColumnsAsyncOrSync(this._adapter, table);
       const encCols = resolveEncryptedColumns(def.encrypted, allCols);
       this._encryptedTableColumns.set(table, encCols);
     }
@@ -1527,14 +1534,25 @@ export class Lattice {
    * objects are interpolated into SQL, so stripping unknown keys eliminates
    * any theoretical injection vector from crafted object keys.
    */
-  /** Lazily populate column cache for tables not registered via define(). */
+  /**
+   * Return the column cache for a registered table. The cache is pre-populated
+   * for every `define()`d table at the end of `_initAsync` (after migrations
+   * apply, so migration-added columns are visible). Tables accessed through
+   * the raw `.db` / `.adapter` escape hatch — outside lattice's `define()`
+   * contract — return an empty set; their callers' `_filterToSchemaColumns`
+   * short-circuit ("unknown table — pass through") is the right behavior for
+   * those, since column filtering needs a known column list.
+   *
+   * Pre-1.10.0 this method had a lazy `introspectColumns` fallback for
+   * unregistered tables. The fallback was dropped when synckit was removed —
+   * synchronous Postgres introspection has no path on `pg.Pool`. The
+   * effective behavior change is: raw-.db writes to a table that lattice
+   * never `define()`d no longer get their `Row` filtered to "schema-known
+   * columns". That contract is preserved for every `define()`d table, which
+   * is what production code uses.
+   */
   private _ensureColumnCache(table: string): Set<string> {
-    let cols = this._columnCache.get(table);
-    if (!cols) {
-      cols = new Set(this._adapter.introspectColumns(table));
-      if (cols.size > 0) this._columnCache.set(table, cols);
-    }
-    return cols;
+    return this._columnCache.get(table) ?? new Set<string>();
   }
 
   private _filterToSchemaColumns(table: string, row: Row): Row {
