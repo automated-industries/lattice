@@ -20,11 +20,11 @@ import type { Row } from '../types.js';
 //
 // In an ESM bundle, the global `require` is not defined and tsup's
 // `__require` shim throws "Dynamic require of '...' is not supported". We
-// need a real runtime `require` to load `pg` and `synckit` (which are
-// optionalDependencies the consumer installs into their node_modules).
-// createRequire solves this: it builds a CommonJS `require` rooted at the
-// URL of this file, so it walks up from `latticesql/dist/` and finds the
-// consumer's `node_modules` entries.
+// need a real runtime `require` to load `pg` (an optionalDependency the
+// consumer installs into their node_modules). createRequire solves this:
+// it builds a CommonJS `require` rooted at the URL of this file, so it
+// walks up from `latticesql/dist/` and finds the consumer's `node_modules`
+// entries.
 let _moduleContext: { dir: string; require: NodeJS.Require } | null = null;
 function moduleContext(): { dir: string; require: NodeJS.Require } {
   if (_moduleContext) return _moduleContext;
@@ -44,50 +44,39 @@ function moduleContext(): { dir: string; require: NodeJS.Require } {
 /**
  * Pluggable Postgres backend for Lattice.
  *
- * Two surfaces, one adapter:
- *   - Sync surface (`run` / `get` / `all` / `prepare`): bridged via a synckit
- *     worker thread that owns a single pg.Client. The main thread blocks on
- *     Atomics.wait until the worker posts its reply. Used by callers that
- *     haven't migrated to the async surface; preserved for back-compat so
- *     consumers can adopt the async surface incrementally.
- *   - Async surface (`runAsync` / `getAsync` / `allAsync` / `prepareAsync` /
- *     `withClient`): native against a `pg.Pool` in the main thread. No
- *     synckit, no Atomics.wait. The Node event loop is free to serve other
- *     work between awaited DB roundtrips — exactly the property normal Node
- *     async I/O is supposed to have. Required for any workload that runs
- *     long sync bursts on the main thread (the original motivation for this
- *     adapter rewrite).
+ * Native against `pg.Pool` — no synckit, no worker thread, no `Atomics.wait`.
+ * Every query runs on the Node main thread via async/await; the event loop
+ * is free to handle other work between awaited DB roundtrips.
  *
- * The two surfaces share the same underlying database but use different
- * upstream connections: the synckit worker owns one pg.Client, the pool owns
- * up to `poolSize` connections. Total upstream connection demand per
- * adapter instance is `1 + poolSize` while both surfaces are alive. Once
- * all consumers have migrated to the async surface, the synckit worker
- * (and its single connection) can be removed in a future release.
+ * **Async-only on Postgres (since 1.10.0).** The synchronous methods
+ * (`run` / `get` / `all` / `prepare`) inherited from {@link StorageAdapter}
+ * throw on Postgres — there is no synchronous way to execute a `pg.Pool`
+ * query. Callers must use `runAsync` / `getAsync` / `allAsync` / `prepareAsync`
+ * / `withClient`. Lattice core calls the async surface internally; downstream
+ * code that escapes into `adapter.run(...)` directly needs to migrate to the
+ * async surface (or use the higher-level `Lattice.query` / `.insert` /
+ * `.render` / etc., which already do).
  *
  * Transactional contract:
- *   - Sync `adapter.run('BEGIN')` / `adapter.run('COMMIT')` is no longer a
- *     safe idiom. The synckit worker's single pg.Client still happens to
- *     pin those calls to one connection (so existing call sites keep
- *     working), but new transaction boundaries MUST go through `withClient(fn)`
- *     because the async surface is pool-backed and raw BEGIN/COMMIT can
- *     land on different upstream connections under transaction-mode pooling.
- *   - `withClient(fn)` checks out a single pool client, runs `fn` against
- *     a `TxClient` whose run/get/all are pinned to that client, and
+ *   - All BEGIN/COMMIT must go through `withClient(fn)`. Raw `BEGIN` /
+ *     `COMMIT` issued via separate pool checkouts can land on different
+ *     upstream connections under transaction-mode pooling and break atomicity
+ *     silently. `withClient(fn)` checks out a single pool client, runs `fn`
+ *     against a `TxClient` whose run/get/all are pinned to that client, and
  *     commits or rolls back automatically.
  *
- * Polyfills (json_extract, strftime, pgcrypto extension): registered by
- * the synckit worker on open(). Kept there for PR 1 since synckit always
- * runs first; when synckit is removed in a later release the pool will
- * need its own one-shot registration on first checkout.
+ * Polyfills (`pgcrypto` extension, `json_extract`, `strftime`): registered
+ * lazily on first pool use via a `_polyfillsReady` Promise that every async
+ * method awaits before its first query. SQLite-isms in user migrations
+ * (`randomblob(N)`, `json_extract(doc, path)`, `strftime(...)`, etc.) keep
+ * working unchanged when pointed at Postgres.
  *
- * Optional dependencies: `pg` and `synckit` are listed in `optionalDependencies`
- * — SQLite-only consumers don't pay the install cost. The constructor throws
- * a clear error if either is missing.
+ * Optional dependency: `pg` is listed in `optionalDependencies` — SQLite-only
+ * consumers don't pay the install cost. The constructor throws a clear error
+ * if it's missing. **`synckit` was removed in 1.10.0** — if you have a
+ * dependency on it via this package, drop it from your install list.
  */
 export interface PostgresAdapterOptions {
-  /** Override the worker file path. Useful in test setups. */
-  workerPath?: string;
   /**
    * Maximum number of pool connections used by the async surface
    * (`runAsync` / `getAsync` / `allAsync` / `withClient`). Default 10.
@@ -124,41 +113,27 @@ interface PgModule {
   Pool: new (config: { connectionString: string; max?: number }) => PgPool;
 }
 
+const SYNC_NOT_SUPPORTED_MSG =
+  'PostgresAdapter: synchronous adapter methods (run/get/all/prepare/introspectColumns/addColumn) are no longer supported on Postgres as of latticesql 1.10.0. ' +
+  'Use the async surface (runAsync/getAsync/allAsync/prepareAsync/introspectColumnsAsync/addColumnAsync/withClient) instead. ' +
+  'Lattice core methods (Lattice.query, .insert, .update, .render, etc.) already route through the async surface — only consumer code that escapes into adapter.run/get/all directly needs migrating.';
+
 export class PostgresAdapter implements StorageAdapter {
   readonly dialect = 'postgres' as const;
   private readonly _connectionString: string;
-  private readonly _workerPath: string;
   private readonly _poolSize: number;
-  private _syncFn: ((action: unknown) => unknown) | null = null;
   private _pool: PgPool | null = null;
+  private _polyfillsReady: Promise<void> | null = null;
   private _opened = false;
 
   constructor(connectionString: string, options: PostgresAdapterOptions = {}) {
     this._connectionString = connectionString;
-    // .cjs extension because the published package.json has `"type": "module"`
-    // and the worker is built as CJS — Node refuses to run a `.js` CJS file
-    // under `type: module`. tsup emits the worker as `dist/postgres-worker.cjs`.
-    this._workerPath = options.workerPath ?? path.join(moduleContext().dir, 'postgres-worker.cjs');
     this._poolSize = options.poolSize ?? 10;
   }
 
   open(): void {
     if (this._opened) return;
     const ctxRequire = moduleContext().require;
-    let createSyncFn: (worker: string) => (action: unknown) => unknown;
-    try {
-      // moduleContext().require bridges ESM → CJS (via createRequire) or is
-      // the native CJS require under the dual-bundle CJS output. Lets us
-      // load optionalDependencies from the consumer's node_modules without
-      // relying on the bundler's `__require` shim (which throws under ESM).
-      ({ createSyncFn } = ctxRequire('synckit') as typeof import('synckit'));
-    } catch (err) {
-      throw new Error(
-        "PostgresAdapter requires 'synckit'. Install with: npm install synckit\n" +
-          'Underlying error: ' +
-          (err instanceof Error ? err.message : String(err)),
-      );
-    }
     let pgMod: PgModule;
     try {
       pgMod = ctxRequire('pg') as PgModule;
@@ -169,99 +144,82 @@ export class PostgresAdapter implements StorageAdapter {
           (err instanceof Error ? err.message : String(err)),
       );
     }
-    this._syncFn = createSyncFn(this._workerPath);
-    this._call({ type: 'open', connectionString: this._connectionString });
-    // Pool is opened lazily on first async use to keep the upstream-connection
-    // footprint minimal for callers that only use the sync surface today.
     this._pool = new pgMod.Pool({
       connectionString: this._connectionString,
       max: this._poolSize,
     });
+    // Fire the polyfill registration immediately. Every async method awaits
+    // this Promise before its first query, so by the time any user query
+    // runs the polyfills are guaranteed to be in place. We don't await here
+    // because open() is synchronous per the StorageAdapter contract.
+    this._polyfillsReady = this._registerPolyfills();
     this._opened = true;
   }
 
   close(): void {
     if (!this._opened) return;
-    this._call({ type: 'close' });
     if (this._pool) {
       // Fire-and-forget — pool.end() is async, but close() is the sync
-      // contract; existing in-flight async queries on the pool will still
-      // settle, and the upstream connections will close as they drain.
+      // contract; existing in-flight queries on the pool will still settle,
+      // and the upstream connections will close as they drain.
       void this._pool.end().catch(() => {
         // Pool teardown failures don't affect close() semantics.
       });
       this._pool = null;
     }
+    this._polyfillsReady = null;
     this._opened = false;
-    this._syncFn = null;
   }
 
-  run(sql: string, params: unknown[] = []): void {
-    this._call({ type: 'run', sql: rewrite(sql), params });
+  // ── Sync surface (no longer supported on Postgres) ──────────────────
+  // The synchronous methods on StorageAdapter exist for SQLite consumers
+  // (better-sqlite3 is sync by design). On Postgres they throw — `pg.Pool`
+  // is fundamentally async and the synckit-bridged sync path was removed
+  // in 1.10.0 to drop the `Atomics.wait` blocking it imposed on the Node
+  // main thread.
+
+  run(_sql: string, _params: unknown[] = []): void {
+    throw new Error(SYNC_NOT_SUPPORTED_MSG);
   }
 
-  get(sql: string, params: unknown[] = []): Row | undefined {
-    const r = this._call({ type: 'get', sql: rewrite(sql), params }) as { rows?: Row[] };
-    return r.rows?.[0];
+  get(_sql: string, _params: unknown[] = []): Row | undefined {
+    throw new Error(SYNC_NOT_SUPPORTED_MSG);
   }
 
-  all(sql: string, params: unknown[] = []): Row[] {
-    const r = this._call({ type: 'all', sql: rewrite(sql), params }) as { rows?: Row[] };
-    return r.rows ?? [];
+  all(_sql: string, _params: unknown[] = []): Row[] {
+    throw new Error(SYNC_NOT_SUPPORTED_MSG);
   }
 
-  prepare(sql: string): PreparedStatement {
-    // Postgres connections handle prepared-statement caching server-side; we
-    // just translate the SQL once and execute via the same call paths.
-    const rewritten = rewrite(sql);
-    return {
-      run: (...params: unknown[]) => {
-        const r = this._call({ type: 'run', sql: rewritten, params }) as { rowCount?: number };
-        // Postgres surfaces inserted IDs via RETURNING clauses, not lastInsertRowid.
-        // Consumers that need a fresh ID should use TEXT PRIMARY KEY + UUID and
-        // RETURNING explicitly. We surface 0 here to satisfy the SQLite contract.
-        return { changes: r.rowCount ?? 0, lastInsertRowid: 0 };
-      },
-      get: (...params: unknown[]) => {
-        const r = this._call({ type: 'get', sql: rewritten, params }) as { rows?: Row[] };
-        return r.rows?.[0];
-      },
-      all: (...params: unknown[]) => {
-        const r = this._call({ type: 'all', sql: rewritten, params }) as { rows?: Row[] };
-        return r.rows ?? [];
-      },
-    };
+  prepare(_sql: string): PreparedStatement {
+    throw new Error(SYNC_NOT_SUPPORTED_MSG);
   }
 
-  introspectColumns(table: string): string[] {
-    const r = this._call({ type: 'introspectColumns', table }) as {
-      rows?: { column_name: string }[];
-    };
-    return (r.rows ?? []).map((row) => row.column_name);
+  introspectColumns(_table: string): string[] {
+    throw new Error(SYNC_NOT_SUPPORTED_MSG);
   }
 
-  addColumn(table: string, column: string, typeSpec: string): void {
-    this._call({ type: 'addColumn', table, column, typeSpec });
+  addColumn(_table: string, _column: string, _typeSpec: string): void {
+    throw new Error(SYNC_NOT_SUPPORTED_MSG);
   }
 
   // ── Async surface ───────────────────────────────────────────────────
-  // Native against pg.Pool. No synckit, no Atomics.wait. The Node event
-  // loop is free to handle other work (HTTP requests, Slack socket pings,
-  // scheduler timers, etc.) while these calls await DB I/O.
+  // Native against pg.Pool. The Node event loop is free to handle other
+  // work (HTTP requests, Slack socket pings, scheduler timers, etc.) while
+  // these calls await DB I/O.
 
   async runAsync(sql: string, params: unknown[] = []): Promise<void> {
-    const pool = this._requirePool();
+    const pool = await this._readyPool();
     await pool.query(rewrite(sql), params);
   }
 
   async getAsync(sql: string, params: unknown[] = []): Promise<Row | undefined> {
-    const pool = this._requirePool();
+    const pool = await this._readyPool();
     const r = await pool.query(rewrite(sql), params);
     return r.rows[0];
   }
 
   async allAsync(sql: string, params: unknown[] = []): Promise<Row[]> {
-    const pool = this._requirePool();
+    const pool = await this._readyPool();
     const r = await pool.query(rewrite(sql), params);
     return r.rows;
   }
@@ -284,21 +242,45 @@ export class PostgresAdapter implements StorageAdapter {
     const rewritten = rewrite(sql);
     return {
       run: async (...params: unknown[]) => {
-        const pool = this._requirePool();
+        const pool = await this._readyPool();
         const r = await pool.query(rewritten, params);
         return { changes: r.rowCount ?? 0, lastInsertRowid: 0 };
       },
       get: async (...params: unknown[]) => {
-        const pool = this._requirePool();
+        const pool = await this._readyPool();
         const r = await pool.query(rewritten, params);
         return r.rows[0];
       },
       all: async (...params: unknown[]) => {
-        const pool = this._requirePool();
+        const pool = await this._readyPool();
         const r = await pool.query(rewritten, params);
         return r.rows;
       },
     };
+  }
+
+  async introspectColumnsAsync(table: string): Promise<string[]> {
+    const pool = await this._readyPool();
+    const r = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name = $1
+       ORDER BY ordinal_position`,
+      [table],
+    );
+    return r.rows.map((row) => (row as { column_name: string }).column_name);
+  }
+
+  async addColumnAsync(table: string, column: string, typeSpec: string): Promise<void> {
+    // Postgres accepts non-constant defaults (NOW(), random(), CURRENT_TIMESTAMP)
+    // natively in ALTER TABLE ADD COLUMN. Skip PRIMARY KEY columns — same
+    // reasoning as SQLite (existing tables already have a PK).
+    const upper = typeSpec.toUpperCase();
+    if (upper.includes('PRIMARY KEY')) return;
+    const translated = translateTypeSpec(typeSpec);
+    const pool = await this._readyPool();
+    await pool.query(
+      `ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${column}" ${translated}`,
+    );
   }
 
   /**
@@ -313,7 +295,7 @@ export class PostgresAdapter implements StorageAdapter {
    * the connection rather than recycling a known-bad one.
    */
   async withClient<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
-    const pool = this._requirePool();
+    const pool = await this._readyPool();
     const client = await pool.connect();
     const tx: TxClient = {
       run: async (sql: string, params?: unknown[]) => {
@@ -353,22 +335,97 @@ export class PostgresAdapter implements StorageAdapter {
     }
   }
 
-  private _requirePool(): PgPool {
+  /**
+   * Resolve the pool, waiting for one-time polyfill registration to complete.
+   * Every async method funnels through here so the polyfills are guaranteed
+   * to be in place by the time the caller's first query runs.
+   */
+  private async _readyPool(): Promise<PgPool> {
     if (!this._pool) {
       throw new Error('PostgresAdapter: not open — call open() first');
     }
+    if (this._polyfillsReady) await this._polyfillsReady;
     return this._pool;
   }
 
-  private _call(action: unknown): { rows?: Row[]; rowCount?: number } {
-    if (!this._syncFn) throw new Error('PostgresAdapter: not open — call open() first');
-    const result = this._syncFn(action) as
-      | { ok: true; rows?: Row[]; rowCount?: number }
-      | { ok: false; error: string };
-    if (!result.ok) {
-      throw new Error(`PostgresAdapter: ${result.error}`);
+  /**
+   * Idempotently register the SQLite-compat polyfills the dialect translator
+   * relies on:
+   *   - `pgcrypto` extension — provides `gen_random_bytes()` for the
+   *     `randomblob()` translation.
+   *   - `json_extract(doc, path)` SQL function — mimics SQLite's
+   *     `$.a.b.c` path syntax against jsonb.
+   *   - `strftime(format, modifier)` SQL function — handles the common
+   *     `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` pattern lattice itself emits
+   *     for ISO timestamps.
+   *
+   * Each registration is wrapped in try/catch so a permission-restricted
+   * provider (e.g. some managed Postgres tiers don't allow CREATE EXTENSION)
+   * surfaces a non-fatal warning rather than blocking pool readiness.
+   */
+  private async _registerPolyfills(): Promise<void> {
+    if (!this._pool) return;
+    const pool = this._pool;
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    } catch (extErr) {
+      console.warn(
+        '[PostgresAdapter] CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
+        extErr instanceof Error ? extErr.message : extErr,
+      );
     }
-    return result;
+    try {
+      await pool.query(
+        `CREATE OR REPLACE FUNCTION json_extract(doc text, path text)
+         RETURNS text
+         LANGUAGE sql
+         IMMUTABLE
+         AS $fn$
+           SELECT doc::jsonb #>> string_to_array(regexp_replace(path, '^\\$\\.?', ''), '.')
+         $fn$;`,
+      );
+    } catch (jeErr) {
+      console.warn(
+        '[PostgresAdapter] could not register json_extract polyfill:',
+        jeErr instanceof Error ? jeErr.message : jeErr,
+      );
+    }
+    try {
+      await pool.query(
+        `CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
+         RETURNS text
+         LANGUAGE plpgsql
+         IMMUTABLE
+         AS $fn$
+         DECLARE ts timestamptz;
+         BEGIN
+           IF modifier = 'now' THEN
+             ts := now();
+           ELSE
+             ts := modifier::timestamptz;
+           END IF;
+           RETURN to_char(
+             ts AT TIME ZONE 'UTC',
+             replace(replace(replace(replace(replace(replace(replace(replace(
+               format,
+               '%Y', 'YYYY'),
+               '%m', 'MM'),
+               '%d', 'DD'),
+               '%H', 'HH24'),
+               '%M', 'MI'),
+               '%S', 'SS'),
+               '%f', 'MS'),
+               'T', '"T"')
+           );
+         END;
+         $fn$;`,
+      );
+    } catch (sfErr) {
+      console.warn(
+        '[PostgresAdapter] could not register strftime polyfill:',
+        sfErr instanceof Error ? sfErr.message : sfErr,
+      );
+    }
   }
 }
 
@@ -465,6 +522,17 @@ function translateDialect(sql: string): string {
   });
 
   return s;
+}
+
+/**
+ * Translate SQLite type specs to Postgres equivalents for ALTER TABLE ADD COLUMN.
+ * Used by addColumnAsync — exposed at module scope so it's testable.
+ */
+function translateTypeSpec(typeSpec: string): string {
+  return typeSpec
+    .replace(/\bBLOB\b/gi, 'BYTEA')
+    .replace(/\bdatetime\(\s*'now'\s*\)/gi, 'NOW()')
+    .replace(/\bRANDOM\(\)/gi, 'random()');
 }
 
 /**
