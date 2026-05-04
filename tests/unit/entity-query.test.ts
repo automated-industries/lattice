@@ -26,22 +26,22 @@ const entityRow: Row = { id: 'agent-1', name: 'Alpha' };
 // ---------------------------------------------------------------------------
 
 describe('resolveEntitySource — self', () => {
-  it('returns the entity row wrapped in an array', () => {
+  it('returns the entity row wrapped in an array', async () => {
     const allFn = vi.fn().mockReturnValue([]);
     const adapter = makeAdapter({ all: allFn });
-    const rows = resolveEntitySource({ type: 'self' }, entityRow, 'id', adapter);
+    const rows = await resolveEntitySource({ type: 'self' }, entityRow, 'id', adapter);
     expect(rows).toEqual([entityRow]);
     expect(allFn).not.toHaveBeenCalled();
   });
 });
 
 describe('resolveEntitySource — hasMany', () => {
-  it('queries related table by foreignKey', () => {
+  it('queries related table by foreignKey', async () => {
     const related: Row[] = [{ id: 't1', agent_id: 'agent-1', title: 'Task 1' }];
     const allFn = vi.fn().mockReturnValue(related);
     const adapter = makeAdapter({ all: allFn });
 
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       { type: 'hasMany', table: 'tasks', foreignKey: 'agent_id' },
       entityRow,
       'id',
@@ -52,11 +52,11 @@ describe('resolveEntitySource — hasMany', () => {
     expect(allFn).toHaveBeenCalledWith('SELECT * FROM "tasks" WHERE "agent_id" = ?', ['agent-1']);
   });
 
-  it('uses custom references column when specified', () => {
+  it('uses custom references column when specified', async () => {
     const allFn = vi.fn().mockReturnValue([]);
     const adapter = makeAdapter({ all: allFn });
 
-    resolveEntitySource(
+    await resolveEntitySource(
       { type: 'hasMany', table: 'tasks', foreignKey: 'owner_ref', references: 'slug' },
       { id: 'a1', slug: 'alpha' },
       'id',
@@ -66,11 +66,11 @@ describe('resolveEntitySource — hasMany', () => {
     expect(allFn).toHaveBeenCalledWith('SELECT * FROM "tasks" WHERE "owner_ref" = ?', ['alpha']);
   });
 
-  it('falls back to entityPk when references is omitted', () => {
+  it('falls back to entityPk when references is omitted', async () => {
     const allFn = vi.fn().mockReturnValue([]);
     const adapter = makeAdapter({ all: allFn });
 
-    resolveEntitySource(
+    await resolveEntitySource(
       { type: 'hasMany', table: 'items', foreignKey: 'parent_id' },
       { slug: 'my-entity' },
       'slug',
@@ -84,12 +84,12 @@ describe('resolveEntitySource — hasMany', () => {
 });
 
 describe('resolveEntitySource — manyToMany', () => {
-  it('joins junction and remote table', () => {
+  it('joins junction and remote table', async () => {
     const skills: Row[] = [{ id: 's1', name: 'TypeScript' }];
     const allFn = vi.fn().mockReturnValue(skills);
     const adapter = makeAdapter({ all: allFn });
 
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skills',
@@ -112,11 +112,11 @@ describe('resolveEntitySource — manyToMany', () => {
     ]);
   });
 
-  it('uses custom references column on remote table', () => {
+  it('uses custom references column on remote table', async () => {
     const allFn = vi.fn().mockReturnValue([]);
     const adapter = makeAdapter({ all: allFn });
 
-    resolveEntitySource(
+    await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'proj_tags',
@@ -135,12 +135,12 @@ describe('resolveEntitySource — manyToMany', () => {
 });
 
 describe('resolveEntitySource — belongsTo', () => {
-  it('looks up the parent row by FK value', () => {
+  it('looks up the parent row by FK value', async () => {
     const team: Row = { id: 'team-1', name: 'Team Alpha' };
     const getFn = vi.fn().mockReturnValue(team);
     const adapter = makeAdapter({ get: getFn });
 
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       { type: 'belongsTo', table: 'teams', foreignKey: 'team_id' },
       { id: 'bot-1', team_id: 'team-1' },
       'id',
@@ -151,11 +151,11 @@ describe('resolveEntitySource — belongsTo', () => {
     expect(getFn).toHaveBeenCalledWith('SELECT * FROM "teams" WHERE "id" = ?', ['team-1']);
   });
 
-  it('returns [] when FK is null', () => {
+  it('returns [] when FK is null', async () => {
     const getFn = vi.fn().mockReturnValue(undefined);
     const adapter = makeAdapter({ get: getFn });
 
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       { type: 'belongsTo', table: 'teams', foreignKey: 'team_id' },
       { id: 'bot-1', team_id: null },
       'id',
@@ -166,10 +166,10 @@ describe('resolveEntitySource — belongsTo', () => {
     expect(getFn).not.toHaveBeenCalled();
   });
 
-  it('returns [] when parent row is not found', () => {
+  it('returns [] when parent row is not found', async () => {
     const adapter = makeAdapter({ get: vi.fn().mockReturnValue(undefined) });
 
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       { type: 'belongsTo', table: 'teams', foreignKey: 'team_id' },
       { id: 'bot-1', team_id: 'missing' },
       'id',
@@ -179,11 +179,11 @@ describe('resolveEntitySource — belongsTo', () => {
     expect(rows).toEqual([]);
   });
 
-  it('uses custom references column', () => {
+  it('uses custom references column', async () => {
     const getFn = vi.fn().mockReturnValue(undefined);
     const adapter = makeAdapter({ get: getFn });
 
-    resolveEntitySource(
+    await resolveEntitySource(
       { type: 'belongsTo', table: 'orgs', foreignKey: 'org_slug', references: 'slug' },
       { id: 'u1', org_slug: 'acme' },
       'id',
@@ -195,12 +195,12 @@ describe('resolveEntitySource — belongsTo', () => {
 });
 
 describe('resolveEntitySource — custom', () => {
-  it('delegates to the caller-supplied query function', () => {
+  it('delegates to the caller-supplied query function', async () => {
     const customRows: Row[] = [{ id: 'e1', type: 'event' }];
     const query = vi.fn().mockReturnValue(customRows);
     const adapter = makeAdapter();
 
-    const rows = resolveEntitySource({ type: 'custom', query }, entityRow, 'id', adapter);
+    const rows = await resolveEntitySource({ type: 'custom', query }, entityRow, 'id', adapter);
 
     expect(rows).toEqual(customRows);
     expect(query).toHaveBeenCalledWith(entityRow, adapter);

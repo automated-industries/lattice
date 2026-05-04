@@ -65,7 +65,7 @@ export class ReverseSyncEngine {
       if (reverseSyncFiles.size === 0) continue;
 
       // Build slug → entityRow map for this table
-      const allRows = this._schema.queryTable(this._adapter, table);
+      const allRows = await this._schema.queryTable(this._adapter, table);
       const slugToRow = new Map<string, import('../types.js').Row>();
       for (const row of allRows) {
         slugToRow.set(def.slug(row), row);

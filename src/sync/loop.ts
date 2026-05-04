@@ -22,10 +22,14 @@ export class SyncLoop {
 
       void this._engine
         .render(outputDir)
-        .then((result: RenderResult) => {
+        .then(async (result: RenderResult) => {
           options.onRender?.(result);
           if (options.cleanup) {
-            const cleanupResult = this._engine.cleanup(outputDir, prevManifest, options.cleanup);
+            const cleanupResult = await this._engine.cleanup(
+              outputDir,
+              prevManifest,
+              options.cleanup,
+            );
             options.onCleanup?.(cleanupResult);
           }
         })

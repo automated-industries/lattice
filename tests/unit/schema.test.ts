@@ -27,7 +27,7 @@ describe('SchemaManager', () => {
     }).toThrow(/"ctx"/);
   });
 
-  it('applySchema creates the table', () => {
+  it('applySchema creates the table', async () => {
     const mgr = new SchemaManager();
     mgr.define('tasks', {
       columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT NOT NULL' },
@@ -35,7 +35,7 @@ describe('SchemaManager', () => {
       outputFile: 'tasks.md',
     });
     const adapter = makeAdapter();
-    mgr.applySchema(adapter);
+    await mgr.applySchema(adapter);
 
     const result = adapter.get(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'`,
@@ -44,7 +44,7 @@ describe('SchemaManager', () => {
     adapter.close();
   });
 
-  it('applySchema is idempotent', () => {
+  it('applySchema is idempotent', async () => {
     const mgr = new SchemaManager();
     mgr.define('tasks', {
       columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT NOT NULL' },
@@ -52,14 +52,12 @@ describe('SchemaManager', () => {
       outputFile: 'tasks.md',
     });
     const adapter = makeAdapter();
-    expect(() => {
-      mgr.applySchema(adapter);
-      mgr.applySchema(adapter); // second call should not throw
-    }).not.toThrow();
+    await mgr.applySchema(adapter);
+    await mgr.applySchema(adapter); // second call should not throw
     adapter.close();
   });
 
-  it('applySchema adds missing columns to existing tables', () => {
+  it('applySchema adds missing columns to existing tables', async () => {
     const adapter = makeAdapter();
     adapter.run('CREATE TABLE items (id TEXT PRIMARY KEY)');
 
@@ -69,7 +67,7 @@ describe('SchemaManager', () => {
       render: () => '',
       outputFile: 'items.md',
     });
-    mgr.applySchema(adapter);
+    await mgr.applySchema(adapter);
 
     const cols = adapter.all('PRAGMA table_info(items)').map((r) => r.name as string);
     expect(cols).toContain('name');
@@ -112,7 +110,7 @@ describe('SchemaManager', () => {
     adapter.close();
   });
 
-  it('queryTable returns rows', () => {
+  it('queryTable returns rows', async () => {
     const mgr = new SchemaManager();
     mgr.define('items', {
       columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT' },
@@ -120,19 +118,19 @@ describe('SchemaManager', () => {
       outputFile: 'items.md',
     });
     const adapter = makeAdapter();
-    mgr.applySchema(adapter);
+    await mgr.applySchema(adapter);
     adapter.run('INSERT INTO items (id, name) VALUES (?, ?)', ['i1', 'Thing']);
 
-    const rows = mgr.queryTable(adapter, 'items');
+    const rows = await mgr.queryTable(adapter, 'items');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.name).toBe('Thing');
     adapter.close();
   });
 
-  it('queryTable throws for unknown table', () => {
+  it('queryTable throws for unknown table', async () => {
     const mgr = new SchemaManager();
     const adapter = makeAdapter();
-    expect(() => mgr.queryTable(adapter, 'missing')).toThrow('Unknown table');
+    await expect(mgr.queryTable(adapter, 'missing')).rejects.toThrow('Unknown table');
     adapter.close();
   });
 });
