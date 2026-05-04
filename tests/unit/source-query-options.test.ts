@@ -77,8 +77,8 @@ describe('hasMany with query options', () => {
     adapter = getAdapter(db);
   });
 
-  it('basic hasMany without options (backward compat)', () => {
-    const rows = resolveEntitySource(
+  it('basic hasMany without options (backward compat)', async () => {
+    const rows = await resolveEntitySource(
       { type: 'hasMany', table: 'agent', foreignKey: 'team_id' },
       teamRow,
       'id',
@@ -87,8 +87,8 @@ describe('hasMany with query options', () => {
     expect(rows).toHaveLength(4); // includes deleted
   });
 
-  it('softDelete: true excludes soft-deleted rows', () => {
-    const rows = resolveEntitySource(
+  it('softDelete: true excludes soft-deleted rows', async () => {
+    const rows = await resolveEntitySource(
       { type: 'hasMany', table: 'agent', foreignKey: 'team_id', softDelete: true },
       teamRow,
       'id',
@@ -98,8 +98,8 @@ describe('hasMany with query options', () => {
     expect(rows.every((r) => r.deleted_at === null || r.deleted_at === undefined)).toBe(true);
   });
 
-  it('orderBy sorts results', () => {
-    const rows = resolveEntitySource(
+  it('orderBy sorts results', async () => {
+    const rows = await resolveEntitySource(
       { type: 'hasMany', table: 'agent', foreignKey: 'team_id', softDelete: true, orderBy: 'name' },
       teamRow,
       'id',
@@ -108,8 +108,8 @@ describe('hasMany with query options', () => {
     expect(rows.map((r) => r.name)).toEqual(['Alice', 'Bob', 'Charlie']);
   });
 
-  it('orderDir: desc reverses sort', () => {
-    const rows = resolveEntitySource(
+  it('orderDir: desc reverses sort', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'hasMany',
         table: 'agent',
@@ -125,8 +125,8 @@ describe('hasMany with query options', () => {
     expect(rows.map((r) => r.name)).toEqual(['Charlie', 'Bob', 'Alice']);
   });
 
-  it('limit caps result count', () => {
-    const rows = resolveEntitySource(
+  it('limit caps result count', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'hasMany',
         table: 'agent',
@@ -143,8 +143,8 @@ describe('hasMany with query options', () => {
     expect(rows.map((r) => r.name)).toEqual(['Alice', 'Bob']);
   });
 
-  it('filters with eq operator', () => {
-    const rows = resolveEntitySource(
+  it('filters with eq operator', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'hasMany',
         table: 'agent',
@@ -159,8 +159,8 @@ describe('hasMany with query options', () => {
     expect(rows[0]!.name).toBe('Charlie');
   });
 
-  it('combines softDelete with explicit filters', () => {
-    const rows = resolveEntitySource(
+  it('combines softDelete with explicit filters', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'hasMany',
         table: 'agent',
@@ -190,8 +190,8 @@ describe('manyToMany with query options', () => {
     adapter = getAdapter(db);
   });
 
-  it('basic manyToMany without options (backward compat)', () => {
-    const rows = resolveEntitySource(
+  it('basic manyToMany without options (backward compat)', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skill',
@@ -206,8 +206,8 @@ describe('manyToMany with query options', () => {
     expect(rows).toHaveLength(3); // includes deleted skill
   });
 
-  it('softDelete: true excludes soft-deleted remote rows', () => {
-    const rows = resolveEntitySource(
+  it('softDelete: true excludes soft-deleted remote rows', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skill',
@@ -223,8 +223,8 @@ describe('manyToMany with query options', () => {
     expect(rows).toHaveLength(2); // TypeScript, Python (not Deleted Skill)
   });
 
-  it('orderBy sorts remote table results', () => {
-    const rows = resolveEntitySource(
+  it('orderBy sorts remote table results', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skill',
@@ -241,8 +241,8 @@ describe('manyToMany with query options', () => {
     expect(rows.map((r) => r.name)).toEqual(['Python', 'TypeScript']);
   });
 
-  it('limit caps manyToMany results', () => {
-    const rows = resolveEntitySource(
+  it('limit caps manyToMany results', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skill',
@@ -277,9 +277,9 @@ describe('belongsTo with query options', () => {
     await db.update('team', 't1', { deleted_at: '2026-01-01T00:00:00Z' });
   });
 
-  it('basic belongsTo returns deleted row (backward compat)', () => {
+  it('basic belongsTo returns deleted row (backward compat)', async () => {
     const agentRow: Row = { id: 'a1', name: 'Alice', team_id: 't1' };
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       { type: 'belongsTo', table: 'team', foreignKey: 'team_id' },
       agentRow,
       'id',
@@ -288,9 +288,9 @@ describe('belongsTo with query options', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('softDelete: true excludes soft-deleted parent', () => {
+  it('softDelete: true excludes soft-deleted parent', async () => {
     const agentRow: Row = { id: 'a1', name: 'Alice', team_id: 't1' };
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       { type: 'belongsTo', table: 'team', foreignKey: 'team_id', softDelete: true },
       agentRow,
       'id',
@@ -299,9 +299,9 @@ describe('belongsTo with query options', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('returns empty when FK is null', () => {
+  it('returns empty when FK is null', async () => {
     const agentRow: Row = { id: 'a5', name: 'NoTeam', team_id: null };
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       { type: 'belongsTo', table: 'team', foreignKey: 'team_id', softDelete: true },
       agentRow,
       'id',
@@ -423,7 +423,7 @@ describe('manyToMany with junctionColumns', () => {
     adapter = getAdapter(db);
   });
 
-  it('includes junction columns as string', () => {
+  it('includes junction columns as string', async () => {
     // Add proficiency column to agent_skill junction for testing
     (db as unknown as { _adapter: StorageAdapter })._adapter.run(
       `ALTER TABLE agent_skill ADD COLUMN proficiency TEXT DEFAULT 'standard'`,
@@ -432,7 +432,7 @@ describe('manyToMany with junctionColumns', () => {
       `UPDATE agent_skill SET proficiency = 'expert' WHERE agent_id = 'a1' AND skill_id = 's1'`,
     );
 
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skill',
@@ -451,12 +451,12 @@ describe('manyToMany with junctionColumns', () => {
     expect(ts?.proficiency).toBe('expert');
   });
 
-  it('includes junction columns with alias', () => {
+  it('includes junction columns with alias', async () => {
     (db as unknown as { _adapter: StorageAdapter })._adapter.run(
       `ALTER TABLE agent_skill ADD COLUMN proficiency TEXT DEFAULT 'standard'`,
     );
 
-    const rows = resolveEntitySource(
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skill',
@@ -473,8 +473,8 @@ describe('manyToMany with junctionColumns', () => {
     expect(rows[0]?.skill_level).toBeDefined();
   });
 
-  it('works without junctionColumns (backward compat)', () => {
-    const rows = resolveEntitySource(
+  it('works without junctionColumns (backward compat)', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'manyToMany',
         junctionTable: 'agent_skill',
@@ -506,8 +506,8 @@ describe('multi-column orderBy', () => {
     adapter = getAdapter(db);
   });
 
-  it('sorts by multiple columns', () => {
-    const rows = resolveEntitySource(
+  it('sorts by multiple columns', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'hasMany',
         table: 'agent',
@@ -524,8 +524,8 @@ describe('multi-column orderBy', () => {
     expect(rows[0]!.status).toBe('active');
   });
 
-  it('string orderBy still works (backward compat)', () => {
-    const rows = resolveEntitySource(
+  it('string orderBy still works (backward compat)', async () => {
+    const rows = await resolveEntitySource(
       {
         type: 'hasMany',
         table: 'agent',

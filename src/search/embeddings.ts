@@ -1,4 +1,5 @@
 import type { StorageAdapter } from '../db/adapter.js';
+import { runAsyncOrSync, getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import type { Row, EmbeddingsConfig, SearchResult } from '../types.js';
 
 const EMBEDDINGS_TABLE = '_lattice_embeddings';
@@ -6,13 +7,16 @@ const EMBEDDINGS_TABLE = '_lattice_embeddings';
 /**
  * Ensure the internal embeddings storage table exists.
  */
-export function ensureEmbeddingsTable(adapter: StorageAdapter): void {
-  adapter.run(`CREATE TABLE IF NOT EXISTS "${EMBEDDINGS_TABLE}" (
+export async function ensureEmbeddingsTable(adapter: StorageAdapter): Promise<void> {
+  await runAsyncOrSync(
+    adapter,
+    `CREATE TABLE IF NOT EXISTS "${EMBEDDINGS_TABLE}" (
     "table_name" TEXT NOT NULL,
     "row_pk"     TEXT NOT NULL,
     "embedding"  TEXT NOT NULL,
     PRIMARY KEY ("table_name", "row_pk")
-  )`);
+  )`,
+  );
 }
 
 /**
@@ -39,7 +43,8 @@ export async function storeEmbedding(
   if (text.length === 0) return;
 
   const vector = await config.embed(text);
-  adapter.run(
+  await runAsyncOrSync(
+    adapter,
     `INSERT OR REPLACE INTO "${EMBEDDINGS_TABLE}" ("table_name", "row_pk", "embedding") VALUES (?, ?, ?)`,
     [table, pk, JSON.stringify(vector)],
   );
@@ -48,11 +53,16 @@ export async function storeEmbedding(
 /**
  * Remove a stored embedding.
  */
-export function removeEmbedding(adapter: StorageAdapter, table: string, pk: string): void {
-  adapter.run(`DELETE FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`, [
-    table,
-    pk,
-  ]);
+export async function removeEmbedding(
+  adapter: StorageAdapter,
+  table: string,
+  pk: string,
+): Promise<void> {
+  await runAsyncOrSync(
+    adapter,
+    `DELETE FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`,
+    [table, pk],
+  );
 }
 
 /**
@@ -93,7 +103,8 @@ export async function searchByEmbedding(
 ): Promise<SearchResult[]> {
   const queryVector = await config.embed(queryText);
 
-  const stored = adapter.all(
+  const stored = await allAsyncOrSync(
+    adapter,
     `SELECT "row_pk", "embedding" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
     [table],
   );
@@ -113,7 +124,11 @@ export async function searchByEmbedding(
   // Fetch full rows using the table's primary key column
   const results: SearchResult[] = [];
   for (const { pk, score } of topResults) {
-    const row = adapter.get(`SELECT * FROM "${table}" WHERE "${pkColumn}" = ?`, [pk]);
+    const row = await getAsyncOrSync(
+      adapter,
+      `SELECT * FROM "${table}" WHERE "${pkColumn}" = ?`,
+      [pk],
+    );
     if (row) {
       results.push({ row, score });
     }

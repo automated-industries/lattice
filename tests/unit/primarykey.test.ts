@@ -122,8 +122,8 @@ describe('Custom primary key', () => {
         outputFile: 'posts.md',
       });
       await strictDb.init();
-      // Inserting without slug violates NOT NULL — SQLite throws synchronously.
-      expect(() => strictDb.insert('posts', { title: 'No slug' })).toThrow();
+      // Inserting without slug violates NOT NULL — surfaces as a rejected Promise.
+      await expect(strictDb.insert('posts', { title: 'No slug' })).rejects.toThrow();
       strictDb.close();
     });
   });
