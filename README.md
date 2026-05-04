@@ -77,10 +77,10 @@ npm install latticesql
 
 Requires **Node.js 18+**. The default backend is SQLite (`better-sqlite3`) — no external database process needed.
 
-To use the Postgres backend (for Supabase, Neon, RDS, or any other Postgres-compatible database), install the optional dependencies:
+To use the Postgres backend (for Supabase, Neon, RDS, or any other Postgres-compatible database), install the optional dependency:
 
 ```bash
-npm install latticesql pg synckit
+npm install latticesql pg
 ```
 
 Then pass a connection string instead of a file path:
@@ -2153,11 +2153,13 @@ The rest of the API — `define()`, `init()`, `query()`, `insert()`, `render()`,
 
 ### Postgres setup
 
-`PostgresAdapter` depends on `pg` and `synckit`. Both are listed as `optionalDependencies`, so SQLite-only consumers don't pay the install cost. Install them when you actually use Postgres:
+`PostgresAdapter` depends on `pg`, listed as an `optionalDependency` so SQLite-only consumers don't pay the install cost. Install it when you actually use Postgres:
 
 ```bash
-npm install pg synckit
+npm install pg
 ```
+
+> **Migrating from `<= 1.9.x`?** `synckit` is no longer a dependency. Drop it from your install. The `dist/postgres-worker.cjs` file is also gone (it served the now-removed sync surface).
 
 Then point Lattice at any Postgres-compatible database that speaks the standard wire protocol on port 5432:
 
@@ -2166,16 +2168,13 @@ const lattice = new Lattice('postgres://user:pass@host:5432/db');
 await lattice.init();
 ```
 
-**Connection pooler note:** the `PostgresAdapter` exposes both a synckit-bridged sync surface and a native `pg.Pool`-backed async surface (since 1.8.0). Pick your pooler endpoint based on which surface you primarily use:
+**Recommended pooler:** **transaction-mode** (e.g. PgBouncer transaction-mode, Supabase port `6543`). `PostgresAdapter` is native against `pg.Pool` and designed for transaction-mode: server-side prepared statements aren't kept across calls (because the upstream connection returns to the pool at `COMMIT`), and `prepareAsync` re-binds per call. Migrations are wrapped in `withClient(fn)` and acquire a transaction-scoped advisory lock so concurrent app boots serialize cleanly. `pool.max` is configurable via `PostgresAdapterOptions.poolSize` (default 10).
 
-- **Transaction-mode pooling** (e.g. PgBouncer transaction-mode, Supabase port `6543`) — recommended for `pg.Pool`-backed callers. The async surface (`runAsync`/`getAsync`/`allAsync`/`withClient`) is designed for transaction-mode: server-side prepared statements aren't kept across calls (because the upstream connection returns to the pool at `COMMIT`), and `prepareAsync` re-binds per call, so the prepared-statement-incompatibility caveat doesn't apply. Migrations are wrapped in `withClient(fn)` and acquire a transaction-scoped advisory lock so concurrent app boots serialize cleanly.
-- **Session-mode pooling** (e.g. PgBouncer session-mode, Supabase port `5432`) — required if you rely on the synckit-bridged sync surface (`adapter.run`/`adapter.prepare`) for transactional code. The synckit worker owns a single `pg.Client`, so session-mode preserves the per-connection guarantees that raw `BEGIN`/`COMMIT` calls assume.
+**Async-only on Postgres (since 1.10.0):**
 
-**Two surfaces, one adapter (since 1.8.0):**
-
-- **Sync surface** (`run` / `get` / `all` / `prepare`) — bridged via a synckit worker thread that owns a single `pg.Client`. The main thread blocks on `Atomics.wait` until the worker replies. Each query pays ~1–3 ms of message-passing overhead. Preserved for back-compat with third-party adapters that don't implement the async surface; lattice itself no longer uses it on the hot path.
-- **Async surface** (`runAsync` / `getAsync` / `allAsync` / `prepareAsync` / `withClient`) — native against a `pg.Pool` in the main thread. No synckit, no `Atomics.wait`. The Node event loop is free to handle other work between awaited DB roundtrips. **Since 1.9.0, lattice core internally prefers this surface at every call site** when the configured adapter implements it (Postgres) — fall-back to the sync surface only when the adapter doesn't expose async methods (SQLite). `pool.max` is configurable via `PostgresAdapterOptions.poolSize` (default 10).
-- **Transactional contract**: any code that issues `BEGIN`/`COMMIT` should use `withClient(fn)` rather than raw `adapter.run('BEGIN')`. The pool checks out a single connection for the lifetime of `fn` and the `TxClient` handed to `fn` pins every query to that connection. Raw `adapter.run('BEGIN')` is only safe under the synckit worker (single-connection by construction); the next major release will remove the synckit worker entirely.
+- The async surface (`runAsync` / `getAsync` / `allAsync` / `prepareAsync` / `introspectColumnsAsync` / `addColumnAsync` / `withClient`) is the *only* path that does work against Postgres. The synchronous methods (`run` / `get` / `all` / `prepare` / `introspectColumns` / `addColumn`) **throw** with a clear error pointing at the async equivalent. `pg.Pool` is fundamentally async; the previous synckit-bridged sync surface was a workaround that blocked the Node main thread on `Atomics.wait`, and it was removed in 1.10.0 once lattice core had migrated to async at every call site (1.9.0).
+- `SQLiteAdapter` keeps the sync surface as the authoritative path (better-sqlite3 is sync by design). Its async methods just wrap the sync calls in resolved Promises — the one-microtask cost is negligible relative to having a single cross-dialect code path.
+- **Transactional contract**: any code that issues `BEGIN`/`COMMIT` should use `withClient(fn)`. The pool checks out a single connection for the lifetime of `fn` and the `TxClient` handed to `fn` pins every query to that connection. Raw `adapter.runAsync('BEGIN')` is unsafe — different awaited calls land on different upstream connections under transaction-mode pooling.
 
 ```ts
 // Recommended pattern for transactional writes
@@ -2202,7 +2201,9 @@ export interface StorageAdapter {
   // core. Most application code never needs to read this.
   readonly dialect: 'sqlite' | 'postgres';
 
-  // Sync surface — required.
+  // Sync surface — required by the interface. Sync-native backends like
+  // SQLite implement it; async-native backends like Postgres (since 1.10.0)
+  // throw with a helpful error pointing callers at the async equivalents.
   run(sql: string, params?: unknown[]): void;
   get(sql: string, params?: unknown[]): Row | undefined;
   all(sql: string, params?: unknown[]): Row[];
@@ -2217,6 +2218,8 @@ export interface StorageAdapter {
   getAsync?(sql: string, params?: unknown[]): Promise<Row | undefined>;
   allAsync?(sql: string, params?: unknown[]): Promise<Row[]>;
   prepareAsync?(sql: string): PreparedStatementAsync;
+  introspectColumnsAsync?(table: string): Promise<string[]>;
+  addColumnAsync?(table: string, column: string, typeSpec: string): Promise<void>;
   withClient?<T>(fn: (tx: TxClient) => Promise<T>): Promise<T>;
 }
 ```
