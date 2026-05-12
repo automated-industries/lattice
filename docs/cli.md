@@ -13,6 +13,7 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice reconcile`](#lattice-reconcile)
   - [`lattice status`](#lattice-status)
   - [`lattice watch`](#lattice-watch)
+  - [`lattice gui`](#lattice-gui)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -229,6 +230,42 @@ lattice watch --config ./lattice.config.yml --output ./context --interval 3000 -
 [10:42:06] Cleanup: removed 0 dirs, 1 files
 ^C
 ```
+
+---
+
+### `lattice gui`
+
+Starts a local-only browser GUI for exploring a rendered Lattice context tree.
+The GUI is read-only: it visualizes config, rendered entity context files, and
+relationships without mutating the database or deleting files.
+
+```sh
+lattice gui [options]
+```
+
+**Options:**
+
+| Option            | Short | Default                | Description                                           |
+| ----------------- | ----- | ---------------------- | ----------------------------------------------------- |
+| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                          |
+| `--output <dir>`  | –     | `./context`            | Output directory containing rendered context files    |
+| `--port <number>` | –     | `4317`                 | Localhost port; auto-increments when the port is busy |
+| `--no-open`       | –     | off                    | Print the URL without opening a browser               |
+
+**Example:**
+
+```sh
+lattice gui --config ./lattice.config.yml --output ./context
+```
+
+```
+Lattice GUI listening at http://127.0.0.1:4317
+Press Ctrl+C to stop.
+```
+
+The GUI includes an object explorer, relationship graph, inspector tabs for
+overview/files/connections/raw data, and a drag-and-drop preview area for config,
+database, manifest, and context files.
 
 ---
 
