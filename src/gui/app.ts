@@ -306,6 +306,31 @@ export const guiAppHtml = `<!doctype html>
     }
     .dm-col-rename { height: 28px; padding: 0 10px; font-size: 12px; }
 
+    /* ── Toast / undo banner ──────────────────────────── */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1f2328; color: white;
+      padding: 10px 18px; border-radius: 999px;
+      display: flex; align-items: center; gap: 14px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+      z-index: 200; font-size: 13.5px;
+      animation: toast-in 0.18s ease;
+    }
+    @keyframes toast-in {
+      from { transform: translate(-50%, 8px); opacity: 0; }
+      to   { transform: translate(-50%, 0);   opacity: 1; }
+    }
+    .toast .undo-link {
+      color: #87b3ff; cursor: pointer; font-weight: 600;
+      background: transparent; border: none; padding: 0; font: inherit;
+    }
+    .toast .undo-link:hover { color: white; }
+    .toast .toast-dismiss {
+      background: transparent; border: none; color: #9aa1ad;
+      cursor: pointer; padding: 0 4px; font-size: 16px; line-height: 1;
+    }
+    .toast .toast-dismiss:hover { color: white; }
+
     /* ── Buttons ──────────────────────────────────────── */
     .btn {
       display: inline-flex; align-items: center; gap: 6px;
@@ -348,34 +373,6 @@ export const guiAppHtml = `<!doctype html>
       display: inline-flex; align-items: center; justify-content: center;
       font-size: 18px;
     }
-
-    /* ── Modal ────────────────────────────────────────── */
-    .modal-backdrop {
-      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.35);
-      display: flex; align-items: center; justify-content: center;
-      z-index: 100;
-    }
-    .modal {
-      background: var(--surface); border-radius: 10px;
-      width: 480px; max-width: calc(100vw - 40px); max-height: 80vh;
-      display: flex; flex-direction: column;
-      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
-    }
-    .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border);
-      font-size: 15px; font-weight: 600; }
-    .modal-body { padding: 16px 20px; overflow-y: auto; }
-    .modal-foot { padding: 12px 20px; border-top: 1px solid var(--border);
-      display: flex; justify-content: flex-end; gap: 8px; }
-    .field { display: block; margin-bottom: 12px; }
-    .field label { display: block; font-size: 12px; color: var(--text-muted);
-      margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
-    .field input, .field textarea, .field select {
-      width: 100%; padding: 7px 10px; font: inherit;
-      border: 1px solid var(--border-strong); border-radius: 6px;
-      background: white;
-    }
-    .field textarea { min-height: 72px; resize: vertical; }
-    .field:last-child { margin-bottom: 0; }
 
     /* Detail inputs (inline editing) */
     .detail dl.editing input,
@@ -541,18 +538,61 @@ export const guiAppHtml = `<!doctype html>
     }
 
     // ────────────────────────────────────────────────────────────
+    // Toast banner (with optional one-click undo)
+    // ────────────────────────────────────────────────────────────
+    var activeToast = null;
+    var toastDismissTimer = null;
+    function showToast(message, opts) {
+      opts = opts || {};
+      if (activeToast) activeToast.remove();
+      if (toastDismissTimer) clearTimeout(toastDismissTimer);
+      var toast = document.createElement('div');
+      toast.className = 'toast';
+      var undoBtn = opts.undo ? '<button class="undo-link" type="button">Undo</button>' : '';
+      toast.innerHTML =
+        '<span>' + escapeHtml(message) + '</span>' +
+        undoBtn +
+        '<button class="toast-dismiss" type="button" title="Dismiss">×</button>';
+      document.body.appendChild(toast);
+      activeToast = toast;
+
+      function close() {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+        if (activeToast === toast) activeToast = null;
+      }
+      toast.querySelector('.toast-dismiss').addEventListener('click', close);
+      if (opts.undo) {
+        toast.querySelector('.undo-link').addEventListener('click', function () {
+          close();
+          if (toastDismissTimer) clearTimeout(toastDismissTimer);
+          opts.undo();
+        });
+      }
+      toastDismissTimer = setTimeout(close, opts.duration || 6000);
+    }
+
+    /** Standard undo: hit /api/history/undo and refresh views. */
+    function undoLast() {
+      return fetchJson('/api/history/undo', { method: 'POST' })
+        .then(afterMutation)
+        .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
+    }
+
+    // ────────────────────────────────────────────────────────────
     // Version history (undo / redo / log)
     // ────────────────────────────────────────────────────────────
     function wireHistoryControls() {
       document.getElementById('undo-btn').addEventListener('click', function () {
-        fetchJson('/api/history/undo', { method: 'POST' }).then(afterMutation).catch(function (err) {
-          alert('Undo failed: ' + err.message);
-        });
+        fetchJson('/api/history/undo', { method: 'POST' })
+          .then(function () { return afterMutation(); })
+          .then(function () { showToast('Last change undone', {}); })
+          .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
       });
       document.getElementById('redo-btn').addEventListener('click', function () {
-        fetchJson('/api/history/redo', { method: 'POST' }).then(afterMutation).catch(function (err) {
-          alert('Redo failed: ' + err.message);
-        });
+        fetchJson('/api/history/redo', { method: 'POST' })
+          .then(function () { return afterMutation(); })
+          .then(function () { showToast('Redone', {}); })
+          .catch(function (err) { showToast('Redo failed: ' + err.message, {}); });
       });
     }
 
@@ -638,7 +678,9 @@ export const guiAppHtml = `<!doctype html>
             }).then(function () {
               menu.hidden = true;
               return reloadEverything();
-            }).catch(function (err) { alert('Switch failed: ' + err.message); });
+            }).then(function () {
+              showToast('Switched database', {});
+            }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
           });
         });
         document.getElementById('db-create-btn').addEventListener('click', function () {
@@ -652,7 +694,9 @@ export const guiAppHtml = `<!doctype html>
           }).then(function () {
             menu.hidden = true;
             return reloadEverything();
-          }).catch(function (err) { alert('Create failed: ' + err.message); });
+          }).then(function () {
+            showToast('Database "' + name + '" created', {});
+          }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
         });
       }
 
@@ -832,46 +876,6 @@ export const guiAppHtml = `<!doctype html>
       ]);
     }
 
-    // ────────────────────────────────────────────────────────────
-    // Modal helper
-    // ────────────────────────────────────────────────────────────
-    function showModal(title, bodyHtml, opts) {
-      opts = opts || {};
-      var primaryLabel = opts.primaryLabel || 'Save';
-      var backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML =
-        '<div class="modal">' +
-          '<div class="modal-head">' + escapeHtml(title) + '</div>' +
-          '<div class="modal-body">' + bodyHtml + '</div>' +
-          '<div class="modal-foot">' +
-            '<button class="btn" data-act="cancel">Cancel</button>' +
-            '<button class="btn primary" data-act="ok">' + escapeHtml(primaryLabel) + '</button>' +
-          '</div>' +
-        '</div>';
-      document.body.appendChild(backdrop);
-      function close() { document.body.removeChild(backdrop); }
-      backdrop.addEventListener('click', function (e) {
-        if (e.target === backdrop) close();
-      });
-      backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
-      backdrop.querySelector('[data-act="ok"]').addEventListener('click', function () {
-        try {
-          var result = opts.onSubmit ? opts.onSubmit(backdrop) : null;
-          if (result && typeof result.then === 'function') {
-            result.then(close).catch(function (err) {
-              alert('Failed: ' + err.message);
-            });
-          } else {
-            close();
-          }
-        } catch (err) {
-          alert('Failed: ' + err.message);
-        }
-      });
-      return { close: close };
-    }
-
     function fieldFor(col, value, table) {
       // Render an input element for a column. belongsTo FK columns become a
       // <select> over the referenced table's rows (must already be cached).
@@ -1019,8 +1023,9 @@ export const guiAppHtml = `<!doctype html>
             return refreshEntities();
           }).then(function () {
             renderTable(content, tableName);
+            showToast(d.label.replace(/s$/, '') + ' created', { undo: undoLast });
           }).catch(function (err) {
-            alert('Create failed: ' + err.message);
+            showToast('Create failed: ' + err.message, {});
           });
         });
 
@@ -1031,12 +1036,6 @@ export const guiAppHtml = `<!doctype html>
             var hardId = btn.getAttribute('data-hard-del');
             var id = softId || hardId;
             var hard = !!hardId;
-            var prompt = hard
-              ? 'Permanently delete this row? This cannot be undone.'
-              : (supportsSoftDelete
-                  ? 'Move this row to trash? You can restore it later.'
-                  : 'Delete this row?');
-            if (!confirm(prompt)) return;
             var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id);
             if (hard) url += '?hard=true';
             fetchJson(url, { method: 'DELETE' }).then(function () {
@@ -1044,8 +1043,12 @@ export const guiAppHtml = `<!doctype html>
               return refreshEntities();
             }).then(function () {
               renderTable(content, tableName);
+              var msg = hard
+                ? d.label.replace(/s$/, '') + ' permanently deleted'
+                : d.label.replace(/s$/, '') + ' deleted';
+              showToast(msg, { undo: undoLast });
             }).catch(function (err) {
-              alert('Delete failed: ' + err.message);
+              showToast('Delete failed: ' + err.message, {});
             });
           });
         });
@@ -1063,8 +1066,9 @@ export const guiAppHtml = `<!doctype html>
               return refreshEntities();
             }).then(function () {
               renderTable(content, tableName);
+              showToast(d.label.replace(/s$/, '') + ' restored', { undo: undoLast });
             }).catch(function (err) {
-              alert('Restore failed: ' + err.message);
+              showToast('Restore failed: ' + err.message, {});
             });
           });
         });
@@ -1169,14 +1173,14 @@ export const guiAppHtml = `<!doctype html>
                 return refreshEntities();
               }).then(function () {
                 renderDetail(content, tableName, id);
+                showToast(d.label.replace(/s$/, '') + ' modified', { undo: undoLast });
               }).catch(function (err) {
-                alert('Save failed: ' + err.message);
+                showToast('Save failed: ' + err.message, {});
               });
             });
           } else {
             document.getElementById('edit-row').addEventListener('click', function () { paint(true); });
             document.getElementById('del-row').addEventListener('click', function () {
-              if (!confirm('Delete this row? This cannot be undone.')) return;
               fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
                 method: 'DELETE',
               }).then(function () {
@@ -1184,8 +1188,9 @@ export const guiAppHtml = `<!doctype html>
                 return refreshEntities();
               }).then(function () {
                 location.hash = '#/objects/' + tableName;
+                showToast(d.label.replace(/s$/, '') + ' deleted', { undo: undoLast });
               }).catch(function (err) {
-                alert('Delete failed: ' + err.message);
+                showToast('Delete failed: ' + err.message, {});
               });
             });
           }
@@ -1218,11 +1223,16 @@ export const guiAppHtml = `<!doctype html>
         mount.querySelectorAll('button.history-revert').forEach(function (btn) {
           btn.addEventListener('click', function () {
             var id = btn.getAttribute('data-id');
-            if (!confirm('Revert this change?')) return;
             fetchJson('/api/history/revert/' + encodeURIComponent(id), { method: 'POST' })
               .then(afterMutation)
-              .then(function () { renderHistory(document.getElementById('content')); })
-              .catch(function (err) { alert('Revert failed: ' + err.message); });
+              .then(function () {
+                renderHistory(document.getElementById('content'));
+                // No undo affordance here — revert is the explicit user action,
+                // and the original entry remains in history if they want to
+                // un-undo it (it'll be picked up by the top-bar Redo button).
+                showToast('Change reverted', {});
+              })
+              .catch(function (err) { showToast('Revert failed: ' + err.message, {}); });
           });
         });
       }).catch(function (err) {
@@ -1452,11 +1462,12 @@ export const guiAppHtml = `<!doctype html>
 
     /** Wire up the edit-entity controls in the Data Model side panel. */
     function wireEntityEditPanel(panel, tableName) {
-      // Rename entity
+      // Rename entity — schema change, not in the audit log, so we keep
+      // a confirm (the only kind of warning left in the app).
       panel.querySelector('#dm-rename-btn').addEventListener('click', function () {
         var to = panel.querySelector('#dm-rename-input').value.trim();
         if (!to || to === tableName) return;
-        if (!confirm('Rename entity "' + tableName + '" to "' + to + '"? This rewrites the SQL table and the YAML config.')) return;
+        if (!confirm('Rename entity "' + tableName + '" to "' + to + '"? This is irreversible from the GUI.')) return;
         fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/rename', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1465,7 +1476,8 @@ export const guiAppHtml = `<!doctype html>
           return reloadEverything();
         }).then(function () {
           location.hash = '#/settings/data-model';
-        }).catch(function (err) { alert('Rename failed: ' + err.message); });
+          showToast('Entity renamed to "' + to + '"', {});
+        }).catch(function (err) { showToast('Rename failed: ' + err.message, {}); });
       });
       // Edit icon
       panel.querySelector('#dm-icon-btn').addEventListener('click', function () {
@@ -1474,10 +1486,12 @@ export const guiAppHtml = `<!doctype html>
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ icon: icon }),
-        }).then(refreshIcons).then(function () { dmShowTableRows(tableName); })
-          .catch(function (err) { alert('Icon save failed: ' + err.message); });
+        }).then(refreshIcons).then(function () {
+          dmShowTableRows(tableName);
+          showToast('Icon saved', {});
+        }).catch(function (err) { showToast('Icon save failed: ' + err.message, {}); });
       });
-      // Add column
+      // Add column — additive but not in the audit log, so no undo.
       panel.querySelector('#dm-newcol-btn').addEventListener('click', function () {
         var name = panel.querySelector('#dm-newcol-name').value.trim();
         var type = panel.querySelector('#dm-newcol-type').value;
@@ -1490,15 +1504,17 @@ export const guiAppHtml = `<!doctype html>
           return reloadEverything();
         }).then(function () {
           location.hash = '#/settings/data-model';
-        }).catch(function (err) { alert('Add column failed: ' + err.message); });
+          showToast('Column "' + name + '" added', {});
+        }).catch(function (err) { showToast('Add column failed: ' + err.message, {}); });
       });
-      // Rename column
+      // Rename column — schema change, irreversible.
       panel.querySelectorAll('.dm-col-rename').forEach(function (btn) {
         btn.addEventListener('click', function () {
           var col = btn.getAttribute('data-col');
           var input = panel.querySelector('input.dm-col-name[data-col="' + col + '"]');
           var to = input.value.trim();
           if (!to || to === col) return;
+          if (!confirm('Rename column "' + col + '" to "' + to + '"? This is irreversible from the GUI.')) return;
           fetchJson(
             '/api/schema/entities/' + encodeURIComponent(tableName) +
               '/columns/' + encodeURIComponent(col) + '/rename',
@@ -1511,7 +1527,8 @@ export const guiAppHtml = `<!doctype html>
             return reloadEverything();
           }).then(function () {
             location.hash = '#/settings/data-model';
-          }).catch(function (err) { alert('Rename column failed: ' + err.message); });
+            showToast('Column renamed to "' + to + '"', {});
+          }).catch(function (err) { showToast('Rename column failed: ' + err.message, {}); });
         });
       });
     }
@@ -1607,8 +1624,9 @@ export const guiAppHtml = `<!doctype html>
               return refreshEntities();
             }).then(function () {
               dmShowRowLinks(tableName, rowId);
+              showToast('Link removed', { undo: undoLast });
             }).catch(function (err) {
-              alert('Unlink failed: ' + err.message);
+              showToast('Unlink failed: ' + err.message, {});
             });
           });
         });
@@ -1628,8 +1646,9 @@ export const guiAppHtml = `<!doctype html>
               return refreshEntities();
             }).then(function () {
               dmShowRowLinks(tableName, rowId);
+              showToast('Linked', { undo: undoLast });
             }).catch(function (err) {
-              alert('Link failed: ' + err.message);
+              showToast('Link failed: ' + err.message, {});
             });
           });
         });
