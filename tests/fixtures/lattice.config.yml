@@ -7,6 +7,7 @@ entities:
       name: { type: text, required: true }
       email: { type: text }
       role: { type: text }
+      deleted_at: { type: text }
     outputFile: PEOPLE.md
 
   meetings:
@@ -16,6 +17,7 @@ entities:
       starts_at: { type: text }
       transcript: { type: text }
       summary: { type: text }
+      deleted_at: { type: text }
     outputFile: MEETINGS.md
 
   messages:
@@ -24,6 +26,7 @@ entities:
       channel: { type: text }
       body: { type: text }
       sent_at: { type: text }
+      deleted_at: { type: text }
     outputFile: MESSAGES.md
 
   projects:
@@ -31,6 +34,7 @@ entities:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
       status: { type: text }
+      deleted_at: { type: text }
     outputFile: PROJECTS.md
 
   repositories:
@@ -38,6 +42,7 @@ entities:
       id: { type: uuid, primaryKey: true }
       url: { type: text, required: true }
       project_id: { type: uuid, ref: projects }
+      deleted_at: { type: text }
     outputFile: REPOS.md
 
   files:
@@ -45,6 +50,7 @@ entities:
       id: { type: uuid, primaryKey: true }
       path: { type: text, required: true }
       kind: { type: text }
+      deleted_at: { type: text }
     outputFile: FILES.md
 
   secrets:
@@ -52,6 +58,7 @@ entities:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
       kind: { type: text }
+      deleted_at: { type: text }
     outputFile: SECRETS.md
 
   # Junction tables (hidden from sidebar/dashboard by the GUI; editable via Data Model).

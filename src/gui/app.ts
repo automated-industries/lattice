@@ -122,6 +122,8 @@ export const guiAppHtml = `<!doctype html>
       background: var(--accent-soft); color: var(--accent);
       border-radius: 10px; font-size: 12px;
     }
+    a.chip-link { cursor: pointer; }
+    a.chip-link:hover { background: var(--accent); color: white; }
     .empty-row td {
       color: var(--text-muted); font-style: italic; text-align: center;
       padding: 24px;
@@ -212,15 +214,31 @@ export const guiAppHtml = `<!doctype html>
     .btn.ghost:hover { background: var(--row-hover); color: var(--text); }
     .view-header .actions { margin-left: auto; display: flex; gap: 8px; }
 
-    /* Row delete control */
-    .row-actions { width: 36px; text-align: center; }
-    .row-delete {
+    /* Row delete / restore controls */
+    .row-actions { width: 64px; text-align: center; white-space: nowrap; }
+    .row-delete, .row-restore {
       background: transparent; border: none; color: var(--text-muted);
-      font-size: 16px; cursor: pointer; padding: 4px 8px;
+      font-size: 16px; cursor: pointer; padding: 4px 6px;
       border-radius: 4px;
     }
     tr:hover .row-delete { color: #b42318; }
     .row-delete:hover { background: #fef3f2; }
+    .row-restore:hover { background: var(--accent-soft); color: var(--accent); }
+    tr.row-deleted td { background: #fefbf3; color: var(--text-muted); }
+    tr.row-deleted:hover td { background: #fcf5e3; }
+
+    /* Inline create-row at the bottom of every table */
+    tr.create-row td { background: #fafbfc; }
+    tr.create-row input, tr.create-row textarea, tr.create-row select {
+      width: 100%; padding: 6px 8px; font: inherit;
+      border: 1px solid var(--border); border-radius: 4px; background: white;
+    }
+    tr.create-row textarea { min-height: 32px; resize: vertical; }
+    tr.create-row #inline-create {
+      height: 30px; width: 30px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
 
     /* ── Modal ────────────────────────────────────────── */
     .modal-backdrop {
@@ -489,6 +507,17 @@ export const guiAppHtml = `<!doctype html>
       return row.name || row.title || row.url || row.path || row.id || '';
     }
 
+    /**
+     * Render a clickable chip linking to the detail page of a row in another
+     * table. Used for belongsTo cells and junction-derived cells so the user
+     * can navigate to the related object with one click.
+     */
+    function chipLink(table, row) {
+      if (!row) return '<span class="muted">—</span>';
+      return '<a class="chip chip-link" href="#/objects/' + encodeURIComponent(table) +
+        '/' + encodeURIComponent(row.id) + '">' + escapeHtml(displayNameFor(row)) + '</a>';
+    }
+
     var loadedTables = {};
     function loadAllRows(tableName) {
       if (loadedTables[tableName]) return Promise.resolve(loadedTables[tableName]);
@@ -496,6 +525,13 @@ export const guiAppHtml = `<!doctype html>
         loadedTables[tableName] = d.rows;
         return d.rows;
       });
+    }
+
+    /** Force a fresh fetch — used for views that need to opt in/out of soft-delete filtering. */
+    function fetchRows(tableName, deletedMode) {
+      var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows';
+      if (deletedMode) url += '?deleted=' + encodeURIComponent(deletedMode);
+      return fetchJson(url).then(function (d) { return d.rows; });
     }
 
     /**
@@ -586,6 +622,9 @@ export const guiAppHtml = `<!doctype html>
       return out;
     }
 
+    // Per-table view state: 'live' (default) or 'trash' (soft-deleted rows).
+    var tableViewMode = {};
+
     function renderTable(content, tableName) {
       var t = tableByName(tableName);
       if (!t) {
@@ -596,17 +635,18 @@ export const guiAppHtml = `<!doctype html>
       var intrinsic = intrinsicColumns(t);
       var belongsTo = belongsToColumns(t);
       var junctions = junctionsFor(tableName);
-
-      // Fetch this entity's rows + every related entity's rows so we can resolve names.
-      var fetches = [loadAllRows(tableName)];
+      var supportsSoftDelete = (t.columns || []).indexOf('deleted_at') !== -1;
+      var viewMode = tableViewMode[tableName] || 'live';
+      // Fetch this entity's rows fresh (mode-aware), plus relation tables (live only) for chips.
+      var fetches = [fetchRows(tableName, viewMode === 'trash' ? 'only' : '')];
       belongsTo.forEach(function (b) { fetches.push(loadAllRows(b.rel.table)); });
       junctions.forEach(function (j) {
         fetches.push(loadAllRows(j.junction));
         fetches.push(loadAllRows(j.remoteRel.table));
       });
 
-      Promise.all(fetches).then(function () {
-        var rows = loadedTables[tableName];
+      Promise.all(fetches).then(function (results) {
+        var rows = results[0];
         var headers = intrinsic.map(fieldLabel)
           .concat(belongsTo.map(function (b) { return titleCase(b.relName); }))
           .concat(junctions.map(function (j) { return titleCase(j.remoteRel.table); }))
@@ -614,9 +654,8 @@ export const guiAppHtml = `<!doctype html>
         headers += '<th class="row-actions"></th>';
 
         var bodyRows;
-        var totalCols = intrinsic.length + belongsTo.length + junctions.length + 1;
         if (rows.length === 0) {
-          bodyRows = '<tr class="empty-row"><td colspan="' + totalCols + '">No rows yet — click “+ New” to add one</td></tr>';
+          bodyRows = '';
         } else {
           bodyRows = rows.map(function (r) {
             var tds = intrinsic.map(function (c) {
@@ -624,48 +663,105 @@ export const guiAppHtml = `<!doctype html>
             });
             belongsTo.forEach(function (b) {
               var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === r[b.rel.foreignKey]; });
-              tds.push('<td>' + (ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '<span class="muted">—</span>') + '</td>');
+              tds.push('<td>' + chipLink(b.rel.table, ref) + '</td>');
             });
             junctions.forEach(function (j) {
               var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === r.id; });
               var remoteFkCol = j.remoteRel.foreignKey;
               var chips = matches.map(function (jr) {
                 var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[remoteFkCol]; });
-                return ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '';
+                return ref ? chipLink(j.remoteRel.table, ref) : '';
               }).join('');
               tds.push('<td>' + (chips || '<span class="muted">—</span>') + '</td>');
             });
-            tds.push('<td class="row-actions"><button class="row-delete" title="Delete" data-del="' + escapeHtml(r.id) + '">✕</button></td>');
-            return '<tr data-id="' + escapeHtml(r.id) + '">' + tds.join('') + '</tr>';
+            if (viewMode === 'trash') {
+              tds.push('<td class="row-actions">' +
+                '<button class="row-restore" title="Restore" data-restore="' + escapeHtml(r.id) + '">↺</button>' +
+                '<button class="row-delete" title="Delete permanently" data-hard-del="' + escapeHtml(r.id) + '">✕</button>' +
+                '</td>');
+            } else {
+              tds.push('<td class="row-actions"><button class="row-delete" title="Delete" data-del="' + escapeHtml(r.id) + '">✕</button></td>');
+            }
+            return '<tr data-id="' + escapeHtml(r.id) + '"' + (viewMode === 'trash' ? ' class="row-deleted"' : '') + '>' + tds.join('') + '</tr>';
           }).join('');
         }
+
+        // Inline "+ new" row at the bottom of the table. Intrinsic + belongsTo
+        // columns become inputs; junctions show a dim placeholder (links happen
+        // via the Data Model page); the last cell is the create control.
+        var createCells = intrinsic.map(function (c) {
+          return '<td>' + fieldFor(c, '', t) + '</td>';
+        });
+        belongsTo.forEach(function (b) {
+          createCells.push('<td>' + fieldFor(b.rel.foreignKey, '', t) + '</td>');
+        });
+        junctions.forEach(function () {
+          createCells.push('<td><span class="muted">add after create</span></td>');
+        });
+        createCells.push('<td class="row-actions"><button class="btn primary" id="inline-create" title="Create">+</button></td>');
+        var createRow = '<tr class="create-row">' + createCells.join('') + '</tr>';
+
+        var trashToggle = supportsSoftDelete
+          ? '<div class="actions"><button class="btn ghost" id="toggle-trash">' +
+              (viewMode === 'trash' ? '← Back to live' : 'Show trash') +
+            '</button></div>'
+          : '';
 
         content.innerHTML =
           '<div class="view-header">' +
             '<span class="entity-icon">' + d.icon + '</span>' +
-            '<h1>' + escapeHtml(d.label) + '</h1>' +
+            '<h1>' + escapeHtml(d.label) + (viewMode === 'trash' ? ' · Trash' : '') + '</h1>' +
             '<span class="count">' + rows.length + ' row' + (rows.length === 1 ? '' : 's') + '</span>' +
-            '<div class="actions">' +
-              '<button class="btn primary" id="new-row">+ New</button>' +
-            '</div>' +
+            trashToggle +
           '</div>' +
           '<table>' +
             '<thead><tr>' + headers + '</tr></thead>' +
-            '<tbody>' + bodyRows + '</tbody>' +
+            '<tbody>' + bodyRows + (viewMode === 'trash' ? '' : createRow) + '</tbody>' +
           '</table>';
 
-        document.getElementById('new-row').addEventListener('click', function () {
-          openCreateModal(tableName);
+        if (supportsSoftDelete) {
+          document.getElementById('toggle-trash').addEventListener('click', function () {
+            tableViewMode[tableName] = viewMode === 'trash' ? 'live' : 'trash';
+            renderTable(content, tableName);
+          });
+        }
+
+        if (viewMode === 'live') document.getElementById('inline-create').addEventListener('click', function () {
+          var values = collectFormValues(content.querySelector('tr.create-row'));
+          // Strip empty optional fields so they're left to DB defaults.
+          Object.keys(values).forEach(function (k) {
+            if (values[k] === null || values[k] === '') delete values[k];
+          });
+          fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(values),
+          }).then(function () {
+            invalidate(tableName);
+            return refreshEntities();
+          }).then(function () {
+            renderTable(content, tableName);
+          }).catch(function (err) {
+            alert('Create failed: ' + err.message);
+          });
         });
 
         content.querySelectorAll('button.row-delete').forEach(function (btn) {
           btn.addEventListener('click', function (e) {
             e.stopPropagation();
-            var id = btn.getAttribute('data-del');
-            if (!confirm('Delete this row?')) return;
-            fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
-              method: 'DELETE',
-            }).then(function () {
+            var softId = btn.getAttribute('data-del');
+            var hardId = btn.getAttribute('data-hard-del');
+            var id = softId || hardId;
+            var hard = !!hardId;
+            var prompt = hard
+              ? 'Permanently delete this row? This cannot be undone.'
+              : (supportsSoftDelete
+                  ? 'Move this row to trash? You can restore it later.'
+                  : 'Delete this row?');
+            if (!confirm(prompt)) return;
+            var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id);
+            if (hard) url += '?hard=true';
+            fetchJson(url, { method: 'DELETE' }).then(function () {
               invalidate(tableName);
               return refreshEntities();
             }).then(function () {
@@ -676,47 +772,34 @@ export const guiAppHtml = `<!doctype html>
           });
         });
 
+        content.querySelectorAll('button.row-restore').forEach(function (btn) {
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var id = btn.getAttribute('data-restore');
+            fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
+              method: 'PATCH',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ deleted_at: null }),
+            }).then(function () {
+              invalidate(tableName);
+              return refreshEntities();
+            }).then(function () {
+              renderTable(content, tableName);
+            }).catch(function (err) {
+              alert('Restore failed: ' + err.message);
+            });
+          });
+        });
+
         content.querySelectorAll('tr[data-id]').forEach(function (tr) {
           tr.addEventListener('click', function (e) {
-            if (e.target && e.target.closest('button')) return;
+            // Let chip-link anchors and the delete button handle their own click.
+            if (e.target && e.target.closest('a, button')) return;
             location.hash = '#/objects/' + tableName + '/' + tr.getAttribute('data-id');
           });
         });
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
-      });
-    }
-
-    function openCreateModal(tableName) {
-      var t = tableByName(tableName);
-      var intrinsic = intrinsicColumns(t);
-      var belongsTo = belongsToColumns(t);
-      // Make sure referenced tables are loaded so the FK <select>s have options.
-      var prefetch = Promise.all(belongsTo.map(function (b) { return loadAllRows(b.rel.table); }));
-      prefetch.then(function () {
-        var fkCols = belongsTo.map(function (b) { return b.rel.foreignKey; });
-        var allCols = intrinsic.concat(fkCols);
-        var body = allCols.map(function (c) {
-          return '<div class="field"><label>' + escapeHtml(fieldLabel(c)) + '</label>' + fieldFor(c, '', t) + '</div>';
-        }).join('');
-        showModal('New ' + (displayFor(tableName).label.replace(/s$/, '') || tableName), body, {
-          primaryLabel: 'Create',
-          onSubmit: function (scope) {
-            var values = collectFormValues(scope);
-            return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(values),
-            }).then(function () {
-              invalidate(tableName);
-              return refreshEntities();
-            }).then(function () {
-              renderTable(document.getElementById('content'), tableName);
-            });
-          },
-        });
-      }).catch(function (err) {
-        alert('Failed to prepare form: ' + err.message);
       });
     }
 
@@ -760,7 +843,7 @@ export const guiAppHtml = `<!doctype html>
               dd = fieldFor(b.rel.foreignKey, row[b.rel.foreignKey], t);
             } else {
               var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
-              dd = ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '<span class="muted">—</span>';
+              dd = chipLink(b.rel.table, ref);
             }
             rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt><dd>' + dd + '</dd>');
           });
@@ -769,7 +852,7 @@ export const guiAppHtml = `<!doctype html>
             var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
             var chips = matches.map(function (jr) {
               var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[j.remoteRel.foreignKey]; });
-              return ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '';
+              return ref ? chipLink(j.remoteRel.table, ref) : '';
             }).join(' ');
             rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
                       '<dd>' + (chips || '<span class="muted">—</span>') + '</dd>');

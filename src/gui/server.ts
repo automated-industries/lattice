@@ -115,7 +115,13 @@ async function entitiesWithCounts(
 ): Promise<GuiEntitiesPayload> {
   const payload = getGuiEntities(configPath, outputDir);
   const enrichedTables = await Promise.all(
-    payload.tables.map(async (t) => ({ ...t, rowCount: await db.count(t.name) })),
+    payload.tables.map(async (t) => {
+      // Only count live rows when the table has a `deleted_at` column.
+      const rowCount = t.columns.includes('deleted_at')
+        ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
+        : await db.count(t.name);
+      return { ...t, rowCount };
+    }),
   );
   return { ...payload, tables: enrichedTables };
 }
@@ -186,6 +192,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   for (const { table, definition } of parsed.entityContexts) {
     entityContextByTable.set(table, definition);
   }
+
+  // Which tables have a `deleted_at` column → eligible for soft delete.
+  const softDeletable = new Set(
+    parsed.tables
+      .filter(({ definition }) => 'deleted_at' in definition.columns)
+      .map(({ name }) => name),
+  );
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -260,7 +273,17 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             if (method === 'GET') {
               const limit = Number(url.searchParams.get('limit') ?? '500');
               const offset = Number(url.searchParams.get('offset') ?? '0');
-              const rows = await db.query(table, { limit, offset });
+              // `?deleted=only` returns just soft-deleted rows (Trash view);
+              // `?deleted=any`  returns all rows including soft-deleted;
+              // default        hides soft-deleted (the live data).
+              const deletedMode = url.searchParams.get('deleted');
+              const queryOpts: Parameters<typeof db.query>[1] = { limit, offset };
+              if (softDeletable.has(table) && deletedMode !== 'any') {
+                queryOpts.filters = [
+                  { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
+                ];
+              }
+              const rows = await db.query(table, queryOpts);
               sendJson(res, { rows });
               return;
             }
@@ -287,7 +310,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return;
             }
             if (method === 'DELETE') {
-              await db.delete(table, id);
+              // Soft delete when the table has a `deleted_at` column;
+              // hard delete otherwise (junctions, schema rows).
+              // ?hard=true forces a hard delete regardless.
+              const hard = url.searchParams.get('hard') === 'true';
+              if (!hard && softDeletable.has(table)) {
+                await db.update(table, id, { deleted_at: new Date().toISOString() });
+              } else {
+                await db.delete(table, id);
+              }
               sendJson(res, { ok: true });
               return;
             }
