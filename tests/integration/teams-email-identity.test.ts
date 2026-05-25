@@ -177,9 +177,9 @@ describe('email-bound identity + one-team-per-DB', () => {
       expect(members[0]?.role).toBe('creator');
 
       // Second createTeam returns 409 — DB already has a team.
-      await expect(
-        alice.client.createTeam(cloud.url, reg.raw_token, 'Beta'),
-      ).rejects.toMatchObject({ status: 409 });
+      await expect(alice.client.createTeam(cloud.url, reg.raw_token, 'Beta')).rejects.toMatchObject(
+        { status: 409 },
+      );
     } finally {
       alice.db.close();
     }

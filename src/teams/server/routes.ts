@@ -179,6 +179,11 @@ export async function dispatchTeamRoute(
     return true;
   }
 
+  // Multi-team enumeration routes. Preserved for backwards-compatibility
+  // with PR #16's sync engine and existing tests; new code should call
+  // POST /api/team (creates the singleton) and GET /api/team (resolves
+  // the active team) instead. See CHANGELOG `Notes` under the OSS-only
+  // redesign entry for the deprecation timeline.
   if (pathname === '/api/teams') {
     if (method === 'POST') {
       await handleCreateTeam(req, res, ctx);
@@ -365,9 +370,7 @@ interface TeamIdentityRow {
 /** Read the singleton team-identity row, or null if no team is set up. */
 async function getTeamIdentity(db: Lattice): Promise<TeamIdentityRow | null> {
   try {
-    const row = (await db.get('__lattice_team_identity', 'singleton')) as
-      | TeamIdentityRow
-      | null;
+    const row = (await db.get('__lattice_team_identity', 'singleton')) as TeamIdentityRow | null;
     return row ?? null;
   } catch {
     return null;
@@ -771,7 +774,13 @@ async function handleCreateInvitation(
   });
   sendJson(
     res,
-    { id, raw_token: raw, expires_at: expiresAt, team_name: team.name, invitee_email: inviteeEmail },
+    {
+      id,
+      raw_token: raw,
+      expires_at: expiresAt,
+      team_name: team.name,
+      invitee_email: inviteeEmail,
+    },
     201,
   );
 }
@@ -779,10 +788,7 @@ async function handleCreateInvitation(
 // ── Singleton-team convenience routes ──────────────────────────────────────
 
 /** GET /api/team — current team identity + member list. */
-async function handleGetSingletonTeam(
-  res: ServerResponse,
-  ctx: TeamRouteContext,
-): Promise<void> {
+async function handleGetSingletonTeam(res: ServerResponse, ctx: TeamRouteContext): Promise<void> {
   if (!ctx.authContext) {
     sendJson(res, { error: 'Unauthorized' }, 401);
     return;

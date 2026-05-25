@@ -24,7 +24,9 @@ export async function hashFile(srcPath: string): Promise<string> {
     const stream = createReadStream(srcPath);
     stream.on('data', (chunk) => hash.update(chunk));
     stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('end', () => {
+      resolve(hash.digest('hex'));
+    });
   });
 }
 

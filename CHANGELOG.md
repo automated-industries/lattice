@@ -8,6 +8,63 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — OSS-only redesign on top of Phase 5 (feat/teams)
+
+A follow-on PR layered on the five-phase Lattice Teams branch. Adds machine-local user config, a Database panel in Project Config, native `secrets`/`files` entities with at-rest encryption on plain `define()` tables, email-bound invitations + a singleton team-identity facade, and a GUI restyle that pulls design tokens directly from latticesql.com.
+
+**Native `secrets` and `files` entities.** Every Lattice opened via the GUI server now has framework-shipped `secrets` and `files` tables registered before `init()`. `secrets.value` is encrypted at rest using a new `TableDefinition.encrypted?: boolean | { columns: string[] }` field (same shape as `EntityContextDefinition.encrypted`). The encryption resolver in `src/lattice.ts` walks both entity contexts and registered tables; `defineLate()` also wires encryption for late-registered tables with the `encrypted` flag.
+
+- `src/framework/native-entities.ts` — `NATIVE_ENTITY_DEFS` + `registerNativeEntities(db)`. `secrets` columns: `id, name, kind, value (encrypted), description, created_at, updated_at, deleted_at`. `files` columns: a superset of the legacy `path`/`kind` shape plus content-addressed `sha256` / `blob_path` / `original_name` / `mime` / `size_bytes` / `extraction_status` / `extracted_text` / `description`.
+- `src/framework/blob-store.ts` — `attachBlob(srcPath, latticeRoot)` writes a file into `<root>/data/blobs/<sha256>` (idempotent) and returns metadata suitable for a `files` row.
+
+**Machine-local user config at `~/.lattice/`.** Files, not a Lattice DB.
+
+- `master.key` — AES-256 master key, auto-generated chmod 0600 on first use. `LATTICE_ENCRYPTION_KEY` env var takes precedence.
+- `identity.json` — `{display_name, email}`. Loaded into the active Lattice as `__lattice_user_identity` (singleton row, id='singleton') on every open.
+- `db-credentials.enc` — AES-GCM-encrypted Postgres URLs by label.
+- `keys/<label>.token` — per-team bearer tokens.
+- `src/framework/user-config.ts` exports `getOrCreateMasterKey`, `readIdentity`/`writeIdentity`, `listDbCredentials`/`saveDbCredential`/`getDbCredential`/`deleteDbCredential`, `listTokens`/`readToken`/`writeToken`/`deleteToken`.
+
+**`/api/userconfig/*` GUI endpoints.** Identity get/post (mirrors identity.json into the active Lattice on save) and a catalog of databases (sibling YAML configs + saved Postgres labels).
+
+**Database panel in Project Config.** New `/api/dbconfig/*` endpoints:
+
+- `GET /api/dbconfig` — current shape (sqlite/postgres + redacted params + `teamEnabled` flag from `__lattice_team_identity`).
+- `POST /api/dbconfig/save` — Postgres saves to `db-credentials.enc` and rewrites the active YAML's `db:` to `${LATTICE_DB:<label>}`; SQLite rewrites the path in place using yaml round-tripping.
+- `POST /api/dbconfig/connect` — re-opens the active config path so the YAML rewrite takes effect.
+- `POST /api/dbconfig/test` — instantiates a probe `Lattice(url)` + `init()`; returns `{ ok: false, error }` on failure.
+- `GET /api/dbconfig/labels` — saved Postgres labels.
+
+YAML resolver in `src/config/parser.ts` honours `${LATTICE_DB:<label>}` (looks up via `getDbCredential`, throws on missing), `postgres://...` / `file:` / `:memory:` (passthrough), and the existing relative-path resolve for everything else.
+
+**Email-bound invitations + singleton team identity.**
+
+- `__lattice_users.email` becomes `NOT NULL`. Uniqueness still enforced at the route layer.
+- `__lattice_invitations.invitee_email TEXT NOT NULL` — `redeem-invite` verifies the caller's claimed email matches the bound invitee (case-insensitive) and returns `403` on mismatch.
+- New `__lattice_team_identity` singleton table (`id='singleton', team_id, team_name, creator_email, created_at`). Populated by `createTeam`. A second `createTeam` call against a DB with an existing identity row returns `409`.
+- New singleton routes:
+  - `GET /api/team` — identity + member list, or `{enabled: false}`.
+  - `DELETE /api/team` — creator-only; drops the identity row + soft-deletes the underlying `__lattice_team` row.
+  - `POST /api/team/invitations` — convenience alias for `/api/teams/:id/invitations` that resolves the id from the singleton.
+- `TeamsClient.invite()` gains a required `inviteeEmail` argument; `InviteResponse` echoes the email back. CLI `lattice teams invite` adopts `--invitee-email`.
+- The teams-gui invite endpoint (`POST /api/teams-gui/teams/:id/invitations`) requires `invitee_email` in the request body.
+
+**GUI: identity + databases panels, email-driven invite modal.**
+
+- User Config view now hosts an **Identity** panel (display_name + email, persisted via `/api/userconfig/identity`) and a **Databases** panel (local + cloud table from `/api/userconfig/databases` with switch-to action), with the existing "Cloud accounts" team-connection list moved below.
+- Create-team and join-team modals prefill display name + email from `identity.json` so operators only type the per-team bits.
+- The per-team-card "Invite" button now opens an email modal (`showInviteByEmailModal`) that threads `invitee_email` through.
+
+**GUI restyle in latticesql.com design tokens.**
+
+- `:root` lifts colors, spacing accents, and font families directly from `lattice-website`'s `tailwind.config.ts` (last-sync comment in the inline `<style>` block flags manual sync).
+- Dark theme (`--bg: #0b0d10`, `--surface: #13171b`, `--accent: #bef264` lime, `--warn: #fb923c`, `--signal: #22d3ee`). Inter for body, JetBrains Mono for code.
+- Primary buttons swap white-on-blue for dark text on lime with `--accent-glow` on hover.
+
+### Notes
+
+- The multi-team-per-cloud routes (`/api/teams`, `/api/teams/:id/*`) and the `__lattice_team` table are preserved for backwards-compatibility with PR #16's sync engine. The new `/api/team/*` singleton routes are the documented path for new code; the multi-team enumeration helpers will be removed in a follow-up once every consumer (CLI, GUI, tests) has migrated.
+
 ### Added — Lattice Teams (Phase 5: GUI integration)
 
 Fifth and final slice of **Lattice Teams**: the user-facing dev GUI (`lattice gui`) now drives the full Lattice Teams lifecycle. No new top-level sidebar — everything plugs into PR #10's existing **Project Config** and **User Config** settings views, which were placeholder "Coming soon" screens before this PR.

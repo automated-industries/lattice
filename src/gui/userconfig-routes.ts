@@ -64,9 +64,11 @@ async function tryHandler(res: ServerResponse, fn: () => Promise<void>): Promise
 }
 
 async function upsertIdentityRow(db: Lattice, identity: UserIdentity): Promise<void> {
-  const existing = (await db.get('__lattice_user_identity', 'singleton')) as
-    | { id: string; display_name: string; email: string }
-    | null;
+  const existing = (await db.get('__lattice_user_identity', 'singleton')) as {
+    id: string;
+    display_name: string;
+    email: string;
+  } | null;
   const updated_at = new Date().toISOString();
   if (existing) {
     await db.update('__lattice_user_identity', 'singleton', {
@@ -85,7 +87,9 @@ async function upsertIdentityRow(db: Lattice, identity: UserIdentity): Promise<v
 }
 
 /** Walk sibling YAMLs of the active config; return one entry per parseable lattice config. */
-function listProjectConfigs(activeConfigPath: string): { path: string; name: string; dbFile: string }[] {
+function listProjectConfigs(
+  activeConfigPath: string,
+): { path: string; name: string; dbFile: string }[] {
   const dir = dirname(activeConfigPath);
   const out: { path: string; name: string; dbFile: string }[] = [];
   if (!existsSync(dir)) return out;
@@ -118,8 +122,9 @@ export async function dispatchUserConfigRoute(
   const { pathname, method } = ctx;
 
   if (pathname === '/api/userconfig/identity' && method === 'GET') {
-    await tryHandler(res, async () => {
+    await tryHandler(res, () => {
       sendJson(res, readIdentity());
+      return Promise.resolve();
     });
     return true;
   }
@@ -138,7 +143,7 @@ export async function dispatchUserConfigRoute(
   }
 
   if (pathname === '/api/userconfig/databases' && method === 'GET') {
-    await tryHandler(res, async () => {
+    await tryHandler(res, () => {
       const projects = listProjectConfigs(ctx.configPath);
       const cloudLabels = listDbCredentials();
       sendJson(res, {
@@ -151,6 +156,7 @@ export async function dispatchUserConfigRoute(
         })),
         cloud: cloudLabels.map((label) => ({ label, type: 'postgres' as const })),
       });
+      return Promise.resolve();
     });
     return true;
   }

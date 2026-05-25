@@ -112,12 +112,7 @@ describe('teams management — end-to-end', () => {
       });
 
       // 3. Alice generates an invitation addressed to Bob
-      const invite = await alice.client.invite(
-        cloud.url,
-        aliceToken,
-        atlas.id,
-        'bob@example.com',
-      );
+      const invite = await alice.client.invite(cloud.url, aliceToken, atlas.id, 'bob@example.com');
       expect(invite.raw_token).toMatch(/^latinv_/);
       expect(invite.team_name).toBe('Atlas');
       expect(invite.invitee_email).toBe('bob@example.com');

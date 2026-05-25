@@ -135,7 +135,7 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
 export function resolveDbPath(raw: string, configDir: string): string {
   const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(raw.trim());
   if (labelMatch) {
-    const label = labelMatch[1]!;
+    const label = labelMatch[1] ?? '';
     const url = getDbCredential(label);
     if (!url) {
       throw new Error(

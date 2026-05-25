@@ -4,10 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { Lattice } from '../../src/lattice.js';
-import {
-  NATIVE_ENTITY_DEFS,
-  registerNativeEntities,
-} from '../../src/framework/native-entities.js';
+import { NATIVE_ENTITY_DEFS, registerNativeEntities } from '../../src/framework/native-entities.js';
 import { attachBlob } from '../../src/framework/blob-store.js';
 
 describe('framework native entities', () => {
@@ -36,7 +33,9 @@ describe('framework native entities', () => {
     });
 
     it('is idempotent — second call is a no-op', () => {
-      expect(() => registerNativeEntities(db)).not.toThrow();
+      expect(() => {
+        registerNativeEntities(db);
+      }).not.toThrow();
       const names = db.getRegisteredTableNames();
       expect(names.filter((n) => n === 'secrets')).toHaveLength(1);
       expect(names.filter((n) => n === 'files')).toHaveLength(1);

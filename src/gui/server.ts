@@ -524,9 +524,11 @@ async function registerTeamCloudTables(db: Lattice): Promise<void> {
  */
 async function syncUserIdentityRow(db: Lattice): Promise<void> {
   const identity = readIdentity();
-  const existing = (await db.get('__lattice_user_identity', 'singleton')) as
-    | { id: string; display_name: string; email: string }
-    | null;
+  const existing = (await db.get('__lattice_user_identity', 'singleton')) as {
+    id: string;
+    display_name: string;
+    email: string;
+  } | null;
   if (existing) {
     await db.update('__lattice_user_identity', 'singleton', {
       display_name: identity.display_name,

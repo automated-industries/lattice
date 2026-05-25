@@ -121,9 +121,15 @@ describe('framework user-config', () => {
     });
 
     it('rejects path-traversal labels', () => {
-      expect(() => writeToken('../escape', 'x')).toThrow(/Invalid label/);
-      expect(() => writeToken('foo/bar', 'x')).toThrow(/Invalid label/);
-      expect(() => writeToken('.hidden', 'x')).toThrow(/Invalid label/);
+      expect(() => {
+        writeToken('../escape', 'x');
+      }).toThrow(/Invalid label/);
+      expect(() => {
+        writeToken('foo/bar', 'x');
+      }).toThrow(/Invalid label/);
+      expect(() => {
+        writeToken('.hidden', 'x');
+      }).toThrow(/Invalid label/);
     });
 
     it('writes token files with restrictive permissions on POSIX', () => {

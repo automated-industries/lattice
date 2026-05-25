@@ -161,9 +161,7 @@ function loadCredentials(): Record<string, string> {
     const parsed = JSON.parse(plaintext) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return Object.fromEntries(
-        Object.entries(parsed as Record<string, unknown>).filter(
-          ([, v]) => typeof v === 'string',
-        ),
+        Object.entries(parsed as Record<string, unknown>).filter(([, v]) => typeof v === 'string'),
       ) as Record<string, string>;
     }
     return {};
@@ -211,8 +209,9 @@ export function saveDbCredential(label: string, url: string): void {
 export function deleteDbCredential(label: string): void {
   const creds = loadCredentials();
   if (!(label in creds)) return;
-  delete creds[label];
-  saveCredentials(creds);
+  const { [label]: _removed, ...rest } = creds;
+  void _removed;
+  saveCredentials(rest);
 }
 
 // ---------------------------------------------------------------------------

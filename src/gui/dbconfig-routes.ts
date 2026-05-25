@@ -3,11 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
-import {
-  getDbCredential,
-  saveDbCredential,
-  listDbCredentials,
-} from '../framework/user-config.js';
+import { getDbCredential, saveDbCredential, listDbCredentials } from '../framework/user-config.js';
 
 /**
  * Endpoints for the Project Config "Database" panel. They wrap three
@@ -130,7 +126,7 @@ async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo>
   const teamEnabled = await detectTeamEnabled(db);
   const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(dbLine);
   if (labelMatch) {
-    const label = labelMatch[1]!;
+    const label = labelMatch[1] ?? '';
     const url = getDbCredential(label);
     if (url) {
       const parsed = parsePostgresUrl(url);
@@ -151,7 +147,14 @@ async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo>
   if (/^postgres(ql)?:\/\//i.test(dbLine)) {
     const parsed = parsePostgresUrl(dbLine);
     return parsed
-      ? { type: 'postgres', host: parsed.host, port: parsed.port, dbname: parsed.dbname, user: parsed.user, teamEnabled }
+      ? {
+          type: 'postgres',
+          host: parsed.host,
+          port: parsed.port,
+          dbname: parsed.dbname,
+          user: parsed.user,
+          teamEnabled,
+        }
       : { type: 'postgres', teamEnabled };
   }
   return { type: 'sqlite', dbFile: basename(dbLine), teamEnabled };
@@ -308,8 +311,9 @@ export async function dispatchDbConfigRoute(
   }
 
   if (pathname === '/api/dbconfig/labels' && method === 'GET') {
-    await tryHandler(res, async () => {
+    await tryHandler(res, () => {
       sendJson(res, { labels: listDbCredentials() });
+      return Promise.resolve();
     });
     return true;
   }

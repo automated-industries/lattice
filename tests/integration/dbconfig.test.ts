@@ -2,10 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  startGuiServer,
-  type GuiServerHandle,
-} from '../../src/gui/server.js';
+import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import {
   getDbCredential,
   listDbCredentials,
@@ -57,7 +54,10 @@ afterEach(async () => {
   else process.env.LATTICE_ENCRYPTION_KEY = savedEnv.LATTICE_ENCRYPTION_KEY;
 });
 
-function writeSqliteConfig(root: string, dbName: string): { configPath: string; outputDir: string } {
+function writeSqliteConfig(
+  root: string,
+  dbName: string,
+): { configPath: string; outputDir: string } {
   const outputDir = join(root, 'context');
   mkdirSync(outputDir, { recursive: true });
   mkdirSync(join(root, 'data'), { recursive: true });
@@ -94,25 +94,26 @@ async function startGui(): Promise<{ handle: GuiServerHandle; configPath: string
   return { handle, configPath };
 }
 
-async function api<T>(
+type ApiResult = { status: number; body: Record<string, unknown> };
+async function api(
   base: string,
   path: string,
   init: { method?: string; body?: unknown } = {},
-): Promise<{ status: number; body: T }> {
+): Promise<ApiResult> {
   const res = await fetch(`${base}${path}`, {
     method: init.method ?? 'GET',
     headers: init.body ? { 'content-type': 'application/json' } : undefined,
     body: init.body ? JSON.stringify(init.body) : undefined,
   });
   const text = await res.text();
-  const body = text ? (JSON.parse(text) as T) : (null as unknown as T);
+  const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
   return { status: res.status, body };
 }
 
 describe('dbconfig endpoints', () => {
   it('GET /api/dbconfig describes a SQLite project', async () => {
     const { handle } = await startGui();
-    const r = await api<{ type: string; dbFile?: string; teamEnabled: boolean }>(handle.url, '/api/dbconfig');
+    const r = await api(handle.url, '/api/dbconfig');
     expect(r.status).toBe(200);
     expect(r.body.type).toBe('sqlite');
     expect(r.body.dbFile).toBe('project.db');
@@ -121,7 +122,7 @@ describe('dbconfig endpoints', () => {
 
   it('POST /api/dbconfig/save persists a Postgres URL encrypted + rewrites the YAML', async () => {
     const { handle, configPath } = await startGui();
-    const r = await api<{ ok: boolean; label: string }>(handle.url, '/api/dbconfig/save', {
+    const r = await api(handle.url, '/api/dbconfig/save', {
       method: 'POST',
       body: {
         type: 'postgres',
@@ -152,7 +153,7 @@ describe('dbconfig endpoints', () => {
 
   it('POST /api/dbconfig/save with SQLite rewrites the db: line', async () => {
     const { handle, configPath } = await startGui();
-    const r = await api<{ ok: boolean; path: string }>(handle.url, '/api/dbconfig/save', {
+    const r = await api(handle.url, '/api/dbconfig/save', {
       method: 'POST',
       body: { type: 'sqlite', path: './data/alt.db' },
     });
@@ -163,16 +164,24 @@ describe('dbconfig endpoints', () => {
 
   it('rejects malformed bodies with 400', async () => {
     const { handle } = await startGui();
-    const r = await api<{ error: string }>(handle.url, '/api/dbconfig/save', {
+    const r = await api(handle.url, '/api/dbconfig/save', {
       method: 'POST',
-      body: { type: 'postgres', label: 'has space!', host: 'h', dbname: 'd', user: 'u', password: 'p', port: 5432 },
+      body: {
+        type: 'postgres',
+        label: 'has space!',
+        host: 'h',
+        dbname: 'd',
+        user: 'u',
+        password: 'p',
+        port: 5432,
+      },
     });
     expect(r.status).toBe(400);
   });
 
   it('POST /api/dbconfig/test returns ok:false for an unreachable Postgres', async () => {
     const { handle } = await startGui();
-    const r = await api<{ ok: boolean; error?: string }>(handle.url, '/api/dbconfig/test', {
+    const r = await api(handle.url, '/api/dbconfig/test', {
       method: 'POST',
       body: {
         type: 'postgres',
@@ -193,13 +202,29 @@ describe('dbconfig endpoints', () => {
     const { handle } = await startGui();
     await api(handle.url, '/api/dbconfig/save', {
       method: 'POST',
-      body: { type: 'postgres', label: 'atlas', host: 'h', port: 5432, dbname: 'd', user: 'u', password: 'p' },
+      body: {
+        type: 'postgres',
+        label: 'atlas',
+        host: 'h',
+        port: 5432,
+        dbname: 'd',
+        user: 'u',
+        password: 'p',
+      },
     });
     await api(handle.url, '/api/dbconfig/save', {
       method: 'POST',
-      body: { type: 'postgres', label: 'beta', host: 'h', port: 5432, dbname: 'd', user: 'u', password: 'p' },
+      body: {
+        type: 'postgres',
+        label: 'beta',
+        host: 'h',
+        port: 5432,
+        dbname: 'd',
+        user: 'u',
+        password: 'p',
+      },
     });
-    const r = await api<{ labels: string[] }>(handle.url, '/api/dbconfig/labels');
+    const r = await api(handle.url, '/api/dbconfig/labels');
     // Second save also rewrites YAML to ${LATTICE_DB:beta}. The labels
     // endpoint reports both.
     expect(r.body.labels.sort()).toEqual(['atlas', 'beta']);
