@@ -1,12 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import { LOCAL_INTERNAL_TABLE_DEFS } from './internal-tables.js';
-import {
-  deserializeSchema,
-  diffSchemaForAdditive,
-  renderColumnType,
-  TeamsSchemaConflictError,
-  type SchemaSpec,
-} from './schema-spec.js';
+import { applySchemaSpec, TeamsSchemaConflictError, type SchemaSpec } from './schema-spec.js';
+import type { Row, WriteHookContext } from '../types.js';
 
 /**
  * Local-side client for a Lattice Teams cloud. Wraps the cloud HTTP API
@@ -77,9 +73,53 @@ export interface ShareObjectResponse {
 export interface ChangeEnvelope {
   seq: number;
   table_name: string | null;
-  op: string;
+  pk: string | null;
+  op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete';
   payload: unknown;
+  owner_user_id: string | null;
   created_at: string;
+}
+
+export interface OutboxRow {
+  id: string;
+  team_id: string;
+  table_name: string;
+  pk: string;
+  op: 'insert' | 'update' | 'delete';
+  payload_json: string | null;
+  attempts: number;
+  last_error: string | null;
+  next_attempt_at: string;
+  created_at: string;
+}
+
+export interface LocalLinkRow {
+  team_id: string;
+  table_name: string;
+  pk: string;
+  owner_user_id: string;
+  linked_at: string;
+}
+
+export interface SyncStatus {
+  team_id: string;
+  team_name: string;
+  last_change_seq: number | null;
+  outbox_depth: number;
+  outbox_failing: number;
+  dlq_depth: number;
+  local_links: number;
+}
+
+export interface PullResult {
+  applied: number;
+  last_seq: number;
+  dlq_count: number;
+}
+
+export interface PushResult {
+  pushed: number;
+  failed: number;
 }
 
 export interface SyncSharedSchemasResult {
@@ -93,11 +133,20 @@ interface ConnectionRow {
   cloud_url: string;
   my_user_id: string;
   api_token_encrypted: string;
+  last_change_seq: number | null;
   joined_at: string;
 }
 
 export class TeamsClient {
   private _tablesReady = false;
+  /**
+   * Set during a pull's envelope application so the local write-hook
+   * skips outbox insertion — otherwise B's pull of A's change would
+   * push it right back to the cloud.
+   */
+  private _isReplaying = false;
+  /** Tables for which a sync write-hook has already been registered. */
+  private readonly _hookedTables = new Set<string>();
 
   constructor(private readonly local: Lattice) {}
 
@@ -259,7 +308,7 @@ export class TeamsClient {
    * emits `schema` and `unshare` ops; Phase 4 adds row-level ops. The
    * `has_more` flag tells callers to loop until drained before sleeping.
    */
-  async pullChanges(
+  async fetchChangeBatch(
     cloudUrl: string,
     token: string,
     teamId: string,
@@ -313,30 +362,7 @@ export class TeamsClient {
    * already in sync. Throws `TeamsSchemaConflictError` on PK mismatch.
    */
   async applyCloudSchemaLocally(table: string, spec: SchemaSpec): Promise<boolean> {
-    let localColumns: string[];
-    try {
-      localColumns = await this.local.introspectColumns(table);
-    } catch {
-      localColumns = [];
-    }
-
-    if (localColumns.length === 0) {
-      // Table doesn't exist locally — register it.
-      const def = deserializeSchema(spec, this.local.getDialect());
-      await this.local.defineLate(table, def);
-      return true;
-    }
-
-    const localPk = this.local.getPrimaryKey(table);
-    const { addColumns } = diffSchemaForAdditive(table, spec, localColumns, localPk);
-    if (addColumns.length === 0) return false;
-    for (const colName of addColumns) {
-      const colSpec = spec.columns[colName];
-      if (!colSpec) continue;
-      const sqlType = renderColumnType(colSpec, this.local.getDialect());
-      await this.local.addColumn(table, colName, sqlType);
-    }
-    return true;
+    return applySchemaSpec(this.local, table, spec);
   }
 
   // ── Local persistence (encrypted API tokens) ────────────────────────────
@@ -408,6 +434,377 @@ export class TeamsClient {
       );
     }
     return matches[0] ?? null;
+  }
+
+  // ── Row link / unlink (Phase 4) ─────────────────────────────────────────
+
+  /**
+   * Link a local row to a team. Reads the current local row, POSTs the
+   * snapshot to the cloud (which creates a `__lattice_row_links` row +
+   * mirrors the data into the team's shared table + emits link/upsert
+   * envelopes), and records the link on the local side.
+   *
+   * Also ensures the sync write-hook is attached for `table` so future
+   * local writes to this row drain through the outbox to the cloud.
+   */
+  async linkRow(
+    connection: TeamConnection,
+    table: string,
+    pk: string,
+  ): Promise<{ owner_user_id: string; seq: number }> {
+    await this.ensureLocalTables();
+    const snapshot = await this.local.get(table, pk);
+    if (!snapshot) {
+      throw new Error(`Row not found in local table "${table}" with pk "${pk}"`);
+    }
+    const result = await this.fetchAuthed<{ owner_user_id: string; seq: number }>(
+      connection.cloud_url,
+      connection.api_token,
+      'POST',
+      `/api/teams/${connection.team_id}/objects/${encodeURIComponent(table)}/links`,
+      { pk, row_snapshot: snapshot },
+    );
+    await this.local.upsert('__lattice_local_links', {
+      team_id: connection.team_id,
+      table_name: table,
+      pk,
+      owner_user_id: result.owner_user_id,
+      linked_at: new Date().toISOString(),
+    });
+    this.ensureWriteHook(table);
+    return result;
+  }
+
+  /**
+   * Remove a row from the team. The cloud verifies the caller is the
+   * owner (or team creator) and emits an `unlink` envelope; the local
+   * link row is removed and the local data row is kept in place (Phase
+   * 4 v1 default — receivers' pullers handle their own removal).
+   */
+  async unlinkRow(connection: TeamConnection, table: string, pk: string): Promise<void> {
+    await this.ensureLocalTables();
+    await this.fetchAuthed<unknown>(
+      connection.cloud_url,
+      connection.api_token,
+      'DELETE',
+      `/api/teams/${connection.team_id}/objects/${encodeURIComponent(table)}/links/${encodeURIComponent(pk)}`,
+    );
+    try {
+      await this.local.delete('__lattice_local_links', {
+        team_id: connection.team_id,
+        table_name: table,
+        pk,
+      });
+    } catch {
+      // Link row may have already been removed by a concurrent pull.
+    }
+  }
+
+  /**
+   * Scan `__lattice_local_links` for tables that currently have at
+   * least one link and ensure a write-hook is registered for each.
+   * Called by CLI sync commands at session start to re-arm hooks after
+   * a process restart (write hooks are bound to the in-memory Lattice
+   * instance, not the underlying DB).
+   */
+  async attachWriteHooks(): Promise<void> {
+    await this.ensureLocalTables();
+    const links = (await this.local.query(
+      '__lattice_local_links',
+      {},
+    )) as unknown as LocalLinkRow[];
+    const tables = new Set(links.map((l) => l.table_name));
+    for (const t of tables) this.ensureWriteHook(t);
+  }
+
+  /**
+   * Register a sync write-hook for a single table. Idempotent: a second
+   * call for the same table is a no-op. Called automatically by
+   * `linkRow` and `applyCloudSchemaLocally`; manual callers can invoke
+   * directly for tables that exist before any link/share happens.
+   *
+   * The hook captures local writes to linked rows into
+   * `__lattice_team_outbox`. The replay guard (`_isReplaying`) skips
+   * captures during envelope application so pulled changes don't get
+   * pushed back to the cloud.
+   */
+  ensureWriteHook(table: string): void {
+    if (this._hookedTables.has(table)) return;
+    this._hookedTables.add(table);
+    this.local.defineWriteHook({
+      table,
+      on: ['insert', 'update', 'delete'],
+      handler: (ctx) => this.captureWrite(ctx),
+    });
+  }
+
+  private async captureWrite(ctx: WriteHookContext): Promise<void> {
+    if (this._isReplaying) return;
+    // Find every (team, owner=me) link that matches (table, pk). One
+    // outbox row per matching team.
+    const links = (await this.local.query('__lattice_local_links', {
+      filters: [
+        { col: 'table_name', op: 'eq', val: ctx.table },
+        { col: 'pk', op: 'eq', val: ctx.pk },
+      ],
+    })) as unknown as LocalLinkRow[];
+    if (links.length === 0) return;
+    // Lattice's update-hook ctx.row contains only the partial diff
+    // (missing the PK and unchanged columns), so push a full snapshot
+    // re-read from the DB. The write has already committed by the time
+    // the hook fires, so `get()` here sees the new state.
+    let payloadJson: string | null = null;
+    if (ctx.op !== 'delete') {
+      const fullRow = await this.local.get(ctx.table, ctx.pk);
+      if (!fullRow) return; // race: row already gone, skip
+      payloadJson = JSON.stringify(fullRow);
+    }
+    for (const link of links) {
+      const conn = (await this.local.get(
+        '__lattice_team_connections',
+        link.team_id,
+      )) as unknown as ConnectionRow | null;
+      if (!conn) continue;
+      // Push only rows I own. Non-owner writes to mirrored rows are a
+      // local-only divergence — the next pull will overwrite them with
+      // the cloud's (owner's) state.
+      if (conn.my_user_id !== link.owner_user_id) continue;
+      const now = new Date().toISOString();
+      await this.local.insert('__lattice_team_outbox', {
+        id: randomUUID(),
+        team_id: link.team_id,
+        table_name: ctx.table,
+        pk: ctx.pk,
+        op: ctx.op,
+        payload_json: payloadJson,
+        attempts: 0,
+        next_attempt_at: now,
+        created_at: now,
+      });
+    }
+  }
+
+  // ── Push: drain outbox → cloud (Phase 4) ────────────────────────────────
+
+  /**
+   * Drain the outbox for one team in FIFO order. Each entry POSTs to
+   * the cloud's row endpoint (or DELETEs for soft-delete ops). 2xx
+   * deletes the outbox row; failures increment `attempts` + set
+   * `next_attempt_at` to an exponential-backoff future timestamp,
+   * leaving the row for a later drain.
+   *
+   * Phase 4 v1: no separate dead-letter for outbox entries. Repeated
+   * 4xx responses just keep retrying with a growing backoff — operator
+   * surfaces them via `lattice teams status`.
+   */
+  async drainOutbox(connection: TeamConnection): Promise<PushResult> {
+    await this.ensureLocalTables();
+    const now = new Date().toISOString();
+    const rows = (await this.local.query('__lattice_team_outbox', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: connection.team_id },
+        { col: 'next_attempt_at', op: 'lte', val: now },
+      ],
+      orderBy: 'created_at',
+      orderDir: 'asc',
+    })) as unknown as OutboxRow[];
+    let pushed = 0;
+    let failed = 0;
+    for (const row of rows) {
+      try {
+        if (row.op === 'delete') {
+          await this.fetchAuthed<unknown>(
+            connection.cloud_url,
+            connection.api_token,
+            'DELETE',
+            `/api/teams/${connection.team_id}/objects/${encodeURIComponent(row.table_name)}/rows/${encodeURIComponent(row.pk)}`,
+          );
+        } else {
+          const payload = row.payload_json ? (JSON.parse(row.payload_json) as Row) : {};
+          await this.fetchAuthed<unknown>(
+            connection.cloud_url,
+            connection.api_token,
+            'POST',
+            `/api/teams/${connection.team_id}/objects/${encodeURIComponent(row.table_name)}/rows`,
+            { pk: row.pk, payload },
+          );
+        }
+        await this.local.delete('__lattice_team_outbox', row.id);
+        pushed++;
+      } catch (e) {
+        failed++;
+        const attempts = row.attempts + 1;
+        const backoffMs = Math.min(60_000, 2_000 * 2 ** Math.min(row.attempts, 5));
+        const nextAt = new Date(Date.now() + backoffMs).toISOString();
+        await this.local.update('__lattice_team_outbox', row.id, {
+          attempts,
+          last_error: (e as Error).message,
+          next_attempt_at: nextAt,
+        });
+      }
+    }
+    return { pushed, failed };
+  }
+
+  // ── Pull: cloud → local with replay guard (Phase 4) ─────────────────────
+
+  /**
+   * Pull change envelopes from the cloud and apply them to the local
+   * lattice. Loops internally until the cloud reports no more pending
+   * envelopes, so a single call drains arbitrary backlog. Bookkeeping:
+   * the local connection's `last_change_seq` advances per successful
+   * envelope; the replay guard prevents pulled writes from being re-
+   * pushed back to the cloud via the outbox.
+   *
+   * Individual envelope failures land in `__lattice_team_dlq` so one
+   * bad row doesn't stall the stream.
+   */
+  async pullChanges(connection: TeamConnection, batchSize = 500): Promise<PullResult> {
+    await this.ensureLocalTables();
+    const connRow = (await this.local.get(
+      '__lattice_team_connections',
+      connection.team_id,
+    )) as unknown as ConnectionRow | null;
+    let lastSeq = connRow?.last_change_seq ?? 0;
+    let totalApplied = 0;
+    let dlqCount = 0;
+
+    for (;;) {
+      const response = await this.fetchAuthed<{
+        envelopes: ChangeEnvelope[];
+        has_more: boolean;
+      }>(
+        connection.cloud_url,
+        connection.api_token,
+        'GET',
+        `/api/teams/${connection.team_id}/changes?since=${lastSeq.toString()}&limit=${batchSize.toString()}`,
+      );
+      if (response.envelopes.length === 0) break;
+
+      this._isReplaying = true;
+      try {
+        for (const env of response.envelopes) {
+          try {
+            await this.applyEnvelope(connection, env);
+            totalApplied++;
+          } catch (e) {
+            await this.local.insert('__lattice_team_dlq', {
+              id: randomUUID(),
+              team_id: connection.team_id,
+              envelope_json: JSON.stringify(env),
+              error: (e as Error).message,
+              created_at: new Date().toISOString(),
+            });
+            dlqCount++;
+          }
+          lastSeq = env.seq;
+        }
+      } finally {
+        this._isReplaying = false;
+      }
+
+      // Persist the cursor advance — survives crashes mid-pull.
+      await this.local.update('__lattice_team_connections', connection.team_id, {
+        last_change_seq: lastSeq,
+      });
+
+      if (!response.has_more) break;
+    }
+
+    return { applied: totalApplied, last_seq: lastSeq, dlq_count: dlqCount };
+  }
+
+  private async applyEnvelope(connection: TeamConnection, env: ChangeEnvelope): Promise<void> {
+    switch (env.op) {
+      case 'schema': {
+        if (!env.table_name || !env.payload) return;
+        await this.applyCloudSchemaLocally(env.table_name, env.payload as SchemaSpec);
+        this.ensureWriteHook(env.table_name);
+        return;
+      }
+      case 'unshare':
+        // Phase 4 v1: receivers keep their local copy of the unshared
+        // table. The row-link entries get cleaned up via individual
+        // `unlink` envelopes the cloud emits separately.
+        return;
+      case 'link': {
+        if (!env.table_name || !env.pk) return;
+        const payload = (env.payload ?? {}) as { owner_user_id?: string };
+        const ownerId = payload.owner_user_id ?? env.owner_user_id;
+        if (!ownerId) return;
+        await this.local.upsert('__lattice_local_links', {
+          team_id: connection.team_id,
+          table_name: env.table_name,
+          pk: env.pk,
+          owner_user_id: ownerId,
+          linked_at: env.created_at,
+        });
+        this.ensureWriteHook(env.table_name);
+        return;
+      }
+      case 'unlink': {
+        if (!env.table_name || !env.pk) return;
+        try {
+          await this.local.delete('__lattice_local_links', {
+            team_id: connection.team_id,
+            table_name: env.table_name,
+            pk: env.pk,
+          });
+        } catch {
+          // Link row may already be gone — idempotent.
+        }
+        // Default unlink behavior: hard-delete the row from local mirror.
+        // (`onUnlink: 'keep'` mode is a future per-team setting.)
+        try {
+          await this.local.delete(env.table_name, env.pk);
+        } catch {
+          // Row may not exist locally.
+        }
+        return;
+      }
+      case 'upsert': {
+        if (!env.table_name || !env.payload) return;
+        await this.local.upsert(env.table_name, env.payload as Row);
+        return;
+      }
+      case 'delete': {
+        if (!env.table_name || !env.pk) return;
+        try {
+          await this.local.delete(env.table_name, env.pk);
+        } catch {
+          // Row may not exist locally.
+        }
+        return;
+      }
+    }
+  }
+
+  // ── Status (Phase 4) ────────────────────────────────────────────────────
+
+  async getStatus(connection: TeamConnection): Promise<SyncStatus> {
+    await this.ensureLocalTables();
+    const connRow = (await this.local.get(
+      '__lattice_team_connections',
+      connection.team_id,
+    )) as unknown as ConnectionRow | null;
+    const outbox = (await this.local.query('__lattice_team_outbox', {
+      filters: [{ col: 'team_id', op: 'eq', val: connection.team_id }],
+    })) as unknown as OutboxRow[];
+    const dlq = await this.local.count('__lattice_team_dlq', {
+      filters: [{ col: 'team_id', op: 'eq', val: connection.team_id }],
+    });
+    const links = await this.local.count('__lattice_local_links', {
+      filters: [{ col: 'team_id', op: 'eq', val: connection.team_id }],
+    });
+    return {
+      team_id: connection.team_id,
+      team_name: connection.team_name,
+      last_change_seq: connRow?.last_change_seq ?? null,
+      outbox_depth: outbox.length,
+      outbox_failing: outbox.filter((r) => r.attempts > 0).length,
+      dlq_depth: dlq,
+      local_links: links,
+    };
   }
 
   // ── HTTP plumbing ───────────────────────────────────────────────────────

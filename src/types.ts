@@ -772,8 +772,15 @@ export interface WriteHook {
   on: ('insert' | 'update' | 'delete')[];
   /** Only fire on update when these columns changed. Omit = fire on any change. */
   watchColumns?: string[];
-  /** Handler function. Runs synchronously after the DB write. */
-  handler: (ctx: WriteHookContext) => void;
+  /**
+   * Handler function. Fires after the DB write completes.
+   *
+   * The handler may return `void` (sync, fire-and-forget) OR a Promise
+   * the write path will await. The async option exists so callers can
+   * persist side-effects (e.g. the Lattice Teams outbox) atomically with
+   * the user's `await db.insert(...)` rather than racing the response.
+   */
+  handler: (ctx: WriteHookContext) => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

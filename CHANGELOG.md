@@ -8,6 +8,56 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — Lattice Teams (Phase 4: row link/unlink + sync engine)
+
+Fourth slice of **Lattice Teams**: row-level link/unlink, write-hook capture into a local outbox, polling pull with a replay guard, and auto-unlink on member kick. End-to-end propagation of row updates between two locals now runs through one cloud.
+
+**Cloud endpoints (row layer).**
+
+- `POST /api/teams/:id/objects/:table/links` — link a row: body `{pk, row_snapshot}`. Owner is taken from the bearer token, not trusted from the client. Emits `link` + `upsert` envelopes.
+- `DELETE /api/teams/:id/objects/:table/links/:pk` — unlink. Owner or team creator only. Emits `unlink`.
+- `POST /api/teams/:id/objects/:table/rows` — push an owner-update for a linked row. Body `{pk, payload}`. Cloud rejects non-owners (403). Emits `upsert`.
+- `DELETE /api/teams/:id/objects/:table/rows/:pk` — owner-side delete. Equivalent to unlink for Phase 4 v1.
+- `DELETE /api/teams/:id/members/:userId` — extended: now also auto-unlinks every row owned by the kicked user before the membership row is removed. Each torn-down link emits an `unlink` envelope so other members' pullers drop the row from their local mirrors. Self-kick (= "leave") triggers the same path.
+
+**New cloud table.** `__lattice_row_links` — composite PK `(team_id, table_name, pk)`, `owner_user_id`, `linked_at`.
+
+**New local tables.** `__lattice_local_links` (composite PK, mirrors the cloud's view of which rows are linked + by whom), `__lattice_team_outbox` (pending pushes with `attempts`, `last_error`, `next_attempt_at` for exponential-backoff retry), `__lattice_team_dlq` (envelopes that failed to apply locally; one bad row doesn't stall the stream).
+
+**`WriteHook` API widening (small breaking change in an unreleased internal API).** `WriteHook.handler` now accepts `() => void | Promise<void>` and `Lattice._fireWriteHooks` awaits the return. Callers that need to persist side-effects (the teams outbox is the canonical case) can do so atomically with the user's `await db.insert/update/delete(...)` instead of racing the response. All six `_fireWriteHooks` callsites in `lattice.ts` are now awaited.
+
+**`TeamsClient` sync engine.**
+
+- `linkRow(connection, table, pk)` — reads the local row, POSTs the snapshot, records the link locally, ensures the write-hook is attached for `table`.
+- `unlinkRow(connection, table, pk)` — DELETEs the cloud link + drops the local link row.
+- `ensureWriteHook(table)` — idempotent per-table hook registration. The hook captures local writes to linked rows into `__lattice_team_outbox`, but only for rows the local user actually owns (non-owner writes are local-only divergence; cloud is authoritative).
+- `attachWriteHooks()` — scans `__lattice_local_links` and re-registers hooks for every linked table at session start (hooks are bound to the in-memory Lattice, not the DB).
+- `drainOutbox(connection)` — FIFO drain in `created_at` order. 2xx → delete the outbox row. Failure → bump `attempts`, set `next_attempt_at` to a future ISO timestamp (exponential backoff to 60s).
+- `pullChanges(connection)` — loops the `/changes` endpoint internally until drained. Inside the apply loop, sets `_isReplaying = true` so the write-hook skips outbox insertion — otherwise pulled envelopes would re-push immediately. Individual envelope failures land in `__lattice_team_dlq` so one bad row doesn't stall the stream. Advances `__lattice_team_connections.last_change_seq` after every successful batch.
+- `getStatus(connection)` — surfaces `last_change_seq`, outbox depth + failing count, DLQ depth, and local-link count for the team.
+- The write-hook re-fetches the full row via `lattice.get()` before queueing — Lattice's update hook fires with the partial diff (no PK, no unchanged columns), so the snapshot pushed to the cloud needs to be re-materialised.
+
+**Cloud-side schema materialisation.** `handleShareObject` (Phase 3) now also applies the schema spec to the cloud's own lattice (via the new shared `applySchemaSpec` helper extracted from `TeamsClient.applyCloudSchemaLocally`). Without this, the cloud's lattice had no table to upsert linked rows into. The applier lives in `src/teams/schema-spec.ts` so both client and server share the logic.
+
+**Replay guard correctness.** A pull that materialises Alice's link envelope on Bob's local must NOT immediately push the upsert back to the cloud — that would cause an infinite ping-pong. `TeamsClient._isReplaying` (set during `pullChanges`'s apply block) is checked in `captureWrite` before any outbox insertion.
+
+**Ownership enforcement.**
+
+- Cloud-side: 403 on row pushes from non-owners (security boundary).
+- Local-side: the write-hook checks `__lattice_local_links.owner_user_id === my_user_id_for_this_team` before queueing — non-owners' writes silently no-op (cloud will overwrite via next pull). Belt-and-suspenders.
+
+**CLI additions.** `lattice teams {link, unlink, pull, push, status}`. Each command calls `attachWriteHooks()` at startup so prior links resume tracking writes.
+
+### v1 design notes (documented)
+
+- **Phase 4 has no background polling.** Pull and push are explicit (`lattice teams pull` / `lattice teams push`). A polling loop is a transparent layer over these methods and can land in Phase 5 (GUI) or 4.5 without API changes.
+- **Cursor is single-writer.** The cloud's change-log seq generation uses `MAX(seq) + 1` under the single-Lattice-process invariant. Adding HA cloud replicas later would need a transaction-scoped advisory lock — already documented in routes.ts.
+- **`onUnlink` is "delete the mirrored row"** — `keep` mode is a future per-team setting; Phase 4 hard-deletes on every unlink envelope (with a try/catch for already-missing rows).
+
+### Added — Tests
+
+- `tests/integration/teams-sync.test.ts` — 7 cases covering the full sync flow: link → propagate → drain outbox → receiver pulls update, replay guard verified (receivers' pulls don't push back), non-owner cannot push or unlink (403), non-owner local writes don't reach the outbox, unlink propagates with hard-delete on receiver, kick auto-unlinks every owned row, outbox retry behaviour (success deletes the row; failure leaves it with bumped `attempts` for backoff).
+
 ### Added — Lattice Teams (Phase 3: object sharing + schema propagation)
 
 Third slice of **Lattice Teams**: any member can share a table with the team, and other members' locals auto-register the schema on demand.

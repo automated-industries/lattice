@@ -1,3 +1,4 @@
+import type { Lattice } from '../lattice.js';
 import type { TableDefinition } from '../types.js';
 
 /**
@@ -224,4 +225,42 @@ export class TeamsSchemaConflictError extends Error {
     super(`Schema conflict on table "${table}": ${reason}`);
     this.name = 'TeamsSchemaConflictError';
   }
+}
+
+/**
+ * Apply a SchemaSpec to a Lattice instance: register the table via
+ * `defineLate` if missing, or `addColumn` any additive cloud-only
+ * columns if it already exists. Returns true when changes were made.
+ * Throws `TeamsSchemaConflictError` on PK mismatch.
+ *
+ * Used by both the local-side `TeamsClient` (mirroring cloud-shared
+ * schemas onto the user's lattice) and the cloud-side share handler
+ * (which materialises the table on the cloud lattice so it can hold
+ * mirrored rows for link/upsert/delete propagation).
+ */
+export async function applySchemaSpec(
+  db: Lattice,
+  table: string,
+  spec: SchemaSpec,
+): Promise<boolean> {
+  let cols: string[];
+  try {
+    cols = await db.introspectColumns(table);
+  } catch {
+    cols = [];
+  }
+  if (cols.length === 0) {
+    const def = deserializeSchema(spec, db.getDialect());
+    await db.defineLate(table, def);
+    return true;
+  }
+  const pk = db.getPrimaryKey(table);
+  const { addColumns } = diffSchemaForAdditive(table, spec, cols, pk);
+  for (const colName of addColumns) {
+    const colSpec = spec.columns[colName];
+    if (!colSpec) continue;
+    const sqlType = renderColumnType(colSpec, db.getDialect());
+    await db.addColumn(table, colName, sqlType);
+  }
+  return addColumns.length > 0;
 }

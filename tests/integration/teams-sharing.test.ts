@@ -371,7 +371,7 @@ describe('teams sharing — end-to-end propagation', () => {
       await alice.client.shareObject(cloud.url, aliceToken, teamId, 'tasks', spec);
 
       // Pull changes — should see one 'schema' envelope
-      const first = await alice.client.pullChanges(cloud.url, aliceToken, teamId, 0);
+      const first = await alice.client.fetchChangeBatch(cloud.url, aliceToken, teamId, 0);
       expect(first.envelopes).toHaveLength(1);
       expect(first.envelopes[0]?.op).toBe('schema');
       expect(first.envelopes[0]?.table_name).toBe('tasks');
@@ -381,7 +381,7 @@ describe('teams sharing — end-to-end propagation', () => {
       await alice.client.unshareObject(cloud.url, aliceToken, teamId, 'tasks');
 
       // Pull since firstSeq — should see one 'unshare' envelope
-      const second = await alice.client.pullChanges(cloud.url, aliceToken, teamId, firstSeq);
+      const second = await alice.client.fetchChangeBatch(cloud.url, aliceToken, teamId, firstSeq);
       expect(second.envelopes).toHaveLength(1);
       expect(second.envelopes[0]?.op).toBe('unshare');
       expect(second.envelopes[0]?.table_name).toBe('tasks');
@@ -413,7 +413,7 @@ describe('teams sharing — end-to-end propagation', () => {
         stranger.client.listSharedObjects(cloud.url, 'lat_unknown', teamId),
       ).rejects.toMatchObject({ status: 401 });
       await expect(
-        stranger.client.pullChanges(cloud.url, 'lat_unknown', teamId, 0),
+        stranger.client.fetchChangeBatch(cloud.url, 'lat_unknown', teamId, 0),
       ).rejects.toMatchObject({ status: 401 });
     } finally {
       alice.db.close();
