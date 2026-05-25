@@ -7,7 +7,7 @@ entities:
       name: { type: text, required: true }
       email: { type: text }
       role: { type: text }
-    outputFile: context/PEOPLE.md
+    outputFile: PEOPLE.md
 
   meetings:
     fields:
@@ -16,7 +16,7 @@ entities:
       starts_at: { type: text }
       transcript: { type: text }
       summary: { type: text }
-    outputFile: context/MEETINGS.md
+    outputFile: MEETINGS.md
 
   messages:
     fields:
@@ -24,35 +24,35 @@ entities:
       channel: { type: text }
       body: { type: text }
       sent_at: { type: text }
-    outputFile: context/MESSAGES.md
+    outputFile: MESSAGES.md
 
   projects:
     fields:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
       status: { type: text }
-    outputFile: context/PROJECTS.md
+    outputFile: PROJECTS.md
 
   repositories:
     fields:
       id: { type: uuid, primaryKey: true }
       url: { type: text, required: true }
       project_id: { type: uuid, ref: projects }
-    outputFile: context/REPOS.md
+    outputFile: REPOS.md
 
   files:
     fields:
       id: { type: uuid, primaryKey: true }
       path: { type: text, required: true }
       kind: { type: text }
-    outputFile: context/FILES.md
+    outputFile: FILES.md
 
   secrets:
     fields:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
       kind: { type: text }
-    outputFile: context/SECRETS.md
+    outputFile: SECRETS.md
 
   # Junction tables (hidden from sidebar/dashboard by the GUI; editable via Data Model).
   meeting_people:
@@ -84,3 +84,57 @@ entities:
       id: { type: uuid, primaryKey: true }
       project_id: { type: uuid, ref: projects }
       file_id: { type: uuid, ref: files }
+
+# Per-row rendered context files. Each row is written to:
+#   ./context/<directoryRoot>/<id>/<FILE>.md
+# The GUI detail view reads them via /api/tables/:table/rows/:id/context.
+entityContexts:
+  people:
+    slug: '{{id}}'
+    directoryRoot: people
+    files:
+      PERSON.md:
+        source: self
+        template: default-detail
+  meetings:
+    slug: '{{id}}'
+    directoryRoot: meetings
+    files:
+      MEETING.md:
+        source: self
+        template: default-detail
+  messages:
+    slug: '{{id}}'
+    directoryRoot: messages
+    files:
+      MESSAGE.md:
+        source: self
+        template: default-detail
+  projects:
+    slug: '{{id}}'
+    directoryRoot: projects
+    files:
+      PROJECT.md:
+        source: self
+        template: default-detail
+  repositories:
+    slug: '{{id}}'
+    directoryRoot: repositories
+    files:
+      REPOSITORY.md:
+        source: self
+        template: default-detail
+  files:
+    slug: '{{id}}'
+    directoryRoot: files
+    files:
+      FILE.md:
+        source: self
+        template: default-detail
+  secrets:
+    slug: '{{id}}'
+    directoryRoot: secrets
+    files:
+      SECRET.md:
+        source: self
+        template: default-detail

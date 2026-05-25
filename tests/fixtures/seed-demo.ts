@@ -19,12 +19,14 @@ import { Lattice } from '../../src/lattice.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(__dirname, 'lattice.config.yml');
 const DB_PATH = resolve(__dirname, 'data/lattice-demo.db');
+const CONTEXT_DIR = resolve(__dirname, 'context');
 
 async function main(): Promise<void> {
   mkdirSync(dirname(DB_PATH), { recursive: true });
   rmSync(DB_PATH, { force: true });
   rmSync(`${DB_PATH}-shm`, { force: true });
   rmSync(`${DB_PATH}-wal`, { force: true });
+  rmSync(CONTEXT_DIR, { recursive: true, force: true });
 
   const db = new Lattice({ config: CONFIG_PATH });
   await db.init();
@@ -200,8 +202,11 @@ async function main(): Promise<void> {
     await db.link('project_files', { project_id: projectIds[pr], file_id: fileIds[f] });
   }
 
+  // Render per-row context markdown so the GUI detail page has something to show.
+  const result = await db.render(CONTEXT_DIR);
   db.close();
   console.log(`Seeded ${DB_PATH}`);
+  console.log(`Rendered ${String(result.filesWritten.length)} context files under ${CONTEXT_DIR}`);
 }
 
 main().catch((e: unknown) => {

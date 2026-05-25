@@ -16,3 +16,4 @@ docs-generated/
 CLAUDE.md
 AGENTS.md
 .claude/
+tests/fixtures/context/

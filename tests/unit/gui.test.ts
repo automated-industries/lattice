@@ -333,6 +333,48 @@ describe('GUI server', () => {
     );
   });
 
+  it('serves rendered context files for a row via /context', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // Insert an `agents` row whose slug matches the rendered alpha fixture.
+    const { id } = (await (
+      await fetch(`${server.url}/api/tables/agents/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'alpha', name: 'Alpha' }),
+      })
+    ).json()) as { id: string };
+
+    const ctx = (await fetch(`${server.url}/api/tables/agents/rows/${id}/context`).then((r) =>
+      r.json(),
+    )) as { files: { name: string; path: string; content: string }[] };
+
+    const agentFile = ctx.files.find((f) => f.name === 'AGENT.md');
+    expect(agentFile?.content).toContain('Alpha');
+    expect(agentFile?.path).toMatch(/^agents\/alpha\/AGENT\.md$/);
+  });
+
+  it('returns empty files for tables with no entityContext', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const { id } = (await (
+      await fetch(`${server.url}/api/tables/tasks/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'do thing' }),
+      })
+    ).json()) as { id: string };
+
+    const ctx = (await fetch(`${server.url}/api/tables/tasks/rows/${id}/context`).then((r) =>
+      r.json(),
+    )) as { files: unknown[] };
+    expect(ctx.files).toEqual([]);
+  });
+
   it('rejects unknown tables and non-junctions for link/unlink', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });

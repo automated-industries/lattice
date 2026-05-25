@@ -257,6 +257,30 @@ export const guiAppHtml = `<!doctype html>
       border: 1px solid var(--border-strong); border-radius: 6px; background: white;
     }
     .detail dl.editing textarea { min-height: 60px; resize: vertical; }
+
+    /* ── Rendered context (per-row .md from Lattice) ──── */
+    .context-block {
+      margin-top: 24px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px;
+      max-width: 900px; box-shadow: var(--shadow);
+    }
+    .context-file { padding: 12px 18px; border-bottom: 1px solid var(--border); }
+    .context-file:last-child { border-bottom: none; }
+    .context-file-head {
+      display: flex; align-items: baseline; gap: 8px;
+      font-size: 12.5px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+    .context-file-head .context-file-name { color: var(--text); font-weight: 600; text-transform: none; letter-spacing: 0; }
+    .context-file pre {
+      margin: 0; padding: 12px; background: #fafbfc;
+      border: 1px solid var(--border); border-radius: 6px;
+      font-family: ui-monospace, 'SF Mono', 'Menlo', Consolas, monospace;
+      font-size: 12.5px; line-height: 1.55;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .context-empty { padding: 16px 18px; color: var(--text-muted); font-style: italic; }
   </style>
 </head>
 <body>
@@ -764,7 +788,12 @@ export const guiAppHtml = `<!doctype html>
               '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
               '<div class="actions">' + actions + '</div>' +
             '</div>' +
-            '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>';
+            '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
+            '<div id="row-context"></div>';
+
+          // Skip the context fetch while editing — the just-PATCHed row may
+          // not have re-rendered yet, so we'd flash stale content.
+          if (!editing) loadRowContext(tableName, id);
 
           if (editing) {
             document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
@@ -804,6 +833,38 @@ export const guiAppHtml = `<!doctype html>
         paint(false);
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Row context (Lattice-rendered markdown files)
+    // ────────────────────────────────────────────────────────────
+    function loadRowContext(tableName, id) {
+      var mount = document.getElementById('row-context');
+      if (!mount) return;
+      fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' +
+                encodeURIComponent(id) + '/context').then(function (data) {
+        if (!data.files || data.files.length === 0) {
+          mount.innerHTML = '<div class="context-block"><div class="context-empty">' +
+            'No rendered context for this row — define an entityContext for "' +
+            escapeHtml(tableName) + '" in lattice.config.yml or run \`lattice render\`.' +
+            '</div></div>';
+          return;
+        }
+        var blocks = data.files.map(function (f) {
+          var body = f.content
+            ? '<pre>' + escapeHtml(f.content) + '</pre>'
+            : '<div class="context-empty">File not rendered yet (run \`lattice render\`).</div>';
+          return '<div class="context-file">' +
+            '<div class="context-file-head">' +
+              '<span class="context-file-name">' + escapeHtml(f.name) + '</span>' +
+              '<span>· ' + escapeHtml(f.path) + '</span>' +
+            '</div>' + body + '</div>';
+        }).join('');
+        mount.innerHTML = '<div class="context-block">' + blocks + '</div>';
+      }).catch(function (err) {
+        mount.innerHTML = '<div class="context-block"><div class="context-empty">' +
+          'Failed to load rendered context: ' + escapeHtml(err.message) + '</div></div>';
       });
     }
 

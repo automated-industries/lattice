@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile } from '../config/parser.js';
+import type { EntityContextDefinition } from '../schema/entity-context.js';
 import {
   buildGuiGraph,
   getGuiEntities,
@@ -120,7 +121,42 @@ async function entitiesWithCounts(
 }
 
 const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
+const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
+
+interface ContextFile {
+  name: string;
+  path: string;
+  content: string;
+}
+
+/**
+ * Read the Lattice-rendered context files for a single row. Returns the
+ * declared files for the row's entity context (relative to `outputDir`),
+ * with their content if they exist on disk. Files that haven't been
+ * rendered yet come back with `content: ''` and `exists: false`-equivalent
+ * (empty content; caller can infer from `path`).
+ */
+function readRowContext(
+  outputDir: string,
+  def: EntityContextDefinition,
+  row: Record<string, unknown>,
+): ContextFile[] {
+  const slug = def.slug(row);
+  const directoryRoot = def.directoryRoot ?? '';
+  const entityDir = resolve(outputDir, directoryRoot, slug);
+  // Defence in depth: the slug must not escape outputDir.
+  const resolvedBase = resolve(outputDir);
+  if (entityDir !== resolvedBase && !entityDir.startsWith(resolvedBase + sep)) {
+    throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
+  }
+  return Object.keys(def.files).map((filename) => {
+    const absPath = join(entityDir, filename);
+    const relPath = join(directoryRoot, slug, filename);
+    if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
+    return { name: filename, path: relPath, content: readFileSync(absPath, 'utf8') };
+  });
+}
 
 export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
   const configPath = resolve(options.configPath);
@@ -144,6 +180,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       .map((t) => t.name),
   );
 
+  // Per-table entity context defs (slug fn + declared files). Used by the
+  // /context route to read the row's rendered markdown off disk.
+  const entityContextByTable = new Map<string, EntityContextDefinition>();
+  for (const { table, definition } of parsed.entityContexts) {
+    entityContextByTable.set(table, definition);
+  }
+
   const server = createServer((req, res) => {
     void (async () => {
       try {
@@ -166,6 +209,39 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (method === 'GET' && pathname === '/api/graph') {
           sendJson(res, buildGuiGraph(configPath, outputDir));
+          return;
+        }
+
+        // ── Row context: /api/tables/:table/rows/:id/context ──────────────
+        // Matched BEFORE the generic rows route so the `/context` suffix
+        // doesn't get treated as part of the id.
+        const ctxMatch = CONTEXT_PATH.exec(pathname);
+        if (ctxMatch) {
+          const [, rawCtxTable, rawCtxId] = ctxMatch;
+          const ctxTable = decodeURIComponent(rawCtxTable ?? '');
+          const ctxId = decodeURIComponent(rawCtxId ?? '');
+          if (method !== 'GET') {
+            sendJson(res, { error: `Method ${method} not allowed` }, 405);
+            return;
+          }
+          if (!validTables.has(ctxTable)) {
+            sendJson(res, { error: `Unknown table: ${ctxTable}` }, 400);
+            return;
+          }
+          const def = entityContextByTable.get(ctxTable);
+          if (!def) {
+            // No entityContext declared for this table — return an empty list
+            // rather than 404 so the detail view can show a clean "no rendered
+            // context" message instead of an error.
+            sendJson(res, { files: [] });
+            return;
+          }
+          const row = await db.get(ctxTable, ctxId);
+          if (row === null) {
+            sendJson(res, { error: 'Row not found' }, 404);
+            return;
+          }
+          sendJson(res, { files: readRowContext(outputDir, def, row) });
           return;
         }
 
