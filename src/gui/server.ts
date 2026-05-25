@@ -175,6 +175,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   mkdirSync(dirname(parsed.dbPath), { recursive: true });
 
   const db = new Lattice({ config: configPath });
+  // GUI-only meta table: per-entity icon overrides edited from the browser.
+  // Lives alongside the user's tables but isn't in their config — never
+  // appears in /api/entities (which derives from the YAML).
+  db.define('_lattice_gui_meta', {
+    columns: {
+      entity_name: 'TEXT PRIMARY KEY',
+      icon: 'TEXT',
+      updated_at: "TEXT DEFAULT (datetime('now'))",
+    },
+    primaryKey: 'entity_name',
+    render: () => '',
+    outputFile: '.lattice-gui/meta.md',
+  });
   await db.init();
 
   // Look up which tables actually exist in the config (and which are junctions)
@@ -222,6 +235,49 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (method === 'GET' && pathname === '/api/graph') {
           sendJson(res, buildGuiGraph(configPath, outputDir));
+          return;
+        }
+
+        // ── GUI-only metadata (per-entity icon overrides) ─────────────────
+        if (method === 'GET' && pathname === '/api/gui-meta') {
+          const rows = (await db.query('_lattice_gui_meta', {})) as {
+            entity_name: string;
+            icon: string | null;
+          }[];
+          const out: Record<string, { icon: string }> = {};
+          for (const r of rows) {
+            if (r.icon) out[r.entity_name] = { icon: r.icon };
+          }
+          sendJson(res, out);
+          return;
+        }
+        if (method === 'PUT' && pathname.startsWith('/api/gui-meta/')) {
+          const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
+          if (!validTables.has(entityName)) {
+            sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
+            return;
+          }
+          const body = (await readJsonBody(req)) as { icon?: unknown };
+          if (typeof body.icon !== 'string') {
+            sendJson(res, { error: 'icon must be a string' }, 400);
+            return;
+          }
+          // Upsert. Lattice's `insert` filters to schema columns and handles
+          // INSERT-or-error semantics; for upsert we check existence first.
+          const existing = await db.get('_lattice_gui_meta', entityName);
+          if (existing) {
+            await db.update('_lattice_gui_meta', entityName, {
+              icon: body.icon,
+              updated_at: new Date().toISOString(),
+            });
+          } else {
+            await db.insert('_lattice_gui_meta', {
+              entity_name: entityName,
+              icon: body.icon,
+              updated_at: new Date().toISOString(),
+            });
+          }
+          sendJson(res, { ok: true });
           return;
         }
 

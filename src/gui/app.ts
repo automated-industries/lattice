@@ -94,6 +94,11 @@ export const guiAppHtml = `<!doctype html>
       margin-bottom: 18px;
     }
     .view-header .entity-icon { font-size: 22px; }
+    button.entity-icon.icon-edit {
+      background: transparent; border: none; padding: 2px 6px;
+      cursor: pointer; border-radius: 6px; line-height: 1;
+    }
+    button.entity-icon.icon-edit:hover { background: var(--row-hover); }
     .view-header h1 { font-size: 22px; font-weight: 600; margin: 0; }
     .view-header .count { color: var(--text-muted); font-size: 13px; margin-left: 4px; }
 
@@ -347,10 +352,18 @@ export const guiAppHtml = `<!doctype html>
       kind:      'Kind',
     };
 
-    var state = { entities: null, rowCache: {} };
+    // Generic fallback icon when the user hasn't set one and the entity
+    // name isn't in the built-in DISPLAY map.
+    var DEFAULT_ICON = '📋';
+
+    var state = { entities: null, rowCache: {}, iconOverrides: {} };
 
     function displayFor(name) {
-      return DISPLAY[name] || { label: titleCase(name), icon: '·' };
+      var override = state.iconOverrides[name];
+      var base = DISPLAY[name];
+      var icon = (override && override.icon) || (base && base.icon) || DEFAULT_ICON;
+      var label = (base && base.label) || titleCase(name);
+      return { label: label, icon: icon };
     }
     function titleCase(s) {
       return s.replace(/_/g, ' ').replace(/\\b\\w/g, function (c) { return c.toUpperCase(); });
@@ -392,13 +405,26 @@ export const guiAppHtml = `<!doctype html>
     // Boot
     // ────────────────────────────────────────────────────────────
     function init() {
-      fetchJson('/api/entities').then(function (data) {
-        state.entities = data;
+      Promise.all([
+        fetchJson('/api/entities'),
+        fetchJson('/api/gui-meta').catch(function () { return {}; }),
+      ]).then(function (results) {
+        state.entities = results[0];
+        state.iconOverrides = results[1] || {};
         renderSidebar();
         renderRoute();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    /** Reload icon overrides after a save, then re-render the current view. */
+    function refreshIcons() {
+      return fetchJson('/api/gui-meta').then(function (data) {
+        state.iconOverrides = data || {};
+        renderSidebar();
+        renderRoute();
       });
     }
 
@@ -709,7 +735,8 @@ export const guiAppHtml = `<!doctype html>
 
         content.innerHTML =
           '<div class="view-header">' +
-            '<span class="entity-icon">' + d.icon + '</span>' +
+            '<button class="entity-icon icon-edit" data-edit-icon="' + escapeHtml(tableName) +
+              '" title="Change icon">' + d.icon + '</button>' +
             '<h1>' + escapeHtml(d.label) + (viewMode === 'trash' ? ' · Trash' : '') + '</h1>' +
             '<span class="count">' + rows.length + ' row' + (rows.length === 1 ? '' : 's') + '</span>' +
             trashToggle +
@@ -725,6 +752,12 @@ export const guiAppHtml = `<!doctype html>
             renderTable(content, tableName);
           });
         }
+
+        content.querySelectorAll('[data-edit-icon]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            openIconEditor(btn.getAttribute('data-edit-icon'));
+          });
+        });
 
         if (viewMode === 'live') document.getElementById('inline-create').addEventListener('click', function () {
           var values = collectFormValues(content.querySelector('tr.create-row'));
@@ -867,7 +900,8 @@ export const guiAppHtml = `<!doctype html>
           content.innerHTML =
             '<a class="breadcrumb" href="#/objects/' + tableName + '">← ' + escapeHtml(d.label) + '</a>' +
             '<div class="view-header">' +
-              '<span class="entity-icon">' + d.icon + '</span>' +
+              '<button class="entity-icon icon-edit" data-edit-icon="' + escapeHtml(tableName) +
+                '" title="Change icon">' + d.icon + '</button>' +
               '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
               '<div class="actions">' + actions + '</div>' +
             '</div>' +
@@ -877,6 +911,12 @@ export const guiAppHtml = `<!doctype html>
           // Skip the context fetch while editing — the just-PATCHed row may
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
+
+          content.querySelectorAll('[data-edit-icon]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              openIconEditor(btn.getAttribute('data-edit-icon'));
+            });
+          });
 
           if (editing) {
             document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
@@ -916,6 +956,32 @@ export const guiAppHtml = `<!doctype html>
         paint(false);
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Per-entity icon editor (persisted to /api/gui-meta)
+    // ────────────────────────────────────────────────────────────
+    function openIconEditor(entityName) {
+      var current = displayFor(entityName).icon;
+      var body =
+        '<p style="margin:0 0 12px;color:var(--text-muted);font-size:13px;">' +
+          'Paste a single emoji or short character. Leave blank to reset to the default.' +
+        '</p>' +
+        '<div class="field">' +
+          '<label>Icon for ' + escapeHtml(entityName) + '</label>' +
+          '<input type="text" name="icon" maxlength="8" value="' + escapeHtml(current) + '" autofocus />' +
+        '</div>';
+      showModal('Edit icon', body, {
+        primaryLabel: 'Save',
+        onSubmit: function (scope) {
+          var val = scope.querySelector('input[name="icon"]').value.trim();
+          return fetchJson('/api/gui-meta/' + encodeURIComponent(entityName), {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ icon: val }),
+          }).then(refreshIcons);
+        },
       });
     }
 
