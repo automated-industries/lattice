@@ -8,6 +8,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — Lattice Teams (Phase 2: team management)
+
+Second slice of **Lattice Teams**: identity + team-management endpoints on top of Phase 1's auth scaffolding. `lattice teams <subcommand>` now drives the full create → invite → join → leave/destroy lifecycle.
+
+**Cloud-side endpoints:**
+
+- `POST /api/auth/register` — bootstrap-only (403 once any user exists); creates first user + initial token.
+- `POST /api/auth/redeem-invite` — public; takes `{invite_token, email, name}`, validates + creates a fresh user (one per redemption — v1 limitation, documented below), adds to the team, issues a permanent API token.
+- `GET /api/auth/me` — current user info (handy for debugging + the create-team flow).
+- `POST /api/auth/tokens` — mint additional tokens for the caller.
+- `DELETE /api/auth/tokens/:id` — revoke (idempotent; only the owner can revoke).
+- `POST /api/teams` — caller becomes creator.
+- `GET /api/teams` — teams I'm in.
+- `DELETE /api/teams/:id` — soft-delete (creator only).
+- `GET /api/teams/:id/members` — member-only.
+- `POST /api/teams/:id/invitations` — creator only; returns `latinv_`-prefixed token + expiry.
+- `DELETE /api/teams/:id/members/:userId` — creator can kick others; any member can kick themselves (= leave); creators cannot kick themselves (must destroy the team instead).
+
+**New cloud-side tables:** `__lattice_team`, `__lattice_team_members` (composite PK), `__lattice_invitations`. **New local-side table:** `__lattice_team_connections` (per-team metadata + encrypted API token; Phase 2 currently stores plaintext — encryption-at-rest follow-up captured as a TODO).
+
+**`TeamsClient` (`src/teams/client.ts`)** — local-side orchestrator wrapping the cloud HTTP API + local-table persistence. Idempotent table bootstrap via the new defineLate idempotency. Throws a typed `TeamsHttpError` carrying the response status so callers can branch on auth/permission failures.
+
+**CLI:** `lattice teams <subcommand>` for `register | create | join | list | members | invite | leave | destroy`. Subcommands that operate on an existing team (members/invite/leave/destroy) look the team up locally via `--team <name>` or `--team-id <uuid>`; the create/join flow takes `--cloud --token --name [--email]` and persists the connection after the cloud call returns.
+
+**Invitation tokens** use a distinct `latinv_` prefix and 24-byte (192-bit) entropy, hashed with SHA-256 like API tokens. The bearer-extractor's `lat_` prefix check rejects them — invitation tokens are exchanged via the redeem endpoint, never used as bearer tokens.
+
+**`defineLate` is now idempotent.** A second call for an already-registered table is a no-op (CREATE TABLE IF NOT EXISTS handles the DB side; this skip avoids the SchemaManager throw). Lets `TeamsClient` bootstrap its internal tables on every session start without explicit checks.
+
+### v1 limitations (documented for follow-ups)
+
+- **Every invitation redemption creates a fresh cloud user.** A single human joining two teams on the same cloud ends up with two `user_id`s and two API tokens. Email-based identity merging is a Phase 5-or-later refinement.
+- **Local API tokens are stored in plaintext.** The `__lattice_team_connections.api_token_encrypted` column name reserves the slot for encryption-at-rest; the integration with Lattice's existing AES-256-GCM layer (currently scoped to entity contexts) will land in a follow-up.
+
+### Added — Tests
+
+- `tests/integration/teams-management.test.ts` — 5 cases: full create → invite → join → list → leave → destroy round-trip across two locals + one cloud (one in-process), plus self-kick blocked for creators, invitation tokens rejected as bearers, token revocation, and `findConnectionByName` ambiguity error.
+
 ### Added — Lattice Teams (Phase 1: server mode + bearer auth)
 
 First slice of the **Lattice Teams** feature: a single Postgres- or SQLite-backed lattice instance can now boot in **team-cloud server mode**, exposing the HTTP API over a non-localhost interface with bearer-token authentication. The rest of the feature (team management, object sharing, row link/unlink, sync engine, GUI integration) lands in subsequent phases.

@@ -16,6 +16,7 @@ import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from '../teams/internal-tables.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
+import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -318,16 +319,31 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const method = req.method ?? 'GET';
 
         // ── Team-cloud auth gate ──────────────────────────────────────────
-        // Phase 1: every route requires a valid bearer token. Public
-        // endpoints (auth/register, auth/tokens) land in Phase 2 and will
-        // need an allowlist here.
+        // Most routes require a valid bearer token. A small allowlist of
+        // bootstrap/redemption endpoints (defined in routes.ts) is exempt
+        // so a new operator can register and invitees can redeem invites
+        // before they have a token.
+        let authContext: AuthContext | null = null;
         if (teamCloud) {
-          const ctx = await authenticate(req, active.db);
-          if (!ctx) {
-            sendJson(res, { error: 'Unauthorized' }, 401);
-            return;
+          if (!UNAUTHENTICATED_TEAM_PATHS.has(pathname)) {
+            authContext = await authenticate(req, active.db);
+            if (!authContext) {
+              sendJson(res, { error: 'Unauthorized' }, 401);
+              return;
+            }
+            (req as RequestWithAuth).authContext = authContext;
           }
-          (req as RequestWithAuth).authContext = ctx;
+        }
+
+        // ── Team-cloud route dispatch ─────────────────────────────────────
+        if (teamCloud) {
+          const handled = await dispatchTeamRoute(req, res, {
+            db: active.db,
+            authContext,
+            pathname,
+            method,
+          });
+          if (handled) return;
         }
 
         // ── HTML + read-only data routes ──────────────────────────────────

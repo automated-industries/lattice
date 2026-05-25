@@ -12,9 +12,8 @@ import type { TableDefinition } from '../types.js';
  * with empty render functions and out-of-the-way outputFiles so they
  * don't pollute the user's rendered context output.
  *
- * Phase 1 covers only the rows the auth middleware needs to validate a
- * bearer token. Teams, members, shared objects, row links, and the change
- * log are added in later phases.
+ * Phase 2 adds teams, members, and invitations. Shared objects, row
+ * links, and the change log come in Phases 3 and 4.
  */
 export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
   __lattice_users: {
@@ -41,5 +40,73 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
     },
     render: () => '',
     outputFile: '.lattice-teams/tokens.md',
+  },
+  __lattice_team: {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      name: 'TEXT NOT NULL',
+      created_by_user_id: 'TEXT NOT NULL',
+      created_at: 'TEXT NOT NULL',
+      updated_at: 'TEXT NOT NULL',
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '.lattice-teams/teams.md',
+  },
+  __lattice_team_members: {
+    columns: {
+      team_id: 'TEXT NOT NULL',
+      user_id: 'TEXT NOT NULL',
+      role: "TEXT NOT NULL CHECK (role IN ('creator', 'member'))",
+      joined_at: 'TEXT NOT NULL',
+    },
+    primaryKey: ['team_id', 'user_id'],
+    render: () => '',
+    outputFile: '.lattice-teams/members.md',
+  },
+  __lattice_invitations: {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      team_id: 'TEXT NOT NULL',
+      token_hash: 'TEXT NOT NULL UNIQUE',
+      invited_by_user_id: 'TEXT NOT NULL',
+      created_at: 'TEXT NOT NULL',
+      expires_at: 'TEXT',
+      redeemed_at: 'TEXT',
+      redeemed_by_user_id: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '.lattice-teams/invitations.md',
+  },
+};
+
+/**
+ * Local-side internal tables for the Lattice Teams feature.
+ *
+ * Registered on local lattice instances by `TeamsClient` when a user
+ * joins their first team (idempotent on subsequent joins). Carries the
+ * connection metadata + per-team encrypted API token; the pull cursor
+ * (`last_change_seq`) is reserved for Phase 4.
+ *
+ * The plan called for `team_id` as PK; that holds here because team_ids
+ * are UUIDs and globally unique. A user who joins the same team twice
+ * (e.g. left + rejoined) overwrites the existing row via upsert.
+ */
+export const LOCAL_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
+  __lattice_team_connections: {
+    columns: {
+      team_id: 'TEXT PRIMARY KEY',
+      team_name: 'TEXT NOT NULL',
+      cloud_url: 'TEXT NOT NULL',
+      my_user_id: 'TEXT NOT NULL',
+      api_token_encrypted: 'TEXT NOT NULL',
+      last_change_seq: 'INTEGER',
+      joined_at: 'TEXT NOT NULL',
+    },
+    // Override Lattice's default `id` PK convention — this table is
+    // keyed by team_id so a duplicate-join just upserts.
+    primaryKey: 'team_id',
+    render: () => '',
+    outputFile: '.lattice-teams/connections.md',
   },
 };
