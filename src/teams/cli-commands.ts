@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { Lattice } from '../lattice.js';
 import { TeamsClient, TeamsHttpError, type TeamConnection } from './client.js';
+import { serializeSchema, type SchemaSpec } from './schema-spec.js';
 
 /**
  * Argument shape for `lattice teams <subcommand>`. Parsed by the top-
@@ -17,6 +18,7 @@ export interface TeamsCliArgs {
   teamId?: string | undefined;
   expires?: number | undefined;
   userId?: string | undefined;
+  table?: string | undefined;
 }
 
 const TEAMS_USAGE = [
@@ -31,6 +33,10 @@ const TEAMS_USAGE = [
   '  invite     Generate an invitation token (creator only; --team)',
   '  leave      Leave a team (--team)',
   '  destroy    Soft-delete a team (creator only; --team)',
+  '  share      Share a local table with a team (--team --table)',
+  '  unshare    Stop sharing a table (--team --table)',
+  '  shared     List shared objects on a team (--team)',
+  '  sync       Apply cloud-shared schemas to the local lattice (--team)',
   '',
   'Options:',
   '  --cloud <url>          Cloud server URL (e.g. http://localhost:4317)',
@@ -39,6 +45,7 @@ const TEAMS_USAGE = [
   '  --name <name>          Display name (for register / join) OR team name (for create)',
   '  --team <name>          Team name (resolves to a local connection)',
   '  --team-id <uuid>       Team id (disambiguates duplicate names)',
+  '  --table <name>         Table name (for share / unshare)',
   '  --expires <hours>      Invitation expiry in hours (default: 168 = 7 days)',
   '  --user-id <uuid>       User id to kick (with members --kick)',
   '  --config, -c <path>    Local lattice config (default: ./lattice.config.yml)',
@@ -76,6 +83,18 @@ export async function runTeamsCommand(args: TeamsCliArgs): Promise<void> {
         return;
       case 'destroy':
         await runDestroy(args);
+        return;
+      case 'share':
+        await runShare(args);
+        return;
+      case 'unshare':
+        await runUnshare(args);
+        return;
+      case 'shared':
+        await runShared(args);
+        return;
+      case 'sync':
+        await runSync(args);
         return;
       default:
         console.error(`Unknown teams subcommand: ${sub}`);
@@ -282,6 +301,92 @@ async function runDestroy(args: TeamsCliArgs): Promise<void> {
     await client.deleteTeam(conn.cloud_url, conn.api_token, conn.team_id);
     await client.deleteConnection(conn.team_id);
     console.log(`Destroyed team "${conn.team_name}".`);
+  } finally {
+    db.close();
+  }
+}
+
+async function runShare(args: TeamsCliArgs): Promise<void> {
+  const table = requireArg(args, 'table', 'table');
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    const conn = await resolveConnection(client, args);
+    const columns = db.getRegisteredColumns(table);
+    if (!columns) {
+      throw new Error(
+        `Table "${table}" is not registered in this local lattice. Ensure it's declared in your config and that you ran the share command from the right project directory.`,
+      );
+    }
+    const pkCols = db.getPrimaryKey(table);
+    const spec: SchemaSpec = serializeSchema({ columns, render: () => '', outputFile: '' }, pkCols);
+    const result = await client.shareObject(
+      conn.cloud_url,
+      conn.api_token,
+      conn.team_id,
+      table,
+      spec,
+    );
+    console.log(
+      `Shared "${table}" with "${conn.team_name}" (schema_version ${result.schema_version.toString()}, seq ${result.seq.toString()}).`,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+async function runUnshare(args: TeamsCliArgs): Promise<void> {
+  const table = requireArg(args, 'table', 'table');
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    const conn = await resolveConnection(client, args);
+    await client.unshareObject(conn.cloud_url, conn.api_token, conn.team_id, table);
+    console.log(`Unshared "${table}" from "${conn.team_name}".`);
+  } finally {
+    db.close();
+  }
+}
+
+async function runShared(args: TeamsCliArgs): Promise<void> {
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    const conn = await resolveConnection(client, args);
+    const objects = await client.listSharedObjects(conn.cloud_url, conn.api_token, conn.team_id);
+    if (objects.length === 0) {
+      console.log(`Team "${conn.team_name}" has no shared objects.`);
+      return;
+    }
+    for (const obj of objects) {
+      const colCount = Object.keys(obj.schema_spec.columns).length;
+      console.log(
+        `${obj.table.padEnd(24)}  v${obj.schema_version.toString().padEnd(3)}  ${colCount.toString().padStart(3)} cols  updated ${obj.updated_at}`,
+      );
+    }
+  } finally {
+    db.close();
+  }
+}
+
+async function runSync(args: TeamsCliArgs): Promise<void> {
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    const conn = await resolveConnection(client, args);
+    const result = await client.syncSharedSchemas(conn);
+    if (result.applied.length === 0 && result.conflicts.length === 0) {
+      console.log(`Already up to date with "${conn.team_name}".`);
+    }
+    for (const a of result.applied) {
+      console.log(`✓ ${a.table}  (schema_version ${a.schema_version.toString()})`);
+    }
+    for (const c of result.conflicts) {
+      console.error(`✗ ${c.table}: ${c.reason}`);
+    }
+    if (result.conflicts.length > 0) {
+      process.exit(1);
+    }
   } finally {
     db.close();
   }

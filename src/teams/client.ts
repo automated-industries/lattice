@@ -1,5 +1,12 @@
 import type { Lattice } from '../lattice.js';
 import { LOCAL_INTERNAL_TABLE_DEFS } from './internal-tables.js';
+import {
+  deserializeSchema,
+  diffSchemaForAdditive,
+  renderColumnType,
+  TeamsSchemaConflictError,
+  type SchemaSpec,
+} from './schema-spec.js';
 
 /**
  * Local-side client for a Lattice Teams cloud. Wraps the cloud HTTP API
@@ -49,6 +56,35 @@ export interface TeamConnection {
   my_user_id: string;
   api_token: string;
   joined_at: string;
+}
+
+export interface SharedObjectSummary {
+  table: string;
+  schema_version: number;
+  schema_spec: SchemaSpec;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ShareObjectResponse {
+  table: string;
+  schema_version: number;
+  seq: number;
+  schema_spec: SchemaSpec;
+}
+
+export interface ChangeEnvelope {
+  seq: number;
+  table_name: string | null;
+  op: string;
+  payload: unknown;
+  created_at: string;
+}
+
+export interface SyncSharedSchemasResult {
+  applied: { table: string; schema_version: number }[];
+  conflicts: { table: string; reason: string }[];
 }
 
 interface ConnectionRow {
@@ -160,6 +196,147 @@ export class TeamsClient {
     token: string,
   ): Promise<{ user: { id: string; email: string | null; name: string | null } }> {
     return this.fetchAuthed(cloudUrl, token, 'GET', '/api/auth/me');
+  }
+
+  // ── Object sharing (Phase 3) ────────────────────────────────────────────
+
+  /**
+   * Share a table with the team. Re-sharing the same table bumps its
+   * `schema_version` and replaces the stored spec — useful for evolving
+   * shared schemas additively.
+   */
+  async shareObject(
+    cloudUrl: string,
+    token: string,
+    teamId: string,
+    table: string,
+    schemaSpec: SchemaSpec,
+  ): Promise<ShareObjectResponse> {
+    return this.fetchAuthed<ShareObjectResponse>(
+      cloudUrl,
+      token,
+      'POST',
+      `/api/teams/${teamId}/objects`,
+      { table, schema_spec: schemaSpec },
+    );
+  }
+
+  /**
+   * Stop sharing a table. Only the original sharer or the team creator
+   * can call this. The cloud soft-deletes the `__lattice_shared_objects`
+   * row and appends an `unshare` envelope to the change log.
+   */
+  async unshareObject(
+    cloudUrl: string,
+    token: string,
+    teamId: string,
+    table: string,
+  ): Promise<void> {
+    await this.fetchAuthed<unknown>(
+      cloudUrl,
+      token,
+      'DELETE',
+      `/api/teams/${teamId}/objects/${encodeURIComponent(table)}`,
+    );
+  }
+
+  async listSharedObjects(
+    cloudUrl: string,
+    token: string,
+    teamId: string,
+  ): Promise<SharedObjectSummary[]> {
+    const r = await this.fetchAuthed<{ objects: SharedObjectSummary[] }>(
+      cloudUrl,
+      token,
+      'GET',
+      `/api/teams/${teamId}/objects`,
+    );
+    return r.objects;
+  }
+
+  /**
+   * Pull change envelopes since the given sequence number. Phase 3
+   * emits `schema` and `unshare` ops; Phase 4 adds row-level ops. The
+   * `has_more` flag tells callers to loop until drained before sleeping.
+   */
+  async pullChanges(
+    cloudUrl: string,
+    token: string,
+    teamId: string,
+    since = 0,
+    limit = 500,
+  ): Promise<{ envelopes: ChangeEnvelope[]; has_more: boolean }> {
+    return this.fetchAuthed<{ envelopes: ChangeEnvelope[]; has_more: boolean }>(
+      cloudUrl,
+      token,
+      'GET',
+      `/api/teams/${teamId}/changes?since=${since.toString()}&limit=${limit.toString()}`,
+    );
+  }
+
+  /**
+   * Fetch every shared object on the team's cloud and apply each spec
+   * to the local lattice. New tables go through `defineLate`; existing
+   * tables get additive ALTER TABLE for any cloud-only columns. PK
+   * mismatches are surfaced as `TeamsSchemaConflictError`s and recorded
+   * in the returned summary so callers can present them to the user.
+   *
+   * Phase 4 will wrap this in a polling loop; Phase 3 invokes it on
+   * demand from the CLI / GUI.
+   */
+  async syncSharedSchemas(connection: TeamConnection): Promise<SyncSharedSchemasResult> {
+    const objects = await this.listSharedObjects(
+      connection.cloud_url,
+      connection.api_token,
+      connection.team_id,
+    );
+    const applied: { table: string; schema_version: number }[] = [];
+    const conflicts: { table: string; reason: string }[] = [];
+    for (const obj of objects) {
+      try {
+        const changed = await this.applyCloudSchemaLocally(obj.table, obj.schema_spec);
+        if (changed) applied.push({ table: obj.table, schema_version: obj.schema_version });
+      } catch (e) {
+        if (e instanceof TeamsSchemaConflictError) {
+          conflicts.push({ table: e.table, reason: e.reason });
+        } else {
+          throw e;
+        }
+      }
+    }
+    return { applied, conflicts };
+  }
+
+  /**
+   * Apply a single cloud SchemaSpec to the local lattice. Returns true
+   * if any change was made (new table, new column), false if local was
+   * already in sync. Throws `TeamsSchemaConflictError` on PK mismatch.
+   */
+  async applyCloudSchemaLocally(table: string, spec: SchemaSpec): Promise<boolean> {
+    let localColumns: string[];
+    try {
+      localColumns = await this.local.introspectColumns(table);
+    } catch {
+      localColumns = [];
+    }
+
+    if (localColumns.length === 0) {
+      // Table doesn't exist locally — register it.
+      const def = deserializeSchema(spec, this.local.getDialect());
+      await this.local.defineLate(table, def);
+      return true;
+    }
+
+    const localPk = this.local.getPrimaryKey(table);
+    const { addColumns } = diffSchemaForAdditive(table, spec, localColumns, localPk);
+    if (addColumns.length === 0) return false;
+    for (const colName of addColumns) {
+      const colSpec = spec.columns[colName];
+      if (!colSpec) continue;
+      const sqlType = renderColumnType(colSpec, this.local.getDialect());
+      await this.local.addColumn(table, colName, sqlType);
+    }
+    return true;
   }
 
   // ── Local persistence (encrypted API tokens) ────────────────────────────

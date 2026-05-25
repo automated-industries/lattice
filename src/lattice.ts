@@ -42,6 +42,7 @@ import {
   getAsyncOrSync,
   allAsyncOrSync,
   introspectColumnsAsyncOrSync,
+  addColumnAsyncOrSync,
 } from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { PostgresAdapter } from './db/postgres.js';
@@ -384,6 +385,82 @@ export class Lattice {
     this._encryptedTableColumns.clear();
     delete this._encryptionKey;
     this._initialized = false;
+  }
+
+  /**
+   * Return the actual columns currently present in the underlying table,
+   * as reported by the adapter's introspection. Bypasses Lattice's
+   * declared schema — useful for callers (e.g. the Lattice Teams schema
+   * sync) that need to diff what's on disk against an external spec.
+   *
+   * Throws if the table doesn't exist or the adapter can't introspect.
+   */
+  async introspectColumns(table: string): Promise<string[]> {
+    if (!this._initialized) {
+      throw new Error('Lattice: not initialized — call init() first');
+    }
+    return introspectColumnsAsyncOrSync(this._adapter, table);
+  }
+
+  /**
+   * Return the adapter dialect ('sqlite' | 'postgres'). Useful for
+   * callers that need to render dialect-specific SQL (e.g. the Lattice
+   * Teams schema spec → DDL translation).
+   */
+  getDialect(): 'sqlite' | 'postgres' {
+    return this._adapter.dialect;
+  }
+
+  /**
+   * Return the normalised primary-key column list for a registered
+   * table. Falls back to `['id']` for tables registered via raw DDL
+   * (without a corresponding `define()` call) — same as the
+   * SchemaManager default.
+   */
+  getPrimaryKey(table: string): string[] {
+    return this._schema.getPrimaryKey(table);
+  }
+
+  /**
+   * Return the raw column declarations for a registered table, as
+   * passed to `define()` / `defineLate()`. Returns null for tables
+   * that exist in the DB but were never registered with Lattice (e.g.
+   * created by user DDL outside the lattice config).
+   *
+   * Used by the Lattice Teams `share` command to serialise a local
+   * TableDefinition into the dialect-neutral SchemaSpec format.
+   */
+  getRegisteredColumns(table: string): Record<string, string> | null {
+    const def = this._schema.getTables().get(table);
+    return def ? { ...def.columns } : null;
+  }
+
+  /**
+   * Add a single column to an existing table at runtime. Wraps the
+   * adapter's `addColumnAsync` (which handles dialect-specific quirks —
+   * SQLite non-constant default workarounds, Postgres native syntax,
+   * PK skip, etc.) and refreshes the column cache so subsequent
+   * `query`/`insert`/`update` calls are aware of the new column.
+   *
+   * Does NOT update the SchemaManager's stored TableDefinition. The
+   * runtime column cache is what insert/update/query consult; the def
+   * is only consulted by `applySchema` (which is only re-run at init).
+   * Callers who care about def-level fidelity (most don't) should
+   * re-`defineLate` the table on the next session start.
+   *
+   * Idempotent: if the column already exists on the table, this is a
+   * no-op (introspect-first; skip the ALTER).
+   */
+  async addColumn(table: string, column: string, typeSpec: string): Promise<void> {
+    if (!this._initialized) {
+      throw new Error('Lattice: not initialized — call init() first');
+    }
+    const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
+    if (!existing.includes(column)) {
+      await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+    }
+    const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
+    this._columnCache.set(table, new Set(cols));
   }
 
   // -------------------------------------------------------------------------

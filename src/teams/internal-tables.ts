@@ -78,6 +78,34 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
     render: () => '',
     outputFile: '.lattice-teams/invitations.md',
   },
+  __lattice_shared_objects: {
+    columns: {
+      team_id: 'TEXT NOT NULL',
+      table_name: 'TEXT NOT NULL',
+      schema_spec_json: 'TEXT NOT NULL',
+      schema_version: 'INTEGER NOT NULL',
+      created_by_user_id: 'TEXT NOT NULL',
+      created_at: 'TEXT NOT NULL',
+      updated_at: 'TEXT NOT NULL',
+      deleted_at: 'TEXT',
+    },
+    primaryKey: ['team_id', 'table_name'],
+    render: () => '',
+    outputFile: '.lattice-teams/shared-objects.md',
+  },
+  __lattice_change_log: {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      seq: 'INTEGER NOT NULL',
+      team_id: 'TEXT NOT NULL',
+      table_name: 'TEXT',
+      op: 'TEXT NOT NULL',
+      payload_json: 'TEXT',
+      created_at: 'TEXT NOT NULL',
+    },
+    render: () => '',
+    outputFile: '.lattice-teams/change-log.md',
+  },
 };
 
 /**

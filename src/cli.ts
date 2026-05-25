@@ -42,6 +42,7 @@ interface ParsedArgs {
   teamId?: string | undefined;
   expires?: number | undefined;
   userId?: string | undefined;
+  table?: string | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -71,6 +72,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let teamId: string | undefined;
   let expires: number | undefined;
   let userId: string | undefined;
+  let table: string | undefined;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -152,6 +154,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--user-id' && i + 1 < argv.length) {
       i++;
       userId = argv[i];
+    } else if (arg === '--table' && i + 1 < argv.length) {
+      i++;
+      table = argv[i];
     }
     i++;
   }
@@ -183,6 +188,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     teamId,
     expires,
     userId,
+    table,
   };
 }
 
@@ -609,6 +615,7 @@ function main(): void {
         teamId: args.teamId,
         expires: args.expires,
         userId: args.userId,
+        table: args.table,
       });
       break;
     case 'update':
