@@ -43,14 +43,6 @@ export const guiAppHtml = `<!doctype html>
     }
     .brand:hover { background: rgba(255, 255, 255, 0.06); }
     .brand-logo { width: 32px; height: 32px; display: block; }
-    .query {
-      flex: 1 1 220px; min-width: 0; max-width: 480px; margin-left: auto;
-      height: 32px; padding: 0 12px;
-      border: 1px solid #2a2f36; border-radius: 6px;
-      background: #1a1d22; color: #9aa1ad; font-size: 13px;
-    }
-    .query[disabled] { cursor: not-allowed; }
-    .query::placeholder { color: #6b7280; }
 
     /* History controls — dark variant */
     .history-controls { display: inline-flex; gap: 4px; }
@@ -509,7 +501,6 @@ export const guiAppHtml = `<!doctype html>
       </button>
       <div class="db-menu" id="db-menu" hidden></div>
     </div>
-    <input class="query" type="text" placeholder="Query + Prompt Workspace..." disabled />
   </header>
   <div class="layout">
     <nav class="sidebar">
@@ -520,8 +511,6 @@ export const guiAppHtml = `<!doctype html>
       <div class="section-label">Settings</div>
       <ul id="settings-nav">
         <li><a href="#/settings/data-model"><span class="nav-icon">⚙</span> Data Model</a></li>
-        <li><a href="#/settings/project-config"><span class="nav-icon">⚙</span> Project Config</a></li>
-        <li><a href="#/settings/user-config"><span class="nav-icon">👤</span> User Config</a></li>
       </ul>
     </nav>
     <main id="content"></main>
@@ -882,11 +871,6 @@ export const guiAppHtml = `<!doctype html>
 
       if (hash === '#/settings/data-model') { renderDataModel(content); return; }
       if (hash === '#/settings/history') { renderHistory(content); return; }
-      if (hash === '#/settings/project-config' || hash === '#/settings/user-config') {
-        content.innerHTML = '<div class="placeholder"><h2>Coming soon</h2>' +
-          '<p>This view will be wired up in a follow-up release.</p></div>';
-        return;
-      }
       content.innerHTML = '<div class="placeholder"><h2>Unknown route</h2></div>';
     }
 

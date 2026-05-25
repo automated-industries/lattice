@@ -10,13 +10,9 @@ describe('guiAppHtml', () => {
 
     // Settings entries
     expect(guiAppHtml).toContain('href="#/settings/data-model"');
-    expect(guiAppHtml).toContain('href="#/settings/project-config"');
-    expect(guiAppHtml).toContain('href="#/settings/user-config"');
 
-    // Branding + disabled query bar (the Query+Prompt stub)
+    // Branding
     expect(guiAppHtml).toContain('Lattice');
-    expect(guiAppHtml).toMatch(/placeholder=".*Query.*Prompt/);
-    expect(guiAppHtml).toMatch(/class="query".*disabled/);
   });
 
   it('boots from /api/entities on load', () => {
