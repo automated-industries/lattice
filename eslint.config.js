@@ -19,6 +19,11 @@ export default tseslint.config(
       '@typescript-eslint/no-misused-promises': 'error',
       // union types must use `type`, not `interface` — disable to allow mixed usage
       '@typescript-eslint/consistent-type-definitions': 'off',
+      // `_`-prefixed args/vars are intentionally unused (interface-required stubs, etc.)
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
     },
   },
   {

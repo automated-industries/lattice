@@ -597,11 +597,7 @@ export class Lattice {
 
     const values = [...Object.values(encrypted), ...pkParams];
 
-    await runAsyncOrSync(
-      this._adapter,
-      `UPDATE "${table}" SET ${setCols} WHERE ${clause}`,
-      values,
-    );
+    await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
 
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
     await this._appendChangelog(table, auditId, 'update', sanitized, previousValues);
@@ -641,11 +637,8 @@ export class Lattice {
     let previousRow: Row | null = null;
     if (this._changelogTables.has(table)) {
       previousRow =
-        (await getAsyncOrSync(
-          this._adapter,
-          `SELECT * FROM "${table}" WHERE ${clause}`,
-          params,
-        )) ?? null;
+        (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
+        null;
     }
 
     await runAsyncOrSync(this._adapter, `DELETE FROM "${table}" WHERE ${clause}`, params);
@@ -1991,11 +1984,7 @@ export class Lattice {
    * Reconstruct the row state at a specific changelog entry by replaying
    * all operations up to and including that entry.
    */
-  async snapshot(
-    table: string,
-    id: string,
-    changeId: string,
-  ): Promise<Record<string, unknown>> {
+  async snapshot(table: string, id: string, changeId: string): Promise<Record<string, unknown>> {
     const notInit = this._notInitError<Record<string, unknown>>();
     if (notInit) return notInit;
 
