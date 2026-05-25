@@ -278,9 +278,7 @@ export class PostgresAdapter implements StorageAdapter {
     if (upper.includes('PRIMARY KEY')) return;
     const translated = translateTypeSpec(typeSpec);
     const pool = await this._readyPool();
-    await pool.query(
-      `ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${column}" ${translated}`,
-    );
+    await pool.query(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${column}" ${translated}`);
   }
 
   /**
