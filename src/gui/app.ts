@@ -30,13 +30,14 @@ export const guiAppHtml = `<!doctype html>
 
     /* ── Top bar ───────────────────────────────────────── */
     header.topbar {
-      display: flex; align-items: center; gap: 16px;
-      height: 56px; padding: 0 20px;
+      display: flex; align-items: center; gap: 12px;
+      min-height: 56px; padding: 8px 20px;
       background: var(--surface); border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
     }
-    .brand { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+    .brand { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; flex-shrink: 0; }
     .query {
-      flex: 1; max-width: 480px; margin-left: auto;
+      flex: 1 1 220px; min-width: 0; max-width: 480px; margin-left: auto;
       height: 32px; padding: 0 12px;
       border: 1px solid var(--border-strong); border-radius: 6px;
       background: #fafbfc; color: var(--text-muted); font-size: 13px;
@@ -236,10 +237,20 @@ export const guiAppHtml = `<!doctype html>
     .placeholder h2 { margin: 0 0 8px; color: var(--text); }
 
     /* Data Model: 2-column graph + side panel */
-    .dm-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; }
+    .dm-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 20px;
+      align-items: start;
+    }
+    @media (max-width: 1000px) {
+      .dm-layout { grid-template-columns: minmax(0, 1fr); }
+    }
     #graph-mount { background: var(--surface);
-      border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-height: 70vh; }
-    #graph-mount svg { width: 100%; height: 65vh; }
+      border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+      min-height: 70vh; overflow: hidden;
+    }
+    #graph-mount svg { width: 100%; height: 70vh; display: block; }
     #graph-mount g.gnode { cursor: pointer; }
     #graph-mount g.gnode circle { transition: fill 0.1s ease, stroke 0.1s ease; }
     #graph-mount g.gnode.active circle { fill: var(--accent); stroke: var(--accent); }
@@ -1129,15 +1140,40 @@ export const guiAppHtml = `<!doctype html>
             }
             rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt><dd>' + dd + '</dd>');
           });
-          // Junctions are read-only here — managed via Data Model.
+          // Junctions: always editable inline. Click × on a chip to unlink,
+          // pick from the dropdown to link. Mutations are atomic — no Save.
           junctions.forEach(function (j) {
             var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
+            var linkedIds = new Set(matches.map(function (m) { return m[j.remoteRel.foreignKey]; }));
+            var available = (loadedTables[j.remoteRel.table] || []).filter(function (o) { return !linkedIds.has(o.id); });
             var chips = matches.map(function (jr) {
-              var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[j.remoteRel.foreignKey]; });
-              return ref ? chipLink(j.remoteRel.table, ref) : '';
+              var remoteId = jr[j.remoteRel.foreignKey];
+              var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === remoteId; });
+              if (!ref) return '';
+              return '<span class="chip-removable"' +
+                ' data-junction="' + escapeHtml(j.junction) + '"' +
+                ' data-localfk="' + escapeHtml(j.localFk) + '"' +
+                ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
+                ' data-local="' + escapeHtml(row.id) + '"' +
+                ' data-remote="' + escapeHtml(remoteId) + '">' +
+                '<a class="chip-link" href="#/objects/' + encodeURIComponent(j.remoteRel.table) +
+                  '/' + encodeURIComponent(remoteId) + '">' + escapeHtml(displayNameFor(ref)) + '</a>' +
+                ' <button class="remove-link" title="Unlink">×</button></span>';
             }).join(' ');
+            var picker = available.length
+              ? '<select class="dm-add"' +
+                  ' data-junction="' + escapeHtml(j.junction) + '"' +
+                  ' data-localfk="' + escapeHtml(j.localFk) + '"' +
+                  ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
+                  ' data-local="' + escapeHtml(row.id) + '">' +
+                '<option value="">+ Add link…</option>' +
+                available.map(function (o) {
+                  return '<option value="' + escapeHtml(o.id) + '">' + escapeHtml(displayNameFor(o)) + '</option>';
+                }).join('') +
+                '</select>'
+              : '';
             rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
-                      '<dd>' + (chips || '<span class="muted">—</span>') + '</dd>');
+                      '<dd>' + (chips || '<span class="muted">None yet</span>') + ' ' + picker + '</dd>');
           });
 
           var actions = editing
@@ -1159,6 +1195,48 @@ export const guiAppHtml = `<!doctype html>
           // Skip the context fetch while editing — the just-PATCHed row may
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
+
+          // Junction link/unlink handlers (active in both read and edit modes).
+          content.querySelectorAll('.remove-link').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+              e.preventDefault();
+              e.stopPropagation();
+              var chip = btn.closest('[data-junction]');
+              var body = {};
+              body[chip.getAttribute('data-localfk')] = chip.getAttribute('data-local');
+              body[chip.getAttribute('data-remotefk')] = chip.getAttribute('data-remote');
+              fetchJson('/api/tables/' + encodeURIComponent(chip.getAttribute('data-junction')) + '/unlink', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+              }).then(function () {
+                invalidate(chip.getAttribute('data-junction'));
+                return refreshEntities();
+              }).then(function () {
+                renderDetail(content, tableName, id);
+                showToast('Link removed', { undo: undoLast });
+              }).catch(function (err) { showToast('Unlink failed: ' + err.message, {}); });
+            });
+          });
+          content.querySelectorAll('select.dm-add').forEach(function (sel) {
+            sel.addEventListener('change', function () {
+              if (!sel.value) return;
+              var body = {};
+              body[sel.getAttribute('data-localfk')] = sel.getAttribute('data-local');
+              body[sel.getAttribute('data-remotefk')] = sel.value;
+              fetchJson('/api/tables/' + encodeURIComponent(sel.getAttribute('data-junction')) + '/link', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+              }).then(function () {
+                invalidate(sel.getAttribute('data-junction'));
+                return refreshEntities();
+              }).then(function () {
+                renderDetail(content, tableName, id);
+                showToast('Linked', { undo: undoLast });
+              }).catch(function (err) { showToast('Link failed: ' + err.message, {}); });
+            });
+          });
 
           if (editing) {
             document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
@@ -1347,10 +1425,10 @@ export const guiAppHtml = `<!doctype html>
     }
 
     // ────────────────────────────────────────────────────────────
-    // Data Model — entity graph + row-level link/unlink picker
+    // Data Model — entity graph + entity editor
+    // (row-level link/unlink lives on the row detail page now)
     // ────────────────────────────────────────────────────────────
     var dmActiveTable = null;
-    var dmActiveRowId = null;
 
     function renderDataModel(content) {
       content.innerHTML =
@@ -1360,7 +1438,7 @@ export const guiAppHtml = `<!doctype html>
         '</div>' +
         '<div class="dm-layout">' +
           '<div id="graph-mount"><div class="muted">Loading graph…</div></div>' +
-          '<aside id="dm-panel"><div class="muted">Click an entity to explore its rows and links.</div></aside>' +
+          '<aside id="dm-panel" hidden></aside>' +
         '</div>';
 
       fetchJson('/api/graph').then(function (graph) {
@@ -1368,11 +1446,15 @@ export const guiAppHtml = `<!doctype html>
         document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
           g.addEventListener('click', function () {
             var name = g.getAttribute('data-table');
-            dmShowTableRows(name);
+            dmShowEntityEditor(name);
             highlightGraphNode(name);
           });
         });
-        if (dmActiveTable) highlightGraphNode(dmActiveTable);
+        // Restore the previously-active panel if any.
+        if (dmActiveTable) {
+          dmShowEntityEditor(dmActiveTable);
+          highlightGraphNode(dmActiveTable);
+        }
       }).catch(function (err) {
         document.getElementById('graph-mount').innerHTML =
           '<div class="muted">Failed to load graph: ' + escapeHtml(err.message) + '</div>';
@@ -1385,79 +1467,58 @@ export const guiAppHtml = `<!doctype html>
       });
     }
 
-    function dmShowTableRows(tableName) {
+    /**
+     * Show the editor for a selected entity. Only shows after the user
+     * clicks an entity node — until then the side panel stays hidden.
+     */
+    function dmShowEntityEditor(tableName) {
       dmActiveTable = tableName;
-      dmActiveRowId = null;
       var panel = document.getElementById('dm-panel');
-      panel.innerHTML = '<div class="muted">Loading…</div>';
-      loadAllRows(tableName).then(function (rows) {
-        var t = tableByName(tableName);
-        var d = displayFor(tableName);
-        var override = state.iconOverrides[tableName];
-        var overrideIcon = (override && override.icon) || '';
-
-        // ── Edit section: name / icon / columns ──
-        var editableCols = (t.columns || []).filter(function (c) { return c !== 'id'; });
-        var columnsHtml = editableCols.map(function (c) {
-          return '<div class="dm-col-row">' +
-            '<input class="dm-col-name" data-col="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
-            '<button class="btn dm-col-rename" data-col="' + escapeHtml(c) + '" title="Rename">↻</button>' +
-            '</div>';
-        }).join('');
-        var editPanel =
-          '<details class="dm-section" open>' +
-            '<summary><strong>Edit entity</strong></summary>' +
-            '<div class="dm-edit-grid">' +
-              '<label>Name</label>' +
-              '<div class="dm-row-inline">' +
-                '<input id="dm-rename-input" value="' + escapeHtml(tableName) + '" />' +
-                '<button class="btn" id="dm-rename-btn">Save</button>' +
-              '</div>' +
-              '<label>Icon</label>' +
-              '<div class="dm-row-inline">' +
-                '<input id="dm-icon-input" maxlength="8" placeholder="📋" value="' + escapeHtml(overrideIcon) + '" />' +
-                '<button class="btn" id="dm-icon-btn">Save</button>' +
-              '</div>' +
-              '<label>Columns</label>' +
-              '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No editable columns</span>') + '</div>' +
-              '<label>Add column</label>' +
-              '<div class="dm-row-inline">' +
-                '<input id="dm-newcol-name" placeholder="column_name" />' +
-                '<select id="dm-newcol-type">' +
-                  '<option value="text">text</option>' +
-                  '<option value="integer">integer</option>' +
-                  '<option value="real">real</option>' +
-                  '<option value="boolean">boolean</option>' +
-                  '<option value="uuid">uuid</option>' +
-                '</select>' +
-                '<button class="btn primary" id="dm-newcol-btn">Add</button>' +
-              '</div>' +
-            '</div>' +
-          '</details>';
-
-        // ── Browse section: existing row picker ──
-        var list = rows.map(function (r) {
-          return '<li data-id="' + escapeHtml(r.id) + '">' + escapeHtml(displayNameFor(r)) + '</li>';
-        }).join('');
-        var browsePanel =
-          '<details class="dm-section">' +
-            '<summary><strong>Browse rows (' + rows.length + ')</strong></summary>' +
-            (rows.length === 0
-              ? '<div class="muted">No rows yet — use the Objects view to add one.</div>'
-              : '<ul class="dm-rows">' + list + '</ul>') +
-          '</details>';
-
-        panel.innerHTML =
-          '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
-          editPanel + browsePanel;
-
-        wireEntityEditPanel(panel, tableName);
-        panel.querySelectorAll('li[data-id]').forEach(function (li) {
-          li.addEventListener('click', function () {
-            dmShowRowLinks(tableName, li.getAttribute('data-id'));
-          });
-        });
-      });
+      panel.hidden = false;
+      var t = tableByName(tableName);
+      if (!t) {
+        panel.innerHTML = '<div class="muted">Unknown entity.</div>';
+        return;
+      }
+      var d = displayFor(tableName);
+      var override = state.iconOverrides[tableName];
+      var overrideIcon = (override && override.icon) || '';
+      var editableCols = (t.columns || []).filter(function (c) { return c !== 'id'; });
+      var columnsHtml = editableCols.map(function (c) {
+        return '<div class="dm-col-row">' +
+          '<input class="dm-col-name" data-col="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
+          '<button class="btn dm-col-rename" data-col="' + escapeHtml(c) + '" title="Rename">↻</button>' +
+          '</div>';
+      }).join('');
+      panel.innerHTML =
+        '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
+        '<div class="dm-edit-grid">' +
+          '<label>Name</label>' +
+          '<div class="dm-row-inline">' +
+            '<input id="dm-rename-input" value="' + escapeHtml(tableName) + '" />' +
+            '<button class="btn" id="dm-rename-btn">Save</button>' +
+          '</div>' +
+          '<label>Icon</label>' +
+          '<div class="dm-row-inline">' +
+            '<input id="dm-icon-input" maxlength="8" placeholder="📋" value="' + escapeHtml(overrideIcon) + '" />' +
+            '<button class="btn" id="dm-icon-btn">Save</button>' +
+          '</div>' +
+          '<label>Columns</label>' +
+          '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No editable columns</span>') + '</div>' +
+          '<label>Add column</label>' +
+          '<div class="dm-row-inline">' +
+            '<input id="dm-newcol-name" placeholder="column_name" />' +
+            '<select id="dm-newcol-type">' +
+              '<option value="text">text</option>' +
+              '<option value="integer">integer</option>' +
+              '<option value="real">real</option>' +
+              '<option value="boolean">boolean</option>' +
+              '<option value="uuid">uuid</option>' +
+            '</select>' +
+            '<button class="btn primary" id="dm-newcol-btn">Add</button>' +
+          '</div>' +
+        '</div>';
+      wireEntityEditPanel(panel, tableName);
     }
 
     /** Wire up the edit-entity controls in the Data Model side panel. */
@@ -1533,128 +1594,6 @@ export const guiAppHtml = `<!doctype html>
       });
     }
 
-    function dmShowRowLinks(tableName, rowId) {
-      dmActiveRowId = rowId;
-      var t = tableByName(tableName);
-      var junctions = junctionsFor(tableName);
-      var panel = document.getElementById('dm-panel');
-      panel.innerHTML = '<div class="muted">Loading…</div>';
-
-      // Preload junctions + remote-side rows so chips + pickers can render.
-      var fetches = [];
-      junctions.forEach(function (j) {
-        fetches.push(loadAllRows(j.junction));
-        fetches.push(loadAllRows(j.remoteRel.table));
-      });
-      // Also reload the row itself in case it changed.
-      fetches.push(loadAllRows(tableName));
-
-      Promise.all(fetches).then(function () {
-        var row = (loadedTables[tableName] || []).find(function (r) { return r.id === rowId; });
-        if (!row) {
-          panel.innerHTML = '<div class="muted">Row no longer exists.</div>';
-          return;
-        }
-
-        var sections = junctions.map(function (j) {
-          var matches = (loadedTables[j.junction] || []).filter(function (jr) {
-            return jr[j.localFk] === rowId;
-          });
-          var linkedIds = new Set(matches.map(function (m) { return m[j.remoteRel.foreignKey]; }));
-          var available = (loadedTables[j.remoteRel.table] || []).filter(function (o) {
-            return !linkedIds.has(o.id);
-          });
-          var chips = matches.map(function (jr) {
-            var remoteId = jr[j.remoteRel.foreignKey];
-            var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === remoteId; });
-            if (!ref) return '';
-            return '<span class="chip-removable" data-junction="' + escapeHtml(j.junction) +
-              '" data-localfk="' + escapeHtml(j.localFk) +
-              '" data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) +
-              '" data-local="' + escapeHtml(rowId) +
-              '" data-remote="' + escapeHtml(remoteId) + '">' +
-              escapeHtml(displayNameFor(ref)) +
-              ' <button class="remove-link" title="Remove">×</button></span>';
-          }).join('');
-          var picker = available.length
-            ? '<select class="dm-add" data-junction="' + escapeHtml(j.junction) +
-                '" data-localfk="' + escapeHtml(j.localFk) +
-                '" data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) +
-                '" data-local="' + escapeHtml(rowId) + '">' +
-                '<option value="">+ Add link…</option>' +
-                available.map(function (o) {
-                  return '<option value="' + escapeHtml(o.id) + '">' +
-                    escapeHtml(displayNameFor(o)) + '</option>';
-                }).join('') +
-              '</select>'
-            : '<span class="muted">All ' + escapeHtml(titleCase(j.remoteRel.table).toLowerCase()) + ' linked</span>';
-          return '<div class="dm-junction">' +
-            '<h4>' + escapeHtml(titleCase(j.remoteRel.table)) + '</h4>' +
-            '<div class="dm-chips">' + (chips || '<span class="muted">None yet</span>') + '</div>' +
-            picker +
-            '</div>';
-        }).join('');
-
-        panel.innerHTML =
-          '<a class="breadcrumb" data-back-to="' + escapeHtml(tableName) + '">← ' +
-            escapeHtml(displayFor(tableName).label) + '</a>' +
-          '<h3>' + escapeHtml(displayNameFor(row) || row.id) + '</h3>' +
-          (sections || '<div class="muted">This entity has no relationships to link.</div>');
-
-        var back = panel.querySelector('[data-back-to]');
-        if (back) {
-          back.addEventListener('click', function (e) {
-            e.preventDefault();
-            dmShowTableRows(back.getAttribute('data-back-to'));
-          });
-        }
-
-        panel.querySelectorAll('.remove-link').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var chip = btn.closest('[data-junction]');
-            var body = {};
-            body[chip.getAttribute('data-localfk')] = chip.getAttribute('data-local');
-            body[chip.getAttribute('data-remotefk')] = chip.getAttribute('data-remote');
-            fetchJson('/api/tables/' + encodeURIComponent(chip.getAttribute('data-junction')) + '/unlink', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(body),
-            }).then(function () {
-              invalidate(chip.getAttribute('data-junction'));
-              return refreshEntities();
-            }).then(function () {
-              dmShowRowLinks(tableName, rowId);
-              showToast('Link removed', { undo: undoLast });
-            }).catch(function (err) {
-              showToast('Unlink failed: ' + err.message, {});
-            });
-          });
-        });
-
-        panel.querySelectorAll('select.dm-add').forEach(function (sel) {
-          sel.addEventListener('change', function () {
-            if (!sel.value) return;
-            var body = {};
-            body[sel.getAttribute('data-localfk')] = sel.getAttribute('data-local');
-            body[sel.getAttribute('data-remotefk')] = sel.value;
-            fetchJson('/api/tables/' + encodeURIComponent(sel.getAttribute('data-junction')) + '/link', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(body),
-            }).then(function () {
-              invalidate(sel.getAttribute('data-junction'));
-              return refreshEntities();
-            }).then(function () {
-              dmShowRowLinks(tableName, rowId);
-              showToast('Linked', { undo: undoLast });
-            }).catch(function (err) {
-              showToast('Link failed: ' + err.message, {});
-            });
-          });
-        });
-      });
-    }
-
     function renderGraphSvg(graph) {
       // Circular layout. Junctions become edges (not nodes).
       var allTableNodes = graph.nodes.filter(function (n) { return n.type === 'table'; });
@@ -1689,35 +1628,79 @@ export const guiAppHtml = `<!doctype html>
         });
       });
 
-      var cx = 500, cy = 320, r = 240;
+      var cx = 500, cy = 360, r = 250;
+      var nodeRadius = 30;
       var pos = {};
       tableNodes.forEach(function (n, i) {
         var a = (i / tableNodes.length) * Math.PI * 2 - Math.PI / 2;
         pos[n.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
       });
+
+      var BELONGS_COLOR = '#2f6feb';
+      var M2M_COLOR = '#a16207';
+
+      // Trim edge endpoints back from the node centre so the arrow heads
+      // sit outside the circle. Markers are 7px tall; pad a little more.
+      function trim(from, to, pad) {
+        var dx = to.x - from.x, dy = to.y - from.y;
+        var len = Math.sqrt(dx * dx + dy * dy);
+        if (len === 0) return to;
+        var k = (len - pad) / len;
+        return { x: from.x + dx * k, y: from.y + dy * k };
+      }
+
       var edgeSvg = entityEdges.map(function (e) {
         var a = pos[e.source], b = pos[e.target];
         if (!a || !b) return '';
-        var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-        var color = e.type === 'belongs-to' ? '#2f6feb' : '#a16207';
+        var color = e.type === 'belongs-to' ? BELONGS_COLOR : M2M_COLOR;
         var dash = e.type === 'belongs-to' ? '' : ' stroke-dasharray="6 4"';
-        var labelBg = '<rect x="' + (mx - 56) + '" y="' + (my - 9) + '" width="112" height="18" rx="9" fill="white" stroke="' + color + '" stroke-width="1" />';
-        var labelText = '<text x="' + mx + '" y="' + (my + 4) + '" text-anchor="middle" font-size="10" fill="' + color + '">' +
-          escapeHtml(e.type + (e.via && e.type === 'many-to-many' ? ' · ' + e.via : '')) + '</text>';
-        return '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
-          '" stroke="' + color + '" stroke-width="1.5"' + dash + ' />' + labelBg + labelText;
+        // One arrowhead at the target for belongs-to (child→parent);
+        // arrowheads at both ends for many-to-many.
+        var endTrimmed = trim(a, b, nodeRadius + 4);
+        var startTrimmed = trim(b, a, nodeRadius + 4);
+        var markerEnd = ' marker-end="url(#arrow-' + (e.type === 'belongs-to' ? 'b' : 'm') + ')"';
+        var markerStart = e.type === 'many-to-many'
+          ? ' marker-start="url(#arrow-m)"' : '';
+        return '<line x1="' + startTrimmed.x + '" y1="' + startTrimmed.y +
+          '" x2="' + endTrimmed.x + '" y2="' + endTrimmed.y +
+          '" stroke="' + color + '" stroke-width="1.8"' + dash + markerEnd + markerStart +
+          ' data-edge-type="' + e.type + '" data-via="' + escapeHtml(e.via || '') + '"></line>';
       }).join('');
+
       var nodeSvg = tableNodes.map(function (n) {
         var p = pos[n.id];
         var tableName = n.table || n.label;
         var d = displayFor(tableName);
         return '<g class="gnode" data-table="' + escapeHtml(tableName) + '">' +
-          '<circle cx="' + p.x + '" cy="' + p.y + '" r="26" fill="#e7efff" stroke="#2f6feb" stroke-width="1.5" />' +
-          '<text x="' + p.x + '" y="' + (p.y + 6) + '" text-anchor="middle" font-size="16">' + d.icon + '</text>' +
-          '<text x="' + p.x + '" y="' + (p.y + 44) + '" text-anchor="middle" font-size="12" fill="#1f2328">' +
+          '<circle cx="' + p.x + '" cy="' + p.y + '" r="' + nodeRadius +
+            '" fill="#e7efff" stroke="' + BELONGS_COLOR + '" stroke-width="1.5" />' +
+          '<text x="' + p.x + '" y="' + (p.y + 7) + '" text-anchor="middle" font-size="20">' + d.icon + '</text>' +
+          '<text x="' + p.x + '" y="' + (p.y + nodeRadius + 18) + '" text-anchor="middle" font-size="12" fill="#1f2328">' +
           escapeHtml(d.label) + '</text></g>';
       }).join('');
-      return '<svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg">' + edgeSvg + nodeSvg + '</svg>';
+
+      // Arrow-head markers: "b" = belongs-to (blue), "m" = many-to-many (amber).
+      var defs =
+        '<defs>' +
+          '<marker id="arrow-b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+            '<path d="M0,0 L10,5 L0,10 z" fill="' + BELONGS_COLOR + '" />' +
+          '</marker>' +
+          '<marker id="arrow-m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+            '<path d="M0,0 L10,5 L0,10 z" fill="' + M2M_COLOR + '" />' +
+          '</marker>' +
+        '</defs>';
+
+      // Legend in the corner.
+      var legend =
+        '<g class="dm-legend" transform="translate(20, 20)">' +
+          '<line x1="0" y1="6" x2="36" y2="6" stroke="' + BELONGS_COLOR + '" stroke-width="1.8" marker-end="url(#arrow-b)" />' +
+          '<text x="44" y="10" font-size="11" fill="#1f2328">belongs-to (child → parent)</text>' +
+          '<line x1="0" y1="28" x2="36" y2="28" stroke="' + M2M_COLOR + '" stroke-width="1.8" stroke-dasharray="6 4" marker-start="url(#arrow-m)" marker-end="url(#arrow-m)" />' +
+          '<text x="44" y="32" font-size="11" fill="#1f2328">many-to-many</text>' +
+        '</g>';
+
+      return '<svg viewBox="0 0 1000 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">' +
+        defs + legend + edgeSvg + nodeSvg + '</svg>';
     }
 
     init();
