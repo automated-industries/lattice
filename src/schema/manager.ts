@@ -227,16 +227,15 @@ export class SchemaManager {
       }
       for (const m of sorted) {
         const versionStr = String(m.version);
-        const exists = await tx.get(
-          'SELECT 1 FROM __lattice_migrations WHERE version = ?',
-          [versionStr],
-        );
+        const exists = await tx.get('SELECT 1 FROM __lattice_migrations WHERE version = ?', [
+          versionStr,
+        ]);
         if (!exists) {
           await tx.run(m.sql);
-          await tx.run(
-            'INSERT INTO __lattice_migrations (version, applied_at) VALUES (?, ?)',
-            [versionStr, new Date().toISOString()],
-          );
+          await tx.run('INSERT INTO __lattice_migrations (version, applied_at) VALUES (?, ?)', [
+            versionStr,
+            new Date().toISOString(),
+          ]);
         }
       }
     });

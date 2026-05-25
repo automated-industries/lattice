@@ -1,22 +1,159 @@
-db: ./data/test.db
+db: ./data/lattice-demo.db
 
 entities:
-  user:
+  people:
     fields:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
       email: { type: text }
-    render: default-table
-    outputFile: context/USERS.md
+      role: { type: text }
+      deleted_at: { type: text }
+    outputFile: PEOPLE.md
 
-  ticket:
+  meetings:
     fields:
       id: { type: uuid, primaryKey: true }
       title: { type: text, required: true }
-      status: { type: text, default: open }
-      priority: { type: integer, default: 1 }
-      assignee_id: { type: uuid, ref: user }
-    render:
-      template: default-list
-      formatRow: '{{title}} ({{status}})'
-    outputFile: context/TICKETS.md
+      starts_at: { type: text }
+      transcript: { type: text }
+      summary: { type: text }
+      deleted_at: { type: text }
+    outputFile: MEETINGS.md
+
+  messages:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      channel: { type: text }
+      body: { type: text }
+      sent_at: { type: text }
+      deleted_at: { type: text }
+    outputFile: MESSAGES.md
+
+  projects:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
+      status: { type: text }
+      deleted_at: { type: text }
+    outputFile: PROJECTS.md
+
+  repositories:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      url: { type: text, required: true }
+      project_id: { type: uuid, ref: projects }
+      deleted_at: { type: text }
+    outputFile: REPOS.md
+
+  files:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      path: { type: text, required: true }
+      kind: { type: text }
+      deleted_at: { type: text }
+    outputFile: FILES.md
+
+  secrets:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
+      kind: { type: text }
+      value: { type: text } # Marked as secret via _lattice_gui_column_meta in the seed
+      deleted_at: { type: text }
+    outputFile: SECRETS.md
+
+  # Junction tables (hidden from sidebar/dashboard by the GUI; editable via Data Model).
+  meeting_people:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      meeting_id: { type: uuid, ref: meetings }
+      person_id: { type: uuid, ref: people }
+
+  meeting_projects:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      meeting_id: { type: uuid, ref: meetings }
+      project_id: { type: uuid, ref: projects }
+
+  project_people:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      project_id: { type: uuid, ref: projects }
+      person_id: { type: uuid, ref: people }
+
+  message_people:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      message_id: { type: uuid, ref: messages }
+      person_id: { type: uuid, ref: people }
+
+  project_files:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      project_id: { type: uuid, ref: projects }
+      file_id: { type: uuid, ref: files }
+  Invoices:
+    fields:
+      id:
+        type: uuid
+        primaryKey: true
+      name:
+        type: text
+        required: true
+      deleted_at:
+        type: text
+    outputFile: INVOICES.md
+
+# Per-row rendered context files. Each row is written to:
+#   ./context/<directoryRoot>/<id>/<FILE>.md
+# The GUI detail view reads them via /api/tables/:table/rows/:id/context.
+entityContexts:
+  people:
+    slug: '{{id}}'
+    directoryRoot: people
+    files:
+      PERSON.md:
+        source: self
+        template: default-detail
+  meetings:
+    slug: '{{id}}'
+    directoryRoot: meetings
+    files:
+      MEETING.md:
+        source: self
+        template: default-detail
+  messages:
+    slug: '{{id}}'
+    directoryRoot: messages
+    files:
+      MESSAGE.md:
+        source: self
+        template: default-detail
+  projects:
+    slug: '{{id}}'
+    directoryRoot: projects
+    files:
+      PROJECT.md:
+        source: self
+        template: default-detail
+  repositories:
+    slug: '{{id}}'
+    directoryRoot: repositories
+    files:
+      REPOSITORY.md:
+        source: self
+        template: default-detail
+  files:
+    slug: '{{id}}'
+    directoryRoot: files
+    files:
+      FILE.md:
+        source: self
+        template: default-detail
+  secrets:
+    slug: '{{id}}'
+    directoryRoot: secrets
+    files:
+      SECRET.md:
+        source: self
+        template: default-detail

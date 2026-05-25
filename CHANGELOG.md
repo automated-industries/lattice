@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.11.0] — 2026-05-25
+
+### Added
+
+- **`lattice gui` CLI command.** Starts a local-only browser GUI for exploring and editing the data in a Lattice database. The server binds to `127.0.0.1`, auto-increments port `4317` when busy, and opens a single-page app for browsing entities, viewing relationship graphs, editing rows, and adding / removing junction-table links. All HTTP routes delegate straight to the existing `Lattice` CRUD methods — no separate state, no schema duplication. New flags: `--port <number>`, `--no-open`.
+
+### Notes for upgraders
+
+- **Three additive `_lattice_gui_*` tables are created in any database opened with `lattice gui`.** The first time the GUI runs against a given DB, it creates `_lattice_gui_meta` (per-entity icon overrides), `_lattice_gui_column_meta` (per-column `secret` flag), and `_lattice_gui_audit` (mutation log powering undo / redo). These are filtered out of `/api/entities`, hidden from the dashboard, and write to `.lattice-gui/*.md` rather than your declared `outputFile` paths — they do not appear in rendered context. **No fictional / demo rows are inserted: your existing data is what the GUI shows.** The schema mutation is one-way additive — there is no migration to remove these tables, but they are inert if you stop using `lattice gui`.
+- **The GUI has no authentication and binds only to loopback.** Do not expose port 4317 (or its auto-incremented successor) on a non-loopback interface or proxy it to a public host. See [SECURITY.md](./SECURITY.md).
+
+### Security
+
+- **`SECURITY.md` contact updated** to `contact@automatedindustries.ai`. Supported versions updated to `1.11.x`. GUI HTTP surface added to the in-scope list.
+
+---
+
 ## [1.10.0] — 2026-05-04
 
 ### BREAKING
@@ -29,7 +46,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 - **Most consumers see zero impact.** Lattice 1.9.0 already routed all its internal DB I/O through the async surface. If your code calls `db.query(...)`, `db.insert(...)`, `db.render(...)`, etc., this release is a transparent upgrade.
 - **If you escape into `db.lattice.adapter` for raw SQL**, audit those sites: replace `adapter.run` / `adapter.get` / `adapter.all` with `await adapter.runAsync(...)` / `await adapter.getAsync(...)` / `await adapter.allAsync(...)`, and replace any raw `adapter.run('BEGIN')` / `adapter.run('COMMIT')` blocks with `await adapter.withClient(async (tx) => { … })`. The thrown error surfaces the same advice.
-- **If you registered a third-party `StorageAdapter`**, you'll want to add `runAsync` / `getAsync` / `allAsync` / `introspectColumnsAsync` / `addColumnAsync` / `withClient` implementations. The async-or-sync helper pattern (`runAsyncOrSync` etc.) means a third-party adapter that *only* implements the sync surface still works — lattice falls back. But Postgres-style third-party adapters should expose async natively.
+- **If you registered a third-party `StorageAdapter`**, you'll want to add `runAsync` / `getAsync` / `allAsync` / `introspectColumnsAsync` / `addColumnAsync` / `withClient` implementations. The async-or-sync helper pattern (`runAsyncOrSync` etc.) means a third-party adapter that _only_ implements the sync surface still works — lattice falls back. But Postgres-style third-party adapters should expose async natively.
 - **Connection budget on Postgres drops by 1 per adapter instance.** The synckit worker owned a separate `pg.Client` outside the pool. With the worker gone, a `PostgresAdapter` instance consumes only `poolSize` upstream connections (default 10). For the canonical setup (3 service replicas across dev + prod = 6 instances × 10 pool = 60 connections), that's a 6-connection reduction.
 
 ## [1.9.0] — 2026-05-04
