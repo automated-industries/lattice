@@ -32,7 +32,8 @@ export const guiAppHtml = `<!doctype html>
     header.topbar {
       display: flex; align-items: center; gap: 12px;
       min-height: 56px; padding: 8px 20px;
-      background: var(--surface); border-bottom: 1px solid var(--border);
+      background: #0b0d10; border-bottom: 1px solid #1f2328;
+      color: #e6e8eb;
       flex-wrap: wrap;
     }
     .brand {
@@ -40,26 +41,27 @@ export const guiAppHtml = `<!doctype html>
       flex-shrink: 0; border-radius: 6px;
       padding: 2px; cursor: pointer;
     }
-    .brand:hover { background: var(--row-hover); }
+    .brand:hover { background: rgba(255, 255, 255, 0.06); }
     .brand-logo { width: 32px; height: 32px; display: block; }
     .query {
       flex: 1 1 220px; min-width: 0; max-width: 480px; margin-left: auto;
       height: 32px; padding: 0 12px;
-      border: 1px solid var(--border-strong); border-radius: 6px;
-      background: #fafbfc; color: var(--text-muted); font-size: 13px;
+      border: 1px solid #2a2f36; border-radius: 6px;
+      background: #1a1d22; color: #9aa1ad; font-size: 13px;
     }
     .query[disabled] { cursor: not-allowed; }
+    .query::placeholder { color: #6b7280; }
 
-    /* History controls in top bar */
+    /* History controls — dark variant */
     .history-controls { display: inline-flex; gap: 4px; }
     .history-btn {
       display: inline-flex; align-items: center; justify-content: center;
       width: 32px; height: 32px;
-      background: transparent; border: 1px solid var(--border-strong);
+      background: transparent; border: 1px solid #2a2f36;
       border-radius: 6px; cursor: pointer;
-      color: var(--text); font-size: 16px; text-decoration: none;
+      color: #e6e8eb; font-size: 16px; text-decoration: none;
     }
-    .history-btn:hover:not([disabled]) { background: var(--row-hover); }
+    .history-btn:hover:not([disabled]) { background: rgba(255, 255, 255, 0.06); }
     .history-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
 
     /* History page */
@@ -101,12 +103,12 @@ export const guiAppHtml = `<!doctype html>
     .db-button {
       display: inline-flex; align-items: center; gap: 6px;
       height: 32px; padding: 0 10px;
-      background: #fafbfc; color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: 6px;
+      background: #1a1d22; color: #e6e8eb;
+      border: 1px solid #2a2f36; border-radius: 6px;
       font-size: 13px; cursor: pointer;
     }
-    .db-button:hover { background: var(--row-hover); }
-    .db-button .db-caret { color: var(--text-muted); font-size: 10px; }
+    .db-button:hover { background: rgba(255, 255, 255, 0.08); }
+    .db-button .db-caret { color: #9aa1ad; font-size: 10px; }
     .db-menu {
       position: absolute; top: 38px; left: 0;
       min-width: 260px; background: var(--surface);
@@ -246,29 +248,22 @@ export const guiAppHtml = `<!doctype html>
     }
     .placeholder h2 { margin: 0 0 8px; color: var(--text); }
 
-    /* Data Model: 2-column graph + side panel */
+    /* Data Model: graph on top, edit panel below when an entity is selected. */
     .dm-layout {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 360px;
-      gap: 20px;
-      align-items: start;
-    }
-    @media (max-width: 1000px) {
-      .dm-layout { grid-template-columns: minmax(0, 1fr); }
+      display: flex; flex-direction: column; gap: 20px;
     }
     #graph-mount { background: var(--surface);
       border: 1px solid var(--border); border-radius: 10px; padding: 16px;
-      min-height: 70vh; overflow: hidden;
+      min-height: 60vh; overflow: hidden;
     }
-    #graph-mount svg { width: 100%; height: 70vh; display: block; }
+    #graph-mount svg { width: 100%; height: 60vh; display: block; }
     #graph-mount g.gnode { cursor: pointer; }
     #graph-mount g.gnode circle { transition: fill 0.1s ease, stroke 0.1s ease; }
     #graph-mount g.gnode.active circle { fill: var(--accent); stroke: var(--accent); }
     #graph-mount g.gnode.active text { fill: var(--accent); font-weight: 600; }
     #dm-panel {
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 16px;
-      max-height: 70vh; overflow-y: auto;
+      border-radius: 10px; padding: 20px;
     }
     #dm-panel h3 { margin: 0 0 12px; font-size: 16px; }
     #dm-panel h4 { margin: 12px 0 6px; font-size: 12.5px;
@@ -306,26 +301,41 @@ export const guiAppHtml = `<!doctype html>
     }
     .dm-section[open] summary::before { transform: rotate(90deg); }
     .dm-edit-grid {
-      display: grid; grid-template-columns: 70px 1fr; gap: 8px 10px;
-      align-items: center; font-size: 12.5px;
+      display: grid; grid-template-columns: 110px minmax(0, 1fr);
+      gap: 10px 14px; align-items: center; font-size: 13px;
     }
-    .dm-edit-grid label { color: var(--text-muted); text-transform: uppercase;
-      letter-spacing: 0.04em; font-size: 11px; }
+    .dm-edit-grid > label {
+      color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.04em; font-size: 11px;
+      align-self: start; padding-top: 9px;
+    }
     .dm-edit-grid input, .dm-edit-grid select {
-      padding: 5px 8px; font: inherit; border: 1px solid var(--border-strong);
-      border-radius: 5px; background: white; font-size: 12.5px;
+      padding: 7px 10px; font: inherit; border: 1px solid var(--border-strong);
+      border-radius: 6px; background: white; font-size: 13.5px;
+      min-width: 0;
     }
-    .dm-row-inline { display: flex; gap: 6px; align-items: center; }
-    .dm-row-inline input { flex: 1; min-width: 0; }
-    .dm-row-inline select { width: 90px; }
-    .dm-row-inline .btn { height: 28px; font-size: 12px; padding: 0 10px; }
-    .dm-cols { display: flex; flex-direction: column; gap: 4px; }
-    .dm-col-row { display: flex; gap: 6px; align-items: center; }
-    .dm-col-row input { flex: 1; min-width: 0;
-      padding: 5px 8px; font: inherit; border: 1px solid var(--border);
-      border-radius: 5px; background: white; font-size: 12.5px;
+    .dm-row-inline { display: flex; gap: 8px; align-items: center; min-width: 0; }
+    .dm-row-inline input { flex: 1 1 auto; min-width: 0; }
+    .dm-row-inline select { flex: 0 0 110px; }
+    .dm-row-inline .btn { height: 32px; font-size: 12.5px; padding: 0 12px; flex-shrink: 0; }
+    .dm-cols { display: flex; flex-direction: column; gap: 6px; }
+    .dm-col-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px; align-items: center;
     }
-    .dm-col-rename { height: 28px; padding: 0 10px; font-size: 12px; }
+    .dm-col-row input {
+      padding: 7px 10px; font: inherit; border: 1px solid var(--border);
+      border-radius: 6px; background: white; font-size: 13.5px; min-width: 0;
+    }
+    .dm-col-row .dm-locked {
+      padding: 7px 10px; font: inherit; font-size: 13.5px;
+      color: var(--text-muted); background: #fafbfc;
+      border: 1px dashed var(--border); border-radius: 6px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .dm-col-row .dm-locked-label { font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.04em; color: var(--text-muted); margin-left: auto; }
+    .dm-col-rename { height: 32px; padding: 0 12px; font-size: 12.5px; }
     .dm-secret-toggle {
       display: inline-flex; align-items: center; gap: 4px;
       font-size: 11px; color: var(--text-muted);
@@ -333,6 +343,30 @@ export const guiAppHtml = `<!doctype html>
       white-space: nowrap; cursor: pointer;
     }
     .dm-secret-toggle input[type="checkbox"] { margin: 0; }
+
+    /* Emoji picker */
+    .emoji-picker { display: flex; flex-direction: column; gap: 8px; }
+    .emoji-current {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 4px 10px; background: #fafbfc;
+      border: 1px solid var(--border); border-radius: 6px;
+      align-self: flex-start;
+    }
+    .emoji-current .emoji-preview { font-size: 22px; line-height: 1; }
+    .emoji-grid {
+      display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px;
+      background: #fafbfc; padding: 8px; border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .emoji-tile {
+      width: 100%; aspect-ratio: 1 / 1;
+      background: transparent; border: 1px solid transparent;
+      border-radius: 6px; cursor: pointer;
+      font-size: 18px; line-height: 1; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .emoji-tile:hover { background: white; border-color: var(--border); }
+    .emoji-tile.active { background: var(--accent-soft); border-color: var(--accent); }
 
     /* ── Toast / undo banner ──────────────────────────── */
     .toast {
@@ -476,6 +510,8 @@ export const guiAppHtml = `<!doctype html>
     <nav class="sidebar">
       <div class="section-label">Objects</div>
       <ul id="object-nav"></ul>
+      <div class="section-label">System</div>
+      <ul id="system-nav"></ul>
       <div class="section-label">Settings</div>
       <ul id="settings-nav">
         <li><a href="#/settings/data-model"><span class="nav-icon">⚙</span> Data Model</a></li>
@@ -517,7 +553,7 @@ export const guiAppHtml = `<!doctype html>
     // name isn't in the built-in DISPLAY map.
     var DEFAULT_ICON = '📋';
 
-    var state = { entities: null, rowCache: {}, iconOverrides: {}, columnMeta: {} };
+    var state = { entities: null, rowCache: {}, iconOverrides: {}, columnMeta: {}, systemTables: [] };
 
     function isSecretColumn(tableName, colName) {
       var t = state.columnMeta[tableName];
@@ -577,10 +613,12 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/databases').catch(function () { return null; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
+        fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[3] || {};
+        state.systemTables = (results[4] && results[4].tables) || [];
         renderDbSwitcher(results[2]);
         renderSidebar();
         wireHistoryControls();
@@ -690,10 +728,12 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/databases').catch(function () { return null; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
+        fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[3] || {};
+        state.systemTables = (results[4] && results[4].tables) || [];
         renderDbSwitcher(results[2]);
         renderSidebar();
         if (location.hash !== '#/') location.hash = '#/';
@@ -796,6 +836,13 @@ export const guiAppHtml = `<!doctype html>
         return '<li><a data-route="#/objects/' + t.name + '" href="#/objects/' + t.name +
           '"><span class="nav-icon">' + d.icon + '</span> ' + escapeHtml(d.label) + '</a></li>';
       }).join('');
+
+      var sys = document.getElementById('system-nav');
+      sys.innerHTML = (state.systemTables || []).map(function (t) {
+        return '<li><a data-route="#/system/' + t.name + '" href="#/system/' + t.name +
+          '"><span class="nav-icon">⚙</span> ' + escapeHtml(t.name) + '</a></li>';
+      }).join('');
+
       highlightActive();
     }
 
@@ -824,6 +871,9 @@ export const guiAppHtml = `<!doctype html>
         else      renderTable(content, m[1]);
         return;
       }
+
+      var sm = /^#\\/system\\/([^/]+)$/.exec(hash);
+      if (sm) { renderSystemTable(content, sm[1]); return; }
 
       if (hash === '#/settings/data-model') { renderDataModel(content); return; }
       if (hash === '#/settings/history') { renderHistory(content); return; }
@@ -1347,6 +1397,53 @@ export const guiAppHtml = `<!doctype html>
     }
 
     // ────────────────────────────────────────────────────────────
+    // System tables (Lattice-internal — read-only browse view)
+    // ────────────────────────────────────────────────────────────
+    function renderSystemTable(content, tableName) {
+      var entry = (state.systemTables || []).find(function (t) { return t.name === tableName; });
+      if (!entry) {
+        content.innerHTML = '<div class="placeholder">Unknown system table: ' + escapeHtml(tableName) + '</div>';
+        return;
+      }
+      content.innerHTML =
+        '<div class="view-header">' +
+          '<span class="entity-icon">⚙</span>' +
+          '<h1>' + escapeHtml(tableName) + '</h1>' +
+          '<span class="count">' + entry.rowCount + ' row' + (entry.rowCount === 1 ? '' : 's') +
+            ' · read-only</span>' +
+        '</div>' +
+        '<div class="muted" style="margin-bottom:12px;font-size:13px;">' +
+          'Lattice-internal table — shown here for inspection only. The GUI does not allow editing.' +
+        '</div>' +
+        '<table id="system-table"><thead><tr></tr></thead><tbody></tbody></table>';
+
+      fetchJson('/api/system-tables/' + encodeURIComponent(tableName) + '/rows').then(function (data) {
+        var rows = data.rows || [];
+        var cols = entry.columns;
+        var thead = content.querySelector('#system-table thead tr');
+        thead.innerHTML = cols.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('');
+        var tbody = content.querySelector('#system-table tbody');
+        if (rows.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="' + cols.length + '" class="muted" style="padding:24px;text-align:center;">Empty</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map(function (r) {
+          var tds = cols.map(function (c) {
+            var v = r[c];
+            if (v == null) return '<td class="muted">—</td>';
+            var s = String(v);
+            return '<td>' + escapeHtml(s.length > 200 ? s.slice(0, 200) + '…' : s) + '</td>';
+          }).join('');
+          return '<tr>' + tds + '</tr>';
+        }).join('');
+      }).catch(function (err) {
+        content.querySelector('#system-table tbody').innerHTML =
+          '<tr><td colspan="' + entry.columns.length + '" class="muted" style="padding:24px;">' +
+          'Failed to load: ' + escapeHtml(err.message) + '</td></tr>';
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
     // Version history page (#/settings/history)
     // ────────────────────────────────────────────────────────────
     var historyFilterTable = '';
@@ -1547,6 +1644,21 @@ export const guiAppHtml = `<!doctype html>
     // ────────────────────────────────────────────────────────────
     var dmActiveTable = null;
 
+    /** Columns that are structurally part of every entity and shouldn't be
+     * renamed or removed from the GUI. id is the primary key; deleted_at is
+     * the soft-delete column whose semantics undo/redo depends on. */
+    var LOCKED_COLUMNS = ['id', 'deleted_at'];
+
+    /** Curated emoji set for entity icons. Click one to select. */
+    var EMOJI_PALETTE = [
+      '📋', '📅', '👥', '✉️', '📦', '💿', '📄', '🔐',
+      '🗂️', '📁', '📓', '📕', '📗', '📘', '📙', '📒',
+      '📊', '📈', '📌', '📍', '🧾', '🧰', '🧪', '🧬',
+      '🛒', '💼', '💳', '💰', '🏢', '🏬', '🏛️', '🚀',
+      '🎯', '🎨', '🛠️', '🔧', '⚙️', '⚡', '🌟', '🔔',
+      '🔖', '🔍', '❤️', '🌐', '🌎', '🐙', '🦄', '👤',
+    ];
+
     function renderDataModel(content) {
       content.innerHTML =
         '<div class="view-header">' +
@@ -1610,8 +1722,8 @@ export const guiAppHtml = `<!doctype html>
               '<input id="dm-create-name" placeholder="e.g. invoices" autofocus />' +
             '</div>' +
             '<label>Icon</label>' +
-            '<div class="dm-row-inline">' +
-              '<input id="dm-create-icon" maxlength="8" placeholder="📋" />' +
+            '<div>' +
+              emojiPickerHtml('dm-create-icon', '📋') +
             '</div>' +
             '<label></label>' +
             '<div class="dm-row-inline">' +
@@ -1619,9 +1731,10 @@ export const guiAppHtml = `<!doctype html>
             '</div>' +
           '</div>' +
           '<div class="muted" style="margin-top:14px;font-size:12px;">' +
-            'New entities get \`id\` (uuid PK), \`name\`, and \`deleted_at\` columns. ' +
+            'New entities get id (uuid PK), name, and deleted_at columns. ' +
             'Add more columns once the entity exists.' +
           '</div>';
+        wireEmojiPicker(panel, 'dm-create-icon');
         panel.querySelector('#dm-create-btn').addEventListener('click', function () {
           var name = panel.querySelector('#dm-create-name').value.trim();
           var icon = panel.querySelector('#dm-create-icon').value.trim();
@@ -1650,8 +1763,20 @@ export const guiAppHtml = `<!doctype html>
       var d = displayFor(tableName);
       var override = state.iconOverrides[tableName];
       var overrideIcon = (override && override.icon) || '';
-      var editableCols = (t.columns || []).filter(function (c) { return c !== 'id'; });
-      var columnsHtml = editableCols.map(function (c) {
+      // Render every column, but render locked ones (id, deleted_at) as
+      // read-only labels — they're structural and renaming would break
+      // soft-delete / version-history semantics.
+      var allCols = (t.columns || []);
+      var columnsHtml = allCols.map(function (c) {
+        var locked = LOCKED_COLUMNS.indexOf(c) !== -1;
+        if (locked) {
+          return '<div class="dm-col-row">' +
+            '<div class="dm-locked">' + escapeHtml(c) +
+              '<span class="dm-locked-label">system</span>' +
+            '</div>' +
+            '<span></span><span></span>' +
+            '</div>';
+        }
         var secret = isSecretColumn(tableName, c);
         return '<div class="dm-col-row">' +
           '<input class="dm-col-name" data-col="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
@@ -1672,12 +1797,12 @@ export const guiAppHtml = `<!doctype html>
             '<button class="btn" id="dm-rename-btn">Save</button>' +
           '</div>' +
           '<label>Icon</label>' +
-          '<div class="dm-row-inline">' +
-            '<input id="dm-icon-input" maxlength="8" placeholder="📋" value="' + escapeHtml(overrideIcon) + '" />' +
-            '<button class="btn" id="dm-icon-btn">Save</button>' +
+          '<div>' +
+            emojiPickerHtml('dm-icon-input', overrideIcon) +
+            '<button class="btn" id="dm-icon-btn" style="margin-top:6px;">Save</button>' +
           '</div>' +
           '<label>Columns</label>' +
-          '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No editable columns</span>') + '</div>' +
+          '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
           '<label>Add column</label>' +
           '<div class="dm-row-inline">' +
             '<input id="dm-newcol-name" placeholder="column_name" />' +
@@ -1694,7 +1819,45 @@ export const guiAppHtml = `<!doctype html>
             '<button class="btn primary" id="dm-newcol-btn">Add</button>' +
           '</div>' +
         '</div>';
+      wireEmojiPicker(panel, 'dm-icon-input');
       wireEntityEditPanel(panel, tableName);
+    }
+
+    /** Render an emoji-picker grid + hidden input. The hidden input's value
+     *  is the currently selected emoji; clicking a tile updates it and the
+     *  visible "selected" preview. */
+    function emojiPickerHtml(inputId, currentValue) {
+      var current = currentValue || '';
+      var tiles = EMOJI_PALETTE.map(function (e) {
+        var active = e === current ? ' active' : '';
+        return '<button type="button" class="emoji-tile' + active +
+          '" data-emoji="' + escapeHtml(e) + '" aria-label="' + escapeHtml(e) + '">' + e + '</button>';
+      }).join('');
+      return '<div class="emoji-picker" data-input-id="' + escapeHtml(inputId) + '">' +
+        '<div class="emoji-current">' +
+          '<span class="emoji-preview">' + (current ? escapeHtml(current) : '<span class="muted">—</span>') + '</span>' +
+          '<span class="muted" style="font-size:11px;">selected</span>' +
+        '</div>' +
+        '<div class="emoji-grid">' + tiles + '</div>' +
+        '<input type="hidden" id="' + escapeHtml(inputId) + '" value="' + escapeHtml(current) + '" />' +
+      '</div>';
+    }
+
+    function wireEmojiPicker(panel, inputId) {
+      var picker = panel.querySelector('.emoji-picker[data-input-id="' + inputId + '"]');
+      if (!picker) return;
+      var input = picker.querySelector('input[type="hidden"]');
+      var preview = picker.querySelector('.emoji-preview');
+      picker.querySelectorAll('.emoji-tile').forEach(function (tile) {
+        tile.addEventListener('click', function () {
+          var v = tile.getAttribute('data-emoji');
+          input.value = v;
+          preview.textContent = v;
+          picker.querySelectorAll('.emoji-tile').forEach(function (t) {
+            t.classList.toggle('active', t === tile);
+          });
+        });
+      });
     }
 
     /** Wire up the edit-entity controls in the Data Model side panel. */

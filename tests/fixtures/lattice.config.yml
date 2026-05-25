@@ -92,6 +92,17 @@ entities:
       id: { type: uuid, primaryKey: true }
       project_id: { type: uuid, ref: projects }
       file_id: { type: uuid, ref: files }
+  Invoices:
+    fields:
+      id:
+        type: uuid
+        primaryKey: true
+      name:
+        type: text
+        required: true
+      deleted_at:
+        type: text
+    outputFile: INVOICES.md
 
 # Per-row rendered context files. Each row is written to:
 #   ./context/<directoryRoot>/<id>/<FILE>.md

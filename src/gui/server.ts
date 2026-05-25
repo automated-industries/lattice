@@ -767,6 +767,57 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── System tables (Lattice-internal, read-only in the GUI) ────────
+        if (method === 'GET' && pathname === '/api/system-tables') {
+          // Lattice + GUI internal tables — `__lattice_*` (migration ledger,
+          // changelog, etc.) and `_lattice_gui_*` (icon overrides, audit log,
+          // column meta). Shown in the Objects sidebar under "System" so the
+          // user can browse but not edit them.
+          const rows = (await (async () => {
+            type Adapter = { allAsync?: (sql: string) => Promise<unknown[]> };
+            const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
+            if (!adapter.allAsync) return [];
+            // The underscore is a LIKE wildcard, so '_%' would match any
+            // table. Use ESCAPE to take it literally.
+            return adapter.allAsync(
+              `SELECT name FROM sqlite_master
+               WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'
+               ORDER BY name`,
+            );
+          })()) as { name: string }[];
+          const tables: { name: string; columns: string[]; rowCount: number }[] = [];
+          for (const r of rows) {
+            const cols = (await (async () => {
+              type Adapter = { allAsync?: (sql: string) => Promise<unknown[]> };
+              const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
+              return adapter.allAsync?.(`PRAGMA table_info("${r.name}")`) ?? Promise.resolve([]);
+            })()) as { name: string }[];
+            const rowCount = await active.db.count(r.name);
+            tables.push({ name: r.name, columns: cols.map((c) => c.name), rowCount });
+          }
+          sendJson(res, { tables });
+          return;
+        }
+        if (method === 'GET' && /^\/api\/system-tables\/[^/]+\/rows$/.test(pathname)) {
+          const parts = pathname.split('/');
+          const sysTable = decodeURIComponent(parts[3] ?? '');
+          if (!/^_+[a-zA-Z0-9_]+$/.test(sysTable)) {
+            sendJson(res, { error: 'Not a system table' }, 400);
+            return;
+          }
+          const limit = Number(url.searchParams.get('limit') ?? '500');
+          const rowsResult = (await (async () => {
+            type Adapter = { allAsync?: (sql: string) => Promise<unknown[]> };
+            const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
+            return (
+              adapter.allAsync?.(`SELECT * FROM "${sysTable}" LIMIT ${String(limit)}`) ??
+              Promise.resolve([])
+            );
+          })()) as Record<string, unknown>[];
+          sendJson(res, { rows: rowsResult });
+          return;
+        }
+
         // ── Database switcher ─────────────────────────────────────────────
         if (method === 'GET' && pathname === '/api/databases') {
           sendJson(res, {
