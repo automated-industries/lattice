@@ -2084,11 +2084,11 @@ npx lattice gui --config ./lattice.config.yml --output ./context --port 4317
 
 Opening a database with `lattice gui` is **additive** but mutates the schema: on the first run against any given DB, the GUI creates three `_lattice_gui_*` tables for its own bookkeeping:
 
-| Table                     | Purpose                                                     |
-| ------------------------- | ----------------------------------------------------------- |
-| `_lattice_gui_meta`       | Per-entity icon overrides edited from the browser           |
+| Table                      | Purpose                                                     |
+| -------------------------- | ----------------------------------------------------------- |
+| `_lattice_gui_meta`        | Per-entity icon overrides edited from the browser           |
 | `_lattice_gui_column_meta` | Per-column flags (e.g. mark a column as `secret`)           |
-| `_lattice_gui_audit`      | Linear audit log of every GUI mutation — powers undo / redo |
+| `_lattice_gui_audit`       | Linear audit log of every GUI mutation — powers undo / redo |
 
 These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entities`, the dashboard, and rendered context output. They are not part of your declared schema and do not affect any `Lattice` API calls. **No fictional / demo rows are ever inserted** — your existing data is what the GUI shows.
 
