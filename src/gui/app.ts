@@ -520,6 +520,40 @@ export const guiAppHtml = `<!doctype html>
     }
     .danger-btn { background: #fff4f4; color: #b3231f; border-color: #f5c2c0; }
     .danger-btn:hover { background: #ffe4e4; }
+
+    /* Modal — used by the teams flows. Self-contained so it doesn't
+       collide with any modal styles the GUI agent may add later. */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.32);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .modal {
+      background: var(--surface); border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+      min-width: 420px; max-width: 560px; max-height: 80vh;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .modal-head {
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      font-size: 15px; font-weight: 600;
+    }
+    .modal-body {
+      padding: 16px 18px; overflow-y: auto; flex: 1;
+    }
+    .modal-foot {
+      padding: 12px 18px; border-top: 1px solid var(--border);
+      display: flex; gap: 8px; justify-content: flex-end;
+    }
+    .modal-foot .btn {
+      padding: 6px 14px; border: 1px solid var(--border-strong);
+      border-radius: 6px; background: var(--surface); color: var(--text);
+    }
+    .modal-foot .btn:hover { background: var(--row-hover); }
+    .modal-foot .btn.primary {
+      background: var(--accent); color: white; border-color: var(--accent);
+    }
+    .modal-foot .btn.primary:hover { background: #1f56c2; }
     .modal .field { margin-bottom: 12px; }
     .modal .field label {
       display: block; margin-bottom: 4px; font-size: 12px;
@@ -2176,6 +2210,50 @@ export const guiAppHtml = `<!doctype html>
     // ────────────────────────────────────────────────────────────
     function fetchConnections() {
       return fetchJson('/api/teams-gui/connections').then(function (d) { return d.connections; });
+    }
+
+    /**
+     * Minimal modal helper for the teams flows. Returns { close } so
+     * callers can dismiss imperatively (used by the invite-token modal
+     * after copy). opts.onSubmit may return a Promise — the OK button
+     * stays disabled until it resolves, then the modal closes.
+     */
+    function showModal(title, bodyHtml, opts) {
+      opts = opts || {};
+      var primaryLabel = opts.primaryLabel || 'Save';
+      var backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML =
+        '<div class="modal">' +
+          '<div class="modal-head">' + escapeHtml(title) + '</div>' +
+          '<div class="modal-body">' + bodyHtml + '</div>' +
+          '<div class="modal-foot">' +
+            '<button class="btn" data-act="cancel">Cancel</button>' +
+            '<button class="btn primary" data-act="ok">' + escapeHtml(primaryLabel) + '</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(backdrop);
+      function close() { if (backdrop.parentNode) document.body.removeChild(backdrop); }
+      backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
+      backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
+      backdrop.querySelector('[data-act="ok"]').addEventListener('click', function () {
+        var btn = backdrop.querySelector('[data-act="ok"]');
+        try {
+          var result = opts.onSubmit ? opts.onSubmit(backdrop) : null;
+          if (result && typeof result.then === 'function') {
+            btn.setAttribute('disabled', 'disabled');
+            result.then(function () { close(); }).catch(function (err) {
+              btn.removeAttribute('disabled');
+              alert('Failed: ' + (err && err.message ? err.message : String(err)));
+            });
+          } else {
+            close();
+          }
+        } catch (err) {
+          alert('Failed: ' + (err && err.message ? err.message : String(err)));
+        }
+      });
+      return { close: close };
     }
 
     function renderTeamsEmpty(content, kind) {
