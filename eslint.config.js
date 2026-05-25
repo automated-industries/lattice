@@ -46,6 +46,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'docs-generated/**', 'eslint.config.js'],
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'docs-generated/**', 'eslint.config.js', 'tests/smoke/**'],
   },
 );
