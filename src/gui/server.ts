@@ -1,13 +1,7 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
-import {
-  buildGuiGraph,
-  getGuiEntities,
-  getGuiEntityFiles,
-  getGuiProject,
-  previewDroppedFile,
-} from './graph.js';
+import { buildGuiGraph, getGuiEntities, getGuiProject } from './data.js';
 import { guiAppHtml } from './app.js';
 
 export interface StartGuiServerOptions {
@@ -40,23 +34,6 @@ function sendText(
 ): void {
   res.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store' });
   res.end(body);
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolveBody, reject) => {
-    let body = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => {
-      body += chunk;
-      if (body.length > 1_000_000) {
-        req.destroy(new Error('Request body too large'));
-      }
-    });
-    req.on('end', () => {
-      resolveBody(body);
-    });
-    req.on('error', reject);
-  });
 }
 
 function openUrl(url: string): void {
@@ -101,60 +78,28 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const startPort = options.port ?? 4317;
 
   const server = createServer((req, res) => {
-    void (async () => {
-      try {
-        const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-        if (req.method === 'GET' && url.pathname === '/') {
-          sendText(res, guiAppHtml, 200, 'text/html; charset=utf-8');
-          return;
-        }
-        if (req.method === 'GET' && url.pathname === '/api/project') {
-          sendJson(res, getGuiProject(configPath, outputDir));
-          return;
-        }
-        if (req.method === 'GET' && url.pathname === '/api/entities') {
-          sendJson(res, getGuiEntities(configPath, outputDir));
-          return;
-        }
-        if (req.method === 'GET' && url.pathname === '/api/graph') {
-          sendJson(res, buildGuiGraph(configPath, outputDir));
-          return;
-        }
-        if (req.method === 'GET' && url.pathname === '/api/files') {
-          const table = url.searchParams.get('entity');
-          const slug = url.searchParams.get('slug');
-          if (!table || !slug) {
-            sendJson(res, { error: 'Missing entity or slug query parameter' }, 400);
-            return;
-          }
-          sendJson(res, getGuiEntityFiles(configPath, outputDir, table, slug));
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/drop') {
-          const parsed = JSON.parse(await readBody(req)) as {
-            name?: unknown;
-            content?: unknown;
-            size?: unknown;
-          };
-          if (typeof parsed.name !== 'string') {
-            sendJson(res, { error: 'Dropped file requires a name' }, 400);
-            return;
-          }
-          sendJson(
-            res,
-            previewDroppedFile({
-              name: parsed.name,
-              ...(typeof parsed.content === 'string' ? { content: parsed.content } : {}),
-              ...(typeof parsed.size === 'number' ? { size: parsed.size } : {}),
-            }),
-          );
-          return;
-        }
-        sendJson(res, { error: 'Not found' }, 404);
-      } catch (err) {
-        sendJson(res, { error: (err as Error).message }, 500);
+    try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (req.method === 'GET' && url.pathname === '/') {
+        sendText(res, guiAppHtml, 200, 'text/html; charset=utf-8');
+        return;
       }
-    })();
+      if (req.method === 'GET' && url.pathname === '/api/project') {
+        sendJson(res, getGuiProject(configPath, outputDir));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/entities') {
+        sendJson(res, getGuiEntities(configPath, outputDir));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/graph') {
+        sendJson(res, buildGuiGraph(configPath, outputDir));
+        return;
+      }
+      sendJson(res, { error: 'Not found' }, 404);
+    } catch (err) {
+      sendJson(res, { error: (err as Error).message }, 500);
+    }
   });
 
   const port = await listenWithPortFallback(server, startPort);

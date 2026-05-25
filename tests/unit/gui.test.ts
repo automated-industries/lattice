@@ -2,12 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  buildGuiGraph,
-  getGuiEntities,
-  getGuiEntityFiles,
-  isJunctionTable,
-} from '../../src/gui/graph.js';
+import { buildGuiGraph, getGuiEntities, isJunctionTable } from '../../src/gui/data.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { writeManifest } from '../../src/lifecycle/manifest.js';
 
@@ -222,13 +217,6 @@ describe('GUI graph builder', () => {
     expect(() => buildGuiGraph(configPath, outputDir)).toThrow(/escapes output directory/);
   });
 
-  it('reads safe entity file contents', () => {
-    const { configPath, outputDir } = writeFixture(tempDir());
-    const payload = getGuiEntityFiles(configPath, outputDir, 'agents', 'alpha');
-    expect(payload.files.some((f) => f.name === 'AGENT.md' && f.content.includes('Alpha'))).toBe(
-      true,
-    );
-  });
 });
 
 describe('GUI server', () => {
@@ -254,20 +242,6 @@ describe('GUI server', () => {
     expect(graph.edges.length).toBeGreaterThan(0);
   });
 
-  it('previews dropped files without writing them', async () => {
-    const { configPath, outputDir } = writeFixture(tempDir());
-    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
-    servers.push(server);
-
-    const preview = (await fetch(`${server.url}/api/drop`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'NOTES.md', content: '# Notes' }),
-    }).then((r) => r.json())) as { type: string; lineCount: number };
-
-    expect(preview.type).toBe('context');
-    expect(preview.lineCount).toBe(1);
-  });
 });
 
 describe('isJunctionTable', () => {

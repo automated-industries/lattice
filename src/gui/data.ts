@@ -66,11 +66,6 @@ export interface GuiGraphPayload {
   edges: GuiGraphEdge[];
 }
 
-export interface GuiEntityFilesPayload {
-  entity: GuiEntitySummary;
-  files: (GuiFileSummary & { content: string })[];
-}
-
 interface GuiData {
   parsed: ParsedConfig;
   manifest: LatticeManifest | null;
@@ -356,50 +351,3 @@ export function isJunctionTable(table: GuiTableSummary): boolean {
   return belongsTo.length === 2 && Object.keys(table.relations).length === 2;
 }
 
-export function getGuiEntityFiles(
-  configPath: string,
-  outputDir: string,
-  table: string,
-  slug: string,
-): GuiEntityFilesPayload {
-  const data = loadGuiData(configPath, outputDir);
-  const entity = data.entities.find((e) => e.table === table && e.slug === slug);
-  if (!entity) throw new Error(`Unknown entity: ${table}/${slug}`);
-  return {
-    entity,
-    files: entity.files.map((file) => ({
-      ...file,
-      content: file.exists ? readFileSync(safeResolveInside(outputDir, file.path), 'utf8') : '',
-    })),
-  };
-}
-
-export interface DroppedFilePreview {
-  name: string;
-  type: 'config' | 'database' | 'context' | 'manifest' | 'unknown';
-  bytes: number;
-  lineCount: number;
-}
-
-export function previewDroppedFile(input: {
-  name: string;
-  content?: string;
-  size?: number;
-}): DroppedFilePreview {
-  const name = input.name;
-  const lower = name.toLowerCase();
-  const content = input.content ?? '';
-  let type: DroppedFilePreview['type'] = 'unknown';
-  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) type = 'config';
-  else if (lower.endsWith('.db') || lower.endsWith('.sqlite')) type = 'database';
-  else if (lower === 'manifest.json') type = 'manifest';
-  else if (lower.endsWith('.md') || lower.endsWith('.json') || lower.endsWith('.txt'))
-    type = 'context';
-
-  return {
-    name,
-    type,
-    bytes: input.size ?? Buffer.byteLength(content),
-    lineCount: content ? content.split(/\r?\n/).length : 0,
-  };
-}
