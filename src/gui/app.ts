@@ -5,25 +5,38 @@ export const guiAppHtml = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lattice Browser</title>
   <style>
+    /* Design tokens copied from lattice-website's tailwind.config.ts
+       (tailwind.config theme.extend.colors). The local GUI ships these
+       inline so it doesn't need a build step or a network fetch — keep
+       in sync manually when the website's palette changes. Last sync:
+       tailwind.config.ts as of feat/teams branch. */
     :root {
-      --bg: #f4f5f7;
-      --surface: #ffffff;
-      --border: #e2e5ea;
-      --border-strong: #c9cdd4;
-      --text: #1f2328;
-      --text-muted: #6b7280;
-      --accent: #2f6feb;
-      --accent-soft: #e7efff;
-      --row-hover: #f6f7fa;
-      --shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+      --bg: #0b0d10;
+      --surface: #13171b;
+      --surface-2: #1a1f25;
+      --border: #262d36;
+      --border-strong: #2f3742;
+      --text: #e7ecf0;
+      --text-muted: #8b96a3;
+      --accent: #bef264;
+      --accent-deep: #84cc16;
+      --accent-glow: #d9f99d;
+      --accent-soft: rgba(190, 242, 100, 0.12);
+      --row-hover: #1a1f25;
+      --signal: #22d3ee;
+      --warn: #fb923c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       color: var(--text);
       background: var(--bg);
       font-size: 14px;
+    }
+    code, kbd, samp, pre {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     a { color: inherit; text-decoration: none; }
     button { font: inherit; cursor: pointer; }
@@ -32,8 +45,8 @@ export const guiAppHtml = `<!doctype html>
     header.topbar {
       display: flex; align-items: center; gap: 12px;
       min-height: 56px; padding: 8px 20px;
-      background: #0b0d10; border-bottom: 1px solid #1f2328;
-      color: #e6e8eb;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      color: var(--text);
       flex-wrap: wrap;
     }
     .brand {
@@ -63,7 +76,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .history-entry { display: flex; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
     .history-entry:last-child { border-bottom: none; }
-    .history-entry.is-undone { background: #fafbfc; }
+    .history-entry.is-undone { background: var(--surface-2); }
     .history-entry.is-undone .history-summary { color: var(--text-muted); text-decoration: line-through; }
     .history-meta { min-width: 200px; font-size: 12px; color: var(--text-muted); }
     .history-meta .history-op {
@@ -72,22 +85,22 @@ export const guiAppHtml = `<!doctype html>
       border-radius: 8px; font-size: 11px; text-transform: uppercase;
       letter-spacing: 0.04em; font-weight: 600;
     }
-    .history-op.op-delete { background: #fef3f2; color: #b42318; }
-    .history-op.op-link, .history-op.op-unlink { background: #f3f0fe; color: #6941c6; }
+    .history-op.op-delete { background: rgba(251, 146, 60, 0.12); color: var(--warn); }
+    .history-op.op-link, .history-op.op-unlink { background: rgba(34, 211, 238, 0.15); color: var(--signal); }
     .history-summary { flex: 1; font-size: 13.5px; }
     .history-summary .history-table { font-weight: 600; }
     .history-diff {
       margin-top: 8px; font-family: ui-monospace, monospace; font-size: 12px;
-      background: #fafbfc; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
       padding: 8px 10px; white-space: pre-wrap;
     }
-    .history-diff .diff-add { color: #027a48; }
-    .history-diff .diff-rem { color: #b42318; }
+    .history-diff .diff-add { color: var(--accent); }
+    .history-diff .diff-rem { color: var(--warn); }
     .history-actions { display: flex; flex-direction: column; gap: 4px; }
     .history-actions .btn { font-size: 12px; height: 26px; padding: 0 10px; }
     #history-filter {
       height: 30px; padding: 0 10px; font: inherit; font-size: 13px;
-      border: 1px solid var(--border-strong); border-radius: 6px; background: white;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface);
     }
 
     /* DB switcher in the top bar */
@@ -123,7 +136,7 @@ export const guiAppHtml = `<!doctype html>
     .db-menu .db-create input {
       width: 100%; height: 30px; padding: 0 10px; font: inherit;
       border: 1px solid var(--border-strong); border-radius: 6px;
-      background: white; margin-bottom: 6px;
+      background: var(--surface); margin-bottom: 6px;
     }
 
     /* ── Layout ────────────────────────────────────────── */
@@ -189,7 +202,7 @@ export const guiAppHtml = `<!doctype html>
     thead th {
       text-align: left; font-weight: 600; font-size: 12.5px;
       color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;
-      padding: 12px 14px; background: #fafbfc;
+      padding: 12px 14px; background: var(--surface-2);
       border-bottom: 1px solid var(--border);
     }
     tbody td {
@@ -281,7 +294,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .chip-removable button:hover { background: rgba(47, 111, 235, 0.15); }
     select.dm-add { width: 100%; padding: 6px 10px; font: inherit;
-      border: 1px solid var(--border-strong); border-radius: 6px; background: white; }
+      border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
 
     /* Data Model entity-edit panel */
     .dm-section { margin: 10px 0; }
@@ -303,7 +316,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .dm-edit-grid input, .dm-edit-grid select {
       padding: 7px 10px; font: inherit; border: 1px solid var(--border-strong);
-      border-radius: 6px; background: white; font-size: 13.5px;
+      border-radius: 6px; background: var(--surface); font-size: 13.5px;
       min-width: 0;
     }
     .dm-row-inline { display: flex; gap: 8px; align-items: center; min-width: 0; }
@@ -317,11 +330,11 @@ export const guiAppHtml = `<!doctype html>
     }
     .dm-col-row input {
       padding: 7px 10px; font: inherit; border: 1px solid var(--border);
-      border-radius: 6px; background: white; font-size: 13.5px; min-width: 0;
+      border-radius: 6px; background: var(--surface); font-size: 13.5px; min-width: 0;
     }
     .dm-col-row .dm-locked {
       padding: 7px 10px; font: inherit; font-size: 13.5px;
-      color: var(--text-muted); background: #fafbfc;
+      color: var(--text-muted); background: var(--surface-2);
       border: 1px dashed var(--border); border-radius: 6px;
       display: flex; align-items: center; gap: 8px;
     }
@@ -340,7 +353,7 @@ export const guiAppHtml = `<!doctype html>
     .emoji-picker { position: relative; display: inline-block; }
     .emoji-trigger {
       display: inline-flex; align-items: center; gap: 8px;
-      padding: 4px 8px 4px 10px; background: white;
+      padding: 4px 8px 4px 10px; background: var(--surface);
       border: 1px solid var(--border-strong); border-radius: 6px;
       cursor: pointer; min-width: 70px;
     }
@@ -399,10 +412,10 @@ export const guiAppHtml = `<!doctype html>
       font-size: 13px;
     }
     .btn:hover { background: var(--row-hover); }
-    .btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
-    .btn.primary:hover { background: #1f5dd1; }
-    .btn.danger { color: #b42318; border-color: #f2c4c0; }
-    .btn.danger:hover { background: #fef3f2; }
+    .btn.primary { background: var(--accent); color: #0b0d10; border-color: var(--accent); font-weight: 600; }
+    .btn.primary:hover { background: var(--accent-glow); border-color: var(--accent-glow); }
+    .btn.danger { color: var(--warn); border-color: rgba(251, 146, 60, 0.4); }
+    .btn.danger:hover { background: rgba(251, 146, 60, 0.12); }
     .btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
     .btn.ghost:hover { background: var(--row-hover); color: var(--text); }
     .view-header .actions { margin-left: auto; display: flex; gap: 8px; }
@@ -414,17 +427,17 @@ export const guiAppHtml = `<!doctype html>
       font-size: 16px; cursor: pointer; padding: 4px 6px;
       border-radius: 4px;
     }
-    tr:hover .row-delete { color: #b42318; }
-    .row-delete:hover { background: #fef3f2; }
+    tr:hover .row-delete { color: var(--warn); }
+    .row-delete:hover { background: rgba(251, 146, 60, 0.12); }
     .row-restore:hover { background: var(--accent-soft); color: var(--accent); }
-    tr.row-deleted td { background: #fefbf3; color: var(--text-muted); }
+    tr.row-deleted td { background: rgba(251, 146, 60, 0.08); color: var(--text-muted); }
     tr.row-deleted:hover td { background: #fcf5e3; }
 
     /* Inline create-row at the bottom of every table */
-    tr.create-row td { background: #fafbfc; }
+    tr.create-row td { background: var(--surface-2); }
     tr.create-row input, tr.create-row textarea, tr.create-row select {
       width: 100%; padding: 6px 8px; font: inherit;
-      border: 1px solid var(--border); border-radius: 4px; background: white;
+      border: 1px solid var(--border); border-radius: 4px; background: var(--surface);
     }
     tr.create-row textarea { min-height: 32px; resize: vertical; }
     tr.create-row #inline-create {
@@ -437,7 +450,7 @@ export const guiAppHtml = `<!doctype html>
     .detail dl.editing input,
     .detail dl.editing textarea {
       width: 100%; padding: 6px 9px; font: inherit;
-      border: 1px solid var(--border-strong); border-radius: 6px; background: white;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface);
     }
     .detail dl.editing textarea { min-height: 60px; resize: vertical; }
 
@@ -457,7 +470,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .context-file-head .context-file-name { color: var(--text); font-weight: 600; text-transform: none; letter-spacing: 0; }
     .context-file pre {
-      margin: 0; padding: 12px; background: #fafbfc;
+      margin: 0; padding: 12px; background: var(--surface-2);
       border: 1px solid var(--border); border-radius: 6px;
       font-family: ui-monospace, 'SF Mono', 'Menlo', Consolas, monospace;
       font-size: 12.5px; line-height: 1.55;
@@ -492,7 +505,7 @@ export const guiAppHtml = `<!doctype html>
       margin: 10px 0 14px 0;
     }
     .team-stat {
-      background: #fafbfc; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
       padding: 8px 10px; text-align: center;
     }
     .team-stat .stat-label {
@@ -518,8 +531,8 @@ export const guiAppHtml = `<!doctype html>
       padding: 32px; text-align: center; color: var(--text-muted);
       border: 1px dashed var(--border-strong); border-radius: 8px;
     }
-    .danger-btn { background: #fff4f4; color: #b3231f; border-color: #f5c2c0; }
-    .danger-btn:hover { background: #ffe4e4; }
+    .danger-btn { background: rgba(251, 146, 60, 0.12); color: var(--warn); border-color: rgba(251, 146, 60, 0.4); }
+    .danger-btn:hover { background: rgba(251, 146, 60, 0.2); }
 
     /* Modal — used by the teams flows. Self-contained so it doesn't
        collide with any modal styles the GUI agent may add later. */
@@ -551,9 +564,9 @@ export const guiAppHtml = `<!doctype html>
     }
     .modal-foot .btn:hover { background: var(--row-hover); }
     .modal-foot .btn.primary {
-      background: var(--accent); color: white; border-color: var(--accent);
+      background: var(--accent); color: #0b0d10; border-color: var(--accent); font-weight: 600;
     }
-    .modal-foot .btn.primary:hover { background: #1f56c2; }
+    .modal-foot .btn.primary:hover { background: var(--accent-glow); border-color: var(--accent-glow); }
     .modal .field { margin-bottom: 12px; }
     .modal .field label {
       display: block; margin-bottom: 4px; font-size: 12px;
@@ -565,7 +578,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .modal .field textarea { min-height: 60px; font-family: ui-monospace, monospace; font-size: 12px; }
     .modal .copy-token {
-      padding: 8px 10px; background: #fafbfc; border: 1px solid var(--border);
+      padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border);
       border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px;
       word-break: break-all; cursor: pointer;
     }
