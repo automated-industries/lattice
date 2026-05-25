@@ -67,7 +67,7 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
     // Drop any test tables we created. Best-effort — failure here is
     // a teardown smell, not a test failure.
     try {
-      const rows = (await adapter.allAsync!(
+      const rows = (await adapter.allAsync(
         `SELECT tablename FROM pg_tables
          WHERE schemaname = current_schema()
            AND tablename LIKE $1`,
@@ -75,16 +75,15 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
       )) as { tablename: string }[];
       for (const r of rows) {
         try {
-          await adapter.runAsync!(`DROP TABLE IF EXISTS "${r.tablename}"`);
+          await adapter.runAsync(`DROP TABLE IF EXISTS "${r.tablename}"`);
         } catch {
           /* swallow teardown errors */
         }
       }
       // Clean migration ledger rows we added.
-      await adapter.runAsync!(
-        `DELETE FROM __lattice_migrations WHERE version LIKE $1`,
-        [`test-${runId}-%`],
-      );
+      await adapter.runAsync(`DELETE FROM __lattice_migrations WHERE version LIKE $1`, [
+        `test-${runId}-%`,
+      ]);
     } catch {
       /* DB may already be torn down */
     }
@@ -115,7 +114,7 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
     await expect(mgr.applyMigrationsAsync(adapter, migrations)).resolves.toBeUndefined();
 
     // Migration recorded in __lattice_migrations.
-    const recorded = await adapter.getAsync!(
+    const recorded = await adapter.getAsync(
       `SELECT version FROM __lattice_migrations WHERE version = $1`,
       [versionId],
     );
@@ -123,7 +122,7 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
     expect(recorded!.version).toBe(versionId);
 
     // Table actually created.
-    const cols = adapter.introspectColumns(tableName);
+    const cols = await adapter.introspectColumnsAsync(tableName);
     expect(cols.sort()).toEqual(['id', 'val']);
   });
 
@@ -140,7 +139,7 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
     // exists") or insert a duplicate __lattice_migrations row.
     await mgr.applyMigrationsAsync(adapter, migrations);
 
-    const rows = (await adapter.allAsync!(
+    const rows = (await adapter.allAsync(
       `SELECT version FROM __lattice_migrations WHERE version = $1`,
       [versionId],
     )) as { version: string }[];
@@ -161,13 +160,13 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
     // The whole withClient block rolls back on the failed migration. Neither
     // the good migration nor the bad migration should have been recorded,
     // and the good table should not exist on disk.
-    const recorded = (await adapter.allAsync!(
+    const recorded = (await adapter.allAsync(
       `SELECT version FROM __lattice_migrations WHERE version IN ($1, $2)`,
       [v1, v2],
     )) as { version: string }[];
     expect(recorded).toHaveLength(0);
 
-    const tableExists = await adapter.getAsync!(
+    const tableExists = await adapter.getAsync(
       `SELECT 1 AS one FROM pg_tables
        WHERE schemaname = current_schema() AND tablename = $1`,
       [goodTable],
@@ -234,8 +233,8 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
       expect(slower).toBeGreaterThanOrEqual(migrationDelayMs);
 
       // Both tables should exist.
-      expect(adapter.introspectColumns(tableA)).toContain('id');
-      expect(adapterB.introspectColumns(tableB)).toContain('id');
+      expect(await adapter.introspectColumnsAsync(tableA)).toContain('id');
+      expect(await adapterB.introspectColumnsAsync(tableB)).toContain('id');
     } finally {
       adapterB.close();
     }

@@ -124,11 +124,9 @@ export async function searchByEmbedding(
   // Fetch full rows using the table's primary key column
   const results: SearchResult[] = [];
   for (const { pk, score } of topResults) {
-    const row = await getAsyncOrSync(
-      adapter,
-      `SELECT * FROM "${table}" WHERE "${pkColumn}" = ?`,
-      [pk],
-    );
+    const row = await getAsyncOrSync(adapter, `SELECT * FROM "${table}" WHERE "${pkColumn}" = ?`, [
+      pk,
+    ]);
     if (row) {
       results.push({ row, score });
     }
