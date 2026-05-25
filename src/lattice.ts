@@ -231,14 +231,22 @@ export class Lattice {
    * `SchemaManager.applySchemaForAsync`). On SQLite, CREATE TABLE IF NOT
    * EXISTS plus the single-writer guarantee covers the race.
    *
-   * Throws if called before `init()` (use `define()` instead) or if the
-   * table is already registered.
+   * Idempotent: a second call for an already-registered table is a no-op
+   * (the underlying CREATE TABLE IF NOT EXISTS is already idempotent at
+   * the DB level; this skip avoids the SchemaManager.define throw on
+   * re-registration). Use this property for clients (e.g. TeamsClient)
+   * that may bootstrap their internal tables on every session start.
+   *
+   * Throws if called before `init()` (use `define()` instead).
    */
   async defineLate(table: string, def: TableDefinition): Promise<this> {
     if (!this._initialized) {
       throw new Error(
         'Lattice: defineLate() must be called after init() — use define() during setup',
       );
+    }
+    if (this._schema.getTables().has(table)) {
+      return this;
     }
     this._registerTable(table, def);
     await this._schema.applySchemaForAsync(this._adapter, table);

@@ -20,7 +20,9 @@ import type { Lattice } from '../../lattice.js';
  */
 
 const TOKEN_PREFIX = 'lat_';
+const INVITE_PREFIX = 'latinv_';
 const TOKEN_BYTES = 32;
+const INVITE_BYTES = 24;
 
 export interface AuthenticatedUser {
   id: string;
@@ -73,6 +75,25 @@ export function hashToken(rawToken: string): string {
 export function generateToken(): { raw: string; hash: string } {
   const raw = `${TOKEN_PREFIX}${randomBytes(TOKEN_BYTES).toString('hex')}`;
   return { raw, hash: hashToken(raw) };
+}
+
+/**
+ * Mint a new invitation token. Distinct prefix (`latinv_`) so the bearer
+ * extractor in `extractBearer()` rejects it for authentication — invites
+ * are exchanged via the redeem endpoint, never used as bearer tokens.
+ *
+ * Slightly shorter than API tokens (24 bytes vs 32) because invites are
+ * short-lived and one-time — still 192 bits of entropy, well past brute-
+ * force range.
+ */
+export function generateInviteToken(): { raw: string; hash: string } {
+  const raw = `${INVITE_PREFIX}${randomBytes(INVITE_BYTES).toString('hex')}`;
+  return { raw, hash: hashToken(raw) };
+}
+
+/** True iff a string has the invite-token shape. */
+export function isInviteToken(value: string): boolean {
+  return value.startsWith(INVITE_PREFIX);
 }
 
 /**
