@@ -179,24 +179,10 @@ export async function dispatchTeamRoute(
     return true;
   }
 
-  // Multi-team enumeration routes. Preserved for backwards-compatibility
-  // with PR #16's sync engine and existing tests; new code should call
-  // POST /api/team (creates the singleton) and GET /api/team (resolves
-  // the active team) instead. See CHANGELOG `Notes` under the OSS-only
-  // redesign entry for the deprecation timeline.
-  if (pathname === '/api/teams') {
-    if (method === 'POST') {
-      await handleCreateTeam(req, res, ctx);
-      return true;
-    }
-    if (method === 'GET') {
-      await handleListTeams(res, ctx);
-      return true;
-    }
-  }
-
-  // One-team-per-DB singleton API. Resolves the active team from
-  // __lattice_team_identity rather than encoding a team_id in the URL.
+  // One-team-per-DB singleton API. The team is created atomically by
+  // POST /api/auth/register (bootstrap-only); afterwards GET /api/team
+  // resolves the active team and DELETE /api/team destroys it. There
+  // is no enumeration surface — one cloud = one team.
   if (pathname === '/api/team') {
     if (method === 'GET') {
       await handleGetSingletonTeam(res, ctx);
@@ -209,12 +195,6 @@ export async function dispatchTeamRoute(
   }
   if (pathname === '/api/team/invitations' && method === 'POST') {
     await handleCreateSingletonInvitation(req, res, ctx);
-    return true;
-  }
-
-  const teamMatch = /^\/api\/teams\/([^/]+)$/.exec(pathname);
-  if (teamMatch && method === 'DELETE') {
-    await handleDeleteTeam(res, ctx, teamMatch[1] ?? '');
     return true;
   }
 
@@ -321,12 +301,17 @@ async function handleRegister(
   const body = await readJson(req);
   const email = requireString(body, 'email');
   const name = requireString(body, 'name');
+  const teamName = requireString(body, 'team_name');
   if (!email) {
     sendJson(res, { error: 'email is required' }, 400);
     return;
   }
   if (!name) {
     sendJson(res, { error: 'name is required' }, 400);
+    return;
+  }
+  if (!teamName) {
+    sendJson(res, { error: 'team_name is required' }, 400);
     return;
   }
 
@@ -341,6 +326,15 @@ async function handleRegister(
     return;
   }
 
+  // One team per DB. If the singleton already exists (e.g. a prior
+  // register call landed mid-way before this user row was written),
+  // refuse. Should be impossible under the single-writer event-loop
+  // invariant but cheap to assert.
+  if (await getTeamIdentity(ctx.db)) {
+    sendJson(res, { error: 'This cloud already has a team' }, 409);
+    return;
+  }
+
   const now = new Date().toISOString();
   const userId = await ctx.db.insert('__lattice_users', {
     email,
@@ -352,11 +346,38 @@ async function handleRegister(
   await ctx.db.insert('__lattice_api_tokens', {
     user_id: userId,
     token_hash: hash,
-    name: 'bootstrap',
+    name: `creator:${teamName}`,
+    created_at: now,
+  });
+  const teamId = await ctx.db.insert('__lattice_team', {
+    name: teamName,
+    created_by_user_id: userId,
+    created_at: now,
+    updated_at: now,
+  });
+  await ctx.db.insert('__lattice_team_members', {
+    team_id: teamId,
+    user_id: userId,
+    role: 'creator',
+    joined_at: now,
+  });
+  await ctx.db.insert('__lattice_team_identity', {
+    id: 'singleton',
+    team_id: teamId,
+    team_name: teamName,
+    creator_email: email,
     created_at: now,
   });
 
-  sendJson(res, { user: { id: userId, email, name }, raw_token: raw }, 201);
+  sendJson(
+    res,
+    {
+      user: { id: userId, email, name },
+      raw_token: raw,
+      team: { id: teamId, name: teamName, role: 'creator' },
+    },
+    201,
+  );
 }
 
 interface TeamIdentityRow {
@@ -375,12 +396,6 @@ async function getTeamIdentity(db: Lattice): Promise<TeamIdentityRow | null> {
   } catch {
     return null;
   }
-}
-
-/** Look up a user's email by id from __lattice_users. */
-async function getUserEmail(db: Lattice, userId: string): Promise<string | null> {
-  const row = (await db.get('__lattice_users', userId)) as UserRow | null;
-  return row?.email ?? null;
 }
 
 async function handleRedeemInvite(
@@ -524,119 +539,6 @@ async function handleRevokeToken(
       revoked_at: new Date().toISOString(),
     });
   }
-  sendJson(res, { ok: true });
-}
-
-async function handleCreateTeam(
-  req: IncomingMessage,
-  res: ServerResponse,
-  ctx: TeamRouteContext,
-): Promise<void> {
-  if (!ctx.authContext) {
-    sendJson(res, { error: 'Unauthorized' }, 401);
-    return;
-  }
-  const body = await readJson(req);
-  const name = requireString(body, 'name');
-  if (!name) {
-    sendJson(res, { error: 'name is required' }, 400);
-    return;
-  }
-  // One team per DB. Reject if the singleton identity row already exists.
-  const existing = await getTeamIdentity(ctx.db);
-  if (existing) {
-    sendJson(
-      res,
-      {
-        error: 'This DB already has a team. Use DELETE /api/team to destroy it first.',
-        team_id: existing.team_id,
-        team_name: existing.team_name,
-      },
-      409,
-    );
-    return;
-  }
-  const callerEmail = await getUserEmail(ctx.db, ctx.authContext.user.id);
-  if (!callerEmail) {
-    sendJson(res, { error: 'Caller has no email on file' }, 500);
-    return;
-  }
-  const now = new Date().toISOString();
-  const teamId = await ctx.db.insert('__lattice_team', {
-    name,
-    created_by_user_id: ctx.authContext.user.id,
-    created_at: now,
-    updated_at: now,
-  });
-  await ctx.db.insert('__lattice_team_members', {
-    team_id: teamId,
-    user_id: ctx.authContext.user.id,
-    role: 'creator',
-    joined_at: now,
-  });
-  // Mirror into the singleton identity table so the new /api/team
-  // endpoints can resolve the active team without scanning.
-  await ctx.db.insert('__lattice_team_identity', {
-    id: 'singleton',
-    team_id: teamId,
-    team_name: name,
-    creator_email: callerEmail,
-    created_at: now,
-  });
-  sendJson(res, { id: teamId, name, role: 'creator' }, 201);
-}
-
-async function handleListTeams(res: ServerResponse, ctx: TeamRouteContext): Promise<void> {
-  if (!ctx.authContext) {
-    sendJson(res, { error: 'Unauthorized' }, 401);
-    return;
-  }
-  const memberships = (await ctx.db.query('__lattice_team_members', {
-    filters: [{ col: 'user_id', op: 'eq', val: ctx.authContext.user.id }],
-  })) as unknown as TeamMemberRow[];
-  if (memberships.length === 0) {
-    sendJson(res, { teams: [] });
-    return;
-  }
-  const teamIds = memberships.map((m) => m.team_id);
-  const teams = (await ctx.db.query('__lattice_team', {
-    filters: [
-      { col: 'id', op: 'in', val: teamIds },
-      { col: 'deleted_at', op: 'isNull' },
-    ],
-  })) as unknown as TeamRow[];
-  const roleByTeam = new Map(memberships.map((m) => [m.team_id, m.role]));
-  sendJson(res, {
-    teams: teams.map((t) => ({
-      id: t.id,
-      name: t.name,
-      role: roleByTeam.get(t.id) ?? 'member',
-    })),
-  });
-}
-
-async function handleDeleteTeam(
-  res: ServerResponse,
-  ctx: TeamRouteContext,
-  teamId: string,
-): Promise<void> {
-  if (!ctx.authContext) {
-    sendJson(res, { error: 'Unauthorized' }, 401);
-    return;
-  }
-  const role = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
-  if (role !== 'creator') {
-    sendJson(res, { error: 'Only the team creator can delete the team' }, 403);
-    return;
-  }
-  const team = (await ctx.db.get('__lattice_team', teamId)) as unknown as TeamRow | null;
-  if (!team || team.deleted_at) {
-    sendJson(res, { error: 'Team not found' }, 404);
-    return;
-  }
-  await ctx.db.update('__lattice_team', teamId, {
-    deleted_at: new Date().toISOString(),
-  });
   sendJson(res, { ok: true });
 }
 

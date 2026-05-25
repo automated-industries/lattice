@@ -98,8 +98,8 @@ async function bootstrapTeamWithTasks(cloud: GuiServerHandle): Promise<{
   aliceUserId: string;
 }> {
   const alice = await openLocal();
-  const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-  const team = await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
+  const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
+  const team = reg.team;
   await alice.client.saveConnection({
     team_id: team.id,
     team_name: team.name,

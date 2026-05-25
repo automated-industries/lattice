@@ -168,7 +168,7 @@ async function dispatchTeamSubroute(
 
   // /api/teams-gui/teams/:id (DELETE = destroy)
   if (subpath === '' && method === 'DELETE') {
-    await ctx.client.deleteTeam(conn.cloud_url, conn.api_token, teamId);
+    await ctx.client.destroyTeam(conn.cloud_url, conn.api_token);
     await ctx.client.deleteConnection(teamId);
     sendJson(res, { ok: true });
     return;
@@ -326,16 +326,15 @@ async function handleRegisterAndCreate(
     sendJson(res, { error: 'cloud_url, email, user_name, team_name required' }, 400);
     return;
   }
-  const reg = await ctx.client.register(cloudUrl, email, userName);
-  const team = await ctx.client.createTeam(cloudUrl, reg.raw_token, teamName);
+  const reg = await ctx.client.register(cloudUrl, email, userName, teamName);
   await ctx.client.saveConnection({
-    team_id: team.id,
-    team_name: team.name,
+    team_id: reg.team.id,
+    team_name: reg.team.name,
     cloud_url: cloudUrl,
     my_user_id: reg.user.id,
     api_token: reg.raw_token,
   });
-  sendJson(res, { ok: true, team, user: reg.user });
+  sendJson(res, { ok: true, team: reg.team, user: reg.user });
 }
 
 async function handleLeave(

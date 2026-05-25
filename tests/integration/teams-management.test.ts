@@ -88,21 +88,25 @@ describe('teams management — end-to-end', () => {
     const bob = await openLocalClient();
 
     try {
-      // 1. Alice registers (bootstrap)
-      const aliceReg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
+      // 1. Alice registers (bootstrap) — atomic with team creation.
+      const aliceReg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
       expect(aliceReg.user.email).toBe('alice@example.com');
       expect(aliceReg.raw_token).toMatch(/^lat_/);
+      expect(aliceReg.team.name).toBe('Atlas');
+      expect(aliceReg.team.role).toBe('creator');
       const aliceToken = aliceReg.raw_token;
+      const atlas = aliceReg.team;
 
-      // Second registration must fail — bootstrap-only
+      // Second registration must fail — bootstrap-only.
       await expect(
-        alice.client.register(cloud.url, 'mallory@example.com', 'Mallory'),
+        alice.client.register(cloud.url, 'mallory@example.com', 'Mallory', 'Mallory-Team'),
       ).rejects.toMatchObject({ status: 403 });
 
-      // 2. Alice creates Atlas team
-      const atlas = await alice.client.createTeam(cloud.url, aliceToken, 'Atlas');
-      expect(atlas.name).toBe('Atlas');
-      expect(atlas.role).toBe('creator');
       await alice.client.saveConnection({
         team_id: atlas.id,
         team_name: atlas.name,
@@ -158,7 +162,7 @@ describe('teams management — end-to-end', () => {
 
       // 7b. Bob tries to destroy — 403
       await expect(
-        bob.client.deleteTeam(cloud.url, bobJoin.raw_token, atlas.id),
+        bob.client.destroyTeam(cloud.url, bobJoin.raw_token),
       ).rejects.toMatchObject({ status: 403 });
 
       // 8. Bob leaves Atlas (kick-self as non-creator)
@@ -176,14 +180,12 @@ describe('teams management — end-to-end', () => {
       expect(remaining).toHaveLength(1);
       expect(remaining[0]?.role).toBe('creator');
 
-      // 9. Alice destroys Atlas — soft-delete; her listTeams becomes empty
-      await alice.client.deleteTeam(cloud.url, aliceToken, atlas.id);
-      const teamsAfter = await alice.client.listTeams(cloud.url, aliceToken);
-      expect(teamsAfter).toEqual([]);
+      // 9. Alice destroys Atlas — soft-delete + identity row dropped.
+      await alice.client.destroyTeam(cloud.url, aliceToken);
 
-      // Destroying twice is a 403 (creator role still applies but team is
-      // already deleted — get returns null, so the handler 404s).
-      await expect(alice.client.deleteTeam(cloud.url, aliceToken, atlas.id)).rejects.toMatchObject({
+      // Destroying twice is a 404 — the singleton identity is gone, so
+      // the handler can't resolve a team to destroy.
+      await expect(alice.client.destroyTeam(cloud.url, aliceToken)).rejects.toMatchObject({
         status: 404,
       });
 
@@ -200,10 +202,14 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      const team = await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
       await expect(
-        alice.client.kickMember(cloud.url, reg.raw_token, team.id, reg.user.id),
+        alice.client.kickMember(cloud.url, reg.raw_token, reg.team.id, reg.user.id),
       ).rejects.toMatchObject({ status: 400 });
     } finally {
       alice.db.close();
@@ -214,18 +220,26 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      const team = await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
       const invite = await alice.client.invite(
         cloud.url,
         reg.raw_token,
-        team.id,
+        reg.team.id,
         'bob@example.com',
       );
       // Try to use the latinv_-prefixed token as a bearer
-      await expect(alice.client.listTeams(cloud.url, invite.raw_token)).rejects.toMatchObject({
-        status: 401,
-      });
+      await expect(
+        fetch(`${cloud.url}/api/team`, {
+          headers: { authorization: `Bearer ${invite.raw_token}` },
+        }).then((r) => {
+          if (r.status !== 200) throw Object.assign(new Error('bad status'), { status: r.status });
+        }),
+      ).rejects.toMatchObject({ status: 401 });
     } finally {
       alice.db.close();
     }
@@ -235,7 +249,12 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
       // Mint a second token directly via the public HTTP API.
       const mintRes = await fetch(`${cloud.url}/api/auth/tokens`, {
         method: 'POST',
@@ -256,13 +275,17 @@ describe('teams management — end-to-end', () => {
       });
       expect(revokeRes.status).toBe(200);
 
-      // The revoked token must now be rejected
-      await expect(alice.client.listTeams(cloud.url, secondToken.raw_token)).rejects.toMatchObject({
-        status: 401,
+      // The revoked token must now be rejected. Use GET /api/team as
+      // the auth probe — it requires a valid bearer.
+      const revokedRes = await fetch(`${cloud.url}/api/team`, {
+        headers: { authorization: `Bearer ${secondToken.raw_token}` },
       });
-      // The bootstrap token still works
-      const teams = await alice.client.listTeams(cloud.url, reg.raw_token);
-      expect(teams).toEqual([]);
+      expect(revokedRes.status).toBe(401);
+      // The bootstrap token still works.
+      const okRes = await fetch(`${cloud.url}/api/team`, {
+        headers: { authorization: `Bearer ${reg.raw_token}` },
+      });
+      expect(okRes.status).toBe(200);
     } finally {
       alice.db.close();
     }
@@ -272,12 +295,16 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      const a = await alice.client.createTeam(cloud.url, reg.raw_token, 'Same');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Same',
+      );
       // Manually plant a second connection row with the same name to simulate
       // joining a same-named team on a different cloud.
       await alice.client.saveConnection({
-        team_id: a.id,
+        team_id: reg.team.id,
         team_name: 'Same',
         cloud_url: cloud.url,
         my_user_id: reg.user.id,

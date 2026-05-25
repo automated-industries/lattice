@@ -41,13 +41,27 @@ YAML resolver in `src/config/parser.ts` honours `${LATTICE_DB:<label>}` (looks u
 
 - `__lattice_users.email` becomes `NOT NULL`. Uniqueness still enforced at the route layer.
 - `__lattice_invitations.invitee_email TEXT NOT NULL` — `redeem-invite` verifies the caller's claimed email matches the bound invitee (case-insensitive) and returns `403` on mismatch.
-- New `__lattice_team_identity` singleton table (`id='singleton', team_id, team_name, creator_email, created_at`). Populated by `createTeam`. A second `createTeam` call against a DB with an existing identity row returns `409`.
+- New `__lattice_team_identity` singleton table (`id='singleton', team_id, team_name, creator_email, created_at`). Populated atomically by `POST /api/auth/register`.
+- `POST /api/auth/register` is now an **atomic** bootstrap: body requires `{email, name, team_name}` and the handler creates the user, team, identity row, creator membership, and bearer token in one call. There is no longer a separate `createTeam` step.
 - New singleton routes:
   - `GET /api/team` — identity + member list, or `{enabled: false}`.
   - `DELETE /api/team` — creator-only; drops the identity row + soft-deletes the underlying `__lattice_team` row.
   - `POST /api/team/invitations` — convenience alias for `/api/teams/:id/invitations` that resolves the id from the singleton.
 - `TeamsClient.invite()` gains a required `inviteeEmail` argument; `InviteResponse` echoes the email back. CLI `lattice teams invite` adopts `--invitee-email`.
 - The teams-gui invite endpoint (`POST /api/teams-gui/teams/:id/invitations`) requires `invitee_email` in the request body.
+
+**Multi-team enumeration removed.** One cloud = one team. The following surface is gone:
+
+| Removed | Replacement |
+| --- | --- |
+| `POST /api/teams` (create) | `POST /api/auth/register` (atomic with bootstrap user) |
+| `GET /api/teams` (list) | `GET /api/team` (singleton) |
+| `DELETE /api/teams/:id` | `DELETE /api/team` |
+| `TeamsClient.createTeam()` / `.listTeams()` / `.deleteTeam()` | `register()` (atomic) / `getSingleton()` (via GET) / `destroyTeam()` |
+| `lattice teams create` (CLI) | `lattice teams register --team-name <name>` |
+| CLI `--name` overloaded as team name | `--name` = display name; new `--team-name` = team name |
+
+`TeamsClient.register()` now requires a `teamName` argument and returns `{ user, raw_token, team }`. Existing `/api/teams/:id/{objects,changes,members,invitations,rows,links}` routes (the load-bearing sync engine) are unchanged — the `:id` segment continues to identify the (one) team's UUID.
 
 **GUI: identity + databases panels, email-driven invite modal.**
 
@@ -60,10 +74,6 @@ YAML resolver in `src/config/parser.ts` honours `${LATTICE_DB:<label>}` (looks u
 - `:root` lifts colors, spacing accents, and font families directly from `lattice-website`'s `tailwind.config.ts` (last-sync comment in the inline `<style>` block flags manual sync).
 - Dark theme (`--bg: #0b0d10`, `--surface: #13171b`, `--accent: #bef264` lime, `--warn: #fb923c`, `--signal: #22d3ee`). Inter for body, JetBrains Mono for code.
 - Primary buttons swap white-on-blue for dark text on lime with `--accent-glow` on hover.
-
-### Notes
-
-- The multi-team-per-cloud routes (`/api/teams`, `/api/teams/:id/*`) and the `__lattice_team` table are preserved for backwards-compatibility with PR #16's sync engine. The new `/api/team/*` singleton routes are the documented path for new code; the multi-team enumeration helpers will be removed in a follow-up once every consumer (CLI, GUI, tests) has migrated.
 
 ### Added — Lattice Teams (Phase 5: GUI integration)
 

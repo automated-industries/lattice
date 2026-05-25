@@ -15,19 +15,22 @@ import type { Row, WriteHookContext } from '../types.js';
  * sync loop.
  */
 
-export interface RegisterResponse {
-  user: { id: string; email: string; name: string };
-  raw_token: string;
-}
-
-export interface RedeemResponse extends RegisterResponse {
-  team: { id: string; name: string };
-}
-
 export interface TeamSummary {
   id: string;
   name: string;
   role: string;
+}
+
+export interface RegisterResponse {
+  user: { id: string; email: string; name: string };
+  raw_token: string;
+  team: TeamSummary;
+}
+
+export interface RedeemResponse {
+  user: { id: string; email: string; name: string };
+  raw_token: string;
+  team: { id: string; name: string };
 }
 
 export interface MemberSummary {
@@ -166,10 +169,23 @@ export class TeamsClient {
 
   // ── Cloud HTTP calls (unauthenticated) ──────────────────────────────────
 
-  async register(cloudUrl: string, email: string, name: string): Promise<RegisterResponse> {
+  /**
+   * Bootstrap-register on a fresh cloud and create the team in one
+   * atomic call. The cloud rejects this once any user exists (subsequent
+   * members join via `redeemInvite`). Returns the new user + bearer
+   * token + team summary so the caller can immediately save a
+   * connection.
+   */
+  async register(
+    cloudUrl: string,
+    email: string,
+    name: string,
+    teamName: string,
+  ): Promise<RegisterResponse> {
     return this.fetchUnauthed<RegisterResponse>(cloudUrl, 'POST', '/api/auth/register', {
       email,
       name,
+      team_name: teamName,
     });
   }
 
@@ -188,22 +204,9 @@ export class TeamsClient {
 
   // ── Cloud HTTP calls (authenticated) ────────────────────────────────────
 
-  async listTeams(cloudUrl: string, token: string): Promise<TeamSummary[]> {
-    const r = await this.fetchAuthed<{ teams: TeamSummary[] }>(
-      cloudUrl,
-      token,
-      'GET',
-      '/api/teams',
-    );
-    return r.teams;
-  }
-
-  async createTeam(cloudUrl: string, token: string, name: string): Promise<TeamSummary> {
-    return this.fetchAuthed<TeamSummary>(cloudUrl, token, 'POST', '/api/teams', { name });
-  }
-
-  async deleteTeam(cloudUrl: string, token: string, teamId: string): Promise<void> {
-    await this.fetchAuthed<unknown>(cloudUrl, token, 'DELETE', `/api/teams/${teamId}`);
+  /** Destroy the singleton team. Creator-only on the cloud side. */
+  async destroyTeam(cloudUrl: string, token: string): Promise<void> {
+    await this.fetchAuthed<unknown>(cloudUrl, token, 'DELETE', '/api/team');
   }
 
   async listMembers(cloudUrl: string, token: string, teamId: string): Promise<MemberSummary[]> {

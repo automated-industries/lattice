@@ -95,12 +95,16 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      const team = await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
       const invite = await alice.client.invite(
         cloud.url,
         reg.raw_token,
-        team.id,
+        reg.team.id,
         'bob@example.com',
       );
       expect(invite.invitee_email).toBe('bob@example.com');
@@ -132,12 +136,16 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      const team = await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
       const invite = await alice.client.invite(
         cloud.url,
         reg.raw_token,
-        team.id,
+        reg.team.id,
         'BOB@example.com',
       );
 
@@ -159,12 +167,17 @@ describe('email-bound identity + one-team-per-DB', () => {
     }
   });
 
-  it('POST /api/teams populates __lattice_team_identity; second createTeam → 409', async () => {
+  it('register populates __lattice_team_identity; second register on the same DB → 403', async () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
+      expect(reg.team.name).toBe('Atlas');
 
       const teamRes = await api(`${cloud.url}/api/team`, reg.raw_token);
       expect(teamRes.status).toBe(200);
@@ -176,10 +189,10 @@ describe('email-bound identity + one-team-per-DB', () => {
       expect(members[0]?.email).toBe('alice@example.com');
       expect(members[0]?.role).toBe('creator');
 
-      // Second createTeam returns 409 — DB already has a team.
-      await expect(alice.client.createTeam(cloud.url, reg.raw_token, 'Beta')).rejects.toMatchObject(
-        { status: 409 },
-      );
+      // Second register is rejected — bootstrap-only.
+      await expect(
+        alice.client.register(cloud.url, 'mallory@example.com', 'Mallory', 'MalloryTeam'),
+      ).rejects.toMatchObject({ status: 403 });
     } finally {
       alice.db.close();
     }
@@ -189,9 +202,12 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
-
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
       const invRes = await api(`${cloud.url}/api/team/invitations`, reg.raw_token, {
         method: 'POST',
         body: JSON.stringify({ invitee_email: 'carol@example.com' }),
@@ -204,12 +220,16 @@ describe('email-bound identity + one-team-per-DB', () => {
     }
   });
 
-  it('DELETE /api/team drops the singleton; second create works after destroy', async () => {
+  it('DELETE /api/team drops the singleton; the cloud refuses a second register anyway', async () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
-      await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
+      const reg = await alice.client.register(
+        cloud.url,
+        'alice@example.com',
+        'Alice',
+        'Atlas',
+      );
 
       const delRes = await api(`${cloud.url}/api/team`, reg.raw_token, { method: 'DELETE' });
       expect(delRes.status).toBe(200);
@@ -219,9 +239,13 @@ describe('email-bound identity + one-team-per-DB', () => {
       const get = await api(`${cloud.url}/api/team`, reg.raw_token);
       expect(get.body.enabled).toBe(false);
 
-      // A fresh createTeam call works again because the singleton was dropped.
-      const next = await alice.client.createTeam(cloud.url, reg.raw_token, 'Beta');
-      expect(next.name).toBe('Beta');
+      // Register is still bootstrap-only — Alice's user row survives the
+      // team destruction, so a fresh register returns 403 even though
+      // the team is gone. (The intended recovery path is to bring up a
+      // fresh cloud, not to recycle an existing one.)
+      await expect(
+        alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Beta'),
+      ).rejects.toMatchObject({ status: 403 });
     } finally {
       alice.db.close();
     }
@@ -231,9 +255,21 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const local = await openLocal();
     try {
-      await expect(local.client.register(cloud.url, '', 'NoEmail')).rejects.toMatchObject({
-        status: 400,
-      });
+      await expect(
+        local.client.register(cloud.url, '', 'NoEmail', 'Team'),
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      local.db.close();
+    }
+  });
+
+  it('register requires team_name — empty string returns 400', async () => {
+    const cloud = await startCloud();
+    const local = await openLocal();
+    try {
+      await expect(
+        local.client.register(cloud.url, 'alice@example.com', 'Alice', ''),
+      ).rejects.toMatchObject({ status: 400 });
     } finally {
       local.db.close();
     }

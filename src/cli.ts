@@ -38,6 +38,9 @@ interface ParsedArgs {
   token?: string | undefined;
   email?: string | undefined;
   inviteeEmail?: string | undefined;
+  /** --name <display> — user display name (register / join). */
+  displayName?: string | undefined;
+  /** --team-name <name> — the team being created (register). */
   teamName?: string | undefined;
   team?: string | undefined;
   teamId?: string | undefined;
@@ -70,6 +73,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let token: string | undefined;
   let email: string | undefined;
   let inviteeEmail: string | undefined;
+  let displayName: string | undefined;
   let teamName: string | undefined;
   let team: string | undefined;
   let teamId: string | undefined;
@@ -147,6 +151,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       inviteeEmail = argv[i];
     } else if (arg === '--name' && i + 1 < argv.length) {
       i++;
+      displayName = argv[i];
+    } else if (arg === '--team-name' && i + 1 < argv.length) {
+      i++;
       teamName = argv[i];
     } else if (arg === '--team' && i + 1 < argv.length) {
       i++;
@@ -194,6 +201,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     token,
     email,
     inviteeEmail,
+    displayName,
     teamName,
     team,
     teamId,
@@ -620,10 +628,8 @@ function main(): void {
         token: args.token,
         email: args.email,
         inviteeEmail: args.inviteeEmail,
-        // For teams subcommands, `--name <X>` is the "name" arg — either a
-        // user display name (for register / join) or the team name (for
-        // create). The flag is overloaded; the subcommand decides which.
-        name: args.teamName,
+        name: args.displayName,
+        teamName: args.teamName,
         team: args.team,
         teamId: args.teamId,
         expires: args.expires,

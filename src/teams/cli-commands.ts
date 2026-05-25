@@ -16,6 +16,8 @@ export interface TeamsCliArgs {
   /** For invite: the email the invitation is addressed to. */
   inviteeEmail?: string | undefined;
   name?: string | undefined;
+  /** For register: the name to give the team being created. */
+  teamName?: string | undefined;
   team?: string | undefined;
   teamId?: string | undefined;
   expires?: number | undefined;
@@ -28,35 +30,37 @@ const TEAMS_USAGE = [
   'lattice teams <subcommand> [options]',
   '',
   'Subcommands:',
-  '  register   Bootstrap-register on a fresh cloud (no users yet)',
-  '  create     Create a team (requires --cloud --token --name)',
+  '  register   Bootstrap on a fresh cloud: create user + team in one call',
+  '             (requires --cloud --email --name --team-name)',
   '  join       Redeem an invitation (requires --cloud --token --email --name)',
-  '  list       List local team connections',
-  '  members    List members of a team (--team or --team-id)',
-  '  invite     Generate an invitation token (creator only; --team)',
-  '  leave      Leave a team (--team)',
-  '  destroy    Soft-delete a team (creator only; --team)',
-  '  share      Share a local table with a team (--team --table)',
+  '  list       List your local team connections',
+  '  members    List members of the team (--team)',
+  '  invite     Generate an invitation (creator only; --team --invitee-email)',
+  '  leave      Leave the team (--team)',
+  '  destroy    Destroy the team (creator only; --team)',
+  '  share      Share a local table (--team --table)',
   '  unshare    Stop sharing a table (--team --table)',
-  '  shared     List shared objects on a team (--team)',
-  '  sync       Apply cloud-shared schemas to the local lattice (--team)',
-  '  link       Link a local row to a team (--team --table --pk)',
-  '  unlink     Unlink a row from a team (--team --table --pk)',
-  '  pull       Pull change envelopes from the cloud + apply locally (--team)',
-  '  push       Drain the outbox to the cloud (--team)',
-  '  status     Show sync status for a team (--team)',
+  '  shared     List shared objects (--team)',
+  '  sync       Apply cloud-shared schemas locally (--team)',
+  '  link       Link a local row (--team --table --pk)',
+  '  unlink     Unlink a row (--team --table --pk)',
+  '  pull       Pull change envelopes (--team)',
+  '  push       Drain the outbox (--team)',
+  '  status     Show sync status (--team)',
   '',
   'Options:',
   '  --cloud <url>          Cloud server URL (e.g. http://localhost:4317)',
   '  --token <token>        Bearer API token or invitation token',
-  '  --email <email>        Email address (for register / join)',
-  '  --name <name>          Display name (for register / join) OR team name (for create)',
+  '  --email <email>        Your email (for register / join)',
+  '  --invitee-email <e>    Recipient email (for invite — invitations are bound)',
+  '  --name <name>          Your display name (for register / join)',
+  '  --team-name <name>     Team name (for register)',
   '  --team <name>          Team name (resolves to a local connection)',
   '  --team-id <uuid>       Team id (disambiguates duplicate names)',
   '  --table <name>         Table name (for share / unshare / link / unlink)',
   '  --pk <id>              Row primary key (for link / unlink)',
   '  --expires <hours>      Invitation expiry in hours (default: 168 = 7 days)',
-  '  --user-id <uuid>       User id to kick (with members --kick)',
+  '  --user-id <uuid>       User id to kick',
   '  --config, -c <path>    Local lattice config (default: ./lattice.config.yml)',
 ].join('\n');
 
@@ -71,9 +75,6 @@ export async function runTeamsCommand(args: TeamsCliArgs): Promise<void> {
     switch (sub) {
       case 'register':
         await runRegister(args);
-        return;
-      case 'create':
-        await runCreate(args);
         return;
       case 'join':
         await runJoin(args);
@@ -170,43 +171,28 @@ async function runRegister(args: TeamsCliArgs): Promise<void> {
   const cloud = requireArg(args, 'cloud', 'cloud');
   const email = requireArg(args, 'email', 'email');
   const name = requireArg(args, 'name', 'name');
-  // Register doesn't persist locally — there's no team_id yet. The token
-  // is printed; the operator passes it to subsequent `create` calls via
-  // --token. After they create their first team, the connection (with the
-  // team_id) lands in __lattice_team_connections.
+  const teamName = requireArg(args, 'teamName', 'team-name');
   const db = await openLocal(args.config);
   try {
     const client = new TeamsClient(db);
-    const result = await client.register(cloud, email, name);
-    console.log(`Registered ${result.user.email} (user-id: ${result.user.id})`);
+    const result = await client.register(cloud, email, name, teamName);
+    await client.saveConnection({
+      team_id: result.team.id,
+      team_name: result.team.name,
+      cloud_url: cloud,
+      my_user_id: result.user.id,
+      api_token: result.raw_token,
+    });
+    console.log(`Registered ${result.user.email} and created team "${result.team.name}".`);
+    console.log(`  user-id: ${result.user.id}`);
+    console.log(`  team-id: ${result.team.id}`);
     console.log('');
     console.log('Bootstrap API token (shown ONCE — save it now):');
     console.log(`  ${result.raw_token}`);
     console.log('');
-    console.log('Next: `lattice teams create --cloud <url> --token <above> --name "<team>"`');
-  } finally {
-    db.close();
-  }
-}
-
-async function runCreate(args: TeamsCliArgs): Promise<void> {
-  const cloud = requireArg(args, 'cloud', 'cloud');
-  const token = requireArg(args, 'token', 'token');
-  const name = requireArg(args, 'name', 'name');
-  const db = await openLocal(args.config);
-  try {
-    const client = new TeamsClient(db);
-    const team = await client.createTeam(cloud, token, name);
-    const me = await client.me(cloud, token);
-    await client.saveConnection({
-      team_id: team.id,
-      team_name: team.name,
-      cloud_url: cloud,
-      my_user_id: me.user.id,
-      api_token: token,
-    });
-    console.log(`Created team "${team.name}" (team-id: ${team.id}); role: ${team.role}`);
-    console.log(`Local connection saved.`);
+    console.log(
+      `Next: invite teammates with \`lattice teams invite --team ${result.team.name} --invitee-email <addr>\`.`,
+    );
   } finally {
     db.close();
   }
@@ -241,7 +227,7 @@ async function runList(args: TeamsCliArgs): Promise<void> {
     const client = new TeamsClient(db);
     const conns = await client.listConnections();
     if (conns.length === 0) {
-      console.log('No team connections — use `lattice teams join` or `lattice teams create`.');
+      console.log('No team connections — use `lattice teams register` or `lattice teams join`.');
       return;
     }
     for (const c of conns) {
@@ -329,7 +315,7 @@ async function runDestroy(args: TeamsCliArgs): Promise<void> {
   try {
     const client = new TeamsClient(db);
     const conn = await resolveConnection(client, args);
-    await client.deleteTeam(conn.cloud_url, conn.api_token, conn.team_id);
+    await client.destroyTeam(conn.cloud_url, conn.api_token);
     await client.deleteConnection(conn.team_id);
     console.log(`Destroyed team "${conn.team_name}".`);
   } finally {
