@@ -563,6 +563,116 @@ describe('GUI server', () => {
     expect(ent3.tables.some((t) => t.name === 'tasks')).toBe(false);
   });
 
+  it('creates a new entity via /api/schema/entities', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const create = await fetch(`${server.url}/api/schema/entities`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'widgets', icon: '🔩' }),
+    });
+    expect(create.status).toBe(200);
+
+    const ents = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string; columns: string[] }[];
+    };
+    const widgets = ents.tables.find((t) => t.name === 'widgets');
+    expect(widgets).toBeDefined();
+    expect(widgets!.columns).toEqual(expect.arrayContaining(['id', 'name', 'deleted_at']));
+
+    const icons = (await fetch(`${server.url}/api/gui-meta`).then((r) => r.json())) as Record<
+      string,
+      { icon: string }
+    >;
+    expect(icons.widgets?.icon).toBe('🔩');
+  });
+
+  it('persists and reads per-column secret flag', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const initial = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
+      r.json(),
+    )) as Record<string, Record<string, { secret: boolean }>>;
+    expect(initial).toEqual({});
+
+    const put = await fetch(`${server.url}/api/gui-meta/columns/agents/name`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: true }),
+    });
+    expect(put.status).toBe(200);
+
+    const after = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
+      r.json(),
+    )) as Record<string, Record<string, { secret: boolean }>>;
+    expect(after.agents?.name?.secret).toBe(true);
+
+    // Toggle off.
+    await fetch(`${server.url}/api/gui-meta/columns/agents/name`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: false }),
+    });
+    const finalState = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
+      r.json(),
+    )) as Record<string, Record<string, { secret: boolean }>>;
+    expect(finalState.agents?.name?.secret).toBe(false);
+  });
+
+  it('filters history by table, including junctions that touch the filtered table', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const agentResp = (await (
+      await fetch(`${server.url}/api/tables/agents/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'a1', name: 'Alpha One' }),
+      })
+    ).json()) as { id: string };
+    const skillResp = (await (
+      await fetch(`${server.url}/api/tables/skills/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'TS' }),
+      })
+    ).json()) as { id: string };
+    await fetch(`${server.url}/api/tables/agent_skills/link`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentResp.id, skill_id: skillResp.id }),
+    });
+
+    const filtered = (await fetch(`${server.url}/api/history?table=agents`).then((r) =>
+      r.json(),
+    )) as { entries: { table_name: string; operation: string }[] };
+    // The agents insert AND the agent_skills link should appear under agents.
+    expect(
+      filtered.entries.some((e) => e.table_name === 'agents' && e.operation === 'insert'),
+    ).toBe(true);
+    expect(
+      filtered.entries.some((e) => e.table_name === 'agent_skills' && e.operation === 'link'),
+    ).toBe(true);
+    // The skills insert should NOT appear under agents.
+    expect(filtered.entries.some((e) => e.table_name === 'skills')).toBe(false);
+
+    // Filtering by skills should also show the junction link.
+    const skillsFiltered = (await fetch(`${server.url}/api/history?table=skills`).then((r) =>
+      r.json(),
+    )) as { entries: { table_name: string; operation: string }[] };
+    expect(
+      skillsFiltered.entries.some((e) => e.table_name === 'agent_skills' && e.operation === 'link'),
+    ).toBe(true);
+  });
+
   it('rejects unknown tables and non-junctions for link/unlink', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });

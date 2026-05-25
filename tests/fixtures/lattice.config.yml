@@ -58,6 +58,7 @@ entities:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
       kind: { type: text }
+      value: { type: text } # Marked as secret via _lattice_gui_column_meta in the seed
       deleted_at: { type: text }
     outputFile: SECRETS.md
 

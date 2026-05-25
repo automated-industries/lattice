@@ -35,7 +35,13 @@ export const guiAppHtml = `<!doctype html>
       background: var(--surface); border-bottom: 1px solid var(--border);
       flex-wrap: wrap;
     }
-    .brand { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; flex-shrink: 0; }
+    .brand {
+      display: inline-flex; align-items: center;
+      flex-shrink: 0; border-radius: 6px;
+      padding: 2px; cursor: pointer;
+    }
+    .brand:hover { background: var(--row-hover); }
+    .brand-logo { width: 32px; height: 32px; display: block; }
     .query {
       flex: 1 1 220px; min-width: 0; max-width: 480px; margin-left: auto;
       height: 32px; padding: 0 12px;
@@ -85,6 +91,10 @@ export const guiAppHtml = `<!doctype html>
     .history-diff .diff-rem { color: #b42318; }
     .history-actions { display: flex; flex-direction: column; gap: 4px; }
     .history-actions .btn { font-size: 12px; height: 26px; padding: 0 10px; }
+    #history-filter {
+      height: 30px; padding: 0 10px; font: inherit; font-size: 13px;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: white;
+    }
 
     /* DB switcher in the top bar */
     .db-switcher { position: relative; }
@@ -316,6 +326,13 @@ export const guiAppHtml = `<!doctype html>
       border-radius: 5px; background: white; font-size: 12.5px;
     }
     .dm-col-rename { height: 28px; padding: 0 10px; font-size: 12px; }
+    .dm-secret-toggle {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.04em;
+      white-space: nowrap; cursor: pointer;
+    }
+    .dm-secret-toggle input[type="checkbox"] { margin: 0; }
 
     /* ── Toast / undo banner ──────────────────────────── */
     .toast {
@@ -420,7 +437,26 @@ export const guiAppHtml = `<!doctype html>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Lattice</div>
+    <a class="brand" href="#/" title="Go to dashboard" aria-label="Lattice — dashboard">
+      <svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect width="24" height="24" rx="4" fill="#0b0d10"/>
+        <line x1="6" y1="6" x2="18" y2="6" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
+        <line x1="6" y1="12" x2="18" y2="12" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
+        <line x1="6" y1="18" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
+        <line x1="6" y1="6" x2="6" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
+        <line x1="12" y1="6" x2="12" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
+        <line x1="18" y1="6" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
+        <circle cx="6" cy="6" r="1.5" fill="#bef264"/>
+        <circle cx="12" cy="6" r="1.5" fill="#bef264"/>
+        <circle cx="18" cy="6" r="1.5" fill="#bef264"/>
+        <circle cx="6" cy="12" r="1.5" fill="#bef264"/>
+        <circle cx="12" cy="12" r="2" fill="#bef264"/>
+        <circle cx="18" cy="12" r="1.5" fill="#bef264"/>
+        <circle cx="6" cy="18" r="1.5" fill="#bef264"/>
+        <circle cx="12" cy="18" r="1.5" fill="#bef264"/>
+        <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
+      </svg>
+    </a>
     <div class="history-controls">
       <button class="history-btn" id="undo-btn" title="Undo" disabled>↶</button>
       <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
@@ -481,7 +517,13 @@ export const guiAppHtml = `<!doctype html>
     // name isn't in the built-in DISPLAY map.
     var DEFAULT_ICON = '📋';
 
-    var state = { entities: null, rowCache: {}, iconOverrides: {} };
+    var state = { entities: null, rowCache: {}, iconOverrides: {}, columnMeta: {} };
+
+    function isSecretColumn(tableName, colName) {
+      var t = state.columnMeta[tableName];
+      return !!(t && t[colName] && t[colName].secret);
+    }
+    var SECRET_MASK = '••••••••'; // ••••••••
 
     function displayFor(name) {
       var override = state.iconOverrides[name];
@@ -534,9 +576,11 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/entities'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/databases').catch(function () { return null; }),
+        fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
+        state.columnMeta = results[3] || {};
         renderDbSwitcher(results[2]);
         renderSidebar();
         wireHistoryControls();
@@ -545,6 +589,13 @@ export const guiAppHtml = `<!doctype html>
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    /** Reload column meta after a secret-flag change. */
+    function refreshColumnMeta() {
+      return fetchJson('/api/gui-meta/columns').then(function (d) {
+        state.columnMeta = d || {};
       });
     }
 
@@ -638,16 +689,15 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/entities'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/databases').catch(function () { return null; }),
+        fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
+        state.columnMeta = results[3] || {};
         renderDbSwitcher(results[2]);
         renderSidebar();
-        // Always reset to dashboard after a switch — the previous URL's table
-        // may not exist in the new DB.
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
-        // Reset row cache.
         loadedTables = {};
       });
     }
@@ -899,6 +949,11 @@ export const guiAppHtml = `<!doctype html>
         }).join('');
         return '<select name="' + escapeHtml(col) + '">' + options + '</select>';
       }
+      // Secret columns: use a password input so the value is masked while editing.
+      if (isSecretColumn(table.name, col)) {
+        return '<input type="password" name="' + escapeHtml(col) + '" value="' +
+          escapeHtml(value || '') + '" autocomplete="off" />';
+      }
       // Multiline for known long-form fields.
       if (col === 'transcript' || col === 'summary' || col === 'body') {
         return '<textarea name="' + escapeHtml(col) + '">' + escapeHtml(value || '') + '</textarea>';
@@ -952,6 +1007,9 @@ export const guiAppHtml = `<!doctype html>
         } else {
           bodyRows = rows.map(function (r) {
             var tds = intrinsic.map(function (c) {
+              if (isSecretColumn(tableName, c) && r[c] != null && r[c] !== '') {
+                return '<td class="muted">' + SECRET_MASK + '</td>';
+              }
               return '<td>' + escapeHtml(truncate(r[c], 120)) + '</td>';
             });
             belongsTo.forEach(function (b) {
@@ -1125,9 +1183,17 @@ export const guiAppHtml = `<!doctype html>
         function paint(editing) {
           var rows = [];
           intrinsic.forEach(function (c) {
-            var dd = editing
-              ? fieldFor(c, row[c], t)
-              : (row[c] == null ? '<span class="muted">—</span>' : escapeHtml(row[c]));
+            var secret = isSecretColumn(tableName, c);
+            var dd;
+            if (editing) {
+              dd = fieldFor(c, row[c], t);
+            } else if (row[c] == null || row[c] === '') {
+              dd = '<span class="muted">—</span>';
+            } else if (secret) {
+              dd = '<span class="muted">' + SECRET_MASK + '</span>';
+            } else {
+              dd = escapeHtml(row[c]);
+            }
             rows.push('<dt>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + dd + '</dd>');
           });
           belongsTo.forEach(function (b) {
@@ -1283,21 +1349,75 @@ export const guiAppHtml = `<!doctype html>
     // ────────────────────────────────────────────────────────────
     // Version history page (#/settings/history)
     // ────────────────────────────────────────────────────────────
+    var historyFilterTable = '';
+
     function renderHistory(content) {
+      var firstClass = state.entities.tables
+        .filter(function (t) { return !isJunction(t); })
+        .map(function (t) { return t.name; });
+      var options = '<option value="">All entities</option>' +
+        firstClass.map(function (n) {
+          var sel = n === historyFilterTable ? ' selected' : '';
+          return '<option value="' + escapeHtml(n) + '"' + sel + '>' + escapeHtml(displayFor(n).label) + '</option>';
+        }).join('');
+
       content.innerHTML =
         '<div class="view-header">' +
           '<span class="entity-icon">📜</span>' +
           '<h1>Version history</h1>' +
+          '<div class="actions">' +
+            '<select id="history-filter">' + options + '</select>' +
+            '<button class="btn danger" id="history-revert-all" disabled>Revert all (filtered)</button>' +
+          '</div>' +
         '</div>' +
         '<div class="history-list" id="history-list"><div class="muted" style="padding:20px;">Loading…</div></div>';
 
-      fetchJson('/api/history?limit=500').then(function (data) {
+      var filterEl = document.getElementById('history-filter');
+      filterEl.addEventListener('change', function () {
+        historyFilterTable = filterEl.value;
+        renderHistory(content);
+      });
+
+      var url = '/api/history?limit=500' +
+        (historyFilterTable ? '&table=' + encodeURIComponent(historyFilterTable) : '');
+      fetchJson(url).then(function (data) {
         var mount = document.getElementById('history-list');
         if (!data.entries || data.entries.length === 0) {
-          mount.innerHTML = '<div class="muted" style="padding:24px;">No history yet — make a change to see it here.</div>';
+          mount.innerHTML = '<div class="muted" style="padding:24px;">' +
+            (historyFilterTable
+              ? 'No history yet for ' + escapeHtml(displayFor(historyFilterTable).label) + '.'
+              : 'No history yet — make a change to see it here.') +
+            '</div>';
           return;
         }
         mount.innerHTML = data.entries.map(historyEntryHtml).join('');
+
+        // 'Revert all (filtered)' — only when a filter is active and at least
+        // one live entry is showing.
+        var liveFiltered = data.entries.filter(function (e) { return e.undone === 0; });
+        var revertAllBtn = document.getElementById('history-revert-all');
+        revertAllBtn.disabled = !(historyFilterTable && liveFiltered.length > 0);
+        revertAllBtn.addEventListener('click', function () {
+          // Walk newest → oldest so each revert undoes against the most-recent
+          // version of the row.
+          var queue = liveFiltered.slice();
+          function next() {
+            var e = queue.shift();
+            if (!e) {
+              afterMutation().then(function () {
+                renderHistory(document.getElementById('content'));
+                showToast('Reverted ' + liveFiltered.length + ' change' +
+                  (liveFiltered.length === 1 ? '' : 's'), {});
+              });
+              return;
+            }
+            fetchJson('/api/history/revert/' + encodeURIComponent(e.id), { method: 'POST' })
+              .then(next)
+              .catch(function (err) { showToast('Bulk revert failed: ' + err.message, {}); });
+          }
+          next();
+        });
+
         mount.querySelectorAll('button.history-revert').forEach(function (btn) {
           btn.addEventListener('click', function () {
             var id = btn.getAttribute('data-id');
@@ -1305,9 +1425,6 @@ export const guiAppHtml = `<!doctype html>
               .then(afterMutation)
               .then(function () {
                 renderHistory(document.getElementById('content'));
-                // No undo affordance here — revert is the explicit user action,
-                // and the original entry remains in history if they want to
-                // un-undo it (it'll be picked up by the top-bar Redo button).
                 showToast('Change reverted', {});
               })
               .catch(function (err) { showToast('Revert failed: ' + err.message, {}); });
@@ -1435,11 +1552,18 @@ export const guiAppHtml = `<!doctype html>
         '<div class="view-header">' +
           '<span class="entity-icon">⚙</span>' +
           '<h1>Data Model</h1>' +
+          '<div class="actions">' +
+            '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
+          '</div>' +
         '</div>' +
         '<div class="dm-layout">' +
           '<div id="graph-mount"><div class="muted">Loading graph…</div></div>' +
           '<aside id="dm-panel" hidden></aside>' +
         '</div>';
+
+      document.getElementById('new-entity-btn').addEventListener('click', function () {
+        dmShowEntityEditor(null);
+      });
 
       fetchJson('/api/graph').then(function (graph) {
         document.getElementById('graph-mount').innerHTML = renderGraphSvg(graph);
@@ -1450,7 +1574,6 @@ export const guiAppHtml = `<!doctype html>
             highlightGraphNode(name);
           });
         });
-        // Restore the previously-active panel if any.
         if (dmActiveTable) {
           dmShowEntityEditor(dmActiveTable);
           highlightGraphNode(dmActiveTable);
@@ -1468,13 +1591,57 @@ export const guiAppHtml = `<!doctype html>
     }
 
     /**
-     * Show the editor for a selected entity. Only shows after the user
-     * clicks an entity node — until then the side panel stays hidden.
+     * Show the editor for a selected entity. Pass null to render the
+     * 'create new entity' form (same controls, different submit endpoint).
+     * Until the user clicks a graph node or '+ New entity', the side panel
+     * stays hidden.
      */
     function dmShowEntityEditor(tableName) {
       dmActiveTable = tableName;
       var panel = document.getElementById('dm-panel');
       panel.hidden = false;
+      var creating = !tableName;
+      if (creating) {
+        panel.innerHTML =
+          '<h3>+ New entity</h3>' +
+          '<div class="dm-edit-grid">' +
+            '<label>Name</label>' +
+            '<div class="dm-row-inline">' +
+              '<input id="dm-create-name" placeholder="e.g. invoices" autofocus />' +
+            '</div>' +
+            '<label>Icon</label>' +
+            '<div class="dm-row-inline">' +
+              '<input id="dm-create-icon" maxlength="8" placeholder="📋" />' +
+            '</div>' +
+            '<label></label>' +
+            '<div class="dm-row-inline">' +
+              '<button class="btn primary" id="dm-create-btn">Create entity</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="muted" style="margin-top:14px;font-size:12px;">' +
+            'New entities get \`id\` (uuid PK), \`name\`, and \`deleted_at\` columns. ' +
+            'Add more columns once the entity exists.' +
+          '</div>';
+        panel.querySelector('#dm-create-btn').addEventListener('click', function () {
+          var name = panel.querySelector('#dm-create-name').value.trim();
+          var icon = panel.querySelector('#dm-create-icon').value.trim();
+          if (!name) { panel.querySelector('#dm-create-name').focus(); return; }
+          fetchJson('/api/schema/entities', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: name, icon: icon || undefined }),
+          }).then(function () {
+            return reloadEverything();
+          }).then(function () {
+            location.hash = '#/settings/data-model';
+            dmActiveTable = name;
+            renderRoute();
+            showToast('Entity "' + name + '" created', {});
+          }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
+        });
+        return;
+      }
+
       var t = tableByName(tableName);
       if (!t) {
         panel.innerHTML = '<div class="muted">Unknown entity.</div>';
@@ -1485,8 +1652,14 @@ export const guiAppHtml = `<!doctype html>
       var overrideIcon = (override && override.icon) || '';
       var editableCols = (t.columns || []).filter(function (c) { return c !== 'id'; });
       var columnsHtml = editableCols.map(function (c) {
+        var secret = isSecretColumn(tableName, c);
         return '<div class="dm-col-row">' +
           '<input class="dm-col-name" data-col="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
+          '<label class="dm-secret-toggle" title="Mask values in the GUI">' +
+            '<input type="checkbox" class="dm-col-secret" data-col="' + escapeHtml(c) + '"' +
+              (secret ? ' checked' : '') + ' />' +
+            ' secret' +
+          '</label>' +
           '<button class="btn dm-col-rename" data-col="' + escapeHtml(c) + '" title="Rename">↻</button>' +
           '</div>';
       }).join('');
@@ -1515,6 +1688,9 @@ export const guiAppHtml = `<!doctype html>
               '<option value="boolean">boolean</option>' +
               '<option value="uuid">uuid</option>' +
             '</select>' +
+            '<label class="dm-secret-toggle">' +
+              '<input type="checkbox" id="dm-newcol-secret" /> secret' +
+            '</label>' +
             '<button class="btn primary" id="dm-newcol-btn">Add</button>' +
           '</div>' +
         '</div>';
@@ -1556,17 +1732,48 @@ export const guiAppHtml = `<!doctype html>
       panel.querySelector('#dm-newcol-btn').addEventListener('click', function () {
         var name = panel.querySelector('#dm-newcol-name').value.trim();
         var type = panel.querySelector('#dm-newcol-type').value;
+        var secret = !!panel.querySelector('#dm-newcol-secret').checked;
         if (!name) return;
         fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/columns', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ name: name, type: type }),
         }).then(function () {
+          if (!secret) return;
+          // Persist the secret flag for the new column.
+          return fetchJson(
+            '/api/gui-meta/columns/' + encodeURIComponent(tableName) + '/' + encodeURIComponent(name),
+            {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ secret: true }),
+            },
+          );
+        }).then(function () {
           return reloadEverything();
         }).then(function () {
           location.hash = '#/settings/data-model';
           showToast('Column "' + name + '" added', {});
         }).catch(function (err) { showToast('Add column failed: ' + err.message, {}); });
+      });
+      // Toggle 'secret' on an existing column.
+      panel.querySelectorAll('input.dm-col-secret').forEach(function (cb) {
+        cb.addEventListener('change', function () {
+          var col = cb.getAttribute('data-col');
+          fetchJson(
+            '/api/gui-meta/columns/' + encodeURIComponent(tableName) + '/' + encodeURIComponent(col),
+            {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ secret: !!cb.checked }),
+            },
+          ).then(refreshColumnMeta).then(function () {
+            showToast(cb.checked ? 'Column "' + col + '" marked secret' : 'Column "' + col + '" no longer secret', {});
+          }).catch(function (err) {
+            cb.checked = !cb.checked; // revert
+            showToast('Failed: ' + err.message, {});
+          });
+        });
       });
       // Rename column — schema change, irreversible.
       panel.querySelectorAll('.dm-col-rename').forEach(function (btn) {

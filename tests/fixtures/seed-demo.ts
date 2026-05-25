@@ -29,6 +29,19 @@ async function main(): Promise<void> {
   rmSync(CONTEXT_DIR, { recursive: true, force: true });
 
   const db = new Lattice({ config: CONFIG_PATH });
+  // Mirror the dynamic GUI tables so the seed can pre-populate column-meta
+  // flags. Keep these in sync with src/gui/server.ts → openConfig.
+  db.define('_lattice_gui_column_meta', {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      table_name: 'TEXT NOT NULL',
+      column_name: 'TEXT NOT NULL',
+      secret: 'INTEGER NOT NULL DEFAULT 0',
+      updated_at: "TEXT DEFAULT (datetime('now'))",
+    },
+    render: () => '',
+    outputFile: '.lattice-gui/column-meta.md',
+  });
   await db.init();
 
   // ── Core rows ────────────────────────────────────────────────────────
@@ -123,11 +136,20 @@ async function main(): Promise<void> {
   for (const f of files) fileIds.push(await db.insert('files', f));
 
   const secrets = [
-    { name: 'STRIPE_API_KEY', kind: 'api-key' },
-    { name: 'POSTGRES_PASSWORD', kind: 'db-password' },
-    { name: 'OAUTH_CLIENT_SECRET', kind: 'oauth' },
+    { name: 'PAYMENT_API_KEY', kind: 'api-key', value: 'demo-placeholder-not-a-real-key' },
+    { name: 'POSTGRES_PASSWORD', kind: 'db-password', value: 'demo-placeholder-password' },
+    { name: 'OAUTH_CLIENT_SECRET', kind: 'oauth', value: 'demo-placeholder-oauth-secret' },
   ];
   for (const s of secrets) await db.insert('secrets', s);
+
+  // Mark secrets.value as a secret column so the GUI masks the cell.
+  await db.insert('_lattice_gui_column_meta', {
+    id: crypto.randomUUID(),
+    table_name: 'secrets',
+    column_name: 'value',
+    secret: 1,
+    updated_at: new Date().toISOString(),
+  });
 
   // ── Junctions ────────────────────────────────────────────────────────
   // Meetings ↔ people: kickoff has 3 attendees, others vary.

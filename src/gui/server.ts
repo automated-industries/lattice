@@ -256,6 +256,7 @@ function readRowContext(
   outputDir: string,
   def: EntityContextDefinition,
   row: Record<string, unknown>,
+  secretCols: Set<string>,
 ): ContextFile[] {
   const slug = def.slug(row);
   const directoryRoot = def.directoryRoot ?? '';
@@ -269,7 +270,15 @@ function readRowContext(
     const absPath = join(entityDir, filename);
     const relPath = join(directoryRoot, slug, filename);
     if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
-    return { name: filename, path: relPath, content: readFileSync(absPath, 'utf8') };
+    let content = readFileSync(absPath, 'utf8');
+    // Redact `<secretCol>: …` lines from the rendered markdown so the secret
+    // value never reaches the browser (default-detail template writes one
+    // `key: value` line per column).
+    for (const col of secretCols) {
+      const re = new RegExp(`^(${col}):.*$`, 'gm');
+      content = content.replace(re, `$1: ••••••••`);
+    }
+    return { name: filename, path: relPath, content };
   });
 }
 
@@ -300,6 +309,19 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     primaryKey: 'entity_name',
     render: () => '',
     outputFile: '.lattice-gui/meta.md',
+  });
+  // Per-column GUI metadata — currently just the 'secret' flag used to
+  // mask values with bullets in the table / detail / context views.
+  db.define('_lattice_gui_column_meta', {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      table_name: 'TEXT NOT NULL',
+      column_name: 'TEXT NOT NULL',
+      secret: 'INTEGER NOT NULL DEFAULT 0',
+      updated_at: "TEXT DEFAULT (datetime('now'))",
+    },
+    render: () => '',
+    outputFile: '.lattice-gui/column-meta.md',
   });
   // Linear audit log of all mutations the GUI performs. Powers undo/redo
   // and the version-history page. Per-DB (each lattice config has its own).
@@ -453,6 +475,97 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── Create entity (additive — not in audit log, irreversible from GUI) ──
+        if (method === 'POST' && pathname === '/api/schema/entities') {
+          const body = (await readJsonBody(req)) as { name?: unknown; icon?: unknown };
+          const entityName = typeof body.name === 'string' ? body.name.trim() : '';
+          if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(entityName)) {
+            sendJson(res, { error: 'Entity name must be a valid identifier' }, 400);
+            return;
+          }
+          if (active.validTables.has(entityName)) {
+            sendJson(res, { error: `Entity already exists: ${entityName}` }, 400);
+            return;
+          }
+          await execSql(
+            active.db,
+            `CREATE TABLE "${entityName}" (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT)`,
+          );
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', entityName], {
+            fields: {
+              id: { type: 'uuid', primaryKey: true },
+              name: { type: 'text', required: true },
+              deleted_at: { type: 'text' },
+            },
+            outputFile: entityName.toUpperCase() + '.md',
+          });
+          saveConfigDoc(active.configPath, doc);
+          // Save icon override if provided
+          if (typeof body.icon === 'string' && body.icon.trim()) {
+            await active.db.insert('_lattice_gui_meta', {
+              entity_name: entityName,
+              icon: body.icon.trim(),
+              updated_at: new Date().toISOString(),
+            });
+          }
+          active.db.close();
+          active = await openConfig(active.configPath, active.outputDir);
+          sendJson(res, { ok: true, name: entityName });
+          return;
+        }
+
+        // ── GUI column metadata (per-column secret flag) ─────────────────
+        if (method === 'GET' && pathname === '/api/gui-meta/columns') {
+          const rows = (await active.db.query('_lattice_gui_column_meta', {})) as {
+            table_name: string;
+            column_name: string;
+            secret: number;
+          }[];
+          const out: Record<string, Record<string, { secret: boolean }>> = {};
+          for (const r of rows) {
+            const bucket = out[r.table_name] ?? (out[r.table_name] = {});
+            bucket[r.column_name] = { secret: r.secret === 1 };
+          }
+          sendJson(res, out);
+          return;
+        }
+        if (method === 'PUT' && /^\/api\/gui-meta\/columns\/[^/]+\/[^/]+$/.test(pathname)) {
+          const parts = pathname.split('/');
+          const tableName = decodeURIComponent(parts[4] ?? '');
+          const colName = decodeURIComponent(parts[5] ?? '');
+          if (!active.validTables.has(tableName)) {
+            sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
+            return;
+          }
+          const body = (await readJsonBody(req)) as { secret?: unknown };
+          const secret = body.secret === true ? 1 : 0;
+          const existing = (
+            (await active.db.query('_lattice_gui_column_meta', {
+              filters: [
+                { col: 'table_name', op: 'eq', val: tableName },
+                { col: 'column_name', op: 'eq', val: colName },
+              ],
+            })) as { id: string }[]
+          )[0];
+          if (existing) {
+            await active.db.update('_lattice_gui_column_meta', existing.id, {
+              secret,
+              updated_at: new Date().toISOString(),
+            });
+          } else {
+            await active.db.insert('_lattice_gui_column_meta', {
+              id: crypto.randomUUID(),
+              table_name: tableName,
+              column_name: colName,
+              secret,
+              updated_at: new Date().toISOString(),
+            });
+          }
+          sendJson(res, { ok: true });
+          return;
+        }
+
         // ── Schema editing (rename entity / add column / rename column) ──
         // All three mutate the YAML + apply a SQL ALTER, then re-open the
         // Lattice instance so the in-memory schema matches the new config.
@@ -565,16 +678,34 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Version history (audit log + undo/redo + revert) ──────────────
         if (method === 'GET' && pathname === '/api/history') {
           const limit = Number(url.searchParams.get('limit') ?? '200');
+          const filterTable = url.searchParams.get('table');
           const raw = (await active.db.query('_lattice_gui_audit', { limit })) as Record<
             string,
             unknown
           >[];
-          // Lattice query doesn't expose ORDER BY for non-indexed cols in a typed way
-          // here; sort newest-first in JS.
-          const entries = raw.map(parseAudit).sort((a, b) => b.ts.localeCompare(a.ts));
-          // Counts for the toolbar's enable/disable state.
-          const liveCount = entries.filter((e) => e.undone === 0).length;
-          const undoneCount = entries.length - liveCount;
+          let entries = raw.map(parseAudit).sort((a, b) => b.ts.localeCompare(a.ts));
+          if (filterTable) {
+            // Match the entry's primary table OR any junction whose two
+            // belongsTo relations point at the filtered table (so a
+            // link/unlink on `meeting_people` shows up under both Meetings
+            // and People).
+            const junctionMatchesFilter = new Set<string>();
+            for (const guiTable of getGuiEntities(active.configPath, active.outputDir).tables) {
+              if (!isJunctionTable(guiTable)) continue;
+              const rels = Object.values(guiTable.relations);
+              if (rels.some((r) => r.table === filterTable)) {
+                junctionMatchesFilter.add(guiTable.name);
+              }
+            }
+            entries = entries.filter(
+              (e) => e.table_name === filterTable || junctionMatchesFilter.has(e.table_name),
+            );
+          }
+          // Counts for the toolbar's enable/disable state (always over the
+          // full set so undo/redo aren't disabled by an active filter).
+          const allEntries = raw.map(parseAudit);
+          const liveCount = allEntries.filter((e) => e.undone === 0).length;
+          const undoneCount = allEntries.length - liveCount;
           sendJson(res, { entries, canUndo: liveCount > 0, canRedo: undoneCount > 0 });
           return;
         }
@@ -745,7 +876,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Row not found' }, 404);
             return;
           }
-          sendJson(res, { files: readRowContext(active.outputDir, def, row) });
+          // Pull secret columns for this table so the rendered .md gets
+          // redacted before it crosses the wire.
+          const colMetaRows = (await active.db.query('_lattice_gui_column_meta', {
+            filters: [
+              { col: 'table_name', op: 'eq', val: ctxTable },
+              { col: 'secret', op: 'eq', val: 1 },
+            ],
+          })) as { column_name: string }[];
+          const secretCols = new Set(colMetaRows.map((r) => r.column_name));
+          sendJson(res, { files: readRowContext(active.outputDir, def, row, secretCols) });
           return;
         }
 
