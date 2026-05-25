@@ -2,8 +2,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
+import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
-import { parseConfigFile } from '../config/parser.js';
+import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
+import type { LatticeFieldDef } from '../config/types.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 import {
   buildGuiGraph,
@@ -372,6 +374,31 @@ function listConfigs(
 }
 
 /**
+ * Apply a SQL statement directly via the active adapter. The Lattice instance
+ * itself doesn't expose ALTER TABLE on its CRUD surface, so we reach into the
+ * adapter's async run() for schema migrations the user triggers from the GUI.
+ */
+async function execSql(db: Lattice, sql: string): Promise<void> {
+  type Adapter = { runAsync?: (sql: string) => Promise<void> };
+  const adapter = (db as unknown as { _adapter: Adapter })._adapter;
+  if (!adapter.runAsync) throw new Error('Adapter does not support runAsync');
+  await adapter.runAsync(sql);
+}
+
+/**
+ * Parse the config YAML as a round-trip Document so we can mutate it while
+ * preserving comments and ordering. Callers should call `doc.toString()` to
+ * serialize, then writeFileSync the result.
+ */
+function loadConfigDoc(configPath: string): ReturnType<typeof parseDocument> {
+  return parseDocument(readFileSync(configPath, 'utf8'));
+}
+
+function saveConfigDoc(configPath: string, doc: ReturnType<typeof parseDocument>): void {
+  writeFileSync(configPath, doc.toString(), 'utf8');
+}
+
+/**
  * Write a starter YAML config + an empty SQLite DB. The schema is minimal —
  * one example `items` entity — so the user has something to play with
  * immediately. They can edit the YAML directly to add more entities.
@@ -423,6 +450,115 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (method === 'GET' && pathname === '/api/graph') {
           sendJson(res, buildGuiGraph(active.configPath, active.outputDir));
+          return;
+        }
+
+        // ── Schema editing (rename entity / add column / rename column) ──
+        // All three mutate the YAML + apply a SQL ALTER, then re-open the
+        // Lattice instance so the in-memory schema matches the new config.
+        // We don't audit-log schema changes (they're structural, not data).
+        if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/rename$/.test(pathname)) {
+          const oldName = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(oldName)) {
+            sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
+            return;
+          }
+          const body = (await readJsonBody(req)) as { to?: unknown };
+          const newName = typeof body.to === 'string' ? body.to.trim() : '';
+          if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(newName)) {
+            sendJson(res, { error: 'New name must be a valid identifier' }, 400);
+            return;
+          }
+          if (active.validTables.has(newName)) {
+            sendJson(res, { error: `Entity already exists: ${newName}` }, 400);
+            return;
+          }
+          await execSql(active.db, `ALTER TABLE "${oldName}" RENAME TO "${newName}"`);
+          const doc = loadConfigDoc(active.configPath);
+          const entity: unknown = doc.getIn(['entities', oldName]);
+          doc.deleteIn(['entities', oldName]);
+          doc.setIn(['entities', newName], entity);
+          // Also rename in entityContexts if present.
+          if (doc.getIn(['entityContexts', oldName])) {
+            const ctx: unknown = doc.getIn(['entityContexts', oldName]);
+            doc.deleteIn(['entityContexts', oldName]);
+            doc.setIn(['entityContexts', newName], ctx);
+          }
+          saveConfigDoc(active.configPath, doc);
+          active.db.close();
+          active = await openConfig(active.configPath, active.outputDir);
+          sendJson(res, { ok: true });
+          return;
+        }
+        if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
+          const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(entityName)) {
+            sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          const body = (await readJsonBody(req)) as {
+            name?: unknown;
+            type?: unknown;
+            required?: unknown;
+            ref?: unknown;
+          };
+          const colName = typeof body.name === 'string' ? body.name.trim() : '';
+          const colType = (
+            typeof body.type === 'string' ? body.type : 'text'
+          ) as LatticeFieldDef['type'];
+          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(colName)) {
+            sendJson(res, { error: 'Column name must be a valid identifier' }, 400);
+            return;
+          }
+          const sqliteType = fieldToSqliteBaseType(colType);
+          await execSql(
+            active.db,
+            `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${sqliteType}`,
+          );
+          const doc = loadConfigDoc(active.configPath);
+          const fieldDef: Record<string, unknown> = { type: colType };
+          if (body.required === true) fieldDef.required = true;
+          if (typeof body.ref === 'string') fieldDef.ref = body.ref;
+          doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
+          saveConfigDoc(active.configPath, doc);
+          active.db.close();
+          active = await openConfig(active.configPath, active.outputDir);
+          sendJson(res, { ok: true });
+          return;
+        }
+        if (
+          method === 'POST' &&
+          /^\/api\/schema\/entities\/[^/]+\/columns\/[^/]+\/rename$/.test(pathname)
+        ) {
+          const parts = pathname.split('/');
+          const entityName = decodeURIComponent(parts[4] ?? '');
+          const colName = decodeURIComponent(parts[6] ?? '');
+          if (!active.validTables.has(entityName)) {
+            sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          const body = (await readJsonBody(req)) as { to?: unknown };
+          const newCol = typeof body.to === 'string' ? body.to.trim() : '';
+          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newCol)) {
+            sendJson(res, { error: 'New column name must be a valid identifier' }, 400);
+            return;
+          }
+          if (colName === 'id') {
+            sendJson(res, { error: 'Cannot rename the id primary key column' }, 400);
+            return;
+          }
+          await execSql(
+            active.db,
+            `ALTER TABLE "${entityName}" RENAME COLUMN "${colName}" TO "${newCol}"`,
+          );
+          const doc = loadConfigDoc(active.configPath);
+          const fieldDef: unknown = doc.getIn(['entities', entityName, 'fields', colName]);
+          doc.deleteIn(['entities', entityName, 'fields', colName]);
+          doc.setIn(['entities', entityName, 'fields', newCol], fieldDef);
+          saveConfigDoc(active.configPath, doc);
+          active.db.close();
+          active = await openConfig(active.configPath, active.outputDir);
+          sendJson(res, { ok: true });
           return;
         }
 

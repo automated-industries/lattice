@@ -171,12 +171,7 @@ export const guiAppHtml = `<!doctype html>
       display: flex; align-items: center; gap: 10px;
       margin-bottom: 18px;
     }
-    .view-header .entity-icon { font-size: 22px; }
-    button.entity-icon.icon-edit {
-      background: transparent; border: none; padding: 2px 6px;
-      cursor: pointer; border-radius: 6px; line-height: 1;
-    }
-    button.entity-icon.icon-edit:hover { background: var(--row-hover); }
+    .view-header .entity-icon { font-size: 22px; line-height: 1; padding: 2px 0; }
     .view-header h1 { font-size: 22px; font-weight: 600; margin: 0; }
     .view-header .count { color: var(--text-muted); font-size: 13px; margin-left: 4px; }
 
@@ -279,6 +274,37 @@ export const guiAppHtml = `<!doctype html>
     .chip-removable button:hover { background: rgba(47, 111, 235, 0.15); }
     select.dm-add { width: 100%; padding: 6px 10px; font: inherit;
       border: 1px solid var(--border-strong); border-radius: 6px; background: white; }
+
+    /* Data Model entity-edit panel */
+    .dm-section { margin: 10px 0; }
+    .dm-section summary { cursor: pointer; font-size: 13px; padding: 6px 0;
+      color: var(--text); list-style: none; }
+    .dm-section summary::before {
+      content: '▸'; display: inline-block; margin-right: 6px; color: var(--text-muted);
+      transition: transform 0.1s;
+    }
+    .dm-section[open] summary::before { transform: rotate(90deg); }
+    .dm-edit-grid {
+      display: grid; grid-template-columns: 70px 1fr; gap: 8px 10px;
+      align-items: center; font-size: 12.5px;
+    }
+    .dm-edit-grid label { color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.04em; font-size: 11px; }
+    .dm-edit-grid input, .dm-edit-grid select {
+      padding: 5px 8px; font: inherit; border: 1px solid var(--border-strong);
+      border-radius: 5px; background: white; font-size: 12.5px;
+    }
+    .dm-row-inline { display: flex; gap: 6px; align-items: center; }
+    .dm-row-inline input { flex: 1; min-width: 0; }
+    .dm-row-inline select { width: 90px; }
+    .dm-row-inline .btn { height: 28px; font-size: 12px; padding: 0 10px; }
+    .dm-cols { display: flex; flex-direction: column; gap: 4px; }
+    .dm-col-row { display: flex; gap: 6px; align-items: center; }
+    .dm-col-row input { flex: 1; min-width: 0;
+      padding: 5px 8px; font: inherit; border: 1px solid var(--border);
+      border-radius: 5px; background: white; font-size: 12.5px;
+    }
+    .dm-col-rename { height: 28px; padding: 0 10px; font-size: 12px; }
 
     /* ── Buttons ──────────────────────────────────────── */
     .btn {
@@ -961,8 +987,7 @@ export const guiAppHtml = `<!doctype html>
 
         content.innerHTML =
           '<div class="view-header">' +
-            '<button class="entity-icon icon-edit" data-edit-icon="' + escapeHtml(tableName) +
-              '" title="Change icon">' + d.icon + '</button>' +
+            '<span class="entity-icon">' + d.icon + '</span>' +
             '<h1>' + escapeHtml(d.label) + (viewMode === 'trash' ? ' · Trash' : '') + '</h1>' +
             '<span class="count">' + rows.length + ' row' + (rows.length === 1 ? '' : 's') + '</span>' +
             trashToggle +
@@ -978,12 +1003,6 @@ export const guiAppHtml = `<!doctype html>
             renderTable(content, tableName);
           });
         }
-
-        content.querySelectorAll('[data-edit-icon]').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            openIconEditor(btn.getAttribute('data-edit-icon'));
-          });
-        });
 
         if (viewMode === 'live') document.getElementById('inline-create').addEventListener('click', function () {
           var values = collectFormValues(content.querySelector('tr.create-row'));
@@ -1126,8 +1145,7 @@ export const guiAppHtml = `<!doctype html>
           content.innerHTML =
             '<a class="breadcrumb" href="#/objects/' + tableName + '">← ' + escapeHtml(d.label) + '</a>' +
             '<div class="view-header">' +
-              '<button class="entity-icon icon-edit" data-edit-icon="' + escapeHtml(tableName) +
-                '" title="Change icon">' + d.icon + '</button>' +
+              '<span class="entity-icon">' + d.icon + '</span>' +
               '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
               '<div class="actions">' + actions + '</div>' +
             '</div>' +
@@ -1137,12 +1155,6 @@ export const guiAppHtml = `<!doctype html>
           // Skip the context fetch while editing — the just-PATCHed row may
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
-
-          content.querySelectorAll('[data-edit-icon]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-              openIconEditor(btn.getAttribute('data-edit-icon'));
-            });
-          });
 
           if (editing) {
             document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
@@ -1293,32 +1305,6 @@ export const guiAppHtml = `<!doctype html>
     }
 
     // ────────────────────────────────────────────────────────────
-    // Per-entity icon editor (persisted to /api/gui-meta)
-    // ────────────────────────────────────────────────────────────
-    function openIconEditor(entityName) {
-      var current = displayFor(entityName).icon;
-      var body =
-        '<p style="margin:0 0 12px;color:var(--text-muted);font-size:13px;">' +
-          'Paste a single emoji or short character. Leave blank to reset to the default.' +
-        '</p>' +
-        '<div class="field">' +
-          '<label>Icon for ' + escapeHtml(entityName) + '</label>' +
-          '<input type="text" name="icon" maxlength="8" value="' + escapeHtml(current) + '" autofocus />' +
-        '</div>';
-      showModal('Edit icon', body, {
-        primaryLabel: 'Save',
-        onSubmit: function (scope) {
-          var val = scope.querySelector('input[name="icon"]').value.trim();
-          return fetchJson('/api/gui-meta/' + encodeURIComponent(entityName), {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ icon: val }),
-          }).then(refreshIcons);
-        },
-      });
-    }
-
-    // ────────────────────────────────────────────────────────────
     // Row context (Lattice-rendered markdown files)
     // ────────────────────────────────────────────────────────────
     function loadRowContext(tableName, id) {
@@ -1395,19 +1381,137 @@ export const guiAppHtml = `<!doctype html>
       var panel = document.getElementById('dm-panel');
       panel.innerHTML = '<div class="muted">Loading…</div>';
       loadAllRows(tableName).then(function (rows) {
+        var t = tableByName(tableName);
         var d = displayFor(tableName);
+        var override = state.iconOverrides[tableName];
+        var overrideIcon = (override && override.icon) || '';
+
+        // ── Edit section: name / icon / columns ──
+        var editableCols = (t.columns || []).filter(function (c) { return c !== 'id'; });
+        var columnsHtml = editableCols.map(function (c) {
+          return '<div class="dm-col-row">' +
+            '<input class="dm-col-name" data-col="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
+            '<button class="btn dm-col-rename" data-col="' + escapeHtml(c) + '" title="Rename">↻</button>' +
+            '</div>';
+        }).join('');
+        var editPanel =
+          '<details class="dm-section" open>' +
+            '<summary><strong>Edit entity</strong></summary>' +
+            '<div class="dm-edit-grid">' +
+              '<label>Name</label>' +
+              '<div class="dm-row-inline">' +
+                '<input id="dm-rename-input" value="' + escapeHtml(tableName) + '" />' +
+                '<button class="btn" id="dm-rename-btn">Save</button>' +
+              '</div>' +
+              '<label>Icon</label>' +
+              '<div class="dm-row-inline">' +
+                '<input id="dm-icon-input" maxlength="8" placeholder="📋" value="' + escapeHtml(overrideIcon) + '" />' +
+                '<button class="btn" id="dm-icon-btn">Save</button>' +
+              '</div>' +
+              '<label>Columns</label>' +
+              '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No editable columns</span>') + '</div>' +
+              '<label>Add column</label>' +
+              '<div class="dm-row-inline">' +
+                '<input id="dm-newcol-name" placeholder="column_name" />' +
+                '<select id="dm-newcol-type">' +
+                  '<option value="text">text</option>' +
+                  '<option value="integer">integer</option>' +
+                  '<option value="real">real</option>' +
+                  '<option value="boolean">boolean</option>' +
+                  '<option value="uuid">uuid</option>' +
+                '</select>' +
+                '<button class="btn primary" id="dm-newcol-btn">Add</button>' +
+              '</div>' +
+            '</div>' +
+          '</details>';
+
+        // ── Browse section: existing row picker ──
         var list = rows.map(function (r) {
           return '<li data-id="' + escapeHtml(r.id) + '">' + escapeHtml(displayNameFor(r)) + '</li>';
         }).join('');
+        var browsePanel =
+          '<details class="dm-section">' +
+            '<summary><strong>Browse rows (' + rows.length + ')</strong></summary>' +
+            (rows.length === 0
+              ? '<div class="muted">No rows yet — use the Objects view to add one.</div>'
+              : '<ul class="dm-rows">' + list + '</ul>') +
+          '</details>';
+
         panel.innerHTML =
           '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
-          (rows.length === 0
-            ? '<div class="muted">No rows yet — use the Objects view to add one.</div>'
-            : '<ul class="dm-rows">' + list + '</ul>');
+          editPanel + browsePanel;
+
+        wireEntityEditPanel(panel, tableName);
         panel.querySelectorAll('li[data-id]').forEach(function (li) {
           li.addEventListener('click', function () {
             dmShowRowLinks(tableName, li.getAttribute('data-id'));
           });
+        });
+      });
+    }
+
+    /** Wire up the edit-entity controls in the Data Model side panel. */
+    function wireEntityEditPanel(panel, tableName) {
+      // Rename entity
+      panel.querySelector('#dm-rename-btn').addEventListener('click', function () {
+        var to = panel.querySelector('#dm-rename-input').value.trim();
+        if (!to || to === tableName) return;
+        if (!confirm('Rename entity "' + tableName + '" to "' + to + '"? This rewrites the SQL table and the YAML config.')) return;
+        fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/rename', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ to: to }),
+        }).then(function () {
+          return reloadEverything();
+        }).then(function () {
+          location.hash = '#/settings/data-model';
+        }).catch(function (err) { alert('Rename failed: ' + err.message); });
+      });
+      // Edit icon
+      panel.querySelector('#dm-icon-btn').addEventListener('click', function () {
+        var icon = panel.querySelector('#dm-icon-input').value.trim();
+        fetchJson('/api/gui-meta/' + encodeURIComponent(tableName), {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ icon: icon }),
+        }).then(refreshIcons).then(function () { dmShowTableRows(tableName); })
+          .catch(function (err) { alert('Icon save failed: ' + err.message); });
+      });
+      // Add column
+      panel.querySelector('#dm-newcol-btn').addEventListener('click', function () {
+        var name = panel.querySelector('#dm-newcol-name').value.trim();
+        var type = panel.querySelector('#dm-newcol-type').value;
+        if (!name) return;
+        fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/columns', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: name, type: type }),
+        }).then(function () {
+          return reloadEverything();
+        }).then(function () {
+          location.hash = '#/settings/data-model';
+        }).catch(function (err) { alert('Add column failed: ' + err.message); });
+      });
+      // Rename column
+      panel.querySelectorAll('.dm-col-rename').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var col = btn.getAttribute('data-col');
+          var input = panel.querySelector('input.dm-col-name[data-col="' + col + '"]');
+          var to = input.value.trim();
+          if (!to || to === col) return;
+          fetchJson(
+            '/api/schema/entities/' + encodeURIComponent(tableName) +
+              '/columns/' + encodeURIComponent(col) + '/rename',
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ to: to }),
+            },
+          ).then(function () {
+            return reloadEverything();
+          }).then(function () {
+            location.hash = '#/settings/data-model';
+          }).catch(function (err) { alert('Rename column failed: ' + err.message); });
         });
       });
     }
@@ -1538,21 +1642,30 @@ export const guiAppHtml = `<!doctype html>
       var junctionNames = new Set(state.entities.tables.filter(isJunction).map(function (t) { return t.name; }));
       var tableNodes = allTableNodes.filter(function (n) { return !junctionNames.has(n.table || n.label); });
 
-      // Build edges between first-class entities via shared junctions.
+      // Build edges between first-class entities, each tagged with relationship type.
       var entityEdges = [];
       state.entities.tables.forEach(function (t) {
         if (!isJunction(t)) return;
         var rels = Object.values(t.relations);
         if (rels.length === 2) {
-          entityEdges.push({ source: 'table:' + rels[0].table, target: 'table:' + rels[1].table });
+          entityEdges.push({
+            source: 'table:' + rels[0].table,
+            target: 'table:' + rels[1].table,
+            type: 'many-to-many',
+            via: t.name,
+          });
         }
       });
-      // Plus belongsTo edges (e.g. repositories → projects).
       state.entities.tables.forEach(function (t) {
         if (isJunction(t)) return;
         Object.values(t.relations || {}).forEach(function (r) {
           if (r.type === 'belongsTo') {
-            entityEdges.push({ source: 'table:' + t.name, target: 'table:' + r.table });
+            entityEdges.push({
+              source: 'table:' + t.name,
+              target: 'table:' + r.table,
+              type: 'belongs-to',
+              via: r.foreignKey,
+            });
           }
         });
       });
@@ -1566,8 +1679,14 @@ export const guiAppHtml = `<!doctype html>
       var edgeSvg = entityEdges.map(function (e) {
         var a = pos[e.source], b = pos[e.target];
         if (!a || !b) return '';
+        var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        var color = e.type === 'belongs-to' ? '#2f6feb' : '#a16207';
+        var dash = e.type === 'belongs-to' ? '' : ' stroke-dasharray="6 4"';
+        var labelBg = '<rect x="' + (mx - 56) + '" y="' + (my - 9) + '" width="112" height="18" rx="9" fill="white" stroke="' + color + '" stroke-width="1" />';
+        var labelText = '<text x="' + mx + '" y="' + (my + 4) + '" text-anchor="middle" font-size="10" fill="' + color + '">' +
+          escapeHtml(e.type + (e.via && e.type === 'many-to-many' ? ' · ' + e.via : '')) + '</text>';
         return '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
-          '" stroke="#c9cdd4" stroke-width="1.5" />';
+          '" stroke="' + color + '" stroke-width="1.5"' + dash + ' />' + labelBg + labelText;
       }).join('');
       var nodeSvg = tableNodes.map(function (n) {
         var p = pos[n.id];

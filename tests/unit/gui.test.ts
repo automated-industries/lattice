@@ -515,6 +515,54 @@ describe('GUI server', () => {
     expect(back.status).toBe(200);
   });
 
+  it('renames entities, adds columns, and renames columns via /api/schema', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // Add a new column to `tasks`.
+    const addCol = await fetch(`${server.url}/api/schema/entities/tasks/columns`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'priority', type: 'integer' }),
+    });
+    expect(addCol.status).toBe(200);
+    const ent1 = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string; columns: string[] }[];
+    };
+    expect(ent1.tables.find((t) => t.name === 'tasks')?.columns).toContain('priority');
+
+    // Rename the column.
+    const renameCol = await fetch(
+      `${server.url}/api/schema/entities/tasks/columns/priority/rename`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to: 'severity' }),
+      },
+    );
+    expect(renameCol.status).toBe(200);
+    const ent2 = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string; columns: string[] }[];
+    };
+    expect(ent2.tables.find((t) => t.name === 'tasks')?.columns).toContain('severity');
+    expect(ent2.tables.find((t) => t.name === 'tasks')?.columns).not.toContain('priority');
+
+    // Rename the entity.
+    const renameEnt = await fetch(`${server.url}/api/schema/entities/tasks/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to: 'jobs' }),
+    });
+    expect(renameEnt.status).toBe(200);
+    const ent3 = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string }[];
+    };
+    expect(ent3.tables.some((t) => t.name === 'jobs')).toBe(true);
+    expect(ent3.tables.some((t) => t.name === 'tasks')).toBe(false);
+  });
+
   it('rejects unknown tables and non-junctions for link/unlink', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
