@@ -6,263 +6,554 @@ export const guiAppHtml = `<!doctype html>
   <title>Lattice Browser</title>
   <style>
     :root {
-      --bg: #f7f7f4;
-      --panel: #ffffff;
-      --ink: #202124;
-      --muted: #696f78;
-      --line: #d9ddd8;
-      --accent: #0b6b62;
-      --accent-2: #a64f2a;
-      --blue: #345f95;
-      --missing: #b3261e;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --border: #e2e5ea;
+      --border-strong: #c9cdd4;
+      --text: #1f2328;
+      --text-muted: #6b7280;
+      --accent: #2f6feb;
+      --accent-soft: #e7efff;
+      --row-hover: #f6f7fa;
+      --shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--ink); }
-    button, input { font: inherit; }
-    .shell { height: 100vh; display: grid; grid-template-rows: 48px 1fr 48px; }
-    header { display: flex; align-items: center; gap: 16px; padding: 0 14px; border-bottom: 1px solid var(--line); background: #fcfcfa; }
-    .brand { font-weight: 700; letter-spacing: 0; }
-    .meta { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .actions { margin-left: auto; display: flex; gap: 8px; }
-    .icon-btn, .toggle { border: 1px solid var(--line); background: var(--panel); min-height: 32px; padding: 0 10px; border-radius: 6px; color: var(--ink); cursor: pointer; }
-    .toggle.active { border-color: var(--accent); color: var(--accent); }
-    main { min-height: 0; display: grid; grid-template-columns: 280px minmax(320px, 1fr) 340px; }
-    aside, section.inspector { min-width: 0; background: var(--panel); border-right: 1px solid var(--line); overflow: auto; }
-    section.inspector { border-right: 0; border-left: 1px solid var(--line); }
-    .pane-title { display: flex; justify-content: space-between; align-items: center; padding: 14px; font-weight: 700; }
-    .search { padding: 0 14px 12px; }
-    .search input { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; }
-    .group { border-top: 1px solid var(--line); }
-    .group h3 { margin: 0; padding: 10px 14px 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-    .object { width: 100%; display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 8px 14px; text-align: left; cursor: pointer; }
-    .object:hover, .object.selected { background: #eef4f1; }
-    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
-    .dot.table { background: var(--blue); }
-    .dot.file { background: var(--accent-2); }
-    .dot.missing { background: var(--missing); }
-    .object small { color: var(--muted); display: block; }
-    .graph-wrap { min-width: 0; min-height: 0; position: relative; background: #fbfbf8; overflow: hidden; }
-    .graph-toolbar { position: absolute; top: 12px; left: 12px; z-index: 2; display: flex; gap: 8px; flex-wrap: wrap; }
-    svg { width: 100%; height: 100%; display: block; }
-    .edge { stroke: #9da7a3; stroke-width: 1.5; }
-    .edge.markdown { stroke-dasharray: 5 4; }
-    .node circle { stroke: #fff; stroke-width: 2; cursor: pointer; }
-    .node text { font-size: 12px; fill: var(--ink); pointer-events: none; }
-    .tabs { display: flex; gap: 4px; padding: 0 14px 10px; border-bottom: 1px solid var(--line); }
-    .tabs button { border: 0; background: transparent; padding: 8px 10px; border-radius: 6px; cursor: pointer; color: var(--muted); }
-    .tabs button.active { background: #eef4f1; color: var(--accent); }
-    .inspector-body { padding: 14px; }
-    .kv { display: grid; grid-template-columns: 96px 1fr; gap: 8px; font-size: 13px; margin-bottom: 6px; }
-    .kv span:first-child { color: var(--muted); }
-    pre { white-space: pre-wrap; overflow: auto; background: #f1f2ef; padding: 12px; border-radius: 6px; font-size: 12px; line-height: 1.45; }
-    .file-card, .connection { border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-bottom: 10px; background: #fff; }
-    footer { border-top: 1px solid var(--line); background: #fcfcfa; display: flex; align-items: center; padding: 0 14px; color: var(--muted); font-size: 13px; }
-    footer.drop-active { background: #e6f3ef; color: var(--accent); }
-    .empty { color: var(--muted); padding: 14px; }
-    @media (max-width: 860px) {
-      .shell { height: auto; min-height: 100vh; grid-template-rows: 48px auto 54px; }
-      main { grid-template-columns: 1fr; grid-template-rows: auto 420px auto; }
-      aside, section.inspector { border: 0; border-bottom: 1px solid var(--line); max-height: 380px; }
-      .graph-toolbar { position: static; padding: 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
-      .graph-wrap { height: 420px; }
-      header .meta { display: none; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      font-size: 14px;
     }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; cursor: pointer; }
+
+    /* ── Top bar ───────────────────────────────────────── */
+    header.topbar {
+      display: flex; align-items: center; gap: 16px;
+      height: 56px; padding: 0 20px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+    }
+    .brand { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+    .query {
+      flex: 1; max-width: 480px; margin-left: auto;
+      height: 32px; padding: 0 12px;
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      background: #fafbfc; color: var(--text-muted); font-size: 13px;
+    }
+    .query[disabled] { cursor: not-allowed; }
+
+    /* ── Layout ────────────────────────────────────────── */
+    .layout {
+      display: grid; grid-template-columns: 220px 1fr;
+      height: calc(100vh - 56px);
+    }
+    nav.sidebar {
+      background: var(--surface); border-right: 1px solid var(--border);
+      padding: 18px 10px; overflow-y: auto;
+    }
+    .section-label {
+      font-size: 11px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 0 12px; margin: 12px 0 6px;
+    }
+    .section-label:first-child { margin-top: 0; }
+    nav ul { list-style: none; padding: 0; margin: 0; }
+    nav li a {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 12px; border-radius: 6px;
+      color: var(--text); font-size: 13.5px;
+    }
+    nav li a .nav-icon { width: 18px; text-align: center; font-size: 14px; }
+    nav li a:hover { background: var(--row-hover); }
+    nav li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+
+    main#content { padding: 24px; overflow: auto; }
+
+    /* ── Dashboard ────────────────────────────────────── */
+    .dashboard {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+      max-width: 1100px;
+    }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 22px;
+      min-height: 160px;
+      display: flex; flex-direction: column; gap: 8px;
+      box-shadow: var(--shadow);
+      transition: transform 0.05s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+    }
+    .card:hover { border-color: var(--accent); box-shadow: 0 2px 6px rgba(47, 111, 235, 0.12); }
+    .card-icon { font-size: 22px; }
+    .card-label { font-size: 15px; font-weight: 600; }
+    .card-count { font-size: 28px; font-weight: 700; color: var(--text-muted); margin-top: auto; }
+
+    /* ── Table view ───────────────────────────────────── */
+    .view-header {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 18px;
+    }
+    .view-header .entity-icon { font-size: 22px; }
+    .view-header h1 { font-size: 22px; font-weight: 600; margin: 0; }
+    .view-header .count { color: var(--text-muted); font-size: 13px; margin-left: 4px; }
+
+    table {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    thead th {
+      text-align: left; font-weight: 600; font-size: 12.5px;
+      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 12px 14px; background: #fafbfc;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody td {
+      padding: 12px 14px; border-bottom: 1px solid var(--border);
+      vertical-align: top; font-size: 13.5px;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover td { background: var(--row-hover); }
+    td.muted { color: var(--text-muted); }
+    .chip {
+      display: inline-block; padding: 2px 8px; margin: 1px 3px 1px 0;
+      background: var(--accent-soft); color: var(--accent);
+      border-radius: 10px; font-size: 12px;
+    }
+    .empty-row td {
+      color: var(--text-muted); font-style: italic; text-align: center;
+      padding: 24px;
+    }
+
+    /* ── Detail view ──────────────────────────────────── */
+    .breadcrumb {
+      font-size: 13px; color: var(--accent);
+      margin-bottom: 14px; display: inline-block;
+    }
+    .breadcrumb:hover { text-decoration: underline; }
+    .detail dl {
+      display: grid; grid-template-columns: 180px 1fr;
+      gap: 10px 24px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 20px; box-shadow: var(--shadow);
+      max-width: 900px;
+    }
+    .detail dt {
+      font-size: 12.5px; color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.04em; padding-top: 2px;
+    }
+    .detail dd { margin: 0; font-size: 14px; }
+
+    /* ── Placeholder / data-model stub ─────────────────── */
+    .placeholder {
+      background: var(--surface); border: 1px dashed var(--border-strong);
+      border-radius: 10px; padding: 40px;
+      max-width: 600px; text-align: center;
+      color: var(--text-muted);
+    }
+    .placeholder h2 { margin: 0 0 8px; color: var(--text); }
+
+    /* Data Model legacy graph container */
+    #graph-mount { width: 100%; min-height: 70vh; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    #graph-mount svg { width: 100%; height: 65vh; }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <header>
-      <div class="brand">Lattice Browser</div>
-      <div class="meta" id="project-meta">Loading project...</div>
-      <div class="actions">
-        <button class="icon-btn" id="refresh" title="Refresh">Refresh</button>
-      </div>
-    </header>
-    <main>
-      <aside>
-        <div class="pane-title">Objects <span id="object-count"></span></div>
-        <div class="search"><input id="search" placeholder="Search objects..." /></div>
-        <div id="objects"></div>
-      </aside>
-      <div class="graph-wrap">
-        <div class="graph-toolbar">
-          <button class="toggle active" id="toggle-entities">Entities</button>
-          <button class="toggle" id="toggle-files">Files</button>
-          <button class="toggle" id="toggle-markdown">Backlinks</button>
-          <button class="toggle" id="fit">Fit</button>
-        </div>
-        <svg id="graph" role="img" aria-label="Lattice object graph"></svg>
-      </div>
-      <section class="inspector">
-        <div class="pane-title">Inspector</div>
-        <div class="tabs">
-          <button class="active" data-tab="overview">Overview</button>
-          <button data-tab="files">Files</button>
-          <button data-tab="connections">Connections</button>
-          <button data-tab="raw">Raw</button>
-        </div>
-        <div class="inspector-body" id="inspector"><div class="empty">Select an object to inspect its context.</div></div>
-      </section>
-    </main>
-    <footer id="drop-zone">Drop lattice.config.yml, .db, context folder, or context files here</footer>
+  <header class="topbar">
+    <div class="brand">Lattice</div>
+    <input class="query" type="text" placeholder="Query + Prompt Workspace..." disabled />
+  </header>
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="section-label">Objects</div>
+      <ul id="object-nav"></ul>
+      <div class="section-label">Settings</div>
+      <ul id="settings-nav">
+        <li><a href="#/settings/data-model"><span class="nav-icon">⚙</span> Data Model</a></li>
+        <li><a href="#/settings/project-config"><span class="nav-icon">⚙</span> Project Config</a></li>
+        <li><a href="#/settings/user-config"><span class="nav-icon">👤</span> User Config</a></li>
+      </ul>
+    </nav>
+    <main id="content"></main>
   </div>
+
   <script>
-    const state = {
-      project: null, entities: null, graph: null, selected: null, tab: 'overview',
-      showEntities: true, showFiles: false, showMarkdown: true, dropped: []
+  (function () {
+    // ────────────────────────────────────────────────────────────
+    // Display config — labels + icons. Anything missing falls back
+    // to title-case of the table name and a generic dot.
+    // ────────────────────────────────────────────────────────────
+    var DISPLAY = {
+      meetings:     { label: 'Meetings',     icon: '📅' },
+      people:       { label: 'People',       icon: '👥' },
+      messages:     { label: 'Messages',     icon: '✉️' },
+      projects:     { label: 'Projects',     icon: '📦' },
+      repositories: { label: 'Repositories', icon: '💿' },
+      files:        { label: 'Files',        icon: '📄' },
+      secrets:      { label: 'Secrets',      icon: '🔐' },
     };
-    const $ = (id) => document.getElementById(id);
-    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    async function json(url, options) {
-      const res = await fetch(url, options);
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
+    // Cards shown on the dashboard (Secrets is sidebar-only by design).
+    var DASHBOARD_ORDER = ['meetings', 'people', 'messages', 'projects', 'repositories', 'files'];
+
+    var FIELD_DISPLAY = {
+      starts_at: 'Date+Time',
+      sent_at:   'Sent',
+      role:      'Role',
+      url:       'URL',
+      path:      'Path',
+      kind:      'Kind',
+    };
+
+    var state = { entities: null, rowCache: {} };
+
+    function displayFor(name) {
+      return DISPLAY[name] || { label: titleCase(name), icon: '·' };
     }
-    async function load() {
-      state.project = await json('/api/project');
-      state.entities = await json('/api/entities');
-      state.graph = await json('/api/graph');
-      $('project-meta').textContent = 'config: ' + state.project.configPath + '  output: ' + state.project.outputDir;
-      renderObjects(); renderGraph(); renderInspector();
+    function titleCase(s) {
+      return s.replace(/_/g, ' ').replace(/\\b\\w/g, function (c) { return c.toUpperCase(); });
     }
-    function allObjects() {
-      const counts = new Map();
-      for (const e of state.entities?.entities ?? []) counts.set(e.table, (counts.get(e.table) ?? 0) + 1);
-      const tables = state.entities?.tables.map(t => ({ id:'table:'+t.name, type:'table', label:t.name, sub:(counts.get(t.name) ?? 0)+' objects', raw:{...t, objectCount: counts.get(t.name) ?? 0} })) ?? [];
-      const selectedTable = state.selected?.startsWith('table:') ? state.selected.slice('table:'.length) : '';
-      const ents = selectedTable ? (state.entities?.entities.filter(e => e.table === selectedTable).map(e => ({ id:'entity:'+e.table+':'+e.slug, type:'entity', label:e.slug, sub:e.table, raw:e })) ?? []) : [];
-      const dropped = state.dropped.map((d, i) => ({ id:'drop:'+i, type:'file', label:d.name, sub:d.type+' · '+d.bytes+' bytes', raw:d }));
-      return [...tables, ...ents, ...dropped];
+    function fieldLabel(col) {
+      return FIELD_DISPLAY[col] || titleCase(col);
     }
-    function renderObjects() {
-      const q = $('search').value.toLowerCase();
-      const objects = allObjects().filter(o => (o.label+' '+o.sub).toLowerCase().includes(q));
-      $('object-count').textContent = String(objects.length);
-      const byType = { table: [], entity: [], file: [] };
-      for (const o of objects) byType[o.type].push(o);
-      $('objects').innerHTML = [
-        groupHtml('Objects', byType.table),
-        groupHtml('Entities', byType.entity),
-        groupHtml('Dropped Files', byType.file)
-      ].join('');
-      document.querySelectorAll('.object').forEach(btn => btn.addEventListener('click', () => {
-        state.selected = btn.dataset.id; state.tab = 'overview'; renderObjects(); renderGraph(); renderInspector();
-      }));
+
+    function escapeHtml(v) {
+      if (v == null) return '';
+      return String(v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
-    function groupHtml(title, rows) {
-      if (!rows.length) return '';
-      return '<div class="group"><h3>'+title+'</h3>'+rows.map(o =>
-        '<button class="object '+(state.selected===o.id?'selected':'')+'" data-id="'+esc(o.id)+'"><span class="dot '+esc(o.type)+'"></span><span>'+esc(o.label)+'<small>'+esc(o.sub)+'</small></span></button>'
-      ).join('')+'</div>';
+
+    function truncate(s, n) {
+      if (s == null) return '';
+      s = String(s);
+      return s.length > n ? s.slice(0, n) + '…' : s;
     }
-    function visibleGraph() {
-      const selectedTable = state.selected?.startsWith('table:') ? state.selected.slice('table:'.length) : '';
-      const selectedEntity = state.selected?.startsWith('entity:') ? state.selected : '';
-      const allNodes = state.graph?.nodes ?? [];
-      const allEdges = state.graph?.edges ?? [];
-      const nodes = allNodes.filter(n => {
-        if (n.type === 'table') return true;
-        if (n.type === 'entity') {
-          if (!state.showEntities) return false;
-          if (selectedEntity) return n.id === selectedEntity;
-          return Boolean(selectedTable) && n.table === selectedTable;
-        }
-        if (n.type === 'file') return state.showFiles && Boolean(selectedEntity) && n.id.startsWith('file:' + selectedEntity.split(':').slice(1).join('/') + '/');
-        return false;
+
+    function isJunction(table) {
+      var rels = Object.values(table.relations || {});
+      return rels.length === 2 && rels.every(function (r) { return r.type === 'belongsTo'; });
+    }
+
+    function tableByName(name) {
+      return state.entities.tables.find(function (t) { return t.name === name; });
+    }
+
+    function fetchJson(url, opts) {
+      return fetch(url, opts).then(function (r) {
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || r.statusText); });
+        return r.json();
       });
-      const ids = new Set(nodes.map(n => n.id));
-      const edges = allEdges.filter(e => {
-        if (!ids.has(e.source) || !ids.has(e.target)) return false;
-        if (e.type === 'markdown' && !state.showMarkdown) return false;
-        if (e.type === 'renders' && !state.showFiles) return false;
-        if (e.type === 'contains' && !selectedTable && !selectedEntity) return false;
-        return true;
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Boot
+    // ────────────────────────────────────────────────────────────
+    function init() {
+      fetchJson('/api/entities').then(function (data) {
+        state.entities = data;
+        renderSidebar();
+        renderRoute();
+      }).catch(function (err) {
+        document.getElementById('content').innerHTML =
+          '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
       });
-      return { nodes, edges };
     }
-    function renderGraph() {
-      const svg = $('graph'); const { nodes, edges } = visibleGraph();
-      const w = svg.clientWidth || 800, h = svg.clientHeight || 500;
-      const cx = w / 2, cy = h / 2, radius = Math.max(120, Math.min(w, h) / 2 - 70);
-      const pos = new Map();
-      nodes.forEach((n, i) => {
-        const a = (Math.PI * 2 * i) / Math.max(nodes.length, 1) - Math.PI / 2;
-        pos.set(n.id, { x: cx + Math.cos(a) * radius, y: cy + Math.sin(a) * radius });
+
+    window.addEventListener('hashchange', renderRoute);
+
+    // ────────────────────────────────────────────────────────────
+    // Sidebar
+    // ────────────────────────────────────────────────────────────
+    function renderSidebar() {
+      var ul = document.getElementById('object-nav');
+      var firstClass = state.entities.tables.filter(function (t) { return !isJunction(t); });
+      ul.innerHTML = firstClass.map(function (t) {
+        var d = displayFor(t.name);
+        return '<li><a data-route="#/objects/' + t.name + '" href="#/objects/' + t.name +
+          '"><span class="nav-icon">' + d.icon + '</span> ' + escapeHtml(d.label) + '</a></li>';
+      }).join('');
+      highlightActive();
+    }
+
+    function highlightActive() {
+      var hash = location.hash || '#/';
+      document.querySelectorAll('nav a').forEach(function (a) {
+        var route = a.getAttribute('data-route') || a.getAttribute('href');
+        a.classList.toggle('active', route && hash.indexOf(route) === 0);
       });
-      const color = (n) => n.type === 'table' ? '#345f95' : n.type === 'file' ? '#a64f2a' : n.status === 'missing-files' ? '#b3261e' : '#0b6b62';
-      svg.innerHTML = '<g>'+edges.map(e => {
-        const s = pos.get(e.source), t = pos.get(e.target); if (!s || !t) return '';
-        return '<line class="edge '+esc(e.type)+'" x1="'+s.x+'" y1="'+s.y+'" x2="'+t.x+'" y2="'+t.y+'"><title>'+esc(e.label)+'</title></line>';
-      }).join('')+'</g><g>'+nodes.map(n => {
-        const p = pos.get(n.id);
-        return '<g class="node" data-id="'+esc(n.id)+'" transform="translate('+p.x+' '+p.y+')"><circle r="'+(state.selected===n.id?12:9)+'" fill="'+color(n)+'"></circle><text x="14" y="4">'+esc(n.label)+'</text></g>';
-      }).join('')+'</g>';
-      svg.querySelectorAll('.node').forEach(n => n.addEventListener('click', () => {
-        state.selected = n.dataset.id; state.tab = 'overview'; renderObjects(); renderGraph(); renderInspector();
-      }));
     }
-    function findSelected() {
-      return allObjects().find(o => o.id === state.selected) ?? (state.graph?.nodes ?? []).find(n => n.id === state.selected);
-    }
-    async function renderInspector() {
-      document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === state.tab));
-      const selected = findSelected();
-      if (!selected) { $('inspector').innerHTML = '<div class="empty">Select an object to inspect its context.</div>'; return; }
-      if (state.tab === 'raw') { $('inspector').innerHTML = '<pre>'+esc(JSON.stringify(selected.raw ?? selected, null, 2))+'</pre>'; return; }
-      if (state.tab === 'connections') return renderConnections(selected);
-      if (state.tab === 'files' && selected.type === 'entity') return renderFiles(selected.raw);
-      if (selected.type === 'table') return renderObjectType(selected.raw);
-      $('inspector').innerHTML = '<h2>'+esc(selected.label)+'</h2>'
-        + '<div class="kv"><span>Type</span><strong>'+esc(selected.type)+'</strong></div>'
-        + '<div class="kv"><span>Details</span><span>'+esc(selected.sub ?? selected.table ?? '')+'</span></div>'
-        + (selected.raw?.status ? '<div class="kv"><span>Status</span><span>'+esc(selected.raw.status)+'</span></div>' : '');
-    }
-    function renderObjectType(table) {
-      const rows = (state.entities?.entities ?? []).filter(e => e.table === table.name);
-      $('inspector').innerHTML = '<h2>'+esc(table.name)+'</h2>'
-        + '<div class="kv"><span>Objects</span><strong>'+esc(rows.length)+'</strong></div>'
-        + '<div class="kv"><span>Fields</span><span>'+esc(table.columns.join(', '))+'</span></div>'
-        + '<h3>Entities</h3>'
-        + (rows.length ? rows.slice(0, 80).map(e => '<button class="connection object" data-id="entity:'+esc(e.table)+':'+esc(e.slug)+'"><span class="dot"></span><span>'+esc(e.slug)+'<small>'+esc(e.files.length)+' files</small></span></button>').join('') : '<div class="empty">No rendered entities.</div>')
-        + (rows.length > 80 ? '<div class="empty">Showing first 80. Use search to narrow.</div>' : '');
-      document.querySelectorAll('.connection').forEach(btn => btn.addEventListener('click', () => { state.selected = btn.dataset.id; state.tab = 'overview'; renderObjects(); renderGraph(); renderInspector(); }));
-    }
-    async function renderFiles(entity) {
-      if (!entity) { $('inspector').innerHTML = '<div class="empty">Files are available for rendered entities.</div>'; return; }
-      const payload = await json('/api/files?entity='+encodeURIComponent(entity.table)+'&slug='+encodeURIComponent(entity.slug));
-      $('inspector').innerHTML = payload.files.map(f => '<div class="file-card"><strong>'+esc(f.name)+'</strong><small> '+esc(f.path)+'</small><pre>'+esc(f.content || '(missing)')+'</pre></div>').join('');
-    }
-    function renderConnections(selected) {
-      const id = selected.id;
-      const connections = (state.graph?.edges ?? []).filter(e => e.source === id || e.target === id);
-      $('inspector').innerHTML = connections.length ? connections.map(e => {
-        const other = e.source === id ? e.target : e.source;
-        return '<button class="connection object" data-id="'+esc(other)+'"><span class="dot"></span><span>'+esc(e.type)+'<small>'+esc(e.label)+' → '+esc(other)+'</small></span></button>';
-      }).join('') : '<div class="empty">No visible connections.</div>';
-      document.querySelectorAll('.connection').forEach(btn => btn.addEventListener('click', () => { state.selected = btn.dataset.id; renderObjects(); renderGraph(); renderInspector(); }));
-    }
-    async function handleDrop(ev) {
-      ev.preventDefault(); $('drop-zone').classList.remove('drop-active');
-      for (const file of ev.dataTransfer.files) {
-        const text = file.size < 750000 ? await file.text().catch(() => '') : '';
-        const preview = await json('/api/drop', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ name:file.name, size:file.size, content:text }) });
-        state.dropped.push(preview);
+
+    // ────────────────────────────────────────────────────────────
+    // Routing
+    // ────────────────────────────────────────────────────────────
+    function renderRoute() {
+      if (!state.entities) return;
+      highlightActive();
+      var content = document.getElementById('content');
+      var hash = location.hash || '#/';
+
+      if (hash === '#/' || hash === '') { renderDashboard(content); return; }
+
+      var m = /^#\\/objects\\/([^/]+)(?:\\/(.+))?$/.exec(hash);
+      if (m) {
+        if (m[2]) renderDetail(content, m[1], m[2]);
+        else      renderTable(content, m[1]);
+        return;
       }
-      renderObjects();
+
+      if (hash === '#/settings/data-model') { renderDataModel(content); return; }
+      if (hash === '#/settings/project-config' || hash === '#/settings/user-config') {
+        content.innerHTML = '<div class="placeholder"><h2>Coming soon</h2>' +
+          '<p>This view will be wired up in a follow-up release.</p></div>';
+        return;
+      }
+      content.innerHTML = '<div class="placeholder"><h2>Unknown route</h2></div>';
     }
-    document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => { state.tab = b.dataset.tab; renderInspector(); }));
-    $('search').addEventListener('input', renderObjects);
-    $('refresh').addEventListener('click', load);
-    $('toggle-entities').addEventListener('click', () => { state.showEntities = !state.showEntities; $('toggle-entities').classList.toggle('active', state.showEntities); renderGraph(); });
-    $('toggle-files').addEventListener('click', () => { state.showFiles = !state.showFiles; $('toggle-files').classList.toggle('active', state.showFiles); renderGraph(); });
-    $('toggle-markdown').addEventListener('click', () => { state.showMarkdown = !state.showMarkdown; $('toggle-markdown').classList.toggle('active', state.showMarkdown); renderGraph(); });
-    $('fit').addEventListener('click', renderGraph);
-    window.addEventListener('resize', renderGraph);
-    window.addEventListener('dragover', ev => { ev.preventDefault(); $('drop-zone').classList.add('drop-active'); });
-    window.addEventListener('dragleave', () => $('drop-zone').classList.remove('drop-active'));
-    window.addEventListener('drop', handleDrop);
-    load().catch(err => { $('project-meta').textContent = 'Error'; $('objects').innerHTML = '<div class="empty">'+esc(err.message)+'</div>'; });
+
+    // ────────────────────────────────────────────────────────────
+    // Dashboard
+    // ────────────────────────────────────────────────────────────
+    function renderDashboard(content) {
+      var cards = DASHBOARD_ORDER.map(function (name) {
+        var t = tableByName(name);
+        if (!t) return '';
+        var d = displayFor(name);
+        var count = (t.rowCount != null) ? t.rowCount : 0;
+        return '<a class="card" href="#/objects/' + name + '">' +
+          '<div class="card-icon">' + d.icon + '</div>' +
+          '<div class="card-label">' + escapeHtml(d.label) + '</div>' +
+          '<div class="card-count">' + count + '</div>' +
+          '</a>';
+      }).join('');
+      content.innerHTML = '<div class="dashboard">' + cards + '</div>';
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Table view (read-only in this commit)
+    // ────────────────────────────────────────────────────────────
+    function intrinsicColumns(table) {
+      // Drop id + foreign-key columns (rendered as belongsTo relations instead).
+      var fkCols = new Set();
+      Object.values(table.relations || {}).forEach(function (r) {
+        if (r.type === 'belongsTo') fkCols.add(r.foreignKey);
+      });
+      return table.columns.filter(function (c) { return c !== 'id' && !fkCols.has(c); });
+    }
+
+    function belongsToColumns(table) {
+      return Object.entries(table.relations || {})
+        .filter(function (kv) { return kv[1].type === 'belongsTo'; })
+        .map(function (kv) { return { relName: kv[0], rel: kv[1] }; });
+    }
+
+    function junctionsFor(tableName) {
+      // Junctions where the LEFT side is this table.
+      var out = [];
+      state.entities.tables.forEach(function (t) {
+        if (!isJunction(t)) return;
+        var rels = Object.values(t.relations);
+        var here = rels.find(function (r) { return r.table === tableName; });
+        var other = rels.find(function (r) { return r.table !== tableName; });
+        if (here && other) out.push({ junction: t.name, localFk: here.foreignKey, remoteRel: other });
+      });
+      return out;
+    }
+
+    function displayNameFor(row) {
+      if (!row) return '';
+      return row.name || row.title || row.url || row.path || row.id || '';
+    }
+
+    var loadedTables = {};
+    function loadAllRows(tableName) {
+      if (loadedTables[tableName]) return Promise.resolve(loadedTables[tableName]);
+      return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows').then(function (d) {
+        loadedTables[tableName] = d.rows;
+        return d.rows;
+      });
+    }
+
+    function renderTable(content, tableName) {
+      var t = tableByName(tableName);
+      if (!t) {
+        content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>';
+        return;
+      }
+      var d = displayFor(tableName);
+      var intrinsic = intrinsicColumns(t);
+      var belongsTo = belongsToColumns(t);
+      var junctions = junctionsFor(tableName);
+
+      // Fetch this entity's rows + every related entity's rows so we can resolve names.
+      var fetches = [loadAllRows(tableName)];
+      belongsTo.forEach(function (b) { fetches.push(loadAllRows(b.rel.table)); });
+      junctions.forEach(function (j) {
+        fetches.push(loadAllRows(j.junction));
+        fetches.push(loadAllRows(j.remoteRel.table));
+      });
+
+      Promise.all(fetches).then(function () {
+        var rows = loadedTables[tableName];
+        var headers = intrinsic.map(fieldLabel)
+          .concat(belongsTo.map(function (b) { return titleCase(b.relName); }))
+          .concat(junctions.map(function (j) { return titleCase(j.remoteRel.table); }))
+          .map(function (h) { return '<th>' + escapeHtml(h) + '</th>'; }).join('');
+
+        var bodyRows;
+        if (rows.length === 0) {
+          var emptyCols = intrinsic.length + belongsTo.length + junctions.length;
+          bodyRows = '<tr class="empty-row"><td colspan="' + emptyCols + '">No rows yet</td></tr>';
+        } else {
+          bodyRows = rows.map(function (r) {
+            var tds = intrinsic.map(function (c) {
+              return '<td>' + escapeHtml(truncate(r[c], 120)) + '</td>';
+            });
+            belongsTo.forEach(function (b) {
+              var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === r[b.rel.foreignKey]; });
+              tds.push('<td>' + (ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '<span class="muted">—</span>') + '</td>');
+            });
+            junctions.forEach(function (j) {
+              var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === r.id; });
+              var remoteFkCol = j.remoteRel.foreignKey;
+              var chips = matches.map(function (jr) {
+                var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[remoteFkCol]; });
+                return ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '';
+              }).join('');
+              tds.push('<td>' + (chips || '<span class="muted">—</span>') + '</td>');
+            });
+            return '<tr data-id="' + escapeHtml(r.id) + '">' + tds.join('') + '</tr>';
+          }).join('');
+        }
+
+        content.innerHTML =
+          '<div class="view-header">' +
+            '<span class="entity-icon">' + d.icon + '</span>' +
+            '<h1>' + escapeHtml(d.label) + '</h1>' +
+            '<span class="count">' + rows.length + ' row' + (rows.length === 1 ? '' : 's') + '</span>' +
+          '</div>' +
+          '<table>' +
+            '<thead><tr>' + headers + '</tr></thead>' +
+            '<tbody>' + bodyRows + '</tbody>' +
+          '</table>';
+
+        content.querySelectorAll('tr[data-id]').forEach(function (tr) {
+          tr.addEventListener('click', function () {
+            location.hash = '#/objects/' + tableName + '/' + tr.getAttribute('data-id');
+          });
+        });
+      }).catch(function (err) {
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Detail view (read-only in this commit)
+    // ────────────────────────────────────────────────────────────
+    function renderDetail(content, tableName, id) {
+      var t = tableByName(tableName);
+      if (!t) {
+        content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>';
+        return;
+      }
+      var d = displayFor(tableName);
+      var intrinsic = intrinsicColumns(t);
+      var belongsTo = belongsToColumns(t);
+      var junctions = junctionsFor(tableName);
+
+      var fetches = [
+        fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id)),
+      ];
+      belongsTo.forEach(function (b) { fetches.push(loadAllRows(b.rel.table)); });
+      junctions.forEach(function (j) {
+        fetches.push(loadAllRows(j.junction));
+        fetches.push(loadAllRows(j.remoteRel.table));
+      });
+
+      Promise.all(fetches).then(function (results) {
+        var row = results[0];
+        var rows = [];
+        intrinsic.forEach(function (c) {
+          rows.push('<dt>' + escapeHtml(fieldLabel(c)) + '</dt>' +
+                    '<dd>' + (row[c] == null ? '<span class="muted">—</span>' : escapeHtml(row[c])) + '</dd>');
+        });
+        belongsTo.forEach(function (b) {
+          var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
+          rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt>' +
+                    '<dd>' + (ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '<span class="muted">—</span>') + '</dd>');
+        });
+        junctions.forEach(function (j) {
+          var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
+          var chips = matches.map(function (jr) {
+            var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[j.remoteRel.foreignKey]; });
+            return ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '';
+          }).join(' ');
+          rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
+                    '<dd>' + (chips || '<span class="muted">—</span>') + '</dd>');
+        });
+
+        content.innerHTML =
+          '<a class="breadcrumb" href="#/objects/' + tableName + '">← ' + escapeHtml(d.label) + '</a>' +
+          '<div class="view-header">' +
+            '<span class="entity-icon">' + d.icon + '</span>' +
+            '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
+          '</div>' +
+          '<div class="detail"><dl>' + rows.join('') + '</dl></div>';
+      }).catch(function (err) {
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Data Model — bare SVG graph (will get link/unlink UI later)
+    // ────────────────────────────────────────────────────────────
+    function renderDataModel(content) {
+      content.innerHTML =
+        '<div class="view-header">' +
+          '<span class="entity-icon">⚙</span>' +
+          '<h1>Data Model</h1>' +
+        '</div>' +
+        '<div id="graph-mount"><div class="muted">Loading graph…</div></div>';
+
+      fetchJson('/api/graph').then(function (graph) {
+        var mount = document.getElementById('graph-mount');
+        mount.innerHTML = renderGraphSvg(graph);
+      }).catch(function (err) {
+        document.getElementById('graph-mount').innerHTML =
+          '<div class="muted">Failed to load graph: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderGraphSvg(graph) {
+      // Simple circular layout — table nodes only, since junctions encode edges.
+      var tableNodes = graph.nodes.filter(function (n) { return n.type === 'table'; });
+      var keep = new Set(tableNodes.map(function (n) { return n.id; }));
+      var edges = graph.edges.filter(function (e) { return keep.has(e.source) && keep.has(e.target) && e.type !== 'markdown'; });
+      var cx = 500, cy = 320, r = 240;
+      var pos = {};
+      tableNodes.forEach(function (n, i) {
+        var a = (i / tableNodes.length) * Math.PI * 2 - Math.PI / 2;
+        pos[n.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+      });
+      var edgeSvg = edges.map(function (e) {
+        var a = pos[e.source], b = pos[e.target];
+        if (!a || !b) return '';
+        return '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
+          '" stroke="#c9cdd4" stroke-width="1.5" />';
+      }).join('');
+      var nodeSvg = tableNodes.map(function (n) {
+        var p = pos[n.id];
+        return '<g><circle cx="' + p.x + '" cy="' + p.y + '" r="22" fill="#e7efff" stroke="#2f6feb" stroke-width="1.5" />' +
+          '<text x="' + p.x + '" y="' + (p.y + 38) + '" text-anchor="middle" font-size="12" fill="#1f2328">' +
+          escapeHtml(n.label) + '</text></g>';
+      }).join('');
+      return '<svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg">' + edgeSvg + nodeSvg + '</svg>';
+    }
+
+    init();
+  })();
   </script>
 </body>
 </html>`;
