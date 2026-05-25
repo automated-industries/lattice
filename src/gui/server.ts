@@ -14,12 +14,27 @@ import {
 } from './data.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
+import { CLOUD_INTERNAL_TABLE_DEFS } from '../teams/internal-tables.js';
+import { authenticate, type AuthContext } from '../teams/server/auth.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
   outputDir: string;
   port?: number;
   openBrowser?: boolean;
+  /**
+   * Bind address. Defaults to `127.0.0.1`. Use `0.0.0.0` (or a specific
+   * interface) to expose the server outside localhost — only meaningful in
+   * combination with `teamCloud: true`, which adds the auth layer.
+   */
+  host?: string;
+  /**
+   * Enable team-cloud server mode: registers the Lattice Teams internal
+   * tables via `defineLate()` after init, and requires a valid bearer
+   * token on every API request. The DB-switcher endpoints are disabled
+   * (they assume single-user filesystem trust).
+   */
+  teamCloud?: boolean;
 }
 
 export interface GuiServerHandle {
@@ -74,7 +89,7 @@ function openUrl(url: string): void {
   child.unref();
 }
 
-function listen(server: Server, port: number): Promise<number> {
+function listen(server: Server, port: number, host: string): Promise<number> {
   return new Promise((resolveListen, reject) => {
     const onError = (err: NodeJS.ErrnoException): void => {
       server.off('listening', onListening);
@@ -87,14 +102,18 @@ function listen(server: Server, port: number): Promise<number> {
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    server.listen(port, '127.0.0.1');
+    server.listen(port, host);
   });
 }
 
-async function listenWithPortFallback(server: Server, startPort: number): Promise<number> {
+async function listenWithPortFallback(
+  server: Server,
+  startPort: number,
+  host: string,
+): Promise<number> {
   for (let port = startPort; port < startPort + 50; port++) {
     try {
-      return await listen(server, port);
+      return await listen(server, port, host);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err;
     }
@@ -270,20 +289,46 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
   return configPath;
 }
 
+async function registerTeamCloudTables(db: Lattice): Promise<void> {
+  for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
+    await db.defineLate(name, def);
+  }
+}
+
+type RequestWithAuth = IncomingMessage & { authContext?: AuthContext };
+
 export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
   const configPath = resolve(options.configPath);
   const outputDir = resolve(options.outputDir);
   const startPort = options.port ?? 4317;
+  const host = options.host ?? '127.0.0.1';
+  const teamCloud = options.teamCloud ?? false;
 
   // Mutable reference: switching DBs replaces this wholesale.
   let active: ActiveDb = await openConfig(configPath, outputDir);
+  if (teamCloud) {
+    await registerTeamCloudTables(active.db);
+  }
 
   const server = createServer((req, res) => {
     void (async () => {
       try {
-        const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+        const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
+
+        // ── Team-cloud auth gate ──────────────────────────────────────────
+        // Phase 1: every route requires a valid bearer token. Public
+        // endpoints (auth/register, auth/tokens) land in Phase 2 and will
+        // need an allowlist here.
+        if (teamCloud) {
+          const ctx = await authenticate(req, active.db);
+          if (!ctx) {
+            sendJson(res, { error: 'Unauthorized' }, 401);
+            return;
+          }
+          (req as RequestWithAuth).authContext = ctx;
+        }
 
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {
@@ -304,6 +349,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── Database switcher ─────────────────────────────────────────────
+        // Disabled in team-cloud mode — switching the active DB out from
+        // under other members would corrupt their session view and bypass
+        // the team's auth + share contract.
+        if (teamCloud && pathname.startsWith('/api/databases')) {
+          sendJson(res, { error: 'Database switching is disabled in team-cloud mode' }, 403);
+          return;
+        }
         if (method === 'GET' && pathname === '/api/databases') {
           sendJson(res, {
             current: {
@@ -509,8 +561,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     })();
   });
 
-  const port = await listenWithPortFallback(server, startPort);
-  const url = `http://127.0.0.1:${String(port)}`;
+  const port = await listenWithPortFallback(server, startPort, host);
+  // For 0.0.0.0 bindings, advertise via 127.0.0.1 so the printed URL is
+  // actually clickable; real external access uses the operator's known
+  // hostname/IP, not the bind wildcard.
+  const displayHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
+  const url = `http://${displayHost}:${String(port)}`;
   if (options.openBrowser ?? true) openUrl(url);
 
   return {

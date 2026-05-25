@@ -215,7 +215,39 @@ export class Lattice {
 
   define(table: string, def: TableDefinition): this {
     this._assertNotInit('define');
+    this._registerTable(table, def);
+    return this;
+  }
 
+  /**
+   * Register a table after `init()` has already run, and immediately apply
+   * its DDL to the underlying database. The mirror image of `define()` for
+   * post-init use cases — most notably the Lattice Teams feature, which
+   * boots a server-mode lattice and then registers its internal tables
+   * (users, tokens, etc.) once the main schema has been initialized.
+   *
+   * On Postgres, the DDL acquires `pg_advisory_xact_lock` so concurrent
+   * defineLate calls serialize on the same lock the boot path uses (see
+   * `SchemaManager.applySchemaForAsync`). On SQLite, CREATE TABLE IF NOT
+   * EXISTS plus the single-writer guarantee covers the race.
+   *
+   * Throws if called before `init()` (use `define()` instead) or if the
+   * table is already registered.
+   */
+  async defineLate(table: string, def: TableDefinition): Promise<this> {
+    if (!this._initialized) {
+      throw new Error(
+        'Lattice: defineLate() must be called after init() — use define() during setup',
+      );
+    }
+    this._registerTable(table, def);
+    await this._schema.applySchemaForAsync(this._adapter, table);
+    const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
+    this._columnCache.set(table, new Set(cols));
+    return this;
+  }
+
+  private _registerTable(table: string, def: TableDefinition): void {
     // Auto-inject reward tracking columns
     const columns = def.rewardTracking
       ? { ...def.columns, _reward_total: 'REAL DEFAULT 0', _reward_count: 'INTEGER DEFAULT 0' }
@@ -240,7 +272,6 @@ export class Lattice {
     };
     this._schema.define(table, compiledDef);
     if (def.changelog) this._changelogTables.add(table);
-    return this;
   }
 
   defineMulti(name: string, def: MultiTableDefinition): this {
