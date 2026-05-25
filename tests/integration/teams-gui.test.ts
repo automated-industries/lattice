@@ -176,11 +176,11 @@ describe('teams GUI — endpoints', () => {
     expect(shareRes.status).toBe(200);
     expect(shareRes.body.schema_version).toBe(1);
 
-    // Sharer generates an invite
+    // Sharer generates an invite addressed to Bob
     const inviteRes = await api(`${sharer.url}/api/teams-gui/teams/${teamId}/invitations`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ invitee_email: 'bob@example.com' }),
     });
     expect(inviteRes.body.raw_token).toMatch(/^latinv_/);
 
@@ -299,7 +299,7 @@ describe('teams GUI — endpoints', () => {
     const inviteRes = await api(`${sharer.url}/api/teams-gui/teams/${teamId}/invitations`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expires_in_hours: 24 }),
+      body: JSON.stringify({ invitee_email: 'bob@example.com', expires_in_hours: 24 }),
     });
     expect(inviteRes.body.raw_token).toMatch(/^latinv_/);
     expect(new Date(inviteRes.body.expires_at).getTime()).toBeGreaterThan(Date.now());

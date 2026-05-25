@@ -43,6 +43,7 @@ export interface InviteResponse {
   raw_token: string;
   expires_at: string;
   team_name: string;
+  invitee_email: string;
 }
 
 export interface TeamConnection {
@@ -219,9 +220,11 @@ export class TeamsClient {
     cloudUrl: string,
     token: string,
     teamId: string,
+    inviteeEmail: string,
     expiresInHours?: number,
   ): Promise<InviteResponse> {
-    const body = expiresInHours !== undefined ? { expires_in_hours: expiresInHours } : {};
+    const body: Record<string, unknown> = { invitee_email: inviteeEmail };
+    if (expiresInHours !== undefined) body.expires_in_hours = expiresInHours;
     return this.fetchAuthed<InviteResponse>(
       cloudUrl,
       token,

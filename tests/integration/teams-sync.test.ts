@@ -130,7 +130,7 @@ async function inviteAndJoinBob(
   teamId: string,
   bobWithTasks = false,
 ): Promise<{ bob: Awaited<ReturnType<typeof openLocal>>; bobUserId: string }> {
-  const invite = await aliceClient.invite(cloud.url, aliceToken, teamId);
+  const invite = await aliceClient.invite(cloud.url, aliceToken, teamId, 'bob@example.com');
   const bob = await openLocal(bobWithTasks);
   const join = await bob.client.redeemInvite(cloud.url, invite.raw_token, 'bob@example.com', 'Bob');
   await bob.client.saveConnection({

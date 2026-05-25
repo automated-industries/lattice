@@ -55,6 +55,7 @@ interface TeamMemberRow {
 interface InvitationRow {
   id: string;
   team_id: string;
+  invitee_email: string;
   expires_at: string | null;
   redeemed_at: string | null;
 }
@@ -187,6 +188,23 @@ export async function dispatchTeamRoute(
       await handleListTeams(res, ctx);
       return true;
     }
+  }
+
+  // One-team-per-DB singleton API. Resolves the active team from
+  // __lattice_team_identity rather than encoding a team_id in the URL.
+  if (pathname === '/api/team') {
+    if (method === 'GET') {
+      await handleGetSingletonTeam(res, ctx);
+      return true;
+    }
+    if (method === 'DELETE') {
+      await handleDestroySingletonTeam(res, ctx);
+      return true;
+    }
+  }
+  if (pathname === '/api/team/invitations' && method === 'POST') {
+    await handleCreateSingletonInvitation(req, res, ctx);
+    return true;
   }
 
   const teamMatch = /^\/api\/teams\/([^/]+)$/.exec(pathname);
@@ -336,6 +354,32 @@ async function handleRegister(
   sendJson(res, { user: { id: userId, email, name }, raw_token: raw }, 201);
 }
 
+interface TeamIdentityRow {
+  id: string;
+  team_id: string;
+  team_name: string;
+  creator_email: string;
+  created_at: string;
+}
+
+/** Read the singleton team-identity row, or null if no team is set up. */
+async function getTeamIdentity(db: Lattice): Promise<TeamIdentityRow | null> {
+  try {
+    const row = (await db.get('__lattice_team_identity', 'singleton')) as
+      | TeamIdentityRow
+      | null;
+    return row ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Look up a user's email by id from __lattice_users. */
+async function getUserEmail(db: Lattice, userId: string): Promise<string | null> {
+  const row = (await db.get('__lattice_users', userId)) as UserRow | null;
+  return row?.email ?? null;
+}
+
 async function handleRedeemInvite(
   req: IncomingMessage,
   res: ServerResponse,
@@ -372,6 +416,13 @@ async function handleRedeemInvite(
   }
   if (invite.expires_at && new Date(invite.expires_at).getTime() < Date.now()) {
     sendJson(res, { error: 'Invitation expired' }, 410);
+    return;
+  }
+  // Email binding: the invite was addressed to a specific person. If
+  // the caller's claimed email doesn't match, refuse — prevents
+  // re-sharing of an invite code with a different recipient.
+  if (invite.invitee_email && invite.invitee_email.toLowerCase() !== email.toLowerCase()) {
+    sendJson(res, { error: 'Invitation is addressed to a different email' }, 403);
     return;
   }
 
@@ -488,6 +539,25 @@ async function handleCreateTeam(
     sendJson(res, { error: 'name is required' }, 400);
     return;
   }
+  // One team per DB. Reject if the singleton identity row already exists.
+  const existing = await getTeamIdentity(ctx.db);
+  if (existing) {
+    sendJson(
+      res,
+      {
+        error: 'This DB already has a team. Use DELETE /api/team to destroy it first.',
+        team_id: existing.team_id,
+        team_name: existing.team_name,
+      },
+      409,
+    );
+    return;
+  }
+  const callerEmail = await getUserEmail(ctx.db, ctx.authContext.user.id);
+  if (!callerEmail) {
+    sendJson(res, { error: 'Caller has no email on file' }, 500);
+    return;
+  }
   const now = new Date().toISOString();
   const teamId = await ctx.db.insert('__lattice_team', {
     name,
@@ -500,6 +570,15 @@ async function handleCreateTeam(
     user_id: ctx.authContext.user.id,
     role: 'creator',
     joined_at: now,
+  });
+  // Mirror into the singleton identity table so the new /api/team
+  // endpoints can resolve the active team without scanning.
+  await ctx.db.insert('__lattice_team_identity', {
+    id: 'singleton',
+    team_id: teamId,
+    team_name: name,
+    creator_email: callerEmail,
+    created_at: now,
   });
   sendJson(res, { id: teamId, name, role: 'creator' }, 201);
 }
@@ -671,6 +750,11 @@ async function handleCreateInvitation(
     return;
   }
   const body = await readJson(req);
+  const inviteeEmail = requireString(body, 'invitee_email');
+  if (!inviteeEmail) {
+    sendJson(res, { error: 'invitee_email is required' }, 400);
+    return;
+  }
   const expiresInHours =
     typeof body.expires_in_hours === 'number' && body.expires_in_hours > 0
       ? body.expires_in_hours
@@ -680,11 +764,118 @@ async function handleCreateInvitation(
   const id = await ctx.db.insert('__lattice_invitations', {
     team_id: teamId,
     token_hash: hash,
+    invitee_email: inviteeEmail,
     invited_by_user_id: ctx.authContext.user.id,
     created_at: new Date().toISOString(),
     expires_at: expiresAt,
   });
-  sendJson(res, { id, raw_token: raw, expires_at: expiresAt, team_name: team.name }, 201);
+  sendJson(
+    res,
+    { id, raw_token: raw, expires_at: expiresAt, team_name: team.name, invitee_email: inviteeEmail },
+    201,
+  );
+}
+
+// ── Singleton-team convenience routes ──────────────────────────────────────
+
+/** GET /api/team — current team identity + member list. */
+async function handleGetSingletonTeam(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const identity = await getTeamIdentity(ctx.db);
+  if (!identity) {
+    sendJson(res, { enabled: false });
+    return;
+  }
+  const role = await getMembershipRole(ctx.db, identity.team_id, ctx.authContext.user.id);
+  if (!role) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  const members = (await ctx.db.query('__lattice_team_members', {
+    filters: [{ col: 'team_id', op: 'eq', val: identity.team_id }],
+  })) as unknown as TeamMemberRow[];
+  const userIds = members.map((m) => m.user_id);
+  const users = userIds.length
+    ? ((await ctx.db.query('__lattice_users', {
+        filters: [
+          { col: 'id', op: 'in', val: userIds },
+          { col: 'deleted_at', op: 'isNull' },
+        ],
+      })) as unknown as UserRow[])
+    : [];
+  const userById = new Map(users.map((u) => [u.id, u]));
+  sendJson(res, {
+    enabled: true,
+    team_id: identity.team_id,
+    team_name: identity.team_name,
+    creator_email: identity.creator_email,
+    created_at: identity.created_at,
+    members: members
+      .map((m) => {
+        const u = userById.get(m.user_id);
+        if (!u) return null;
+        return {
+          user_id: m.user_id,
+          email: u.email,
+          name: u.name,
+          role: m.role,
+          joined_at: m.joined_at,
+        };
+      })
+      .filter((m): m is NonNullable<typeof m> => m !== null),
+  });
+}
+
+/** DELETE /api/team — destroy the singleton team. Creator only. */
+async function handleDestroySingletonTeam(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const identity = await getTeamIdentity(ctx.db);
+  if (!identity) {
+    sendJson(res, { error: 'No team enabled on this DB' }, 404);
+    return;
+  }
+  const role = await getMembershipRole(ctx.db, identity.team_id, ctx.authContext.user.id);
+  if (role !== 'creator') {
+    sendJson(res, { error: 'Only the team creator can destroy the team' }, 403);
+    return;
+  }
+  const now = new Date().toISOString();
+  await ctx.db.update('__lattice_team', identity.team_id, { deleted_at: now });
+  // Drop the singleton — a fresh createTeam can establish a new team.
+  await ctx.db.delete('__lattice_team_identity', 'singleton');
+  sendJson(res, { ok: true });
+}
+
+/** POST /api/team/invitations — invite by email. Creator only. */
+async function handleCreateSingletonInvitation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const identity = await getTeamIdentity(ctx.db);
+  if (!identity) {
+    sendJson(res, { error: 'No team enabled on this DB' }, 404);
+    return;
+  }
+  // Delegate to the multi-team handler — the team_id is just the
+  // identity row's value. Internal: same code path, same checks.
+  await handleCreateInvitation(req, res, ctx, identity.team_id);
 }
 
 // ── Object sharing + change feed (Phase 3) ─────────────────────────────────

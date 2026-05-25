@@ -111,10 +111,16 @@ describe('teams management — end-to-end', () => {
         api_token: aliceToken,
       });
 
-      // 3. Alice generates an invitation
-      const invite = await alice.client.invite(cloud.url, aliceToken, atlas.id);
+      // 3. Alice generates an invitation addressed to Bob
+      const invite = await alice.client.invite(
+        cloud.url,
+        aliceToken,
+        atlas.id,
+        'bob@example.com',
+      );
       expect(invite.raw_token).toMatch(/^latinv_/);
       expect(invite.team_name).toBe('Atlas');
+      expect(invite.invitee_email).toBe('bob@example.com');
 
       // 4. Bob redeems the invitation
       const bobJoin = await bob.client.redeemInvite(
@@ -134,7 +140,8 @@ describe('teams management — end-to-end', () => {
         api_token: bobJoin.raw_token,
       });
 
-      // Same invitation cannot be redeemed twice
+      // Same invitation cannot be redeemed twice — once Bob has used
+      // it, even the original invitee gets 401 ("already used").
       await expect(
         bob.client.redeemInvite(cloud.url, invite.raw_token, 'eve@example.com', 'Eve'),
       ).rejects.toMatchObject({ status: 401 });
@@ -150,9 +157,9 @@ describe('teams management — end-to-end', () => {
       expect(roles).toEqual(['creator', 'member']);
 
       // 7. Bob tries to invite — 403
-      await expect(bob.client.invite(cloud.url, bobJoin.raw_token, atlas.id)).rejects.toMatchObject(
-        { status: 403 },
-      );
+      await expect(
+        bob.client.invite(cloud.url, bobJoin.raw_token, atlas.id, 'carol@example.com'),
+      ).rejects.toMatchObject({ status: 403 });
 
       // 7b. Bob tries to destroy — 403
       await expect(
@@ -214,7 +221,12 @@ describe('teams management — end-to-end', () => {
     try {
       const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice');
       const team = await alice.client.createTeam(cloud.url, reg.raw_token, 'Atlas');
-      const invite = await alice.client.invite(cloud.url, reg.raw_token, team.id);
+      const invite = await alice.client.invite(
+        cloud.url,
+        reg.raw_token,
+        team.id,
+        'bob@example.com',
+      );
       // Try to use the latinv_-prefixed token as a bearer
       await expect(alice.client.listTeams(cloud.url, invite.raw_token)).rejects.toMatchObject({
         status: 401,

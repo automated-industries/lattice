@@ -197,8 +197,19 @@ async function dispatchTeamSubroute(
   // /api/teams-gui/teams/:id/invitations (POST)
   if (subpath === 'invitations' && method === 'POST') {
     const body = await readJson(req);
+    const inviteeEmail = requireString(body, 'invitee_email');
+    if (!inviteeEmail) {
+      sendJson(res, { error: 'invitee_email is required' }, 400);
+      return;
+    }
     const hours = typeof body.expires_in_hours === 'number' ? body.expires_in_hours : undefined;
-    const invite = await ctx.client.invite(conn.cloud_url, conn.api_token, teamId, hours);
+    const invite = await ctx.client.invite(
+      conn.cloud_url,
+      conn.api_token,
+      teamId,
+      inviteeEmail,
+      hours,
+    );
     sendJson(res, invite);
     return;
   }

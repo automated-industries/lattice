@@ -13,6 +13,8 @@ export interface TeamsCliArgs {
   cloud?: string | undefined;
   token?: string | undefined;
   email?: string | undefined;
+  /** For invite: the email the invitation is addressed to. */
+  inviteeEmail?: string | undefined;
   name?: string | undefined;
   team?: string | undefined;
   teamId?: string | undefined;
@@ -274,14 +276,21 @@ async function runInvite(args: TeamsCliArgs): Promise<void> {
   try {
     const client = new TeamsClient(db);
     const conn = await resolveConnection(client, args);
-    const result = await client.invite(conn.cloud_url, conn.api_token, conn.team_id, args.expires);
-    console.log(`Invitation generated (expires ${result.expires_at}).`);
+    const inviteeEmail = requireArg(args, 'inviteeEmail', '--invitee-email');
+    const result = await client.invite(
+      conn.cloud_url,
+      conn.api_token,
+      conn.team_id,
+      inviteeEmail,
+      args.expires,
+    );
+    console.log(`Invitation generated for ${inviteeEmail} (expires ${result.expires_at}).`);
     console.log('');
     console.log('Share this token with the invitee (one-time use):');
     console.log(`  ${result.raw_token}`);
     console.log('');
     console.log(
-      `Invitee runs: lattice teams join --cloud ${conn.cloud_url} --token <above> --email <their-email> --name "<their-name>"`,
+      `Invitee runs: lattice teams join --cloud ${conn.cloud_url} --token <above> --email ${inviteeEmail} --name "<their-name>"`,
     );
   } finally {
     db.close();

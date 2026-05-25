@@ -37,6 +37,7 @@ interface ParsedArgs {
   cloud?: string | undefined;
   token?: string | undefined;
   email?: string | undefined;
+  inviteeEmail?: string | undefined;
   teamName?: string | undefined;
   team?: string | undefined;
   teamId?: string | undefined;
@@ -68,6 +69,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let cloud: string | undefined;
   let token: string | undefined;
   let email: string | undefined;
+  let inviteeEmail: string | undefined;
   let teamName: string | undefined;
   let team: string | undefined;
   let teamId: string | undefined;
@@ -140,6 +142,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--email' && i + 1 < argv.length) {
       i++;
       email = argv[i];
+    } else if (arg === '--invitee-email' && i + 1 < argv.length) {
+      i++;
+      inviteeEmail = argv[i];
     } else if (arg === '--name' && i + 1 < argv.length) {
       i++;
       teamName = argv[i];
@@ -188,6 +193,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     cloud,
     token,
     email,
+    inviteeEmail,
     teamName,
     team,
     teamId,
@@ -613,6 +619,7 @@ function main(): void {
         cloud: args.cloud,
         token: args.token,
         email: args.email,
+        inviteeEmail: args.inviteeEmail,
         // For teams subcommands, `--name <X>` is the "name" arg — either a
         // user display name (for register / join) or the team name (for
         // create). The flag is overloaded; the subcommand decides which.

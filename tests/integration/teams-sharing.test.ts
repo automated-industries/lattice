@@ -181,7 +181,7 @@ describe('teams sharing — end-to-end propagation', () => {
     aliceToken: string,
     teamId: string,
   ): Promise<Awaited<ReturnType<typeof openLocal>>> {
-    const invite = await aliceClient.invite(cloud.url, aliceToken, teamId);
+    const invite = await aliceClient.invite(cloud.url, aliceToken, teamId, 'bob@example.com');
     const bob = await openLocal(); // Bob's local doesn't declare `tasks` — relies on sync
     const join = await bob.client.redeemInvite(
       cloud.url,
@@ -314,7 +314,7 @@ describe('teams sharing — end-to-end propagation', () => {
       ].join('\n'),
     );
     // Bob joins via invite
-    const invite = await alice.client.invite(cloud.url, aliceToken, teamId);
+    const invite = await alice.client.invite(cloud.url, aliceToken, teamId, 'bob@example.com');
     const join = await bob.client.redeemInvite(
       cloud.url,
       invite.raw_token,

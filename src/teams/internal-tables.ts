@@ -19,12 +19,16 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
   __lattice_users: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      email: 'TEXT',
+      email: 'TEXT NOT NULL',
       name: 'TEXT',
       created_at: 'TEXT NOT NULL',
       updated_at: 'TEXT NOT NULL',
       deleted_at: 'TEXT',
     },
+    // Uniqueness enforced at the route layer (we soft-delete by setting
+    // deleted_at, so a column-level UNIQUE blocks re-registration after
+    // a delete). The register/redeem handlers check for an existing
+    // non-deleted user with the same email before insert.
     render: () => '',
     outputFile: '.lattice-teams/users.md',
   },
@@ -53,6 +57,24 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
     render: () => '',
     outputFile: '.lattice-teams/teams.md',
   },
+  // Singleton mirror of __lattice_team — populated by `createTeam` when
+  // the first (and only) team is established on this cloud. One row per
+  // DB, id='singleton'. Lets GET /api/team / DELETE /api/team / POST
+  // /api/team/invitations resolve the active team without scanning.
+  // The multi-team `__lattice_team` table remains the source of truth
+  // for the row/object/changes routes until Step 8 deprecates them.
+  __lattice_team_identity: {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      team_id: 'TEXT NOT NULL',
+      team_name: 'TEXT NOT NULL',
+      creator_email: 'TEXT NOT NULL',
+      created_at: 'TEXT NOT NULL',
+    },
+    primaryKey: 'id',
+    render: () => '',
+    outputFile: '.lattice-teams/team-identity.md',
+  },
   __lattice_team_members: {
     columns: {
       team_id: 'TEXT NOT NULL',
@@ -69,6 +91,11 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
       id: 'TEXT PRIMARY KEY',
       team_id: 'TEXT NOT NULL',
       token_hash: 'TEXT NOT NULL UNIQUE',
+      // Email the invitation is addressed to — redeem requires the
+      // caller's identity email to match. Email-binding makes invite
+      // codes safe to share over a channel that's not strongly
+      // authenticated; the recipient still has to be the recipient.
+      invitee_email: 'TEXT NOT NULL',
       invited_by_user_id: 'TEXT NOT NULL',
       created_at: 'TEXT NOT NULL',
       expires_at: 'TEXT',
