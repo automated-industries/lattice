@@ -344,28 +344,33 @@ export const guiAppHtml = `<!doctype html>
     }
     .dm-secret-toggle input[type="checkbox"] { margin: 0; }
 
-    /* Emoji picker */
-    .emoji-picker { display: flex; flex-direction: column; gap: 8px; }
-    .emoji-current {
+    /* Emoji picker (collapsed by default; click to drop down) */
+    .emoji-picker { position: relative; display: inline-block; }
+    .emoji-trigger {
       display: inline-flex; align-items: center; gap: 8px;
-      padding: 4px 10px; background: #fafbfc;
-      border: 1px solid var(--border); border-radius: 6px;
-      align-self: flex-start;
+      padding: 4px 8px 4px 10px; background: white;
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      cursor: pointer; min-width: 70px;
     }
-    .emoji-current .emoji-preview { font-size: 22px; line-height: 1; }
+    .emoji-trigger:hover { background: var(--row-hover); }
+    .emoji-trigger .emoji-preview { font-size: 22px; line-height: 1; }
+    .emoji-trigger .emoji-caret { color: var(--text-muted); font-size: 10px; }
     .emoji-grid {
-      display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px;
-      background: #fafbfc; padding: 8px; border-radius: 8px;
-      border: 1px solid var(--border);
+      position: absolute; top: 42px; left: 0; z-index: 70;
+      display: grid; grid-template-columns: repeat(8, 36px); gap: 4px;
+      background: var(--surface); padding: 8px; border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
     }
+    .emoji-grid[hidden] { display: none; }
     .emoji-tile {
-      width: 100%; aspect-ratio: 1 / 1;
+      width: 36px; height: 36px;
       background: transparent; border: 1px solid transparent;
       border-radius: 6px; cursor: pointer;
       font-size: 18px; line-height: 1; padding: 0;
       display: flex; align-items: center; justify-content: center;
     }
-    .emoji-tile:hover { background: white; border-color: var(--border); }
+    .emoji-tile:hover { background: var(--row-hover); border-color: var(--border); }
     .emoji-tile.active { background: var(--accent-soft); border-color: var(--accent); }
 
     /* ── Toast / undo banner ──────────────────────────── */
@@ -1761,8 +1766,10 @@ export const guiAppHtml = `<!doctype html>
         return;
       }
       var d = displayFor(tableName);
-      var override = state.iconOverrides[tableName];
-      var overrideIcon = (override && override.icon) || '';
+      // Pre-fill the picker with the effective icon (override > built-in
+      // default > generic fallback) so the dropdown reflects what's actually
+      // rendered elsewhere in the GUI.
+      var overrideIcon = d.icon;
       // Render every column, but render locked ones (id, deleted_at) as
       // read-only labels — they're structural and renaming would break
       // soft-delete / version-history semantics.
@@ -1823,22 +1830,29 @@ export const guiAppHtml = `<!doctype html>
       wireEntityEditPanel(panel, tableName);
     }
 
-    /** Render an emoji-picker grid + hidden input. The hidden input's value
-     *  is the currently selected emoji; clicking a tile updates it and the
-     *  visible "selected" preview. */
+    /**
+     * Render a collapsed emoji-picker: a button showing the currently selected
+     * emoji (with a ▾ caret) and a hidden grid that drops down when clicked.
+     * Selecting a tile updates the hidden input and the button, then closes
+     * the dropdown.
+     *
+     * currentValue is the emoji to pre-fill (saved override OR the inherited
+     * default — callers pass displayFor(table).icon so the dropdown reflects
+     * what the user actually sees on the rest of the page).
+     */
     function emojiPickerHtml(inputId, currentValue) {
-      var current = currentValue || '';
+      var current = currentValue || '📋';
       var tiles = EMOJI_PALETTE.map(function (e) {
         var active = e === current ? ' active' : '';
         return '<button type="button" class="emoji-tile' + active +
           '" data-emoji="' + escapeHtml(e) + '" aria-label="' + escapeHtml(e) + '">' + e + '</button>';
       }).join('');
       return '<div class="emoji-picker" data-input-id="' + escapeHtml(inputId) + '">' +
-        '<div class="emoji-current">' +
-          '<span class="emoji-preview">' + (current ? escapeHtml(current) : '<span class="muted">—</span>') + '</span>' +
-          '<span class="muted" style="font-size:11px;">selected</span>' +
-        '</div>' +
-        '<div class="emoji-grid">' + tiles + '</div>' +
+        '<button type="button" class="emoji-trigger" aria-haspopup="grid" aria-expanded="false">' +
+          '<span class="emoji-preview">' + escapeHtml(current) + '</span>' +
+          '<span class="emoji-caret">▾</span>' +
+        '</button>' +
+        '<div class="emoji-grid" hidden>' + tiles + '</div>' +
         '<input type="hidden" id="' + escapeHtml(inputId) + '" value="' + escapeHtml(current) + '" />' +
       '</div>';
     }
@@ -1847,7 +1861,30 @@ export const guiAppHtml = `<!doctype html>
       var picker = panel.querySelector('.emoji-picker[data-input-id="' + inputId + '"]');
       if (!picker) return;
       var input = picker.querySelector('input[type="hidden"]');
+      var trigger = picker.querySelector('.emoji-trigger');
       var preview = picker.querySelector('.emoji-preview');
+      var grid = picker.querySelector('.emoji-grid');
+
+      function open() {
+        grid.hidden = false;
+        trigger.setAttribute('aria-expanded', 'true');
+      }
+      function close() {
+        grid.hidden = true;
+        trigger.setAttribute('aria-expanded', 'false');
+      }
+
+      trigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (grid.hidden) open(); else close();
+      });
+
+      // Click anywhere outside the picker closes it.
+      document.addEventListener('click', function (e) {
+        if (grid.hidden) return;
+        if (!picker.contains(e.target)) close();
+      });
+
       picker.querySelectorAll('.emoji-tile').forEach(function (tile) {
         tile.addEventListener('click', function () {
           var v = tile.getAttribute('data-emoji');
@@ -1856,6 +1893,7 @@ export const guiAppHtml = `<!doctype html>
           picker.querySelectorAll('.emoji-tile').forEach(function (t) {
             t.classList.toggle('active', t === tile);
           });
+          close();
         });
       });
     }
