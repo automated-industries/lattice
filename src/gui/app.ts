@@ -340,6 +340,78 @@ export const guiAppHtml = `<!doctype html>
       white-space: pre-wrap; word-break: break-word;
     }
     .context-empty { padding: 16px 18px; color: var(--text-muted); font-style: italic; }
+
+    /* ── Teams (Project Config + User Config) ───────────── */
+    .teams-page { padding: 24px 28px; max-width: 1000px; }
+    .teams-page h2 { margin: 0 0 4px 0; font-size: 22px; }
+    .teams-page .lead { color: var(--text-muted); margin-bottom: 24px; font-size: 13.5px; }
+    .teams-actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+    .team-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px 18px; margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .team-card h3 {
+      margin: 0 0 4px 0; font-size: 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .team-card .team-meta { color: var(--text-muted); font-size: 12.5px; margin-bottom: 12px; }
+    .team-card .team-meta code { font-family: ui-monospace, monospace; font-size: 12px; }
+    .team-card .role-tag {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .team-card .role-tag.role-member { background: #eef0f3; color: var(--text-muted); }
+    .team-stats {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+      margin: 10px 0 14px 0;
+    }
+    .team-stat {
+      background: #fafbfc; border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; text-align: center;
+    }
+    .team-stat .stat-label {
+      font-size: 11px; text-transform: uppercase; color: var(--text-muted);
+      letter-spacing: 0.04em; margin-bottom: 2px;
+    }
+    .team-stat .stat-value { font-size: 18px; font-weight: 600; }
+    .team-card .team-actions { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+    .team-card .shared-list, .team-card .members-list {
+      margin: 12px 0; border-top: 1px solid var(--border); padding-top: 12px;
+    }
+    .team-card .shared-list h4, .team-card .members-list h4 {
+      margin: 0 0 8px 0; font-size: 13px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
+    }
+    .shared-row, .member-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 8px; border-radius: 4px; font-size: 13px;
+    }
+    .shared-row:hover, .member-row:hover { background: var(--row-hover); }
+    .shared-row .table-name { font-family: ui-monospace, monospace; }
+    .teams-empty {
+      padding: 32px; text-align: center; color: var(--text-muted);
+      border: 1px dashed var(--border-strong); border-radius: 8px;
+    }
+    .danger-btn { background: #fff4f4; color: #b3231f; border-color: #f5c2c0; }
+    .danger-btn:hover { background: #ffe4e4; }
+    .modal .field { margin-bottom: 12px; }
+    .modal .field label {
+      display: block; margin-bottom: 4px; font-size: 12px;
+      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .modal .field input, .modal .field textarea {
+      width: 100%; padding: 6px 8px; border: 1px solid var(--border-strong);
+      border-radius: 4px; font: inherit;
+    }
+    .modal .field textarea { min-height: 60px; font-family: ui-monospace, monospace; font-size: 12px; }
+    .modal .copy-token {
+      padding: 8px 10px; background: #fafbfc; border: 1px solid var(--border);
+      border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px;
+      word-break: break-all; cursor: pointer;
+    }
+    .modal .copy-token:hover { background: var(--row-hover); }
   </style>
 </head>
 <body>
@@ -605,11 +677,8 @@ export const guiAppHtml = `<!doctype html>
       }
 
       if (hash === '#/settings/data-model') { renderDataModel(content); return; }
-      if (hash === '#/settings/project-config' || hash === '#/settings/user-config') {
-        content.innerHTML = '<div class="placeholder"><h2>Coming soon</h2>' +
-          '<p>This view will be wired up in a follow-up release.</p></div>';
-        return;
-      }
+      if (hash === '#/settings/project-config') { renderProjectConfig(content); return; }
+      if (hash === '#/settings/user-config') { renderUserConfig(content); return; }
       content.innerHTML = '<div class="placeholder"><h2>Unknown route</h2></div>';
     }
 
@@ -1381,6 +1450,323 @@ export const guiAppHtml = `<!doctype html>
           escapeHtml(d.label) + '</text></g>';
       }).join('');
       return '<svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg">' + edgeSvg + nodeSvg + '</svg>';
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Lattice Teams (Project Config + User Config)
+    // ────────────────────────────────────────────────────────────
+    function fetchConnections() {
+      return fetchJson('/api/teams-gui/connections').then(function (d) { return d.connections; });
+    }
+
+    function renderTeamsEmpty(content, kind) {
+      var msg = kind === 'user'
+        ? 'You aren\\'t signed in to any clouds yet. Add a cloud below.'
+        : 'No team memberships yet. Start a team or join one below.';
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>' + (kind === 'user' ? 'User Config' : 'Project Config') + '</h2>' +
+          '<p class="lead">' + (kind === 'user'
+            ? 'Cloud accounts your local lattice is signed in to.'
+            : 'Teams this project\\'s lattice is joined to. Share tables, link rows, and sync.') + '</p>' +
+          '<div class="teams-actions">' +
+            (kind === 'user'
+              ? '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>'
+              : '<button class="btn primary" id="action-create-team">Create team</button>' +
+                '<button class="btn" id="action-join-team">Join via invite</button>') +
+          '</div>' +
+          '<div class="teams-empty">' + escapeHtml(msg) + '</div>' +
+        '</div>';
+      wireTopActions(kind);
+    }
+
+    function wireTopActions(kind) {
+      var addBtn = document.getElementById('action-add-cloud');
+      if (addBtn) addBtn.addEventListener('click', function () { showJoinTeamModal(kind); });
+      var createBtn = document.getElementById('action-create-team');
+      if (createBtn) createBtn.addEventListener('click', showCreateTeamModal);
+      var joinBtn = document.getElementById('action-join-team');
+      if (joinBtn) joinBtn.addEventListener('click', function () { showJoinTeamModal(kind); });
+    }
+
+    function refreshSettingsRoute() {
+      if (location.hash === '#/settings/project-config') renderProjectConfig(document.getElementById('content'));
+      else if (location.hash === '#/settings/user-config') renderUserConfig(document.getElementById('content'));
+    }
+
+    function showCreateTeamModal() {
+      var bodyHtml =
+        '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
+        '<div class="field"><label>Your email</label><input name="email" /></div>' +
+        '<div class="field"><label>Your display name</label><input name="user_name" /></div>' +
+        '<div class="field"><label>Team name</label><input name="team_name" /></div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+        'This registers you on the cloud (bootstrap-only — must be a fresh cloud) and creates the team in one step.' +
+        '</p>';
+      showModal('Create team', bodyHtml, {
+        primaryLabel: 'Create',
+        onSubmit: function (scope) {
+          var data = collectFormValues(scope);
+          return fetchJson('/api/teams-gui/connections/register-and-create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(data),
+          }).then(function () { refreshSettingsRoute(); });
+        },
+      });
+    }
+
+    function showJoinTeamModal(kind) {
+      var bodyHtml =
+        '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
+        '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..."></textarea></div>' +
+        '<div class="field"><label>Your email</label><input name="email" /></div>' +
+        '<div class="field"><label>Your display name</label><input name="name" /></div>';
+      showModal('Join team', bodyHtml, {
+        primaryLabel: 'Join',
+        onSubmit: function (scope) {
+          var data = collectFormValues(scope);
+          return fetchJson('/api/teams-gui/connections/join', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(data),
+          }).then(function () { refreshSettingsRoute(kind); });
+        },
+      });
+    }
+
+    function renderUserConfig(content) {
+      fetchConnections().then(function (conns) {
+        if (conns.length === 0) { renderTeamsEmpty(content, 'user'); return; }
+        var rows = conns.map(function (c) {
+          return '<div class="team-card" data-team-id="' + escapeHtml(c.team_id) + '">' +
+            '<h3>' + escapeHtml(c.team_name) +
+              '<button class="btn danger-btn" data-act="signout">Sign out</button>' +
+            '</h3>' +
+            '<div class="team-meta">' +
+              'Cloud: <code>' + escapeHtml(c.cloud_url) + '</code> · ' +
+              'User id: <code>' + escapeHtml(c.my_user_id) + '</code> · ' +
+              'Joined ' + escapeHtml(c.joined_at) +
+            '</div>' +
+          '</div>';
+        }).join('');
+        content.innerHTML =
+          '<div class="teams-page">' +
+            '<h2>User Config</h2>' +
+            '<p class="lead">Cloud accounts your local lattice is signed in to. Each team membership keeps its own bearer token locally.</p>' +
+            '<div class="teams-actions">' +
+              '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>' +
+            '</div>' +
+            rows +
+          '</div>';
+        wireTopActions('user');
+        document.querySelectorAll('.team-card').forEach(function (card) {
+          var teamId = card.getAttribute('data-team-id');
+          card.querySelector('[data-act="signout"]').addEventListener('click', function () {
+            if (!confirm('Sign out of this team? Your local link tracking will be removed.')) return;
+            fetchJson('/api/teams-gui/connections/' + teamId, { method: 'DELETE' })
+              .then(function () { refreshSettingsRoute(); })
+              .catch(function (err) { alert('Sign out failed: ' + err.message); });
+          });
+        });
+      }).catch(function (err) {
+        content.innerHTML = '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderProjectConfig(content) {
+      fetchConnections().then(function (conns) {
+        if (conns.length === 0) { renderTeamsEmpty(content, 'project'); return; }
+        content.innerHTML =
+          '<div class="teams-page">' +
+            '<h2>Project Config</h2>' +
+            '<p class="lead">Teams this project\\'s lattice is joined to. Click a team to expand sync details, shared tables, and member admin.</p>' +
+            '<div class="teams-actions">' +
+              '<button class="btn primary" id="action-create-team">Create team</button>' +
+              '<button class="btn" id="action-join-team">Join via invite</button>' +
+            '</div>' +
+            '<div id="team-cards-host"></div>' +
+          '</div>';
+        wireTopActions('project');
+        var host = document.getElementById('team-cards-host');
+        conns.forEach(function (c) {
+          var card = document.createElement('div');
+          card.className = 'team-card';
+          card.setAttribute('data-team-id', c.team_id);
+          host.appendChild(card);
+          renderTeamCard(card, c);
+        });
+      }).catch(function (err) {
+        content.innerHTML = '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderTeamCard(card, conn) {
+      // Fetch status + shared + members in parallel; members may 403 for
+      // non-creators (only members can list, but we still try and ignore).
+      var teamId = conn.team_id;
+      Promise.all([
+        fetchJson('/api/teams-gui/teams/' + teamId + '/status'),
+        fetchJson('/api/teams-gui/teams/' + teamId + '/shared').catch(function () { return { objects: [] }; }),
+        fetchJson('/api/teams-gui/teams/' + teamId + '/members').catch(function () { return { members: [] }; }),
+      ]).then(function (results) {
+        var status = results[0];
+        var shared = results[1].objects;
+        var members = results[2].members;
+        var myMembership = members.find(function (m) { return m.user_id === conn.my_user_id; });
+        var isCreator = myMembership && myMembership.role === 'creator';
+        var rolePill = '<span class="role-tag' + (isCreator ? '' : ' role-member') + '">' + (myMembership ? myMembership.role : 'unknown') + '</span>';
+
+        var lastSeq = status.last_change_seq == null ? '(never)' : status.last_change_seq;
+        card.innerHTML =
+          '<h3>' + escapeHtml(conn.team_name) + ' ' + rolePill +
+            '<span style="font-size:11px;color:var(--text-muted);font-weight:normal">' + escapeHtml(conn.cloud_url) + '</span>' +
+          '</h3>' +
+          '<div class="team-meta">team-id: <code>' + escapeHtml(teamId) + '</code></div>' +
+          '<div class="team-stats">' +
+            '<div class="team-stat"><div class="stat-label">Last seq</div><div class="stat-value">' + lastSeq + '</div></div>' +
+            '<div class="team-stat"><div class="stat-label">Outbox</div><div class="stat-value">' + status.outbox_depth + '</div></div>' +
+            '<div class="team-stat"><div class="stat-label">DLQ</div><div class="stat-value">' + status.dlq_depth + '</div></div>' +
+            '<div class="team-stat"><div class="stat-label">Local links</div><div class="stat-value">' + status.local_links + '</div></div>' +
+          '</div>' +
+          '<div class="team-actions">' +
+            '<button class="btn primary" data-act="sync">Sync now</button>' +
+            (isCreator
+              ? '<button class="btn" data-act="invite">Generate invite token</button>'
+              : '') +
+            '<button class="btn" data-act="leave">' + (isCreator ? 'Destroy team' : 'Leave team') + '</button>' +
+          '</div>' +
+          renderSharedList(shared, isCreator) +
+          (isCreator ? renderMembersList(members, conn.my_user_id) : '');
+        wireTeamCardActions(card, conn, isCreator);
+      }).catch(function (err) {
+        card.innerHTML = '<div class="team-meta">Failed to load team status: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderSharedList(shared, isCreator) {
+      if (shared.length === 0) {
+        return '<div class="shared-list"><h4>Shared tables</h4>' +
+          '<div style="font-size:13px;color:var(--text-muted)">No tables shared yet.</div>' +
+          (isCreator || true ? '<div style="margin-top:8px"><button class="btn" data-act="share-table">Share a table</button></div>' : '') +
+        '</div>';
+      }
+      var rows = shared.map(function (o) {
+        return '<div class="shared-row" data-table="' + escapeHtml(o.table) + '">' +
+          '<span class="table-name">' + escapeHtml(o.table) +
+          ' <span style="color:var(--text-muted);font-size:11px">v' + o.schema_version + '</span></span>' +
+          '<button class="btn danger-btn" data-act="unshare">Unshare</button>' +
+        '</div>';
+      }).join('');
+      return '<div class="shared-list"><h4>Shared tables</h4>' + rows +
+        '<div style="margin-top:8px"><button class="btn" data-act="share-table">Share another table</button></div>' +
+      '</div>';
+    }
+
+    function renderMembersList(members, myUserId) {
+      var rows = members.map(function (m) {
+        var label = m.name || m.email || '(unknown)';
+        var canKick = m.user_id !== myUserId;
+        return '<div class="member-row" data-user-id="' + escapeHtml(m.user_id) + '">' +
+          '<span>' + escapeHtml(label) +
+            ' <span style="color:var(--text-muted);font-size:11px">' + escapeHtml(m.email || '') + '</span>' +
+            ' <span class="role-tag' + (m.role === 'creator' ? '' : ' role-member') + '">' + m.role + '</span>' +
+          '</span>' +
+          (canKick ? '<button class="btn danger-btn" data-act="kick">Kick</button>' : '') +
+        '</div>';
+      }).join('');
+      return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
+    }
+
+    function wireTeamCardActions(card, conn, isCreator) {
+      var teamId = conn.team_id;
+      card.querySelector('[data-act="sync"]').addEventListener('click', function () {
+        fetchJson('/api/teams-gui/teams/' + teamId + '/sync', { method: 'POST' })
+          .then(function () { renderTeamCard(card, conn); })
+          .catch(function (err) { alert('Sync failed: ' + err.message); });
+      });
+      var inviteBtn = card.querySelector('[data-act="invite"]');
+      if (inviteBtn) inviteBtn.addEventListener('click', function () {
+        fetchJson('/api/teams-gui/teams/' + teamId + '/invitations', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+        }).then(function (inv) { showInviteTokenModal(inv); })
+          .catch(function (err) { alert('Invite failed: ' + err.message); });
+      });
+      card.querySelector('[data-act="leave"]').addEventListener('click', function () {
+        if (isCreator) {
+          if (!confirm('Destroy team "' + conn.team_name + '"? This soft-deletes the team on the cloud.')) return;
+          fetchJson('/api/teams-gui/teams/' + teamId, { method: 'DELETE' })
+            .then(function () { refreshSettingsRoute(); })
+            .catch(function (err) { alert('Destroy failed: ' + err.message); });
+        } else {
+          if (!confirm('Leave team "' + conn.team_name + '"?')) return;
+          fetchJson('/api/teams-gui/connections/' + teamId, { method: 'DELETE' })
+            .then(function () { refreshSettingsRoute(); })
+            .catch(function (err) { alert('Leave failed: ' + err.message); });
+        }
+      });
+      var shareBtn = card.querySelector('[data-act="share-table"]');
+      if (shareBtn) shareBtn.addEventListener('click', function () { showShareTableModal(teamId, card, conn); });
+      card.querySelectorAll('[data-act="unshare"]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var tableName = btn.closest('.shared-row').getAttribute('data-table');
+          if (!confirm('Unshare "' + tableName + '"? Linked rows will be unlinked everywhere.')) return;
+          fetchJson('/api/teams-gui/teams/' + teamId + '/shared/' + encodeURIComponent(tableName), { method: 'DELETE' })
+            .then(function () { renderTeamCard(card, conn); })
+            .catch(function (err) { alert('Unshare failed: ' + err.message); });
+        });
+      });
+      card.querySelectorAll('[data-act="kick"]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var userId = btn.closest('.member-row').getAttribute('data-user-id');
+          if (!confirm('Kick this member? All rows they own will be unlinked.')) return;
+          fetchJson('/api/teams-gui/teams/' + teamId + '/members/' + userId, { method: 'DELETE' })
+            .then(function () { renderTeamCard(card, conn); })
+            .catch(function (err) { alert('Kick failed: ' + err.message); });
+        });
+      });
+    }
+
+    function showShareTableModal(teamId, card, conn) {
+      var tableOptions = state.entities.tables
+        .filter(function (t) { return !isJunction(t); })
+        .map(function (t) { return '<option value="' + escapeHtml(t.name) + '">' + escapeHtml(t.name) + '</option>'; })
+        .join('');
+      var bodyHtml =
+        '<div class="field"><label>Local table to share</label>' +
+        '<select name="table">' + tableOptions + '</select></div>' +
+        '<p style="font-size:12px;color:var(--text-muted)">The current local schema will be serialized and stored on the cloud. Re-sharing later bumps the version.</p>';
+      showModal('Share a table', bodyHtml, {
+        primaryLabel: 'Share',
+        onSubmit: function (scope) {
+          var data = collectFormValues(scope);
+          return fetchJson('/api/teams-gui/teams/' + teamId + '/shared', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ table: data.table }),
+          }).then(function () { renderTeamCard(card, conn); });
+        },
+      });
+    }
+
+    function showInviteTokenModal(inv) {
+      var bodyHtml =
+        '<p style="margin-top:0">Share this token with the invitee (one-time use). It expires at <code>' +
+        escapeHtml(inv.expires_at || '(no expiry)') + '</code>.</p>' +
+        '<div class="copy-token" id="copy-token">' + escapeHtml(inv.raw_token) + '</div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>';
+      var handle = showModal('Invitation token', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
+      var tokenEl = document.getElementById('copy-token');
+      if (tokenEl) {
+        tokenEl.addEventListener('click', function () {
+          navigator.clipboard.writeText(inv.raw_token).then(function () {
+            tokenEl.textContent = 'Copied!';
+            setTimeout(function () { tokenEl.textContent = inv.raw_token; }, 1200);
+          });
+        });
+      }
+      // Suppress unused-var on handle
+      void handle;
     }
 
     init();

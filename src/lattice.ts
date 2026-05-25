@@ -436,6 +436,16 @@ export class Lattice {
   }
 
   /**
+   * Return every table currently registered via `define()` or
+   * `defineLate()`. Includes tables added at runtime by the Lattice
+   * Teams schema-propagation flow, so GUI consumers can refresh their
+   * own "valid tables" set after a sync.
+   */
+  getRegisteredTableNames(): string[] {
+    return Array.from(this._schema.getTables().keys());
+  }
+
+  /**
    * Add a single column to an existing table at runtime. Wraps the
    * adapter's `addColumnAsync` (which handles dialect-specific quirks —
    * SQLite non-constant default workarounds, Postgres native syntax,

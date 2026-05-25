@@ -17,6 +17,8 @@ import type { Row } from '../types.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from '../teams/internal-tables.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
+import { TeamsClient } from '../teams/client.js';
+import { dispatchTeamsGuiRoute } from './teams-routes.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -193,6 +195,14 @@ interface ActiveDb {
   junctionTables: Set<string>;
   entityContextByTable: Map<string, EntityContextDefinition>;
   softDeletable: Set<string>;
+  /**
+   * Cached `TeamsClient` so sync write-hooks registered via
+   * `attachWriteHooks` persist across requests. Reuses the same Lattice
+   * instance the GUI's CRUD endpoints write through, so a row update
+   * via the GUI dashboard fires the same outbox-capture hook as a
+   * write from outside.
+   */
+  teamsClient: TeamsClient;
 }
 
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
@@ -229,10 +239,16 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
       .filter(({ definition }) => 'deleted_at' in definition.columns)
       .map(({ name }) => name),
   );
+  const teamsClient = new TeamsClient(db);
+  // Re-arm sync write-hooks for any tables that already have local
+  // links (i.e. the user is part of teams + linked rows in a prior
+  // session). Idempotent — safe to call on every openConfig.
+  await teamsClient.attachWriteHooks();
   return {
     configPath,
     outputDir,
     db,
+    teamsClient,
     validTables,
     junctionTables,
     entityContextByTable,
@@ -568,6 +584,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           sendJson(res, { ok: true });
           return;
+        }
+
+        // ── Teams GUI routes ──────────────────────────────────────────────
+        // Dev-tool surface that wraps the user's TeamsClient. Available
+        // only in local GUI mode — team-cloud mode disables these (the
+        // cloud is the server, not the client).
+        if (!teamCloud && pathname.startsWith('/api/teams-gui/')) {
+          const handled = await dispatchTeamsGuiRoute(req, res, {
+            db: active.db,
+            client: active.teamsClient,
+            pathname,
+            method,
+            validTables: active.validTables,
+          });
+          if (handled) return;
         }
 
         sendJson(res, { error: 'Not found' }, 404);
