@@ -81,10 +81,9 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
         }
       }
       // Clean migration ledger rows we added.
-      await adapter.runAsync(
-        `DELETE FROM __lattice_migrations WHERE version LIKE $1`,
-        [`test-${runId}-%`],
-      );
+      await adapter.runAsync(`DELETE FROM __lattice_migrations WHERE version LIKE $1`, [
+        `test-${runId}-%`,
+      ]);
     } catch {
       /* DB may already be torn down */
     }

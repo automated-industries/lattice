@@ -279,18 +279,18 @@ Press Ctrl+C to stop.
 
 **HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
 
-| Route                                | Method  | Lattice call                  |
-| ------------------------------------ | ------- | ----------------------------- |
-| `/project`                           | GET     | (config + manifest summary)   |
-| `/entities`                          | GET     | tables + `db.count` per table |
-| `/graph`                             | GET     | (schema graph for Data Model) |
-| `/tables/:table/rows`                | GET     | `db.query(table, …)`          |
-| `/tables/:table/rows`                | POST    | `db.insert(table, body)`      |
-| `/tables/:table/rows/:id`            | GET     | `db.get(table, id)`           |
-| `/tables/:table/rows/:id`            | PATCH   | `db.update(table, id, body)`  |
-| `/tables/:table/rows/:id`            | DELETE  | `db.delete(table, id)`        |
-| `/tables/:junction/link`             | POST    | `db.link(junction, body)`     |
-| `/tables/:junction/unlink`           | POST    | `db.unlink(junction, body)`   |
+| Route                      | Method | Lattice call                  |
+| -------------------------- | ------ | ----------------------------- |
+| `/project`                 | GET    | (config + manifest summary)   |
+| `/entities`                | GET    | tables + `db.count` per table |
+| `/graph`                   | GET    | (schema graph for Data Model) |
+| `/tables/:table/rows`      | GET    | `db.query(table, …)`          |
+| `/tables/:table/rows`      | POST   | `db.insert(table, body)`      |
+| `/tables/:table/rows/:id`  | GET    | `db.get(table, id)`           |
+| `/tables/:table/rows/:id`  | PATCH  | `db.update(table, id, body)`  |
+| `/tables/:table/rows/:id`  | DELETE | `db.delete(table, id)`        |
+| `/tables/:junction/link`   | POST   | `db.link(junction, body)`     |
+| `/tables/:junction/unlink` | POST   | `db.unlink(junction, body)`   |
 
 Junction tables (any table with exactly two `belongsTo` relations) are hidden
 from the Objects sidebar and the dashboard; link/unlink lives on the Data Model

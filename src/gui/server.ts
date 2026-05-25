@@ -139,7 +139,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // so the CRUD routes can reject unknown tables loudly.
   const validTables = new Set(parsed.tables.map((t) => t.name));
   const junctionTables = new Set(
-    getGuiEntities(configPath, outputDir).tables.filter(isJunctionTable).map((t) => t.name),
+    getGuiEntities(configPath, outputDir)
+      .tables.filter(isJunctionTable)
+      .map((t) => t.name),
   );
 
   const server = createServer((req, res) => {

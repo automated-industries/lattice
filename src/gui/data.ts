@@ -352,4 +352,3 @@ export function isJunctionTable(table: GuiTableSummary): boolean {
   const belongsTo = Object.values(table.relations).filter((r) => r.type === 'belongsTo');
   return belongsTo.length === 2 && Object.keys(table.relations).length === 2;
 }
-

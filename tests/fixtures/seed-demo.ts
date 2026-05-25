@@ -130,10 +130,21 @@ async function main(): Promise<void> {
   // ── Junctions ────────────────────────────────────────────────────────
   // Meetings ↔ people: kickoff has 3 attendees, others vary.
   const attendance: [number, number][] = [
-    [0, 0], [0, 1], [0, 2],
-    [1, 0], [1, 2], [1, 3],
-    [2, 0], [2, 1], [2, 2], [2, 4],
-    [3, 0], [3, 1], [3, 2], [3, 3], [3, 4],
+    [0, 0],
+    [0, 1],
+    [0, 2],
+    [1, 0],
+    [1, 2],
+    [1, 3],
+    [2, 0],
+    [2, 1],
+    [2, 2],
+    [2, 4],
+    [3, 0],
+    [3, 1],
+    [3, 2],
+    [3, 3],
+    [3, 4],
   ];
   for (const [m, p] of attendance) {
     await db.link('meeting_people', { meeting_id: meetingIds[m], person_id: peopleIds[p] });
@@ -143,7 +154,8 @@ async function main(): Promise<void> {
   const meetingProj: [number, number][] = [
     [0, 0],
     [1, 0],
-    [2, 0], [2, 1],
+    [2, 0],
+    [2, 1],
     [3, 0],
   ];
   for (const [m, p] of meetingProj) {
@@ -152,8 +164,12 @@ async function main(): Promise<void> {
 
   // People ↔ projects.
   const personProj: [number, number][] = [
-    [0, 0], [1, 0], [2, 0], [4, 0],
-    [0, 1], [1, 1],
+    [0, 0],
+    [1, 0],
+    [2, 0],
+    [4, 0],
+    [0, 1],
+    [1, 1],
     [3, 2],
     [2, 3],
   ];
@@ -164,7 +180,8 @@ async function main(): Promise<void> {
   // Messages ↔ people (authors / recipients — simplified).
   const messagePeople: [number, number][] = [
     [0, 0],
-    [1, 1], [1, 2],
+    [1, 1],
+    [1, 2],
     [2, 0],
     [3, 2],
   ];

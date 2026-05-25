@@ -216,7 +216,6 @@ describe('GUI graph builder', () => {
 
     expect(() => buildGuiGraph(configPath, outputDir)).toThrow(/escapes output directory/);
   });
-
 });
 
 describe('GUI server', () => {
