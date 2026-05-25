@@ -130,7 +130,6 @@ describe('Writeback validation', () => {
       persist: (entry) => {
         persisted.push(entry);
       },
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       validate: (_entry) => {
         // Simulate async validation
         return { pass: true, score: 1.0 };

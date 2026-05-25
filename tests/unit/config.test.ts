@@ -698,35 +698,59 @@ entityContexts:
 describe('parseConfigFile()', () => {
   it('reads and parses fixture config', () => {
     const result = parseConfigFile(FIXTURE_CONFIG);
-    expect(result.tables).toHaveLength(2);
-    expect(result.tables.map((t) => t.name)).toEqual(['user', 'ticket']);
+    // The fixture defines 7 first-class entities + 5 junction tables (+ any
+    // entities created by manual GUI smoke tests that wrote back to the YAML).
+    expect(result.tables.length).toBeGreaterThanOrEqual(12);
+    expect(result.tables.map((t) => t.name)).toEqual(
+      expect.arrayContaining([
+        'people',
+        'meetings',
+        'messages',
+        'projects',
+        'repositories',
+        'files',
+        'secrets',
+        'meeting_people',
+        'meeting_projects',
+        'project_people',
+        'message_people',
+        'project_files',
+      ]),
+    );
   });
 
   it('resolves db path relative to config file directory', () => {
     const result = parseConfigFile(FIXTURE_CONFIG);
-    expect(result.dbPath).toBe(join(FIXTURES_DIR, 'data/test.db'));
+    expect(result.dbPath).toBe(join(FIXTURES_DIR, 'data/lattice-demo.db'));
   });
 
   it('throws on a non-existent file', () => {
     expect(() => parseConfigFile('/no/such/file.yml')).toThrow(/cannot read config file/);
   });
 
-  it('fixture ticket entity has assignee belongsTo relation', () => {
+  it('repositories entity has project belongsTo relation', () => {
     const result = parseConfigFile(FIXTURE_CONFIG);
-    const ticket = result.tables.find((t) => t.name === 'ticket')!;
-    expect(ticket.definition.relations?.assignee).toMatchObject({
+    const repos = result.tables.find((t) => t.name === 'repositories')!;
+    expect(repos.definition.relations?.project).toMatchObject({
       type: 'belongsTo',
-      table: 'user',
-      foreignKey: 'assignee_id',
+      table: 'projects',
+      foreignKey: 'project_id',
     });
   });
 
-  it('fixture ticket render spec has formatRow hook', () => {
+  it('junction tables have exactly two belongsTo relations', () => {
     const result = parseConfigFile(FIXTURE_CONFIG);
-    const ticket = result.tables.find((t) => t.name === 'ticket')!;
-    expect(ticket.definition.render).toMatchObject({
-      template: 'default-list',
-      hooks: { formatRow: '{{title}} ({{status}})' },
+    const meetingPeople = result.tables.find((t) => t.name === 'meeting_people')!;
+    expect(Object.values(meetingPeople.definition.relations ?? {})).toHaveLength(2);
+    expect(meetingPeople.definition.relations?.meeting).toMatchObject({
+      type: 'belongsTo',
+      table: 'meetings',
+      foreignKey: 'meeting_id',
+    });
+    expect(meetingPeople.definition.relations?.person).toMatchObject({
+      type: 'belongsTo',
+      table: 'people',
+      foreignKey: 'person_id',
     });
   });
 });

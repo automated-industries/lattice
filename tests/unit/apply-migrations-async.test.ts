@@ -67,7 +67,7 @@ describe('SchemaManager.applyMigrationsAsync', () => {
     const migrations: Migration[] = [
       { version: '10', sql: 'CREATE TABLE later (id INTEGER PRIMARY KEY)' },
       { version: '2', sql: 'CREATE TABLE earlier (id INTEGER PRIMARY KEY)' },
-      { version: '2-ref', sql: "INSERT INTO earlier (id) VALUES (1)" },
+      { version: '2-ref', sql: 'INSERT INTO earlier (id) VALUES (1)' },
     ];
     await mgr.applyMigrationsAsync(adapter, migrations);
 
