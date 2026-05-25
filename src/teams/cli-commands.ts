@@ -19,6 +19,7 @@ export interface TeamsCliArgs {
   expires?: number | undefined;
   userId?: string | undefined;
   table?: string | undefined;
+  pk?: string | undefined;
 }
 
 const TEAMS_USAGE = [
@@ -37,6 +38,11 @@ const TEAMS_USAGE = [
   '  unshare    Stop sharing a table (--team --table)',
   '  shared     List shared objects on a team (--team)',
   '  sync       Apply cloud-shared schemas to the local lattice (--team)',
+  '  link       Link a local row to a team (--team --table --pk)',
+  '  unlink     Unlink a row from a team (--team --table --pk)',
+  '  pull       Pull change envelopes from the cloud + apply locally (--team)',
+  '  push       Drain the outbox to the cloud (--team)',
+  '  status     Show sync status for a team (--team)',
   '',
   'Options:',
   '  --cloud <url>          Cloud server URL (e.g. http://localhost:4317)',
@@ -45,7 +51,8 @@ const TEAMS_USAGE = [
   '  --name <name>          Display name (for register / join) OR team name (for create)',
   '  --team <name>          Team name (resolves to a local connection)',
   '  --team-id <uuid>       Team id (disambiguates duplicate names)',
-  '  --table <name>         Table name (for share / unshare)',
+  '  --table <name>         Table name (for share / unshare / link / unlink)',
+  '  --pk <id>              Row primary key (for link / unlink)',
   '  --expires <hours>      Invitation expiry in hours (default: 168 = 7 days)',
   '  --user-id <uuid>       User id to kick (with members --kick)',
   '  --config, -c <path>    Local lattice config (default: ./lattice.config.yml)',
@@ -95,6 +102,21 @@ export async function runTeamsCommand(args: TeamsCliArgs): Promise<void> {
         return;
       case 'sync':
         await runSync(args);
+        return;
+      case 'link':
+        await runLink(args);
+        return;
+      case 'unlink':
+        await runUnlinkRow(args);
+        return;
+      case 'pull':
+        await runPull(args);
+        return;
+      case 'push':
+        await runPush(args);
+        return;
+      case 'status':
+        await runStatus(args);
         return;
       default:
         console.error(`Unknown teams subcommand: ${sub}`);
@@ -387,6 +409,87 @@ async function runSync(args: TeamsCliArgs): Promise<void> {
     if (result.conflicts.length > 0) {
       process.exit(1);
     }
+  } finally {
+    db.close();
+  }
+}
+
+async function runLink(args: TeamsCliArgs): Promise<void> {
+  const table = requireArg(args, 'table', 'table');
+  const pk = requireArg(args, 'pk', 'pk');
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    await client.attachWriteHooks();
+    const conn = await resolveConnection(client, args);
+    const result = await client.linkRow(conn, table, pk);
+    console.log(
+      `Linked "${table}":${pk} to "${conn.team_name}" (owner-user-id: ${result.owner_user_id}; seq ${result.seq.toString()}).`,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+async function runUnlinkRow(args: TeamsCliArgs): Promise<void> {
+  const table = requireArg(args, 'table', 'table');
+  const pk = requireArg(args, 'pk', 'pk');
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    const conn = await resolveConnection(client, args);
+    await client.unlinkRow(conn, table, pk);
+    console.log(`Unlinked "${table}":${pk} from "${conn.team_name}".`);
+  } finally {
+    db.close();
+  }
+}
+
+async function runPull(args: TeamsCliArgs): Promise<void> {
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    await client.attachWriteHooks();
+    const conn = await resolveConnection(client, args);
+    const result = await client.pullChanges(conn);
+    console.log(
+      `Pulled ${result.applied.toString()} envelope(s) from "${conn.team_name}". ` +
+        `last_seq=${result.last_seq.toString()}, dlq+=${result.dlq_count.toString()}.`,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+async function runPush(args: TeamsCliArgs): Promise<void> {
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    await client.attachWriteHooks();
+    const conn = await resolveConnection(client, args);
+    const result = await client.drainOutbox(conn);
+    console.log(
+      `Pushed ${result.pushed.toString()} outbox entries to "${conn.team_name}"; ${result.failed.toString()} failed (will retry).`,
+    );
+    if (result.failed > 0) process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
+async function runStatus(args: TeamsCliArgs): Promise<void> {
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    const conn = await resolveConnection(client, args);
+    const status = await client.getStatus(conn);
+    console.log(`Team:           ${status.team_name}  (${status.team_id})`);
+    console.log(`Last change seq: ${status.last_change_seq?.toString() ?? '(never pulled)'}`);
+    console.log(`Local links:     ${status.local_links.toString()}`);
+    console.log(
+      `Outbox depth:    ${status.outbox_depth.toString()}  (failing: ${status.outbox_failing.toString()})`,
+    );
+    console.log(`DLQ depth:       ${status.dlq_depth.toString()}`);
   } finally {
     db.close();
   }

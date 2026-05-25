@@ -597,7 +597,7 @@ export class Lattice {
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     await this._appendChangelog(table, pkValue, 'insert', rowWithPk, null);
     this._sanitizer.emitAudit(table, 'insert', pkValue);
-    this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
+    await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
     return pkValue;
   }
@@ -718,7 +718,7 @@ export class Lattice {
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
     await this._appendChangelog(table, auditId, 'update', sanitized, previousValues);
     this._sanitizer.emitAudit(table, 'update', auditId);
-    this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
+    await this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     // Re-fetch full row for embedding recomputation
     const def = this._schema.getTables().get(table);
     if (def?.embeddings) {
@@ -768,7 +768,7 @@ export class Lattice {
       previousRow as Record<string, unknown> | null,
     );
     this._sanitizer.emitAudit(table, 'delete', auditId);
-    this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
+    await this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
     this._syncEmbedding(table, 'delete', {}, auditId);
   }
 
@@ -828,7 +828,7 @@ export class Lattice {
         ...entries.map(([, v]) => v),
         existing.id,
       ]);
-      this._fireWriteHooks(
+      await this._fireWriteHooks(
         table,
         'update',
         withConventions,
@@ -859,7 +859,7 @@ export class Lattice {
       `INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`,
       Object.values(encInserted),
     );
-    this._fireWriteHooks(table, 'insert', filtered, id);
+    await this._fireWriteHooks(table, 'insert', filtered, id);
     return id;
   }
 
@@ -898,7 +898,7 @@ export class Lattice {
       ...withTs.map(([, v]) => v),
       existing.id,
     ]);
-    this._fireWriteHooks(
+    await this._fireWriteHooks(
       table,
       'update',
       Object.fromEntries(entries),
@@ -1753,13 +1753,13 @@ export class Lattice {
   }
 
   /** Returns a rejected Promise if not initialized; null if ready. */
-  private _fireWriteHooks(
+  private async _fireWriteHooks(
     table: string,
     op: 'insert' | 'update' | 'delete',
     row: Row,
     pk: string,
     changedColumns?: string[],
-  ): void {
+  ): Promise<void> {
     for (const hook of this._writeHooks) {
       if (hook.table !== table) continue;
       if (!hook.on.includes(op)) continue;
@@ -1769,9 +1769,10 @@ export class Lattice {
       try {
         const ctx: WriteHookContext = { table, op, row, pk };
         if (changedColumns) ctx.changedColumns = changedColumns;
-        hook.handler(ctx);
+        await hook.handler(ctx);
       } catch (err) {
-        // Hook errors must not crash the caller
+        // Hook errors must not crash the caller — routed through error
+        // handlers like every other lattice background failure.
         for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
       }
     }

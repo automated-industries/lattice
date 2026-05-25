@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../../lattice.js';
 import { generateToken, generateInviteToken, hashToken, type AuthContext } from './auth.js';
-import type { SchemaSpec } from '../schema-spec.js';
+import { applySchemaSpec, type SchemaSpec } from '../schema-spec.js';
 
 /**
  * Lattice Teams cloud-side route handlers.
@@ -81,9 +81,19 @@ interface ChangeLogRow {
   seq: number;
   team_id: string;
   table_name: string | null;
+  pk: string | null;
   op: string;
   payload_json: string | null;
+  owner_user_id: string | null;
   created_at: string;
+}
+
+interface RowLinkRow {
+  team_id: string;
+  table_name: string;
+  pk: string;
+  owner_user_id: string;
+  linked_at: string;
 }
 
 function sendJson(res: ServerResponse, body: unknown, status = 200): void {
@@ -230,6 +240,48 @@ export async function dispatchTeamRoute(
   if (changesMatch && method === 'GET') {
     const url = new URL(req.url ?? '/', 'http://placeholder');
     await handleListChanges(res, ctx, changesMatch[1] ?? '', url.searchParams);
+    return true;
+  }
+
+  const linksListMatch = /^\/api\/teams\/([^/]+)\/objects\/([^/]+)\/links$/.exec(pathname);
+  if (linksListMatch && method === 'POST') {
+    await handleLinkRow(
+      req,
+      res,
+      ctx,
+      linksListMatch[1] ?? '',
+      decodeURIComponent(linksListMatch[2] ?? ''),
+    );
+    return true;
+  }
+
+  const linkMatch = /^\/api\/teams\/([^/]+)\/objects\/([^/]+)\/links\/(.+)$/.exec(pathname);
+  if (linkMatch && method === 'DELETE') {
+    await handleUnlinkRow(
+      res,
+      ctx,
+      linkMatch[1] ?? '',
+      decodeURIComponent(linkMatch[2] ?? ''),
+      decodeURIComponent(linkMatch[3] ?? ''),
+    );
+    return true;
+  }
+
+  const rowsMatch = /^\/api\/teams\/([^/]+)\/objects\/([^/]+)\/rows$/.exec(pathname);
+  if (rowsMatch && method === 'POST') {
+    await handlePushRow(req, res, ctx, rowsMatch[1] ?? '', decodeURIComponent(rowsMatch[2] ?? ''));
+    return true;
+  }
+
+  const rowMatch = /^\/api\/teams\/([^/]+)\/objects\/([^/]+)\/rows\/(.+)$/.exec(pathname);
+  if (rowMatch && method === 'DELETE') {
+    await handleDeleteRow(
+      res,
+      ctx,
+      rowMatch[1] ?? '',
+      decodeURIComponent(rowMatch[2] ?? ''),
+      decodeURIComponent(rowMatch[3] ?? ''),
+    );
     return true;
   }
 
@@ -590,11 +642,12 @@ async function handleKickMember(
     sendJson(res, { error: 'User is not a member of this team' }, 404);
     return;
   }
-  // Composite-PK delete via the {team_id, user_id} lookup form. Phase 4
-  // will extend this handler to also auto-unlink the kicked user's owned
-  // rows; for now it just removes the membership row.
+  // Phase 4: tear down every row the kicked user owns in this team
+  // before removing their membership. Emits `unlink` envelopes so other
+  // members' pullers drop the rows from their local mirrors.
+  const unlinked = await autoUnlinkUserRows(ctx.db, teamId, userId);
   await ctx.db.delete('__lattice_team_members', { team_id: teamId, user_id: userId });
-  sendJson(res, { ok: true });
+  sendJson(res, { ok: true, unlinked_rows: unlinked });
 }
 
 async function handleCreateInvitation(
@@ -657,18 +710,94 @@ async function nextChangeSeq(db: Lattice): Promise<number> {
 
 async function appendChangeEnvelope(
   db: Lattice,
-  entry: { team_id: string; table_name: string | null; op: string; payload_json: string | null },
+  entry: {
+    team_id: string;
+    table_name: string | null;
+    pk?: string | null;
+    op: string;
+    payload_json: string | null;
+    owner_user_id?: string | null;
+  },
 ): Promise<number> {
   const seq = await nextChangeSeq(db);
   await db.insert('__lattice_change_log', {
     seq,
     team_id: entry.team_id,
     table_name: entry.table_name,
+    pk: entry.pk ?? null,
     op: entry.op,
     payload_json: entry.payload_json,
+    owner_user_id: entry.owner_user_id ?? null,
     created_at: new Date().toISOString(),
   });
   return seq;
+}
+
+async function getRowLink(
+  db: Lattice,
+  teamId: string,
+  tableName: string,
+  pk: string,
+): Promise<RowLinkRow | null> {
+  const rows = (await db.query('__lattice_row_links', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: tableName },
+      { col: 'pk', op: 'eq', val: pk },
+    ],
+    limit: 1,
+  })) as unknown as RowLinkRow[];
+  return rows[0] ?? null;
+}
+
+/**
+ * Tear down every row the given user owns in the given team. For each
+ * link: delete the link row, hard-delete the cloud's mirror of the data
+ * row, and emit an `unlink` envelope so other members' pullers reflect
+ * the removal. Called when a member is kicked or leaves.
+ *
+ * Returns the number of links torn down.
+ */
+async function autoUnlinkUserRows(db: Lattice, teamId: string, userId: string): Promise<number> {
+  const links = (await db.query('__lattice_row_links', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'owner_user_id', op: 'eq', val: userId },
+    ],
+  })) as unknown as RowLinkRow[];
+  for (const link of links) {
+    await db.delete('__lattice_row_links', {
+      team_id: link.team_id,
+      table_name: link.table_name,
+      pk: link.pk,
+    });
+    try {
+      await db.delete(link.table_name, link.pk);
+    } catch {
+      // Row may already be gone.
+    }
+    await appendChangeEnvelope(db, {
+      team_id: link.team_id,
+      table_name: link.table_name,
+      pk: link.pk,
+      op: 'unlink',
+      payload_json: null,
+      owner_user_id: link.owner_user_id,
+    });
+  }
+  return links.length;
+}
+
+async function isObjectShared(db: Lattice, teamId: string, tableName: string): Promise<boolean> {
+  const rows = (await db.query('__lattice_shared_objects', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: tableName },
+      { col: 'deleted_at', op: 'isNull' },
+    ],
+    limit: 1,
+  })) as unknown as SharedObjectRow[];
+  return rows.length > 0;
 }
 
 async function handleShareObject(
@@ -747,6 +876,10 @@ async function handleShareObject(
       deleted_at: null,
     });
   }
+  // Materialise the shared table on the cloud's own lattice so it can
+  // hold mirrored rows for subsequent link / upsert / delete propagation.
+  // Idempotent — re-shares with new columns ALTER additively.
+  await applySchemaSpec(ctx.db, tableName, outSpec);
   const seq = await appendChangeEnvelope(ctx.db, {
     team_id: teamId,
     table_name: tableName,
@@ -874,10 +1007,250 @@ async function handleListChanges(
   const envelopes = rows.map((r) => ({
     seq: r.seq,
     table_name: r.table_name,
+    pk: r.pk,
     op: r.op,
     payload: r.payload_json ? (JSON.parse(r.payload_json) as unknown) : null,
+    owner_user_id: r.owner_user_id,
     created_at: r.created_at,
   }));
   const hasMore = envelopes.length === limit;
   sendJson(res, { envelopes, has_more: hasMore });
+}
+
+// ── Row link / unlink / push (Phase 4) ─────────────────────────────────────
+
+async function handleLinkRow(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+  tableName: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const callerRole = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!callerRole) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  if (!(await isObjectShared(ctx.db, teamId, tableName))) {
+    sendJson(res, { error: `Object "${tableName}" is not shared with this team` }, 404);
+    return;
+  }
+  const body = await readJson(req);
+  const pk = requireString(body, 'pk');
+  if (!pk) {
+    sendJson(res, { error: 'pk is required' }, 400);
+    return;
+  }
+  const rawSnapshot = body.row_snapshot;
+  if (!rawSnapshot || typeof rawSnapshot !== 'object') {
+    sendJson(res, { error: 'row_snapshot must be an object' }, 400);
+    return;
+  }
+  const snapshot = rawSnapshot as Record<string, unknown>;
+
+  const existing = await getRowLink(ctx.db, teamId, tableName, pk);
+  // Re-link by the same owner replaces the snapshot. Re-link by a
+  // different user is rejected — would silently steal ownership.
+  if (existing && existing.owner_user_id !== ctx.authContext.user.id) {
+    sendJson(
+      res,
+      {
+        error: 'Row is already linked by another user',
+        owner_user_id: existing.owner_user_id,
+      },
+      409,
+    );
+    return;
+  }
+  const now = new Date().toISOString();
+  if (!existing) {
+    await ctx.db.insert('__lattice_row_links', {
+      team_id: teamId,
+      table_name: tableName,
+      pk,
+      owner_user_id: ctx.authContext.user.id,
+      linked_at: now,
+    });
+  }
+  // Upsert the row snapshot into the cloud's mirror of the shared table.
+  await ctx.db.upsert(tableName, snapshot);
+
+  // Emit a link envelope (membership info) + an upsert envelope (data).
+  // Receivers process them in seq order.
+  await appendChangeEnvelope(ctx.db, {
+    team_id: teamId,
+    table_name: tableName,
+    pk,
+    op: 'link',
+    payload_json: JSON.stringify({ owner_user_id: ctx.authContext.user.id }),
+    owner_user_id: ctx.authContext.user.id,
+  });
+  const upsertSeq = await appendChangeEnvelope(ctx.db, {
+    team_id: teamId,
+    table_name: tableName,
+    pk,
+    op: 'upsert',
+    payload_json: JSON.stringify(snapshot),
+    owner_user_id: ctx.authContext.user.id,
+  });
+  sendJson(
+    res,
+    {
+      ok: true,
+      owner_user_id: ctx.authContext.user.id,
+      seq: upsertSeq,
+    },
+    existing ? 200 : 201,
+  );
+}
+
+async function handleUnlinkRow(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+  tableName: string,
+  pk: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const callerRole = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!callerRole) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  const link = await getRowLink(ctx.db, teamId, tableName, pk);
+  if (!link) {
+    sendJson(res, { error: 'Row is not linked' }, 404);
+    return;
+  }
+  // Owner or team creator may unlink. Anyone else gets 403.
+  if (link.owner_user_id !== ctx.authContext.user.id && callerRole !== 'creator') {
+    sendJson(res, { error: 'Only the row owner or team creator can unlink' }, 403);
+    return;
+  }
+  await ctx.db.delete('__lattice_row_links', {
+    team_id: teamId,
+    table_name: tableName,
+    pk,
+  });
+  // Hard-delete the cloud's mirror of the row. Receivers' default unlink
+  // behaviour also hard-deletes locally.
+  try {
+    await ctx.db.delete(tableName, pk);
+  } catch {
+    // Row may already be gone; not fatal.
+  }
+  await appendChangeEnvelope(ctx.db, {
+    team_id: teamId,
+    table_name: tableName,
+    pk,
+    op: 'unlink',
+    payload_json: null,
+    owner_user_id: link.owner_user_id,
+  });
+  sendJson(res, { ok: true });
+}
+
+async function handlePushRow(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+  tableName: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const callerRole = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!callerRole) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  const body = await readJson(req);
+  const pk = requireString(body, 'pk');
+  if (!pk) {
+    sendJson(res, { error: 'pk is required' }, 400);
+    return;
+  }
+  const rawPayload = body.payload;
+  if (!rawPayload || typeof rawPayload !== 'object') {
+    sendJson(res, { error: 'payload must be an object' }, 400);
+    return;
+  }
+  const payload = rawPayload as Record<string, unknown>;
+  const link = await getRowLink(ctx.db, teamId, tableName, pk);
+  if (!link) {
+    sendJson(res, { error: 'Row is not linked — link it first' }, 404);
+    return;
+  }
+  if (link.owner_user_id !== ctx.authContext.user.id) {
+    sendJson(
+      res,
+      { error: 'Only the row owner can push updates', owner_user_id: link.owner_user_id },
+      403,
+    );
+    return;
+  }
+  await ctx.db.upsert(tableName, payload);
+  const seq = await appendChangeEnvelope(ctx.db, {
+    team_id: teamId,
+    table_name: tableName,
+    pk,
+    op: 'upsert',
+    payload_json: JSON.stringify(payload),
+    owner_user_id: link.owner_user_id,
+  });
+  sendJson(res, { ok: true, seq });
+}
+
+async function handleDeleteRow(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+  tableName: string,
+  pk: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const link = await getRowLink(ctx.db, teamId, tableName, pk);
+  if (!link) {
+    sendJson(res, { error: 'Row is not linked' }, 404);
+    return;
+  }
+  if (link.owner_user_id !== ctx.authContext.user.id) {
+    sendJson(res, { error: 'Only the row owner can delete the row' }, 403);
+    return;
+  }
+  // For Phase 4 v1, "delete" via the rows endpoint behaves the same as
+  // unlink — the row leaves the cloud's mirror and an `unlink` envelope
+  // propagates. Callers who want a soft-delete instead should `upsert`
+  // a row carrying `deleted_at`.
+  await ctx.db.delete('__lattice_row_links', {
+    team_id: teamId,
+    table_name: tableName,
+    pk,
+  });
+  try {
+    await ctx.db.delete(tableName, pk);
+  } catch {
+    // Row may already be gone.
+  }
+  await appendChangeEnvelope(ctx.db, {
+    team_id: teamId,
+    table_name: tableName,
+    pk,
+    op: 'unlink',
+    payload_json: null,
+    owner_user_id: link.owner_user_id,
+  });
+  sendJson(res, { ok: true });
 }
