@@ -2,7 +2,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildGuiGraph, getGuiEntities, getGuiEntityFiles } from '../../src/gui/graph.js';
+import {
+  buildGuiGraph,
+  getGuiEntities,
+  getGuiEntityFiles,
+  isJunctionTable,
+} from '../../src/gui/graph.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { writeManifest } from '../../src/lifecycle/manifest.js';
 
@@ -262,5 +267,19 @@ describe('GUI server', () => {
 
     expect(preview.type).toBe('context');
     expect(preview.lineCount).toBe(1);
+  });
+});
+
+describe('isJunctionTable', () => {
+  it('classifies first-class entities and junctions correctly', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const { tables } = getGuiEntities(configPath, outputDir);
+    const byName = new Map(tables.map((t) => [t.name, t]));
+
+    expect(isJunctionTable(byName.get('agents')!)).toBe(false);
+    expect(isJunctionTable(byName.get('tasks')!)).toBe(false);
+    expect(isJunctionTable(byName.get('teams')!)).toBe(false);
+    expect(isJunctionTable(byName.get('skills')!)).toBe(false);
+    expect(isJunctionTable(byName.get('agent_skills')!)).toBe(true);
   });
 });

@@ -1,22 +1,86 @@
-db: ./data/test.db
+db: ./data/lattice-demo.db
 
 entities:
-  user:
+  people:
     fields:
-      id: { type: uuid, primaryKey: true }
-      name: { type: text, required: true }
+      id:    { type: uuid, primaryKey: true }
+      name:  { type: text, required: true }
       email: { type: text }
-    render: default-table
-    outputFile: context/USERS.md
+      role:  { type: text }
+    outputFile: context/PEOPLE.md
 
-  ticket:
+  meetings:
     fields:
-      id: { type: uuid, primaryKey: true }
-      title: { type: text, required: true }
-      status: { type: text, default: open }
-      priority: { type: integer, default: 1 }
-      assignee_id: { type: uuid, ref: user }
-    render:
-      template: default-list
-      formatRow: '{{title}} ({{status}})'
-    outputFile: context/TICKETS.md
+      id:         { type: uuid, primaryKey: true }
+      title:      { type: text, required: true }
+      starts_at:  { type: text }
+      transcript: { type: text }
+      summary:    { type: text }
+    outputFile: context/MEETINGS.md
+
+  messages:
+    fields:
+      id:      { type: uuid, primaryKey: true }
+      channel: { type: text }
+      body:    { type: text }
+      sent_at: { type: text }
+    outputFile: context/MESSAGES.md
+
+  projects:
+    fields:
+      id:     { type: uuid, primaryKey: true }
+      name:   { type: text, required: true }
+      status: { type: text }
+    outputFile: context/PROJECTS.md
+
+  repositories:
+    fields:
+      id:         { type: uuid, primaryKey: true }
+      url:        { type: text, required: true }
+      project_id: { type: uuid, ref: projects }
+    outputFile: context/REPOS.md
+
+  files:
+    fields:
+      id:   { type: uuid, primaryKey: true }
+      path: { type: text, required: true }
+      kind: { type: text }
+    outputFile: context/FILES.md
+
+  secrets:
+    fields:
+      id:   { type: uuid, primaryKey: true }
+      name: { type: text, required: true }
+      kind: { type: text }
+    outputFile: context/SECRETS.md
+
+  # Junction tables (hidden from sidebar/dashboard by the GUI; editable via Data Model).
+  meeting_people:
+    fields:
+      id:         { type: uuid, primaryKey: true }
+      meeting_id: { type: uuid, ref: meetings }
+      person_id:  { type: uuid, ref: people }
+
+  meeting_projects:
+    fields:
+      id:         { type: uuid, primaryKey: true }
+      meeting_id: { type: uuid, ref: meetings }
+      project_id: { type: uuid, ref: projects }
+
+  project_people:
+    fields:
+      id:         { type: uuid, primaryKey: true }
+      project_id: { type: uuid, ref: projects }
+      person_id:  { type: uuid, ref: people }
+
+  message_people:
+    fields:
+      id:         { type: uuid, primaryKey: true }
+      message_id: { type: uuid, ref: messages }
+      person_id:  { type: uuid, ref: people }
+
+  project_files:
+    fields:
+      id:         { type: uuid, primaryKey: true }
+      project_id: { type: uuid, ref: projects }
+      file_id:    { type: uuid, ref: files }

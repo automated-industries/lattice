@@ -346,6 +346,16 @@ export function getGuiEntities(configPath: string, outputDir: string): GuiEntiti
   return { tables: data.tables, entities: data.entities, hasManifest: data.manifest !== null };
 }
 
+/**
+ * A table is a junction iff it has exactly two `belongsTo` relations.
+ * Junction tables are hidden from the Objects sidebar and dashboard cards;
+ * their rows are editable via the Data Model view.
+ */
+export function isJunctionTable(table: GuiTableSummary): boolean {
+  const belongsTo = Object.values(table.relations).filter((r) => r.type === 'belongsTo');
+  return belongsTo.length === 2 && Object.keys(table.relations).length === 2;
+}
+
 export function getGuiEntityFiles(
   configPath: string,
   outputDir: string,
