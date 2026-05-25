@@ -7,6 +7,7 @@ import { generateAll } from './codegen/generate.js';
 import { parseConfigFile } from './config/parser.js';
 import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
+import { startGuiServer } from './gui/server.js';
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -26,6 +27,8 @@ interface ParsedArgs {
   protected: string[];
   interval: number;
   cleanup: boolean;
+  port: number;
+  noOpen: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -42,6 +45,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   const protectedFiles: string[] = [];
   let interval = 5000;
   let cleanup = false;
+  let port = 4317;
+  let noOpen = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -82,6 +87,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       if (!isNaN(parsed)) interval = parsed;
     } else if (arg === '--cleanup') {
       cleanup = true;
+    } else if (arg === '--port' && i + 1 < argv.length) {
+      i++;
+      const parsed = parseInt(argv[i] ?? '4317', 10);
+      if (!isNaN(parsed)) port = parsed;
+    } else if (arg === '--no-open') {
+      noOpen = true;
     }
     i++;
   }
@@ -100,6 +111,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     protected: protectedFiles,
     interval,
     cleanup,
+    port,
+    noOpen,
   };
 }
 
@@ -121,6 +134,7 @@ function printHelp(): void {
       '  reconcile   Render + cleanup orphaned entity directories and files',
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
+      '  gui         Start a local browser GUI for exploring Lattice context',
       '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
@@ -152,6 +166,12 @@ function printHelp(): void {
       '  --no-orphan-dirs       Skip removal of orphaned entity directories (with --cleanup)',
       '  --no-orphan-files      Skip removal of orphaned files inside entity dirs (with --cleanup)',
       '  --protected <csv>      Comma-separated list of protected filenames (with --cleanup)',
+      '',
+      'Options (gui):',
+      '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
+      '  --output <dir>         Output directory for rendered context (default: ./context)',
+      '  --port <number>        Localhost port (default: 4317; auto-increments if busy)',
+      '  --no-open              Do not open the browser automatically',
       '',
       'Options (global):',
       '  --help, -h             Show this help message',
@@ -391,6 +411,29 @@ async function runWatch(args: ParsedArgs): Promise<void> {
   process.on('SIGTERM', shutdown);
 }
 
+async function runGui(args: ParsedArgs): Promise<void> {
+  try {
+    const handle = await startGuiServer({
+      configPath: resolve(args.config),
+      outputDir: resolve(args.output),
+      port: args.port,
+      openBrowser: !args.noOpen,
+    });
+    console.log(`Lattice GUI listening at ${handle.url}`);
+    console.log('Press Ctrl+C to stop.');
+
+    const shutdown = (): void => {
+      void handle.close().finally(() => process.exit(0));
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -439,6 +482,9 @@ function main(): void {
       break;
     case 'watch':
       void runWatch(args);
+      break;
+    case 'gui':
+      void runGui(args);
       break;
     case 'update':
       void runUpdate();
