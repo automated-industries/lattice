@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { parse } from 'yaml';
+import { getDbCredential } from '../framework/user-config.js';
 import type {
   LatticeConfig,
   LatticeEntityDef,
@@ -102,7 +103,7 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
   }
 
   const config = raw as LatticeConfig;
-  const dbPath = resolve(configDir, config.db);
+  const dbPath = resolveDbPath(config.db, configDir);
 
   const tables: { name: string; definition: TableDefinition }[] = [];
   for (const [entityName, entityDef] of Object.entries(config.entities)) {
@@ -113,6 +114,40 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
   const entityContexts = parseEntityContexts(config.entityContexts);
 
   return { dbPath, tables, entityContexts };
+}
+
+/**
+ * Resolve the `db:` field from a config file. Supports:
+ *
+ *   - `${LATTICE_DB:<label>}` — look up the connection URL stored under
+ *     `<label>` in `~/.lattice/db-credentials.enc`. Throws if absent.
+ *   - `postgres://...` / `postgresql://...` — passed through verbatim.
+ *   - `file:...` / `:memory:` — passed through verbatim (the SQLite
+ *     adapter strips the `file:` prefix itself).
+ *   - any other plain path — resolved relative to the config file
+ *     directory (current behaviour).
+ *
+ * Keeps connection passwords out of the YAML file: the GUI's DB-config
+ * panel writes the URL to db-credentials.enc and replaces the YAML's
+ * `db:` line with the label reference, so VCS-tracked configs don't
+ * leak secrets.
+ */
+export function resolveDbPath(raw: string, configDir: string): string {
+  const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(raw.trim());
+  if (labelMatch) {
+    const label = labelMatch[1]!;
+    const url = getDbCredential(label);
+    if (!url) {
+      throw new Error(
+        `Lattice: config references \${LATTICE_DB:${label}} but no credential is saved for "${label}". Save one via the GUI's Database panel or set LATTICE_DB_${label}.`,
+      );
+    }
+    return url;
+  }
+  if (/^postgres(ql)?:\/\//i.test(raw) || raw.startsWith('file:') || raw === ':memory:') {
+    return raw;
+  }
+  return resolve(configDir, raw);
 }
 
 function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDefinition {

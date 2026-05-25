@@ -22,6 +22,7 @@ import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/r
 import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
+import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { registerNativeEntities } from '../framework/native-entities.js';
 import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
 
@@ -1204,6 +1205,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             configPath: active.configPath,
             pathname,
             method,
+          });
+          if (handled) return;
+        }
+
+        // ── DB Config routes ─────────────────────────────────────────────
+        // Project Config "Database" panel — read / save / connect / test.
+        // The `swap` callback re-opens the active configPath so the
+        // YAML rewrite written by `/save` takes effect.
+        if (!teamCloud && pathname.startsWith('/api/dbconfig')) {
+          const handled = await dispatchDbConfigRoute(req, res, {
+            db: active.db,
+            configPath: active.configPath,
+            pathname,
+            method,
+            swap: async () => {
+              const next = await openConfig(active.configPath, active.outputDir);
+              active.db.close();
+              active = next;
+            },
           });
           if (handled) return;
         }

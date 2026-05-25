@@ -2372,11 +2372,36 @@ export const guiAppHtml = `<!doctype html>
     }
 
     function renderProjectConfig(content) {
+      // Frame the page; Database + Teams panels populate themselves
+      // asynchronously so a slow cloud probe doesn't block the page.
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>Project Config</h2>' +
+          '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
+          '<div id="teams-host"></div>' +
+        '</div>';
+      renderDatabasePanel(document.getElementById('dbconfig-host'));
+      renderTeamsForProjectConfig(document.getElementById('teams-host'));
+    }
+
+    function renderTeamsForProjectConfig(host) {
       fetchConnections().then(function (conns) {
-        if (conns.length === 0) { renderTeamsEmpty(content, 'project'); return; }
-        content.innerHTML =
-          '<div class="teams-page">' +
-            '<h2>Project Config</h2>' +
+        if (conns.length === 0) {
+          host.innerHTML =
+            '<div style="margin-top:18px">' +
+              '<h3 style="margin:0 0 8px">Teams</h3>' +
+              '<p class="lead">No team memberships yet. Start a team or join one below.</p>' +
+              '<div class="teams-actions">' +
+                '<button class="btn primary" id="action-create-team">Create team</button>' +
+                '<button class="btn" id="action-join-team">Join via invite</button>' +
+              '</div>' +
+            '</div>';
+          wireTopActions('project');
+          return;
+        }
+        host.innerHTML =
+          '<div style="margin-top:18px">' +
+            '<h3 style="margin:0 0 8px">Teams</h3>' +
             '<p class="lead">Teams this project\\'s lattice is joined to. Click a team to expand sync details, shared tables, and member admin.</p>' +
             '<div class="teams-actions">' +
               '<button class="btn primary" id="action-create-team">Create team</button>' +
@@ -2385,16 +2410,111 @@ export const guiAppHtml = `<!doctype html>
             '<div id="team-cards-host"></div>' +
           '</div>';
         wireTopActions('project');
-        var host = document.getElementById('team-cards-host');
+        var cards = document.getElementById('team-cards-host');
         conns.forEach(function (c) {
           var card = document.createElement('div');
           card.className = 'team-card';
           card.setAttribute('data-team-id', c.team_id);
-          host.appendChild(card);
+          cards.appendChild(card);
           renderTeamCard(card, c);
         });
       }).catch(function (err) {
-        content.innerHTML = '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+        host.innerHTML = '<div class="placeholder">Failed to load teams: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    /** GET /api/dbconfig + render the Database panel. */
+    function renderDatabasePanel(host) {
+      fetchJson('/api/dbconfig').then(function (info) {
+        var isPg = info.type === 'postgres';
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 10px">Database</h3>' +
+            '<div style="margin-bottom:10px">' +
+              '<label style="margin-right:14px"><input type="radio" name="dbtype" value="sqlite"' + (isPg ? '' : ' checked') + '> Local SQLite</label>' +
+              '<label><input type="radio" name="dbtype" value="postgres"' + (isPg ? ' checked' : '') + '> Cloud Postgres</label>' +
+            '</div>' +
+            '<div id="db-form"></div>' +
+            '<div class="team-actions" style="margin-top:10px">' +
+              '<button class="btn" data-act="db-test">Test connection</button>' +
+              '<button class="btn primary" data-act="db-save">Save</button>' +
+              '<button class="btn" data-act="db-connect" title="Reconnect using the saved configuration">Connect</button>' +
+            '</div>' +
+            '<div id="db-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+          '</div>';
+        function paintForm(kind, prefill) {
+          var form = document.getElementById('db-form');
+          if (kind === 'sqlite') {
+            form.innerHTML =
+              '<label class="field-label">Database file path</label>' +
+              '<input type="text" id="db-sqlite-path" placeholder="./data/project.db" value="' + escapeHtml(prefill || ('./data/' + (info.dbFile || 'project.db'))) + '" style="width:100%">';
+          } else {
+            form.innerHTML =
+              '<div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
+                '<div><label class="field-label">Label</label><input type="text" id="db-label" placeholder="atlas" value="' + escapeHtml(info.label || '') + '" style="width:100%"></div>' +
+                '<div><label class="field-label">Host</label><input type="text" id="db-host" placeholder="db.example.com" value="' + escapeHtml(info.host || '') + '" style="width:100%"></div>' +
+                '<div><label class="field-label">Port</label><input type="number" id="db-port" placeholder="5432" value="' + escapeHtml(String(info.port || 5432)) + '" style="width:100%"></div>' +
+                '<div><label class="field-label">Database name</label><input type="text" id="db-dbname" placeholder="app" value="' + escapeHtml(info.dbname || '') + '" style="width:100%"></div>' +
+                '<div><label class="field-label">User</label><input type="text" id="db-user" placeholder="lattice_user" value="' + escapeHtml(info.user || '') + '" style="width:100%"></div>' +
+                '<div><label class="field-label">Password</label><input type="password" id="db-password" placeholder="••••••••" style="width:100%"></div>' +
+              '</div>';
+          }
+        }
+        paintForm(info.type, undefined);
+        Array.prototype.forEach.call(host.querySelectorAll('input[name="dbtype"]'), function (r) {
+          r.addEventListener('change', function () { paintForm(r.value, undefined); });
+        });
+        function readBody() {
+          var kind = (host.querySelector('input[name="dbtype"]:checked') || { value: 'sqlite' }).value;
+          if (kind === 'sqlite') {
+            return { type: 'sqlite', path: (document.getElementById('db-sqlite-path').value || '').trim() };
+          }
+          return {
+            type: 'postgres',
+            label: (document.getElementById('db-label').value || '').trim(),
+            host: (document.getElementById('db-host').value || '').trim(),
+            port: Number(document.getElementById('db-port').value || 5432),
+            dbname: (document.getElementById('db-dbname').value || '').trim(),
+            user: document.getElementById('db-user').value || '',
+            password: document.getElementById('db-password').value || '',
+          };
+        }
+        function setMsg(text, ok) {
+          var el = document.getElementById('db-msg');
+          el.textContent = text;
+          el.style.color = ok ? 'var(--accent, #1f56c2)' : 'var(--text-muted)';
+        }
+        host.querySelector('[data-act="db-test"]').addEventListener('click', function () {
+          setMsg('Testing…');
+          fetch('/api/dbconfig/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(readBody()) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { setMsg(d.ok ? 'Connection ok.' : 'Failed: ' + (d.error || 'unknown'), !!d.ok); })
+            .catch(function (e) { setMsg('Failed: ' + e.message, false); });
+        });
+        host.querySelector('[data-act="db-save"]').addEventListener('click', function () {
+          setMsg('Saving…');
+          fetch('/api/dbconfig/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(readBody()) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d.error) { setMsg('Failed: ' + d.error, false); return; }
+              setMsg('Saved. Click Connect to apply.', true);
+            })
+            .catch(function (e) { setMsg('Failed: ' + e.message, false); });
+        });
+        host.querySelector('[data-act="db-connect"]').addEventListener('click', function () {
+          setMsg('Reconnecting…');
+          fetch('/api/dbconfig/connect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d.error) { setMsg('Failed: ' + d.error, false); return; }
+              setMsg('Reconnected.', true);
+              // Re-render the panel to reflect the (possibly new) DB shape.
+              renderDatabasePanel(document.getElementById('dbconfig-host'));
+            })
+            .catch(function (e) { setMsg('Failed: ' + e.message, false); });
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load database config: ' + escapeHtml(err.message) + '</div>';
       });
     }
 
