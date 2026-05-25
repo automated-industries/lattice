@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile } from '../config/parser.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
@@ -164,20 +164,24 @@ function readRowContext(
   });
 }
 
-export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
-  const configPath = resolve(options.configPath);
-  const outputDir = resolve(options.outputDir);
-  const startPort = options.port ?? 4317;
+/** Everything tied to a single open lattice config / DB. Swapped wholesale when the user picks a different DB. */
+interface ActiveDb {
+  configPath: string;
+  outputDir: string;
+  db: Lattice;
+  validTables: Set<string>;
+  junctionTables: Set<string>;
+  entityContextByTable: Map<string, EntityContextDefinition>;
+  softDeletable: Set<string>;
+}
 
-  // Ensure the DB's parent dir exists before opening — SQLiteAdapter does not
-  // create it. parseConfigFile already resolves db: to an absolute path.
+async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   mkdirSync(dirname(parsed.dbPath), { recursive: true });
-
   const db = new Lattice({ config: configPath });
   // GUI-only meta table: per-entity icon overrides edited from the browser.
-  // Lives alongside the user's tables but isn't in their config — never
-  // appears in /api/entities (which derives from the YAML).
+  // Defined dynamically (not in the user's YAML) so it never appears in
+  // /api/entities or any user-facing list.
   db.define('_lattice_gui_meta', {
     columns: {
       entity_name: 'TEXT PRIMARY KEY',
@@ -190,28 +194,89 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   });
   await db.init();
 
-  // Look up which tables actually exist in the config (and which are junctions)
-  // so the CRUD routes can reject unknown tables loudly.
   const validTables = new Set(parsed.tables.map((t) => t.name));
   const junctionTables = new Set(
     getGuiEntities(configPath, outputDir)
       .tables.filter(isJunctionTable)
       .map((t) => t.name),
   );
-
-  // Per-table entity context defs (slug fn + declared files). Used by the
-  // /context route to read the row's rendered markdown off disk.
   const entityContextByTable = new Map<string, EntityContextDefinition>();
   for (const { table, definition } of parsed.entityContexts) {
     entityContextByTable.set(table, definition);
   }
-
-  // Which tables have a `deleted_at` column → eligible for soft delete.
   const softDeletable = new Set(
     parsed.tables
       .filter(({ definition }) => 'deleted_at' in definition.columns)
       .map(({ name }) => name),
   );
+  return {
+    configPath,
+    outputDir,
+    db,
+    validTables,
+    junctionTables,
+    entityContextByTable,
+    softDeletable,
+  };
+}
+
+/**
+ * List sibling YAML configs in the same directory as the currently active
+ * config. Each entry includes the parsed `db:` value when available so the
+ * UI can show the underlying DB filename.
+ */
+function listConfigs(
+  activeConfigPath: string,
+): { path: string; name: string; dbFile: string; active: boolean }[] {
+  const dir = dirname(activeConfigPath);
+  const entries: { path: string; name: string; dbFile: string; active: boolean }[] = [];
+  for (const fname of readdirSync(dir)) {
+    if (!fname.endsWith('.yml') && !fname.endsWith('.yaml')) continue;
+    const full = join(dir, fname);
+    try {
+      const parsed = parseConfigFile(full);
+      entries.push({
+        path: full,
+        name: fname.replace(/\.(ya?ml)$/, ''),
+        dbFile: basename(parsed.dbPath),
+        active: full === activeConfigPath,
+      });
+    } catch {
+      // Not a valid lattice config — skip silently.
+    }
+  }
+  return entries.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Write a starter YAML config + an empty SQLite DB. The schema is minimal —
+ * one example `items` entity — so the user has something to play with
+ * immediately. They can edit the YAML directly to add more entities.
+ */
+function createBlankConfig(activeConfigPath: string, dbName: string): string {
+  const dir = dirname(activeConfigPath);
+  // Slug the user-provided name into a safe filename.
+  const slug = dbName
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!slug) throw new Error('Database name must contain at least one alphanumeric character');
+  const configPath = join(dir, `${slug}.config.yml`);
+  if (existsSync(configPath)) throw new Error(`Config already exists: ${slug}.config.yml`);
+  const yaml = `db: ./data/${slug}.db\n\nentities:\n  items:\n    fields:\n      id: { type: uuid, primaryKey: true }\n      name: { type: text, required: true }\n      notes: { type: text }\n      deleted_at: { type: text }\n    outputFile: ITEMS.md\n`;
+  writeFileSync(configPath, yaml, 'utf8');
+  // Ensure the data dir exists so opening the new config doesn't fail.
+  mkdirSync(join(dir, 'data'), { recursive: true });
+  return configPath;
+}
+
+export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
+  const configPath = resolve(options.configPath);
+  const outputDir = resolve(options.outputDir);
+  const startPort = options.port ?? 4317;
+
+  // Mutable reference: switching DBs replaces this wholesale.
+  let active: ActiveDb = await openConfig(configPath, outputDir);
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -226,21 +291,65 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'GET' && pathname === '/api/project') {
-          sendJson(res, getGuiProject(configPath, outputDir));
+          sendJson(res, getGuiProject(active.configPath, active.outputDir));
           return;
         }
         if (method === 'GET' && pathname === '/api/entities') {
-          sendJson(res, await entitiesWithCounts(db, configPath, outputDir));
+          sendJson(res, await entitiesWithCounts(active.db, active.configPath, active.outputDir));
           return;
         }
         if (method === 'GET' && pathname === '/api/graph') {
-          sendJson(res, buildGuiGraph(configPath, outputDir));
+          sendJson(res, buildGuiGraph(active.configPath, active.outputDir));
+          return;
+        }
+
+        // ── Database switcher ─────────────────────────────────────────────
+        if (method === 'GET' && pathname === '/api/databases') {
+          sendJson(res, {
+            current: {
+              path: active.configPath,
+              dbFile: basename(parseConfigFile(active.configPath).dbPath),
+            },
+            configs: listConfigs(active.configPath),
+          });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/databases/switch') {
+          const body = (await readJsonBody(req)) as { path?: unknown };
+          if (typeof body.path !== 'string') {
+            sendJson(res, { error: 'path must be a string' }, 400);
+            return;
+          }
+          const newPath = resolve(body.path);
+          if (!existsSync(newPath)) {
+            sendJson(res, { error: `Config not found: ${newPath}` }, 400);
+            return;
+          }
+          // Try to open the new config first; only swap once it succeeds so a
+          // bad config doesn't leave the server with no active DB.
+          const next = await openConfig(newPath, active.outputDir);
+          active.db.close();
+          active = next;
+          sendJson(res, { ok: true, path: active.configPath });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/databases/create') {
+          const body = (await readJsonBody(req)) as { name?: unknown };
+          if (typeof body.name !== 'string' || !body.name.trim()) {
+            sendJson(res, { error: 'name must be a non-empty string' }, 400);
+            return;
+          }
+          const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
+          const next = await openConfig(newConfigPath, active.outputDir);
+          active.db.close();
+          active = next;
+          sendJson(res, { ok: true, path: active.configPath });
           return;
         }
 
         // ── GUI-only metadata (per-entity icon overrides) ─────────────────
         if (method === 'GET' && pathname === '/api/gui-meta') {
-          const rows = (await db.query('_lattice_gui_meta', {})) as {
+          const rows = (await active.db.query('_lattice_gui_meta', {})) as {
             entity_name: string;
             icon: string | null;
           }[];
@@ -253,7 +362,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (method === 'PUT' && pathname.startsWith('/api/gui-meta/')) {
           const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
-          if (!validTables.has(entityName)) {
+          if (!active.validTables.has(entityName)) {
             sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
             return;
           }
@@ -262,16 +371,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'icon must be a string' }, 400);
             return;
           }
-          // Upsert. Lattice's `insert` filters to schema columns and handles
-          // INSERT-or-error semantics; for upsert we check existence first.
-          const existing = await db.get('_lattice_gui_meta', entityName);
+          const existing = await active.db.get('_lattice_gui_meta', entityName);
           if (existing) {
-            await db.update('_lattice_gui_meta', entityName, {
+            await active.db.update('_lattice_gui_meta', entityName, {
               icon: body.icon,
               updated_at: new Date().toISOString(),
             });
           } else {
-            await db.insert('_lattice_gui_meta', {
+            await active.db.insert('_lattice_gui_meta', {
               entity_name: entityName,
               icon: body.icon,
               updated_at: new Date().toISOString(),
@@ -282,8 +389,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── Row context: /api/tables/:table/rows/:id/context ──────────────
-        // Matched BEFORE the generic rows route so the `/context` suffix
-        // doesn't get treated as part of the id.
         const ctxMatch = CONTEXT_PATH.exec(pathname);
         if (ctxMatch) {
           const [, rawCtxTable, rawCtxId] = ctxMatch;
@@ -293,24 +398,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Method ${method} not allowed` }, 405);
             return;
           }
-          if (!validTables.has(ctxTable)) {
+          if (!active.validTables.has(ctxTable)) {
             sendJson(res, { error: `Unknown table: ${ctxTable}` }, 400);
             return;
           }
-          const def = entityContextByTable.get(ctxTable);
+          const def = active.entityContextByTable.get(ctxTable);
           if (!def) {
-            // No entityContext declared for this table — return an empty list
-            // rather than 404 so the detail view can show a clean "no rendered
-            // context" message instead of an error.
             sendJson(res, { files: [] });
             return;
           }
-          const row = await db.get(ctxTable, ctxId);
+          const row = await active.db.get(ctxTable, ctxId);
           if (row === null) {
             sendJson(res, { error: 'Row not found' }, 404);
             return;
           }
-          sendJson(res, { files: readRowContext(outputDir, def, row) });
+          sendJson(res, { files: readRowContext(active.outputDir, def, row) });
           return;
         }
 
@@ -320,7 +422,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const [, rawTable, rawId] = rowsMatch;
           const table = decodeURIComponent(rawTable ?? '');
           const id = rawId ? decodeURIComponent(rawId) : null;
-          if (!validTables.has(table)) {
+          if (!active.validTables.has(table)) {
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
@@ -329,29 +431,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             if (method === 'GET') {
               const limit = Number(url.searchParams.get('limit') ?? '500');
               const offset = Number(url.searchParams.get('offset') ?? '0');
-              // `?deleted=only` returns just soft-deleted rows (Trash view);
-              // `?deleted=any`  returns all rows including soft-deleted;
-              // default        hides soft-deleted (the live data).
               const deletedMode = url.searchParams.get('deleted');
-              const queryOpts: Parameters<typeof db.query>[1] = { limit, offset };
-              if (softDeletable.has(table) && deletedMode !== 'any') {
+              const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
+              if (active.softDeletable.has(table) && deletedMode !== 'any') {
                 queryOpts.filters = [
                   { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
                 ];
               }
-              const rows = await db.query(table, queryOpts);
+              const rows = await active.db.query(table, queryOpts);
               sendJson(res, { rows });
               return;
             }
             if (method === 'POST') {
               const body = (await readJsonBody(req)) as Row;
-              const newId = await db.insert(table, body);
+              const newId = await active.db.insert(table, body);
               sendJson(res, { id: newId }, 201);
               return;
             }
           } else {
             if (method === 'GET') {
-              const row = await db.get(table, id);
+              const row = await active.db.get(table, id);
               if (row === null) {
                 sendJson(res, { error: 'Row not found' }, 404);
                 return;
@@ -361,19 +460,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
             if (method === 'PATCH') {
               const body = (await readJsonBody(req)) as Partial<Row>;
-              await db.update(table, id, body);
+              await active.db.update(table, id, body);
               sendJson(res, { ok: true });
               return;
             }
             if (method === 'DELETE') {
-              // Soft delete when the table has a `deleted_at` column;
-              // hard delete otherwise (junctions, schema rows).
-              // ?hard=true forces a hard delete regardless.
               const hard = url.searchParams.get('hard') === 'true';
-              if (!hard && softDeletable.has(table)) {
-                await db.update(table, id, { deleted_at: new Date().toISOString() });
+              if (!hard && active.softDeletable.has(table)) {
+                await active.db.update(table, id, { deleted_at: new Date().toISOString() });
               } else {
-                await db.delete(table, id);
+                await active.db.delete(table, id);
               }
               sendJson(res, { ok: true });
               return;
@@ -388,7 +484,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (linkMatch) {
           const [, rawTable, op] = linkMatch;
           const table = decodeURIComponent(rawTable ?? '');
-          if (!junctionTables.has(table)) {
+          if (!active.junctionTables.has(table)) {
             sendJson(res, { error: `Not a junction table: ${table}` }, 400);
             return;
           }
@@ -398,9 +494,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           const body = (await readJsonBody(req)) as Row;
           if (op === 'link') {
-            await db.link(table, body);
+            await active.db.link(table, body);
           } else {
-            await db.unlink(table, body);
+            await active.db.unlink(table, body);
           }
           sendJson(res, { ok: true });
           return;
@@ -428,7 +524,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             reject(err);
             return;
           }
-          db.close();
+          active.db.close();
           resolveClose();
         });
       }),

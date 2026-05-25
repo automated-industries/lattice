@@ -43,6 +43,42 @@ export const guiAppHtml = `<!doctype html>
     }
     .query[disabled] { cursor: not-allowed; }
 
+    /* DB switcher in the top bar */
+    .db-switcher { position: relative; }
+    .db-button {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 32px; padding: 0 10px;
+      background: #fafbfc; color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      font-size: 13px; cursor: pointer;
+    }
+    .db-button:hover { background: var(--row-hover); }
+    .db-button .db-caret { color: var(--text-muted); font-size: 10px; }
+    .db-menu {
+      position: absolute; top: 38px; left: 0;
+      min-width: 260px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+      z-index: 60; padding: 6px;
+    }
+    .db-menu .db-section { font-size: 11px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 8px 10px 4px; }
+    .db-menu button.db-item {
+      width: 100%; display: flex; align-items: center; gap: 8px;
+      padding: 7px 10px; border: none; background: transparent; text-align: left;
+      cursor: pointer; border-radius: 6px; font-size: 13.5px; color: var(--text);
+    }
+    .db-menu button.db-item:hover { background: var(--row-hover); }
+    .db-menu button.db-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+    .db-menu button.db-item .db-item-file { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+    .db-menu .db-create { padding: 6px 10px; border-top: 1px solid var(--border); margin-top: 4px; }
+    .db-menu .db-create input {
+      width: 100%; height: 30px; padding: 0 10px; font: inherit;
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      background: white; margin-bottom: 6px;
+    }
+
     /* ── Layout ────────────────────────────────────────── */
     .layout {
       display: grid; grid-template-columns: 220px 1fr;
@@ -309,6 +345,14 @@ export const guiAppHtml = `<!doctype html>
 <body>
   <header class="topbar">
     <div class="brand">Lattice</div>
+    <div class="db-switcher">
+      <button class="db-button" id="db-button" title="Switch database">
+        <span class="db-icon">💾</span>
+        <span class="db-name" id="db-name">loading…</span>
+        <span class="db-caret">▾</span>
+      </button>
+      <div class="db-menu" id="db-menu" hidden></div>
+    </div>
     <input class="query" type="text" placeholder="Query + Prompt Workspace..." disabled />
   </header>
   <div class="layout">
@@ -408,14 +452,104 @@ export const guiAppHtml = `<!doctype html>
       Promise.all([
         fetchJson('/api/entities'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
+        fetchJson('/api/databases').catch(function () { return null; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
+        renderDbSwitcher(results[2]);
         renderSidebar();
         renderRoute();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    /** Refetch everything after a DB switch and rerender. */
+    function reloadEverything() {
+      return Promise.all([
+        fetchJson('/api/entities'),
+        fetchJson('/api/gui-meta').catch(function () { return {}; }),
+        fetchJson('/api/databases').catch(function () { return null; }),
+      ]).then(function (results) {
+        state.entities = results[0];
+        state.iconOverrides = results[1] || {};
+        renderDbSwitcher(results[2]);
+        renderSidebar();
+        // Always reset to dashboard after a switch — the previous URL's table
+        // may not exist in the new DB.
+        if (location.hash !== '#/') location.hash = '#/';
+        else renderRoute();
+        // Reset row cache.
+        loadedTables = {};
+      });
+    }
+
+    function renderDbSwitcher(data) {
+      var btn = document.getElementById('db-button');
+      var menu = document.getElementById('db-menu');
+      var nameEl = document.getElementById('db-name');
+      if (!data) {
+        nameEl.textContent = '(no databases endpoint)';
+        return;
+      }
+      nameEl.textContent = data.current.dbFile;
+
+      function buildMenu() {
+        var items = data.configs.map(function (c) {
+          return '<button class="db-item' + (c.active ? ' active' : '') +
+            '" data-path="' + escapeHtml(c.path) + '">' +
+            '<span>' + escapeHtml(c.name) + '</span>' +
+            '<span class="db-item-file">' + escapeHtml(c.dbFile) + '</span>' +
+            '</button>';
+        }).join('');
+        menu.innerHTML =
+          '<div class="db-section">Available databases</div>' +
+          items +
+          '<div class="db-section">Create new</div>' +
+          '<div class="db-create">' +
+            '<input id="db-create-name" type="text" placeholder="e.g. scratch, demo-2" maxlength="48" />' +
+            '<button class="btn primary" id="db-create-btn" style="width:100%;">Create blank database</button>' +
+          '</div>';
+        menu.querySelectorAll('button.db-item').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var path = b.getAttribute('data-path');
+            if (path === data.current.path) { menu.hidden = true; return; }
+            fetchJson('/api/databases/switch', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ path: path }),
+            }).then(function () {
+              menu.hidden = true;
+              return reloadEverything();
+            }).catch(function (err) { alert('Switch failed: ' + err.message); });
+          });
+        });
+        document.getElementById('db-create-btn').addEventListener('click', function () {
+          var nameInput = document.getElementById('db-create-name');
+          var name = nameInput.value.trim();
+          if (!name) { nameInput.focus(); return; }
+          fetchJson('/api/databases/create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: name }),
+          }).then(function () {
+            menu.hidden = true;
+            return reloadEverything();
+          }).catch(function (err) { alert('Create failed: ' + err.message); });
+        });
+      }
+
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        if (menu.hidden) buildMenu();
+        menu.hidden = !menu.hidden;
+      };
+      document.addEventListener('click', function (e) {
+        if (menu.hidden) return;
+        if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+          menu.hidden = true;
+        }
       });
     }
 

@@ -375,6 +375,101 @@ describe('GUI server', () => {
     expect(ctx.files).toEqual([]);
   });
 
+  it('soft-deletes rows when the table has a deleted_at column', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // The agents table has no `deleted_at` column → hard delete fallback.
+    // Add a soft-deletable table inline by inserting into one that has the
+    // column. The writeFixture schema doesn't include deleted_at on any
+    // table, so this test verifies the fallback path.
+    const { id } = (await (
+      await fetch(`${server.url}/api/tables/agents/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'soft-del', name: 'Soft Del' }),
+      })
+    ).json()) as { id: string };
+
+    const del = await fetch(`${server.url}/api/tables/agents/rows/${id}`, { method: 'DELETE' });
+    expect(del.status).toBe(200);
+
+    // Without deleted_at, the row is hard-deleted and gone.
+    const after = await fetch(`${server.url}/api/tables/agents/rows/${id}`);
+    expect(after.status).toBe(404);
+  });
+
+  it('lists, switches, and creates databases via /api/databases', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const list = (await fetch(`${server.url}/api/databases`).then((r) => r.json())) as {
+      current: { path: string };
+      configs: { path: string; name: string; active: boolean }[];
+    };
+    expect(list.current.path).toBe(configPath);
+    expect(list.configs.some((c) => c.path === configPath && c.active)).toBe(true);
+
+    const create = await fetch(`${server.url}/api/databases/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'scratch' }),
+    });
+    expect(create.status).toBe(200);
+    const created = (await create.json()) as { path: string };
+    expect(created.path).toMatch(/scratch\.config\.yml$/);
+
+    // The new DB has the default `items` schema, not `agents` — verify.
+    const ents = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string }[];
+    };
+    expect(ents.tables.some((t) => t.name === 'items')).toBe(true);
+    expect(ents.tables.some((t) => t.name === 'agents')).toBe(false);
+
+    // Switch back to the original config.
+    const back = await fetch(`${server.url}/api/databases/switch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: configPath }),
+    });
+    expect(back.status).toBe(200);
+
+    const ents2 = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string }[];
+    };
+    expect(ents2.tables.some((t) => t.name === 'agents')).toBe(true);
+  });
+
+  it('persists per-entity icon overrides via /api/gui-meta', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const empty = (await fetch(`${server.url}/api/gui-meta`).then((r) => r.json())) as Record<
+      string,
+      { icon: string }
+    >;
+    expect(empty).toEqual({});
+
+    const put = await fetch(`${server.url}/api/gui-meta/agents`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ icon: '🦄' }),
+    });
+    expect(put.status).toBe(200);
+
+    const after = (await fetch(`${server.url}/api/gui-meta`).then((r) => r.json())) as Record<
+      string,
+      { icon: string }
+    >;
+    expect(after.agents?.icon).toBe('🦄');
+  });
+
   it('rejects unknown tables and non-junctions for link/unlink', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
