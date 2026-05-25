@@ -21,8 +21,9 @@ import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
+import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { registerNativeEntities } from '../framework/native-entities.js';
-import { getOrCreateMasterKey } from '../framework/user-config.js';
+import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -362,6 +363,21 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     render: () => '',
     outputFile: '.lattice-gui/column-meta.md',
   });
+  // Machine-local user identity, mirrored into the active Lattice from
+  // ~/.lattice/identity.json on every open. Single-row (`id='singleton'`).
+  // Lets queries inside the active DB reference "who is sitting here"
+  // without reaching across into ~/.lattice/.
+  db.define('__lattice_user_identity', {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      display_name: 'TEXT NOT NULL DEFAULT ""',
+      email: 'TEXT NOT NULL DEFAULT ""',
+      updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+    },
+    primaryKey: 'id',
+    render: () => '',
+    outputFile: '.lattice-native/user-identity.md',
+  });
   // Linear audit log of all mutations the GUI performs. Powers undo/redo
   // and the version-history page. Per-DB (each lattice config has its own).
   db.define('_lattice_gui_audit', {
@@ -379,6 +395,11 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     outputFile: '.lattice-gui/audit.md',
   });
   await db.init();
+
+  // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
+  // active Lattice has a current view of who the operator is. Idempotent:
+  // every open just upserts the single 'singleton' row.
+  await syncUserIdentityRow(db);
 
   const validTables = new Set(parsed.tables.map((t) => t.name));
   const junctionTables = new Set(
@@ -490,6 +511,34 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
 async function registerTeamCloudTables(db: Lattice): Promise<void> {
   for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
     await db.defineLate(name, def);
+  }
+}
+
+/**
+ * Upsert the single `__lattice_user_identity` row from
+ * `~/.lattice/identity.json`. Called from `openConfig` after `init()` —
+ * idempotent (always rewrites the same row). When identity.json is
+ * empty, the row still gets written with empty strings; consumers
+ * (Project Config "Team status" panel) treat empty email as "not set."
+ */
+async function syncUserIdentityRow(db: Lattice): Promise<void> {
+  const identity = readIdentity();
+  const existing = (await db.get('__lattice_user_identity', 'singleton')) as
+    | { id: string; display_name: string; email: string }
+    | null;
+  if (existing) {
+    await db.update('__lattice_user_identity', 'singleton', {
+      display_name: identity.display_name,
+      email: identity.email,
+      updated_at: new Date().toISOString(),
+    });
+  } else {
+    await db.insert('__lattice_user_identity', {
+      id: 'singleton',
+      display_name: identity.display_name,
+      email: identity.email,
+      updated_at: new Date().toISOString(),
+    });
   }
 }
 
@@ -1141,6 +1190,20 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             pathname,
             method,
             validTables: active.validTables,
+          });
+          if (handled) return;
+        }
+
+        // ── User Config routes ───────────────────────────────────────────
+        // Reads + writes machine-local user identity and the saved
+        // cloud-DB credential catalog. Same auth model as the other
+        // GUI dev-tool routes — localhost trust, team-cloud disables.
+        if (!teamCloud && pathname.startsWith('/api/userconfig/')) {
+          const handled = await dispatchUserConfigRoute(req, res, {
+            db: active.db,
+            configPath: active.configPath,
+            pathname,
+            method,
           });
           if (handled) return;
         }
