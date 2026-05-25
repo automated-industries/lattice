@@ -10,6 +10,8 @@ export interface GuiTableSummary {
   columns: string[];
   outputFile: string;
   relations: Record<string, Relation>;
+  /** Populated by the server when serving /api/entities; absent on direct data.ts use. */
+  rowCount?: number;
 }
 
 export interface GuiFileSummary {

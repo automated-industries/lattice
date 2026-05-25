@@ -229,6 +229,7 @@ describe('GUI server', () => {
       tableCount: number;
     };
     const entities = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string; rowCount: number }[];
       entities: unknown[];
     };
     const graph = (await fetch(`${server.url}/api/graph`).then((r) => r.json())) as {
@@ -237,11 +238,118 @@ describe('GUI server', () => {
     };
 
     expect(project.tableCount).toBeGreaterThan(0);
-    expect(entities.entities.length).toBeGreaterThan(0);
+    expect(entities.tables.every((t) => typeof t.rowCount === 'number')).toBe(true);
     expect(graph.nodes.length).toBeGreaterThan(0);
     expect(graph.edges.length).toBeGreaterThan(0);
   });
 
+  it('round-trips row CRUD via /api/tables/:table/rows', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const post = await fetch(`${server.url}/api/tables/teams/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'New Team' }),
+    });
+    expect(post.status).toBe(201);
+    const { id } = (await post.json()) as { id: string };
+    expect(typeof id).toBe('string');
+
+    const got = (await fetch(`${server.url}/api/tables/teams/rows/${id}`).then((r) =>
+      r.json(),
+    )) as { id: string; name: string };
+    expect(got.name).toBe('New Team');
+
+    const list = (await fetch(`${server.url}/api/tables/teams/rows`).then((r) => r.json())) as {
+      rows: { id: string }[];
+    };
+    expect(list.rows.some((r) => r.id === id)).toBe(true);
+
+    const patch = await fetch(`${server.url}/api/tables/teams/rows/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+    expect(patch.status).toBe(200);
+
+    const reread = (await fetch(`${server.url}/api/tables/teams/rows/${id}`).then((r) =>
+      r.json(),
+    )) as { name: string };
+    expect(reread.name).toBe('Renamed');
+
+    const del = await fetch(`${server.url}/api/tables/teams/rows/${id}`, { method: 'DELETE' });
+    expect(del.status).toBe(200);
+
+    const after = await fetch(`${server.url}/api/tables/teams/rows/${id}`);
+    expect(after.status).toBe(404);
+  });
+
+  it('link / unlink junction rows via /api/tables/:table/(link|unlink)', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // Seed a row on each side via the CRUD route.
+    const { id: agentId } = (await (
+      await fetch(`${server.url}/api/tables/agents/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'gamma', name: 'Gamma' }),
+      })
+    ).json()) as { id: string };
+    const { id: skillId } = (await (
+      await fetch(`${server.url}/api/tables/skills/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'TypeScript' }),
+      })
+    ).json()) as { id: string };
+
+    const link = await fetch(`${server.url}/api/tables/agent_skills/link`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentId, skill_id: skillId }),
+    });
+    expect(link.status).toBe(200);
+
+    const linked = (await fetch(`${server.url}/api/tables/agent_skills/rows`).then((r) =>
+      r.json(),
+    )) as { rows: { agent_id: string; skill_id: string }[] };
+    expect(linked.rows.some((r) => r.agent_id === agentId && r.skill_id === skillId)).toBe(true);
+
+    const unlink = await fetch(`${server.url}/api/tables/agent_skills/unlink`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentId, skill_id: skillId }),
+    });
+    expect(unlink.status).toBe(200);
+
+    const afterUnlink = (await fetch(`${server.url}/api/tables/agent_skills/rows`).then((r) =>
+      r.json(),
+    )) as { rows: { agent_id: string; skill_id: string }[] };
+    expect(afterUnlink.rows.some((r) => r.agent_id === agentId && r.skill_id === skillId)).toBe(
+      false,
+    );
+  });
+
+  it('rejects unknown tables and non-junctions for link/unlink', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const unknown = await fetch(`${server.url}/api/tables/nope/rows`);
+    expect(unknown.status).toBe(400);
+
+    // agents is a first-class table, not a junction.
+    const wrongLink = await fetch(`${server.url}/api/tables/agents/link`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(wrongLink.status).toBe(400);
+  });
 });
 
 describe('isJunctionTable', () => {
