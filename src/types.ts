@@ -402,6 +402,23 @@ export interface TableDefinition {
    * @default false
    */
   changelog?: boolean;
+  /**
+   * Encrypt named columns at rest via AES-256-GCM. Same shape as the
+   * `encrypted` option on EntityContextDefinition — `true` to encrypt all
+   * non-structural TEXT columns, or `{ columns: [...] }` to encrypt only
+   * the named ones. Requires `encryptionKey` in Lattice options; init()
+   * throws otherwise.
+   *
+   * Encrypted values are stored as `enc:<base64(iv+tag+ciphertext)>` and
+   * transparently decrypted on read. Plaintext values pass through
+   * unchanged (migration-safe).
+   *
+   * Lets framework-shipped tables (e.g. native `secrets`) encrypt
+   * sensitive columns without going through `defineEntityContext()`.
+   *
+   * @default false
+   */
+  encrypted?: boolean | { columns: string[] };
 }
 
 export interface MultiTableDefinition {

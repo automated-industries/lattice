@@ -249,10 +249,18 @@ export class Lattice {
     if (this._schema.getTables().has(table)) {
       return this;
     }
+    if (def.encrypted && !this._encryptionKeyRaw) {
+      throw new Error(
+        `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
+      );
+    }
     this._registerTable(table, def);
     await this._schema.applySchemaForAsync(this._adapter, table);
     const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
     this._columnCache.set(table, new Set(cols));
+    if (def.encrypted) {
+      await this._registerEncryptedColumns(table, def.encrypted);
+    }
     return this;
   }
 
@@ -512,6 +520,14 @@ export class Lattice {
         );
       }
     }
+    for (const [table, def] of this._schema.getTables()) {
+      if (!def.encrypted) continue;
+      if (!this._encryptionKeyRaw) {
+        throw new Error(
+          `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
+        );
+      }
+    }
   }
 
   /**
@@ -523,11 +539,38 @@ export class Lattice {
     for (const [table, def] of this._schema.getEntityContexts()) {
       if (!def.encrypted) continue;
       if (!this._encryptionKeyRaw) continue; // already validated above
-      this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
-      const allCols = await introspectColumnsAsyncOrSync(this._adapter, table);
-      const encCols = resolveEncryptedColumns(def.encrypted, allCols);
-      this._encryptedTableColumns.set(table, encCols);
+      await this._registerEncryptedColumns(table, def.encrypted);
     }
+    for (const [table, def] of this._schema.getTables()) {
+      if (!def.encrypted) continue;
+      if (!this._encryptionKeyRaw) continue;
+      // Entity-context encryption for this table (if any) was already
+      // resolved in the first loop — skip to avoid clobbering with a
+      // narrower table-level spec.
+      if (this._encryptedTableColumns.has(table)) continue;
+      await this._registerEncryptedColumns(table, def.encrypted);
+    }
+  }
+
+  /**
+   * Shared helper: derive the encryption key on first use, introspect the
+   * table's current columns, resolve which to encrypt, and record the set
+   * in `_encryptedTableColumns`. Called from both `_finalizeEncryptionSetup`
+   * (boot path) and `defineLate` (post-init table registration).
+   */
+  private async _registerEncryptedColumns(
+    table: string,
+    encrypted: true | { columns: string[] },
+  ): Promise<void> {
+    if (!this._encryptionKeyRaw) {
+      throw new Error(
+        `Cannot register encrypted columns for "${table}": no encryptionKey was provided`,
+      );
+    }
+    this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
+    const allCols = await introspectColumnsAsyncOrSync(this._adapter, table);
+    const encCols = resolveEncryptedColumns(encrypted, allCols);
+    this._encryptedTableColumns.set(table, encCols);
   }
 
   /** Encrypt applicable columns in a row before writing. Returns a new row. */

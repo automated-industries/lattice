@@ -21,6 +21,8 @@ import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
+import { registerNativeEntities } from '../framework/native-entities.js';
+import { getOrCreateMasterKey } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -326,7 +328,14 @@ interface ActiveDb {
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   mkdirSync(dirname(parsed.dbPath), { recursive: true });
-  const db = new Lattice({ config: configPath });
+  // Native entities (`secrets`, `files`) include encrypted columns —
+  // every GUI-opened Lattice must have an encryption key. Resolve once
+  // here (env var or auto-generated `~/.lattice/master.key`) and feed
+  // into the Lattice options so `_validateEncryptionConfig` is happy
+  // at init() time.
+  const encryptionKey = getOrCreateMasterKey();
+  const db = new Lattice({ config: configPath }, { encryptionKey });
+  registerNativeEntities(db);
   // GUI-only meta table: per-entity icon overrides edited from the browser.
   // Defined dynamically (not in the user's YAML) so it never appears in
   // /api/entities or any user-facing list.
