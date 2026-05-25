@@ -281,10 +281,7 @@ export class ReverseSeedEngine {
       // Skip tables that have entity contexts — those are handled above per-entity
       if (entityContextTables.has(name)) continue;
 
-      const countRow = await getAsyncOrSync(
-        this._adapter,
-        `SELECT COUNT(*) AS n FROM "${name}"`,
-      );
+      const countRow = await getAsyncOrSync(this._adapter, `SELECT COUNT(*) AS n FROM "${name}"`);
       const count = Number(countRow?.n ?? 0);
       if (count > 0) continue;
 
@@ -331,10 +328,7 @@ export class ReverseSeedEngine {
       if (def.reverseSeed === false) continue;
 
       // Check if table is empty
-      const countRow = await getAsyncOrSync(
-        this._adapter,
-        `SELECT COUNT(*) AS n FROM "${name}"`,
-      );
+      const countRow = await getAsyncOrSync(this._adapter, `SELECT COUNT(*) AS n FROM "${name}"`);
       const count = Number(countRow?.n ?? 0);
       if (count > 0) continue;
 
@@ -580,10 +574,7 @@ export class ReverseSeedEngine {
     const before = await tx.get(`SELECT COUNT(*) AS n FROM "${table}"`);
     const countBefore = Number(before?.n ?? 0);
 
-    await tx.run(
-      `INSERT OR IGNORE INTO "${table}" (${cols}) VALUES (${placeholders})`,
-      values,
-    );
+    await tx.run(`INSERT OR IGNORE INTO "${table}" (${cols}) VALUES (${placeholders})`, values);
 
     const after = await tx.get(`SELECT COUNT(*) AS n FROM "${table}"`);
     const countAfter = Number(after?.n ?? 0);

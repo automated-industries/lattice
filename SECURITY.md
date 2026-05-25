@@ -4,14 +4,14 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 0.4.x   | ✓         |
-| < 0.4   | ✗         |
+| 1.11.x  | ✓         |
+| < 1.11  | ✗         |
 
 ## Reporting a Vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-To report a vulnerability, email **security@my-company.ai** with:
+To report a vulnerability, email **contact@automatedindustries.ai** with:
 
 - A description of the vulnerability and its potential impact
 - Steps to reproduce or proof-of-concept code
@@ -21,10 +21,11 @@ You should receive an acknowledgment within 48 hours. We will work with you to u
 
 ## Scope
 
-`latticesql` is a local-only SQLite library. It makes no network requests and handles no authentication. The primary security surface is:
+`latticesql` is a local-first library that runs against SQLite or Postgres and includes an optional local-only browser GUI. It makes no outbound network requests of its own. The primary security surface is:
 
 - **SQL injection** via crafted row object keys or values — mitigated by parameterized queries and schema-column validation
 - **Path traversal** via YAML config file paths — applicable only when the developer controls config files
 - **Sanitization bypass** — the `sanitize.ts` module is on by default; disabling it (`sanitize: false`) removes input filtering
+- **`lattice gui` HTTP surface** — the GUI server binds only to `127.0.0.1` and has no authentication. It is intended for local development against a config you trust. Do not expose it on a non-loopback interface or proxy it to a public host.
 
-Out of scope: vulnerabilities in `better-sqlite3`, `uuid`, or `yaml` dependencies should be reported to those projects directly.
+Out of scope: vulnerabilities in `better-sqlite3`, `pg`, `uuid`, or `yaml` dependencies should be reported to those projects directly.
