@@ -235,9 +235,10 @@ lattice watch --config ./lattice.config.yml --output ./context --interval 3000 -
 
 ### `lattice gui`
 
-Starts a local-only browser GUI for exploring a rendered Lattice context tree.
-The GUI is read-only: it visualizes config, rendered entity context files, and
-relationships without mutating the database or deleting files.
+Starts a local-only browser GUI for exploring _and editing_ the data in a
+Lattice database. The server opens the DB referenced by `db:` in the config
+and exposes a small HTTP surface that delegates straight to Lattice's CRUD
+methods — no separate state, no schema duplication.
 
 ```sh
 lattice gui [options]
@@ -248,14 +249,14 @@ lattice gui [options]
 | Option            | Short | Default                | Description                                           |
 | ----------------- | ----- | ---------------------- | ----------------------------------------------------- |
 | `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                          |
-| `--output <dir>`  | –     | `./context`            | Output directory containing rendered context files    |
+| `--output <dir>`  | –     | `./context`            | Output directory (used by the relationship graph)     |
 | `--port <number>` | –     | `4317`                 | Localhost port; auto-increments when the port is busy |
 | `--no-open`       | –     | off                    | Print the URL without opening a browser               |
 
 **Example:**
 
 ```sh
-lattice gui --config ./lattice.config.yml --output ./context
+lattice gui --config ./lattice.config.yml
 ```
 
 ```
@@ -263,9 +264,38 @@ Lattice GUI listening at http://127.0.0.1:4317
 Press Ctrl+C to stop.
 ```
 
-The GUI includes an object explorer, relationship graph, inspector tabs for
-overview/files/connections/raw data, and a drag-and-drop preview area for config,
-database, manifest, and context files.
+**Views:**
+
+- **Dashboard** (`#/`) — one card per first-class entity with live row counts.
+- **Table view** (`#/objects/<entity>`) — a SQL-like table with intrinsic
+  columns, belongsTo chips, and a column per junction this entity participates
+  in. `+ New` opens a modal; each row has a delete control and a click-through
+  to its detail page.
+- **Detail view** (`#/objects/<entity>/<id>`) — read mode by default;
+  `Edit` flips intrinsic + belongsTo cells into inputs (`Save` PATCHes, `Cancel`
+  reverts). `Delete` confirms and removes the row.
+- **Data Model** (`#/settings/data-model`) — an entity-level graph plus a
+  side panel for adding / removing junction-table links between rows.
+
+**HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
+
+| Route                                | Method  | Lattice call                  |
+| ------------------------------------ | ------- | ----------------------------- |
+| `/project`                           | GET     | (config + manifest summary)   |
+| `/entities`                          | GET     | tables + `db.count` per table |
+| `/graph`                             | GET     | (schema graph for Data Model) |
+| `/tables/:table/rows`                | GET     | `db.query(table, …)`          |
+| `/tables/:table/rows`                | POST    | `db.insert(table, body)`      |
+| `/tables/:table/rows/:id`            | GET     | `db.get(table, id)`           |
+| `/tables/:table/rows/:id`            | PATCH   | `db.update(table, id, body)`  |
+| `/tables/:table/rows/:id`            | DELETE  | `db.delete(table, id)`        |
+| `/tables/:junction/link`             | POST    | `db.link(junction, body)`     |
+| `/tables/:junction/unlink`           | POST    | `db.unlink(junction, body)`   |
+
+Junction tables (any table with exactly two `belongsTo` relations) are hidden
+from the Objects sidebar and the dashboard; link/unlink lives on the Data Model
+page. The server only binds to `127.0.0.1` and does not implement auth — it's
+intended for local development against a config you trust.
 
 ---
 
