@@ -8,6 +8,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — Lattice Teams (Phase 5: GUI integration)
+
+Fifth and final slice of **Lattice Teams**: the user-facing dev GUI (`lattice gui`) now drives the full Lattice Teams lifecycle. No new top-level sidebar — everything plugs into PR #10's existing **Project Config** and **User Config** settings views, which were placeholder "Coming soon" screens before this PR.
+
+**`/api/teams-gui/*` endpoints (`src/gui/teams-routes.ts`).** A thin, unauthenticated dev-tool API that wraps the user's local `TeamsClient`. Available only in local GUI mode (`teamCloud=false`) — team-cloud mode disables this dispatcher, matching the existing database-switcher gating.
+
+| Method | Route                                            | Wraps                                                                 |
+| ------ | ------------------------------------------------ | --------------------------------------------------------------------- |
+| GET    | `/api/teams-gui/connections`                     | `TeamsClient.listConnections()`                                       |
+| POST   | `/api/teams-gui/connections/register-and-create` | bootstrap-register + createTeam + saveConnection                      |
+| POST   | `/api/teams-gui/connections/join`                | `redeemInvite()` + `saveConnection()`                                 |
+| DELETE | `/api/teams-gui/connections/:teamId`             | self-kick + `deleteConnection()` (creator → 400)                      |
+| POST   | `/api/teams-gui/teams/:id/sync`                  | `pullChanges()` + `drainOutbox()` + refreshes the GUI's `validTables` |
+| GET    | `/api/teams-gui/teams/:id/status`                | `TeamsClient.getStatus()`                                             |
+| GET    | `/api/teams-gui/teams/:id/members`               | `listMembers()`                                                       |
+| POST   | `/api/teams-gui/teams/:id/invitations`           | `invite()`                                                            |
+| DELETE | `/api/teams-gui/teams/:id/members/:userId`       | `kickMember()`                                                        |
+| DELETE | `/api/teams-gui/teams/:id`                       | `deleteTeam()` + `deleteConnection()`                                 |
+| GET    | `/api/teams-gui/teams/:id/shared`                | `listSharedObjects()`                                                 |
+| POST   | `/api/teams-gui/teams/:id/shared`                | serialises local schema + `shareObject()`                             |
+| DELETE | `/api/teams-gui/teams/:id/shared/:table`         | `unshareObject()`                                                     |
+| POST   | `/api/teams-gui/teams/:id/links`                 | `linkRow()`                                                           |
+| DELETE | `/api/teams-gui/teams/:id/links/:table/:pk`      | `unlinkRow()`                                                         |
+| GET    | `/api/teams-gui/links`                           | raw `__lattice_local_links` query                                     |
+
+Upstream `TeamsHttpError`s surface as JSON with their original status code so the SPA can branch on auth/permission failures.
+
+**Cached `TeamsClient` per active DB.** The GUI's `ActiveDb` now holds a `TeamsClient` instance, with `attachWriteHooks()` called on every `openConfig()` so any pre-existing local links resume tracking writes. The cached client is what the SPA's CRUD endpoints write through — a row update via the GUI dashboard fires the same outbox-capture hook as a CLI write.
+
+**`validTables` refresh after sync.** Tables registered at runtime via `defineLate` (from a schema envelope) didn't make it into the GUI's `validTables` set, so the SPA's table viewer 400'd on freshly-synced shared tables. The sync handler now refreshes `validTables` from `lattice.getRegisteredTableNames()` after every pull.
+
+**SPA — Project Config view.** Lists every joined team as a card with role pill, four-stat status grid (last_change_seq, outbox depth, DLQ depth, local links), and inline actions:
+
+- **Sync now** — runs `/teams-gui/teams/:id/sync`, re-renders the card with fresh stats.
+- **Generate invite token** (creator only) — opens a modal with the `latinv_`-prefixed token, click-to-copy.
+- **Leave / Destroy team** — destroys for creators, leaves for members; both clean up the local connection row.
+- **Shared tables** sub-section — list with per-row Unshare button; "Share another table" modal lets the user pick from currently-registered local tables.
+- **Members** sub-section (creator-only) — per-member Kick button.
+- **Create team** — register-and-create flow on a fresh cloud in one modal.
+- **Join via invite** — paste cloud URL + invite token + email + name; redeem + save in one call.
+
+**SPA — User Config view.** Cloud-account list (cloud URL + my user_id + joined_at) with per-cloud Sign out. Same "Add cloud" flow as Project Config's Join. Documents the v1 limitation that each team membership keeps its own bearer token.
+
+**Per-row Link affordance (DEFERRED).** The `POST /api/teams-gui/teams/:id/links` + `DELETE /api/teams-gui/teams/:id/links/:table/:pk` endpoints ship in this PR, and the integration test exercises them end-to-end. The SPA button on the existing table-view row menu is a follow-up — adding it requires fetching link state on every row render, which interacts with the GUI agent's parallel work on the table view. The functionality is fully available via the CLI (`lattice teams link/unlink`) in the meantime.
+
+**New `Lattice.getRegisteredTableNames()`.** Returns the SchemaManager's currently-registered table list. Used by the sync handler to refresh `validTables` and is broadly useful for any consumer that wants to discover runtime-added tables.
+
+### Added — Tests
+
+- `tests/integration/teams-gui.test.ts` — 5 cases covering the full GUI-driven round-trip: register-and-create, share + invite + join + sync (schema propagates to receiver, row updates flow through outbox to receiver), shared-list + members-list + invite generation, leave-as-creator returns 400, team-cloud mode rejects `/api/teams-gui/*` (auth gate fires first).
+
 ### Added — Lattice Teams (Phase 4: row link/unlink + sync engine)
 
 Fourth slice of **Lattice Teams**: row-level link/unlink, write-hook capture into a local outbox, polling pull with a replay guard, and auto-unlink on member kick. End-to-end propagation of row updates between two locals now runs through one cloud.
