@@ -96,22 +96,27 @@ export class SQLiteAdapter implements StorageAdapter {
   // exist so callers can write a single async-preferring code path that
   // works against both backends without branching on dialect.
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- SQLite is sync; async surface kept for Postgres parity (see block comment above)
   async runAsync(sql: string, params?: unknown[]): Promise<void> {
     this.run(sql, params);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- SQLite is sync; async surface kept for Postgres parity (see block comment above)
   async getAsync(sql: string, params?: unknown[]): Promise<Row | undefined> {
     return this.get(sql, params);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- SQLite is sync; async surface kept for Postgres parity (see block comment above)
   async allAsync(sql: string, params?: unknown[]): Promise<Row[]> {
     return this.all(sql, params);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- SQLite is sync; async surface kept for Postgres parity (see block comment above)
   async introspectColumnsAsync(table: string): Promise<string[]> {
     return this.introspectColumns(table);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- SQLite is sync; async surface kept for Postgres parity (see block comment above)
   async addColumnAsync(table: string, column: string, typeSpec: string): Promise<void> {
     this.addColumn(table, column, typeSpec);
   }

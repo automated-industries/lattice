@@ -224,13 +224,7 @@ describe('protected entity contexts', () => {
       const adapter = makeAdapter();
       const protection: ProtectionContext = { protectedTables, currentTable: 'agents' };
 
-      const rows = await resolveEntitySource(
-        { type: 'self' },
-        agentRow,
-        'id',
-        adapter,
-        protection,
-      );
+      const rows = await resolveEntitySource({ type: 'self' }, agentRow, 'id', adapter, protection);
       expect(rows).toEqual([agentRow]);
     });
   });

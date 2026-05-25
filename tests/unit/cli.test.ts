@@ -39,6 +39,8 @@ function parseArgs(argv: string[]): {
   noOrphanDirs: boolean;
   noOrphanFiles: boolean;
   protected: string[];
+  port: number;
+  noOpen: boolean;
 } {
   let command: string | undefined;
   let config = './lattice.config.yml';
@@ -51,6 +53,8 @@ function parseArgs(argv: string[]): {
   let noOrphanDirs = false;
   let noOrphanFiles = false;
   const protectedFiles: string[] = [];
+  let port = 4317;
+  let noOpen = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -85,6 +89,12 @@ function parseArgs(argv: string[]): {
       i++;
       const csv = argv[i] ?? '';
       protectedFiles.push(...csv.split(',').filter(Boolean));
+    } else if (arg === '--port' && i + 1 < argv.length) {
+      i++;
+      const parsed = parseInt(argv[i] ?? '4317', 10);
+      if (!isNaN(parsed)) port = parsed;
+    } else if (arg === '--no-open') {
+      noOpen = true;
     }
     i++;
   }
@@ -101,6 +111,8 @@ function parseArgs(argv: string[]): {
     noOrphanDirs,
     noOrphanFiles,
     protected: protectedFiles,
+    port,
+    noOpen,
   };
 }
 
@@ -129,10 +141,42 @@ describe('parseArgs() — command detection', () => {
     expect(args.command).toBe('status');
   });
 
+  it('detects gui command', () => {
+    const args = parseArgs(['gui']);
+    expect(args.command).toBe('gui');
+  });
+
   it('sets command to undefined when only flags are given', () => {
     const args = parseArgs(['--help']);
     expect(args.command).toBeUndefined();
     expect(args.help).toBe(true);
+  });
+});
+
+describe('parseArgs() — gui command', () => {
+  it('uses gui defaults', () => {
+    const args = parseArgs(['gui']);
+    expect(args.config).toBe('./lattice.config.yml');
+    expect(args.output).toBe('./context');
+    expect(args.port).toBe(4317);
+    expect(args.noOpen).toBe(false);
+  });
+
+  it('parses gui options', () => {
+    const args = parseArgs([
+      'gui',
+      '--config',
+      './custom.yml',
+      '--output',
+      './ctx',
+      '--port',
+      '4321',
+      '--no-open',
+    ]);
+    expect(args.config).toBe('./custom.yml');
+    expect(args.output).toBe('./ctx');
+    expect(args.port).toBe(4321);
+    expect(args.noOpen).toBe(true);
   });
 });
 
@@ -292,6 +336,12 @@ describe('help text', () => {
     const cliPath = resolve(import.meta.dirname, '../../src/cli.ts');
     const src = readFileSync(cliPath, 'utf-8');
     expect(src).toContain('generate');
+  });
+
+  it('includes gui command', () => {
+    const cliPath = resolve(import.meta.dirname, '../../src/cli.ts');
+    const src = readFileSync(cliPath, 'utf-8');
+    expect(src).toContain('gui');
   });
 
   it('includes --output flag documentation', () => {
