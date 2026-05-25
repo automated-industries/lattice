@@ -122,7 +122,7 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
     expect(recorded!.version).toBe(versionId);
 
     // Table actually created.
-    const cols = adapter.introspectColumns(tableName);
+    const cols = await adapter.introspectColumnsAsync(tableName);
     expect(cols.sort()).toEqual(['id', 'val']);
   });
 
@@ -233,8 +233,8 @@ describe.skipIf(!PG_URL)('SchemaManager.applyMigrationsAsync (Postgres integrati
       expect(slower).toBeGreaterThanOrEqual(migrationDelayMs);
 
       // Both tables should exist.
-      expect(adapter.introspectColumns(tableA)).toContain('id');
-      expect(adapterB.introspectColumns(tableB)).toContain('id');
+      expect(await adapter.introspectColumnsAsync(tableA)).toContain('id');
+      expect(await adapterB.introspectColumnsAsync(tableB)).toContain('id');
     } finally {
       adapterB.close();
     }
