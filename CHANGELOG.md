@@ -8,6 +8,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — Lattice Teams (Phase 3: object sharing + schema propagation)
+
+Third slice of **Lattice Teams**: any member can share a table with the team, and other members' locals auto-register the schema on demand.
+
+**Schema spec format (`src/teams/schema-spec.ts`).** Dialect-neutral structured representation of a TableDefinition: each column carries a normalised `type` (TEXT/INTEGER/REAL/BLOB/JSONB) plus `notNull` / `pk` / `default` flags. The serializer parses Lattice's raw SQL type strings into this shape (VARCHAR→TEXT, BIGINT→INTEGER, BYTEA→BLOB, JSON→JSONB, etc.); the deserializer renders dialect-appropriate DDL on the receiver (JSONB collapses to TEXT on SQLite; BLOB renders as BYTEA on Postgres). Relations: `belongsTo` propagates as descriptive metadata, `hasMany` is stripped.
+
+**Cloud endpoints.**
+
+- `POST /api/teams/:id/objects` — share or re-share a table. Re-sharing the same `table_name` bumps `schema_version` and replaces the stored spec.
+- `GET /api/teams/:id/objects` — list shared objects (member-only).
+- `DELETE /api/teams/:id/objects/:table` — soft-delete the share. Only the original sharer or the team creator may unshare.
+- `GET /api/teams/:id/changes?since=<seq>&limit=<n>` — monotonic change-log feed. Phase 3 emits `schema` and `unshare` envelopes; Phase 4 adds row-level ops on the same stream.
+
+**New cloud tables.** `__lattice_shared_objects` (composite PK `(team_id, table_name)`, holds the JSON-serialised spec + schema_version + soft-delete) and `__lattice_change_log` (monotonic `seq` per cloud, `(team_id, table_name, op, payload_json, created_at)`).
+
+**TeamsClient additions.** `shareObject`, `unshareObject`, `listSharedObjects`, `pullChanges`, plus the orchestrator `syncSharedSchemas(connection)` which fetches the team's shared objects + applies each via `applyCloudSchemaLocally`. The applier handles three states:
+
+1. **Table doesn't exist locally** → `defineLate` with the deserialised TableDefinition.
+2. **Table exists, additive change** → `addColumn` for every cloud-only column (no-op when local already matches).
+3. **PK mismatch** (different column name, different count) → `TeamsSchemaConflictError`. `syncSharedSchemas` catches per-table and surfaces conflicts in its return value; `applyCloudSchemaLocally` throws directly so callers can react.
+
+Local extras (columns present on the receiver but absent from the cloud's spec) are preserved silently — when Phase 4 pushes a row, the payload will be filtered to the cloud's columns.
+
+**Cursor semantics.** Phase 3 cloud is single-writer per process, so `nextChangeSeq = MAX(seq) + 1` over `__lattice_change_log` is safe inside the Node event loop. Phase 4's outbox-pushing concurrency will need a transaction-scoped advisory lock around the seq read+insert; documented in routes.ts.
+
+**Lattice public additions.**
+
+- `lattice.introspectColumns(table)` — thin wrapper around the adapter's introspect, used by the schema applier to read the current on-disk columns.
+- `lattice.getDialect()` — returns `'sqlite' | 'postgres'` for dialect-aware DDL rendering.
+- `lattice.getPrimaryKey(table)` — exposes the SchemaManager's PK lookup so the applier can verify compatibility before ALTER.
+- `lattice.addColumn(table, column, typeSpec)` — runtime additive DDL with column-cache refresh; idempotent for already-present columns.
+- `lattice.getRegisteredColumns(table)` — returns the raw column-DDL map for a registered table; used by `lattice teams share` to serialise the local def.
+
+**CLI additions.** `lattice teams share <table> --team <name>` serialises the local TableDefinition and posts to the cloud; `lattice teams unshare`, `lattice teams shared`, `lattice teams sync` follow the same pattern. `sync` runs `syncSharedSchemas` and prints applied + conflict tables; non-zero exit on conflicts.
+
+### Added — Tests
+
+- `tests/integration/teams-sharing.test.ts` — 9 cases: schema-spec helpers (parse/render/serialize/diff), share + auto-register on a receiver, additive ALTER on schema-version bump, PK conflict reported by syncSharedSchemas, schema + unshare envelopes streamed via `/changes`, and unauth'd access blocked by 401.
+
 ### Added — Lattice Teams (Phase 2: team management)
 
 Second slice of **Lattice Teams**: identity + team-management endpoints on top of Phase 1's auth scaffolding. `lattice teams <subcommand>` now drives the full create → invite → join → leave/destroy lifecycle.

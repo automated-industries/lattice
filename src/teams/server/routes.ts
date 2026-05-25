@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../../lattice.js';
 import { generateToken, generateInviteToken, hashToken, type AuthContext } from './auth.js';
+import type { SchemaSpec } from '../schema-spec.js';
 
 /**
  * Lattice Teams cloud-side route handlers.
@@ -62,6 +63,27 @@ interface ApiTokenRow {
   id: string;
   user_id: string;
   revoked_at: string | null;
+}
+
+interface SharedObjectRow {
+  team_id: string;
+  table_name: string;
+  schema_spec_json: string;
+  schema_version: number;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+interface ChangeLogRow {
+  id: string;
+  seq: number;
+  team_id: string;
+  table_name: string | null;
+  op: string;
+  payload_json: string | null;
+  created_at: string;
 }
 
 function sendJson(res: ServerResponse, body: unknown, status = 200): void {
@@ -178,6 +200,36 @@ export async function dispatchTeamRoute(
   const invitationsMatch = /^\/api\/teams\/([^/]+)\/invitations$/.exec(pathname);
   if (invitationsMatch && method === 'POST') {
     await handleCreateInvitation(req, res, ctx, invitationsMatch[1] ?? '');
+    return true;
+  }
+
+  const objectsListMatch = /^\/api\/teams\/([^/]+)\/objects$/.exec(pathname);
+  if (objectsListMatch) {
+    if (method === 'POST') {
+      await handleShareObject(req, res, ctx, objectsListMatch[1] ?? '');
+      return true;
+    }
+    if (method === 'GET') {
+      await handleListSharedObjects(res, ctx, objectsListMatch[1] ?? '');
+      return true;
+    }
+  }
+
+  const objectMatch = /^\/api\/teams\/([^/]+)\/objects\/([^/]+)$/.exec(pathname);
+  if (objectMatch && method === 'DELETE') {
+    await handleUnshareObject(
+      res,
+      ctx,
+      objectMatch[1] ?? '',
+      decodeURIComponent(objectMatch[2] ?? ''),
+    );
+    return true;
+  }
+
+  const changesMatch = /^\/api\/teams\/([^/]+)\/changes$/.exec(pathname);
+  if (changesMatch && method === 'GET') {
+    const url = new URL(req.url ?? '/', 'http://placeholder');
+    await handleListChanges(res, ctx, changesMatch[1] ?? '', url.searchParams);
     return true;
   }
 
@@ -580,4 +632,252 @@ async function handleCreateInvitation(
     expires_at: expiresAt,
   });
   sendJson(res, { id, raw_token: raw, expires_at: expiresAt, team_name: team.name }, 201);
+}
+
+// ── Object sharing + change feed (Phase 3) ─────────────────────────────────
+
+/**
+ * Compute the next monotonic sequence number for the change log.
+ *
+ * Phase 3 cloud is single-writer (one Lattice process per cloud), so a
+ * MAX(seq) + 1 lookup is safe under the single-event-loop-at-a-time
+ * invariant Node enforces between awaits. Phase 4 raises the concurrency
+ * floor via the local-side outbox queueing model; if that ever pushes
+ * multiple concurrent /api/... inserts on the cloud side, this helper
+ * will need a transaction-scoped advisory lock.
+ */
+async function nextChangeSeq(db: Lattice): Promise<number> {
+  const rows = (await db.query('__lattice_change_log', {
+    orderBy: 'seq',
+    orderDir: 'desc',
+    limit: 1,
+  })) as unknown as { seq: number }[];
+  return (rows[0]?.seq ?? 0) + 1;
+}
+
+async function appendChangeEnvelope(
+  db: Lattice,
+  entry: { team_id: string; table_name: string | null; op: string; payload_json: string | null },
+): Promise<number> {
+  const seq = await nextChangeSeq(db);
+  await db.insert('__lattice_change_log', {
+    seq,
+    team_id: entry.team_id,
+    table_name: entry.table_name,
+    op: entry.op,
+    payload_json: entry.payload_json,
+    created_at: new Date().toISOString(),
+  });
+  return seq;
+}
+
+async function handleShareObject(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const role = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!role) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  const body = await readJson(req);
+  const tableName = requireString(body, 'table');
+  if (!tableName) {
+    sendJson(res, { error: 'table is required' }, 400);
+    return;
+  }
+  const rawSpec = body.schema_spec;
+  if (!rawSpec || typeof rawSpec !== 'object') {
+    sendJson(res, { error: 'schema_spec must be an object' }, 400);
+    return;
+  }
+  const rawRecord = rawSpec as Record<string, unknown>;
+  if (!rawRecord.columns || typeof rawRecord.columns !== 'object') {
+    sendJson(res, { error: 'schema_spec.columns is required' }, 400);
+    return;
+  }
+  if (rawRecord.primaryKey === undefined) {
+    sendJson(res, { error: 'schema_spec.primaryKey is required' }, 400);
+    return;
+  }
+  const spec = rawSpec as SchemaSpec;
+  const now = new Date().toISOString();
+  // Upsert by composite key: re-sharing the same table bumps schema_version
+  // and updates spec_json. New entry → version 1.
+  const existing = (await ctx.db.query('__lattice_shared_objects', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: tableName },
+    ],
+    limit: 1,
+  })) as unknown as SharedObjectRow[];
+  const prior = existing[0];
+  let schemaVersion: number;
+  let outSpec: SchemaSpec;
+  if (prior && !prior.deleted_at) {
+    schemaVersion = prior.schema_version + 1;
+    outSpec = { ...spec, schemaVersion };
+    await ctx.db.upsert('__lattice_shared_objects', {
+      team_id: teamId,
+      table_name: tableName,
+      schema_spec_json: JSON.stringify(outSpec),
+      schema_version: schemaVersion,
+      created_by_user_id: prior.created_by_user_id,
+      created_at: prior.created_at,
+      updated_at: now,
+      deleted_at: null,
+    });
+  } else {
+    schemaVersion = 1;
+    outSpec = { ...spec, schemaVersion };
+    await ctx.db.upsert('__lattice_shared_objects', {
+      team_id: teamId,
+      table_name: tableName,
+      schema_spec_json: JSON.stringify(outSpec),
+      schema_version: schemaVersion,
+      created_by_user_id: ctx.authContext.user.id,
+      created_at: prior?.created_at ?? now,
+      updated_at: now,
+      deleted_at: null,
+    });
+  }
+  const seq = await appendChangeEnvelope(ctx.db, {
+    team_id: teamId,
+    table_name: tableName,
+    op: 'schema',
+    payload_json: JSON.stringify(outSpec),
+  });
+  sendJson(
+    res,
+    { table: tableName, schema_version: schemaVersion, seq, schema_spec: outSpec },
+    prior && !prior.deleted_at ? 200 : 201,
+  );
+}
+
+async function handleListSharedObjects(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const role = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!role) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  const rows = (await ctx.db.query('__lattice_shared_objects', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'deleted_at', op: 'isNull' },
+    ],
+  })) as unknown as SharedObjectRow[];
+  const objects = rows.map((r) => ({
+    table: r.table_name,
+    schema_version: r.schema_version,
+    created_by_user_id: r.created_by_user_id,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    schema_spec: JSON.parse(r.schema_spec_json) as SchemaSpec,
+  }));
+  sendJson(res, { objects });
+}
+
+async function handleUnshareObject(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+  tableName: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const role = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!role) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  const existing = (await ctx.db.query('__lattice_shared_objects', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: tableName },
+    ],
+    limit: 1,
+  })) as unknown as SharedObjectRow[];
+  const prior = existing[0];
+  if (!prior || prior.deleted_at) {
+    sendJson(res, { error: 'Object not currently shared' }, 404);
+    return;
+  }
+  // Only the original sharer or the team creator can unshare.
+  if (prior.created_by_user_id !== ctx.authContext.user.id && role !== 'creator') {
+    sendJson(
+      res,
+      { error: 'Only the original sharer or the team creator can unshare this object' },
+      403,
+    );
+    return;
+  }
+  const now = new Date().toISOString();
+  await ctx.db.update(
+    '__lattice_shared_objects',
+    { team_id: teamId, table_name: tableName },
+    { deleted_at: now, updated_at: now },
+  );
+  await appendChangeEnvelope(ctx.db, {
+    team_id: teamId,
+    table_name: tableName,
+    op: 'unshare',
+    payload_json: null,
+  });
+  sendJson(res, { ok: true });
+}
+
+async function handleListChanges(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+  params: URLSearchParams,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const role = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!role) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  const sinceRaw = params.get('since');
+  const limitRaw = params.get('limit');
+  const since = sinceRaw !== null && /^\d+$/.test(sinceRaw) ? Number(sinceRaw) : 0;
+  const limitParsed = limitRaw !== null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : 500;
+  const limit = Math.min(Math.max(limitParsed, 1), 1000);
+  const rows = (await ctx.db.query('__lattice_change_log', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'seq', op: 'gt', val: since },
+    ],
+    orderBy: 'seq',
+    orderDir: 'asc',
+    limit,
+  })) as unknown as ChangeLogRow[];
+  const envelopes = rows.map((r) => ({
+    seq: r.seq,
+    table_name: r.table_name,
+    op: r.op,
+    payload: r.payload_json ? (JSON.parse(r.payload_json) as unknown) : null,
+    created_at: r.created_at,
+  }));
+  const hasMore = envelopes.length === limit;
+  sendJson(res, { envelopes, has_more: hasMore });
 }
