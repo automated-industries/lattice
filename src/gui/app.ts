@@ -2292,49 +2292,149 @@ export const guiAppHtml = `<!doctype html>
     }
 
     function showCreateTeamModal() {
-      var bodyHtml =
-        '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
-        '<div class="field"><label>Your email</label><input name="email" /></div>' +
-        '<div class="field"><label>Your display name</label><input name="user_name" /></div>' +
-        '<div class="field"><label>Team name</label><input name="team_name" /></div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-        'This registers you on the cloud (bootstrap-only — must be a fresh cloud) and creates the team in one step.' +
-        '</p>';
-      showModal('Create team', bodyHtml, {
-        primaryLabel: 'Create',
-        onSubmit: function (scope) {
-          var data = collectFormValues(scope);
-          return fetchJson('/api/teams-gui/connections/register-and-create', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(data),
-          }).then(function () { refreshSettingsRoute(); });
-        },
+      // Prefill identity from ~/.lattice/identity.json so the user only
+      // enters per-team things (cloud URL + team name) in this modal.
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        var bodyHtml =
+          '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
+          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" /></div>' +
+          '<div class="field"><label>Your display name</label><input name="user_name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
+          '<div class="field"><label>Team name</label><input name="team_name" /></div>' +
+          '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+          'Registers you on the cloud (bootstrap-only — must be a fresh cloud) and creates the team in one step. ' +
+          'Email + display name are pulled from your User Config identity; edit them below to override for this team only.' +
+          '</p>';
+        showModal('Create team', bodyHtml, {
+          primaryLabel: 'Create',
+          onSubmit: function (scope) {
+            var data = collectFormValues(scope);
+            return fetchJson('/api/teams-gui/connections/register-and-create', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(data),
+            }).then(function () { refreshSettingsRoute(); });
+          },
+        });
       });
     }
 
     function showJoinTeamModal(kind) {
-      var bodyHtml =
-        '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
-        '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..."></textarea></div>' +
-        '<div class="field"><label>Your email</label><input name="email" /></div>' +
-        '<div class="field"><label>Your display name</label><input name="name" /></div>';
-      showModal('Join team', bodyHtml, {
-        primaryLabel: 'Join',
-        onSubmit: function (scope) {
-          var data = collectFormValues(scope);
-          return fetchJson('/api/teams-gui/connections/join', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(data),
-          }).then(function () { refreshSettingsRoute(kind); });
-        },
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        var bodyHtml =
+          '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
+          '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..."></textarea></div>' +
+          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" /></div>' +
+          '<div class="field"><label>Your display name</label><input name="name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
+          '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+          'Email must match the address the invitation was addressed to.' +
+          '</p>';
+        showModal('Join team', bodyHtml, {
+          primaryLabel: 'Join',
+          onSubmit: function (scope) {
+            var data = collectFormValues(scope);
+            return fetchJson('/api/teams-gui/connections/join', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(data),
+            }).then(function () { refreshSettingsRoute(kind); });
+          },
+        });
       });
     }
 
     function renderUserConfig(content) {
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>User Config</h2>' +
+          '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
+          '<div id="databases-host"></div>' +
+          '<div id="user-teams-host"></div>' +
+        '</div>';
+      renderIdentityPanel(document.getElementById('identity-host'));
+      renderDatabasesPanel(document.getElementById('databases-host'));
+      renderUserTeamsList(document.getElementById('user-teams-host'));
+    }
+
+    function renderIdentityPanel(host) {
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 10px">Identity</h3>' +
+            '<p class="lead" style="margin:0 0 10px">Display name + email used when creating or joining teams. Saved to ~/.lattice/identity.json and mirrored into the active Lattice.</p>' +
+            '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
+              '<div><label class="field-label">Display name</label><input id="id-display-name" type="text" value="' + escapeHtml(id.display_name || '') + '" style="width:100%"></div>' +
+              '<div><label class="field-label">Email</label><input id="id-email" type="email" value="' + escapeHtml(id.email || '') + '" style="width:100%"></div>' +
+            '</div>' +
+            '<div class="team-actions" style="margin-top:10px">' +
+              '<button class="btn primary" data-act="id-save">Save</button>' +
+            '</div>' +
+            '<div id="id-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+          '</div>';
+        host.querySelector('[data-act="id-save"]').addEventListener('click', function () {
+          var body = {
+            display_name: document.getElementById('id-display-name').value || '',
+            email: document.getElementById('id-email').value || '',
+          };
+          var msg = document.getElementById('id-msg');
+          msg.textContent = 'Saving…';
+          fetch('/api/userconfig/identity', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json(); })
+            .then(function () { msg.textContent = 'Saved.'; })
+            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load identity: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderDatabasesPanel(host) {
+      fetchJson('/api/userconfig/databases').then(function (cat) {
+        var localRows = (cat.local || []).map(function (d) {
+          return '<tr>' +
+            '<td>' + escapeHtml(d.label) + (d.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
+            '<td>SQLite</td>' +
+            '<td><code>' + escapeHtml(d.dbFile) + '</code></td>' +
+            '<td>' + (d.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(d.configPath) + '">Switch</button>') + '</td>' +
+          '</tr>';
+        }).join('');
+        var cloudRows = (cat.cloud || []).map(function (d) {
+          return '<tr><td>' + escapeHtml(d.label) + '</td><td>Postgres</td><td>(encrypted)</td><td>—</td></tr>';
+        }).join('');
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 10px">Databases</h3>' +
+            '<table style="width:100%;border-collapse:collapse">' +
+              '<thead><tr style="text-align:left"><th>Label</th><th>Type</th><th>File / source</th><th>Action</th></tr></thead>' +
+              '<tbody>' + (localRows + cloudRows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
+            '</table>' +
+          '</div>';
+        host.querySelectorAll('[data-switch]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var configPath = btn.getAttribute('data-switch');
+            fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
+              .then(function (r) { return r.json(); })
+              .then(function () { renderUserConfig(document.getElementById('content')); });
+          });
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load databases: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderUserTeamsList(host) {
       fetchConnections().then(function (conns) {
-        if (conns.length === 0) { renderTeamsEmpty(content, 'user'); return; }
+        if (conns.length === 0) {
+          host.innerHTML =
+            '<div style="margin-top:18px">' +
+              '<h3 style="margin:0 0 8px">Cloud accounts</h3>' +
+              '<p class="lead">No cloud team memberships yet. Use Project Config → Create team, or join an existing team below.</p>' +
+              '<div class="teams-actions">' +
+                '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>' +
+              '</div>' +
+            '</div>';
+          wireTopActions('user');
+          return;
+        }
         var rows = conns.map(function (c) {
           return '<div class="team-card" data-team-id="' + escapeHtml(c.team_id) + '">' +
             '<h3>' + escapeHtml(c.team_name) +
@@ -2347,17 +2447,17 @@ export const guiAppHtml = `<!doctype html>
             '</div>' +
           '</div>';
         }).join('');
-        content.innerHTML =
-          '<div class="teams-page">' +
-            '<h2>User Config</h2>' +
-            '<p class="lead">Cloud accounts your local lattice is signed in to. Each team membership keeps its own bearer token locally.</p>' +
+        host.innerHTML =
+          '<div style="margin-top:18px">' +
+            '<h3 style="margin:0 0 8px">Cloud accounts</h3>' +
+            '<p class="lead">Each team membership keeps its own bearer token in this Lattice DB.</p>' +
             '<div class="teams-actions">' +
               '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>' +
             '</div>' +
             rows +
           '</div>';
         wireTopActions('user');
-        document.querySelectorAll('.team-card').forEach(function (card) {
+        host.querySelectorAll('.team-card').forEach(function (card) {
           var teamId = card.getAttribute('data-team-id');
           card.querySelector('[data-act="signout"]').addEventListener('click', function () {
             if (!confirm('Sign out of this team? Your local link tracking will be removed.')) return;
@@ -2367,7 +2467,7 @@ export const guiAppHtml = `<!doctype html>
           });
         });
       }).catch(function (err) {
-        content.innerHTML = '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+        host.innerHTML = '<div class="placeholder">Failed to load cloud accounts: ' + escapeHtml(err.message) + '</div>';
       });
     }
 
@@ -2604,10 +2704,7 @@ export const guiAppHtml = `<!doctype html>
       });
       var inviteBtn = card.querySelector('[data-act="invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
-        fetchJson('/api/teams-gui/teams/' + teamId + '/invitations', {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
-        }).then(function (inv) { showInviteTokenModal(inv); })
-          .catch(function (err) { alert('Invite failed: ' + err.message); });
+        showInviteByEmailModal(teamId);
       });
       card.querySelector('[data-act="leave"]').addEventListener('click', function () {
         if (isCreator) {
@@ -2662,6 +2759,27 @@ export const guiAppHtml = `<!doctype html>
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ table: data.table }),
           }).then(function () { renderTeamCard(card, conn); });
+        },
+      });
+    }
+
+    function showInviteByEmailModal(teamId) {
+      var bodyHtml =
+        '<div class="field"><label>Invitee email</label>' +
+        '<input name="invitee_email" type="email" placeholder="bob@example.com" /></div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+        'Invitations are bound to this email — only the recipient can redeem.' +
+        '</p>';
+      showModal('Invite member', bodyHtml, {
+        primaryLabel: 'Generate invite',
+        onSubmit: function (scope) {
+          var data = collectFormValues(scope);
+          if (!data.invitee_email) throw new Error('invitee_email is required');
+          return fetchJson('/api/teams-gui/teams/' + teamId + '/invitations', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ invitee_email: data.invitee_email }),
+          }).then(function (inv) { showInviteTokenModal(inv); });
         },
       });
     }
