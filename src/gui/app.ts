@@ -159,6 +159,69 @@ export const guiAppHtml = `<!doctype html>
     #graph-mount { width: 100%; min-height: 70vh; background: var(--surface);
       border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
     #graph-mount svg { width: 100%; height: 65vh; }
+
+    /* ── Buttons ──────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 30px; padding: 0 12px;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      font-size: 13px;
+    }
+    .btn:hover { background: var(--row-hover); }
+    .btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .btn.primary:hover { background: #1f5dd1; }
+    .btn.danger { color: #b42318; border-color: #f2c4c0; }
+    .btn.danger:hover { background: #fef3f2; }
+    .btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+    .btn.ghost:hover { background: var(--row-hover); color: var(--text); }
+    .view-header .actions { margin-left: auto; display: flex; gap: 8px; }
+
+    /* Row delete control */
+    .row-actions { width: 36px; text-align: center; }
+    .row-delete {
+      background: transparent; border: none; color: var(--text-muted);
+      font-size: 16px; cursor: pointer; padding: 4px 8px;
+      border-radius: 4px;
+    }
+    tr:hover .row-delete { color: #b42318; }
+    .row-delete:hover { background: #fef3f2; }
+
+    /* ── Modal ────────────────────────────────────────── */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.35);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: var(--surface); border-radius: 10px;
+      width: 480px; max-width: calc(100vw - 40px); max-height: 80vh;
+      display: flex; flex-direction: column;
+      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+    }
+    .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border);
+      font-size: 15px; font-weight: 600; }
+    .modal-body { padding: 16px 20px; overflow-y: auto; }
+    .modal-foot { padding: 12px 20px; border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px; }
+    .field { display: block; margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: var(--text-muted);
+      margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .field input, .field textarea, .field select {
+      width: 100%; padding: 7px 10px; font: inherit;
+      border: 1px solid var(--border-strong); border-radius: 6px;
+      background: white;
+    }
+    .field textarea { min-height: 72px; resize: vertical; }
+    .field:last-child { margin-bottom: 0; }
+
+    /* Detail inputs (inline editing) */
+    .detail dl.editing input,
+    .detail dl.editing textarea {
+      width: 100%; padding: 6px 9px; font: inherit;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: white;
+    }
+    .detail dl.editing textarea { min-height: 60px; resize: vertical; }
   </style>
 </head>
 <body>
@@ -332,7 +395,7 @@ export const guiAppHtml = `<!doctype html>
     }
 
     // ────────────────────────────────────────────────────────────
-    // Table view (read-only in this commit)
+    // Table view
     // ────────────────────────────────────────────────────────────
     function intrinsicColumns(table) {
       // Drop id + foreign-key columns (rendered as belongsTo relations instead).
@@ -376,6 +439,94 @@ export const guiAppHtml = `<!doctype html>
       });
     }
 
+    /**
+     * Invalidate cached rows for one or more tables. Call after any mutation
+     * so the next renderTable / renderDetail re-fetches from the server.
+     */
+    function invalidate(tableNames) {
+      (Array.isArray(tableNames) ? tableNames : [tableNames]).forEach(function (n) {
+        delete loadedTables[n];
+      });
+    }
+
+    /**
+     * Refresh /api/entities so dashboard row counts stay in sync after a
+     * mutation. The Objects sidebar doesn't change, so we don't re-render it.
+     */
+    function refreshEntities() {
+      return fetchJson('/api/entities').then(function (d) {
+        state.entities = d;
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Modal helper
+    // ────────────────────────────────────────────────────────────
+    function showModal(title, bodyHtml, opts) {
+      opts = opts || {};
+      var primaryLabel = opts.primaryLabel || 'Save';
+      var backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML =
+        '<div class="modal">' +
+          '<div class="modal-head">' + escapeHtml(title) + '</div>' +
+          '<div class="modal-body">' + bodyHtml + '</div>' +
+          '<div class="modal-foot">' +
+            '<button class="btn" data-act="cancel">Cancel</button>' +
+            '<button class="btn primary" data-act="ok">' + escapeHtml(primaryLabel) + '</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(backdrop);
+      function close() { document.body.removeChild(backdrop); }
+      backdrop.addEventListener('click', function (e) {
+        if (e.target === backdrop) close();
+      });
+      backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
+      backdrop.querySelector('[data-act="ok"]').addEventListener('click', function () {
+        try {
+          var result = opts.onSubmit ? opts.onSubmit(backdrop) : null;
+          if (result && typeof result.then === 'function') {
+            result.then(close).catch(function (err) {
+              alert('Failed: ' + err.message);
+            });
+          } else {
+            close();
+          }
+        } catch (err) {
+          alert('Failed: ' + err.message);
+        }
+      });
+      return { close: close };
+    }
+
+    function fieldFor(col, value, table) {
+      // Render an input element for a column. belongsTo FK columns become a
+      // <select> over the referenced table's rows (must already be cached).
+      var belongsTo = belongsToColumns(table).find(function (b) { return b.rel.foreignKey === col; });
+      if (belongsTo) {
+        var rows = loadedTables[belongsTo.rel.table] || [];
+        var options = '<option value="">(none)</option>' + rows.map(function (r) {
+          var sel = (r.id === value) ? ' selected' : '';
+          return '<option value="' + escapeHtml(r.id) + '"' + sel + '>' + escapeHtml(displayNameFor(r)) + '</option>';
+        }).join('');
+        return '<select name="' + escapeHtml(col) + '">' + options + '</select>';
+      }
+      // Multiline for known long-form fields.
+      if (col === 'transcript' || col === 'summary' || col === 'body') {
+        return '<textarea name="' + escapeHtml(col) + '">' + escapeHtml(value || '') + '</textarea>';
+      }
+      return '<input type="text" name="' + escapeHtml(col) + '" value="' + escapeHtml(value || '') + '" />';
+    }
+
+    function collectFormValues(scope) {
+      var out = {};
+      scope.querySelectorAll('[name]').forEach(function (el) {
+        var v = el.value;
+        out[el.getAttribute('name')] = v === '' ? null : v;
+      });
+      return out;
+    }
+
     function renderTable(content, tableName) {
       var t = tableByName(tableName);
       if (!t) {
@@ -401,11 +552,12 @@ export const guiAppHtml = `<!doctype html>
           .concat(belongsTo.map(function (b) { return titleCase(b.relName); }))
           .concat(junctions.map(function (j) { return titleCase(j.remoteRel.table); }))
           .map(function (h) { return '<th>' + escapeHtml(h) + '</th>'; }).join('');
+        headers += '<th class="row-actions"></th>';
 
         var bodyRows;
+        var totalCols = intrinsic.length + belongsTo.length + junctions.length + 1;
         if (rows.length === 0) {
-          var emptyCols = intrinsic.length + belongsTo.length + junctions.length;
-          bodyRows = '<tr class="empty-row"><td colspan="' + emptyCols + '">No rows yet</td></tr>';
+          bodyRows = '<tr class="empty-row"><td colspan="' + totalCols + '">No rows yet — click “+ New” to add one</td></tr>';
         } else {
           bodyRows = rows.map(function (r) {
             var tds = intrinsic.map(function (c) {
@@ -424,6 +576,7 @@ export const guiAppHtml = `<!doctype html>
               }).join('');
               tds.push('<td>' + (chips || '<span class="muted">—</span>') + '</td>');
             });
+            tds.push('<td class="row-actions"><button class="row-delete" title="Delete" data-del="' + escapeHtml(r.id) + '">✕</button></td>');
             return '<tr data-id="' + escapeHtml(r.id) + '">' + tds.join('') + '</tr>';
           }).join('');
         }
@@ -433,14 +586,40 @@ export const guiAppHtml = `<!doctype html>
             '<span class="entity-icon">' + d.icon + '</span>' +
             '<h1>' + escapeHtml(d.label) + '</h1>' +
             '<span class="count">' + rows.length + ' row' + (rows.length === 1 ? '' : 's') + '</span>' +
+            '<div class="actions">' +
+              '<button class="btn primary" id="new-row">+ New</button>' +
+            '</div>' +
           '</div>' +
           '<table>' +
             '<thead><tr>' + headers + '</tr></thead>' +
             '<tbody>' + bodyRows + '</tbody>' +
           '</table>';
 
+        document.getElementById('new-row').addEventListener('click', function () {
+          openCreateModal(tableName);
+        });
+
+        content.querySelectorAll('button.row-delete').forEach(function (btn) {
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var id = btn.getAttribute('data-del');
+            if (!confirm('Delete this row?')) return;
+            fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
+              method: 'DELETE',
+            }).then(function () {
+              invalidate(tableName);
+              return refreshEntities();
+            }).then(function () {
+              renderTable(content, tableName);
+            }).catch(function (err) {
+              alert('Delete failed: ' + err.message);
+            });
+          });
+        });
+
         content.querySelectorAll('tr[data-id]').forEach(function (tr) {
-          tr.addEventListener('click', function () {
+          tr.addEventListener('click', function (e) {
+            if (e.target && e.target.closest('button')) return;
             location.hash = '#/objects/' + tableName + '/' + tr.getAttribute('data-id');
           });
         });
@@ -449,8 +628,41 @@ export const guiAppHtml = `<!doctype html>
       });
     }
 
+    function openCreateModal(tableName) {
+      var t = tableByName(tableName);
+      var intrinsic = intrinsicColumns(t);
+      var belongsTo = belongsToColumns(t);
+      // Make sure referenced tables are loaded so the FK <select>s have options.
+      var prefetch = Promise.all(belongsTo.map(function (b) { return loadAllRows(b.rel.table); }));
+      prefetch.then(function () {
+        var fkCols = belongsTo.map(function (b) { return b.rel.foreignKey; });
+        var allCols = intrinsic.concat(fkCols);
+        var body = allCols.map(function (c) {
+          return '<div class="field"><label>' + escapeHtml(fieldLabel(c)) + '</label>' + fieldFor(c, '', t) + '</div>';
+        }).join('');
+        showModal('New ' + (displayFor(tableName).label.replace(/s$/, '') || tableName), body, {
+          primaryLabel: 'Create',
+          onSubmit: function (scope) {
+            var values = collectFormValues(scope);
+            return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(values),
+            }).then(function () {
+              invalidate(tableName);
+              return refreshEntities();
+            }).then(function () {
+              renderTable(document.getElementById('content'), tableName);
+            });
+          },
+        });
+      }).catch(function (err) {
+        alert('Failed to prepare form: ' + err.message);
+      });
+    }
+
     // ────────────────────────────────────────────────────────────
-    // Detail view (read-only in this commit)
+    // Detail view (with edit / delete)
     // ────────────────────────────────────────────────────────────
     function renderDetail(content, tableName, id) {
       var t = tableByName(tableName);
@@ -474,33 +686,87 @@ export const guiAppHtml = `<!doctype html>
 
       Promise.all(fetches).then(function (results) {
         var row = results[0];
-        var rows = [];
-        intrinsic.forEach(function (c) {
-          rows.push('<dt>' + escapeHtml(fieldLabel(c)) + '</dt>' +
-                    '<dd>' + (row[c] == null ? '<span class="muted">—</span>' : escapeHtml(row[c])) + '</dd>');
-        });
-        belongsTo.forEach(function (b) {
-          var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
-          rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt>' +
-                    '<dd>' + (ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '<span class="muted">—</span>') + '</dd>');
-        });
-        junctions.forEach(function (j) {
-          var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
-          var chips = matches.map(function (jr) {
-            var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[j.remoteRel.foreignKey]; });
-            return ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '';
-          }).join(' ');
-          rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
-                    '<dd>' + (chips || '<span class="muted">—</span>') + '</dd>');
-        });
 
-        content.innerHTML =
-          '<a class="breadcrumb" href="#/objects/' + tableName + '">← ' + escapeHtml(d.label) + '</a>' +
-          '<div class="view-header">' +
-            '<span class="entity-icon">' + d.icon + '</span>' +
-            '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
-          '</div>' +
-          '<div class="detail"><dl>' + rows.join('') + '</dl></div>';
+        function paint(editing) {
+          var rows = [];
+          intrinsic.forEach(function (c) {
+            var dd = editing
+              ? fieldFor(c, row[c], t)
+              : (row[c] == null ? '<span class="muted">—</span>' : escapeHtml(row[c]));
+            rows.push('<dt>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + dd + '</dd>');
+          });
+          belongsTo.forEach(function (b) {
+            var dd;
+            if (editing) {
+              dd = fieldFor(b.rel.foreignKey, row[b.rel.foreignKey], t);
+            } else {
+              var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
+              dd = ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '<span class="muted">—</span>';
+            }
+            rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt><dd>' + dd + '</dd>');
+          });
+          // Junctions are read-only here — managed via Data Model.
+          junctions.forEach(function (j) {
+            var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
+            var chips = matches.map(function (jr) {
+              var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[j.remoteRel.foreignKey]; });
+              return ref ? '<span class="chip">' + escapeHtml(displayNameFor(ref)) + '</span>' : '';
+            }).join(' ');
+            rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
+                      '<dd>' + (chips || '<span class="muted">—</span>') + '</dd>');
+          });
+
+          var actions = editing
+            ? '<button class="btn primary" id="save-row">Save</button>' +
+              '<button class="btn" id="cancel-edit">Cancel</button>'
+            : '<button class="btn" id="edit-row">Edit</button>' +
+              '<button class="btn danger" id="del-row">Delete</button>';
+
+          content.innerHTML =
+            '<a class="breadcrumb" href="#/objects/' + tableName + '">← ' + escapeHtml(d.label) + '</a>' +
+            '<div class="view-header">' +
+              '<span class="entity-icon">' + d.icon + '</span>' +
+              '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
+              '<div class="actions">' + actions + '</div>' +
+            '</div>' +
+            '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>';
+
+          if (editing) {
+            document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
+            document.getElementById('save-row').addEventListener('click', function () {
+              var values = collectFormValues(content.querySelector('.detail dl'));
+              fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
+                method: 'PATCH',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(values),
+              }).then(function () {
+                invalidate(tableName);
+                return refreshEntities();
+              }).then(function () {
+                renderDetail(content, tableName, id);
+              }).catch(function (err) {
+                alert('Save failed: ' + err.message);
+              });
+            });
+          } else {
+            document.getElementById('edit-row').addEventListener('click', function () { paint(true); });
+            document.getElementById('del-row').addEventListener('click', function () {
+              if (!confirm('Delete this row? This cannot be undone.')) return;
+              fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
+                method: 'DELETE',
+              }).then(function () {
+                invalidate(tableName);
+                return refreshEntities();
+              }).then(function () {
+                location.hash = '#/objects/' + tableName;
+              }).catch(function (err) {
+                alert('Delete failed: ' + err.message);
+              });
+            });
+          }
+        }
+
+        paint(false);
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
