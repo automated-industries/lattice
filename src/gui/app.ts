@@ -155,10 +155,45 @@ export const guiAppHtml = `<!doctype html>
     }
     .placeholder h2 { margin: 0 0 8px; color: var(--text); }
 
-    /* Data Model legacy graph container */
-    #graph-mount { width: 100%; min-height: 70vh; background: var(--surface);
-      border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    /* Data Model: 2-column graph + side panel */
+    .dm-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; }
+    #graph-mount { background: var(--surface);
+      border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-height: 70vh; }
     #graph-mount svg { width: 100%; height: 65vh; }
+    #graph-mount g.gnode { cursor: pointer; }
+    #graph-mount g.gnode circle { transition: fill 0.1s ease, stroke 0.1s ease; }
+    #graph-mount g.gnode.active circle { fill: var(--accent); stroke: var(--accent); }
+    #graph-mount g.gnode.active text { fill: var(--accent); font-weight: 600; }
+    #dm-panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px;
+      max-height: 70vh; overflow-y: auto;
+    }
+    #dm-panel h3 { margin: 0 0 12px; font-size: 16px; }
+    #dm-panel h4 { margin: 12px 0 6px; font-size: 12.5px;
+      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    #dm-panel .breadcrumb { cursor: pointer; }
+    ul.dm-rows { list-style: none; padding: 0; margin: 0; }
+    ul.dm-rows li {
+      padding: 8px 10px; border-radius: 6px; cursor: pointer;
+      font-size: 13.5px; border: 1px solid transparent;
+    }
+    ul.dm-rows li:hover { background: var(--row-hover); border-color: var(--border); }
+    .dm-junction { margin-bottom: 14px; }
+    .dm-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+    .chip-removable {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: var(--accent-soft); color: var(--accent);
+      border-radius: 10px; padding: 2px 4px 2px 8px; font-size: 12px;
+    }
+    .chip-removable button {
+      background: transparent; border: none; color: var(--accent);
+      cursor: pointer; padding: 0 4px; font-size: 14px; line-height: 1;
+      border-radius: 50%;
+    }
+    .chip-removable button:hover { background: rgba(47, 111, 235, 0.15); }
+    select.dm-add { width: 100%; padding: 6px 10px; font: inherit;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: white; }
 
     /* ── Buttons ──────────────────────────────────────── */
     .btn {
@@ -773,37 +808,219 @@ export const guiAppHtml = `<!doctype html>
     }
 
     // ────────────────────────────────────────────────────────────
-    // Data Model — bare SVG graph (will get link/unlink UI later)
+    // Data Model — entity graph + row-level link/unlink picker
     // ────────────────────────────────────────────────────────────
+    var dmActiveTable = null;
+    var dmActiveRowId = null;
+
     function renderDataModel(content) {
       content.innerHTML =
         '<div class="view-header">' +
           '<span class="entity-icon">⚙</span>' +
           '<h1>Data Model</h1>' +
         '</div>' +
-        '<div id="graph-mount"><div class="muted">Loading graph…</div></div>';
+        '<div class="dm-layout">' +
+          '<div id="graph-mount"><div class="muted">Loading graph…</div></div>' +
+          '<aside id="dm-panel"><div class="muted">Click an entity to explore its rows and links.</div></aside>' +
+        '</div>';
 
       fetchJson('/api/graph').then(function (graph) {
-        var mount = document.getElementById('graph-mount');
-        mount.innerHTML = renderGraphSvg(graph);
+        document.getElementById('graph-mount').innerHTML = renderGraphSvg(graph);
+        document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
+          g.addEventListener('click', function () {
+            var name = g.getAttribute('data-table');
+            dmShowTableRows(name);
+            highlightGraphNode(name);
+          });
+        });
+        if (dmActiveTable) highlightGraphNode(dmActiveTable);
       }).catch(function (err) {
         document.getElementById('graph-mount').innerHTML =
           '<div class="muted">Failed to load graph: ' + escapeHtml(err.message) + '</div>';
       });
     }
 
+    function highlightGraphNode(tableName) {
+      document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
+        g.classList.toggle('active', g.getAttribute('data-table') === tableName);
+      });
+    }
+
+    function dmShowTableRows(tableName) {
+      dmActiveTable = tableName;
+      dmActiveRowId = null;
+      var panel = document.getElementById('dm-panel');
+      panel.innerHTML = '<div class="muted">Loading…</div>';
+      loadAllRows(tableName).then(function (rows) {
+        var d = displayFor(tableName);
+        var list = rows.map(function (r) {
+          return '<li data-id="' + escapeHtml(r.id) + '">' + escapeHtml(displayNameFor(r)) + '</li>';
+        }).join('');
+        panel.innerHTML =
+          '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
+          (rows.length === 0
+            ? '<div class="muted">No rows yet — use the Objects view to add one.</div>'
+            : '<ul class="dm-rows">' + list + '</ul>');
+        panel.querySelectorAll('li[data-id]').forEach(function (li) {
+          li.addEventListener('click', function () {
+            dmShowRowLinks(tableName, li.getAttribute('data-id'));
+          });
+        });
+      });
+    }
+
+    function dmShowRowLinks(tableName, rowId) {
+      dmActiveRowId = rowId;
+      var t = tableByName(tableName);
+      var junctions = junctionsFor(tableName);
+      var panel = document.getElementById('dm-panel');
+      panel.innerHTML = '<div class="muted">Loading…</div>';
+
+      // Preload junctions + remote-side rows so chips + pickers can render.
+      var fetches = [];
+      junctions.forEach(function (j) {
+        fetches.push(loadAllRows(j.junction));
+        fetches.push(loadAllRows(j.remoteRel.table));
+      });
+      // Also reload the row itself in case it changed.
+      fetches.push(loadAllRows(tableName));
+
+      Promise.all(fetches).then(function () {
+        var row = (loadedTables[tableName] || []).find(function (r) { return r.id === rowId; });
+        if (!row) {
+          panel.innerHTML = '<div class="muted">Row no longer exists.</div>';
+          return;
+        }
+
+        var sections = junctions.map(function (j) {
+          var matches = (loadedTables[j.junction] || []).filter(function (jr) {
+            return jr[j.localFk] === rowId;
+          });
+          var linkedIds = new Set(matches.map(function (m) { return m[j.remoteRel.foreignKey]; }));
+          var available = (loadedTables[j.remoteRel.table] || []).filter(function (o) {
+            return !linkedIds.has(o.id);
+          });
+          var chips = matches.map(function (jr) {
+            var remoteId = jr[j.remoteRel.foreignKey];
+            var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === remoteId; });
+            if (!ref) return '';
+            return '<span class="chip-removable" data-junction="' + escapeHtml(j.junction) +
+              '" data-localfk="' + escapeHtml(j.localFk) +
+              '" data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) +
+              '" data-local="' + escapeHtml(rowId) +
+              '" data-remote="' + escapeHtml(remoteId) + '">' +
+              escapeHtml(displayNameFor(ref)) +
+              ' <button class="remove-link" title="Remove">×</button></span>';
+          }).join('');
+          var picker = available.length
+            ? '<select class="dm-add" data-junction="' + escapeHtml(j.junction) +
+                '" data-localfk="' + escapeHtml(j.localFk) +
+                '" data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) +
+                '" data-local="' + escapeHtml(rowId) + '">' +
+                '<option value="">+ Add link…</option>' +
+                available.map(function (o) {
+                  return '<option value="' + escapeHtml(o.id) + '">' +
+                    escapeHtml(displayNameFor(o)) + '</option>';
+                }).join('') +
+              '</select>'
+            : '<span class="muted">All ' + escapeHtml(titleCase(j.remoteRel.table).toLowerCase()) + ' linked</span>';
+          return '<div class="dm-junction">' +
+            '<h4>' + escapeHtml(titleCase(j.remoteRel.table)) + '</h4>' +
+            '<div class="dm-chips">' + (chips || '<span class="muted">None yet</span>') + '</div>' +
+            picker +
+            '</div>';
+        }).join('');
+
+        panel.innerHTML =
+          '<a class="breadcrumb" data-back-to="' + escapeHtml(tableName) + '">← ' +
+            escapeHtml(displayFor(tableName).label) + '</a>' +
+          '<h3>' + escapeHtml(displayNameFor(row) || row.id) + '</h3>' +
+          (sections || '<div class="muted">This entity has no relationships to link.</div>');
+
+        var back = panel.querySelector('[data-back-to]');
+        if (back) {
+          back.addEventListener('click', function (e) {
+            e.preventDefault();
+            dmShowTableRows(back.getAttribute('data-back-to'));
+          });
+        }
+
+        panel.querySelectorAll('.remove-link').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var chip = btn.closest('[data-junction]');
+            var body = {};
+            body[chip.getAttribute('data-localfk')] = chip.getAttribute('data-local');
+            body[chip.getAttribute('data-remotefk')] = chip.getAttribute('data-remote');
+            fetchJson('/api/tables/' + encodeURIComponent(chip.getAttribute('data-junction')) + '/unlink', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            }).then(function () {
+              invalidate(chip.getAttribute('data-junction'));
+              return refreshEntities();
+            }).then(function () {
+              dmShowRowLinks(tableName, rowId);
+            }).catch(function (err) {
+              alert('Unlink failed: ' + err.message);
+            });
+          });
+        });
+
+        panel.querySelectorAll('select.dm-add').forEach(function (sel) {
+          sel.addEventListener('change', function () {
+            if (!sel.value) return;
+            var body = {};
+            body[sel.getAttribute('data-localfk')] = sel.getAttribute('data-local');
+            body[sel.getAttribute('data-remotefk')] = sel.value;
+            fetchJson('/api/tables/' + encodeURIComponent(sel.getAttribute('data-junction')) + '/link', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            }).then(function () {
+              invalidate(sel.getAttribute('data-junction'));
+              return refreshEntities();
+            }).then(function () {
+              dmShowRowLinks(tableName, rowId);
+            }).catch(function (err) {
+              alert('Link failed: ' + err.message);
+            });
+          });
+        });
+      });
+    }
+
     function renderGraphSvg(graph) {
-      // Simple circular layout — table nodes only, since junctions encode edges.
-      var tableNodes = graph.nodes.filter(function (n) { return n.type === 'table'; });
-      var keep = new Set(tableNodes.map(function (n) { return n.id; }));
-      var edges = graph.edges.filter(function (e) { return keep.has(e.source) && keep.has(e.target) && e.type !== 'markdown'; });
+      // Circular layout. Junctions become edges (not nodes).
+      var allTableNodes = graph.nodes.filter(function (n) { return n.type === 'table'; });
+      var junctionNames = new Set(state.entities.tables.filter(isJunction).map(function (t) { return t.name; }));
+      var tableNodes = allTableNodes.filter(function (n) { return !junctionNames.has(n.table || n.label); });
+
+      // Build edges between first-class entities via shared junctions.
+      var entityEdges = [];
+      state.entities.tables.forEach(function (t) {
+        if (!isJunction(t)) return;
+        var rels = Object.values(t.relations);
+        if (rels.length === 2) {
+          entityEdges.push({ source: 'table:' + rels[0].table, target: 'table:' + rels[1].table });
+        }
+      });
+      // Plus belongsTo edges (e.g. repositories → projects).
+      state.entities.tables.forEach(function (t) {
+        if (isJunction(t)) return;
+        Object.values(t.relations || {}).forEach(function (r) {
+          if (r.type === 'belongsTo') {
+            entityEdges.push({ source: 'table:' + t.name, target: 'table:' + r.table });
+          }
+        });
+      });
+
       var cx = 500, cy = 320, r = 240;
       var pos = {};
       tableNodes.forEach(function (n, i) {
         var a = (i / tableNodes.length) * Math.PI * 2 - Math.PI / 2;
         pos[n.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
       });
-      var edgeSvg = edges.map(function (e) {
+      var edgeSvg = entityEdges.map(function (e) {
         var a = pos[e.source], b = pos[e.target];
         if (!a || !b) return '';
         return '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
@@ -811,9 +1028,13 @@ export const guiAppHtml = `<!doctype html>
       }).join('');
       var nodeSvg = tableNodes.map(function (n) {
         var p = pos[n.id];
-        return '<g><circle cx="' + p.x + '" cy="' + p.y + '" r="22" fill="#e7efff" stroke="#2f6feb" stroke-width="1.5" />' +
-          '<text x="' + p.x + '" y="' + (p.y + 38) + '" text-anchor="middle" font-size="12" fill="#1f2328">' +
-          escapeHtml(n.label) + '</text></g>';
+        var tableName = n.table || n.label;
+        var d = displayFor(tableName);
+        return '<g class="gnode" data-table="' + escapeHtml(tableName) + '">' +
+          '<circle cx="' + p.x + '" cy="' + p.y + '" r="26" fill="#e7efff" stroke="#2f6feb" stroke-width="1.5" />' +
+          '<text x="' + p.x + '" y="' + (p.y + 6) + '" text-anchor="middle" font-size="16">' + d.icon + '</text>' +
+          '<text x="' + p.x + '" y="' + (p.y + 44) + '" text-anchor="middle" font-size="12" fill="#1f2328">' +
+          escapeHtml(d.label) + '</text></g>';
       }).join('');
       return '<svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg">' + edgeSvg + nodeSvg + '</svg>';
     }
