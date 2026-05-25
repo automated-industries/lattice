@@ -57,6 +57,7 @@ Lattice has no opinions about your schema, your agents, or your file format. You
   - [Init from config](#init-from-config)
   - [Config API](#config-api-programmatic)
 - [CLI — lattice generate](#cli--lattice-generate)
+- [CLI — lattice gui (v1.11+)](#cli--lattice-gui-v111)
 - [Schema migrations](#schema-migrations)
 - [Security](#security)
 - [Pluggable backends (v1.6+)](#pluggable-backends-v16)
@@ -2049,6 +2050,64 @@ CREATE TABLE IF NOT EXISTS "ticket" (
   "assignee_id" TEXT
 );
 ```
+
+---
+
+## CLI — `lattice gui` (v1.11+)
+
+Start a local-only browser GUI for exploring and editing the data in a Lattice database. The server binds to `127.0.0.1` and delegates straight to the same `Lattice` CRUD methods you call from code — no separate state, no schema duplication.
+
+```bash
+npx lattice gui
+
+# With options
+npx lattice gui --config ./lattice.config.yml --output ./context --port 4317
+```
+
+**Options**
+
+| Flag                  | Default                | Description                                           |
+| --------------------- | ---------------------- | ----------------------------------------------------- |
+| `--config, -c <path>` | `./lattice.config.yml` | Path to the config file                               |
+| `--output <dir>`      | `./context`            | Output directory (used by the relationship graph)     |
+| `--port <number>`     | `4317`                 | Localhost port; auto-increments when the port is busy |
+| `--no-open`           | off                    | Print the URL without opening a browser               |
+
+**Views**
+
+- **Dashboard** (`#/`) — one card per first-class entity with live row counts.
+- **Table view** (`#/objects/<entity>`) — intrinsic columns, `belongsTo` chips, and a column per junction this entity participates in.
+- **Detail view** (`#/objects/<entity>/<id>`) — read mode by default; `Edit` flips cells into inputs (`Save` PATCHes, `Cancel` reverts).
+- **Data Model** (`#/settings/data-model`) — entity-level graph plus a side panel for adding / removing junction-table links between rows.
+
+**Internal tables added on first open**
+
+Opening a database with `lattice gui` is **additive** but mutates the schema: on the first run against any given DB, the GUI creates three `_lattice_gui_*` tables for its own bookkeeping:
+
+| Table                     | Purpose                                                     |
+| ------------------------- | ----------------------------------------------------------- |
+| `_lattice_gui_meta`       | Per-entity icon overrides edited from the browser           |
+| `_lattice_gui_column_meta` | Per-column flags (e.g. mark a column as `secret`)           |
+| `_lattice_gui_audit`      | Linear audit log of every GUI mutation — powers undo / redo |
+
+These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entities`, the dashboard, and rendered context output. They are not part of your declared schema and do not affect any `Lattice` API calls. **No fictional / demo rows are ever inserted** — your existing data is what the GUI shows.
+
+**HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
+
+| Route                      | Method | Lattice call                  |
+| -------------------------- | ------ | ----------------------------- |
+| `/project`                 | GET    | (config + manifest summary)   |
+| `/entities`                | GET    | tables + `db.count` per table |
+| `/graph`                   | GET    | (schema graph for Data Model) |
+| `/tables/:table/rows`      | GET    | `db.query(table, …)`          |
+| `/tables/:table/rows`      | POST   | `db.insert(table, body)`      |
+| `/tables/:table/rows/:id`  | GET    | `db.get(table, id)`           |
+| `/tables/:table/rows/:id`  | PATCH  | `db.update(table, id, body)`  |
+| `/tables/:table/rows/:id`  | DELETE | `db.delete(table, id)`        |
+| `/tables/:junction/link`   | POST   | `db.link(junction, body)`     |
+| `/tables/:junction/unlink` | POST   | `db.unlink(junction, body)`   |
+
+The server only binds to `127.0.0.1` and has no authentication. See [SECURITY.md](./SECURITY.md) for the threat model — do not expose this port to a non-loopback interface.
 
 ---
 

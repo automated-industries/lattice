@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [1.11.0] — 2026-05-25
+
+### Added
+
+- **`lattice gui` CLI command.** Starts a local-only browser GUI for exploring and editing the data in a Lattice database. The server binds to `127.0.0.1`, auto-increments port `4317` when busy, and opens a single-page app for browsing entities, viewing relationship graphs, editing rows, and adding / removing junction-table links. All HTTP routes delegate straight to the existing `Lattice` CRUD methods — no separate state, no schema duplication. New flags: `--port <number>`, `--no-open`.
+
+### Notes for upgraders
+
+- **Three additive `_lattice_gui_*` tables are created in any database opened with `lattice gui`.** The first time the GUI runs against a given DB, it creates `_lattice_gui_meta` (per-entity icon overrides), `_lattice_gui_column_meta` (per-column `secret` flag), and `_lattice_gui_audit` (mutation log powering undo / redo). These are filtered out of `/api/entities`, hidden from the dashboard, and write to `.lattice-gui/*.md` rather than your declared `outputFile` paths — they do not appear in rendered context. **No fictional / demo rows are inserted: your existing data is what the GUI shows.** The schema mutation is one-way additive — there is no migration to remove these tables, but they are inert if you stop using `lattice gui`.
+- **The GUI has no authentication and binds only to loopback.** Do not expose port 4317 (or its auto-incremented successor) on a non-loopback interface or proxy it to a public host. See [SECURITY.md](./SECURITY.md).
+
+### Security
+
+- **`SECURITY.md` contact updated** to `contact@automatedindustries.ai`. Supported versions updated to `1.11.x`. GUI HTTP surface added to the in-scope list.
+
+---
+
 ## [1.10.0] — 2026-05-04
 
 ### BREAKING

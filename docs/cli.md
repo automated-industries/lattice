@@ -297,6 +297,20 @@ from the Objects sidebar and the dashboard; link/unlink lives on the Data Model
 page. The server only binds to `127.0.0.1` and does not implement auth — it's
 intended for local development against a config you trust.
 
+**Internal tables added on first open.** Opening a database with `lattice gui`
+creates three additive bookkeeping tables prefixed with `_lattice_gui_`:
+
+| Table                      | Purpose                                                     |
+| -------------------------- | ----------------------------------------------------------- |
+| `_lattice_gui_meta`        | Per-entity icon overrides edited from the browser           |
+| `_lattice_gui_column_meta` | Per-column flags (e.g. mark a column as `secret`)           |
+| `_lattice_gui_audit`       | Linear audit log of every GUI mutation — powers undo / redo |
+
+These tables are filtered out of `/api/entities`, the dashboard, and rendered
+context output. They are not part of your declared schema and do not affect any
+`Lattice` API calls. No fictional / demo rows are ever inserted — the GUI only
+shows the data already in your database.
+
 ---
 
 ## Global options
@@ -307,7 +321,7 @@ intended for local development against a config you trust.
 | `--version` | `-v`  | Print the installed version number |
 
 ```sh
-lattice --version   # → 0.4.0
+lattice --version   # → 1.11.0
 lattice --help
 ```
 
@@ -449,5 +463,5 @@ Generated 5 file(s):
 
 ```sh
 npx lattice --version
-# 0.4.0
+# 1.11.0
 ```
