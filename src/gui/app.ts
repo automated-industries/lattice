@@ -43,6 +43,48 @@ export const guiAppHtml = `<!doctype html>
     }
     .query[disabled] { cursor: not-allowed; }
 
+    /* History controls in top bar */
+    .history-controls { display: inline-flex; gap: 4px; }
+    .history-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px;
+      background: transparent; border: 1px solid var(--border-strong);
+      border-radius: 6px; cursor: pointer;
+      color: var(--text); font-size: 16px; text-decoration: none;
+    }
+    .history-btn:hover:not([disabled]) { background: var(--row-hover); }
+    .history-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
+
+    /* History page */
+    .history-list {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden; max-width: 980px;
+    }
+    .history-entry { display: flex; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+    .history-entry:last-child { border-bottom: none; }
+    .history-entry.is-undone { background: #fafbfc; }
+    .history-entry.is-undone .history-summary { color: var(--text-muted); text-decoration: line-through; }
+    .history-meta { min-width: 200px; font-size: 12px; color: var(--text-muted); }
+    .history-meta .history-op {
+      display: inline-block; padding: 1px 8px;
+      background: var(--accent-soft); color: var(--accent);
+      border-radius: 8px; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.04em; font-weight: 600;
+    }
+    .history-op.op-delete { background: #fef3f2; color: #b42318; }
+    .history-op.op-link, .history-op.op-unlink { background: #f3f0fe; color: #6941c6; }
+    .history-summary { flex: 1; font-size: 13.5px; }
+    .history-summary .history-table { font-weight: 600; }
+    .history-diff {
+      margin-top: 8px; font-family: ui-monospace, monospace; font-size: 12px;
+      background: #fafbfc; border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; white-space: pre-wrap;
+    }
+    .history-diff .diff-add { color: #027a48; }
+    .history-diff .diff-rem { color: #b42318; }
+    .history-actions { display: flex; flex-direction: column; gap: 4px; }
+    .history-actions .btn { font-size: 12px; height: 26px; padding: 0 10px; }
+
     /* DB switcher in the top bar */
     .db-switcher { position: relative; }
     .db-button {
@@ -345,6 +387,11 @@ export const guiAppHtml = `<!doctype html>
 <body>
   <header class="topbar">
     <div class="brand">Lattice</div>
+    <div class="history-controls">
+      <button class="history-btn" id="undo-btn" title="Undo" disabled>↶</button>
+      <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
+      <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">📜</a>
+    </div>
     <div class="db-switcher">
       <button class="db-button" id="db-button" title="Switch database">
         <span class="db-icon">💾</span>
@@ -458,11 +505,54 @@ export const guiAppHtml = `<!doctype html>
         state.iconOverrides = results[1] || {};
         renderDbSwitcher(results[2]);
         renderSidebar();
+        wireHistoryControls();
+        refreshHistoryState();
         renderRoute();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Version history (undo / redo / log)
+    // ────────────────────────────────────────────────────────────
+    function wireHistoryControls() {
+      document.getElementById('undo-btn').addEventListener('click', function () {
+        fetchJson('/api/history/undo', { method: 'POST' }).then(afterMutation).catch(function (err) {
+          alert('Undo failed: ' + err.message);
+        });
+      });
+      document.getElementById('redo-btn').addEventListener('click', function () {
+        fetchJson('/api/history/redo', { method: 'POST' }).then(afterMutation).catch(function (err) {
+          alert('Redo failed: ' + err.message);
+        });
+      });
+    }
+
+    /**
+     * Re-fetch everything that might have changed and re-render. Used after
+     * any mutation that goes through the audit log: row CRUD, link/unlink,
+     * undo, redo, revert.
+     */
+    function afterMutation() {
+      loadedTables = {};
+      return Promise.all([
+        fetchJson('/api/entities'),
+        refreshHistoryState(),
+      ]).then(function (r) {
+        state.entities = r[0];
+        renderSidebar();
+        renderRoute();
+      });
+    }
+
+    function refreshHistoryState() {
+      return fetchJson('/api/history?limit=1').then(function (h) {
+        document.getElementById('undo-btn').disabled = !h.canUndo;
+        document.getElementById('redo-btn').disabled = !h.canRedo;
+        return h;
+      }).catch(function () { /* swallow */ });
     }
 
     /** Refetch everything after a DB switch and rerender. */
@@ -605,6 +695,7 @@ export const guiAppHtml = `<!doctype html>
       }
 
       if (hash === '#/settings/data-model') { renderDataModel(content); return; }
+      if (hash === '#/settings/history') { renderHistory(content); return; }
       if (hash === '#/settings/project-config' || hash === '#/settings/user-config') {
         content.innerHTML = '<div class="placeholder"><h2>Coming soon</h2>' +
           '<p>This view will be wired up in a follow-up release.</p></div>';
@@ -705,13 +796,14 @@ export const guiAppHtml = `<!doctype html>
     }
 
     /**
-     * Refresh /api/entities so dashboard row counts stay in sync after a
-     * mutation. The Objects sidebar doesn't change, so we don't re-render it.
+     * Refresh /api/entities (dashboard row counts) AND the undo/redo button
+     * state after a mutation. Called by every CRUD handler.
      */
     function refreshEntities() {
-      return fetchJson('/api/entities').then(function (d) {
-        state.entities = d;
-      });
+      return Promise.all([
+        fetchJson('/api/entities').then(function (d) { state.entities = d; }),
+        refreshHistoryState(),
+      ]);
     }
 
     // ────────────────────────────────────────────────────────────
@@ -1091,6 +1183,113 @@ export const guiAppHtml = `<!doctype html>
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Version history page (#/settings/history)
+    // ────────────────────────────────────────────────────────────
+    function renderHistory(content) {
+      content.innerHTML =
+        '<div class="view-header">' +
+          '<span class="entity-icon">📜</span>' +
+          '<h1>Version history</h1>' +
+        '</div>' +
+        '<div class="history-list" id="history-list"><div class="muted" style="padding:20px;">Loading…</div></div>';
+
+      fetchJson('/api/history?limit=500').then(function (data) {
+        var mount = document.getElementById('history-list');
+        if (!data.entries || data.entries.length === 0) {
+          mount.innerHTML = '<div class="muted" style="padding:24px;">No history yet — make a change to see it here.</div>';
+          return;
+        }
+        mount.innerHTML = data.entries.map(historyEntryHtml).join('');
+        mount.querySelectorAll('button.history-revert').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var id = btn.getAttribute('data-id');
+            if (!confirm('Revert this change?')) return;
+            fetchJson('/api/history/revert/' + encodeURIComponent(id), { method: 'POST' })
+              .then(afterMutation)
+              .then(function () { renderHistory(document.getElementById('content')); })
+              .catch(function (err) { alert('Revert failed: ' + err.message); });
+          });
+        });
+      }).catch(function (err) {
+        document.getElementById('history-list').innerHTML =
+          '<div class="muted" style="padding:24px;">Failed to load: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function historyEntryHtml(e) {
+      var before = e.before_json ? safeParse(e.before_json) : null;
+      var after = e.after_json ? safeParse(e.after_json) : null;
+      var summary;
+      var iconName = displayFor(e.table_name).label;
+      switch (e.operation) {
+        case 'insert': summary = 'Created in <span class="history-table">' + escapeHtml(iconName) + '</span>'; break;
+        case 'update': summary = 'Updated <span class="history-table">' + escapeHtml(iconName) + '</span> row'; break;
+        case 'delete': summary = 'Deleted from <span class="history-table">' + escapeHtml(iconName) + '</span>'; break;
+        case 'link':   summary = 'Linked via <span class="history-table">' + escapeHtml(e.table_name) + '</span>'; break;
+        case 'unlink': summary = 'Unlinked from <span class="history-table">' + escapeHtml(e.table_name) + '</span>'; break;
+        default:       summary = escapeHtml(e.operation) + ' on ' + escapeHtml(e.table_name);
+      }
+      var diff = renderDiff(before, after);
+      var actions = e.undone
+        ? '<span class="muted" style="font-size:11px;">undone</span>'
+        : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>';
+      return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
+        '<div class="history-meta">' +
+          '<div><span class="history-op op-' + escapeHtml(e.operation) + '">' + escapeHtml(e.operation) + '</span></div>' +
+          '<div style="margin-top:6px;">' + escapeHtml(formatTs(e.ts)) + '</div>' +
+        '</div>' +
+        '<div class="history-summary">' +
+          summary +
+          (diff ? '<div class="history-diff">' + diff + '</div>' : '') +
+        '</div>' +
+        '<div class="history-actions">' + actions + '</div>' +
+      '</div>';
+    }
+
+    function safeParse(s) {
+      try { return JSON.parse(s); } catch (_e) { return null; }
+    }
+
+    function formatTs(s) {
+      if (!s) return '';
+      try {
+        var d = new Date(s);
+        return d.toLocaleString();
+      } catch (_e) { return s; }
+    }
+
+    /** Side-by-side-ish text diff. Shows changed columns only for updates. */
+    function renderDiff(before, after) {
+      if (!before && !after) return '';
+      if (!before && after) {
+        return Object.keys(after).map(function (k) {
+          if (k === 'deleted_at' || after[k] == null) return '';
+          return '<div class="diff-add">+ ' + escapeHtml(k) + ': ' + escapeHtml(String(after[k])) + '</div>';
+        }).filter(Boolean).join('');
+      }
+      if (before && !after) {
+        return Object.keys(before).map(function (k) {
+          if (before[k] == null) return '';
+          return '<div class="diff-rem">- ' + escapeHtml(k) + ': ' + escapeHtml(String(before[k])) + '</div>';
+        }).filter(Boolean).join('');
+      }
+      var keys = new Set([].concat(Object.keys(before), Object.keys(after)));
+      var lines = [];
+      keys.forEach(function (k) {
+        var b = before[k];
+        var a = after[k];
+        if (b === a || (b == null && a == null)) return;
+        if (b == null) lines.push('<div class="diff-add">+ ' + escapeHtml(k) + ': ' + escapeHtml(String(a)) + '</div>');
+        else if (a == null) lines.push('<div class="diff-rem">- ' + escapeHtml(k) + ': ' + escapeHtml(String(b)) + '</div>');
+        else {
+          lines.push('<div class="diff-rem">- ' + escapeHtml(k) + ': ' + escapeHtml(String(b)) + '</div>');
+          lines.push('<div class="diff-add">+ ' + escapeHtml(k) + ': ' + escapeHtml(String(a)) + '</div>');
+        }
+      });
+      return lines.join('');
     }
 
     // ────────────────────────────────────────────────────────────

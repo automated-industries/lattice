@@ -470,6 +470,51 @@ describe('GUI server', () => {
     expect(after.agents?.icon).toBe('🦄');
   });
 
+  it('records mutations to the audit log and supports undo / redo', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // Empty to start.
+    const initial = (await fetch(`${server.url}/api/history`).then((r) => r.json())) as {
+      entries: unknown[];
+      canUndo: boolean;
+      canRedo: boolean;
+    };
+    expect(initial.entries).toEqual([]);
+    expect(initial.canUndo).toBe(false);
+
+    // Insert a row -> audit entry.
+    const { id } = (await (
+      await fetch(`${server.url}/api/tables/agents/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'undoable', name: 'Undoable' }),
+      })
+    ).json()) as { id: string };
+
+    const afterInsert = (await fetch(`${server.url}/api/history`).then((r) => r.json())) as {
+      entries: { operation: string }[];
+      canUndo: boolean;
+    };
+    expect(afterInsert.entries.length).toBe(1);
+    expect(afterInsert.entries[0]?.operation).toBe('insert');
+    expect(afterInsert.canUndo).toBe(true);
+
+    // Undo -> row gone.
+    const undo = await fetch(`${server.url}/api/history/undo`, { method: 'POST' });
+    expect(undo.status).toBe(200);
+    const gone = await fetch(`${server.url}/api/tables/agents/rows/${id}`);
+    expect(gone.status).toBe(404);
+
+    // Redo -> row back.
+    const redo = await fetch(`${server.url}/api/history/redo`, { method: 'POST' });
+    expect(redo.status).toBe(200);
+    const back = await fetch(`${server.url}/api/tables/agents/rows/${id}`);
+    expect(back.status).toBe(200);
+  });
+
   it('rejects unknown tables and non-junctions for link/unlink', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
