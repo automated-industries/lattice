@@ -8,6 +8,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-05-25
+
+### Added — Lattice Teams (Phase 5 + OSS-only redesign)
+
+This release lands the full Lattice Teams feature (multi-user shared cloud Lattice databases) on top of v1.11's `lattice gui`. Highlights:
+
+- **Atomic team bootstrap.** `lattice teams register --cloud <url> --email <e> --name <display> --team-name <team>` creates the user, the team, the creator membership, and the bearer token in one HTTP call.
+- **Email-bound invitations.** `lattice teams invite --team <team> --invitee-email <e>` mints a `latinv_` token tied to the recipient's email; redemption with a different email is rejected `403`.
+- **Native `secrets` + `files` entities** with at-rest encryption on `secrets.value`. Available to any Lattice via `registerNativeEntities()`; auto-registered by `lattice gui`.
+- **Machine-local user config at `~/.lattice/`** — `identity.json`, encrypted `db-credentials.enc`, per-team `keys/<label>.token`, and an auto-generated `master.key`.
+- **GUI restyle** matching the latticesql.com design tokens (dark theme, lime accent, Inter + JetBrains Mono).
+
+Full architecture, schema, and HTTP surface: see [docs/teams.md](docs/teams.md).
+
 ### Added — OSS-only redesign on top of Phase 5 (feat/teams)
 
 A follow-on PR layered on the five-phase Lattice Teams branch. Adds machine-local user config, a Database panel in Project Config, native `secrets`/`files` entities with at-rest encryption on plain `define()` tables, email-bound invitations + a singleton team-identity facade, and a GUI restyle that pulls design tokens directly from latticesql.com.
