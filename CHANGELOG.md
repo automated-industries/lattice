@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added — Lattice Teams (Phase 1: server mode + bearer auth)
+
+First slice of the **Lattice Teams** feature: a single Postgres- or SQLite-backed lattice instance can now boot in **team-cloud server mode**, exposing the HTTP API over a non-localhost interface with bearer-token authentication. The rest of the feature (team management, object sharing, row link/unlink, sync engine, GUI integration) lands in subsequent phases.
+
+- **`lattice serve` CLI command.** New subcommand alongside `lattice gui`. Accepts `--host`, `--port`, `--team-cloud`, and the usual `--config` / `--output`. Without `--team-cloud` it acts like `gui` but without auto-opening a browser; with `--team-cloud` it registers the internal teams tables and gates every request on a bearer token.
+- **`Lattice.defineLate(table, def)`.** Mirror image of `define()` for post-`init()` table registration. Compiles the definition, registers it on the schema manager, and immediately applies its DDL through `SchemaManager.applySchemaForAsync` (which holds the same `pg_advisory_xact_lock` the boot path uses, so concurrent defineLate callers on Postgres serialize). Updates `_columnCache` for the new table so subsequent `query`/`insert`/`update` calls are aware of it.
+- **`SchemaManager.applySchemaForAsync(adapter, name)`.** Per-table version of `applySchema` — pulled out into a shared `_applyOneTable` helper, then wrapped in a `withClient` block on Postgres so the advisory lock covers the DDL window. SQLite falls through to the existing direct-DDL path.
+- **Bearer-token auth (`src/teams/server/auth.ts`).** Tokens are `lat_`-prefixed 256-bit random strings; only their SHA-256 hex hash is stored in `__lattice_api_tokens.token_hash`. `authenticate(req, db)` hashes the incoming bearer, looks it up directly, re-verifies with `timingSafeEqual`, and resolves the linked `__lattice_users` row (rejecting revoked tokens and soft-deleted users). `generateToken()` mints a new raw + hash pair for the issuer to store. scrypt/bcrypt are intentionally not used — they exist to slow down brute-forcing of low-entropy passwords; 256-bit tokens don't need slowdown.
+- **Cloud-side internal tables (`src/teams/internal-tables.ts`).** `__lattice_users` and `__lattice_api_tokens` table definitions. Registered via `defineLate` when a lattice is booted with `teamCloud: true`. Teams, members, shared objects, row links, and the change log are added in later phases.
+- **`startGuiServer` extensions.** `StartGuiServerOptions` gains `host?: string` (default `127.0.0.1`) and `teamCloud?: boolean`. In team-cloud mode: every API request requires a valid bearer token (401 otherwise), the database-switcher endpoints (`/api/databases*`) return 403 (single-user filesystem-trust assumption breaks under multi-user access), and the listen bind uses `host` instead of the previously-hardcoded `127.0.0.1`.
+
+### Added — Tests
+
+- `tests/unit/teams-auth.test.ts` — 11 cases covering: token hash/extract helpers (5), server boots in team-cloud mode and registers internal tables (1), 401 on missing/wrong-prefix/wrong-scheme/unknown-token Authorization headers (3), 200 on valid bearer (1), 401 on revoked token (1), 403 on the database-switcher endpoint in team-cloud mode (1).
+
 ## [1.11.0] — 2026-05-25
 
 ### Added
