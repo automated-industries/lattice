@@ -45,4 +45,23 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('local SQLite data will be ignored');
     expect(guiAppHtml).toContain('Your local SQLite file is preserved');
   });
+
+  it('detectSupabasePoolerMistakes is wired into the SPA bundle', () => {
+    // The function lives inline in the GUI app source. Verify the bundle
+    // contains both the function symbol and its hint strings so a future
+    // refactor that accidentally drops the validation surface trips this
+    // test instead of shipping silently.
+    expect(guiAppHtml).toContain('detectSupabasePoolerMistakes');
+    expect(guiAppHtml).toContain('tenant-prefixed user');
+    expect(guiAppHtml).toContain('transaction mode');
+  });
+
+  it('Migrate-to-cloud modal probes before saving the credential', () => {
+    // v1.13.2 + earlier sent the form straight to /api/dbconfig/migrate-to-cloud
+    // without probing first — a wrong host/port/user got persisted and
+    // failed silently on the next open. v1.13.3 routes Migrate through
+    // probeBeforeCredentialSave so the credential is never saved without
+    // proving it can actually connect.
+    expect(guiAppHtml).toContain('probeBeforeCredentialSave');
+  });
 });

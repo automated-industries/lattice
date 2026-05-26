@@ -189,3 +189,6 @@ export type {
 } from './framework/cloud-migration.js';
 export { probeCloud } from './framework/cloud-connect.js';
 export type { CloudProbeResult } from './framework/cloud-connect.js';
+
+export { registerDirectViaPostgres, isPostgresUrl } from './teams/register-direct.js';
+export type { DirectRegisterResult } from './teams/register-direct.js';
