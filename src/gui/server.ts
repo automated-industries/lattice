@@ -351,9 +351,7 @@ function buildRowContextLocator(
   const derivedSlug = deriveSlugFromManifest(row, knownSlugs);
   if (!derivedSlug) return null;
   const entityFiles = manifestEntry.entities[derivedSlug];
-  const fileNames = entityFiles
-    ? entityFileNames(entityFiles)
-    : manifestEntry.declaredFiles;
+  const fileNames = entityFiles ? entityFileNames(entityFiles) : manifestEntry.declaredFiles;
   return {
     directoryRoot: manifestEntry.directoryRoot,
     slug: derivedSlug,

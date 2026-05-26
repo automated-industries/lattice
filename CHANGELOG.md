@@ -32,7 +32,9 @@ The convergence happens in two places now:
 
 ```ts
 const db = new Lattice({ config: './lattice.config.yml' });
-db.defineEntityContext('agents', { /* ... */ });
+db.defineEntityContext('agents', {
+  /* ... */
+});
 await db.init();
 console.log(db.entityContexts()); // Map<string, EntityContextDefinition>
 ```

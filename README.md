@@ -2066,12 +2066,12 @@ npx lattice gui --config ./lattice.config.yml --output ./context --port 4317
 
 **Options**
 
-| Flag                  | Default                | Description                                           |
-| --------------------- | ---------------------- | ----------------------------------------------------- |
-| `--config, -c <path>` | `./lattice.config.yml` | Path to the config file                               |
+| Flag                  | Default                | Description                                              |
+| --------------------- | ---------------------- | -------------------------------------------------------- |
+| `--config, -c <path>` | `./lattice.config.yml` | Path to the config file                                  |
 | `--output <dir>`      | (auto-detected)        | Output directory containing rendered context — see below |
-| `--port <number>`     | `4317`                 | Localhost port; auto-increments when the port is busy |
-| `--no-open`           | off                    | Print the URL without opening a browser               |
+| `--port <number>`     | `4317`                 | Localhost port; auto-increments when the port is busy    |
+| `--no-open`           | off                    | Print the URL without opening a browser                  |
 
 **Output-directory auto-detection (v1.13.1+).** When `--output` is not passed explicitly, the GUI probes `./context`, `.`, and `./generated` in order and uses the first directory containing a `.lattice/manifest.json` (announced via a one-line `auto-detected rendered context at "<dir>"` log on stdout). Projects whose `lattice render` writes into the project root no longer need to pass `--output .` every time. An explicit `--output` is always honoured.
 

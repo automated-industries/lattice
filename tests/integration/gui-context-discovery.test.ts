@@ -117,10 +117,7 @@ describe('GUI row-context discovery — manifest fallback', () => {
     const { configPath, outputDir } = writeMinimalConfig(root);
 
     mkdirSync(join(outputDir, 'items', 'beta-by-name'), { recursive: true });
-    writeFileSync(
-      join(outputDir, 'items', 'beta-by-name', 'ITEM.md'),
-      '# Beta (matched by name)',
-    );
+    writeFileSync(join(outputDir, 'items', 'beta-by-name', 'ITEM.md'), '# Beta (matched by name)');
 
     writeManifest(outputDir, {
       version: 2,
