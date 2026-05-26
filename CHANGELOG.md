@@ -8,6 +8,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-05-26
+
+### Fixed — GUI layout + table-cell overflow
+
+- Replaced `grid-template-columns: 220px 1fr` with `220px minmax(0, 1fr)` on the main layout so wide table content no longer forces the whole page wider than the viewport. The previous `1fr`'s implicit `auto` minimum let chip-heavy cells push the layout past `100vw`, producing a horizontal page scrollbar.
+- Object-table cells now truncate to 3 lines via a `.cell-clip` wrapper (`-webkit-line-clamp: 3`). Junction columns with many chips and intrinsic columns with long text blobs render at a consistent row height instead of growing into multi-line paragraphs.
+
+### Fixed — GUI row-context discovery for programmatic entity contexts
+
+The Database panel previously read entity contexts only from `lattice.config.yml` via the parser's `parsed.entityContexts`. Projects that register entity contexts programmatically (in a JS / TS schema module run by their own `lattice render` script — e.g. `lattice.schema.mjs`) never saw their rendered files: every row opened the "no rendered context — define an entityContext" placeholder, even when the on-disk files existed.
+
+The convergence happens in two places now:
+
+1. **`Lattice.entityContexts()`** (new public accessor) returns the full registered map — YAML entries + anything added later via `defineEntityContext()`. The GUI server consumes this instead of the parser's `entityContexts` field, so programmatic registrations on the live Lattice show up automatically.
+2. **Manifest fallback.** When a table has no schema-registered entity context but the on-disk render manifest (`.lattice/manifest.json`) names it, the GUI derives a row → slug mapping heuristically from `row.slug` / `row.id` / `row.name` and surfaces the rendered files. This covers the "programmatic registration in an mjs file the GUI process never imports" case without requiring users to duplicate context definitions in YAML.
+
+### Fixed — GUI output-directory discovery
+
+`lattice gui` previously defaulted `--output` to `./context` unconditionally. Projects whose `lattice render` writes into the project root (`.`) or `./generated` would launch the GUI against an empty directory and see "no rendered context." When `--output` is not explicitly passed, the CLI now probes `./context`, `.`, and `./generated` in order and uses the first one containing a `.lattice/manifest.json` (announced via a one-line stdout log). Explicit `--output` is always honoured.
+
+### Added — `Lattice.entityContexts()`
+
+```ts
+const db = new Lattice({ config: './lattice.config.yml' });
+db.defineEntityContext('agents', {
+  /* ... */
+});
+await db.init();
+console.log(db.entityContexts()); // Map<string, EntityContextDefinition>
+```
+
+Returns a defensive copy — mutations to the returned map don't affect the schema.
+
 ## [1.13.0] - 2026-05-26
 
 ### Added — Local → Cloud → Team-Cloud progression

@@ -20,7 +20,7 @@ function makeAdapter(overrides: Partial<Pick<StorageAdapter, 'all' | 'get'>> = {
 }
 
 const agentRow: Row = { id: 'agent-1', name: 'Alpha', slug: 'alpha' };
-const userRow: Row = { id: 'user-1', name: 'Brian', email: 'brian@test.com' };
+const userRow: Row = { id: 'user-1', name: 'Ada', email: 'ada@test.com' };
 
 // ---------------------------------------------------------------------------
 // Protected entity context — source filtering
