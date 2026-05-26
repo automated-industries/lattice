@@ -1093,8 +1093,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           // Try to open the new config first; only swap once it succeeds so a
-          // bad config doesn't leave the server with no active DB.
-          const next = await openConfig(newPath, active.outputDir);
+          // bad config doesn't leave the server with no active DB. Common
+          // failure mode: switching back to a cloud DB whose saved credential
+          // was rotated or whose Postgres is now unreachable. Surface the
+          // raw error verbatim so the UI's toast names the real cause.
+          let next: ActiveDb;
+          try {
+            next = await openConfig(newPath, active.outputDir);
+          } catch (e) {
+            const err = e as Error & { code?: string };
+            console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
+            const codePrefix = err.code ? `[${err.code}] ` : '';
+            sendJson(
+              res,
+              { error: `Failed to switch to ${newPath}: ${codePrefix}${err.message}` },
+              500,
+            );
+            return;
+          }
           active.db.close();
           active = next;
           sendJson(res, { ok: true, path: active.configPath });

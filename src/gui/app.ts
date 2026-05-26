@@ -1032,12 +1032,46 @@ export const guiAppHtml = `<!doctype html>
     // Dashboard
     // ────────────────────────────────────────────────────────────
     function renderDashboard(content) {
-      var cards = DASHBOARD_ORDER.map(function (name) {
-        var t = tableByName(name);
-        if (!t) return '';
-        var d = displayFor(name);
+      // Show every first-class (non-junction, non-system) entity. The
+      // previous implementation used DASHBOARD_ORDER as the filter — meaning
+      // installs whose YAML declared tables outside the hardcoded list
+      // (e.g. clients / students / vendors) saw a blank dashboard with no
+      // hint why. DASHBOARD_ORDER is now a preference for ordering only;
+      // tables not in it appear after, in declaration order.
+      var preferenceRank = function (name) {
+        var idx = DASHBOARD_ORDER.indexOf(name);
+        return idx === -1 ? DASHBOARD_ORDER.length : idx;
+      };
+      var firstClass = (state.entities.tables || [])
+        .filter(function (t) {
+          // Junctions belong on the Data Model page, not as dashboard cards.
+          if (isJunction(t)) return false;
+          // System tables (_lattice_gui_*, __lattice_*) are hidden.
+          if (t.name.charAt(0) === '_') return false;
+          return true;
+        })
+        .slice()
+        .sort(function (a, b) {
+          var ra = preferenceRank(a.name);
+          var rb = preferenceRank(b.name);
+          if (ra !== rb) return ra - rb;
+          // Same preference rank — keep declaration order from the API.
+          return 0;
+        });
+
+      if (firstClass.length === 0) {
+        content.innerHTML =
+          '<div class="placeholder">' +
+            '<h2>No entities yet</h2>' +
+            '<p>Define entities in your <code>lattice.config.yml</code> or register them via <code>db.define()</code>, then reload.</p>' +
+          '</div>';
+        return;
+      }
+
+      var cards = firstClass.map(function (t) {
+        var d = displayFor(t.name);
         var count = (t.rowCount != null) ? t.rowCount : 0;
-        return '<a class="card" href="#/objects/' + name + '">' +
+        return '<a class="card" href="#/objects/' + t.name + '">' +
           '<div class="card-icon">' + d.icon + '</div>' +
           '<div class="card-label">' + escapeHtml(d.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +

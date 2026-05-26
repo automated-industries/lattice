@@ -8,6 +8,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.3] - 2026-05-26
+
+### Fixed — Upgrade to team cloud fails when cloud URL is a direct Postgres URL
+
+`TeamsClient.upgradeToTeamCloud` (and `register`) called `fetch(url + path)` against the cloud URL. When the URL is `postgres://user:password@host:5432/db` (which is what the GUI's "Migrate to cloud" / "Connect to existing cloud" wizards save as the cloud credential), browsers refuse the request with `Request cannot be constructed from a URL that includes credentials` — a hard Fetch API restriction. The team-cloud HTTP register flow only works when the cloud is fronted by a `lattice serve --team-cloud` HTTP server; for direct-Postgres clouds there was no fallback.
+
+Fix: new `registerDirectViaPostgres(cloudUrl, email, name, teamName)` runs the same INSERT sequence against the cloud Postgres directly. `TeamsClient.upgradeToTeamCloud` dispatches on URL scheme: `http(s)://` keeps the HTTP path; `postgres(ql)://` uses the direct path. Same invariants enforced both ways (refuses if any user already exists; refuses if the singleton team identity already exists).
+
+New public exports from `latticesql`:
+
+- `registerDirectViaPostgres(cloudUrl, email, name, teamName)`
+- `isPostgresUrl(url)`
+- `type DirectRegisterResult`
+
+### Fixed — GUI dashboard renders empty for any non-hardcoded schema
+
+`renderDashboard` filtered cards through a hardcoded `DASHBOARD_ORDER = ['meetings', 'people', 'messages', 'projects', 'repositories', 'files']`. Installs whose YAML declared different entity names (e.g. `clients`, `students`, `vendors`, `contracts`) saw a blank dashboard with no error or hint why — even though `/api/entities` returned the tables correctly.
+
+Fix: render a card for every first-class entity (non-junction, non-system-table). `DASHBOARD_ORDER` is now a preference for ordering — entries in the list sort first; everything else follows in declaration order. New empty-state placeholder when no first-class entities exist at all.
+
+### Improved — DB switch failures now surface the real error
+
+`POST /api/databases/switch` previously relied on the top-level request handler's catch-all to surface errors as `500 <message>`. The SPA's toast then read just the status code. Common failure mode: switching back to a cloud DB whose saved credential was rotated or whose Postgres became unreachable showed an opaque 500 with no clue.
+
+Fix: dedicated try/catch around `openConfig` in the switch handler logs the full error to the server's stderr (with code + stack) and returns a structured `Failed to switch to <path>: [SQLSTATE] <message>` JSON to the client, so the toast names the real cause.
+
 ## [1.13.2] - 2026-05-26
 
 ### Fixed — GUI Postgres form: silent authentication failures from autocapitalize + paste whitespace

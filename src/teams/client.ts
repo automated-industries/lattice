@@ -5,6 +5,7 @@ import { applySchemaSpec, TeamsSchemaConflictError, type SchemaSpec } from './sc
 import type { Row, WriteHookContext } from '../types.js';
 import { probeCloud, type CloudProbeResult } from '../framework/cloud-connect.js';
 import { saveDbCredential, writeToken } from '../framework/user-config.js';
+import { isPostgresUrl, registerDirectViaPostgres } from './register-direct.js';
 
 /**
  * Local-side client for a Lattice Teams cloud. Wraps the cloud HTTP API
@@ -264,12 +265,19 @@ export class TeamsClient {
   }
 
   /**
-   * Upgrade an already-connected cloud DB to a team DB. Runs the
-   * atomic `POST /api/auth/register` flow against the cloud URL
-   * stored under `label`. Writes the resulting bearer to
-   * `~/.lattice/keys/<label>.token`. Caller is expected to call
-   * `saveConnection` if they also want the local
-   * `__lattice_team_connections` row populated.
+   * Upgrade an already-connected cloud DB to a team DB. Two paths
+   * depending on the cloud URL's scheme:
+   *
+   *   - `http(s)://…` — POST to the cloud's `/api/auth/register` endpoint
+   *     (`lattice serve --team-cloud` is fronting the Postgres).
+   *   - `postgres(ql)://…` — drive the same INSERT sequence directly
+   *     against the cloud Postgres via {@link registerDirectViaPostgres}.
+   *     The HTTP path can't be used here because the browser's Fetch
+   *     API refuses URLs with embedded credentials.
+   *
+   * On success writes the bearer token to `~/.lattice/keys/<label>.token`.
+   * Caller is expected to call `saveConnection` if they also want the
+   * local `__lattice_team_connections` row populated.
    */
   async upgradeToTeamCloud(opts: {
     label: string;
@@ -278,7 +286,9 @@ export class TeamsClient {
     email: string;
     displayName: string;
   }): Promise<RegisterResponse> {
-    const reg = await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
+    const reg = isPostgresUrl(opts.cloudUrl)
+      ? await registerDirectViaPostgres(opts.cloudUrl, opts.email, opts.displayName, opts.teamName)
+      : await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
     writeToken(opts.label, reg.raw_token);
     return reg;
   }
