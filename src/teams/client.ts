@@ -3,6 +3,8 @@ import type { Lattice } from '../lattice.js';
 import { LOCAL_INTERNAL_TABLE_DEFS } from './internal-tables.js';
 import { applySchemaSpec, TeamsSchemaConflictError, type SchemaSpec } from './schema-spec.js';
 import type { Row, WriteHookContext } from '../types.js';
+import { probeCloud, type CloudProbeResult } from '../framework/cloud-connect.js';
+import { saveDbCredential, writeToken } from '../framework/user-config.js';
 
 /**
  * Local-side client for a Lattice Teams cloud. Wraps the cloud HTTP API
@@ -200,6 +202,85 @@ export class TeamsClient {
       email,
       name,
     });
+  }
+
+  // ── High-level orchestration (v1.13+) ───────────────────────────────────
+  // Wraps the multi-step flows the GUI's Database panel + library
+  // consumers both need: connecting to an existing cloud DB (with
+  // optional team join), and upgrading a non-team cloud into a team
+  // cloud. The HTTP routes in src/gui/dbconfig-routes.ts are thin
+  // shells over these methods.
+
+  /**
+   * Connect a local project to an existing cloud DB by URL. Probes
+   * the target for team status first; if it's a teams DB, the caller
+   * must pass `invite_token` + identity (email/name) and the method
+   * will redeem the invite and save the resulting bearer to
+   * `~/.lattice/keys/<label>.token`. The saved credential lands in
+   * `~/.lattice/db-credentials.enc` keyed by `label`. Caller is
+   * responsible for rewriting the YAML `db:` line to
+   * `${LATTICE_DB:<label>}` and reopening the active Lattice.
+   *
+   * Returns the probe result + (if redeemed) the member info. Throws
+   * if the target is unreachable, or if it's a teams DB and the
+   * caller omitted `invite_token`.
+   */
+  async connectToExistingCloud(opts: {
+    label: string;
+    cloudUrl: string;
+    invite_token?: string;
+    email?: string;
+    name?: string;
+  }): Promise<{
+    probe: CloudProbeResult;
+    joinedAsMember?: { user_id: string; team_id: string };
+  }> {
+    const probe = await probeCloud(opts.cloudUrl);
+    if (!probe.reachable) {
+      throw new Error(`Cloud DB unreachable: ${probe.error ?? 'unknown error'}`);
+    }
+    if (probe.teamEnabled) {
+      const inviteToken = opts.invite_token;
+      const email = opts.email;
+      const name = opts.name;
+      if (!inviteToken) {
+        throw new TeamsHttpError(400, 'invite token required for teams DB');
+      }
+      if (!email || !name) {
+        throw new TeamsHttpError(400, 'email + name required to redeem invitation');
+      }
+      const redeem = await this.redeemInvite(opts.cloudUrl, inviteToken, email, name);
+      saveDbCredential(opts.label, opts.cloudUrl);
+      writeToken(opts.label, redeem.raw_token);
+      return {
+        probe,
+        joinedAsMember: { user_id: redeem.user.id, team_id: redeem.team.id },
+      };
+    }
+    // Non-team DB: just save the credential. No bearer needed yet —
+    // the upgrade-to-team flow will mint one later.
+    saveDbCredential(opts.label, opts.cloudUrl);
+    return { probe };
+  }
+
+  /**
+   * Upgrade an already-connected cloud DB to a team DB. Runs the
+   * atomic `POST /api/auth/register` flow against the cloud URL
+   * stored under `label`. Writes the resulting bearer to
+   * `~/.lattice/keys/<label>.token`. Caller is expected to call
+   * `saveConnection` if they also want the local
+   * `__lattice_team_connections` row populated.
+   */
+  async upgradeToTeamCloud(opts: {
+    label: string;
+    cloudUrl: string;
+    teamName: string;
+    email: string;
+    displayName: string;
+  }): Promise<RegisterResponse> {
+    const reg = await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
+    writeToken(opts.label, reg.raw_token);
+    return reg;
   }
 
   // ── Cloud HTTP calls (authenticated) ────────────────────────────────────

@@ -153,8 +153,17 @@ export async function dispatchUserConfigRoute(
           configPath: p.path,
           dbFile: p.dbFile,
           active: p.path === ctx.configPath,
+          // v1.13: state is 'local' for sibling SQLite configs. Cloud
+          // labels could have any state, so they're reported separately
+          // as 'unknown' below — probing every cloud entry on catalog
+          // load is too expensive for v1.
+          state: 'local' as const,
         })),
-        cloud: cloudLabels.map((label) => ({ label, type: 'postgres' as const })),
+        cloud: cloudLabels.map((label) => ({
+          label,
+          type: 'postgres' as const,
+          state: 'unknown' as const,
+        })),
       });
       return Promise.resolve();
     });

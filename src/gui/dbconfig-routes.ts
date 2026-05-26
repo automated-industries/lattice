@@ -3,7 +3,22 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
-import { getDbCredential, saveDbCredential, listDbCredentials } from '../framework/user-config.js';
+import {
+  getDbCredential,
+  saveDbCredential,
+  listDbCredentials,
+  getOrCreateMasterKey,
+  readIdentity,
+  readToken,
+} from '../framework/user-config.js';
+import { probeCloud } from '../framework/cloud-connect.js';
+import {
+  archiveLocalSqlite,
+  migrateLatticeData,
+  openTargetLatticeForMigration,
+} from '../framework/cloud-migration.js';
+import { TeamsClient } from '../teams/client.js';
+import { parseConfigFile } from '../config/parser.js';
 
 /**
  * Endpoints for the Project Config "Database" panel. They wrap three
@@ -106,8 +121,16 @@ function parsePostgresUrl(url: string): {
   }
 }
 
+export type DbConfigState =
+  | 'local'
+  | 'cloud-connected'
+  | 'team-cloud-creator'
+  | 'team-cloud-member'
+  | 'team-cloud-needs-invite';
+
 interface DbInfo {
   type: 'sqlite' | 'postgres';
+  state: DbConfigState;
   label?: string;
   dbFile?: string;
   host?: string;
@@ -115,6 +138,63 @@ interface DbInfo {
   dbname?: string;
   user?: string;
   teamEnabled: boolean;
+  teamName?: string;
+}
+
+/**
+ * Read `__lattice_team_identity.creator_email` if the singleton is
+ * present. Returns null when the table doesn't exist or the row is
+ * absent — used to decide creator-vs-member when computing state.
+ */
+async function getCreatorEmail(db: Lattice): Promise<string | null> {
+  try {
+    const row = (await db.get('__lattice_team_identity', 'singleton')) as
+      | { creator_email?: string }
+      | null;
+    return row?.creator_email ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute the panel's state. Combines the YAML's `db:` shape + the
+ * active Lattice's `__lattice_team_identity` row + the operator's
+ * `~/.lattice/keys/<label>.token` presence + `creator_email` match.
+ */
+function computeState(
+  type: 'sqlite' | 'postgres',
+  teamEnabled: boolean,
+  label: string | undefined,
+  creatorEmail: string | null,
+): DbConfigState {
+  if (type === 'sqlite') return 'local';
+  if (!teamEnabled) return 'cloud-connected';
+  // teamEnabled + postgres: need to disambiguate creator/member/needs-invite.
+  if (!label) {
+    // Postgres with team identity but no label in db-credentials.enc.
+    // Operator pasted a raw URL; we can't look up a token by label,
+    // so we conservatively report needs-invite.
+    return 'team-cloud-needs-invite';
+  }
+  let token: string | null = null;
+  try {
+    token = readToken(label);
+  } catch {
+    token = null;
+  }
+  if (!token) return 'team-cloud-needs-invite';
+  // Have a token + team is enabled. Distinguish creator vs member by
+  // matching identity.email against __lattice_team_identity.creator_email.
+  const identity = readIdentity();
+  if (
+    creatorEmail !== null &&
+    identity.email.length > 0 &&
+    creatorEmail.toLowerCase() === identity.email.toLowerCase()
+  ) {
+    return 'team-cloud-creator';
+  }
+  return 'team-cloud-member';
 }
 
 /** Inspect the YAML's `db:` line + the active Lattice for the team-status flag. */
@@ -124,40 +204,76 @@ async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo>
   const rawDb = doc.get('db');
   const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
   const teamEnabled = await detectTeamEnabled(db);
+  const creatorEmail = teamEnabled ? await getCreatorEmail(db) : null;
   const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(dbLine);
+
+  let identityRow: { team_name?: string } | null = null;
+  if (teamEnabled) {
+    try {
+      identityRow = (await db.get('__lattice_team_identity', 'singleton')) as
+        | { team_name?: string }
+        | null;
+    } catch {
+      identityRow = null;
+    }
+  }
+  const teamName = identityRow?.team_name;
+
   if (labelMatch) {
     const label = labelMatch[1] ?? '';
     const url = getDbCredential(label);
+    const state = computeState('postgres', teamEnabled, label, creatorEmail);
     if (url) {
       const parsed = parsePostgresUrl(url);
       if (parsed) {
         return {
           type: 'postgres',
+          state,
           label,
           host: parsed.host,
           port: parsed.port,
           dbname: parsed.dbname,
           user: parsed.user,
           teamEnabled,
+          ...(teamName !== undefined ? { teamName } : {}),
         };
       }
     }
-    return { type: 'postgres', label, teamEnabled };
+    return {
+      type: 'postgres',
+      state,
+      label,
+      teamEnabled,
+      ...(teamName !== undefined ? { teamName } : {}),
+    };
   }
   if (/^postgres(ql)?:\/\//i.test(dbLine)) {
     const parsed = parsePostgresUrl(dbLine);
+    const state = computeState('postgres', teamEnabled, undefined, creatorEmail);
     return parsed
       ? {
           type: 'postgres',
+          state,
           host: parsed.host,
           port: parsed.port,
           dbname: parsed.dbname,
           user: parsed.user,
           teamEnabled,
+          ...(teamName !== undefined ? { teamName } : {}),
         }
-      : { type: 'postgres', teamEnabled };
+      : {
+          type: 'postgres',
+          state,
+          teamEnabled,
+          ...(teamName !== undefined ? { teamName } : {}),
+        };
   }
-  return { type: 'sqlite', dbFile: basename(dbLine), teamEnabled };
+  return {
+    type: 'sqlite',
+    state: 'local',
+    dbFile: basename(dbLine),
+    teamEnabled,
+  };
 }
 
 /**
@@ -314,6 +430,208 @@ export async function dispatchDbConfigRoute(
     await tryHandler(res, () => {
       sendJson(res, { labels: listDbCredentials() });
       return Promise.resolve();
+    });
+    return true;
+  }
+
+  // ── v1.13: state-machine endpoints (thin wrappers over the public API). ──
+
+  if (pathname === '/api/dbconfig/probe' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const parsed = parseSaveBody(body);
+      if (parsed?.type !== 'postgres') {
+        sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
+        return;
+      }
+      const url = buildPostgresUrl({
+        host: parsed.host,
+        port: Number(parsed.port),
+        dbname: parsed.dbname,
+        user: parsed.user,
+        password: parsed.password,
+      });
+      const result = await probeCloud(url);
+      sendJson(res, result);
+    });
+    return true;
+  }
+
+  if (pathname === '/api/dbconfig/migrate-to-cloud' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const parsed = parseSaveBody(body);
+      if (parsed?.type !== 'postgres') {
+        sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
+        return;
+      }
+      const url = buildPostgresUrl({
+        host: parsed.host,
+        port: Number(parsed.port),
+        dbname: parsed.dbname,
+        user: parsed.user,
+        password: parsed.password,
+      });
+      // Probe first — refuse if unreachable or target already has a team.
+      const probe = await probeCloud(url);
+      if (!probe.reachable) {
+        sendJson(res, { ok: false, error: probe.error ?? 'Cloud DB unreachable' }, 502);
+        return;
+      }
+      if (probe.teamEnabled) {
+        sendJson(
+          res,
+          {
+            ok: false,
+            error: 'Target cloud DB already has a team — migration aborts to avoid mixing data',
+          },
+          409,
+        );
+        return;
+      }
+      // Open a target Lattice matching the source's schema, run the
+      // copy, close, archive, rewrite YAML, swap.
+      const encryptionKey = getOrCreateMasterKey();
+      const target = await openTargetLatticeForMigration(
+        ctx.configPath,
+        url,
+        encryptionKey,
+      );
+      try {
+        const result = await migrateLatticeData(ctx.db, target);
+        target.close();
+        const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;
+        const backupPath = archiveLocalSqlite(sourceDbPath);
+        saveDbCredential(parsed.label, url);
+        rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
+        await ctx.swap();
+        sendJson(res, {
+          ok: true,
+          label: parsed.label,
+          tablesCopied: result.tablesCopied,
+          rowsCopied: result.rowsCopied,
+          sourceBackupPath: backupPath,
+        });
+      } catch (e) {
+        try {
+          target.close();
+        } catch {
+          // best-effort
+        }
+        // Migration failed: do NOT touch YAML or rename the source.
+        sendJson(res, { ok: false, error: (e as Error).message }, 500);
+      }
+    });
+    return true;
+  }
+
+  if (pathname === '/api/dbconfig/connect-existing' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const parsed = parseSaveBody(body);
+      if (parsed?.type !== 'postgres') {
+        sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
+        return;
+      }
+      const inviteToken =
+        typeof body.invite_token === 'string' && body.invite_token.trim()
+          ? body.invite_token.trim()
+          : undefined;
+      const url = buildPostgresUrl({
+        host: parsed.host,
+        port: Number(parsed.port),
+        dbname: parsed.dbname,
+        user: parsed.user,
+        password: parsed.password,
+      });
+      const identity = readIdentity();
+      const client = new TeamsClient(ctx.db);
+      try {
+        const result = await client.connectToExistingCloud({
+          label: parsed.label,
+          cloudUrl: url,
+          ...(inviteToken !== undefined ? { invite_token: inviteToken } : {}),
+          ...(identity.email ? { email: identity.email } : {}),
+          ...(identity.display_name ? { name: identity.display_name } : {}),
+        });
+        rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
+        await ctx.swap();
+        sendJson(res, {
+          ok: true,
+          label: parsed.label,
+          teamEnabled: result.probe.teamEnabled,
+          ...(result.probe.teamName !== undefined ? { teamName: result.probe.teamName } : {}),
+          ...(result.joinedAsMember !== undefined
+            ? { joinedAsMember: result.joinedAsMember }
+            : {}),
+        });
+      } catch (e) {
+        const status = (e as { status?: number }).status ?? 500;
+        sendJson(res, { ok: false, error: (e as Error).message }, status);
+      }
+    });
+    return true;
+  }
+
+  if (pathname === '/api/dbconfig/upgrade-to-team' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const teamName =
+        typeof body.team_name === 'string' && body.team_name.trim()
+          ? body.team_name.trim()
+          : '';
+      if (!teamName) {
+        sendJson(res, { error: 'team_name is required' }, 400);
+        return;
+      }
+      const info = await describeCurrent(ctx.configPath, ctx.db);
+      if (info.type !== 'postgres' || !info.label) {
+        sendJson(
+          res,
+          {
+            error:
+              'upgrade-to-team requires the active project to be on a labeled cloud DB. Migrate to cloud first.',
+          },
+          400,
+        );
+        return;
+      }
+      if (info.teamEnabled) {
+        sendJson(res, { error: 'Cloud DB is already a team DB' }, 409);
+        return;
+      }
+      const cloudUrl = getDbCredential(info.label);
+      if (!cloudUrl) {
+        sendJson(res, { error: 'No saved credential for ' + info.label }, 500);
+        return;
+      }
+      const identity = readIdentity();
+      if (!identity.email || !identity.display_name) {
+        sendJson(
+          res,
+          {
+            error:
+              'Set your display name + email in User Config → Identity before creating a team',
+          },
+          400,
+        );
+        return;
+      }
+      const client = new TeamsClient(ctx.db);
+      try {
+        const reg = await client.upgradeToTeamCloud({
+          label: info.label,
+          cloudUrl,
+          teamName,
+          email: identity.email,
+          displayName: identity.display_name,
+        });
+        await ctx.swap();
+        sendJson(res, { ok: true, team: reg.team, user: reg.user });
+      } catch (e) {
+        const status = (e as { status?: number }).status ?? 500;
+        sendJson(res, { ok: false, error: (e as Error).message }, status);
+      }
     });
     return true;
   }
