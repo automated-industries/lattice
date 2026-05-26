@@ -2398,8 +2398,10 @@ export const guiAppHtml = `<!doctype html>
       // enters per-team things (cloud URL + team name) in this modal.
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
-          '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
-          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" /></div>' +
+          '<div class="field"><label>Cloud URL</label>' +
+            '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+          '</div>' +
+          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" autocapitalize="off" /></div>' +
           '<div class="field"><label>Your display name</label><input name="user_name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
           '<div class="field"><label>Team name</label><input name="team_name" /></div>' +
           '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
@@ -2423,12 +2425,14 @@ export const guiAppHtml = `<!doctype html>
     function showJoinTeamModal(kind) {
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
-          '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
-          '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..."></textarea></div>' +
-          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" /></div>' +
+          '<div class="field"><label>Cloud URL</label>' +
+            '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+          '</div>' +
+          '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..." autocapitalize="off" autocorrect="off" spellcheck="false"></textarea></div>' +
+          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" autocapitalize="off" /></div>' +
           '<div class="field"><label>Your display name</label><input name="name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
           '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-          'Email must match the address the invitation was addressed to.' +
+          'Use the same Postgres URL the inviter used (postgres://…). Email must match the address the invitation was addressed to.' +
           '</p>';
         showModal('Join team', bodyHtml, {
           primaryLabel: 'Join',

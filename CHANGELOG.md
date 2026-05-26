@@ -8,6 +8,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.5] - 2026-05-26
+
+### Fixed — `redeemInvite` fails with HTTP 404 against Postgres cloud URLs
+
+The "Join via invite" flow (and `connectToExistingCloud` with an invite token) called `fetch(cloudUrl + '/api/auth/redeem-invite')` against the form's cloud URL. When that URL is a Postgres connection string (which is what the GUI's Migrate / Connect wizards save as the cloud URL), the Fetch API either refuses (URL with credentials) or returns 404 (no HTTP server at a pooler endpoint). Joining a team from a new local lattice was effectively broken.
+
+Fix: new `redeemInviteDirect(cloudUrl, inviteToken, email, name)` in `src/teams/direct-ops.ts` runs the same INSERT sequence as the server's `handleRedeemInvite` directly against the cloud Postgres — same invariants (token hash match, email binding, expiry, un-redeemed-yet check). `TeamsClient.redeemInvite` dispatches on URL scheme: `http(s)://` keeps the HTTP path; `postgres(ql)://` uses the direct path.
+
+`connectToExistingCloud` with an invite token now works against Postgres cloud URLs (the whole reason it didn't before).
+
+### Changed — Cloud URL placeholders in Create-team / Join-team modals
+
+Both modals' Cloud URL inputs previously placeholdered `http://localhost:4317` — implying users should enter an HTTP URL, even though the realistic case is a Postgres pooler URL the GUI's Migrate/Connect wizards saved earlier. Updated to `postgres://postgres.<ref>:password@aws-x-region.pooler.supabase.com:5432/postgres` so it's obvious which form to use. `autocapitalize="off"` + `autocorrect="off"` + `spellcheck="false"` added so case-sensitive tenant prefixes don't get auto-capitalized (mirrors the v1.13.2 form-input hardening).
+
 ## [1.13.4] - 2026-05-26
 
 ### Changed — GUI team card drops the "Sync now" button + outbox/DLQ stats
