@@ -8,6 +8,62 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.4] - 2026-05-26
+
+### Changed — GUI team card drops the "Sync now" button + outbox/DLQ stats
+
+Lattice is realtime against whatever its `db:` line points at. When that's a direct Postgres URL, every read and every write the GUI does already hits the canonical store. When it's local SQLite, the same is true. There is nothing the user needs to "sync" — operations either succeed live, or they fail gracefully when the connection is down. The HTTP-mode outbox / change-log / dead-letter machinery is still available via `lattice teams sync` on the CLI for HTTP-team operators who genuinely have a local-vs-remote split, but the GUI no longer surfaces it as a user-facing action.
+
+Removed from team cards: the "Sync now" button, and the Last seq / Outbox / DLQ / Local links stat tiles. The card now shows the team name + role pill + redacted cloud URL + members + actions (Invite, Destroy, Leave). Cleaner, accurate.
+
+### Fixed — Team operations failed against direct-Postgres cloud URLs
+
+`TeamsClient` methods for team operations (`listMembers`, `invite`, `kickMember`, `destroyTeam`, `fetchChangeBatch`) all routed through `fetchAuthed(cloudUrl + path)`. When `cloudUrl` is `postgres://user:password@host/db` (Migrate-to-cloud / Connect-to-existing wizards save the Postgres URL directly — no HTTP `lattice serve --team-cloud` server in front), the Fetch API hard-refuses with `Request cannot be constructed from a URL that includes credentials`. So `upgradeToTeamCloud` shipped a usable team to the cloud, but every subsequent action (Invite, Members, Destroy, Sync) failed silently.
+
+Architectural shift: for direct-Postgres cloud URLs, the operator's local Lattice IS the cloud Lattice (the project's `db:` line points at the same Postgres URL the team-internal tables live in). Every operation that the HTTP path POSTs to the cloud server is now also available as a direct query/mutation against `this.local`.
+
+New module `src/teams/direct-ops.ts`:
+
+- `listMembersDirect(db, teamId)` — joins `__lattice_team_members` with `__lattice_users`, returns the same `MemberSummary[]` shape as the HTTP path.
+- `inviteDirect(db, teamId, inviterUserId, inviteeEmail, expiresInHours?)` — generates a `latinv_…` token, SHA-256-hashes it into `__lattice_invitations`. Default 7-day expiry.
+- `kickMemberDirect(db, teamId, userId)` — deletes the membership row.
+- `destroyTeamDirect(db)` — clears the singleton identity row + all members + soft-deletes the `__lattice_team` row.
+
+`TeamsClient.{listMembers, invite, kickMember, destroyTeam}` dispatch on `isPostgresUrl(cloudUrl)` — HTTP path for HTTP clouds, `direct-ops` for Postgres URLs. The `fetchChangeBatch` sync path returns an empty batch immediately for direct-Postgres clouds (local IS cloud, nothing to pull).
+
+The GUI's invite route now passes `connection.my_user_id` as the inviter so the direct path can stamp `__lattice_invitations.invited_by_user_id` correctly. HTTP path ignores it (server resolves the inviter from the bearer).
+
+### Fixed — Plaintext password in the team card's cloud-URL display
+
+The team cards under Project Config → Teams rendered `escapeHtml(conn.cloud_url)` directly. When `cloud_url` is a `postgres://user:PASSWORD@host/db` URL, the password ended up rendered verbatim in the DOM and visible to anyone with screen access. Every cloud-URL render path now goes through a new `redactUrlCredentials(url)` helper that swaps the password portion for `••••••••` while keeping the username (often useful — e.g. Supabase tenant-prefixed users) and host visible.
+
+### Fixed — Team role pill says "UNKNOWN" for the team creator they just registered
+
+When the cloud's `listMembers` request failed (network blip, timing, etc.) or returned a list that didn't contain the user's `my_user_id`, the role pill collapsed to a bare `"unknown"`. Surfaced as "UNKNOWN" on a team the user had just created themselves — confusing because they're obviously the creator.
+
+The role label now splits into three states: the actual role when it resolves, `"(cloud unreachable)"` when the members request fails (network), `"(not in member list)"` when the response is good but doesn't include the local user_id (kicked / stale `my_user_id`). The bare `"unknown"` fallback is gone.
+
+### Fixed — `upgradeToTeamCloud` + `connectToExistingCloud` skipped the local connection row
+
+The v1.13 high-level orchestration registers (or redeems an invite on) the cloud and writes the bearer token to `~/.lattice/keys/<label>.token`, but skipped the matching `saveConnection()` call. So the local `__lattice_team_connections` row was empty after upgrade-to-team or connect-existing — and every subsequent GUI team API call (members, invites, kick, destroy) couldn't find the `cloud_url` + `my_user_id` + `api_token_encrypted` triple it needed to authenticate.
+
+The older `handleRegisterAndCreate` / `handleRedeemInviteAndJoin` routes always wrote the connection row; the v1.13 `TeamsClient.upgradeToTeamCloud` + `TeamsClient.connectToExistingCloud` paths now do the same.
+
+Regression test in `tests/integration/teams-gui.test.ts` asserts the connection row appears after register-and-create.
+
+### Fixed — `/api/system-tables` empty on Postgres-backed Lattices
+
+The GUI's System sidebar (Objects → System) used to list every `_lattice_*` / `__lattice_*` internal table, with their column names + row counts. On Postgres-backed Lattices it silently rendered an empty list because the endpoint ran two SQLite-only queries:
+
+- `SELECT name FROM sqlite_master ...` — table doesn't exist in Postgres.
+- `PRAGMA table_info("<name>")` — Postgres has no `PRAGMA` statement.
+
+Both threw and the catch-all silently produced an empty `tables: []`. Migrated cloud projects + team-cloud DBs saw no system tables at all even though they were correctly created during `db.init()`.
+
+Fix: dispatch on `adapter.dialect` for the listing query (`pg_tables WHERE schemaname='public'` on Postgres; `sqlite_master` on SQLite — same `\_%` ESCAPE pattern either way), and replace `PRAGMA table_info` with the public, dialect-portable `Lattice.introspectColumns(table)` which already dispatches internally to `information_schema.columns` on Postgres.
+
+New regression test in `tests/integration/gui-init-postgres.test.ts` opens the GUI server against a Postgres URL, hits `/api/system-tables`, and asserts all four expected system tables (`_lattice_gui_meta`, `_lattice_gui_column_meta`, `_lattice_gui_audit`, `__lattice_user_identity`) appear with their columns enumerated. Runs whenever `LATTICE_TEST_PG_URL` is set (always in CI's Postgres service container).
+
 ## [1.13.3] - 2026-05-26
 
 ### Fixed — `__lattice_user_identity` init crashes on every Postgres open
@@ -64,7 +120,7 @@ These checks fire on the client before any network call, so the form names the i
 
 Several real-world failure modes the v1.13 Database wizard didn't defend against, all surfacing as opaque "password authentication failed" or "zero-length delimiter identifier" errors:
 
-- **Autocapitalize on User / Host / Database / Label inputs.** macOS Safari and iOS default to `autocapitalize="sentences"` on plain `<input type="text">`. Pasting a Supabase tenant user like `postgres.lcbcbukkutofazxyujar` ended up as `Postgres.lcbcbukkutofazxyujar` on submit — Postgres roles are case-sensitive, so SCRAM auth failed silently with no hint about the case mismatch. Every text input in `postgresFormHtml` now sets `autocapitalize="off"`, `autocorrect="off"`, `spellcheck="false"`.
+- **Autocapitalize on User / Host / Database / Label inputs.** macOS Safari and iOS default to `autocapitalize="sentences"` on plain `<input type="text">`. Pasting a Supabase tenant user like `postgres.<project-ref>` ended up as `Postgres.&lt;project-ref&gt;` on submit — Postgres roles are case-sensitive, so SCRAM auth failed silently with no hint about the case mismatch. Every text input in `postgresFormHtml` now sets `autocapitalize="off"`, `autocorrect="off"`, `spellcheck="false"`.
 - **No `.trim()` on User or Password reads.** Clipboard pastes (especially from password managers and chat clients) frequently carry a trailing newline. The trailing newline ended up in the URL's password segment after `encodeURIComponent`, which the Postgres adapter then sent through SCRAM verbatim — failing with "password authentication failed" — or, for the host field, broke URL parsing into the "zero-length delimiter identifier" Postgres parse error. `readPostgresWizardForm` now trims every text field.
 
 ### Changed — "Connect to existing cloud" copy: switch, not discard
