@@ -64,4 +64,43 @@ describe('guiAppHtml', () => {
     // proving it can actually connect.
     expect(guiAppHtml).toContain('probeBeforeCredentialSave');
   });
+
+  it('renders cloud URLs via redactUrlCredentials (no plaintext passwords in DOM)', () => {
+    // The team cards used to render `escapeHtml(conn.cloud_url)` directly —
+    // when conn.cloud_url is a postgres://user:password@host/db URL the
+    // password ended up as plaintext in the GUI. v1.13.4 routes every
+    // cloud_url through redactUrlCredentials.
+    expect(guiAppHtml).toContain('redactUrlCredentials');
+    // Direct un-redacted patterns are the regression — must NOT appear
+    // anywhere in the bundle.
+    expect(guiAppHtml).not.toMatch(/escapeHtml\(conn\.cloud_url\)/);
+    expect(guiAppHtml).not.toMatch(/escapeHtml\(c\.cloud_url\)/);
+  });
+
+  it('removes the team-card Sync button + outbox/DLQ/last-seq stats (realtime against canonical store)', () => {
+    // v1.13.4: the GUI no longer exposes a "Sync now" action. Lattice
+    // is realtime against whatever its db: line points at — either
+    // direct Postgres or local SQLite. The HTTP-mode outbox + change
+    // log machinery is still available via `lattice teams sync` on the
+    // CLI for power users, but the GUI no longer pretends the user
+    // needs to nudge it.
+    expect(guiAppHtml).not.toContain('data-act="sync"');
+    expect(guiAppHtml).not.toContain('Sync now');
+    // Outbox / DLQ / Last seq stats are gone too — they were
+    // sync-loop artifacts.
+    expect(guiAppHtml).not.toMatch(/stat-label">Outbox/);
+    expect(guiAppHtml).not.toMatch(/stat-label">DLQ/);
+    expect(guiAppHtml).not.toMatch(/stat-label">Last seq/);
+  });
+
+  it('team role pill distinguishes cloud-unreachable from genuine UNKNOWN', () => {
+    // Pre-v1.13.4: when listMembers couldn't be reached or returned a
+    // list without the local user_id, the role pill said "unknown" —
+    // confusing for the team creator who had just registered. v1.13.4
+    // splits into three labels.
+    expect(guiAppHtml).toContain('(cloud unreachable)');
+    expect(guiAppHtml).toContain('(not in member list)');
+    // The bare 'unknown' string from the old fallback is gone.
+    expect(guiAppHtml).not.toMatch(/myMembership \? myMembership\.role : 'unknown'/);
+  });
 });
