@@ -2082,6 +2082,10 @@ npx lattice gui --config ./lattice.config.yml --output ./context --port 4317
 
 The convergence means you don't need to duplicate entity-context definitions in YAML for the GUI to find rendered files.
 
+**Database wizard form (v1.13.2+).** The Postgres connection form (used by Migrate to cloud + Connect to existing cloud) disables browser autocapitalize, autocorrect, and spellcheck on every text input, and trims whitespace on every read. This avoids silent failure modes where macOS Safari / iOS turned a Supabase tenant user `postgres.<ref>` into `Postgres.<ref>` on submit, and where pasted credentials carrying a trailing newline produced opaque "zero-length delimiter identifier" or SCRAM-mismatch errors. `probeCloud` also folds SQLSTATE + `routine` into `result.error` so the GUI's "Unreachable: …" surface is actionable.
+
+**Switch vs. migrate (v1.13.2+ wording).** "Connect to existing cloud" _switches_ the project's `db:` line to point at the cloud; the local SQLite file stays on disk and you can switch back by editing the YAML or via the Databases catalog under User Config. Use "Migrate to cloud" only when you want to _push_ the local data into a fresh empty target.
+
 **Views**
 
 - **Dashboard** (`#/`) — one card per first-class entity with live row counts.
