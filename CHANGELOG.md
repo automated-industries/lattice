@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [1.13.3] - 2026-05-26
 
+### Fixed — `__lattice_user_identity` init crashes on every Postgres open
+
+`__lattice_user_identity` declared `display_name` + `email` with `DEFAULT ""`. SQLite leniently accepts double-quoted `""` as an empty-string literal, but PostgreSQL treats `""` as a zero-length **delimited identifier** (i.e. an empty column name) and throws at `CREATE TABLE` time:
+
+```
+zero-length delimited identifier at or near """""
+```
+
+This crashed every cloud-DB open via `lattice gui` (and every Postgres-targeted Migrate / Connect / Switch through the GUI), even with correct credentials. The standard-conformant form is `DEFAULT ''` (single quotes for string literals; double quotes only for identifiers). Both columns are now defined with single quotes so the CREATE TABLE works on both engines.
+
+New regression test in `tests/integration/gui-init-postgres.test.ts` opens the GUI server against a Postgres URL and asserts `/api/entities` serves cleanly — runs whenever `LATTICE_TEST_PG_URL` is set (always in CI's Postgres service container).
+
 ### Fixed — Upgrade to team cloud fails when cloud URL is a direct Postgres URL
 
 `TeamsClient.upgradeToTeamCloud` (and `register`) called `fetch(url + path)` against the cloud URL. When the URL is `postgres://user:password@host:5432/db` (which is what the GUI's "Migrate to cloud" / "Connect to existing cloud" wizards save as the cloud credential), browsers refuse the request with `Request cannot be constructed from a URL that includes credentials` — a hard Fetch API restriction. The team-cloud HTTP register flow only works when the cloud is fronted by a `lattice serve --team-cloud` HTTP server; for direct-Postgres clouds there was no fallback.
@@ -33,6 +45,18 @@ Fix: render a card for every first-class entity (non-junction, non-system-table)
 `POST /api/databases/switch` previously relied on the top-level request handler's catch-all to surface errors as `500 <message>`. The SPA's toast then read just the status code. Common failure mode: switching back to a cloud DB whose saved credential was rotated or whose Postgres became unreachable showed an opaque 500 with no clue.
 
 Fix: dedicated try/catch around `openConfig` in the switch handler logs the full error to the server's stderr (with code + stack) and returns a structured `Failed to switch to <path>: [SQLSTATE] <message>` JSON to the client, so the toast names the real cause.
+
+### Improved — Validate-on-save in Migrate; Supabase URL pattern hints
+
+The pre-v1.13.3 Migrate flow saved a credential first and probed only later — so an incorrect host / port / user (typical for Supabase: missing tenant prefix in the user, transaction-mode port 6543, wrong direct vs pooler host) got persisted as the active cloud credential and only blew up on the next open. Migrate now routes through the same `probeBeforeCredentialSave` helper Connect-Existing uses: the probe runs first; only on a clean probe does the actual migration kick off.
+
+The same helper detects common Supabase patterns and surfaces inline warnings before the network probe:
+
+- **Pooler host with bare `postgres` user.** Supabase pooler hosts (`*.pooler.supabase.com`) require the tenant-prefixed `postgres.<project-ref>` form. Without it, SCRAM auth fails silently with "password authentication failed for user 'postgres'".
+- **Pooler with port 6543.** That's transaction mode; latticesql needs session mode on port 5432.
+- **Direct host with tenant-prefixed user.** Direct hosts (`db.<project-ref>.supabase.co`) use a bare `postgres` user. Mixing the two forms produces the same SCRAM mismatch.
+
+These checks fire on the client before any network call, so the form names the issue with a fix immediately instead of after a 30s timeout.
 
 ## [1.13.2] - 2026-05-26
 

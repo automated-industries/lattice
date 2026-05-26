@@ -471,8 +471,16 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   db.define('__lattice_user_identity', {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      display_name: 'TEXT NOT NULL DEFAULT ""',
-      email: 'TEXT NOT NULL DEFAULT ""',
+      // Single-quoted empty-string defaults below — not double-quoted!
+      // SQLite leniently accepts `DEFAULT ""` as an empty string literal,
+      // but PostgreSQL treats `""` as a zero-length delimited identifier
+      // (i.e. an empty column name), which throws `zero-length delimited
+      // identifier at or near """""` from the parser before any rows are
+      // inserted. This is the standard-conformant behavior — single
+      // quotes are for string literals; double quotes are for
+      // identifiers. Use `''` so the CREATE TABLE works on both engines.
+      display_name: "TEXT NOT NULL DEFAULT ''",
+      email: "TEXT NOT NULL DEFAULT ''",
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
     },
     primaryKey: 'id',
