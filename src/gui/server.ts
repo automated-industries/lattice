@@ -14,6 +14,7 @@ import {
   isJunctionTable,
   type GuiEntitiesPayload,
 } from './data.js';
+import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from '../teams/internal-tables.js';
@@ -272,6 +273,93 @@ interface ContextFile {
 }
 
 /**
+ * A row-context locator describes the on-disk shape of a single rendered
+ * entity directory — independent of whether the directory was produced by a
+ * YAML-declared {@link EntityContextDefinition} or a programmatic
+ * `db.defineEntityContext()` call (or, for users on the manifest-only path,
+ * just by `lattice render` writing a manifest).
+ */
+interface RowContextLocator {
+  /** Directory (relative to outputDir) that holds this row's files. */
+  directoryRoot: string;
+  /** Slug derived from the row — appended to directoryRoot. */
+  slug: string;
+  /** Filenames inside the entity directory to surface to the browser. */
+  fileNames: string[];
+}
+
+/**
+ * Best-effort slug derivation for the manifest-only fallback path.
+ *
+ * The on-disk manifest tells us which slug strings have been rendered
+ * (`manifest.entityContexts[table].entities` is keyed by slug) but does
+ * **not** persist the slug formula itself. So when we need to map a row
+ * back to its directory and the Lattice schema doesn't carry an
+ * {@link EntityContextDefinition} for this table, we try common fields
+ * (`slug`, then `id`, then `name`) and pick the first whose value matches
+ * a slug in the manifest. Returns `null` when no match is found.
+ *
+ * This is a heuristic — not a guarantee. The clean fix is for callers to
+ * register their {@link EntityContextDefinition} so {@link Lattice.entityContexts}
+ * has it; the manifest fallback exists so users who render via a
+ * programmatic `lattice.schema.mjs` (and never wire that file into the GUI)
+ * still see their rendered context.
+ */
+function deriveSlugFromManifest(
+  row: Record<string, unknown>,
+  knownSlugs: ReadonlySet<string>,
+): string | null {
+  const candidateFields = ['slug', 'id', 'name'];
+  for (const field of candidateFields) {
+    const value = row[field];
+    if (typeof value === 'string' && knownSlugs.has(value)) return value;
+  }
+  return null;
+}
+
+/**
+ * Build a {@link RowContextLocator} for `(table, row)` using the layered
+ * discovery chain:
+ *
+ *   1. **Live Lattice schema** — anything registered via the YAML config or
+ *      a programmatic `db.defineEntityContext()` call. Carries the
+ *      authoritative slug function and declared file list.
+ *   2. **Manifest** — entries written by a prior `lattice render`. Used
+ *      when the schema doesn't know about this table (typical for projects
+ *      that register entity contexts in an mjs/ts module the GUI doesn't
+ *      import). The slug is derived heuristically from common row fields.
+ *
+ * Returns `null` when neither path yields a locator — the GUI surfaces
+ * "no rendered context" to the user.
+ */
+function buildRowContextLocator(
+  table: string,
+  row: Record<string, unknown>,
+  schemaDef: EntityContextDefinition | undefined,
+  manifest: LatticeManifest | null,
+): RowContextLocator | null {
+  if (schemaDef) {
+    return {
+      directoryRoot: schemaDef.directoryRoot ?? '',
+      slug: schemaDef.slug(row),
+      fileNames: Object.keys(schemaDef.files),
+    };
+  }
+  const manifestEntry = manifest?.entityContexts[table];
+  if (!manifestEntry) return null;
+  const knownSlugs = new Set(Object.keys(manifestEntry.entities));
+  const derivedSlug = deriveSlugFromManifest(row, knownSlugs);
+  if (!derivedSlug) return null;
+  const entityFiles = manifestEntry.entities[derivedSlug];
+  const fileNames = entityFiles ? entityFileNames(entityFiles) : manifestEntry.declaredFiles;
+  return {
+    directoryRoot: manifestEntry.directoryRoot,
+    slug: derivedSlug,
+    fileNames,
+  };
+}
+
+/**
  * Read the Lattice-rendered context files for a single row. Returns the
  * declared files for the row's entity context (relative to `outputDir`),
  * with their content if they exist on disk. Files that haven't been
@@ -280,19 +368,17 @@ interface ContextFile {
  */
 function readRowContext(
   outputDir: string,
-  def: EntityContextDefinition,
-  row: Record<string, unknown>,
+  locator: RowContextLocator,
   secretCols: Set<string>,
 ): ContextFile[] {
-  const slug = def.slug(row);
-  const directoryRoot = def.directoryRoot ?? '';
+  const { slug, directoryRoot, fileNames } = locator;
   const entityDir = resolve(outputDir, directoryRoot, slug);
   // Defence in depth: the slug must not escape outputDir.
   const resolvedBase = resolve(outputDir);
   if (entityDir !== resolvedBase && !entityDir.startsWith(resolvedBase + sep)) {
     throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
   }
-  return Object.keys(def.files).map((filename) => {
+  return fileNames.map((filename) => {
     const absPath = join(entityDir, filename);
     const relPath = join(directoryRoot, slug, filename);
     if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
@@ -315,7 +401,21 @@ interface ActiveDb {
   db: Lattice;
   validTables: Set<string>;
   junctionTables: Set<string>;
+  /**
+   * Entity contexts registered on the live Lattice — covers both YAML and
+   * programmatic `defineEntityContext()` registrations. Tables missing here
+   * fall back to {@link ActiveDb.manifest} for row-context discovery.
+   */
   entityContextByTable: Map<string, EntityContextDefinition>;
+  /**
+   * Last-read render manifest. Used as the fallback when a table has no
+   * registered {@link EntityContextDefinition} but has rendered context
+   * files on disk — typically when the user defines entity contexts in
+   * an mjs/ts module the GUI process never imports. Re-read on each
+   * `openConfig` so manual `lattice render` runs are picked up the next
+   * time the GUI swaps DBs (or on next request via a small cache).
+   */
+  manifest: LatticeManifest | null;
   softDeletable: Set<string>;
   /**
    * Cached `TeamsClient` so sync write-hooks registered via
@@ -408,10 +508,16 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
       .tables.filter(isJunctionTable)
       .map((t) => t.name),
   );
-  const entityContextByTable = new Map<string, EntityContextDefinition>();
-  for (const { table, definition } of parsed.entityContexts) {
-    entityContextByTable.set(table, definition);
-  }
+  // Pull entity contexts from the live Lattice — covers both YAML-declared
+  // contexts (already loaded in the constructor from `parsed.entityContexts`)
+  // and anything a caller registered via `db.defineEntityContext()` against
+  // this Lattice instance.
+  const entityContextByTable = db.entityContexts();
+  // Read the on-disk render manifest. Tables not registered above (e.g.
+  // the user defines entity contexts in `lattice.schema.mjs` and runs
+  // `lattice render` separately) fall through to this manifest to find
+  // their rendered directories.
+  const manifest = readManifest(outputDir);
   const softDeletable = new Set(
     parsed.tables
       .filter(({ definition }) => 'deleted_at' in definition.columns)
@@ -430,6 +536,7 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     validTables,
     junctionTables,
     entityContextByTable,
+    manifest,
     softDeletable,
   };
 }
@@ -1062,14 +1169,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${ctxTable}` }, 400);
             return;
           }
-          const def = active.entityContextByTable.get(ctxTable);
-          if (!def) {
-            sendJson(res, { files: [] });
-            return;
-          }
           const row = await active.db.get(ctxTable, ctxId);
           if (row === null) {
             sendJson(res, { error: 'Row not found' }, 404);
+            return;
+          }
+          const def = active.entityContextByTable.get(ctxTable);
+          const locator = buildRowContextLocator(ctxTable, row, def, active.manifest);
+          if (!locator) {
+            // No schema-registered context AND no matching manifest entry.
+            // Surface an empty file list — the SPA renders its
+            // "no rendered context" placeholder.
+            sendJson(res, { files: [] });
             return;
           }
           // Pull secret columns for this table so the rendered .md gets
@@ -1081,7 +1192,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             ],
           })) as { column_name: string }[];
           const secretCols = new Set(colMetaRows.map((r) => r.column_name));
-          sendJson(res, { files: readRowContext(active.outputDir, def, row, secretCols) });
+          sendJson(res, { files: readRowContext(active.outputDir, locator, secretCols) });
           return;
         }
 
