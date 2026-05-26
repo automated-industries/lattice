@@ -2109,6 +2109,158 @@ These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entitie
 
 The server only binds to `127.0.0.1` and has no authentication. See [SECURITY.md](./SECURITY.md) for the threat model — do not expose this port to a non-loopback interface.
 
+**Native `secrets` and `files` entities (v1.12+).** Every Lattice opened by `lattice gui` automatically registers two framework-shipped tables before `init()`:
+
+| Table     | Shape                                                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `secrets` | `id, name, kind, value (encrypted), description, created_at, updated_at, deleted_at`                                                                       |
+| `files`   | `id, original_name, mime, size_bytes, sha256, blob_path, extraction_status, extracted_text, description, …` (superset of any legacy `path`/`kind` columns) |
+
+`secrets.value` is encrypted at rest via a new `TableDefinition.encrypted?: { columns: string[] }` field that extends the existing entity-context encryption to plain `define()` tables. The encryption master key resolves from `LATTICE_ENCRYPTION_KEY` (env) or `~/.lattice/master.key` (auto-generated, `chmod 0600` on POSIX). The companion helper `attachBlob(srcPath, latticeRoot)` writes any file into a content-addressed store at `<root>/data/blobs/<sha256>` and returns metadata suitable for a `files` row.
+
+You can also register the native entities programmatically when opening a Lattice outside the GUI:
+
+```ts
+import { Lattice } from 'latticesql';
+import { registerNativeEntities } from 'latticesql/framework/native-entities';
+
+const db = new Lattice(
+  { config: './lattice.config.yml' },
+  { encryptionKey: process.env.LATTICE_ENCRYPTION_KEY },
+);
+registerNativeEntities(db);
+await db.init();
+```
+
+**Machine-local user config at `~/.lattice/` (v1.12+).** A small set of files outside any Lattice DB so a user's identity, encrypted master key, saved cloud-DB credentials, and per-team bearer tokens survive switching projects:
+
+| File                            | Purpose                                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `~/.lattice/master.key`         | 32-byte AES-256 master key, auto-generated, `chmod 0600` on POSIX                                        |
+| `~/.lattice/identity.json`      | `{display_name, email}` — mirrored into the active Lattice's `__lattice_user_identity` row on every open |
+| `~/.lattice/keys/<label>.token` | Per-joined-team bearer tokens (`chmod 0600`)                                                             |
+| `~/.lattice/db-credentials.enc` | AES-GCM-encrypted Postgres URLs keyed by label                                                           |
+
+The GUI's User Config view edits `identity.json` directly; the Project Config "Database" panel writes saved Postgres URLs into `db-credentials.enc` and rewrites `lattice.config.yml`'s `db:` line to `${LATTICE_DB:<label>}`. The config parser resolves that reference at open time so connection passwords never sit in YAML on disk.
+
+---
+
+## CLI — `lattice teams` (v1.12+)
+
+Multi-user cloud-shared Lattice databases on your own Postgres. Bring your own Postgres connection; lattice handles identity (bearer tokens, email-bound invitations), the team membership table, and the sync engine (shared objects + row links + change feed + outbox + replay-guard puller).
+
+**Bootstrap** (on a fresh cloud — no users yet):
+
+```bash
+lattice teams register \
+  --cloud http://localhost:4317 \
+  --email alice@example.com \
+  --name "Alice" \
+  --team-name "Atlas"
+```
+
+Atomic: creates the user, the singleton team, the creator membership, and the bearer token in one HTTP call. Prints the token once — save it locally.
+
+**Invite a teammate by email**:
+
+```bash
+lattice teams invite --team Atlas --invitee-email bob@example.com
+# → prints `latinv_…` token to share OOB with bob@example.com
+```
+
+**Join an existing team**:
+
+```bash
+lattice teams join \
+  --cloud http://localhost:4317 \
+  --token latinv_… \
+  --email bob@example.com \
+  --name "Bob"
+```
+
+The cloud rejects redemption if the caller's claimed email doesn't match the invitation's `invitee_email` (case-insensitive). Sharing an invite token in a public channel is therefore safe — only the addressee can redeem it.
+
+**Other subcommands** (`lattice teams help` for the full list): `list`, `members`, `leave`, `destroy`, `share`, `unshare`, `shared`, `sync`, `link`, `unlink`, `pull`, `push`, `status`.
+
+**Same flows from the GUI.** The local `lattice gui` Project Config view drives the entire teams lifecycle — create / join, invite by email, share tables, link rows, see sync status. Identity (display name + email) comes from `~/.lattice/identity.json` and is prefilled in every modal.
+
+**Cloud server mode**: `lattice gui --team-cloud` boots the same binary as a cloud server. It exposes the bearer-token-gated `/api/team*` endpoints + the `/objects`/`/changes`/`/rows`/`/links` sync routes, and disables the local dev-tool surface (table viewer, CRUD endpoints, register-and-create modal).
+
+The full architecture, schema, and HTTP surface live in [docs/teams.md](./docs/teams.md).
+
+---
+
+## Cloud migration + connection (v1.13+)
+
+Lattice Teams + the GUI's Database panel now flow through a state machine:
+
+```
+LOCAL  →  CLOUD CONNECTED  →  TEAM CLOUD
+       (migrate)           (upgrade)
+```
+
+Each transition is one-way: once on cloud, the panel does not surface a revert-to-local button. Disconnecting from the cloud temporarily is a follow-up; for v1.13 the in-place reconnection happens automatically when the GUI reopens.
+
+Public API surface (the GUI's `/api/dbconfig/*` routes are thin wrappers):
+
+```ts
+import {
+  Lattice,
+  migrateLatticeData,
+  archiveLocalSqlite,
+  openTargetLatticeForMigration,
+  probeCloud,
+  TeamsClient,
+} from 'latticesql';
+
+// 1. Migrate a local SQLite project to a fresh cloud Postgres
+const source = new Lattice({ config: './lattice.config.yml' }, { encryptionKey });
+await source.init();
+const target = await openTargetLatticeForMigration('./lattice.config.yml', cloudUrl, encryptionKey);
+const result = await migrateLatticeData(source, target);
+// → { tablesCopied: ['files','items','secrets',...], rowsCopied: 42 }
+target.close();
+archiveLocalSqlite('./data/project.db'); // renames to .db.local-bak
+
+// 2. Probe an arbitrary cloud URL for reachability + team status
+const probe = await probeCloud('postgres://u:p@host/db');
+// → { reachable: true, dialect: 'postgres', teamEnabled: false }
+
+// 3. Connect a fresh project to an existing cloud (auto-redeems if it's a teams DB)
+const client = new TeamsClient(source);
+await client.connectToExistingCloud({
+  label: 'atlas',
+  cloudUrl: 'postgres://u:p@host/db',
+  invite_token: 'latinv_...',
+  email: 'bob@example.com',
+  name: 'Bob',
+});
+
+// 4. Upgrade an already-connected cloud DB to a team cloud
+await client.upgradeToTeamCloud({
+  label: 'atlas',
+  cloudUrl: 'postgres://u:p@host/db',
+  teamName: 'Atlas',
+  email: 'alice@example.com',
+  displayName: 'Alice',
+});
+```
+
+GUI consumers don't need to call these directly — the Database panel surfaces them as wizards (`Migrate to cloud →`, `Connect to existing cloud →`, `Upgrade to team cloud →`).
+
+HTTP surface (all under `/api/dbconfig/*`, localhost-only, same auth model as the rest of `lattice gui`):
+
+| Method | Route                                     | Wraps                                         |
+| ------ | ----------------------------------------- | --------------------------------------------- |
+| GET    | `/api/dbconfig`                           | returns `{ type, state, label?, host?, ... }` |
+| POST   | `/api/dbconfig/probe`                     | `probeCloud(url)`                             |
+| POST   | `/api/dbconfig/migrate-to-cloud`          | `migrateLatticeData` + `archiveLocalSqlite`   |
+| POST   | `/api/dbconfig/connect-existing`          | `TeamsClient.connectToExistingCloud`          |
+| POST   | `/api/dbconfig/upgrade-to-team`           | `TeamsClient.upgradeToTeamCloud`              |
+| POST   | `/api/dbconfig/save` / `connect` / `test` | unchanged from v1.12                          |
+
+The `state` field on `GET /api/dbconfig` is one of: `local`, `cloud-connected`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite`. The SPA badge color-codes them; the routes use them only for response shape.
+
 ---
 
 ## Schema migrations
