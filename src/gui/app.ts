@@ -2203,7 +2203,7 @@ export const guiAppHtml = `<!doctype html>
           '<circle cx="' + p.x + '" cy="' + p.y + '" r="' + nodeRadius +
             '" fill="#e7efff" stroke="' + BELONGS_COLOR + '" stroke-width="1.5" />' +
           '<text x="' + p.x + '" y="' + (p.y + 7) + '" text-anchor="middle" font-size="20">' + d.icon + '</text>' +
-          '<text x="' + p.x + '" y="' + (p.y + nodeRadius + 18) + '" text-anchor="middle" font-size="12" fill="#1f2328">' +
+          '<text x="' + p.x + '" y="' + (p.y + nodeRadius + 18) + '" text-anchor="middle" font-size="12" fill="#e7ecf0">' +
           escapeHtml(d.label) + '</text></g>';
       }).join('');
 
@@ -2222,9 +2222,9 @@ export const guiAppHtml = `<!doctype html>
       var legend =
         '<g class="dm-legend" transform="translate(20, 20)">' +
           '<line x1="0" y1="6" x2="36" y2="6" stroke="' + BELONGS_COLOR + '" stroke-width="1.8" marker-end="url(#arrow-b)" />' +
-          '<text x="44" y="10" font-size="11" fill="#1f2328">belongs-to (child → parent)</text>' +
+          '<text x="44" y="10" font-size="11" fill="#8b96a3">belongs-to (child → parent)</text>' +
           '<line x1="0" y1="28" x2="36" y2="28" stroke="' + M2M_COLOR + '" stroke-width="1.8" stroke-dasharray="6 4" marker-start="url(#arrow-m)" marker-end="url(#arrow-m)" />' +
-          '<text x="44" y="32" font-size="11" fill="#1f2328">many-to-many</text>' +
+          '<text x="44" y="32" font-size="11" fill="#8b96a3">many-to-many</text>' +
         '</g>';
 
       return '<svg viewBox="0 0 1000 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">' +
