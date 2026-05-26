@@ -22,9 +22,11 @@
  * connection-credential holder. If the operator can connect to the
  * Postgres, they're authorized.
  */
-import type { Lattice } from '../lattice.js';
-import { generateInviteToken } from './server/auth.js';
-import type { MemberSummary, InviteResponse } from './client.js';
+import { Lattice } from '../lattice.js';
+import { CLOUD_INTERNAL_TABLE_DEFS } from './internal-tables.js';
+import { generateInviteToken, generateToken, hashToken } from './server/auth.js';
+import { isPostgresUrl } from './register-direct.js';
+import type { MemberSummary, InviteResponse, RedeemResponse } from './client.js';
 
 interface MemberRow {
   user_id: string;
@@ -153,4 +155,117 @@ export async function destroyTeamDirect(db: Lattice): Promise<void> {
     await db.update('__lattice_team', teamId, { deleted_at: new Date().toISOString() });
   }
   await db.delete('__lattice_team_identity', 'singleton');
+}
+
+interface InvitationRow {
+  id: string;
+  team_id: string;
+  token_hash: string;
+  invitee_email: string | null;
+  expires_at: string | null;
+  redeemed_at: string | null;
+}
+
+/**
+ * Direct-Postgres equivalent of `POST /api/auth/redeem-invite`.
+ *
+ * Used by the GUI's "Join via invite" flow + `connectToExistingCloud`
+ * when the cloud URL is `postgres://...` (no HTTP teams server in
+ * front). Opens the cloud Postgres directly, validates the invite
+ * (token hash + email binding + expiry + un-redeemed), inserts the
+ * joining user + member row + bearer token, and stamps the invite as
+ * redeemed.
+ *
+ * Mirrors `handleRedeemInvite` in `src/teams/server/routes.ts` line
+ * for line — same Lattice queries, same invariants. The token is only
+ * compared by its SHA-256 hash; the raw form never gets stored.
+ *
+ * Caller is responsible for writing the returned `raw_token` to
+ * `~/.lattice/keys/<label>.token` and calling `saveConnection()` so
+ * the local `__lattice_team_connections` row is populated.
+ */
+export async function redeemInviteDirect(
+  cloudUrl: string,
+  inviteToken: string,
+  email: string,
+  name: string,
+): Promise<RedeemResponse> {
+  if (!isPostgresUrl(cloudUrl)) {
+    throw new Error(
+      `redeemInviteDirect: cloudUrl must be a postgres:// URL (got ${cloudUrl.slice(0, 12)}…)`,
+    );
+  }
+  const db = new Lattice(cloudUrl);
+  try {
+    await db.init();
+    for (const [table, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
+      await db.defineLate(table, def);
+    }
+
+    const invites = (await db.query('__lattice_invitations', {
+      filters: [
+        { col: 'token_hash', op: 'eq', val: hashToken(inviteToken) },
+        { col: 'redeemed_at', op: 'isNull' },
+      ],
+      limit: 1,
+    })) as unknown as InvitationRow[];
+    const invite = invites[0];
+    if (!invite) {
+      throw new Error('Invitation invalid or already used');
+    }
+    if (invite.expires_at && new Date(invite.expires_at).getTime() < Date.now()) {
+      throw new Error('Invitation expired');
+    }
+    // Email binding — match the server's case-insensitive compare so
+    // the same invite token works from either implementation.
+    if (invite.invitee_email && invite.invitee_email.toLowerCase() !== email.toLowerCase()) {
+      throw new Error('Invitation is addressed to a different email');
+    }
+
+    const team = (await db.get('__lattice_team', invite.team_id)) as {
+      id: string;
+      name: string;
+      deleted_at: string | null;
+    } | null;
+    if (!team || team.deleted_at) {
+      throw new Error('Team no longer exists');
+    }
+
+    const now = new Date().toISOString();
+    const userId = await db.insert('__lattice_users', {
+      email,
+      name,
+      created_at: now,
+      updated_at: now,
+    });
+    await db.insert('__lattice_team_members', {
+      team_id: invite.team_id,
+      user_id: userId,
+      role: 'member',
+      joined_at: now,
+    });
+    const { raw, hash } = generateToken();
+    await db.insert('__lattice_api_tokens', {
+      user_id: userId,
+      token_hash: hash,
+      name: `invited:${team.name}`,
+      created_at: now,
+    });
+    await db.update('__lattice_invitations', invite.id, {
+      redeemed_at: now,
+      redeemed_by_user_id: userId,
+    });
+
+    return {
+      user: { id: userId, email, name },
+      raw_token: raw,
+      team: { id: team.id, name: team.name },
+    };
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // best-effort
+    }
+  }
 }
