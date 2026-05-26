@@ -8,6 +8,7 @@ import { parseConfigFile } from './config/parser.js';
 import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { startGuiServer } from './gui/server.js';
+import { discoverOutputDir } from './gui/discover-output-dir.js';
 import { runTeamsCommand } from './teams/cli-commands.js';
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,13 @@ interface ParsedArgs {
   config: string;
   out: string;
   output: string;
+  /**
+   * `true` when the user explicitly passed `--output` / `--output-dir`.
+   * The GUI command uses this to decide whether to auto-discover an
+   * existing render dir (default behaviour) or trust the user's value
+   * (when explicit).
+   */
+  outputExplicit: boolean;
   scaffold: boolean;
   help: boolean;
   version: boolean;
@@ -55,6 +63,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let config = './lattice.config.yml';
   let out = './generated';
   let output = './context';
+  let outputExplicit = false;
   let scaffold = false;
   let help = false;
   let version = false;
@@ -108,6 +117,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if ((arg === '--output' || arg === '--output-dir') && i + 1 < argv.length) {
       i++;
       output = argv[i] ?? output;
+      outputExplicit = true;
     } else if (arg === '--scaffold') {
       scaffold = true;
     } else if (arg === '--dry-run') {
@@ -184,6 +194,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     config,
     out,
     output,
+    outputExplicit,
     scaffold,
     help,
     version,
@@ -518,9 +529,16 @@ async function runWatch(args: ParsedArgs): Promise<void> {
 
 async function runGui(args: ParsedArgs): Promise<void> {
   try {
+    const resolvedOutput = discoverOutputDir(args.output, args.outputExplicit);
+    if (!args.outputExplicit && resolvedOutput !== args.output) {
+      console.log(
+        `Lattice GUI: auto-detected rendered context at "${resolvedOutput}" ` +
+          `(use --output to override).`,
+      );
+    }
     const handle = await startGuiServer({
       configPath: resolve(args.config),
-      outputDir: resolve(args.output),
+      outputDir: resolve(resolvedOutput),
       port: args.port,
       openBrowser: !args.noOpen,
     });
