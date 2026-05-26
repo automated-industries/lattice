@@ -2086,6 +2086,10 @@ The convergence means you don't need to duplicate entity-context definitions in 
 
 **Switch vs. migrate (v1.13.2+ wording).** "Connect to existing cloud" _switches_ the project's `db:` line to point at the cloud; the local SQLite file stays on disk and you can switch back by editing the YAML or via the Databases catalog under User Config. Use "Migrate to cloud" only when you want to _push_ the local data into a fresh empty target.
 
+**Upgrade to team cloud — works against direct Postgres URLs (v1.13.3+).** The "Upgrade to team cloud" action previously HTTP-POSTed to `/api/auth/register` on the cloud URL, which fails with `Request cannot be constructed from a URL that includes credentials` when the cloud URL is a Postgres connection string. v1.13.3 dispatches on URL scheme: `http(s)://` keeps the HTTP path; `postgres(ql)://` calls the new `registerDirectViaPostgres()` helper that drives the same INSERT sequence directly against the cloud Postgres. Same invariants enforced both ways.
+
+**Dashboard renders every entity (v1.13.3+).** Previously the dashboard cards filtered through a hardcoded entity list (`meetings`, `people`, `messages`, `projects`, `repositories`, `files`). Installs whose YAML declared different names saw a blank dashboard. Now every first-class entity gets a card; the hardcoded list survives as an ordering preference only.
+
 **Views**
 
 - **Dashboard** (`#/`) — one card per first-class entity with live row counts.
