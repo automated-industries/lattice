@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [1.13.4] - 2026-05-26
 
+### Fixed — Plaintext password in the team card's cloud-URL display
+
+The team cards under Project Config → Teams rendered `escapeHtml(conn.cloud_url)` directly. When `cloud_url` is a `postgres://user:PASSWORD@host/db` URL, the password ended up rendered verbatim in the DOM and visible to anyone with screen access. Every cloud-URL render path now goes through a new `redactUrlCredentials(url)` helper that swaps the password portion for `••••••••` while keeping the username (often useful — e.g. Supabase tenant-prefixed users) and host visible.
+
+### Fixed — Team role pill says "UNKNOWN" for the team creator they just registered
+
+When the cloud's `listMembers` request failed (network blip, timing, etc.) or returned a list that didn't contain the user's `my_user_id`, the role pill collapsed to a bare `"unknown"`. Surfaced as "UNKNOWN" on a team the user had just created themselves — confusing because they're obviously the creator.
+
+The role label now splits into three states: the actual role when it resolves, `"(cloud unreachable)"` when the members request fails (network), `"(not in member list)"` when the response is good but doesn't include the local user_id (kicked / stale `my_user_id`). The bare `"unknown"` fallback is gone.
+
 ### Fixed — `upgradeToTeamCloud` + `connectToExistingCloud` skipped the local connection row
 
 The v1.13 high-level orchestration registers (or redeems an invite on) the cloud and writes the bearer token to `~/.lattice/keys/<label>.token`, but skipped the matching `saveConnection()` call. So the local `__lattice_team_connections` row was empty after upgrade-to-team or connect-existing — and every subsequent GUI team API call (members, invites, kick, destroy) couldn't find the `cloud_url` + `my_user_id` + `api_token_encrypted` triple it needed to authenticate.
