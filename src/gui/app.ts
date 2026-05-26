@@ -38,6 +38,19 @@ export const guiAppHtml = `<!doctype html>
     code, kbd, samp, pre {
       font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    /* Form controls inherit the body text color so they're readable
+       on the dark surface. Browsers default inputs to the OS color
+       (typically black), which disappears on var(--surface)=#13171b.
+       Placeholders default ~black too — bump them to --text-muted.
+       Affects every input/select/textarea across the GUI (Data Model
+       editor, Database wizard, User Config Identity, all modals). */
+    input, select, textarea {
+      color: var(--text);
+    }
+    input::placeholder, textarea::placeholder {
+      color: var(--text-muted);
+      opacity: 1;
+    }
     a { color: inherit; text-decoration: none; }
     button { font: inherit; cursor: pointer; }
 
@@ -2403,22 +2416,28 @@ export const guiAppHtml = `<!doctype html>
     function renderDatabasesPanel(host) {
       fetchJson('/api/userconfig/databases').then(function (cat) {
         var localRows = (cat.local || []).map(function (d) {
+          var stateBadge = '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:var(--text-muted)">' + escapeHtml((d.state || 'local').toUpperCase()) + '</span>';
           return '<tr>' +
             '<td>' + escapeHtml(d.label) + (d.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>SQLite</td>' +
+            '<td>' + stateBadge + '</td>' +
             '<td><code>' + escapeHtml(d.dbFile) + '</code></td>' +
             '<td>' + (d.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(d.configPath) + '">Switch</button>') + '</td>' +
           '</tr>';
         }).join('');
         var cloudRows = (cat.cloud || []).map(function (d) {
-          return '<tr><td>' + escapeHtml(d.label) + '</td><td>Postgres</td><td>(encrypted)</td><td>—</td></tr>';
+          var stateBadge = '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:var(--text-muted)">' + escapeHtml((d.state || 'unknown').toUpperCase()) + '</span>';
+          return '<tr><td>' + escapeHtml(d.label) + '</td><td>Postgres</td><td>' + stateBadge + '</td><td>(encrypted)</td><td>—</td></tr>';
         }).join('');
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 10px">Databases</h3>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+              '<h3 style="margin:0">Databases</h3>' +
+              '<button class="btn primary" id="action-add-cloud-db">Add a cloud DB →</button>' +
+            '</div>' +
             '<table style="width:100%;border-collapse:collapse">' +
-              '<thead><tr style="text-align:left"><th>Label</th><th>Type</th><th>File / source</th><th>Action</th></tr></thead>' +
-              '<tbody>' + (localRows + cloudRows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
+              '<thead><tr style="text-align:left"><th>Label</th><th>Type</th><th>State</th><th>File / source</th><th>Action</th></tr></thead>' +
+              '<tbody>' + (localRows + cloudRows || '<tr><td colspan="5" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
         host.querySelectorAll('[data-switch]').forEach(function (btn) {
@@ -2428,6 +2447,25 @@ export const guiAppHtml = `<!doctype html>
               .then(function (r) { return r.json(); })
               .then(function () { renderUserConfig(document.getElementById('content')); });
           });
+        });
+        var addCloudBtn = document.getElementById('action-add-cloud-db');
+        if (addCloudBtn) addCloudBtn.addEventListener('click', function () {
+          // Create a fresh project then immediately open the Connect-
+          // existing wizard against it. The backend's /api/databases/create
+          // makes a starter YAML + swaps the active Lattice to it; the
+          // wizard then rewrites that project's db: line.
+          var name = prompt('Project name for the new cloud-connected project:');
+          if (!name) return;
+          fetch('/api/databases/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name }) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d.error) { alert('Failed: ' + d.error); return; }
+              // Active swapped to the new project — open Connect-existing.
+              showConnectExistingModal(function () {
+                renderUserConfig(document.getElementById('content'));
+              });
+            })
+            .catch(function (e) { alert('Failed: ' + e.message); });
         });
       }).catch(function (err) {
         host.innerHTML = '<div class="placeholder">Failed to load databases: ' + escapeHtml(err.message) + '</div>';
@@ -2536,98 +2574,338 @@ export const guiAppHtml = `<!doctype html>
       });
     }
 
-    /** GET /api/dbconfig + render the Database panel. */
+    // State-machine Database panel (v1.13+). Renders a different body
+    // per info.state: local -> Migrate / Connect-existing wizards;
+    // cloud-connected -> Upgrade-to-team; team-cloud-creator/member ->
+    // team management UI; team-cloud-needs-invite -> join form.
+    // Progression is one-way: local -> cloud -> team-cloud.
     function renderDatabasePanel(host) {
       fetchJson('/api/dbconfig').then(function (info) {
-        var isPg = info.type === 'postgres';
+        var badge = renderStateBadge(info);
+        var body = renderStateBody(info);
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 10px">Database</h3>' +
-            '<div style="margin-bottom:10px">' +
-              '<label style="margin-right:14px"><input type="radio" name="dbtype" value="sqlite"' + (isPg ? '' : ' checked') + '> Local SQLite</label>' +
-              '<label><input type="radio" name="dbtype" value="postgres"' + (isPg ? ' checked' : '') + '> Cloud Postgres</label>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">' +
+              '<h3 style="margin:0">Database</h3>' +
+              badge +
             '</div>' +
-            '<div id="db-form"></div>' +
-            '<div class="team-actions" style="margin-top:10px">' +
-              '<button class="btn" data-act="db-test">Test connection</button>' +
-              '<button class="btn primary" data-act="db-save">Save</button>' +
-              '<button class="btn" data-act="db-connect" title="Reconnect using the saved configuration">Connect</button>' +
-            '</div>' +
+            body +
             '<div id="db-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
-        function paintForm(kind, prefill) {
-          var form = document.getElementById('db-form');
-          if (kind === 'sqlite') {
-            form.innerHTML =
-              '<label class="field-label">Database file path</label>' +
-              '<input type="text" id="db-sqlite-path" placeholder="./data/project.db" value="' + escapeHtml(prefill || ('./data/' + (info.dbFile || 'project.db'))) + '" style="width:100%">';
-          } else {
-            form.innerHTML =
-              '<div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
-                '<div><label class="field-label">Label</label><input type="text" id="db-label" placeholder="atlas" value="' + escapeHtml(info.label || '') + '" style="width:100%"></div>' +
-                '<div><label class="field-label">Host</label><input type="text" id="db-host" placeholder="db.example.com" value="' + escapeHtml(info.host || '') + '" style="width:100%"></div>' +
-                '<div><label class="field-label">Port</label><input type="number" id="db-port" placeholder="5432" value="' + escapeHtml(String(info.port || 5432)) + '" style="width:100%"></div>' +
-                '<div><label class="field-label">Database name</label><input type="text" id="db-dbname" placeholder="app" value="' + escapeHtml(info.dbname || '') + '" style="width:100%"></div>' +
-                '<div><label class="field-label">User</label><input type="text" id="db-user" placeholder="lattice_user" value="' + escapeHtml(info.user || '') + '" style="width:100%"></div>' +
-                '<div><label class="field-label">Password</label><input type="password" id="db-password" placeholder="••••••••" style="width:100%"></div>' +
-              '</div>';
-          }
-        }
-        paintForm(info.type, undefined);
-        Array.prototype.forEach.call(host.querySelectorAll('input[name="dbtype"]'), function (r) {
-          r.addEventListener('change', function () { paintForm(r.value, undefined); });
-        });
-        function readBody() {
-          var kind = (host.querySelector('input[name="dbtype"]:checked') || { value: 'sqlite' }).value;
-          if (kind === 'sqlite') {
-            return { type: 'sqlite', path: (document.getElementById('db-sqlite-path').value || '').trim() };
-          }
-          return {
-            type: 'postgres',
-            label: (document.getElementById('db-label').value || '').trim(),
-            host: (document.getElementById('db-host').value || '').trim(),
-            port: Number(document.getElementById('db-port').value || 5432),
-            dbname: (document.getElementById('db-dbname').value || '').trim(),
-            user: document.getElementById('db-user').value || '',
-            password: document.getElementById('db-password').value || '',
-          };
-        }
-        function setMsg(text, ok) {
-          var el = document.getElementById('db-msg');
-          el.textContent = text;
-          el.style.color = ok ? 'var(--accent, #1f56c2)' : 'var(--text-muted)';
-        }
-        host.querySelector('[data-act="db-test"]').addEventListener('click', function () {
-          setMsg('Testing…');
-          fetch('/api/dbconfig/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(readBody()) })
-            .then(function (r) { return r.json(); })
-            .then(function (d) { setMsg(d.ok ? 'Connection ok.' : 'Failed: ' + (d.error || 'unknown'), !!d.ok); })
-            .catch(function (e) { setMsg('Failed: ' + e.message, false); });
-        });
-        host.querySelector('[data-act="db-save"]').addEventListener('click', function () {
-          setMsg('Saving…');
-          fetch('/api/dbconfig/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(readBody()) })
-            .then(function (r) { return r.json(); })
-            .then(function (d) {
-              if (d.error) { setMsg('Failed: ' + d.error, false); return; }
-              setMsg('Saved. Click Connect to apply.', true);
-            })
-            .catch(function (e) { setMsg('Failed: ' + e.message, false); });
-        });
-        host.querySelector('[data-act="db-connect"]').addEventListener('click', function () {
-          setMsg('Reconnecting…');
-          fetch('/api/dbconfig/connect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) })
-            .then(function (r) { return r.json(); })
-            .then(function (d) {
-              if (d.error) { setMsg('Failed: ' + d.error, false); return; }
-              setMsg('Reconnected.', true);
-              // Re-render the panel to reflect the (possibly new) DB shape.
-              renderDatabasePanel(document.getElementById('dbconfig-host'));
-            })
-            .catch(function (e) { setMsg('Failed: ' + e.message, false); });
-        });
+        wireStateActions(host, info);
       }).catch(function (err) {
         host.innerHTML = '<div class="placeholder">Failed to load database config: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderStateBadge(info) {
+      var label = '';
+      var color = 'var(--text-muted)';
+      switch (info.state) {
+        case 'local':
+          label = 'LOCAL';
+          color = 'var(--text-muted)';
+          break;
+        case 'cloud-connected':
+          label = 'CLOUD · CONNECTED';
+          color = 'var(--accent)';
+          break;
+        case 'team-cloud-creator':
+          label = '👑 TEAM CLOUD · CREATOR';
+          color = 'var(--accent)';
+          break;
+        case 'team-cloud-member':
+          label = 'TEAM CLOUD · MEMBER';
+          color = 'var(--accent)';
+          break;
+        case 'team-cloud-needs-invite':
+          label = 'TEAM CLOUD · NEEDS INVITE';
+          color = 'var(--warn)';
+          break;
+        default:
+          label = String(info.state || 'UNKNOWN').toUpperCase();
+      }
+      return '<span style="font-family:JetBrains Mono,monospace;font-size:11px;letter-spacing:0.04em;padding:4px 10px;border-radius:999px;border:1px solid ' + color + ';color:' + color + '">' + escapeHtml(label) + '</span>';
+    }
+
+    function renderStateBody(info) {
+      if (info.state === 'local') {
+        return (
+          '<p style="margin:0 0 12px;color:var(--text-muted);font-size:13px">' +
+            'SQLite DB: <code>' + escapeHtml(info.dbFile || '(unknown)') + '</code>. ' +
+            'Move forward by either pushing this data to a new cloud Postgres or connecting to an existing one.' +
+          '</p>' +
+          '<div class="team-actions">' +
+            '<button class="btn primary" data-act="open-migrate">Migrate to cloud →</button>' +
+            '<button class="btn" data-act="open-connect-existing">Connect to existing cloud →</button>' +
+          '</div>'
+        );
+      }
+      if (info.state === 'cloud-connected') {
+        return (
+          renderConnectionSummary(info) +
+          '<div class="team-actions" style="margin-top:10px">' +
+            '<button class="btn primary" data-act="open-upgrade">Upgrade to team cloud →</button>' +
+          '</div>'
+        );
+      }
+      if (info.state === 'team-cloud-creator' || info.state === 'team-cloud-member') {
+        var isCreator = info.state === 'team-cloud-creator';
+        return (
+          renderConnectionSummary(info) +
+          '<div style="margin-top:10px;font-size:13px">' +
+            '<strong>Team:</strong> ' + escapeHtml(info.teamName || '(unnamed)') +
+            (isCreator ? ' · <span style="color:var(--accent)">you are the creator</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
+          '</div>' +
+          '<div class="team-actions" style="margin-top:10px">' +
+            (isCreator ? '<button class="btn primary" data-act="open-invite">Invite member</button>' : '') +
+            (isCreator ? '<button class="btn danger" data-act="destroy-team">Destroy team</button>' : '') +
+          '</div>'
+        );
+      }
+      if (info.state === 'team-cloud-needs-invite') {
+        return (
+          renderConnectionSummary(info) +
+          '<p style="margin-top:10px;color:var(--warn);font-size:13px">' +
+            'This cloud DB is a team — paste your invite token to join.' +
+          '</p>' +
+          '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:6px">' +
+            '<div><label class="field-label">Invite token</label>' +
+            '<textarea id="db-rejoin-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea></div>' +
+          '</div>' +
+          '<div class="team-actions" style="margin-top:10px">' +
+            '<button class="btn primary" data-act="rejoin-with-token">Join team →</button>' +
+          '</div>'
+        );
+      }
+      return '<p style="color:var(--text-muted)">Unknown database state.</p>';
+    }
+
+    function renderConnectionSummary(info) {
+      var parts = [];
+      if (info.label) parts.push('<strong>Label:</strong> <code>' + escapeHtml(info.label) + '</code>');
+      if (info.host) parts.push('<strong>Host:</strong> ' + escapeHtml(info.host) + ':' + (info.port || 5432));
+      if (info.dbname) parts.push('<strong>DB:</strong> ' + escapeHtml(info.dbname));
+      if (info.user) parts.push('<strong>User:</strong> ' + escapeHtml(info.user));
+      return '<p style="margin:0;color:var(--text-muted);font-size:13px;line-height:1.7">' + parts.join(' · ') + '</p>';
+    }
+
+    function wireStateActions(host, info) {
+      var setMsg = function (text, ok) {
+        var el = document.getElementById('db-msg');
+        if (!el) return;
+        el.textContent = text;
+        el.style.color = ok ? 'var(--accent)' : 'var(--text-muted)';
+      };
+      var rerender = function () { renderDatabasePanel(document.getElementById('dbconfig-host')); };
+
+      var migrateBtn = host.querySelector('[data-act="open-migrate"]');
+      if (migrateBtn) migrateBtn.addEventListener('click', function () {
+        showMigrateToCloudModal(rerender);
+      });
+
+      var connectExBtn = host.querySelector('[data-act="open-connect-existing"]');
+      if (connectExBtn) connectExBtn.addEventListener('click', function () {
+        showConnectExistingModal(rerender);
+      });
+
+      var upgradeBtn = host.querySelector('[data-act="open-upgrade"]');
+      if (upgradeBtn) upgradeBtn.addEventListener('click', function () {
+        showUpgradeToTeamModal(rerender);
+      });
+
+      var inviteBtn = host.querySelector('[data-act="open-invite"]');
+      if (inviteBtn) inviteBtn.addEventListener('click', function () {
+        // Reuse the per-team email-bound invite modal — but resolve
+        // the team_id via the active connection. Fetch then open.
+        fetchConnections().then(function (conns) {
+          var conn = conns[0];
+          if (!conn) { alert('No local team connection found.'); return; }
+          showInviteByEmailModal(conn.team_id);
+        });
+      });
+
+      var destroyBtn = host.querySelector('[data-act="destroy-team"]');
+      if (destroyBtn) destroyBtn.addEventListener('click', function () {
+        if (!confirm('Destroy this team? All member rows are dropped on the cloud. This cannot be undone.')) return;
+        fetch('/api/team', { method: 'DELETE' })
+          .then(function (r) { return r.json(); })
+          .then(function () { setMsg('Destroyed.', true); rerender(); })
+          .catch(function (e) { setMsg('Failed: ' + e.message, false); });
+      });
+
+      var rejoinBtn = host.querySelector('[data-act="rejoin-with-token"]');
+      if (rejoinBtn) rejoinBtn.addEventListener('click', function () {
+        var token = (document.getElementById('db-rejoin-token').value || '').trim();
+        if (!token) { setMsg('Invite token required.', false); return; }
+        // Without form re-entry the credentials are already saved; we
+        // call the connect-existing endpoint with just the invite
+        // token. The handler reads credentials from db-credentials.enc
+        // via the active configPath's label.
+        setMsg('Joining team…');
+        fetch('/api/dbconfig/connect-existing', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'postgres',
+            label: info.label,
+            host: info.host, port: info.port, dbname: info.dbname,
+            user: info.user, password: '', // password lives in db-credentials.enc; backend will pull
+            invite_token: token,
+          }),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.error) { setMsg('Failed: ' + d.error, false); return; }
+            setMsg('Joined.', true); rerender();
+          })
+          .catch(function (e) { setMsg('Failed: ' + e.message, false); });
+      });
+    }
+
+    // ── v1.13 wizards ─────────────────────────────────────────────
+
+    function postgresFormHtml(prefill) {
+      prefill = prefill || {};
+      return (
+        '<div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
+          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Host</label><input type="text" id="w-host" placeholder="db.example.com" value="' + escapeHtml(prefill.host || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Port</label><input type="number" id="w-port" placeholder="5432" value="' + escapeHtml(String(prefill.port || 5432)) + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Database name</label><input type="text" id="w-dbname" placeholder="app" value="' + escapeHtml(prefill.dbname || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">User</label><input type="text" id="w-user" placeholder="lattice_user" value="' + escapeHtml(prefill.user || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Password</label><input type="password" id="w-password" placeholder="••••••••" style="width:100%"></div>' +
+        '</div>'
+      );
+    }
+
+    function readPostgresWizardForm() {
+      return {
+        type: 'postgres',
+        label: (document.getElementById('w-label').value || '').trim(),
+        host: (document.getElementById('w-host').value || '').trim(),
+        port: Number(document.getElementById('w-port').value || 5432),
+        dbname: (document.getElementById('w-dbname').value || '').trim(),
+        user: document.getElementById('w-user').value || '',
+        password: document.getElementById('w-password').value || '',
+      };
+    }
+
+    function showMigrateToCloudModal(onClose) {
+      var bodyHtml =
+        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+          'Enter credentials for a <strong>fresh, empty</strong> Postgres database. ' +
+          'Lattice will copy every row from your local SQLite into the new DB, then ' +
+          'rename the SQLite file to <code>.db.local-bak</code> and switch the project ' +
+          'to read from the cloud. This action cannot be undone.' +
+        '</p>' +
+        postgresFormHtml({}) +
+        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+      showModal('Migrate to cloud', bodyHtml, {
+        primaryLabel: 'Migrate →',
+        onSubmit: function () {
+          var body = readPostgresWizardForm();
+          var msg = document.getElementById('w-msg');
+          msg.textContent = 'Migrating… (this may take a moment for large DBs)';
+          return fetch('/api/dbconfig/migrate-to-cloud', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+          })
+            .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+            .then(function (r) {
+              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              if (onClose) onClose();
+            });
+        },
+      });
+    }
+
+    function showConnectExistingModal(onClose) {
+      var bodyHtml =
+        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+          'Connect this project to an <strong>existing</strong> cloud Postgres. ' +
+          'Your local SQLite data will be ignored — use Migrate to cloud instead ' +
+          'if you want to push it. If the target is a teams DB you\\'ll be asked ' +
+          'for an invite token after the probe.' +
+        '</p>' +
+        postgresFormHtml({}) +
+        '<div id="w-team-zone" style="margin-top:10px"></div>' +
+        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+      var teamZoneShown = false;
+      showModal('Connect to existing cloud', bodyHtml, {
+        primaryLabel: 'Connect →',
+        onSubmit: function () {
+          var body = readPostgresWizardForm();
+          var msg = document.getElementById('w-msg');
+          msg.textContent = 'Probing…';
+          // First probe; if team, require token before the actual connect.
+          return fetch('/api/dbconfig/probe', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (probe) {
+              if (!probe.reachable) throw new Error('Unreachable: ' + (probe.error || 'unknown'));
+              if (probe.teamEnabled && !teamZoneShown) {
+                var zone = document.getElementById('w-team-zone');
+                zone.innerHTML =
+                  '<div style="padding:10px;background:rgba(251,146,60,0.08);border:1px solid var(--warn);border-radius:6px">' +
+                    '<p style="margin:0 0 8px;font-size:13px;color:var(--warn)">Target is a teams DB' +
+                    (probe.teamName ? ' (<strong>' + escapeHtml(probe.teamName) + '</strong>)' : '') +
+                    '. Paste your invite token to join:</p>' +
+                    '<textarea id="w-invite-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea>' +
+                  '</div>';
+                teamZoneShown = true;
+                msg.textContent = 'Enter invite token, then click Connect again.';
+                throw new Error('__PROBE_REQUIRES_TOKEN__');
+              }
+              // Either non-team, or we already showed the token zone.
+              var tokenEl = document.getElementById('w-invite-token');
+              var payload = Object.assign({}, body);
+              if (tokenEl && tokenEl.value.trim()) payload.invite_token = tokenEl.value.trim();
+              msg.textContent = 'Connecting…';
+              return fetch('/api/dbconfig/connect-existing', {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+              })
+                .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+                .then(function (r) {
+                  if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                  if (onClose) onClose();
+                });
+            })
+            .catch(function (e) {
+              if (e.message === '__PROBE_REQUIRES_TOKEN__') {
+                // Suppress error — token zone is now visible.
+                throw new Error(' '); // forces modal to stay open with a no-op message
+              }
+              throw e;
+            });
+        },
+      });
+    }
+
+    function showUpgradeToTeamModal(onClose) {
+      var bodyHtml =
+        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+          'Upgrade this cloud DB to a team DB by registering as the founding member. ' +
+          'Your display name + email from <strong>User Config → Identity</strong> are used.' +
+        '</p>' +
+        '<div><label class="field-label">Team name</label>' +
+          '<input type="text" id="w-team-name" placeholder="Atlas" style="width:100%"></div>' +
+        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+      showModal('Upgrade to team cloud', bodyHtml, {
+        primaryLabel: 'Upgrade →',
+        onSubmit: function () {
+          var teamName = (document.getElementById('w-team-name').value || '').trim();
+          if (!teamName) throw new Error('Team name is required.');
+          var msg = document.getElementById('w-msg');
+          msg.textContent = 'Upgrading…';
+          return fetch('/api/dbconfig/upgrade-to-team', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ team_name: teamName }),
+          })
+            .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+            .then(function (r) {
+              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              if (onClose) onClose();
+            });
+        },
       });
     }
 
