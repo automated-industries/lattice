@@ -8,6 +8,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.4] - 2026-05-26
+
+### Fixed — `/api/system-tables` empty on Postgres-backed Lattices
+
+The GUI's System sidebar (Objects → System) used to list every `_lattice_*` / `__lattice_*` internal table, with their column names + row counts. On Postgres-backed Lattices it silently rendered an empty list because the endpoint ran two SQLite-only queries:
+
+- `SELECT name FROM sqlite_master ...` — table doesn't exist in Postgres.
+- `PRAGMA table_info("<name>")` — Postgres has no `PRAGMA` statement.
+
+Both threw and the catch-all silently produced an empty `tables: []`. Migrated cloud projects + team-cloud DBs saw no system tables at all even though they were correctly created during `db.init()`.
+
+Fix: dispatch on `adapter.dialect` for the listing query (`pg_tables WHERE schemaname='public'` on Postgres; `sqlite_master` on SQLite — same `\_%` ESCAPE pattern either way), and replace `PRAGMA table_info` with the public, dialect-portable `Lattice.introspectColumns(table)` which already dispatches internally to `information_schema.columns` on Postgres.
+
+New regression test in `tests/integration/gui-init-postgres.test.ts` opens the GUI server against a Postgres URL, hits `/api/system-tables`, and asserts all four expected system tables (`_lattice_gui_meta`, `_lattice_gui_column_meta`, `_lattice_gui_audit`, `__lattice_user_identity`) appear with their columns enumerated. Runs whenever `LATTICE_TEST_PG_URL` is set (always in CI's Postgres service container).
+
 ## [1.13.3] - 2026-05-26
 
 ### Fixed — `__lattice_user_identity` init crashes on every Postgres open

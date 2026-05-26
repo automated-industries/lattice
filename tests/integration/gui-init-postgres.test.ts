@@ -87,5 +87,61 @@ describe.skipIf(!PG_URL)(
       };
       expect(entities.tables.map((t) => t.name)).toContain('items');
     });
+
+    it('lists Lattice system tables on /api/system-tables (regression for sqlite_master + PRAGMA on Postgres)', async () => {
+      // The pre-1.13.4 implementation queried sqlite_master and ran
+      // PRAGMA table_info — both throw on Postgres. The bug surfaced as
+      // an empty System sidebar on every Postgres-backed Lattice. This
+      // test exercises the dialect-portable replacement: pg_tables for
+      // the listing on Postgres, Lattice.introspectColumns() for cols.
+      const runId = randomBytes(4).toString('hex');
+      const root = mkdtempSync(join(tmpdir(), `gui-pg-systables-${runId}-`));
+      dirs.push(root);
+
+      const configPath = join(root, 'lattice.config.yml');
+      writeFileSync(
+        configPath,
+        [
+          `db: ${PG_URL!}`,
+          '',
+          'entities:',
+          '  items:',
+          '    fields:',
+          '      id: { type: uuid, primaryKey: true }',
+          '      name: { type: text }',
+          '    render: default-list',
+          '    outputFile: items.md',
+        ].join('\n'),
+      );
+
+      const outputDir = join(root, 'context');
+      mkdirSync(outputDir, { recursive: true });
+
+      const server = await startGuiServer({
+        configPath,
+        outputDir,
+        port: 0,
+        openBrowser: false,
+      });
+      servers.push(server);
+
+      const payload = (await fetch(`${server.url}/api/system-tables`).then((r) => r.json())) as {
+        tables: { name: string; columns: string[]; rowCount: number }[];
+      };
+      // Every fresh GUI-opened Lattice registers these four system tables
+      // during openConfig() init. The new dialect-portable listing
+      // surfaces all four; pre-1.13.4 returned an empty list with no
+      // error visible to the user.
+      const tableNames = payload.tables.map((t) => t.name);
+      expect(tableNames).toContain('_lattice_gui_meta');
+      expect(tableNames).toContain('_lattice_gui_column_meta');
+      expect(tableNames).toContain('_lattice_gui_audit');
+      expect(tableNames).toContain('__lattice_user_identity');
+      // Column-introspection lane survived too (replaced PRAGMA with
+      // information_schema.columns via Lattice.introspectColumns).
+      const userIdentity = payload.tables.find((t) => t.name === '__lattice_user_identity')!;
+      expect(userIdentity.columns).toContain('display_name');
+      expect(userIdentity.columns).toContain('email');
+    });
   },
 );
