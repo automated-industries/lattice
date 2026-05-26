@@ -8,6 +8,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-05-26
+
+### Added — Local → Cloud → Team-Cloud progression
+
+A one-way state machine for the GUI's Database panel, with matching public API on the npm package. Every new GUI action is a thin wrapper over an exported function:
+
+- **`migrateLatticeData(source, target, options?)`** — copy every user-defined entity + native `secrets` / `files` row from one Lattice to another. Refuses non-empty targets. Encrypted columns round-trip through decrypt-on-read + encrypt-on-write so the operator's master key stays on the machine.
+- **`openTargetLatticeForMigration(configPath, targetUrl, encryptionKey)`** — open a fresh target Lattice with the same user schema + native entities as the source's YAML config. Caller closes when done.
+- **`archiveLocalSqlite(dbPath)`** — rename `<path>.db` (+ `-shm` / `-wal`) to `.db.local-bak`. Idempotent.
+- **`probeCloud(targetUrl)`** — non-destructive `{reachable, dialect, teamEnabled, teamName?}` against any Lattice URL. Never throws.
+- **`TeamsClient.connectToExistingCloud(opts)`** — wraps probe + (optional) `redeem-invite` + credential save + token-file write.
+- **`TeamsClient.upgradeToTeamCloud(opts)`** — wraps atomic `register` + token-file write for the active cloud's label.
+
+All exported from `latticesql` package index.
+
+### Added — Cloud connection probe + connect-existing
+
+GUI routes (thin wrappers):
+- `POST /api/dbconfig/probe` — `probeCloud` wrapper.
+- `POST /api/dbconfig/migrate-to-cloud` — migrate + archive + swap.
+- `POST /api/dbconfig/connect-existing` — connect-existing + optional redeem-invite + swap.
+- `POST /api/dbconfig/upgrade-to-team` — atomic register on the active cloud's label.
+
+`GET /api/dbconfig` gains a `state` field — one of `local`, `cloud-connected`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite`.
+
+### Changed — Project Config Database panel rewritten state-machine style
+
+- Panel renders state-specific bodies + a color-coded badge (lime accent for connected, warn orange for needs-invite).
+- Three new wizards: `showMigrateToCloudModal`, `showConnectExistingModal`, `showUpgradeToTeamModal`.
+- "Create team" modal removed — replaced by the narrower "Upgrade to team cloud" wizard that's only available when state is `cloud-connected`.
+- Old SQLite-only `POST /api/dbconfig/save` path preserved for local-state file-path edits; the Postgres save path is now `migrate-to-cloud` or `connect-existing`.
+
+### Changed — User Config Databases catalog
+
+- New `State` column per row (local SQLite rows report `LOCAL`; cloud labels report `UNKNOWN` until probed).
+- New `Add a cloud DB →` button — creates a fresh project via the existing `/api/databases/create` then opens the Connect-to-existing wizard against it.
+
+### Fixed — Form input + placeholder contrast
+
+Step 7's dark-theme restyle didn't override the OS-default input/placeholder colors. Two global CSS rules now set:
+- `input, select, textarea { color: var(--text); }`
+- `input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1; }`
+
+Affects every form across the GUI: Data Model editor, Database wizard, User Config Identity, all team modals.
+
 ## [1.12.0] - 2026-05-25
 
 ### Added — Lattice Teams (Phase 5 + OSS-only redesign)

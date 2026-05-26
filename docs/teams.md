@@ -130,6 +130,69 @@ All routes live on the cloud Postgres-backed Lattice booted via `lattice gui --t
 
 ---
 
+## Local → Cloud → Team-Cloud progression (v1.13+)
+
+The GUI's Database panel models the project lifecycle as a one-way state machine: a project starts on local SQLite, can be promoted to a BYO Postgres (data migration), and a non-team cloud can be upgraded to a team cloud. There is no revert path in the UI.
+
+```
+LOCAL  →  CLOUD CONNECTED  →  TEAM CLOUD (creator | member | needs-invite)
+       migrate              upgrade / connect-existing+invite
+```
+
+State detection (returned by `GET /api/dbconfig` as the `state` field):
+
+| State                       | Detection                                                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `local`                     | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                |
+| `cloud-connected`           | YAML resolves to a Postgres URL, `__lattice_team_identity` row absent.                                                         |
+| `team-cloud-creator`        | YAML is cloud, identity row present, `~/.lattice/keys/<label>.token` exists, and `identity.email` matches `creator_email`.    |
+| `team-cloud-member`         | YAML is cloud, identity row present, token exists, but email doesn't match the creator.                                       |
+| `team-cloud-needs-invite`   | YAML is cloud, identity row present, no token in `~/.lattice/keys/`.                                                          |
+
+### Transition: Local → Cloud (migrate)
+
+Driven by `POST /api/dbconfig/migrate-to-cloud`. The handler:
+
+1. Probes the target via `probeCloud(url)` → refuses on `reachable: false` (502) or `teamEnabled: true` (409 — migration is into-empty only).
+2. Opens a fresh target Lattice via `openTargetLatticeForMigration(configPath, url, encryptionKey)` — registers the same user entities + native `secrets`/`files` as the source, then `init()`s.
+3. Calls `migrateLatticeData(source, target)` — copies every user-defined entity row + `secrets` + `files` row in batches of 500. Encrypted columns round-trip via decrypt-on-read + encrypt-on-write.
+4. Closes the target. Calls `archiveLocalSqlite(sourceDbPath)` to rename `<name>.db` (+ `-shm`/`-wal`) to `.db.local-bak`.
+5. `saveDbCredential(label, url)` + rewrites the YAML's `db:` line to `${LATTICE_DB:<label>}`.
+6. Swaps the active Lattice via the GUI server's `swap()` callback.
+
+On any error before step 4 the YAML is untouched and the SQLite file stays in place. Blobs under `data/blobs/` are not moved — the migrated `files` rows reference relative paths that remain valid against the same project root.
+
+### Transition: Local → Cloud (connect to existing)
+
+Driven by `POST /api/dbconfig/connect-existing`. Used when a teammate has already created a team — the local project's data is discarded.
+
+1. Probes the target.
+2. If `teamEnabled: true`, requires `invite_token` in the body. The handler resolves email + display name from `~/.lattice/identity.json`, calls `TeamsClient.connectToExistingCloud()` which internally runs `POST /api/auth/redeem-invite` against the cloud.
+3. On success the bearer lands in `~/.lattice/keys/<label>.token` and the credential in `db-credentials.enc`. The YAML is rewritten, active Lattice swapped.
+
+### Transition: Cloud → Team Cloud (upgrade)
+
+Driven by `POST /api/dbconfig/upgrade-to-team`. Available only when the panel is in `cloud-connected` state.
+
+1. Reads cloud URL from the saved credential (looked up by the active label).
+2. Reads identity from `~/.lattice/identity.json` (refuses if email or display name is empty).
+3. Calls `TeamsClient.upgradeToTeamCloud()` which runs the atomic `POST /api/auth/register` flow against the cloud — creates the user, the team, the creator membership, and the bearer in one call.
+4. Writes the bearer to `~/.lattice/keys/<label>.token`. Swaps the active Lattice so the panel re-renders into `team-cloud-creator`.
+
+### v1.13 HTTP routes (thin wrappers over the public API)
+
+| Method | Route                                  | Wraps                                                  |
+| ------ | -------------------------------------- | ------------------------------------------------------ |
+| GET    | `/api/dbconfig`                        | adds `state` field per the table above                 |
+| POST   | `/api/dbconfig/probe`                  | `probeCloud(url)` from `latticesql/framework/cloud-connect` |
+| POST   | `/api/dbconfig/migrate-to-cloud`       | `migrateLatticeData` + `archiveLocalSqlite` from `latticesql/framework/cloud-migration` |
+| POST   | `/api/dbconfig/connect-existing`       | `TeamsClient.connectToExistingCloud`                   |
+| POST   | `/api/dbconfig/upgrade-to-team`        | `TeamsClient.upgradeToTeamCloud`                       |
+
+All five are reachable as public functions from the `latticesql` package — the frontend is just a wrapper.
+
+---
+
 ## CLI
 
 ```

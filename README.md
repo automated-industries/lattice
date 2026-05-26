@@ -2187,6 +2187,79 @@ The full architecture, schema, and HTTP surface live in [docs/teams.md](./docs/t
 
 ---
 
+## Cloud migration + connection (v1.13+)
+
+Lattice Teams + the GUI's Database panel now flow through a state machine:
+
+```
+LOCAL  →  CLOUD CONNECTED  →  TEAM CLOUD
+       (migrate)           (upgrade)
+```
+
+Each transition is one-way: once on cloud, the panel does not surface a revert-to-local button. Disconnecting from the cloud temporarily is a follow-up; for v1.13 the in-place reconnection happens automatically when the GUI reopens.
+
+Public API surface (the GUI's `/api/dbconfig/*` routes are thin wrappers):
+
+```ts
+import {
+  Lattice,
+  migrateLatticeData,
+  archiveLocalSqlite,
+  openTargetLatticeForMigration,
+  probeCloud,
+  TeamsClient,
+} from 'latticesql';
+
+// 1. Migrate a local SQLite project to a fresh cloud Postgres
+const source = new Lattice({ config: './lattice.config.yml' }, { encryptionKey });
+await source.init();
+const target = await openTargetLatticeForMigration('./lattice.config.yml', cloudUrl, encryptionKey);
+const result = await migrateLatticeData(source, target);
+// → { tablesCopied: ['files','items','secrets',...], rowsCopied: 42 }
+target.close();
+archiveLocalSqlite('./data/project.db'); // renames to .db.local-bak
+
+// 2. Probe an arbitrary cloud URL for reachability + team status
+const probe = await probeCloud('postgres://u:p@host/db');
+// → { reachable: true, dialect: 'postgres', teamEnabled: false }
+
+// 3. Connect a fresh project to an existing cloud (auto-redeems if it's a teams DB)
+const client = new TeamsClient(source);
+await client.connectToExistingCloud({
+  label: 'atlas',
+  cloudUrl: 'postgres://u:p@host/db',
+  invite_token: 'latinv_...',
+  email: 'bob@example.com',
+  name: 'Bob',
+});
+
+// 4. Upgrade an already-connected cloud DB to a team cloud
+await client.upgradeToTeamCloud({
+  label: 'atlas',
+  cloudUrl: 'postgres://u:p@host/db',
+  teamName: 'Atlas',
+  email: 'alice@example.com',
+  displayName: 'Alice',
+});
+```
+
+GUI consumers don't need to call these directly — the Database panel surfaces them as wizards (`Migrate to cloud →`, `Connect to existing cloud →`, `Upgrade to team cloud →`).
+
+HTTP surface (all under `/api/dbconfig/*`, localhost-only, same auth model as the rest of `lattice gui`):
+
+| Method | Route                                  | Wraps                                          |
+| ------ | -------------------------------------- | ---------------------------------------------- |
+| GET    | `/api/dbconfig`                        | returns `{ type, state, label?, host?, ... }`  |
+| POST   | `/api/dbconfig/probe`                  | `probeCloud(url)`                              |
+| POST   | `/api/dbconfig/migrate-to-cloud`       | `migrateLatticeData` + `archiveLocalSqlite`    |
+| POST   | `/api/dbconfig/connect-existing`       | `TeamsClient.connectToExistingCloud`           |
+| POST   | `/api/dbconfig/upgrade-to-team`        | `TeamsClient.upgradeToTeamCloud`               |
+| POST   | `/api/dbconfig/save` / `connect` / `test` | unchanged from v1.12                        |
+
+The `state` field on `GET /api/dbconfig` is one of: `local`, `cloud-connected`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite`. The SPA badge color-codes them; the routes use them only for response shape.
+
+---
+
 ## Schema migrations
 
 Lattice auto-creates tables and adds missing columns on every `init()` — you never need to manually write `CREATE TABLE` or `ALTER TABLE ADD COLUMN` for schema evolution.

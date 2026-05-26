@@ -359,6 +359,21 @@ Single atomic call — creates the bootstrap user, the team, the creator members
 
 **Cloud-side server**: the same binary boots in team-cloud mode with `lattice gui --team-cloud`, which exposes the bearer-gated team API + sync routes on the configured Postgres and disables the dev-tool surface.
 
+**Local → Cloud → Team-Cloud progression (v1.13+)**: the GUI's Database panel drives a three-state lifecycle (`local` → `cloud-connected` → `team-cloud-*`). The transitions are GUI-only — there are no CLI subcommands for migrate / connect-existing / upgrade-to-team. Library consumers can drive the same flows directly via the public API:
+
+```ts
+import {
+  Lattice,
+  migrateLatticeData,
+  archiveLocalSqlite,
+  openTargetLatticeForMigration,
+  probeCloud,
+  TeamsClient,
+} from 'latticesql';
+```
+
+See [docs/teams.md](./teams.md#local--cloud--team-cloud-progression-v113) for the full progression model + HTTP route table.
+
 ---
 
 ## Global options
