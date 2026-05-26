@@ -82,7 +82,7 @@ export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
     const parts: string[] = [];
     if (err.code) parts.push(`[${err.code}]`);
     if (err.message) parts.push(err.message);
-    if (err.routine && !String(err.message ?? '').includes(err.routine)) {
+    if (err.routine && !err.message.includes(err.routine)) {
       parts.push(`(routine: ${err.routine})`);
     }
     return {
