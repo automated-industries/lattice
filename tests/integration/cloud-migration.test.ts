@@ -1,12 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -63,7 +56,9 @@ function writeConfig(root: string, dbName: string): { configPath: string; dbPath
   return { configPath, dbPath };
 }
 
-async function openSource(root: string): Promise<{ db: Lattice; configPath: string; dbPath: string }> {
+async function openSource(
+  root: string,
+): Promise<{ db: Lattice; configPath: string; dbPath: string }> {
   const { configPath, dbPath } = writeConfig(root, 'source');
   const db = new Lattice({ config: configPath }, { encryptionKey: 'migration-test-key' });
   registerNativeEntities(db);

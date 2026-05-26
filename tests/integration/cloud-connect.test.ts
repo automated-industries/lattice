@@ -89,4 +89,3 @@ describe('probeCloud()', () => {
     expect(typeof result.error).toBe('string');
   });
 });
-

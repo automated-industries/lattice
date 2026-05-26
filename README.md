@@ -2111,10 +2111,10 @@ The server only binds to `127.0.0.1` and has no authentication. See [SECURITY.md
 
 **Native `secrets` and `files` entities (v1.12+).** Every Lattice opened by `lattice gui` automatically registers two framework-shipped tables before `init()`:
 
-| Table     | Shape                                                                                                                                                                                                  |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `secrets` | `id, name, kind, value (encrypted), description, created_at, updated_at, deleted_at`                                                                                                                  |
-| `files`   | `id, original_name, mime, size_bytes, sha256, blob_path, extraction_status, extracted_text, description, …` (superset of any legacy `path`/`kind` columns)                                              |
+| Table     | Shape                                                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `secrets` | `id, name, kind, value (encrypted), description, created_at, updated_at, deleted_at`                                                                       |
+| `files`   | `id, original_name, mime, size_bytes, sha256, blob_path, extraction_status, extracted_text, description, …` (superset of any legacy `path`/`kind` columns) |
 
 `secrets.value` is encrypted at rest via a new `TableDefinition.encrypted?: { columns: string[] }` field that extends the existing entity-context encryption to plain `define()` tables. The encryption master key resolves from `LATTICE_ENCRYPTION_KEY` (env) or `~/.lattice/master.key` (auto-generated, `chmod 0600` on POSIX). The companion helper `attachBlob(srcPath, latticeRoot)` writes any file into a content-addressed store at `<root>/data/blobs/<sha256>` and returns metadata suitable for a `files` row.
 
@@ -2124,19 +2124,22 @@ You can also register the native entities programmatically when opening a Lattic
 import { Lattice } from 'latticesql';
 import { registerNativeEntities } from 'latticesql/framework/native-entities';
 
-const db = new Lattice({ config: './lattice.config.yml' }, { encryptionKey: process.env.LATTICE_ENCRYPTION_KEY });
+const db = new Lattice(
+  { config: './lattice.config.yml' },
+  { encryptionKey: process.env.LATTICE_ENCRYPTION_KEY },
+);
 registerNativeEntities(db);
 await db.init();
 ```
 
 **Machine-local user config at `~/.lattice/` (v1.12+).** A small set of files outside any Lattice DB so a user's identity, encrypted master key, saved cloud-DB credentials, and per-team bearer tokens survive switching projects:
 
-| File                          | Purpose                                                              |
-| ----------------------------- | -------------------------------------------------------------------- |
-| `~/.lattice/master.key`       | 32-byte AES-256 master key, auto-generated, `chmod 0600` on POSIX    |
-| `~/.lattice/identity.json`    | `{display_name, email}` — mirrored into the active Lattice's `__lattice_user_identity` row on every open |
-| `~/.lattice/keys/<label>.token` | Per-joined-team bearer tokens (`chmod 0600`)                       |
-| `~/.lattice/db-credentials.enc` | AES-GCM-encrypted Postgres URLs keyed by label                     |
+| File                            | Purpose                                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `~/.lattice/master.key`         | 32-byte AES-256 master key, auto-generated, `chmod 0600` on POSIX                                        |
+| `~/.lattice/identity.json`      | `{display_name, email}` — mirrored into the active Lattice's `__lattice_user_identity` row on every open |
+| `~/.lattice/keys/<label>.token` | Per-joined-team bearer tokens (`chmod 0600`)                                                             |
+| `~/.lattice/db-credentials.enc` | AES-GCM-encrypted Postgres URLs keyed by label                                                           |
 
 The GUI's User Config view edits `identity.json` directly; the Project Config "Database" panel writes saved Postgres URLs into `db-credentials.enc` and rewrites `lattice.config.yml`'s `db:` line to `${LATTICE_DB:<label>}`. The config parser resolves that reference at open time so connection passwords never sit in YAML on disk.
 
@@ -2247,14 +2250,14 @@ GUI consumers don't need to call these directly — the Database panel surfaces 
 
 HTTP surface (all under `/api/dbconfig/*`, localhost-only, same auth model as the rest of `lattice gui`):
 
-| Method | Route                                  | Wraps                                          |
-| ------ | -------------------------------------- | ---------------------------------------------- |
-| GET    | `/api/dbconfig`                        | returns `{ type, state, label?, host?, ... }`  |
-| POST   | `/api/dbconfig/probe`                  | `probeCloud(url)`                              |
-| POST   | `/api/dbconfig/migrate-to-cloud`       | `migrateLatticeData` + `archiveLocalSqlite`    |
-| POST   | `/api/dbconfig/connect-existing`       | `TeamsClient.connectToExistingCloud`           |
-| POST   | `/api/dbconfig/upgrade-to-team`        | `TeamsClient.upgradeToTeamCloud`               |
-| POST   | `/api/dbconfig/save` / `connect` / `test` | unchanged from v1.12                        |
+| Method | Route                                     | Wraps                                         |
+| ------ | ----------------------------------------- | --------------------------------------------- |
+| GET    | `/api/dbconfig`                           | returns `{ type, state, label?, host?, ... }` |
+| POST   | `/api/dbconfig/probe`                     | `probeCloud(url)`                             |
+| POST   | `/api/dbconfig/migrate-to-cloud`          | `migrateLatticeData` + `archiveLocalSqlite`   |
+| POST   | `/api/dbconfig/connect-existing`          | `TeamsClient.connectToExistingCloud`          |
+| POST   | `/api/dbconfig/upgrade-to-team`           | `TeamsClient.upgradeToTeamCloud`              |
+| POST   | `/api/dbconfig/save` / `connect` / `test` | unchanged from v1.12                          |
 
 The `state` field on `GET /api/dbconfig` is one of: `local`, `cloud-connected`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite`. The SPA badge color-codes them; the routes use them only for response shape.
 

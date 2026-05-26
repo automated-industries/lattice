@@ -58,9 +58,9 @@ export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
     let teamEnabled = false;
     let teamName: string | undefined;
     try {
-      const row = (await probe.get('__lattice_team_identity', 'singleton')) as
-        | { team_name?: string }
-        | null;
+      const row = (await probe.get('__lattice_team_identity', 'singleton')) as {
+        team_name?: string;
+      } | null;
       if (row && typeof row.team_name === 'string') {
         teamEnabled = true;
         teamName = row.team_name;

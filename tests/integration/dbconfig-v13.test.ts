@@ -1,18 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  startGuiServer,
-  type GuiServerHandle,
-} from '../../src/gui/server.js';
+import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import {
   getDbCredential,
   saveDbCredential,
@@ -62,7 +52,10 @@ afterEach(async () => {
   else process.env.LATTICE_ENCRYPTION_KEY = savedEnv.LATTICE_ENCRYPTION_KEY;
 });
 
-function writeSqliteConfig(root: string, dbName: string): { configPath: string; outputDir: string } {
+function writeSqliteConfig(
+  root: string,
+  dbName: string,
+): { configPath: string; outputDir: string } {
   const outputDir = join(root, 'context');
   mkdirSync(outputDir, { recursive: true });
   mkdirSync(join(root, 'data'), { recursive: true });
@@ -238,7 +231,8 @@ describe('credential helper round-trip (used by the routes)', () => {
     const yaml = readFileSync(configPath, 'utf8');
     expect(yaml).toContain('db:');
     // Sanity that mkdirSync + existsSync are reachable from the test env
-    const tmp = mkdtempSync(join(tmpdir(), 'lattice-fs-')); dirs.push(tmp);
+    const tmp = mkdtempSync(join(tmpdir(), 'lattice-fs-'));
+    dirs.push(tmp);
     mkdirSync(join(tmp, 'sub'), { recursive: true });
     expect(existsSync(join(tmp, 'sub'))).toBe(true);
   });

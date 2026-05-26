@@ -161,9 +161,9 @@ describe('teams management — end-to-end', () => {
       ).rejects.toMatchObject({ status: 403 });
 
       // 7b. Bob tries to destroy — 403
-      await expect(
-        bob.client.destroyTeam(cloud.url, bobJoin.raw_token),
-      ).rejects.toMatchObject({ status: 403 });
+      await expect(bob.client.destroyTeam(cloud.url, bobJoin.raw_token)).rejects.toMatchObject({
+        status: 403,
+      });
 
       // 8. Bob leaves Atlas (kick-self as non-creator)
       await bob.client.kickMember(cloud.url, bobJoin.raw_token, atlas.id, bobJoin.user.id);
@@ -202,12 +202,7 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
       await expect(
         alice.client.kickMember(cloud.url, reg.raw_token, reg.team.id, reg.user.id),
       ).rejects.toMatchObject({ status: 400 });
@@ -220,12 +215,7 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
       const invite = await alice.client.invite(
         cloud.url,
         reg.raw_token,
@@ -249,12 +239,7 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
       // Mint a second token directly via the public HTTP API.
       const mintRes = await fetch(`${cloud.url}/api/auth/tokens`, {
         method: 'POST',
@@ -295,12 +280,7 @@ describe('teams management — end-to-end', () => {
     const cloud = await startCloud();
     const alice = await openLocalClient();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Same',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Same');
       // Manually plant a second connection row with the same name to simulate
       // joining a same-named team on a different cloud.
       await alice.client.saveConnection({

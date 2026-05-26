@@ -81,7 +81,7 @@ export async function migrateLatticeData(
   // Up-front: refuse if any of the migratable tables on the target
   // already has rows. Migration is one-shot and into-empty.
   for (const table of sourceTables) {
-    const existing = (await target.query(table, { limit: 1 }));
+    const existing = await target.query(table, { limit: 1 });
     if (existing.length > 0) {
       throw new Error(
         `Target Lattice is not empty: table "${table}" already has rows. Migration aborts to avoid mixing data.`,
@@ -92,7 +92,7 @@ export async function migrateLatticeData(
   const result: MigrationResult = { tablesCopied: [], rowsCopied: 0 };
 
   for (const table of sourceTables) {
-    const rows = (await source.query(table, {}));
+    const rows = await source.query(table, {});
     if (rows.length === 0) {
       result.tablesCopied.push(table);
       if (onProgress) onProgress({ table, rowsCopied: 0, rowsTotal: 0 });

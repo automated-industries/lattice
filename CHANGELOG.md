@@ -26,6 +26,7 @@ All exported from `latticesql` package index.
 ### Added — Cloud connection probe + connect-existing
 
 GUI routes (thin wrappers):
+
 - `POST /api/dbconfig/probe` — `probeCloud` wrapper.
 - `POST /api/dbconfig/migrate-to-cloud` — migrate + archive + swap.
 - `POST /api/dbconfig/connect-existing` — connect-existing + optional redeem-invite + swap.
@@ -48,6 +49,7 @@ GUI routes (thin wrappers):
 ### Fixed — Form input + placeholder contrast
 
 Step 7's dark-theme restyle didn't override the OS-default input/placeholder colors. Two global CSS rules now set:
+
 - `input, select, textarea { color: var(--text); }`
 - `input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1; }`
 
@@ -111,14 +113,14 @@ YAML resolver in `src/config/parser.ts` honours `${LATTICE_DB:<label>}` (looks u
 
 **Multi-team enumeration removed.** One cloud = one team. The following surface is gone:
 
-| Removed | Replacement |
-| --- | --- |
-| `POST /api/teams` (create) | `POST /api/auth/register` (atomic with bootstrap user) |
-| `GET /api/teams` (list) | `GET /api/team` (singleton) |
-| `DELETE /api/teams/:id` | `DELETE /api/team` |
+| Removed                                                       | Replacement                                                          |
+| ------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `POST /api/teams` (create)                                    | `POST /api/auth/register` (atomic with bootstrap user)               |
+| `GET /api/teams` (list)                                       | `GET /api/team` (singleton)                                          |
+| `DELETE /api/teams/:id`                                       | `DELETE /api/team`                                                   |
 | `TeamsClient.createTeam()` / `.listTeams()` / `.deleteTeam()` | `register()` (atomic) / `getSingleton()` (via GET) / `destroyTeam()` |
-| `lattice teams create` (CLI) | `lattice teams register --team-name <name>` |
-| CLI `--name` overloaded as team name | `--name` = display name; new `--team-name` = team name |
+| `lattice teams create` (CLI)                                  | `lattice teams register --team-name <name>`                          |
+| CLI `--name` overloaded as team name                          | `--name` = display name; new `--team-name` = team name               |
 
 `TeamsClient.register()` now requires a `teamName` argument and returns `{ user, raw_token, team }`. Existing `/api/teams/:id/{objects,changes,members,invitations,rows,links}` routes (the load-bearing sync engine) are unchanged — the `:id` segment continues to identify the (one) team's UUID.
 

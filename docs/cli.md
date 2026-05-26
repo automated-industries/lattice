@@ -322,24 +322,24 @@ Multi-user shared Lattice databases. See [docs/teams.md](./teams.md) for the ful
 lattice teams <subcommand> [options]
 ```
 
-| Subcommand    | Description                                                                                |
-| ------------- | ------------------------------------------------------------------------------------------ |
-| `register`    | Bootstrap a fresh cloud: atomic user + team creation. `--cloud --email --name --team-name` |
-| `join`        | Redeem an invitation. `--cloud --token --email --name`                                     |
-| `list`        | List your local team connections                                                           |
-| `members`     | List members of the team (`--team`)                                                        |
-| `invite`      | Generate an invitation (creator-only). `--team --invitee-email`                            |
-| `leave`       | Leave the team (`--team`)                                                                  |
-| `destroy`     | Destroy the team (creator-only). `--team`                                                  |
-| `share`       | Share a local table with the team (`--team --table`)                                       |
-| `unshare`     | Stop sharing a table (`--team --table`)                                                    |
-| `shared`      | List shared objects on the team (`--team`)                                                 |
-| `sync`        | Apply cloud-shared schemas locally (`--team`)                                              |
-| `link`        | Link a local row to the team (`--team --table --pk`)                                       |
-| `unlink`      | Unlink a row (`--team --table --pk`)                                                       |
-| `pull`        | Pull change envelopes from the cloud + apply locally (`--team`)                            |
-| `push`        | Drain the local outbox to the cloud (`--team`)                                             |
-| `status`      | Show sync stats (outbox depth, DLQ depth, last seq) (`--team`)                             |
+| Subcommand | Description                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| `register` | Bootstrap a fresh cloud: atomic user + team creation. `--cloud --email --name --team-name` |
+| `join`     | Redeem an invitation. `--cloud --token --email --name`                                     |
+| `list`     | List your local team connections                                                           |
+| `members`  | List members of the team (`--team`)                                                        |
+| `invite`   | Generate an invitation (creator-only). `--team --invitee-email`                            |
+| `leave`    | Leave the team (`--team`)                                                                  |
+| `destroy`  | Destroy the team (creator-only). `--team`                                                  |
+| `share`    | Share a local table with the team (`--team --table`)                                       |
+| `unshare`  | Stop sharing a table (`--team --table`)                                                    |
+| `shared`   | List shared objects on the team (`--team`)                                                 |
+| `sync`     | Apply cloud-shared schemas locally (`--team`)                                              |
+| `link`     | Link a local row to the team (`--team --table --pk`)                                       |
+| `unlink`   | Unlink a row (`--team --table --pk`)                                                       |
+| `pull`     | Pull change envelopes from the cloud + apply locally (`--team`)                            |
+| `push`     | Drain the local outbox to the cloud (`--team`)                                             |
+| `status`   | Show sync stats (outbox depth, DLQ depth, last seq) (`--team`)                             |
 
 **Bootstrap example**:
 

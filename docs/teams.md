@@ -45,12 +45,12 @@ The cloud Postgres is fully under the operator's control — Lattice doesn't hos
 
 Machine-local, outside any Lattice DB. Files are created lazily on first use; the directory is `chmod 0700` on POSIX, best-effort on Windows.
 
-| File                          | Purpose                                                                                            |
-| ----------------------------- | -------------------------------------------------------------------------------------------------- |
-| `master.key`                  | 32-byte AES-256 key (base64). Auto-generated. `LATTICE_ENCRYPTION_KEY` env var takes precedence. `chmod 0600`. |
-| `identity.json`               | `{display_name, email}`. Mirrored into `__lattice_user_identity` (singleton) on every Lattice open. |
-| `db-credentials.enc`          | AES-GCM-encrypted JSON `{ [label]: postgresUrl }`. Decrypted in-memory; never returned over HTTP.  |
-| `keys/<label>.token`          | Per-joined-team bearer token. One file per joined team.                                            |
+| File                 | Purpose                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `master.key`         | 32-byte AES-256 key (base64). Auto-generated. `LATTICE_ENCRYPTION_KEY` env var takes precedence. `chmod 0600`. |
+| `identity.json`      | `{display_name, email}`. Mirrored into `__lattice_user_identity` (singleton) on every Lattice open.            |
+| `db-credentials.enc` | AES-GCM-encrypted JSON `{ [label]: postgresUrl }`. Decrypted in-memory; never returned over HTTP.              |
+| `keys/<label>.token` | Per-joined-team bearer token. One file per joined team.                                                        |
 
 The `src/framework/user-config.ts` module exposes the read/write API:
 
@@ -99,32 +99,32 @@ All routes live on the cloud Postgres-backed Lattice booted via `lattice gui --t
 
 **Unauthenticated** (the only routes the cloud accepts without a bearer):
 
-| Method | Route                          | Notes                                                                                 |
-| ------ | ------------------------------ | ------------------------------------------------------------------------------------- |
-| POST   | `/api/auth/register`           | Bootstrap-only — fails 403 once a user exists. Atomic with team creation.             |
-| POST   | `/api/auth/redeem-invite`      | Email-bound; checks `invitee_email` match before consuming the token.                 |
+| Method | Route                     | Notes                                                                     |
+| ------ | ------------------------- | ------------------------------------------------------------------------- |
+| POST   | `/api/auth/register`      | Bootstrap-only — fails 403 once a user exists. Atomic with team creation. |
+| POST   | `/api/auth/redeem-invite` | Email-bound; checks `invitee_email` match before consuming the token.     |
 
 **Authenticated**:
 
-| Method | Route                                          | Notes                                                          |
-| ------ | ---------------------------------------------- | -------------------------------------------------------------- |
-| GET    | `/api/auth/me`                                 | Current user from the bearer.                                  |
-| POST   | `/api/auth/tokens`                             | Mint a second bearer for this user.                            |
-| DELETE | `/api/auth/tokens/:id`                         | Revoke a bearer (self-revoke allowed).                         |
-| GET    | `/api/team`                                    | Singleton: team identity + member list.                        |
-| DELETE | `/api/team`                                    | Destroy the team (creator-only).                               |
-| POST   | `/api/team/invitations`                        | Invite by email (creator-only). Singleton alias.               |
-| GET    | `/api/teams/:id/members`                       | Members of the (one) team.                                     |
-| DELETE | `/api/teams/:id/members/:userId`               | Kick (creator-only) or self-leave.                             |
-| POST   | `/api/teams/:id/invitations`                   | Multi-team-shaped alias for `POST /api/team/invitations`.      |
-| POST   | `/api/teams/:id/objects`                       | Share a table (member-only).                                   |
-| GET    | `/api/teams/:id/objects`                       | List shared objects (member-only).                             |
-| DELETE | `/api/teams/:id/objects/:table`                | Unshare (sharer or creator).                                   |
-| GET    | `/api/teams/:id/changes?since=<seq>&limit=<n>` | Pull the monotonic change feed (envelopes for schema + rows).  |
-| POST   | `/api/teams/:id/objects/:table/links`          | Link a local row to the team.                                  |
-| DELETE | `/api/teams/:id/objects/:table/links/:pk`      | Unlink (owner or creator).                                     |
-| POST   | `/api/teams/:id/objects/:table/rows`           | Push an owner-side update.                                     |
-| DELETE | `/api/teams/:id/objects/:table/rows/:pk`       | Owner-side delete (emits `unlink` envelope to receivers).      |
+| Method | Route                                          | Notes                                                         |
+| ------ | ---------------------------------------------- | ------------------------------------------------------------- |
+| GET    | `/api/auth/me`                                 | Current user from the bearer.                                 |
+| POST   | `/api/auth/tokens`                             | Mint a second bearer for this user.                           |
+| DELETE | `/api/auth/tokens/:id`                         | Revoke a bearer (self-revoke allowed).                        |
+| GET    | `/api/team`                                    | Singleton: team identity + member list.                       |
+| DELETE | `/api/team`                                    | Destroy the team (creator-only).                              |
+| POST   | `/api/team/invitations`                        | Invite by email (creator-only). Singleton alias.              |
+| GET    | `/api/teams/:id/members`                       | Members of the (one) team.                                    |
+| DELETE | `/api/teams/:id/members/:userId`               | Kick (creator-only) or self-leave.                            |
+| POST   | `/api/teams/:id/invitations`                   | Multi-team-shaped alias for `POST /api/team/invitations`.     |
+| POST   | `/api/teams/:id/objects`                       | Share a table (member-only).                                  |
+| GET    | `/api/teams/:id/objects`                       | List shared objects (member-only).                            |
+| DELETE | `/api/teams/:id/objects/:table`                | Unshare (sharer or creator).                                  |
+| GET    | `/api/teams/:id/changes?since=<seq>&limit=<n>` | Pull the monotonic change feed (envelopes for schema + rows). |
+| POST   | `/api/teams/:id/objects/:table/links`          | Link a local row to the team.                                 |
+| DELETE | `/api/teams/:id/objects/:table/links/:pk`      | Unlink (owner or creator).                                    |
+| POST   | `/api/teams/:id/objects/:table/rows`           | Push an owner-side update.                                    |
+| DELETE | `/api/teams/:id/objects/:table/rows/:pk`       | Owner-side delete (emits `unlink` envelope to receivers).     |
 
 `/api/team/*` are the singleton-shaped routes for new code. `/api/teams/:id/*` are the per-team routes — there's only ever one team, so `:id` is just the singleton's UUID. Both are kept because the sync engine is happier addressing the team by id.
 
@@ -141,13 +141,13 @@ LOCAL  →  CLOUD CONNECTED  →  TEAM CLOUD (creator | member | needs-invite)
 
 State detection (returned by `GET /api/dbconfig` as the `state` field):
 
-| State                       | Detection                                                                                                                      |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `local`                     | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                |
-| `cloud-connected`           | YAML resolves to a Postgres URL, `__lattice_team_identity` row absent.                                                         |
-| `team-cloud-creator`        | YAML is cloud, identity row present, `~/.lattice/keys/<label>.token` exists, and `identity.email` matches `creator_email`.    |
-| `team-cloud-member`         | YAML is cloud, identity row present, token exists, but email doesn't match the creator.                                       |
-| `team-cloud-needs-invite`   | YAML is cloud, identity row present, no token in `~/.lattice/keys/`.                                                          |
+| State                     | Detection                                                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `local`                   | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                             |
+| `cloud-connected`         | YAML resolves to a Postgres URL, `__lattice_team_identity` row absent.                                                     |
+| `team-cloud-creator`      | YAML is cloud, identity row present, `~/.lattice/keys/<label>.token` exists, and `identity.email` matches `creator_email`. |
+| `team-cloud-member`       | YAML is cloud, identity row present, token exists, but email doesn't match the creator.                                    |
+| `team-cloud-needs-invite` | YAML is cloud, identity row present, no token in `~/.lattice/keys/`.                                                       |
 
 ### Transition: Local → Cloud (migrate)
 
@@ -181,13 +181,13 @@ Driven by `POST /api/dbconfig/upgrade-to-team`. Available only when the panel is
 
 ### v1.13 HTTP routes (thin wrappers over the public API)
 
-| Method | Route                                  | Wraps                                                  |
-| ------ | -------------------------------------- | ------------------------------------------------------ |
-| GET    | `/api/dbconfig`                        | adds `state` field per the table above                 |
-| POST   | `/api/dbconfig/probe`                  | `probeCloud(url)` from `latticesql/framework/cloud-connect` |
-| POST   | `/api/dbconfig/migrate-to-cloud`       | `migrateLatticeData` + `archiveLocalSqlite` from `latticesql/framework/cloud-migration` |
-| POST   | `/api/dbconfig/connect-existing`       | `TeamsClient.connectToExistingCloud`                   |
-| POST   | `/api/dbconfig/upgrade-to-team`        | `TeamsClient.upgradeToTeamCloud`                       |
+| Method | Route                            | Wraps                                                                                   |
+| ------ | -------------------------------- | --------------------------------------------------------------------------------------- |
+| GET    | `/api/dbconfig`                  | adds `state` field per the table above                                                  |
+| POST   | `/api/dbconfig/probe`            | `probeCloud(url)` from `latticesql/framework/cloud-connect`                             |
+| POST   | `/api/dbconfig/migrate-to-cloud` | `migrateLatticeData` + `archiveLocalSqlite` from `latticesql/framework/cloud-migration` |
+| POST   | `/api/dbconfig/connect-existing` | `TeamsClient.connectToExistingCloud`                                                    |
+| POST   | `/api/dbconfig/upgrade-to-team`  | `TeamsClient.upgradeToTeamCloud`                                                        |
 
 All five are reachable as public functions from the `latticesql` package — the frontend is just a wrapper.
 
@@ -239,27 +239,27 @@ The GUI is localhost-only and unauthenticated by default. `--team-cloud` mode sw
 
 Cloud-side:
 
-| Table                       | Columns                                                                                          |
-| --------------------------- | ------------------------------------------------------------------------------------------------ |
-| `__lattice_users`           | `id, email NOT NULL, name, created_at, updated_at, deleted_at`                                   |
-| `__lattice_api_tokens`      | `id, user_id, token_hash UNIQUE, name, created_at, last_used_at, revoked_at`                     |
-| `__lattice_team`            | `id, name, created_by_user_id, created_at, updated_at, deleted_at`                               |
-| `__lattice_team_identity`   | `id='singleton', team_id, team_name, creator_email, created_at`                                  |
-| `__lattice_team_members`    | `(team_id, user_id) PK, role IN ('creator','member'), joined_at`                                 |
-| `__lattice_invitations`     | `id, team_id, token_hash UNIQUE, invitee_email NOT NULL, invited_by_user_id, created_at, expires_at, redeemed_at, redeemed_by_user_id` |
-| `__lattice_shared_objects`  | `(team_id, table_name) PK, schema_spec_json, schema_version, …`                                  |
-| `__lattice_change_log`      | `id, seq (monotonic), team_id, table_name, pk, op, payload_json, owner_user_id, created_at`      |
-| `__lattice_row_links`       | `(team_id, table_name, pk) PK, owner_user_id, linked_at`                                         |
+| Table                      | Columns                                                                                                                                |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `__lattice_users`          | `id, email NOT NULL, name, created_at, updated_at, deleted_at`                                                                         |
+| `__lattice_api_tokens`     | `id, user_id, token_hash UNIQUE, name, created_at, last_used_at, revoked_at`                                                           |
+| `__lattice_team`           | `id, name, created_by_user_id, created_at, updated_at, deleted_at`                                                                     |
+| `__lattice_team_identity`  | `id='singleton', team_id, team_name, creator_email, created_at`                                                                        |
+| `__lattice_team_members`   | `(team_id, user_id) PK, role IN ('creator','member'), joined_at`                                                                       |
+| `__lattice_invitations`    | `id, team_id, token_hash UNIQUE, invitee_email NOT NULL, invited_by_user_id, created_at, expires_at, redeemed_at, redeemed_by_user_id` |
+| `__lattice_shared_objects` | `(team_id, table_name) PK, schema_spec_json, schema_version, …`                                                                        |
+| `__lattice_change_log`     | `id, seq (monotonic), team_id, table_name, pk, op, payload_json, owner_user_id, created_at`                                            |
+| `__lattice_row_links`      | `(team_id, table_name, pk) PK, owner_user_id, linked_at`                                                                               |
 
 Local-side:
 
-| Table                         | Columns                                                                                        |
-| ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| `__lattice_user_identity`     | Singleton (`id='singleton'`) mirroring `~/.lattice/identity.json`.                             |
-| `__lattice_team_connections`  | `team_id PK, team_name, cloud_url, my_user_id, api_token_encrypted, last_change_seq, joined_at`|
-| `__lattice_local_links`       | Same shape as `__lattice_row_links` (used by write-hook capture + receiver mirrors)             |
-| `__lattice_team_outbox`       | FIFO outbox of local writes pending push to the cloud                                          |
-| `__lattice_team_dlq`          | Dead-letter for envelopes that failed too many push attempts                                   |
+| Table                        | Columns                                                                                         |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `__lattice_user_identity`    | Singleton (`id='singleton'`) mirroring `~/.lattice/identity.json`.                              |
+| `__lattice_team_connections` | `team_id PK, team_name, cloud_url, my_user_id, api_token_encrypted, last_change_seq, joined_at` |
+| `__lattice_local_links`      | Same shape as `__lattice_row_links` (used by write-hook capture + receiver mirrors)             |
+| `__lattice_team_outbox`      | FIFO outbox of local writes pending push to the cloud                                           |
+| `__lattice_team_dlq`         | Dead-letter for envelopes that failed too many push attempts                                    |
 
 ---
 

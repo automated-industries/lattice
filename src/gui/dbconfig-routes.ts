@@ -148,9 +148,9 @@ interface DbInfo {
  */
 async function getCreatorEmail(db: Lattice): Promise<string | null> {
   try {
-    const row = (await db.get('__lattice_team_identity', 'singleton')) as
-      | { creator_email?: string }
-      | null;
+    const row = (await db.get('__lattice_team_identity', 'singleton')) as {
+      creator_email?: string;
+    } | null;
     return row?.creator_email ?? null;
   } catch {
     return null;
@@ -210,9 +210,9 @@ async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo>
   let identityRow: { team_name?: string } | null = null;
   if (teamEnabled) {
     try {
-      identityRow = (await db.get('__lattice_team_identity', 'singleton')) as
-        | { team_name?: string }
-        | null;
+      identityRow = (await db.get('__lattice_team_identity', 'singleton')) as {
+        team_name?: string;
+      } | null;
     } catch {
       identityRow = null;
     }
@@ -492,11 +492,7 @@ export async function dispatchDbConfigRoute(
       // Open a target Lattice matching the source's schema, run the
       // copy, close, archive, rewrite YAML, swap.
       const encryptionKey = getOrCreateMasterKey();
-      const target = await openTargetLatticeForMigration(
-        ctx.configPath,
-        url,
-        encryptionKey,
-      );
+      const target = await openTargetLatticeForMigration(ctx.configPath, url, encryptionKey);
       try {
         const result = await migrateLatticeData(ctx.db, target);
         target.close();
@@ -561,9 +557,7 @@ export async function dispatchDbConfigRoute(
           label: parsed.label,
           teamEnabled: result.probe.teamEnabled,
           ...(result.probe.teamName !== undefined ? { teamName: result.probe.teamName } : {}),
-          ...(result.joinedAsMember !== undefined
-            ? { joinedAsMember: result.joinedAsMember }
-            : {}),
+          ...(result.joinedAsMember !== undefined ? { joinedAsMember: result.joinedAsMember } : {}),
         });
       } catch (e) {
         const status = (e as { status?: number }).status ?? 500;
@@ -577,9 +571,7 @@ export async function dispatchDbConfigRoute(
     await tryHandler(res, async () => {
       const body = await readJson(req);
       const teamName =
-        typeof body.team_name === 'string' && body.team_name.trim()
-          ? body.team_name.trim()
-          : '';
+        typeof body.team_name === 'string' && body.team_name.trim() ? body.team_name.trim() : '';
       if (!teamName) {
         sendJson(res, { error: 'team_name is required' }, 400);
         return;
@@ -610,8 +602,7 @@ export async function dispatchDbConfigRoute(
         sendJson(
           res,
           {
-            error:
-              'Set your display name + email in User Config → Identity before creating a team',
+            error: 'Set your display name + email in User Config → Identity before creating a team',
           },
           400,
         );

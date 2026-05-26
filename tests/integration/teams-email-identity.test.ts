@@ -95,12 +95,7 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
       const invite = await alice.client.invite(
         cloud.url,
         reg.raw_token,
@@ -136,12 +131,7 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
       const invite = await alice.client.invite(
         cloud.url,
         reg.raw_token,
@@ -171,12 +161,7 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
       expect(reg.team.name).toBe('Atlas');
 
       const teamRes = await api(`${cloud.url}/api/team`, reg.raw_token);
@@ -202,12 +187,7 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
       const invRes = await api(`${cloud.url}/api/team/invitations`, reg.raw_token, {
         method: 'POST',
         body: JSON.stringify({ invitee_email: 'carol@example.com' }),
@@ -224,12 +204,7 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const alice = await openLocal();
     try {
-      const reg = await alice.client.register(
-        cloud.url,
-        'alice@example.com',
-        'Alice',
-        'Atlas',
-      );
+      const reg = await alice.client.register(cloud.url, 'alice@example.com', 'Alice', 'Atlas');
 
       const delRes = await api(`${cloud.url}/api/team`, reg.raw_token, { method: 'DELETE' });
       expect(delRes.status).toBe(200);
@@ -255,9 +230,9 @@ describe('email-bound identity + one-team-per-DB', () => {
     const cloud = await startCloud();
     const local = await openLocal();
     try {
-      await expect(
-        local.client.register(cloud.url, '', 'NoEmail', 'Team'),
-      ).rejects.toMatchObject({ status: 400 });
+      await expect(local.client.register(cloud.url, '', 'NoEmail', 'Team')).rejects.toMatchObject({
+        status: 400,
+      });
     } finally {
       local.db.close();
     }
