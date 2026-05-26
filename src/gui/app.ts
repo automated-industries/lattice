@@ -3138,22 +3138,28 @@ export const guiAppHtml = `<!doctype html>
           escapeHtml(roleLabel) +
         '</span>';
 
-        var lastSeq = status.last_change_seq == null ? '(never)' : status.last_change_seq;
+        // v1.13.4: no manual-sync button and no Last seq / Outbox / DLQ /
+        // Local links stats. Lattice is realtime against its canonical
+        // store — every read and every write the GUI does hits the
+        // active DB directly. When the project's db: line points at a
+        // Postgres URL, that IS the cloud DB; when it's local SQLite,
+        // it's the canonical local. There's nothing for the user to
+        // "sync" — operations either succeed live or fail gracefully
+        // when the connection is down. The outbox/change-log machinery
+        // is an HTTP-mode-only internal that the CLI still exposes
+        // (lattice teams sync) for power users; the GUI no longer
+        // pretends it's a user-facing action.
+        // Reference status once so eslint no-unused-vars stays happy
+        // even though we've intentionally dropped its display.
+        void status;
         card.innerHTML =
           '<h3>' + escapeHtml(conn.team_name) + ' ' + rolePill +
             '<span style="font-size:11px;color:var(--text-muted);font-weight:normal">' + escapeHtml(redactUrlCredentials(conn.cloud_url)) + '</span>' +
           '</h3>' +
           '<div class="team-meta">team-id: <code>' + escapeHtml(teamId) + '</code></div>' +
-          '<div class="team-stats">' +
-            '<div class="team-stat"><div class="stat-label">Last seq</div><div class="stat-value">' + lastSeq + '</div></div>' +
-            '<div class="team-stat"><div class="stat-label">Outbox</div><div class="stat-value">' + status.outbox_depth + '</div></div>' +
-            '<div class="team-stat"><div class="stat-label">DLQ</div><div class="stat-value">' + status.dlq_depth + '</div></div>' +
-            '<div class="team-stat"><div class="stat-label">Local links</div><div class="stat-value">' + status.local_links + '</div></div>' +
-          '</div>' +
           '<div class="team-actions">' +
-            '<button class="btn primary" data-act="sync">Sync now</button>' +
             (isCreator
-              ? '<button class="btn" data-act="invite">Generate invite token</button>'
+              ? '<button class="btn primary" data-act="invite">Generate invite token</button>'
               : '') +
             '<button class="btn" data-act="leave">' + (isCreator ? 'Destroy team' : 'Leave team') + '</button>' +
           '</div>' +
@@ -3201,11 +3207,9 @@ export const guiAppHtml = `<!doctype html>
 
     function wireTeamCardActions(card, conn, isCreator) {
       var teamId = conn.team_id;
-      card.querySelector('[data-act="sync"]').addEventListener('click', function () {
-        fetchJson('/api/teams-gui/teams/' + teamId + '/sync', { method: 'POST' })
-          .then(function () { renderTeamCard(card, conn); })
-          .catch(function (err) { alert('Sync failed: ' + err.message); });
-      });
+      // v1.13.4: no Sync button anymore. The CLI command lattice teams
+      // sync remains for HTTP-mode operators who need to nudge their
+      // outbox; the GUI is realtime against the canonical store.
       var inviteBtn = card.querySelector('[data-act="invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
         showInviteByEmailModal(teamId);

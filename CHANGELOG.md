@@ -10,6 +10,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [1.13.4] - 2026-05-26
 
+### Changed — GUI team card drops the "Sync now" button + outbox/DLQ stats
+
+Lattice is realtime against whatever its `db:` line points at. When that's a direct Postgres URL, every read and every write the GUI does already hits the canonical store. When it's local SQLite, the same is true. There is nothing the user needs to "sync" — operations either succeed live, or they fail gracefully when the connection is down. The HTTP-mode outbox / change-log / dead-letter machinery is still available via `lattice teams sync` on the CLI for HTTP-team operators who genuinely have a local-vs-remote split, but the GUI no longer surfaces it as a user-facing action.
+
+Removed from team cards: the "Sync now" button, and the Last seq / Outbox / DLQ / Local links stat tiles. The card now shows the team name + role pill + redacted cloud URL + members + actions (Invite, Destroy, Leave). Cleaner, accurate.
+
 ### Fixed — Team operations failed against direct-Postgres cloud URLs
 
 `TeamsClient` methods for team operations (`listMembers`, `invite`, `kickMember`, `destroyTeam`, `fetchChangeBatch`) all routed through `fetchAuthed(cloudUrl + path)`. When `cloudUrl` is `postgres://user:password@host/db` (Migrate-to-cloud / Connect-to-existing wizards save the Postgres URL directly — no HTTP `lattice serve --team-cloud` server in front), the Fetch API hard-refuses with `Request cannot be constructed from a URL that includes credentials`. So `upgradeToTeamCloud` shipped a usable team to the cloud, but every subsequent action (Invite, Members, Destroy, Sync) failed silently.

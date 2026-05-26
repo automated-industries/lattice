@@ -77,6 +77,22 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toMatch(/escapeHtml\(c\.cloud_url\)/);
   });
 
+  it('removes the team-card Sync button + outbox/DLQ/last-seq stats (realtime against canonical store)', () => {
+    // v1.13.4: the GUI no longer exposes a "Sync now" action. Lattice
+    // is realtime against whatever its db: line points at — either
+    // direct Postgres or local SQLite. The HTTP-mode outbox + change
+    // log machinery is still available via `lattice teams sync` on the
+    // CLI for power users, but the GUI no longer pretends the user
+    // needs to nudge it.
+    expect(guiAppHtml).not.toContain('data-act="sync"');
+    expect(guiAppHtml).not.toContain('Sync now');
+    // Outbox / DLQ / Last seq stats are gone too — they were
+    // sync-loop artifacts.
+    expect(guiAppHtml).not.toMatch(/stat-label">Outbox/);
+    expect(guiAppHtml).not.toMatch(/stat-label">DLQ/);
+    expect(guiAppHtml).not.toMatch(/stat-label">Last seq/);
+  });
+
   it('team role pill distinguishes cloud-unreachable from genuine UNKNOWN', () => {
     // Pre-v1.13.4: when listMembers couldn't be reached or returned a
     // list without the local user_id, the role pill said "unknown" —
