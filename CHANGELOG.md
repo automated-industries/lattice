@@ -8,6 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.2] - 2026-05-26
+
+### Fixed — GUI Postgres form: silent authentication failures from autocapitalize + paste whitespace
+
+Several real-world failure modes the v1.13 Database wizard didn't defend against, all surfacing as opaque "password authentication failed" or "zero-length delimiter identifier" errors:
+
+- **Autocapitalize on User / Host / Database / Label inputs.** macOS Safari and iOS default to `autocapitalize="sentences"` on plain `<input type="text">`. Pasting a Supabase tenant user like `postgres.lcbcbukkutofazxyujar` ended up as `Postgres.lcbcbukkutofazxyujar` on submit — Postgres roles are case-sensitive, so SCRAM auth failed silently with no hint about the case mismatch. Every text input in `postgresFormHtml` now sets `autocapitalize="off"`, `autocorrect="off"`, `spellcheck="false"`.
+- **No `.trim()` on User or Password reads.** Clipboard pastes (especially from password managers and chat clients) frequently carry a trailing newline. The trailing newline ended up in the URL's password segment after `encodeURIComponent`, which the Postgres adapter then sent through SCRAM verbatim — failing with "password authentication failed" — or, for the host field, broke URL parsing into the "zero-length delimiter identifier" Postgres parse error. `readPostgresWizardForm` now trims every text field.
+
+### Changed — "Connect to existing cloud" copy: switch, not discard
+
+The Connect-Existing modal previously read "Your local SQLite data will be ignored — use Migrate to cloud instead if you want to push it." That wording mis-described the actual behavior: the local SQLite file is **preserved on disk** (the `db:` line in `lattice.config.yml` is rewritten to `${LATTICE_DB:<label>}`, the file itself is untouched). New copy reframes this accurately: "Switch this project to an existing cloud Postgres. Your local SQLite file is preserved — only this project's active connection changes. Switch back any time by editing `lattice.config.yml`'s `db:` line or via the Databases catalog under User Config."
+
+Mental model going forward: one Lattice user manages multiple databases, some local + some cloud. Project Config's "Switch" creates a one-line YAML change you can reverse; the Databases catalog under User Config lets you jump between projects without editing YAML.
+
+### Changed — `probeCloud` surfaces SQLSTATE + routine in `result.error`
+
+When the underlying driver throws a structured error (Postgres `pg` errors carry `.code` SQLSTATE + `.routine`), `probeCloud` now folds those into `result.error` so the GUI's "Unreachable: …" message includes actionable detail. Example: `[28P01] password authentication failed for user "Postgres"` instead of just `password authentication failed for user "Postgres"`.
+
 ## [1.13.1] - 2026-05-26
 
 ### Fixed — GUI layout + table-cell overflow

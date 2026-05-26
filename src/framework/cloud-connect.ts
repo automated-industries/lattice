@@ -73,11 +73,23 @@ export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
       ? { reachable: true, dialect, teamEnabled, teamName }
       : { reachable: true, dialect, teamEnabled };
   } catch (e) {
+    // Surface as much underlying detail as the driver gave us so the GUI
+    // can show something more actionable than "Unreachable: unknown".
+    // Postgres errors from `pg` carry `.code` (SQLSTATE) + `.routine` +
+    // `.severity` properties — include them when present so callers can
+    // tell e.g. SCRAM auth failure (28P01) from a network error.
+    const err = e as Error & { code?: string; routine?: string; severity?: string };
+    const parts: string[] = [];
+    if (err.code) parts.push(`[${err.code}]`);
+    if (err.message) parts.push(err.message);
+    if (err.routine && !String(err.message ?? '').includes(err.routine)) {
+      parts.push(`(routine: ${err.routine})`);
+    }
     return {
       reachable: false,
       dialect,
       teamEnabled: false,
-      error: (e as Error).message,
+      error: parts.join(' ') || 'unknown',
     };
   } finally {
     if (probe) {
