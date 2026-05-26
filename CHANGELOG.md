@@ -10,6 +10,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [1.13.4] - 2026-05-26
 
+### Fixed — Team operations failed against direct-Postgres cloud URLs
+
+`TeamsClient` methods for team operations (`listMembers`, `invite`, `kickMember`, `destroyTeam`, `fetchChangeBatch`) all routed through `fetchAuthed(cloudUrl + path)`. When `cloudUrl` is `postgres://user:password@host/db` (Migrate-to-cloud / Connect-to-existing wizards save the Postgres URL directly — no HTTP `lattice serve --team-cloud` server in front), the Fetch API hard-refuses with `Request cannot be constructed from a URL that includes credentials`. So `upgradeToTeamCloud` shipped a usable team to the cloud, but every subsequent action (Invite, Members, Destroy, Sync) failed silently.
+
+Architectural shift: for direct-Postgres cloud URLs, the operator's local Lattice IS the cloud Lattice (the project's `db:` line points at the same Postgres URL the team-internal tables live in). Every operation that the HTTP path POSTs to the cloud server is now also available as a direct query/mutation against `this.local`.
+
+New module `src/teams/direct-ops.ts`:
+
+- `listMembersDirect(db, teamId)` — joins `__lattice_team_members` with `__lattice_users`, returns the same `MemberSummary[]` shape as the HTTP path.
+- `inviteDirect(db, teamId, inviterUserId, inviteeEmail, expiresInHours?)` — generates a `latinv_…` token, SHA-256-hashes it into `__lattice_invitations`. Default 7-day expiry.
+- `kickMemberDirect(db, teamId, userId)` — deletes the membership row.
+- `destroyTeamDirect(db)` — clears the singleton identity row + all members + soft-deletes the `__lattice_team` row.
+
+`TeamsClient.{listMembers, invite, kickMember, destroyTeam}` dispatch on `isPostgresUrl(cloudUrl)` — HTTP path for HTTP clouds, `direct-ops` for Postgres URLs. The `fetchChangeBatch` sync path returns an empty batch immediately for direct-Postgres clouds (local IS cloud, nothing to pull).
+
+The GUI's invite route now passes `connection.my_user_id` as the inviter so the direct path can stamp `__lattice_invitations.invited_by_user_id` correctly. HTTP path ignores it (server resolves the inviter from the bearer).
+
 ### Fixed — Plaintext password in the team card's cloud-URL display
 
 The team cards under Project Config → Teams rendered `escapeHtml(conn.cloud_url)` directly. When `cloud_url` is a `postgres://user:PASSWORD@host/db` URL, the password ended up rendered verbatim in the DOM and visible to anyone with screen access. Every cloud-URL render path now goes through a new `redactUrlCredentials(url)` helper that swaps the password portion for `••••••••` while keeping the username (often useful — e.g. Supabase tenant-prefixed users) and host visible.
