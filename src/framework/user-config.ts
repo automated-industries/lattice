@@ -26,8 +26,8 @@ import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
  *   keys/<label>.token    per-joined-team bearer tokens (added later).
  *   db-credentials.enc    encrypted Postgres URLs (added later).
  *
- * Per Rule 7 (public-repo isolation), do NOT log filesystem paths or
- * user identity values from this module.
+ * Security: do NOT log filesystem paths or user identity values from
+ * this module. Errors must be thrown without echoing sensitive arguments.
  */
 
 /** Root directory for machine-local lattice config. Override via env. */
