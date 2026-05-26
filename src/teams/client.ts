@@ -11,6 +11,7 @@ import {
   inviteDirect,
   kickMemberDirect,
   listMembersDirect,
+  redeemInviteDirect,
 } from './direct-ops.js';
 
 /**
@@ -204,6 +205,15 @@ export class TeamsClient {
     email: string,
     name: string,
   ): Promise<RedeemResponse> {
+    // Dispatch on URL scheme — http(s):// keeps the HTTP teams-server
+    // path; postgres(ql):// drives the same INSERT sequence directly
+    // against the cloud Postgres. The Fetch API refuses URLs with
+    // embedded credentials, so when the operator's cloud_url is the
+    // saved Postgres URL the HTTP path 404s before it leaves the
+    // browser (no server to answer /api/auth/redeem-invite).
+    if (isPostgresUrl(cloudUrl)) {
+      return redeemInviteDirect(cloudUrl, inviteToken, email, name);
+    }
     return this.fetchUnauthed<RedeemResponse>(cloudUrl, 'POST', '/api/auth/redeem-invite', {
       invite_token: inviteToken,
       email,

@@ -23,6 +23,7 @@ import {
   inviteDirect,
   kickMemberDirect,
   listMembersDirect,
+  redeemInviteDirect,
 } from '../../src/teams/direct-ops.js';
 
 const dirs: string[] = [];
@@ -200,5 +201,16 @@ describe('direct-ops — kickMemberDirect + destroyTeamDirect', () => {
     expect(identity).toBeNull();
 
     cleanup();
+  });
+});
+
+describe('direct-ops — redeemInviteDirect scheme guard', () => {
+  it('refuses non-postgres URLs up-front (Fetch-API-compatible error message)', async () => {
+    await expect(
+      redeemInviteDirect('http://example.com', 'latinv_dead', 'a@b.com', 'A'),
+    ).rejects.toThrow(/must be a postgres/);
+    await expect(
+      redeemInviteDirect('/tmp/local.db', 'latinv_dead', 'a@b.com', 'A'),
+    ).rejects.toThrow(/must be a postgres/);
   });
 });
