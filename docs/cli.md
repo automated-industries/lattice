@@ -14,6 +14,7 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice status`](#lattice-status)
   - [`lattice watch`](#lattice-watch)
   - [`lattice gui`](#lattice-gui)
+  - [`lattice teams`](#lattice-teams)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -310,6 +311,68 @@ These tables are filtered out of `/api/entities`, the dashboard, and rendered
 context output. They are not part of your declared schema and do not affect any
 `Lattice` API calls. No fictional / demo rows are ever inserted — the GUI only
 shows the data already in your database.
+
+---
+
+### `lattice teams`
+
+Multi-user shared Lattice databases. See [docs/teams.md](./teams.md) for the full architecture; this section is the CLI summary.
+
+```sh
+lattice teams <subcommand> [options]
+```
+
+| Subcommand | Description                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| `register` | Bootstrap a fresh cloud: atomic user + team creation. `--cloud --email --name --team-name` |
+| `join`     | Redeem an invitation. `--cloud --token --email --name`                                     |
+| `list`     | List your local team connections                                                           |
+| `members`  | List members of the team (`--team`)                                                        |
+| `invite`   | Generate an invitation (creator-only). `--team --invitee-email`                            |
+| `leave`    | Leave the team (`--team`)                                                                  |
+| `destroy`  | Destroy the team (creator-only). `--team`                                                  |
+| `share`    | Share a local table with the team (`--team --table`)                                       |
+| `unshare`  | Stop sharing a table (`--team --table`)                                                    |
+| `shared`   | List shared objects on the team (`--team`)                                                 |
+| `sync`     | Apply cloud-shared schemas locally (`--team`)                                              |
+| `link`     | Link a local row to the team (`--team --table --pk`)                                       |
+| `unlink`   | Unlink a row (`--team --table --pk`)                                                       |
+| `pull`     | Pull change envelopes from the cloud + apply locally (`--team`)                            |
+| `push`     | Drain the local outbox to the cloud (`--team`)                                             |
+| `status`   | Show sync stats (outbox depth, DLQ depth, last seq) (`--team`)                             |
+
+**Bootstrap example**:
+
+```sh
+lattice teams register \
+  --cloud http://localhost:4317 \
+  --email alice@example.com \
+  --name "Alice" \
+  --team-name "Atlas"
+```
+
+Single atomic call — creates the bootstrap user, the team, the creator membership, and the bearer token in one HTTP round-trip. The token is printed once; save it before clearing your terminal.
+
+**Email-bound invitations**: every `invite` call carries an `--invitee-email`; the cloud rejects a `join` whose `--email` doesn't match (case-insensitive). Invite tokens are therefore safe to share over an unauthenticated channel.
+
+**`--name` vs `--team-name`**: `--name` is the operator's display name (for `register` and `join`); `--team-name` is the team being created (for `register`). The two flags used to be overloaded as a single `--name` — that was clarified in v1.12.
+
+**Cloud-side server**: the same binary boots in team-cloud mode with `lattice gui --team-cloud`, which exposes the bearer-gated team API + sync routes on the configured Postgres and disables the dev-tool surface.
+
+**Local → Cloud → Team-Cloud progression (v1.13+)**: the GUI's Database panel drives a three-state lifecycle (`local` → `cloud-connected` → `team-cloud-*`). The transitions are GUI-only — there are no CLI subcommands for migrate / connect-existing / upgrade-to-team. Library consumers can drive the same flows directly via the public API:
+
+```ts
+import {
+  Lattice,
+  migrateLatticeData,
+  archiveLocalSqlite,
+  openTargetLatticeForMigration,
+  probeCloud,
+  TeamsClient,
+} from 'latticesql';
+```
+
+See [docs/teams.md](./teams.md#local--cloud--team-cloud-progression-v113) for the full progression model + HTTP route table.
 
 ---
 

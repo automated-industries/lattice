@@ -45,22 +45,11 @@ entities:
       deleted_at: { type: text }
     outputFile: REPOS.md
 
-  files:
-    fields:
-      id: { type: uuid, primaryKey: true }
-      path: { type: text, required: true }
-      kind: { type: text }
-      deleted_at: { type: text }
-    outputFile: FILES.md
-
-  secrets:
-    fields:
-      id: { type: uuid, primaryKey: true }
-      name: { type: text, required: true }
-      kind: { type: text }
-      value: { type: text } # Marked as secret via _lattice_gui_column_meta in the seed
-      deleted_at: { type: text }
-    outputFile: SECRETS.md
+  # `files` and `secrets` are framework-native entities registered by the
+  # GUI server on every Lattice open (see src/framework/native-entities.ts).
+  # They are intentionally NOT declared here so the YAML reflects only
+  # the user's domain schema; the native shape is a superset of the
+  # earlier fixture shape, so existing seeds + tests keep working.
 
   # Junction tables (hidden from sidebar/dashboard by the GUI; editable via Data Model).
   meeting_people:
@@ -143,17 +132,7 @@ entityContexts:
       REPOSITORY.md:
         source: self
         template: default-detail
-  files:
-    slug: '{{id}}'
-    directoryRoot: files
-    files:
-      FILE.md:
-        source: self
-        template: default-detail
-  secrets:
-    slug: '{{id}}'
-    directoryRoot: secrets
-    files:
-      SECRET.md:
-        source: self
-        template: default-detail
+  # Native `files` and `secrets` entities are framework-shipped without
+  # entity contexts in v1; rendering for them comes from src/framework/
+  # native-entities.ts (currently render-suppressed; full templates are a
+  # follow-up).

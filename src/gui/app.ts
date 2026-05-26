@@ -5,25 +5,51 @@ export const guiAppHtml = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lattice Browser</title>
   <style>
+    /* Design tokens copied from lattice-website's tailwind.config.ts
+       (tailwind.config theme.extend.colors). The local GUI ships these
+       inline so it doesn't need a build step or a network fetch — keep
+       in sync manually when the website's palette changes. Last sync:
+       tailwind.config.ts as of feat/teams branch. */
     :root {
-      --bg: #f4f5f7;
-      --surface: #ffffff;
-      --border: #e2e5ea;
-      --border-strong: #c9cdd4;
-      --text: #1f2328;
-      --text-muted: #6b7280;
-      --accent: #2f6feb;
-      --accent-soft: #e7efff;
-      --row-hover: #f6f7fa;
-      --shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+      --bg: #0b0d10;
+      --surface: #13171b;
+      --surface-2: #1a1f25;
+      --border: #262d36;
+      --border-strong: #2f3742;
+      --text: #e7ecf0;
+      --text-muted: #8b96a3;
+      --accent: #bef264;
+      --accent-deep: #84cc16;
+      --accent-glow: #d9f99d;
+      --accent-soft: rgba(190, 242, 100, 0.12);
+      --row-hover: #1a1f25;
+      --signal: #22d3ee;
+      --warn: #fb923c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       color: var(--text);
       background: var(--bg);
       font-size: 14px;
+    }
+    code, kbd, samp, pre {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    /* Form controls inherit the body text color so they're readable
+       on the dark surface. Browsers default inputs to the OS color
+       (typically black), which disappears on var(--surface)=#13171b.
+       Placeholders default ~black too — bump them to --text-muted.
+       Affects every input/select/textarea across the GUI (Data Model
+       editor, Database wizard, User Config Identity, all modals). */
+    input, select, textarea {
+      color: var(--text);
+    }
+    input::placeholder, textarea::placeholder {
+      color: var(--text-muted);
+      opacity: 1;
     }
     a { color: inherit; text-decoration: none; }
     button { font: inherit; cursor: pointer; }
@@ -32,8 +58,8 @@ export const guiAppHtml = `<!doctype html>
     header.topbar {
       display: flex; align-items: center; gap: 12px;
       min-height: 56px; padding: 8px 20px;
-      background: #0b0d10; border-bottom: 1px solid #1f2328;
-      color: #e6e8eb;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      color: var(--text);
       flex-wrap: wrap;
     }
     .brand {
@@ -63,7 +89,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .history-entry { display: flex; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
     .history-entry:last-child { border-bottom: none; }
-    .history-entry.is-undone { background: #fafbfc; }
+    .history-entry.is-undone { background: var(--surface-2); }
     .history-entry.is-undone .history-summary { color: var(--text-muted); text-decoration: line-through; }
     .history-meta { min-width: 200px; font-size: 12px; color: var(--text-muted); }
     .history-meta .history-op {
@@ -72,22 +98,22 @@ export const guiAppHtml = `<!doctype html>
       border-radius: 8px; font-size: 11px; text-transform: uppercase;
       letter-spacing: 0.04em; font-weight: 600;
     }
-    .history-op.op-delete { background: #fef3f2; color: #b42318; }
-    .history-op.op-link, .history-op.op-unlink { background: #f3f0fe; color: #6941c6; }
+    .history-op.op-delete { background: rgba(251, 146, 60, 0.12); color: var(--warn); }
+    .history-op.op-link, .history-op.op-unlink { background: rgba(34, 211, 238, 0.15); color: var(--signal); }
     .history-summary { flex: 1; font-size: 13.5px; }
     .history-summary .history-table { font-weight: 600; }
     .history-diff {
       margin-top: 8px; font-family: ui-monospace, monospace; font-size: 12px;
-      background: #fafbfc; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
       padding: 8px 10px; white-space: pre-wrap;
     }
-    .history-diff .diff-add { color: #027a48; }
-    .history-diff .diff-rem { color: #b42318; }
+    .history-diff .diff-add { color: var(--accent); }
+    .history-diff .diff-rem { color: var(--warn); }
     .history-actions { display: flex; flex-direction: column; gap: 4px; }
     .history-actions .btn { font-size: 12px; height: 26px; padding: 0 10px; }
     #history-filter {
       height: 30px; padding: 0 10px; font: inherit; font-size: 13px;
-      border: 1px solid var(--border-strong); border-radius: 6px; background: white;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface);
     }
 
     /* DB switcher in the top bar */
@@ -123,7 +149,7 @@ export const guiAppHtml = `<!doctype html>
     .db-menu .db-create input {
       width: 100%; height: 30px; padding: 0 10px; font: inherit;
       border: 1px solid var(--border-strong); border-radius: 6px;
-      background: white; margin-bottom: 6px;
+      background: var(--surface); margin-bottom: 6px;
     }
 
     /* ── Layout ────────────────────────────────────────── */
@@ -189,7 +215,7 @@ export const guiAppHtml = `<!doctype html>
     thead th {
       text-align: left; font-weight: 600; font-size: 12.5px;
       color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;
-      padding: 12px 14px; background: #fafbfc;
+      padding: 12px 14px; background: var(--surface-2);
       border-bottom: 1px solid var(--border);
     }
     tbody td {
@@ -281,7 +307,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .chip-removable button:hover { background: rgba(47, 111, 235, 0.15); }
     select.dm-add { width: 100%; padding: 6px 10px; font: inherit;
-      border: 1px solid var(--border-strong); border-radius: 6px; background: white; }
+      border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); }
 
     /* Data Model entity-edit panel */
     .dm-section { margin: 10px 0; }
@@ -303,7 +329,7 @@ export const guiAppHtml = `<!doctype html>
     }
     .dm-edit-grid input, .dm-edit-grid select {
       padding: 7px 10px; font: inherit; border: 1px solid var(--border-strong);
-      border-radius: 6px; background: white; font-size: 13.5px;
+      border-radius: 6px; background: var(--surface); font-size: 13.5px;
       min-width: 0;
     }
     .dm-row-inline { display: flex; gap: 8px; align-items: center; min-width: 0; }
@@ -317,11 +343,11 @@ export const guiAppHtml = `<!doctype html>
     }
     .dm-col-row input {
       padding: 7px 10px; font: inherit; border: 1px solid var(--border);
-      border-radius: 6px; background: white; font-size: 13.5px; min-width: 0;
+      border-radius: 6px; background: var(--surface); font-size: 13.5px; min-width: 0;
     }
     .dm-col-row .dm-locked {
       padding: 7px 10px; font: inherit; font-size: 13.5px;
-      color: var(--text-muted); background: #fafbfc;
+      color: var(--text-muted); background: var(--surface-2);
       border: 1px dashed var(--border); border-radius: 6px;
       display: flex; align-items: center; gap: 8px;
     }
@@ -340,7 +366,7 @@ export const guiAppHtml = `<!doctype html>
     .emoji-picker { position: relative; display: inline-block; }
     .emoji-trigger {
       display: inline-flex; align-items: center; gap: 8px;
-      padding: 4px 8px 4px 10px; background: white;
+      padding: 4px 8px 4px 10px; background: var(--surface);
       border: 1px solid var(--border-strong); border-radius: 6px;
       cursor: pointer; min-width: 70px;
     }
@@ -399,10 +425,10 @@ export const guiAppHtml = `<!doctype html>
       font-size: 13px;
     }
     .btn:hover { background: var(--row-hover); }
-    .btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
-    .btn.primary:hover { background: #1f5dd1; }
-    .btn.danger { color: #b42318; border-color: #f2c4c0; }
-    .btn.danger:hover { background: #fef3f2; }
+    .btn.primary { background: var(--accent); color: #0b0d10; border-color: var(--accent); font-weight: 600; }
+    .btn.primary:hover { background: var(--accent-glow); border-color: var(--accent-glow); }
+    .btn.danger { color: var(--warn); border-color: rgba(251, 146, 60, 0.4); }
+    .btn.danger:hover { background: rgba(251, 146, 60, 0.12); }
     .btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
     .btn.ghost:hover { background: var(--row-hover); color: var(--text); }
     .view-header .actions { margin-left: auto; display: flex; gap: 8px; }
@@ -414,17 +440,17 @@ export const guiAppHtml = `<!doctype html>
       font-size: 16px; cursor: pointer; padding: 4px 6px;
       border-radius: 4px;
     }
-    tr:hover .row-delete { color: #b42318; }
-    .row-delete:hover { background: #fef3f2; }
+    tr:hover .row-delete { color: var(--warn); }
+    .row-delete:hover { background: rgba(251, 146, 60, 0.12); }
     .row-restore:hover { background: var(--accent-soft); color: var(--accent); }
-    tr.row-deleted td { background: #fefbf3; color: var(--text-muted); }
+    tr.row-deleted td { background: rgba(251, 146, 60, 0.08); color: var(--text-muted); }
     tr.row-deleted:hover td { background: #fcf5e3; }
 
     /* Inline create-row at the bottom of every table */
-    tr.create-row td { background: #fafbfc; }
+    tr.create-row td { background: var(--surface-2); }
     tr.create-row input, tr.create-row textarea, tr.create-row select {
       width: 100%; padding: 6px 8px; font: inherit;
-      border: 1px solid var(--border); border-radius: 4px; background: white;
+      border: 1px solid var(--border); border-radius: 4px; background: var(--surface);
     }
     tr.create-row textarea { min-height: 32px; resize: vertical; }
     tr.create-row #inline-create {
@@ -437,7 +463,7 @@ export const guiAppHtml = `<!doctype html>
     .detail dl.editing input,
     .detail dl.editing textarea {
       width: 100%; padding: 6px 9px; font: inherit;
-      border: 1px solid var(--border-strong); border-radius: 6px; background: white;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface);
     }
     .detail dl.editing textarea { min-height: 60px; resize: vertical; }
 
@@ -457,13 +483,119 @@ export const guiAppHtml = `<!doctype html>
     }
     .context-file-head .context-file-name { color: var(--text); font-weight: 600; text-transform: none; letter-spacing: 0; }
     .context-file pre {
-      margin: 0; padding: 12px; background: #fafbfc;
+      margin: 0; padding: 12px; background: var(--surface-2);
       border: 1px solid var(--border); border-radius: 6px;
       font-family: ui-monospace, 'SF Mono', 'Menlo', Consolas, monospace;
       font-size: 12.5px; line-height: 1.55;
       white-space: pre-wrap; word-break: break-word;
     }
     .context-empty { padding: 16px 18px; color: var(--text-muted); font-style: italic; }
+
+    /* ── Teams (Project Config + User Config) ───────────── */
+    .teams-page { padding: 24px 28px; max-width: 1000px; }
+    .teams-page h2 { margin: 0 0 4px 0; font-size: 22px; }
+    .teams-page .lead { color: var(--text-muted); margin-bottom: 24px; font-size: 13.5px; }
+    .teams-actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+    .team-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px 18px; margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .team-card h3 {
+      margin: 0 0 4px 0; font-size: 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .team-card .team-meta { color: var(--text-muted); font-size: 12.5px; margin-bottom: 12px; }
+    .team-card .team-meta code { font-family: ui-monospace, monospace; font-size: 12px; }
+    .team-card .role-tag {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .team-card .role-tag.role-member { background: #eef0f3; color: var(--text-muted); }
+    .team-stats {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+      margin: 10px 0 14px 0;
+    }
+    .team-stat {
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; text-align: center;
+    }
+    .team-stat .stat-label {
+      font-size: 11px; text-transform: uppercase; color: var(--text-muted);
+      letter-spacing: 0.04em; margin-bottom: 2px;
+    }
+    .team-stat .stat-value { font-size: 18px; font-weight: 600; }
+    .team-card .team-actions { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+    .team-card .shared-list, .team-card .members-list {
+      margin: 12px 0; border-top: 1px solid var(--border); padding-top: 12px;
+    }
+    .team-card .shared-list h4, .team-card .members-list h4 {
+      margin: 0 0 8px 0; font-size: 13px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
+    }
+    .shared-row, .member-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 8px; border-radius: 4px; font-size: 13px;
+    }
+    .shared-row:hover, .member-row:hover { background: var(--row-hover); }
+    .shared-row .table-name { font-family: ui-monospace, monospace; }
+    .teams-empty {
+      padding: 32px; text-align: center; color: var(--text-muted);
+      border: 1px dashed var(--border-strong); border-radius: 8px;
+    }
+    .danger-btn { background: rgba(251, 146, 60, 0.12); color: var(--warn); border-color: rgba(251, 146, 60, 0.4); }
+    .danger-btn:hover { background: rgba(251, 146, 60, 0.2); }
+
+    /* Modal — used by the teams flows. Self-contained so it doesn't
+       collide with any modal styles the GUI agent may add later. */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.32);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .modal {
+      background: var(--surface); border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+      min-width: 420px; max-width: 560px; max-height: 80vh;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .modal-head {
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      font-size: 15px; font-weight: 600;
+    }
+    .modal-body {
+      padding: 16px 18px; overflow-y: auto; flex: 1;
+    }
+    .modal-foot {
+      padding: 12px 18px; border-top: 1px solid var(--border);
+      display: flex; gap: 8px; justify-content: flex-end;
+    }
+    .modal-foot .btn {
+      padding: 6px 14px; border: 1px solid var(--border-strong);
+      border-radius: 6px; background: var(--surface); color: var(--text);
+    }
+    .modal-foot .btn:hover { background: var(--row-hover); }
+    .modal-foot .btn.primary {
+      background: var(--accent); color: #0b0d10; border-color: var(--accent); font-weight: 600;
+    }
+    .modal-foot .btn.primary:hover { background: var(--accent-glow); border-color: var(--accent-glow); }
+    .modal .field { margin-bottom: 12px; }
+    .modal .field label {
+      display: block; margin-bottom: 4px; font-size: 12px;
+      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .modal .field input, .modal .field textarea {
+      width: 100%; padding: 6px 8px; border: 1px solid var(--border-strong);
+      border-radius: 4px; font: inherit;
+    }
+    .modal .field textarea { min-height: 60px; font-family: ui-monospace, monospace; font-size: 12px; }
+    .modal .copy-token {
+      padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px;
+      word-break: break-all; cursor: pointer;
+    }
+    .modal .copy-token:hover { background: var(--row-hover); }
   </style>
 </head>
 <body>
@@ -511,6 +643,8 @@ export const guiAppHtml = `<!doctype html>
       <div class="section-label">Settings</div>
       <ul id="settings-nav">
         <li><a href="#/settings/data-model"><span class="nav-icon">⚙</span> Data Model</a></li>
+        <li><a href="#/settings/project-config"><span class="nav-icon">⚙</span> Project Config</a></li>
+        <li><a href="#/settings/user-config"><span class="nav-icon">👤</span> User Config</a></li>
       </ul>
     </nav>
     <main id="content"></main>
@@ -871,6 +1005,8 @@ export const guiAppHtml = `<!doctype html>
 
       if (hash === '#/settings/data-model') { renderDataModel(content); return; }
       if (hash === '#/settings/history') { renderHistory(content); return; }
+      if (hash === '#/settings/project-config') { renderProjectConfig(content); return; }
+      if (hash === '#/settings/user-config') { renderUserConfig(content); return; }
       content.innerHTML = '<div class="placeholder"><h2>Unknown route</h2></div>';
     }
 
@@ -2067,7 +2203,7 @@ export const guiAppHtml = `<!doctype html>
           '<circle cx="' + p.x + '" cy="' + p.y + '" r="' + nodeRadius +
             '" fill="#e7efff" stroke="' + BELONGS_COLOR + '" stroke-width="1.5" />' +
           '<text x="' + p.x + '" y="' + (p.y + 7) + '" text-anchor="middle" font-size="20">' + d.icon + '</text>' +
-          '<text x="' + p.x + '" y="' + (p.y + nodeRadius + 18) + '" text-anchor="middle" font-size="12" fill="#1f2328">' +
+          '<text x="' + p.x + '" y="' + (p.y + nodeRadius + 18) + '" text-anchor="middle" font-size="12" fill="#e7ecf0">' +
           escapeHtml(d.label) + '</text></g>';
       }).join('');
 
@@ -2086,13 +2222,877 @@ export const guiAppHtml = `<!doctype html>
       var legend =
         '<g class="dm-legend" transform="translate(20, 20)">' +
           '<line x1="0" y1="6" x2="36" y2="6" stroke="' + BELONGS_COLOR + '" stroke-width="1.8" marker-end="url(#arrow-b)" />' +
-          '<text x="44" y="10" font-size="11" fill="#1f2328">belongs-to (child → parent)</text>' +
+          '<text x="44" y="10" font-size="11" fill="#8b96a3">belongs-to (child → parent)</text>' +
           '<line x1="0" y1="28" x2="36" y2="28" stroke="' + M2M_COLOR + '" stroke-width="1.8" stroke-dasharray="6 4" marker-start="url(#arrow-m)" marker-end="url(#arrow-m)" />' +
-          '<text x="44" y="32" font-size="11" fill="#1f2328">many-to-many</text>' +
+          '<text x="44" y="32" font-size="11" fill="#8b96a3">many-to-many</text>' +
         '</g>';
 
       return '<svg viewBox="0 0 1000 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">' +
         defs + legend + edgeSvg + nodeSvg + '</svg>';
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Lattice Teams (Project Config + User Config)
+    // ────────────────────────────────────────────────────────────
+    function fetchConnections() {
+      return fetchJson('/api/teams-gui/connections').then(function (d) { return d.connections; });
+    }
+
+    /**
+     * Minimal modal helper for the teams flows. Returns { close } so
+     * callers can dismiss imperatively (used by the invite-token modal
+     * after copy). opts.onSubmit may return a Promise — the OK button
+     * stays disabled until it resolves, then the modal closes.
+     */
+    function showModal(title, bodyHtml, opts) {
+      opts = opts || {};
+      var primaryLabel = opts.primaryLabel || 'Save';
+      var backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML =
+        '<div class="modal">' +
+          '<div class="modal-head">' + escapeHtml(title) + '</div>' +
+          '<div class="modal-body">' + bodyHtml + '</div>' +
+          '<div class="modal-foot">' +
+            '<button class="btn" data-act="cancel">Cancel</button>' +
+            '<button class="btn primary" data-act="ok">' + escapeHtml(primaryLabel) + '</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(backdrop);
+      function close() { if (backdrop.parentNode) document.body.removeChild(backdrop); }
+      backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
+      backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
+      backdrop.querySelector('[data-act="ok"]').addEventListener('click', function () {
+        var btn = backdrop.querySelector('[data-act="ok"]');
+        try {
+          var result = opts.onSubmit ? opts.onSubmit(backdrop) : null;
+          if (result && typeof result.then === 'function') {
+            btn.setAttribute('disabled', 'disabled');
+            result.then(function () { close(); }).catch(function (err) {
+              btn.removeAttribute('disabled');
+              alert('Failed: ' + (err && err.message ? err.message : String(err)));
+            });
+          } else {
+            close();
+          }
+        } catch (err) {
+          alert('Failed: ' + (err && err.message ? err.message : String(err)));
+        }
+      });
+      return { close: close };
+    }
+
+    function renderTeamsEmpty(content, kind) {
+      var msg = kind === 'user'
+        ? 'You aren\\'t signed in to any clouds yet. Add a cloud below.'
+        : 'No team memberships yet. Start a team or join one below.';
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>' + (kind === 'user' ? 'User Config' : 'Project Config') + '</h2>' +
+          '<p class="lead">' + (kind === 'user'
+            ? 'Cloud accounts your local lattice is signed in to.'
+            : 'Teams this project\\'s lattice is joined to. Share tables, link rows, and sync.') + '</p>' +
+          '<div class="teams-actions">' +
+            (kind === 'user'
+              ? '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>'
+              : '<button class="btn primary" id="action-create-team">Create team</button>' +
+                '<button class="btn" id="action-join-team">Join via invite</button>') +
+          '</div>' +
+          '<div class="teams-empty">' + escapeHtml(msg) + '</div>' +
+        '</div>';
+      wireTopActions(kind);
+    }
+
+    function wireTopActions(kind) {
+      var addBtn = document.getElementById('action-add-cloud');
+      if (addBtn) addBtn.addEventListener('click', function () { showJoinTeamModal(kind); });
+      var createBtn = document.getElementById('action-create-team');
+      if (createBtn) createBtn.addEventListener('click', showCreateTeamModal);
+      var joinBtn = document.getElementById('action-join-team');
+      if (joinBtn) joinBtn.addEventListener('click', function () { showJoinTeamModal(kind); });
+    }
+
+    function refreshSettingsRoute() {
+      if (location.hash === '#/settings/project-config') renderProjectConfig(document.getElementById('content'));
+      else if (location.hash === '#/settings/user-config') renderUserConfig(document.getElementById('content'));
+    }
+
+    function showCreateTeamModal() {
+      // Prefill identity from ~/.lattice/identity.json so the user only
+      // enters per-team things (cloud URL + team name) in this modal.
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        var bodyHtml =
+          '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
+          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" /></div>' +
+          '<div class="field"><label>Your display name</label><input name="user_name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
+          '<div class="field"><label>Team name</label><input name="team_name" /></div>' +
+          '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+          'Registers you on the cloud (bootstrap-only — must be a fresh cloud) and creates the team in one step. ' +
+          'Email + display name are pulled from your User Config identity; edit them below to override for this team only.' +
+          '</p>';
+        showModal('Create team', bodyHtml, {
+          primaryLabel: 'Create',
+          onSubmit: function (scope) {
+            var data = collectFormValues(scope);
+            return fetchJson('/api/teams-gui/connections/register-and-create', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(data),
+            }).then(function () { refreshSettingsRoute(); });
+          },
+        });
+      });
+    }
+
+    function showJoinTeamModal(kind) {
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        var bodyHtml =
+          '<div class="field"><label>Cloud URL</label><input name="cloud_url" placeholder="http://localhost:4317" /></div>' +
+          '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..."></textarea></div>' +
+          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" /></div>' +
+          '<div class="field"><label>Your display name</label><input name="name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
+          '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+          'Email must match the address the invitation was addressed to.' +
+          '</p>';
+        showModal('Join team', bodyHtml, {
+          primaryLabel: 'Join',
+          onSubmit: function (scope) {
+            var data = collectFormValues(scope);
+            return fetchJson('/api/teams-gui/connections/join', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(data),
+            }).then(function () { refreshSettingsRoute(kind); });
+          },
+        });
+      });
+    }
+
+    function renderUserConfig(content) {
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>User Config</h2>' +
+          '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
+          '<div id="databases-host"></div>' +
+          '<div id="user-teams-host"></div>' +
+        '</div>';
+      renderIdentityPanel(document.getElementById('identity-host'));
+      renderDatabasesPanel(document.getElementById('databases-host'));
+      renderUserTeamsList(document.getElementById('user-teams-host'));
+    }
+
+    function renderIdentityPanel(host) {
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 10px">Identity</h3>' +
+            '<p class="lead" style="margin:0 0 10px">Display name + email used when creating or joining teams. Saved to ~/.lattice/identity.json and mirrored into the active Lattice.</p>' +
+            '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
+              '<div><label class="field-label">Display name</label><input id="id-display-name" type="text" value="' + escapeHtml(id.display_name || '') + '" style="width:100%"></div>' +
+              '<div><label class="field-label">Email</label><input id="id-email" type="email" value="' + escapeHtml(id.email || '') + '" style="width:100%"></div>' +
+            '</div>' +
+            '<div class="team-actions" style="margin-top:10px">' +
+              '<button class="btn primary" data-act="id-save">Save</button>' +
+            '</div>' +
+            '<div id="id-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+          '</div>';
+        host.querySelector('[data-act="id-save"]').addEventListener('click', function () {
+          var body = {
+            display_name: document.getElementById('id-display-name').value || '',
+            email: document.getElementById('id-email').value || '',
+          };
+          var msg = document.getElementById('id-msg');
+          msg.textContent = 'Saving…';
+          fetch('/api/userconfig/identity', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json(); })
+            .then(function () { msg.textContent = 'Saved.'; })
+            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load identity: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderDatabasesPanel(host) {
+      fetchJson('/api/userconfig/databases').then(function (cat) {
+        var localRows = (cat.local || []).map(function (d) {
+          var stateBadge = '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:var(--text-muted)">' + escapeHtml((d.state || 'local').toUpperCase()) + '</span>';
+          return '<tr>' +
+            '<td>' + escapeHtml(d.label) + (d.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
+            '<td>SQLite</td>' +
+            '<td>' + stateBadge + '</td>' +
+            '<td><code>' + escapeHtml(d.dbFile) + '</code></td>' +
+            '<td>' + (d.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(d.configPath) + '">Switch</button>') + '</td>' +
+          '</tr>';
+        }).join('');
+        var cloudRows = (cat.cloud || []).map(function (d) {
+          var stateBadge = '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:var(--text-muted)">' + escapeHtml((d.state || 'unknown').toUpperCase()) + '</span>';
+          return '<tr><td>' + escapeHtml(d.label) + '</td><td>Postgres</td><td>' + stateBadge + '</td><td>(encrypted)</td><td>—</td></tr>';
+        }).join('');
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+              '<h3 style="margin:0">Databases</h3>' +
+              '<button class="btn primary" id="action-add-cloud-db">Add a cloud DB →</button>' +
+            '</div>' +
+            '<table style="width:100%;border-collapse:collapse">' +
+              '<thead><tr style="text-align:left"><th>Label</th><th>Type</th><th>State</th><th>File / source</th><th>Action</th></tr></thead>' +
+              '<tbody>' + (localRows + cloudRows || '<tr><td colspan="5" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
+            '</table>' +
+          '</div>';
+        host.querySelectorAll('[data-switch]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var configPath = btn.getAttribute('data-switch');
+            fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
+              .then(function (r) { return r.json(); })
+              .then(function () { renderUserConfig(document.getElementById('content')); });
+          });
+        });
+        var addCloudBtn = document.getElementById('action-add-cloud-db');
+        if (addCloudBtn) addCloudBtn.addEventListener('click', function () {
+          // Create a fresh project then immediately open the Connect-
+          // existing wizard against it. The backend's /api/databases/create
+          // makes a starter YAML + swaps the active Lattice to it; the
+          // wizard then rewrites that project's db: line.
+          var name = prompt('Project name for the new cloud-connected project:');
+          if (!name) return;
+          fetch('/api/databases/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name }) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d.error) { alert('Failed: ' + d.error); return; }
+              // Active swapped to the new project — open Connect-existing.
+              showConnectExistingModal(function () {
+                renderUserConfig(document.getElementById('content'));
+              });
+            })
+            .catch(function (e) { alert('Failed: ' + e.message); });
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load databases: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderUserTeamsList(host) {
+      fetchConnections().then(function (conns) {
+        if (conns.length === 0) {
+          host.innerHTML =
+            '<div style="margin-top:18px">' +
+              '<h3 style="margin:0 0 8px">Cloud accounts</h3>' +
+              '<p class="lead">No cloud team memberships yet. Use Project Config → Create team, or join an existing team below.</p>' +
+              '<div class="teams-actions">' +
+                '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>' +
+              '</div>' +
+            '</div>';
+          wireTopActions('user');
+          return;
+        }
+        var rows = conns.map(function (c) {
+          return '<div class="team-card" data-team-id="' + escapeHtml(c.team_id) + '">' +
+            '<h3>' + escapeHtml(c.team_name) +
+              '<button class="btn danger-btn" data-act="signout">Sign out</button>' +
+            '</h3>' +
+            '<div class="team-meta">' +
+              'Cloud: <code>' + escapeHtml(c.cloud_url) + '</code> · ' +
+              'User id: <code>' + escapeHtml(c.my_user_id) + '</code> · ' +
+              'Joined ' + escapeHtml(c.joined_at) +
+            '</div>' +
+          '</div>';
+        }).join('');
+        host.innerHTML =
+          '<div style="margin-top:18px">' +
+            '<h3 style="margin:0 0 8px">Cloud accounts</h3>' +
+            '<p class="lead">Each team membership keeps its own bearer token in this Lattice DB.</p>' +
+            '<div class="teams-actions">' +
+              '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>' +
+            '</div>' +
+            rows +
+          '</div>';
+        wireTopActions('user');
+        host.querySelectorAll('.team-card').forEach(function (card) {
+          var teamId = card.getAttribute('data-team-id');
+          card.querySelector('[data-act="signout"]').addEventListener('click', function () {
+            if (!confirm('Sign out of this team? Your local link tracking will be removed.')) return;
+            fetchJson('/api/teams-gui/connections/' + teamId, { method: 'DELETE' })
+              .then(function () { refreshSettingsRoute(); })
+              .catch(function (err) { alert('Sign out failed: ' + err.message); });
+          });
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load cloud accounts: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderProjectConfig(content) {
+      // Frame the page; Database + Teams panels populate themselves
+      // asynchronously so a slow cloud probe doesn't block the page.
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>Project Config</h2>' +
+          '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
+          '<div id="teams-host"></div>' +
+        '</div>';
+      renderDatabasePanel(document.getElementById('dbconfig-host'));
+      renderTeamsForProjectConfig(document.getElementById('teams-host'));
+    }
+
+    function renderTeamsForProjectConfig(host) {
+      fetchConnections().then(function (conns) {
+        if (conns.length === 0) {
+          host.innerHTML =
+            '<div style="margin-top:18px">' +
+              '<h3 style="margin:0 0 8px">Teams</h3>' +
+              '<p class="lead">No team memberships yet. Start a team or join one below.</p>' +
+              '<div class="teams-actions">' +
+                '<button class="btn primary" id="action-create-team">Create team</button>' +
+                '<button class="btn" id="action-join-team">Join via invite</button>' +
+              '</div>' +
+            '</div>';
+          wireTopActions('project');
+          return;
+        }
+        host.innerHTML =
+          '<div style="margin-top:18px">' +
+            '<h3 style="margin:0 0 8px">Teams</h3>' +
+            '<p class="lead">Teams this project\\'s lattice is joined to. Click a team to expand sync details, shared tables, and member admin.</p>' +
+            '<div class="teams-actions">' +
+              '<button class="btn primary" id="action-create-team">Create team</button>' +
+              '<button class="btn" id="action-join-team">Join via invite</button>' +
+            '</div>' +
+            '<div id="team-cards-host"></div>' +
+          '</div>';
+        wireTopActions('project');
+        var cards = document.getElementById('team-cards-host');
+        conns.forEach(function (c) {
+          var card = document.createElement('div');
+          card.className = 'team-card';
+          card.setAttribute('data-team-id', c.team_id);
+          cards.appendChild(card);
+          renderTeamCard(card, c);
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load teams: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // State-machine Database panel (v1.13+). Renders a different body
+    // per info.state: local -> Migrate / Connect-existing wizards;
+    // cloud-connected -> Upgrade-to-team; team-cloud-creator/member ->
+    // team management UI; team-cloud-needs-invite -> join form.
+    // Progression is one-way: local -> cloud -> team-cloud.
+    function renderDatabasePanel(host) {
+      fetchJson('/api/dbconfig').then(function (info) {
+        var badge = renderStateBadge(info);
+        var body = renderStateBody(info);
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">' +
+              '<h3 style="margin:0">Database</h3>' +
+              badge +
+            '</div>' +
+            body +
+            '<div id="db-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+          '</div>';
+        wireStateActions(host, info);
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load database config: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderStateBadge(info) {
+      var label = '';
+      var color = 'var(--text-muted)';
+      switch (info.state) {
+        case 'local':
+          label = 'LOCAL';
+          color = 'var(--text-muted)';
+          break;
+        case 'cloud-connected':
+          label = 'CLOUD · CONNECTED';
+          color = 'var(--accent)';
+          break;
+        case 'team-cloud-creator':
+          label = '👑 TEAM CLOUD · CREATOR';
+          color = 'var(--accent)';
+          break;
+        case 'team-cloud-member':
+          label = 'TEAM CLOUD · MEMBER';
+          color = 'var(--accent)';
+          break;
+        case 'team-cloud-needs-invite':
+          label = 'TEAM CLOUD · NEEDS INVITE';
+          color = 'var(--warn)';
+          break;
+        default:
+          label = String(info.state || 'UNKNOWN').toUpperCase();
+      }
+      return '<span style="font-family:JetBrains Mono,monospace;font-size:11px;letter-spacing:0.04em;padding:4px 10px;border-radius:999px;border:1px solid ' + color + ';color:' + color + '">' + escapeHtml(label) + '</span>';
+    }
+
+    function renderStateBody(info) {
+      if (info.state === 'local') {
+        return (
+          '<p style="margin:0 0 12px;color:var(--text-muted);font-size:13px">' +
+            'SQLite DB: <code>' + escapeHtml(info.dbFile || '(unknown)') + '</code>. ' +
+            'Move forward by either pushing this data to a new cloud Postgres or connecting to an existing one.' +
+          '</p>' +
+          '<div class="team-actions">' +
+            '<button class="btn primary" data-act="open-migrate">Migrate to cloud →</button>' +
+            '<button class="btn" data-act="open-connect-existing">Connect to existing cloud →</button>' +
+          '</div>'
+        );
+      }
+      if (info.state === 'cloud-connected') {
+        return (
+          renderConnectionSummary(info) +
+          '<div class="team-actions" style="margin-top:10px">' +
+            '<button class="btn primary" data-act="open-upgrade">Upgrade to team cloud →</button>' +
+          '</div>'
+        );
+      }
+      if (info.state === 'team-cloud-creator' || info.state === 'team-cloud-member') {
+        var isCreator = info.state === 'team-cloud-creator';
+        return (
+          renderConnectionSummary(info) +
+          '<div style="margin-top:10px;font-size:13px">' +
+            '<strong>Team:</strong> ' + escapeHtml(info.teamName || '(unnamed)') +
+            (isCreator ? ' · <span style="color:var(--accent)">you are the creator</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
+          '</div>' +
+          '<div class="team-actions" style="margin-top:10px">' +
+            (isCreator ? '<button class="btn primary" data-act="open-invite">Invite member</button>' : '') +
+            (isCreator ? '<button class="btn danger" data-act="destroy-team">Destroy team</button>' : '') +
+          '</div>'
+        );
+      }
+      if (info.state === 'team-cloud-needs-invite') {
+        return (
+          renderConnectionSummary(info) +
+          '<p style="margin-top:10px;color:var(--warn);font-size:13px">' +
+            'This cloud DB is a team — paste your invite token to join.' +
+          '</p>' +
+          '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:6px">' +
+            '<div><label class="field-label">Invite token</label>' +
+            '<textarea id="db-rejoin-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea></div>' +
+          '</div>' +
+          '<div class="team-actions" style="margin-top:10px">' +
+            '<button class="btn primary" data-act="rejoin-with-token">Join team →</button>' +
+          '</div>'
+        );
+      }
+      return '<p style="color:var(--text-muted)">Unknown database state.</p>';
+    }
+
+    function renderConnectionSummary(info) {
+      var parts = [];
+      if (info.label) parts.push('<strong>Label:</strong> <code>' + escapeHtml(info.label) + '</code>');
+      if (info.host) parts.push('<strong>Host:</strong> ' + escapeHtml(info.host) + ':' + (info.port || 5432));
+      if (info.dbname) parts.push('<strong>DB:</strong> ' + escapeHtml(info.dbname));
+      if (info.user) parts.push('<strong>User:</strong> ' + escapeHtml(info.user));
+      return '<p style="margin:0;color:var(--text-muted);font-size:13px;line-height:1.7">' + parts.join(' · ') + '</p>';
+    }
+
+    function wireStateActions(host, info) {
+      var setMsg = function (text, ok) {
+        var el = document.getElementById('db-msg');
+        if (!el) return;
+        el.textContent = text;
+        el.style.color = ok ? 'var(--accent)' : 'var(--text-muted)';
+      };
+      var rerender = function () { renderDatabasePanel(document.getElementById('dbconfig-host')); };
+
+      var migrateBtn = host.querySelector('[data-act="open-migrate"]');
+      if (migrateBtn) migrateBtn.addEventListener('click', function () {
+        showMigrateToCloudModal(rerender);
+      });
+
+      var connectExBtn = host.querySelector('[data-act="open-connect-existing"]');
+      if (connectExBtn) connectExBtn.addEventListener('click', function () {
+        showConnectExistingModal(rerender);
+      });
+
+      var upgradeBtn = host.querySelector('[data-act="open-upgrade"]');
+      if (upgradeBtn) upgradeBtn.addEventListener('click', function () {
+        showUpgradeToTeamModal(rerender);
+      });
+
+      var inviteBtn = host.querySelector('[data-act="open-invite"]');
+      if (inviteBtn) inviteBtn.addEventListener('click', function () {
+        // Reuse the per-team email-bound invite modal — but resolve
+        // the team_id via the active connection. Fetch then open.
+        fetchConnections().then(function (conns) {
+          var conn = conns[0];
+          if (!conn) { alert('No local team connection found.'); return; }
+          showInviteByEmailModal(conn.team_id);
+        });
+      });
+
+      var destroyBtn = host.querySelector('[data-act="destroy-team"]');
+      if (destroyBtn) destroyBtn.addEventListener('click', function () {
+        if (!confirm('Destroy this team? All member rows are dropped on the cloud. This cannot be undone.')) return;
+        fetch('/api/team', { method: 'DELETE' })
+          .then(function (r) { return r.json(); })
+          .then(function () { setMsg('Destroyed.', true); rerender(); })
+          .catch(function (e) { setMsg('Failed: ' + e.message, false); });
+      });
+
+      var rejoinBtn = host.querySelector('[data-act="rejoin-with-token"]');
+      if (rejoinBtn) rejoinBtn.addEventListener('click', function () {
+        var token = (document.getElementById('db-rejoin-token').value || '').trim();
+        if (!token) { setMsg('Invite token required.', false); return; }
+        // Without form re-entry the credentials are already saved; we
+        // call the connect-existing endpoint with just the invite
+        // token. The handler reads credentials from db-credentials.enc
+        // via the active configPath's label.
+        setMsg('Joining team…');
+        fetch('/api/dbconfig/connect-existing', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'postgres',
+            label: info.label,
+            host: info.host, port: info.port, dbname: info.dbname,
+            user: info.user, password: '', // password lives in db-credentials.enc; backend will pull
+            invite_token: token,
+          }),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.error) { setMsg('Failed: ' + d.error, false); return; }
+            setMsg('Joined.', true); rerender();
+          })
+          .catch(function (e) { setMsg('Failed: ' + e.message, false); });
+      });
+    }
+
+    // ── v1.13 wizards ─────────────────────────────────────────────
+
+    function postgresFormHtml(prefill) {
+      prefill = prefill || {};
+      return (
+        '<div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
+          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Host</label><input type="text" id="w-host" placeholder="db.example.com" value="' + escapeHtml(prefill.host || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Port</label><input type="number" id="w-port" placeholder="5432" value="' + escapeHtml(String(prefill.port || 5432)) + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Database name</label><input type="text" id="w-dbname" placeholder="app" value="' + escapeHtml(prefill.dbname || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">User</label><input type="text" id="w-user" placeholder="lattice_user" value="' + escapeHtml(prefill.user || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Password</label><input type="password" id="w-password" placeholder="••••••••" style="width:100%"></div>' +
+        '</div>'
+      );
+    }
+
+    function readPostgresWizardForm() {
+      return {
+        type: 'postgres',
+        label: (document.getElementById('w-label').value || '').trim(),
+        host: (document.getElementById('w-host').value || '').trim(),
+        port: Number(document.getElementById('w-port').value || 5432),
+        dbname: (document.getElementById('w-dbname').value || '').trim(),
+        user: document.getElementById('w-user').value || '',
+        password: document.getElementById('w-password').value || '',
+      };
+    }
+
+    function showMigrateToCloudModal(onClose) {
+      var bodyHtml =
+        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+          'Enter credentials for a <strong>fresh, empty</strong> Postgres database. ' +
+          'Lattice will copy every row from your local SQLite into the new DB, then ' +
+          'rename the SQLite file to <code>.db.local-bak</code> and switch the project ' +
+          'to read from the cloud. This action cannot be undone.' +
+        '</p>' +
+        postgresFormHtml({}) +
+        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+      showModal('Migrate to cloud', bodyHtml, {
+        primaryLabel: 'Migrate →',
+        onSubmit: function () {
+          var body = readPostgresWizardForm();
+          var msg = document.getElementById('w-msg');
+          msg.textContent = 'Migrating… (this may take a moment for large DBs)';
+          return fetch('/api/dbconfig/migrate-to-cloud', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+          })
+            .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+            .then(function (r) {
+              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              if (onClose) onClose();
+            });
+        },
+      });
+    }
+
+    function showConnectExistingModal(onClose) {
+      var bodyHtml =
+        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+          'Connect this project to an <strong>existing</strong> cloud Postgres. ' +
+          'Your local SQLite data will be ignored — use Migrate to cloud instead ' +
+          'if you want to push it. If the target is a teams DB you\\'ll be asked ' +
+          'for an invite token after the probe.' +
+        '</p>' +
+        postgresFormHtml({}) +
+        '<div id="w-team-zone" style="margin-top:10px"></div>' +
+        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+      var teamZoneShown = false;
+      showModal('Connect to existing cloud', bodyHtml, {
+        primaryLabel: 'Connect →',
+        onSubmit: function () {
+          var body = readPostgresWizardForm();
+          var msg = document.getElementById('w-msg');
+          msg.textContent = 'Probing…';
+          // First probe; if team, require token before the actual connect.
+          return fetch('/api/dbconfig/probe', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (probe) {
+              if (!probe.reachable) throw new Error('Unreachable: ' + (probe.error || 'unknown'));
+              if (probe.teamEnabled && !teamZoneShown) {
+                var zone = document.getElementById('w-team-zone');
+                zone.innerHTML =
+                  '<div style="padding:10px;background:rgba(251,146,60,0.08);border:1px solid var(--warn);border-radius:6px">' +
+                    '<p style="margin:0 0 8px;font-size:13px;color:var(--warn)">Target is a teams DB' +
+                    (probe.teamName ? ' (<strong>' + escapeHtml(probe.teamName) + '</strong>)' : '') +
+                    '. Paste your invite token to join:</p>' +
+                    '<textarea id="w-invite-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea>' +
+                  '</div>';
+                teamZoneShown = true;
+                msg.textContent = 'Enter invite token, then click Connect again.';
+                throw new Error('__PROBE_REQUIRES_TOKEN__');
+              }
+              // Either non-team, or we already showed the token zone.
+              var tokenEl = document.getElementById('w-invite-token');
+              var payload = Object.assign({}, body);
+              if (tokenEl && tokenEl.value.trim()) payload.invite_token = tokenEl.value.trim();
+              msg.textContent = 'Connecting…';
+              return fetch('/api/dbconfig/connect-existing', {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+              })
+                .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+                .then(function (r) {
+                  if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                  if (onClose) onClose();
+                });
+            })
+            .catch(function (e) {
+              if (e.message === '__PROBE_REQUIRES_TOKEN__') {
+                // Suppress error — token zone is now visible.
+                throw new Error(' '); // forces modal to stay open with a no-op message
+              }
+              throw e;
+            });
+        },
+      });
+    }
+
+    function showUpgradeToTeamModal(onClose) {
+      var bodyHtml =
+        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+          'Upgrade this cloud DB to a team DB by registering as the founding member. ' +
+          'Your display name + email from <strong>User Config → Identity</strong> are used.' +
+        '</p>' +
+        '<div><label class="field-label">Team name</label>' +
+          '<input type="text" id="w-team-name" placeholder="Atlas" style="width:100%"></div>' +
+        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+      showModal('Upgrade to team cloud', bodyHtml, {
+        primaryLabel: 'Upgrade →',
+        onSubmit: function () {
+          var teamName = (document.getElementById('w-team-name').value || '').trim();
+          if (!teamName) throw new Error('Team name is required.');
+          var msg = document.getElementById('w-msg');
+          msg.textContent = 'Upgrading…';
+          return fetch('/api/dbconfig/upgrade-to-team', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ team_name: teamName }),
+          })
+            .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+            .then(function (r) {
+              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              if (onClose) onClose();
+            });
+        },
+      });
+    }
+
+    function renderTeamCard(card, conn) {
+      // Fetch status + shared + members in parallel; members may 403 for
+      // non-creators (only members can list, but we still try and ignore).
+      var teamId = conn.team_id;
+      Promise.all([
+        fetchJson('/api/teams-gui/teams/' + teamId + '/status'),
+        fetchJson('/api/teams-gui/teams/' + teamId + '/shared').catch(function () { return { objects: [] }; }),
+        fetchJson('/api/teams-gui/teams/' + teamId + '/members').catch(function () { return { members: [] }; }),
+      ]).then(function (results) {
+        var status = results[0];
+        var shared = results[1].objects;
+        var members = results[2].members;
+        var myMembership = members.find(function (m) { return m.user_id === conn.my_user_id; });
+        var isCreator = myMembership && myMembership.role === 'creator';
+        var rolePill = '<span class="role-tag' + (isCreator ? '' : ' role-member') + '">' + (myMembership ? myMembership.role : 'unknown') + '</span>';
+
+        var lastSeq = status.last_change_seq == null ? '(never)' : status.last_change_seq;
+        card.innerHTML =
+          '<h3>' + escapeHtml(conn.team_name) + ' ' + rolePill +
+            '<span style="font-size:11px;color:var(--text-muted);font-weight:normal">' + escapeHtml(conn.cloud_url) + '</span>' +
+          '</h3>' +
+          '<div class="team-meta">team-id: <code>' + escapeHtml(teamId) + '</code></div>' +
+          '<div class="team-stats">' +
+            '<div class="team-stat"><div class="stat-label">Last seq</div><div class="stat-value">' + lastSeq + '</div></div>' +
+            '<div class="team-stat"><div class="stat-label">Outbox</div><div class="stat-value">' + status.outbox_depth + '</div></div>' +
+            '<div class="team-stat"><div class="stat-label">DLQ</div><div class="stat-value">' + status.dlq_depth + '</div></div>' +
+            '<div class="team-stat"><div class="stat-label">Local links</div><div class="stat-value">' + status.local_links + '</div></div>' +
+          '</div>' +
+          '<div class="team-actions">' +
+            '<button class="btn primary" data-act="sync">Sync now</button>' +
+            (isCreator
+              ? '<button class="btn" data-act="invite">Generate invite token</button>'
+              : '') +
+            '<button class="btn" data-act="leave">' + (isCreator ? 'Destroy team' : 'Leave team') + '</button>' +
+          '</div>' +
+          renderSharedList(shared, isCreator) +
+          (isCreator ? renderMembersList(members, conn.my_user_id) : '');
+        wireTeamCardActions(card, conn, isCreator);
+      }).catch(function (err) {
+        card.innerHTML = '<div class="team-meta">Failed to load team status: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderSharedList(shared, isCreator) {
+      if (shared.length === 0) {
+        return '<div class="shared-list"><h4>Shared tables</h4>' +
+          '<div style="font-size:13px;color:var(--text-muted)">No tables shared yet.</div>' +
+          (isCreator || true ? '<div style="margin-top:8px"><button class="btn" data-act="share-table">Share a table</button></div>' : '') +
+        '</div>';
+      }
+      var rows = shared.map(function (o) {
+        return '<div class="shared-row" data-table="' + escapeHtml(o.table) + '">' +
+          '<span class="table-name">' + escapeHtml(o.table) +
+          ' <span style="color:var(--text-muted);font-size:11px">v' + o.schema_version + '</span></span>' +
+          '<button class="btn danger-btn" data-act="unshare">Unshare</button>' +
+        '</div>';
+      }).join('');
+      return '<div class="shared-list"><h4>Shared tables</h4>' + rows +
+        '<div style="margin-top:8px"><button class="btn" data-act="share-table">Share another table</button></div>' +
+      '</div>';
+    }
+
+    function renderMembersList(members, myUserId) {
+      var rows = members.map(function (m) {
+        var label = m.name || m.email || '(unknown)';
+        var canKick = m.user_id !== myUserId;
+        return '<div class="member-row" data-user-id="' + escapeHtml(m.user_id) + '">' +
+          '<span>' + escapeHtml(label) +
+            ' <span style="color:var(--text-muted);font-size:11px">' + escapeHtml(m.email || '') + '</span>' +
+            ' <span class="role-tag' + (m.role === 'creator' ? '' : ' role-member') + '">' + m.role + '</span>' +
+          '</span>' +
+          (canKick ? '<button class="btn danger-btn" data-act="kick">Kick</button>' : '') +
+        '</div>';
+      }).join('');
+      return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
+    }
+
+    function wireTeamCardActions(card, conn, isCreator) {
+      var teamId = conn.team_id;
+      card.querySelector('[data-act="sync"]').addEventListener('click', function () {
+        fetchJson('/api/teams-gui/teams/' + teamId + '/sync', { method: 'POST' })
+          .then(function () { renderTeamCard(card, conn); })
+          .catch(function (err) { alert('Sync failed: ' + err.message); });
+      });
+      var inviteBtn = card.querySelector('[data-act="invite"]');
+      if (inviteBtn) inviteBtn.addEventListener('click', function () {
+        showInviteByEmailModal(teamId);
+      });
+      card.querySelector('[data-act="leave"]').addEventListener('click', function () {
+        if (isCreator) {
+          if (!confirm('Destroy team "' + conn.team_name + '"? This soft-deletes the team on the cloud.')) return;
+          fetchJson('/api/teams-gui/teams/' + teamId, { method: 'DELETE' })
+            .then(function () { refreshSettingsRoute(); })
+            .catch(function (err) { alert('Destroy failed: ' + err.message); });
+        } else {
+          if (!confirm('Leave team "' + conn.team_name + '"?')) return;
+          fetchJson('/api/teams-gui/connections/' + teamId, { method: 'DELETE' })
+            .then(function () { refreshSettingsRoute(); })
+            .catch(function (err) { alert('Leave failed: ' + err.message); });
+        }
+      });
+      var shareBtn = card.querySelector('[data-act="share-table"]');
+      if (shareBtn) shareBtn.addEventListener('click', function () { showShareTableModal(teamId, card, conn); });
+      card.querySelectorAll('[data-act="unshare"]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var tableName = btn.closest('.shared-row').getAttribute('data-table');
+          if (!confirm('Unshare "' + tableName + '"? Linked rows will be unlinked everywhere.')) return;
+          fetchJson('/api/teams-gui/teams/' + teamId + '/shared/' + encodeURIComponent(tableName), { method: 'DELETE' })
+            .then(function () { renderTeamCard(card, conn); })
+            .catch(function (err) { alert('Unshare failed: ' + err.message); });
+        });
+      });
+      card.querySelectorAll('[data-act="kick"]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var userId = btn.closest('.member-row').getAttribute('data-user-id');
+          if (!confirm('Kick this member? All rows they own will be unlinked.')) return;
+          fetchJson('/api/teams-gui/teams/' + teamId + '/members/' + userId, { method: 'DELETE' })
+            .then(function () { renderTeamCard(card, conn); })
+            .catch(function (err) { alert('Kick failed: ' + err.message); });
+        });
+      });
+    }
+
+    function showShareTableModal(teamId, card, conn) {
+      var tableOptions = state.entities.tables
+        .filter(function (t) { return !isJunction(t); })
+        .map(function (t) { return '<option value="' + escapeHtml(t.name) + '">' + escapeHtml(t.name) + '</option>'; })
+        .join('');
+      var bodyHtml =
+        '<div class="field"><label>Local table to share</label>' +
+        '<select name="table">' + tableOptions + '</select></div>' +
+        '<p style="font-size:12px;color:var(--text-muted)">The current local schema will be serialized and stored on the cloud. Re-sharing later bumps the version.</p>';
+      showModal('Share a table', bodyHtml, {
+        primaryLabel: 'Share',
+        onSubmit: function (scope) {
+          var data = collectFormValues(scope);
+          return fetchJson('/api/teams-gui/teams/' + teamId + '/shared', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ table: data.table }),
+          }).then(function () { renderTeamCard(card, conn); });
+        },
+      });
+    }
+
+    function showInviteByEmailModal(teamId) {
+      var bodyHtml =
+        '<div class="field"><label>Invitee email</label>' +
+        '<input name="invitee_email" type="email" placeholder="bob@example.com" /></div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+        'Invitations are bound to this email — only the recipient can redeem.' +
+        '</p>';
+      showModal('Invite member', bodyHtml, {
+        primaryLabel: 'Generate invite',
+        onSubmit: function (scope) {
+          var data = collectFormValues(scope);
+          if (!data.invitee_email) throw new Error('invitee_email is required');
+          return fetchJson('/api/teams-gui/teams/' + teamId + '/invitations', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ invitee_email: data.invitee_email }),
+          }).then(function (inv) { showInviteTokenModal(inv); });
+        },
+      });
+    }
+
+    function showInviteTokenModal(inv) {
+      var bodyHtml =
+        '<p style="margin-top:0">Share this token with the invitee (one-time use). It expires at <code>' +
+        escapeHtml(inv.expires_at || '(no expiry)') + '</code>.</p>' +
+        '<div class="copy-token" id="copy-token">' + escapeHtml(inv.raw_token) + '</div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>';
+      var handle = showModal('Invitation token', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
+      var tokenEl = document.getElementById('copy-token');
+      if (tokenEl) {
+        tokenEl.addEventListener('click', function () {
+          navigator.clipboard.writeText(inv.raw_token).then(function () {
+            tokenEl.textContent = 'Copied!';
+            setTimeout(function () { tokenEl.textContent = inv.raw_token; }, 1200);
+          });
+        });
+      }
+      // Suppress unused-var on handle
+      void handle;
     }
 
     init();

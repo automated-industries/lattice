@@ -13,6 +13,7 @@ export default defineConfig({
         'src/index.ts',
         'src/types.ts',
         'src/cli.ts',
+        'src/teams/cli-commands.ts',
         'src/schema/entity-context.ts',
         'src/config/types.ts',
         'src/db/adapter.ts',
