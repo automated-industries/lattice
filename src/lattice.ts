@@ -42,6 +42,7 @@ import {
   getAsyncOrSync,
   allAsyncOrSync,
   introspectColumnsAsyncOrSync,
+  addColumnAsyncOrSync,
 } from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { PostgresAdapter } from './db/postgres.js';
@@ -215,7 +216,55 @@ export class Lattice {
 
   define(table: string, def: TableDefinition): this {
     this._assertNotInit('define');
+    this._registerTable(table, def);
+    return this;
+  }
 
+  /**
+   * Register a table after `init()` has already run, and immediately apply
+   * its DDL to the underlying database. The mirror image of `define()` for
+   * post-init use cases — most notably the Lattice Teams feature, which
+   * boots a server-mode lattice and then registers its internal tables
+   * (users, tokens, etc.) once the main schema has been initialized.
+   *
+   * On Postgres, the DDL acquires `pg_advisory_xact_lock` so concurrent
+   * defineLate calls serialize on the same lock the boot path uses (see
+   * `SchemaManager.applySchemaForAsync`). On SQLite, CREATE TABLE IF NOT
+   * EXISTS plus the single-writer guarantee covers the race.
+   *
+   * Idempotent: a second call for an already-registered table is a no-op
+   * (the underlying CREATE TABLE IF NOT EXISTS is already idempotent at
+   * the DB level; this skip avoids the SchemaManager.define throw on
+   * re-registration). Use this property for clients (e.g. TeamsClient)
+   * that may bootstrap their internal tables on every session start.
+   *
+   * Throws if called before `init()` (use `define()` instead).
+   */
+  async defineLate(table: string, def: TableDefinition): Promise<this> {
+    if (!this._initialized) {
+      throw new Error(
+        'Lattice: defineLate() must be called after init() — use define() during setup',
+      );
+    }
+    if (this._schema.getTables().has(table)) {
+      return this;
+    }
+    if (def.encrypted && !this._encryptionKeyRaw) {
+      throw new Error(
+        `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
+      );
+    }
+    this._registerTable(table, def);
+    await this._schema.applySchemaForAsync(this._adapter, table);
+    const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
+    this._columnCache.set(table, new Set(cols));
+    if (def.encrypted) {
+      await this._registerEncryptedColumns(table, def.encrypted);
+    }
+    return this;
+  }
+
+  private _registerTable(table: string, def: TableDefinition): void {
     // Auto-inject reward tracking columns
     const columns = def.rewardTracking
       ? { ...def.columns, _reward_total: 'REAL DEFAULT 0', _reward_count: 'INTEGER DEFAULT 0' }
@@ -240,7 +289,6 @@ export class Lattice {
     };
     this._schema.define(table, compiledDef);
     if (def.changelog) this._changelogTables.add(table);
-    return this;
   }
 
   defineMulti(name: string, def: MultiTableDefinition): this {
@@ -347,6 +395,92 @@ export class Lattice {
     this._initialized = false;
   }
 
+  /**
+   * Return the actual columns currently present in the underlying table,
+   * as reported by the adapter's introspection. Bypasses Lattice's
+   * declared schema — useful for callers (e.g. the Lattice Teams schema
+   * sync) that need to diff what's on disk against an external spec.
+   *
+   * Throws if the table doesn't exist or the adapter can't introspect.
+   */
+  async introspectColumns(table: string): Promise<string[]> {
+    if (!this._initialized) {
+      throw new Error('Lattice: not initialized — call init() first');
+    }
+    return introspectColumnsAsyncOrSync(this._adapter, table);
+  }
+
+  /**
+   * Return the adapter dialect ('sqlite' | 'postgres'). Useful for
+   * callers that need to render dialect-specific SQL (e.g. the Lattice
+   * Teams schema spec → DDL translation).
+   */
+  getDialect(): 'sqlite' | 'postgres' {
+    return this._adapter.dialect;
+  }
+
+  /**
+   * Return the normalised primary-key column list for a registered
+   * table. Falls back to `['id']` for tables registered via raw DDL
+   * (without a corresponding `define()` call) — same as the
+   * SchemaManager default.
+   */
+  getPrimaryKey(table: string): string[] {
+    return this._schema.getPrimaryKey(table);
+  }
+
+  /**
+   * Return the raw column declarations for a registered table, as
+   * passed to `define()` / `defineLate()`. Returns null for tables
+   * that exist in the DB but were never registered with Lattice (e.g.
+   * created by user DDL outside the lattice config).
+   *
+   * Used by the Lattice Teams `share` command to serialise a local
+   * TableDefinition into the dialect-neutral SchemaSpec format.
+   */
+  getRegisteredColumns(table: string): Record<string, string> | null {
+    const def = this._schema.getTables().get(table);
+    return def ? { ...def.columns } : null;
+  }
+
+  /**
+   * Return every table currently registered via `define()` or
+   * `defineLate()`. Includes tables added at runtime by the Lattice
+   * Teams schema-propagation flow, so GUI consumers can refresh their
+   * own "valid tables" set after a sync.
+   */
+  getRegisteredTableNames(): string[] {
+    return Array.from(this._schema.getTables().keys());
+  }
+
+  /**
+   * Add a single column to an existing table at runtime. Wraps the
+   * adapter's `addColumnAsync` (which handles dialect-specific quirks —
+   * SQLite non-constant default workarounds, Postgres native syntax,
+   * PK skip, etc.) and refreshes the column cache so subsequent
+   * `query`/`insert`/`update` calls are aware of the new column.
+   *
+   * Does NOT update the SchemaManager's stored TableDefinition. The
+   * runtime column cache is what insert/update/query consult; the def
+   * is only consulted by `applySchema` (which is only re-run at init).
+   * Callers who care about def-level fidelity (most don't) should
+   * re-`defineLate` the table on the next session start.
+   *
+   * Idempotent: if the column already exists on the table, this is a
+   * no-op (introspect-first; skip the ALTER).
+   */
+  async addColumn(table: string, column: string, typeSpec: string): Promise<void> {
+    if (!this._initialized) {
+      throw new Error('Lattice: not initialized — call init() first');
+    }
+    const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
+    if (!existing.includes(column)) {
+      await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+    }
+    const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
+    this._columnCache.set(table, new Set(cols));
+  }
+
   // -------------------------------------------------------------------------
   // Task context (for relevance filtering)
   // -------------------------------------------------------------------------
@@ -386,6 +520,14 @@ export class Lattice {
         );
       }
     }
+    for (const [table, def] of this._schema.getTables()) {
+      if (!def.encrypted) continue;
+      if (!this._encryptionKeyRaw) {
+        throw new Error(
+          `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
+        );
+      }
+    }
   }
 
   /**
@@ -397,11 +539,38 @@ export class Lattice {
     for (const [table, def] of this._schema.getEntityContexts()) {
       if (!def.encrypted) continue;
       if (!this._encryptionKeyRaw) continue; // already validated above
-      this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
-      const allCols = await introspectColumnsAsyncOrSync(this._adapter, table);
-      const encCols = resolveEncryptedColumns(def.encrypted, allCols);
-      this._encryptedTableColumns.set(table, encCols);
+      await this._registerEncryptedColumns(table, def.encrypted);
     }
+    for (const [table, def] of this._schema.getTables()) {
+      if (!def.encrypted) continue;
+      if (!this._encryptionKeyRaw) continue;
+      // Entity-context encryption for this table (if any) was already
+      // resolved in the first loop — skip to avoid clobbering with a
+      // narrower table-level spec.
+      if (this._encryptedTableColumns.has(table)) continue;
+      await this._registerEncryptedColumns(table, def.encrypted);
+    }
+  }
+
+  /**
+   * Shared helper: derive the encryption key on first use, introspect the
+   * table's current columns, resolve which to encrypt, and record the set
+   * in `_encryptedTableColumns`. Called from both `_finalizeEncryptionSetup`
+   * (boot path) and `defineLate` (post-init table registration).
+   */
+  private async _registerEncryptedColumns(
+    table: string,
+    encrypted: true | { columns: string[] },
+  ): Promise<void> {
+    if (!this._encryptionKeyRaw) {
+      throw new Error(
+        `Cannot register encrypted columns for "${table}": no encryptionKey was provided`,
+      );
+    }
+    this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
+    const allCols = await introspectColumnsAsyncOrSync(this._adapter, table);
+    const encCols = resolveEncryptedColumns(encrypted, allCols);
+    this._encryptedTableColumns.set(table, encCols);
   }
 
   /** Encrypt applicable columns in a row before writing. Returns a new row. */
@@ -481,7 +650,7 @@ export class Lattice {
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     await this._appendChangelog(table, pkValue, 'insert', rowWithPk, null);
     this._sanitizer.emitAudit(table, 'insert', pkValue);
-    this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
+    await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
     return pkValue;
   }
@@ -602,7 +771,7 @@ export class Lattice {
     const auditId = typeof id === 'string' ? id : JSON.stringify(id);
     await this._appendChangelog(table, auditId, 'update', sanitized, previousValues);
     this._sanitizer.emitAudit(table, 'update', auditId);
-    this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
+    await this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     // Re-fetch full row for embedding recomputation
     const def = this._schema.getTables().get(table);
     if (def?.embeddings) {
@@ -652,7 +821,7 @@ export class Lattice {
       previousRow as Record<string, unknown> | null,
     );
     this._sanitizer.emitAudit(table, 'delete', auditId);
-    this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
+    await this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
     this._syncEmbedding(table, 'delete', {}, auditId);
   }
 
@@ -712,7 +881,7 @@ export class Lattice {
         ...entries.map(([, v]) => v),
         existing.id,
       ]);
-      this._fireWriteHooks(
+      await this._fireWriteHooks(
         table,
         'update',
         withConventions,
@@ -743,7 +912,7 @@ export class Lattice {
       `INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`,
       Object.values(encInserted),
     );
-    this._fireWriteHooks(table, 'insert', filtered, id);
+    await this._fireWriteHooks(table, 'insert', filtered, id);
     return id;
   }
 
@@ -782,7 +951,7 @@ export class Lattice {
       ...withTs.map(([, v]) => v),
       existing.id,
     ]);
-    this._fireWriteHooks(
+    await this._fireWriteHooks(
       table,
       'update',
       Object.fromEntries(entries),
@@ -1637,13 +1806,13 @@ export class Lattice {
   }
 
   /** Returns a rejected Promise if not initialized; null if ready. */
-  private _fireWriteHooks(
+  private async _fireWriteHooks(
     table: string,
     op: 'insert' | 'update' | 'delete',
     row: Row,
     pk: string,
     changedColumns?: string[],
-  ): void {
+  ): Promise<void> {
     for (const hook of this._writeHooks) {
       if (hook.table !== table) continue;
       if (!hook.on.includes(op)) continue;
@@ -1653,9 +1822,10 @@ export class Lattice {
       try {
         const ctx: WriteHookContext = { table, op, row, pk };
         if (changedColumns) ctx.changedColumns = changedColumns;
-        hook.handler(ctx);
+        await hook.handler(ctx);
       } catch (err) {
-        // Hook errors must not crash the caller
+        // Hook errors must not crash the caller — routed through error
+        // handlers like every other lattice background failure.
         for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
       }
     }
