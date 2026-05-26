@@ -728,6 +728,30 @@ export const guiAppHtml = `<!doctype html>
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // Redact the userinfo portion of a connection URL so the password
+    // never reaches the rendered DOM. Used for every place the GUI
+    // displays a cloud_url field (team cards, connection list, etc).
+    // Defensive fallback returns the input as-is when it doesn't parse
+    // as a URL — better to render a non-credential string verbatim than
+    // to silently swallow the value.
+    function redactUrlCredentials(url) {
+      if (url == null) return '';
+      var s = String(url);
+      try {
+        var u = new URL(s);
+        if (u.password) {
+          // Preserve the username (often useful for identification —
+          // e.g. tenant prefixes like postgres.<ref>) but mask the
+          // password portion. URL.password is the decoded form.
+          u.password = '••••••••';
+          return u.toString();
+        }
+        return s;
+      } catch (_) {
+        return s;
+      }
+    }
+
     function truncate(s, n) {
       if (s == null) return '';
       s = String(s);
@@ -2544,7 +2568,7 @@ export const guiAppHtml = `<!doctype html>
               '<button class="btn danger-btn" data-act="signout">Sign out</button>' +
             '</h3>' +
             '<div class="team-meta">' +
-              'Cloud: <code>' + escapeHtml(c.cloud_url) + '</code> · ' +
+              'Cloud: <code>' + escapeHtml(redactUrlCredentials(c.cloud_url)) + '</code> · ' +
               'User id: <code>' + escapeHtml(c.my_user_id) + '</code> · ' +
               'Joined ' + escapeHtml(c.joined_at) +
             '</div>' +
@@ -3066,37 +3090,76 @@ export const guiAppHtml = `<!doctype html>
     }
 
     function renderTeamCard(card, conn) {
-      // Fetch status + shared + members in parallel; members may 403 for
-      // non-creators (only members can list, but we still try and ignore).
+      // Fetch status + shared + members in parallel. The members fetch
+      // can fail two ways: HTTP 403 for non-creators (only members can
+      // list — though in practice every active member can), or the
+      // cloud is genuinely unreachable. We track which case we're in so
+      // the role pill says something more useful than "unknown".
       var teamId = conn.team_id;
+      var membersFailed = false;
       Promise.all([
         fetchJson('/api/teams-gui/teams/' + teamId + '/status'),
         fetchJson('/api/teams-gui/teams/' + teamId + '/shared').catch(function () { return { objects: [] }; }),
-        fetchJson('/api/teams-gui/teams/' + teamId + '/members').catch(function () { return { members: [] }; }),
+        fetchJson('/api/teams-gui/teams/' + teamId + '/members').catch(function () {
+          membersFailed = true;
+          return { members: [] };
+        }),
       ]).then(function (results) {
         var status = results[0];
         var shared = results[1].objects;
         var members = results[2].members;
         var myMembership = members.find(function (m) { return m.user_id === conn.my_user_id; });
-        var isCreator = myMembership && myMembership.role === 'creator';
-        var rolePill = '<span class="role-tag' + (isCreator ? '' : ' role-member') + '">' + (myMembership ? myMembership.role : 'unknown') + '</span>';
+        // Resolve the role label with a three-step fallback chain that
+        // distinguishes "we know what the role is" from "we couldn't ask
+        // the cloud" from "the cloud answered but didn't recognize us".
+        // The pre-v1.13.4 implementation collapsed all three into
+        // "unknown" — confusing when (a) the user just created the
+        // team and IS the creator on the cloud side, or (b) the cloud
+        // briefly hiccupped. Use saveConnection's own data as the
+        // authoritative source when we have it on the local row.
+        var roleLabel;
+        var isCreator;
+        if (myMembership) {
+          roleLabel = myMembership.role;
+          isCreator = myMembership.role === 'creator';
+        } else if (membersFailed) {
+          // Cloud listMembers couldn't be reached. We don't know who
+          // we are remotely, but the local connection row knows we
+          // joined this team — surface that, with a soft warning.
+          roleLabel = '(cloud unreachable)';
+          isCreator = false;
+        } else {
+          // listMembers returned a list, but our user_id wasn't in it.
+          // Either we were kicked or the local my_user_id is stale.
+          roleLabel = '(not in member list)';
+          isCreator = false;
+        }
+        var rolePill = '<span class="role-tag' + (isCreator ? '' : ' role-member') + '">' +
+          escapeHtml(roleLabel) +
+        '</span>';
 
-        var lastSeq = status.last_change_seq == null ? '(never)' : status.last_change_seq;
+        // v1.13.4: no manual-sync button and no Last seq / Outbox / DLQ /
+        // Local links stats. Lattice is realtime against its canonical
+        // store — every read and every write the GUI does hits the
+        // active DB directly. When the project's db: line points at a
+        // Postgres URL, that IS the cloud DB; when it's local SQLite,
+        // it's the canonical local. There's nothing for the user to
+        // "sync" — operations either succeed live or fail gracefully
+        // when the connection is down. The outbox/change-log machinery
+        // is an HTTP-mode-only internal that the CLI still exposes
+        // (lattice teams sync) for power users; the GUI no longer
+        // pretends it's a user-facing action.
+        // Reference status once so eslint no-unused-vars stays happy
+        // even though we've intentionally dropped its display.
+        void status;
         card.innerHTML =
           '<h3>' + escapeHtml(conn.team_name) + ' ' + rolePill +
-            '<span style="font-size:11px;color:var(--text-muted);font-weight:normal">' + escapeHtml(conn.cloud_url) + '</span>' +
+            '<span style="font-size:11px;color:var(--text-muted);font-weight:normal">' + escapeHtml(redactUrlCredentials(conn.cloud_url)) + '</span>' +
           '</h3>' +
           '<div class="team-meta">team-id: <code>' + escapeHtml(teamId) + '</code></div>' +
-          '<div class="team-stats">' +
-            '<div class="team-stat"><div class="stat-label">Last seq</div><div class="stat-value">' + lastSeq + '</div></div>' +
-            '<div class="team-stat"><div class="stat-label">Outbox</div><div class="stat-value">' + status.outbox_depth + '</div></div>' +
-            '<div class="team-stat"><div class="stat-label">DLQ</div><div class="stat-value">' + status.dlq_depth + '</div></div>' +
-            '<div class="team-stat"><div class="stat-label">Local links</div><div class="stat-value">' + status.local_links + '</div></div>' +
-          '</div>' +
           '<div class="team-actions">' +
-            '<button class="btn primary" data-act="sync">Sync now</button>' +
             (isCreator
-              ? '<button class="btn" data-act="invite">Generate invite token</button>'
+              ? '<button class="btn primary" data-act="invite">Generate invite token</button>'
               : '') +
             '<button class="btn" data-act="leave">' + (isCreator ? 'Destroy team' : 'Leave team') + '</button>' +
           '</div>' +
@@ -3144,11 +3207,9 @@ export const guiAppHtml = `<!doctype html>
 
     function wireTeamCardActions(card, conn, isCreator) {
       var teamId = conn.team_id;
-      card.querySelector('[data-act="sync"]').addEventListener('click', function () {
-        fetchJson('/api/teams-gui/teams/' + teamId + '/sync', { method: 'POST' })
-          .then(function () { renderTeamCard(card, conn); })
-          .catch(function (err) { alert('Sync failed: ' + err.message); });
-      });
+      // v1.13.4: no Sync button anymore. The CLI command lattice teams
+      // sync remains for HTTP-mode operators who need to nudge their
+      // outbox; the GUI is realtime against the canonical store.
       var inviteBtn = card.querySelector('[data-act="invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
         showInviteByEmailModal(teamId);
