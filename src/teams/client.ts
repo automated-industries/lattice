@@ -6,6 +6,12 @@ import type { Row, WriteHookContext } from '../types.js';
 import { probeCloud, type CloudProbeResult } from '../framework/cloud-connect.js';
 import { saveDbCredential, writeToken } from '../framework/user-config.js';
 import { isPostgresUrl, registerDirectViaPostgres } from './register-direct.js';
+import {
+  destroyTeamDirect,
+  inviteDirect,
+  kickMemberDirect,
+  listMembersDirect,
+} from './direct-ops.js';
 
 /**
  * Local-side client for a Lattice Teams cloud. Wraps the cloud HTTP API
@@ -253,6 +259,18 @@ export class TeamsClient {
       const redeem = await this.redeemInvite(opts.cloudUrl, inviteToken, email, name);
       saveDbCredential(opts.label, opts.cloudUrl);
       writeToken(opts.label, redeem.raw_token);
+      // Persist the local connection row too — without this, the GUI's
+      // team API calls (members, invites, etc.) can't find the cloud
+      // URL + bearer + user_id triple they need to authenticate. The
+      // older `handleRedeemInviteAndJoin` route did this; v1.13's
+      // higher-level orchestration was skipping it (see PR #20 / 1.13.4).
+      await this.saveConnection({
+        team_id: redeem.team.id,
+        team_name: redeem.team.name,
+        cloud_url: opts.cloudUrl,
+        my_user_id: redeem.user.id,
+        api_token: redeem.raw_token,
+      });
       return {
         probe,
         joinedAsMember: { user_id: redeem.user.id, team_id: redeem.team.id },
@@ -275,9 +293,13 @@ export class TeamsClient {
    *     The HTTP path can't be used here because the browser's Fetch
    *     API refuses URLs with embedded credentials.
    *
-   * On success writes the bearer token to `~/.lattice/keys/<label>.token`.
-   * Caller is expected to call `saveConnection` if they also want the
-   * local `__lattice_team_connections` row populated.
+   * On success writes the bearer token to `~/.lattice/keys/<label>.token`
+   * **and** persists the local `__lattice_team_connections` row so the
+   * GUI's team-management API calls can authenticate immediately
+   * afterward (members, invites, kick, destroy). v1.13.4 added the
+   * connection-row write — the older v1.13 implementation only wrote
+   * the token file, leaving GUI authenticated calls with no
+   * `cloud_url` + `my_user_id` + `api_token_encrypted` row to read.
    */
   async upgradeToTeamCloud(opts: {
     label: string;
@@ -290,17 +312,43 @@ export class TeamsClient {
       ? await registerDirectViaPostgres(opts.cloudUrl, opts.email, opts.displayName, opts.teamName)
       : await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
     writeToken(opts.label, reg.raw_token);
+    await this.saveConnection({
+      team_id: reg.team.id,
+      team_name: reg.team.name,
+      cloud_url: opts.cloudUrl,
+      my_user_id: reg.user.id,
+      api_token: reg.raw_token,
+    });
     return reg;
   }
 
-  // ── Cloud HTTP calls (authenticated) ────────────────────────────────────
+  // ── Cloud team operations (dispatch on URL scheme) ──────────────────────
+  // For HTTP cloud URLs (`http://lattice-server:port`), every operation
+  // round-trips through the team server's authenticated REST API. For
+  // direct-Postgres cloud URLs (`postgres://...`), the user's `this.local`
+  // Lattice IS the cloud DB — operations dispatch through `direct-ops.ts`
+  // helpers that run the same INSERT / UPDATE / DELETE / SELECT logic
+  // against `this.local` directly. The Fetch API can't handle
+  // credentials-in-URL anyway, so the dispatch isn't optional.
+  //
+  // Authorization model: for HTTP clouds, the server gates by bearer
+  // token + membership row. For direct-Postgres, possession of the
+  // connection credential is the implicit gate — the operator is
+  // already reading/writing the canonical data.
 
   /** Destroy the singleton team. Creator-only on the cloud side. */
   async destroyTeam(cloudUrl: string, token: string): Promise<void> {
+    if (isPostgresUrl(cloudUrl)) {
+      await destroyTeamDirect(this.local);
+      return;
+    }
     await this.fetchAuthed<unknown>(cloudUrl, token, 'DELETE', '/api/team');
   }
 
   async listMembers(cloudUrl: string, token: string, teamId: string): Promise<MemberSummary[]> {
+    if (isPostgresUrl(cloudUrl)) {
+      return listMembersDirect(this.local, teamId);
+    }
     const r = await this.fetchAuthed<{ members: MemberSummary[] }>(
       cloudUrl,
       token,
@@ -316,7 +364,17 @@ export class TeamsClient {
     teamId: string,
     inviteeEmail: string,
     expiresInHours?: number,
+    inviterUserId?: string,
   ): Promise<InviteResponse> {
+    if (isPostgresUrl(cloudUrl)) {
+      if (!inviterUserId) {
+        throw new Error(
+          'invite: inviterUserId is required for direct-Postgres cloud URLs ' +
+            '(read it from __lattice_team_connections.my_user_id)',
+        );
+      }
+      return inviteDirect(this.local, teamId, inviterUserId, inviteeEmail, expiresInHours);
+    }
     const body: Record<string, unknown> = { invitee_email: inviteeEmail };
     if (expiresInHours !== undefined) body.expires_in_hours = expiresInHours;
     return this.fetchAuthed<InviteResponse>(
@@ -329,6 +387,10 @@ export class TeamsClient {
   }
 
   async kickMember(cloudUrl: string, token: string, teamId: string, userId: string): Promise<void> {
+    if (isPostgresUrl(cloudUrl)) {
+      await kickMemberDirect(this.local, teamId, userId);
+      return;
+    }
     await this.fetchAuthed<unknown>(
       cloudUrl,
       token,
@@ -412,6 +474,15 @@ export class TeamsClient {
     since = 0,
     limit = 500,
   ): Promise<{ envelopes: ChangeEnvelope[]; has_more: boolean }> {
+    // Direct-Postgres mode: local IS cloud. There is no remote change
+    // log to pull — every write the operator made already landed in
+    // the same DB the GUI is reading. Return an empty batch so the
+    // sync loop terminates cleanly. (When per-user row sharing arrives
+    // for direct-Postgres clouds we'll revisit; today there's nothing
+    // to do.)
+    if (isPostgresUrl(cloudUrl)) {
+      return { envelopes: [], has_more: false };
+    }
     return this.fetchAuthed<{ envelopes: ChangeEnvelope[]; has_more: boolean }>(
       cloudUrl,
       token,
