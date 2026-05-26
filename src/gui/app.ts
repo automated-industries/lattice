@@ -1032,12 +1032,46 @@ export const guiAppHtml = `<!doctype html>
     // Dashboard
     // ────────────────────────────────────────────────────────────
     function renderDashboard(content) {
-      var cards = DASHBOARD_ORDER.map(function (name) {
-        var t = tableByName(name);
-        if (!t) return '';
-        var d = displayFor(name);
+      // Show every first-class (non-junction, non-system) entity. The
+      // previous implementation used DASHBOARD_ORDER as the filter — meaning
+      // installs whose YAML declared tables outside the hardcoded list
+      // (e.g. clients / students / vendors) saw a blank dashboard with no
+      // hint why. DASHBOARD_ORDER is now a preference for ordering only;
+      // tables not in it appear after, in declaration order.
+      var preferenceRank = function (name) {
+        var idx = DASHBOARD_ORDER.indexOf(name);
+        return idx === -1 ? DASHBOARD_ORDER.length : idx;
+      };
+      var firstClass = (state.entities.tables || [])
+        .filter(function (t) {
+          // Junctions belong on the Data Model page, not as dashboard cards.
+          if (isJunction(t)) return false;
+          // System tables (_lattice_gui_*, __lattice_*) are hidden.
+          if (t.name.charAt(0) === '_') return false;
+          return true;
+        })
+        .slice()
+        .sort(function (a, b) {
+          var ra = preferenceRank(a.name);
+          var rb = preferenceRank(b.name);
+          if (ra !== rb) return ra - rb;
+          // Same preference rank — keep declaration order from the API.
+          return 0;
+        });
+
+      if (firstClass.length === 0) {
+        content.innerHTML =
+          '<div class="placeholder">' +
+            '<h2>No entities yet</h2>' +
+            '<p>Define entities in your <code>lattice.config.yml</code> or register them via <code>db.define()</code>, then reload.</p>' +
+          '</div>';
+        return;
+      }
+
+      var cards = firstClass.map(function (t) {
+        var d = displayFor(t.name);
         var count = (t.rowCount != null) ? t.rowCount : 0;
-        return '<a class="card" href="#/objects/' + name + '">' +
+        return '<a class="card" href="#/objects/' + t.name + '">' +
           '<div class="card-icon">' + d.icon + '</div>' +
           '<div class="card-label">' + escapeHtml(d.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +
@@ -2820,6 +2854,81 @@ export const guiAppHtml = `<!doctype html>
       };
     }
 
+    // Detect common Supabase pooler URL mistakes the form gives no hint
+    // about. Returns an array of human-readable hints, or [] when the
+    // form looks plausible. Conservative — only flags clear patterns.
+    function detectSupabasePoolerMistakes(body) {
+      var hints = [];
+      var host = (body.host || '').toLowerCase();
+      if (host.indexOf('pooler.supabase') !== -1) {
+        // Pooler requires the tenant-prefixed user form postgres.<ref>.
+        if (body.user && body.user.indexOf('.') === -1) {
+          hints.push(
+            'Supabase pooler hosts require a tenant-prefixed user like ' +
+            '<code>postgres.&lt;project-ref&gt;</code>. You entered <code>' +
+            escapeHtml(body.user) + '</code> — Supabase will reject SCRAM ' +
+            'auth with a misleading "password authentication failed" error.'
+          );
+        }
+        // Session-mode is on 5432; transaction-mode on 6543. latticesql
+        // wants session-mode (transactions span multiple statements).
+        if (Number(body.port) === 6543) {
+          hints.push(
+            'Supabase pooler port <code>6543</code> is transaction mode. ' +
+            'Lattice needs session mode — use port <code>5432</code> on ' +
+            'the same pooler host.'
+          );
+        }
+      } else if (host.indexOf('.supabase.co') !== -1 && host.indexOf('pooler') === -1) {
+        // Direct host form uses bare postgres user, not the tenant-
+        // prefixed pooler form. Easy to mix up.
+        if (body.user && body.user.indexOf('.') !== -1) {
+          hints.push(
+            'The direct host <code>db.&lt;project-ref&gt;.supabase.co</code> ' +
+            'uses a bare <code>postgres</code> user (no tenant prefix). ' +
+            'You entered <code>' + escapeHtml(body.user) + '</code> — ' +
+            'Supabase will reject SCRAM auth with "password authentication ' +
+            'failed".'
+          );
+        }
+      }
+      return hints;
+    }
+
+    // Probe the cloud and validate Supabase form patterns. Resolves to
+    // the probe result on success; rejects with a human-readable error
+    // when the form has obvious mistakes or the probe is unreachable.
+    // Shared by Migrate + Connect so the credential is never saved
+    // without first proving the form values can actually connect.
+    function probeBeforeCredentialSave(body, msgEl) {
+      var hints = detectSupabasePoolerMistakes(body);
+      if (hints.length > 0) {
+        // Block submit until the form is fixed. Show the hints inline.
+        msgEl.innerHTML =
+          '<strong style="color:var(--warn)">Connection looks wrong:</strong>' +
+          '<ul style="margin:6px 0 0 18px;padding:0;color:var(--warn)">' +
+          hints.map(function (h) { return '<li>' + h + '</li>'; }).join('') +
+          '</ul>';
+        return Promise.reject(new Error('Fix the issues above and try again.'));
+      }
+      msgEl.textContent = 'Testing connection…';
+      return fetch('/api/dbconfig/probe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (probe) {
+          if (!probe.reachable) {
+            throw new Error(
+              'Cloud unreachable: ' + (probe.error || 'unknown error') +
+              '. Double-check host, port, user, and password.'
+            );
+          }
+          return probe;
+        });
+    }
+
     function showMigrateToCloudModal(onClose) {
       var bodyHtml =
         '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
@@ -2835,15 +2944,30 @@ export const guiAppHtml = `<!doctype html>
         onSubmit: function () {
           var body = readPostgresWizardForm();
           var msg = document.getElementById('w-msg');
-          msg.textContent = 'Migrating… (this may take a moment for large DBs)';
-          return fetch('/api/dbconfig/migrate-to-cloud', {
-            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-          })
-            .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
-            .then(function (r) {
-              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
-              if (onClose) onClose();
-            });
+          // Validate Supabase URL pattern + probe the cloud before
+          // persisting a credential that would just blow up on the next
+          // open. Saves users from the "Migrate succeeded, switch back
+          // later fails" trap that strikes when the saved credential
+          // has a wrong host/port/user.
+          return probeBeforeCredentialSave(body, msg).then(function (probe) {
+            if (probe.teamEnabled) {
+              throw new Error(
+                'Target is already a teams DB' +
+                (probe.teamName ? ' (' + probe.teamName + ')' : '') +
+                '. Migrate-to-cloud only works against fresh empty targets — ' +
+                'use Connect to existing cloud instead.'
+              );
+            }
+            msg.textContent = 'Migrating… (this may take a moment for large DBs)';
+            return fetch('/api/dbconfig/migrate-to-cloud', {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+            })
+              .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+              .then(function (r) {
+                if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                if (onClose) onClose();
+              });
+          });
         },
       });
     }
@@ -2869,14 +2993,12 @@ export const guiAppHtml = `<!doctype html>
         onSubmit: function () {
           var body = readPostgresWizardForm();
           var msg = document.getElementById('w-msg');
-          msg.textContent = 'Probing…';
-          // First probe; if team, require token before the actual connect.
-          return fetch('/api/dbconfig/probe', {
-            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-          })
-            .then(function (r) { return r.json(); })
+          // probeBeforeCredentialSave validates Supabase form patterns
+          // before sending the probe; surfaces inline warnings (with
+          // hints) when the user clearly has e.g. the wrong port or
+          // missing tenant prefix in the pooler user.
+          return probeBeforeCredentialSave(body, msg)
             .then(function (probe) {
-              if (!probe.reachable) throw new Error('Unreachable: ' + (probe.error || 'unknown'));
               if (probe.teamEnabled && !teamZoneShown) {
                 var zone = document.getElementById('w-team-zone');
                 zone.innerHTML =
