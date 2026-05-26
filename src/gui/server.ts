@@ -471,8 +471,16 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   db.define('__lattice_user_identity', {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      display_name: 'TEXT NOT NULL DEFAULT ""',
-      email: 'TEXT NOT NULL DEFAULT ""',
+      // Single-quoted empty-string defaults below — not double-quoted!
+      // SQLite leniently accepts `DEFAULT ""` as an empty string literal,
+      // but PostgreSQL treats `""` as a zero-length delimited identifier
+      // (i.e. an empty column name), which throws `zero-length delimited
+      // identifier at or near """""` from the parser before any rows are
+      // inserted. This is the standard-conformant behavior — single
+      // quotes are for string literals; double quotes are for
+      // identifiers. Use `''` so the CREATE TABLE works on both engines.
+      display_name: "TEXT NOT NULL DEFAULT ''",
+      email: "TEXT NOT NULL DEFAULT ''",
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
     },
     primaryKey: 'id',
@@ -1093,8 +1101,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           // Try to open the new config first; only swap once it succeeds so a
-          // bad config doesn't leave the server with no active DB.
-          const next = await openConfig(newPath, active.outputDir);
+          // bad config doesn't leave the server with no active DB. Common
+          // failure mode: switching back to a cloud DB whose saved credential
+          // was rotated or whose Postgres is now unreachable. Surface the
+          // raw error verbatim so the UI's toast names the real cause.
+          let next: ActiveDb;
+          try {
+            next = await openConfig(newPath, active.outputDir);
+          } catch (e) {
+            const err = e as Error & { code?: string };
+            console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
+            const codePrefix = err.code ? `[${err.code}] ` : '';
+            sendJson(
+              res,
+              { error: `Failed to switch to ${newPath}: ${codePrefix}${err.message}` },
+              500,
+            );
+            return;
+          }
           active.db.close();
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
