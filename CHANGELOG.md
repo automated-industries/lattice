@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [1.13.4] - 2026-05-26
 
+### Fixed — `upgradeToTeamCloud` + `connectToExistingCloud` skipped the local connection row
+
+The v1.13 high-level orchestration registers (or redeems an invite on) the cloud and writes the bearer token to `~/.lattice/keys/<label>.token`, but skipped the matching `saveConnection()` call. So the local `__lattice_team_connections` row was empty after upgrade-to-team or connect-existing — and every subsequent GUI team API call (members, invites, kick, destroy) couldn't find the `cloud_url` + `my_user_id` + `api_token_encrypted` triple it needed to authenticate.
+
+The older `handleRegisterAndCreate` / `handleRedeemInviteAndJoin` routes always wrote the connection row; the v1.13 `TeamsClient.upgradeToTeamCloud` + `TeamsClient.connectToExistingCloud` paths now do the same.
+
+Regression test in `tests/integration/teams-gui.test.ts` asserts the connection row appears after register-and-create.
+
 ### Fixed — `/api/system-tables` empty on Postgres-backed Lattices
 
 The GUI's System sidebar (Objects → System) used to list every `_lattice_*` / `__lattice_*` internal table, with their column names + row counts. On Postgres-backed Lattices it silently rendered an empty list because the endpoint ran two SQLite-only queries:

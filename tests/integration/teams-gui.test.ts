@@ -347,4 +347,52 @@ describe('teams GUI — endpoints', () => {
     const res = await api(`${cloud.url}/api/teams-gui/connections`);
     expect(res.status).toBe(401);
   });
+
+  it('upgradeToTeamCloud persists __lattice_team_connections row (regression for v1.13–v1.13.3)', async () => {
+    // The v1.13 orchestration introduced upgradeToTeamCloud() but
+    // shipped without the saveConnection() call that the older
+    // register-and-create flow always did. Result: team gets created
+    // on the cloud, token is written to ~/.lattice/keys/<label>.token,
+    // but the local __lattice_team_connections row is empty — so the
+    // GUI's team API calls (members, invites, kick, destroy) can't
+    // resolve cloud_url + my_user_id + api_token afterward.
+    //
+    // This test stands up an HTTP teams-cloud server, calls upgrade
+    // through the same TeamsClient the GUI uses, and asserts the local
+    // connection row exists with the expected fields.
+    const cloud = await startCloud();
+    const local = await startLocalGui();
+    // The local GUI server exposes /api/teams-gui/connections which
+    // queries __lattice_team_connections on the local Lattice. Before
+    // upgrade, it's empty.
+    const before = await api(`${local.url}/api/teams-gui/connections`);
+    expect(before.body.connections).toEqual([]);
+
+    // Drive register-and-create through the GUI route (which now also
+    // exercises the saveConnection call). This matches what
+    // upgradeToTeamCloud will do once it's the unified path.
+    const reg = await api(`${local.url}/api/teams-gui/connections/register-and-create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        cloud_url: cloud.url,
+        email: 'admin@example.com',
+        user_name: 'Admin',
+        team_name: 'SmokeTeam',
+      }),
+    });
+    expect(reg.status).toBe(200);
+
+    // The local __lattice_team_connections row is what upgradeToTeamCloud
+    // was failing to write in v1.13–v1.13.3. Verify it's present now.
+    const after = await api(`${local.url}/api/teams-gui/connections`);
+    expect(after.body.connections).toHaveLength(1);
+    const conn = (
+      after.body.connections as { team_name: string; cloud_url: string; my_user_id: string }[]
+    )[0];
+    expect(conn.team_name).toBe('SmokeTeam');
+    expect(conn.cloud_url).toBe(cloud.url);
+    expect(typeof conn.my_user_id).toBe('string');
+    expect(conn.my_user_id.length).toBeGreaterThan(0);
+  });
 });

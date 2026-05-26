@@ -253,6 +253,18 @@ export class TeamsClient {
       const redeem = await this.redeemInvite(opts.cloudUrl, inviteToken, email, name);
       saveDbCredential(opts.label, opts.cloudUrl);
       writeToken(opts.label, redeem.raw_token);
+      // Persist the local connection row too — without this, the GUI's
+      // team API calls (members, invites, etc.) can't find the cloud
+      // URL + bearer + user_id triple they need to authenticate. The
+      // older `handleRedeemInviteAndJoin` route did this; v1.13's
+      // higher-level orchestration was skipping it (see PR #20 / 1.13.4).
+      await this.saveConnection({
+        team_id: redeem.team.id,
+        team_name: redeem.team.name,
+        cloud_url: opts.cloudUrl,
+        my_user_id: redeem.user.id,
+        api_token: redeem.raw_token,
+      });
       return {
         probe,
         joinedAsMember: { user_id: redeem.user.id, team_id: redeem.team.id },
@@ -275,9 +287,13 @@ export class TeamsClient {
    *     The HTTP path can't be used here because the browser's Fetch
    *     API refuses URLs with embedded credentials.
    *
-   * On success writes the bearer token to `~/.lattice/keys/<label>.token`.
-   * Caller is expected to call `saveConnection` if they also want the
-   * local `__lattice_team_connections` row populated.
+   * On success writes the bearer token to `~/.lattice/keys/<label>.token`
+   * **and** persists the local `__lattice_team_connections` row so the
+   * GUI's team-management API calls can authenticate immediately
+   * afterward (members, invites, kick, destroy). v1.13.4 added the
+   * connection-row write — the older v1.13 implementation only wrote
+   * the token file, leaving GUI authenticated calls with no
+   * `cloud_url` + `my_user_id` + `api_token_encrypted` row to read.
    */
   async upgradeToTeamCloud(opts: {
     label: string;
@@ -290,6 +306,13 @@ export class TeamsClient {
       ? await registerDirectViaPostgres(opts.cloudUrl, opts.email, opts.displayName, opts.teamName)
       : await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
     writeToken(opts.label, reg.raw_token);
+    await this.saveConnection({
+      team_id: reg.team.id,
+      team_name: reg.team.name,
+      cloud_url: opts.cloudUrl,
+      my_user_id: reg.user.id,
+      api_token: reg.raw_token,
+    });
     return reg;
   }
 
