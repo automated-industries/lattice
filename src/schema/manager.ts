@@ -116,23 +116,8 @@ export class SchemaManager {
    * Never drops tables or columns.
    */
   async applySchema(adapter: StorageAdapter): Promise<void> {
-    for (const [name, def] of this._tables) {
-      // For composite primary keys, inject a PRIMARY KEY(...) table constraint
-      // if the caller hasn't already provided one.
-      const pkCols = this._tablePK.get(name) ?? ['id'];
-      const constraints = def.tableConstraints ? [...def.tableConstraints] : [];
-      if (pkCols.length > 1) {
-        const alreadyHasPK = constraints.some((c) => c.toUpperCase().startsWith('PRIMARY KEY'));
-        if (!alreadyHasPK) {
-          constraints.unshift(`PRIMARY KEY (${pkCols.map((c) => `"${c}"`).join(', ')})`);
-        }
-      }
-      await this._ensureTable(
-        adapter,
-        name,
-        def.columns,
-        constraints.length ? constraints : undefined,
-      );
+    for (const name of this._tables.keys()) {
+      await this._applyOneTable(adapter, name);
     }
     // Internal migrations tracking table — uses TEXT version for both numeric
     // and string-based version identifiers (e.g. "1", "pkg:1.0.0").
@@ -140,6 +125,63 @@ export class SchemaManager {
       version: 'TEXT PRIMARY KEY',
       applied_at: 'TEXT NOT NULL',
     });
+  }
+
+  /**
+   * Apply DDL for a single registered table after init. Used by
+   * `Lattice.defineLate()` so internal tables (Lattice Teams, etc.) can be
+   * registered against an already-initialized lattice instance.
+   *
+   * On Postgres, wraps the DDL in a transaction-scoped advisory lock so
+   * concurrent defineLate calls serialize on the same lock the boot path
+   * uses — preventing two clients reacting to the same schema-propagation
+   * event from racing each other on CREATE TABLE.
+   *
+   * On SQLite (no `withClient`), runs the DDL directly. SQLite's
+   * single-writer guarantee + IF NOT EXISTS handles the race.
+   */
+  async applySchemaForAsync(adapter: StorageAdapter, name: string): Promise<void> {
+    if (!this._tables.has(name)) {
+      throw new Error(`applySchemaForAsync: table "${name}" is not registered`);
+    }
+    if (!adapter.withClient) {
+      await this._applyOneTable(adapter, name);
+      return;
+    }
+    await adapter.withClient(async (tx: TxClient) => {
+      if (adapter.dialect === 'postgres') {
+        await tx.run('SELECT pg_advisory_xact_lock($1::bigint)', [
+          LATTICE_MIGRATION_LOCK_ID.toString(),
+        ]);
+      }
+      // DDL still goes through the pool (via runAsyncOrSync), which is fine:
+      // CREATE TABLE IF NOT EXISTS is idempotent, and concurrent defineLate
+      // callers queue on the advisory lock acquired above before reaching
+      // their own DDL. The lock releases at the implicit COMMIT when this
+      // withClient block returns.
+      await this._applyOneTable(adapter, name);
+    });
+  }
+
+  private async _applyOneTable(adapter: StorageAdapter, name: string): Promise<void> {
+    const def = this._tables.get(name);
+    if (!def) return;
+    // For composite primary keys, inject a PRIMARY KEY(...) table constraint
+    // if the caller hasn't already provided one.
+    const pkCols = this._tablePK.get(name) ?? ['id'];
+    const constraints = def.tableConstraints ? [...def.tableConstraints] : [];
+    if (pkCols.length > 1) {
+      const alreadyHasPK = constraints.some((c) => c.toUpperCase().startsWith('PRIMARY KEY'));
+      if (!alreadyHasPK) {
+        constraints.unshift(`PRIMARY KEY (${pkCols.map((c) => `"${c}"`).join(', ')})`);
+      }
+    }
+    await this._ensureTable(
+      adapter,
+      name,
+      def.columns,
+      constraints.length ? constraints : undefined,
+    );
   }
 
   /**

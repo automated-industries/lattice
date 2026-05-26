@@ -145,3 +145,47 @@ export type { StorageAdapter, PreparedStatement } from './db/adapter.js';
 export { SQLiteAdapter } from './db/sqlite.js';
 export { PostgresAdapter } from './db/postgres.js';
 export type { PostgresAdapterOptions } from './db/postgres.js';
+
+// v1.12 additions — framework-shipped tables, machine-local user config,
+// content-addressed blob store, ed25519-style team auth client.
+export { NATIVE_ENTITY_DEFS, registerNativeEntities } from './framework/native-entities.js';
+export { attachBlob, hashFile } from './framework/blob-store.js';
+export type { BlobMetadata } from './framework/blob-store.js';
+export {
+  configDir,
+  getOrCreateMasterKey,
+  readIdentity,
+  writeIdentity,
+  listDbCredentials,
+  getDbCredential,
+  saveDbCredential,
+  deleteDbCredential,
+  listTokens,
+  readToken,
+  writeToken,
+  deleteToken,
+} from './framework/user-config.js';
+export type { UserIdentity } from './framework/user-config.js';
+export { TeamsClient, TeamsHttpError } from './teams/client.js';
+export type {
+  TeamSummary,
+  RegisterResponse,
+  RedeemResponse,
+  MemberSummary,
+  InviteResponse,
+  TeamConnection,
+} from './teams/client.js';
+
+// v1.13 additions — local-to-cloud migration + cloud-connect probe.
+export {
+  migrateLatticeData,
+  archiveLocalSqlite,
+  openTargetLatticeForMigration,
+} from './framework/cloud-migration.js';
+export type {
+  MigrationProgress,
+  MigrationResult,
+  MigrationOptions,
+} from './framework/cloud-migration.js';
+export { probeCloud } from './framework/cloud-connect.js';
+export type { CloudProbeResult } from './framework/cloud-connect.js';
