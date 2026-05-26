@@ -203,12 +203,16 @@ async function dispatchTeamSubroute(
       return;
     }
     const hours = typeof body.expires_in_hours === 'number' ? body.expires_in_hours : undefined;
+    // Pass conn.my_user_id as the inviter so the direct-Postgres path
+    // can stamp `invited_by_user_id` correctly. The HTTP path ignores
+    // this — the cloud server resolves the inviter from the bearer.
     const invite = await ctx.client.invite(
       conn.cloud_url,
       conn.api_token,
       teamId,
       inviteeEmail,
       hours,
+      conn.my_user_id,
     );
     sendJson(res, invite);
     return;
