@@ -1026,27 +1026,43 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // changelog, etc.) and `_lattice_gui_*` (icon overrides, audit log,
           // column meta). Shown in the Objects sidebar under "System" so the
           // user can browse but not edit them.
-          const rows = (await (async () => {
-            type Adapter = { allAsync?: (sql: string) => Promise<unknown[]> };
-            const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
-            if (!adapter.allAsync) return [];
-            // The underscore is a LIKE wildcard, so '_%' would match any
-            // table. Use ESCAPE to take it literally.
-            return adapter.allAsync(
-              `SELECT name FROM sqlite_master
-               WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\'
-               ORDER BY name`,
-            );
-          })()) as { name: string }[];
+          //
+          // The pre-1.13.4 implementation listed tables via `sqlite_master`
+          // and columns via `PRAGMA table_info` — both SQLite-only. On a
+          // Postgres-backed Lattice (migrated cloud, team cloud) those
+          // queries threw and the System sidebar silently rendered empty.
+          // We dispatch on adapter.dialect for the listing query and
+          // delegate column enumeration to `Lattice.introspectColumns()`,
+          // which is already dialect-portable.
+          type Adapter = {
+            allAsync?: (sql: string) => Promise<unknown[]>;
+            dialect: 'sqlite' | 'postgres';
+          };
+          const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
+          let rows: { name: string }[] = [];
+          if (adapter.allAsync) {
+            const listSql =
+              adapter.dialect === 'postgres'
+                ? // pg_tables is the public-schema-only counterpart to
+                  // sqlite_master. We filter to public + the same `\_%`
+                  // ESCAPE pattern so the result is identical to SQLite.
+                  // Underscore is a LIKE wildcard in both engines.
+                  `SELECT tablename AS name FROM pg_tables ` +
+                  `WHERE schemaname = 'public' AND tablename LIKE '\\_%' ESCAPE '\\' ` +
+                  `ORDER BY tablename`
+                : `SELECT name FROM sqlite_master ` +
+                  `WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\' ` +
+                  `ORDER BY name`;
+            rows = (await adapter.allAsync(listSql)) as { name: string }[];
+          }
           const tables: { name: string; columns: string[]; rowCount: number }[] = [];
           for (const r of rows) {
-            const cols = (await (async () => {
-              type Adapter = { allAsync?: (sql: string) => Promise<unknown[]> };
-              const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
-              return adapter.allAsync?.(`PRAGMA table_info("${r.name}")`) ?? Promise.resolve([]);
-            })()) as { name: string }[];
+            // Lattice.introspectColumns dispatches on dialect internally:
+            // PRAGMA table_info on SQLite, information_schema.columns on
+            // Postgres. Returns string[] of column names either way.
+            const cols = await active.db.introspectColumns(r.name);
             const rowCount = await active.db.count(r.name);
-            tables.push({ name: r.name, columns: cols.map((c) => c.name), rowCount });
+            tables.push({ name: r.name, columns: cols, rowCount });
           }
           sendJson(res, { tables });
           return;
