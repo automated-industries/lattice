@@ -2784,27 +2784,39 @@ export const guiAppHtml = `<!doctype html>
 
     function postgresFormHtml(prefill) {
       prefill = prefill || {};
+      // autocapitalize="off" + autocorrect="off" + spellcheck="false" keep
+      // mobile / macOS keyboards from "helpfully" capitalizing the first
+      // letter of usernames + host fragments. Supabase tenant users
+      // (postgres.<ref>) are case-sensitive and silently failed
+      // authentication when iOS Safari turned the leading "p" into "P".
+      var attrs = ' autocapitalize="off" autocorrect="off" spellcheck="false"';
       return (
         '<div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
-          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" style="width:100%"></div>' +
-          '<div><label class="field-label">Host</label><input type="text" id="w-host" placeholder="db.example.com" value="' + escapeHtml(prefill.host || '') + '" style="width:100%"></div>' +
+          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" style="width:100%"' + attrs + '></div>' +
+          '<div><label class="field-label">Host</label><input type="text" id="w-host" placeholder="db.example.com" value="' + escapeHtml(prefill.host || '') + '" style="width:100%"' + attrs + '></div>' +
           '<div><label class="field-label">Port</label><input type="number" id="w-port" placeholder="5432" value="' + escapeHtml(String(prefill.port || 5432)) + '" style="width:100%"></div>' +
-          '<div><label class="field-label">Database name</label><input type="text" id="w-dbname" placeholder="app" value="' + escapeHtml(prefill.dbname || '') + '" style="width:100%"></div>' +
-          '<div><label class="field-label">User</label><input type="text" id="w-user" placeholder="lattice_user" value="' + escapeHtml(prefill.user || '') + '" style="width:100%"></div>' +
-          '<div><label class="field-label">Password</label><input type="password" id="w-password" placeholder="••••••••" style="width:100%"></div>' +
+          '<div><label class="field-label">Database name</label><input type="text" id="w-dbname" placeholder="app" value="' + escapeHtml(prefill.dbname || '') + '" style="width:100%"' + attrs + '></div>' +
+          '<div><label class="field-label">User</label><input type="text" id="w-user" placeholder="lattice_user" value="' + escapeHtml(prefill.user || '') + '" style="width:100%"' + attrs + '></div>' +
+          '<div><label class="field-label">Password</label><input type="password" id="w-password" placeholder="••••••••" style="width:100%"' + attrs + '></div>' +
         '</div>'
       );
     }
 
     function readPostgresWizardForm() {
+      // Every text field is trimmed — pasted credentials frequently carry a
+      // trailing newline or leading space that breaks URL construction
+      // (zero-length identifier errors from the Postgres parser) or SCRAM
+      // auth (silent password mismatch). Trim once, here, so every caller
+      // benefits.
+      var get = function (id) { return (document.getElementById(id).value || '').trim(); };
       return {
         type: 'postgres',
-        label: (document.getElementById('w-label').value || '').trim(),
-        host: (document.getElementById('w-host').value || '').trim(),
+        label: get('w-label'),
+        host: get('w-host'),
         port: Number(document.getElementById('w-port').value || 5432),
-        dbname: (document.getElementById('w-dbname').value || '').trim(),
-        user: document.getElementById('w-user').value || '',
-        password: document.getElementById('w-password').value || '',
+        dbname: get('w-dbname'),
+        user: get('w-user'),
+        password: get('w-password'),
       };
     }
 
@@ -2839,10 +2851,14 @@ export const guiAppHtml = `<!doctype html>
     function showConnectExistingModal(onClose) {
       var bodyHtml =
         '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
-          'Connect this project to an <strong>existing</strong> cloud Postgres. ' +
-          'Your local SQLite data will be ignored — use Migrate to cloud instead ' +
-          'if you want to push it. If the target is a teams DB you\\'ll be asked ' +
-          'for an invite token after the probe.' +
+          'Switch this project to an <strong>existing</strong> cloud Postgres. ' +
+          'Your local SQLite file is preserved — only this project\\'s active ' +
+          'connection changes. Switch back any time by editing ' +
+          '<code>lattice.config.yml</code>\\'s <code>db:</code> line or via the ' +
+          'Databases catalog under User Config. If you want to <em>push</em> ' +
+          'your local rows into the target instead, use Migrate to cloud. If ' +
+          'the target is a teams DB you\\'ll be asked for an invite token ' +
+          'after the probe.' +
         '</p>' +
         postgresFormHtml({}) +
         '<div id="w-team-zone" style="margin-top:10px"></div>' +
