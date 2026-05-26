@@ -305,6 +305,17 @@ export class Lattice {
   }
 
   /**
+   * All entity contexts currently registered on this Lattice — both those
+   * declared in `lattice.config.yml` and those added programmatically via
+   * `defineEntityContext()`.
+   *
+   * Returns a defensive copy so callers can't mutate the schema.
+   */
+  entityContexts(): Map<string, EntityContextDefinition> {
+    return new Map(this._schema.getEntityContexts());
+  }
+
+  /**
    * Register a write hook that fires after insert/update/delete operations.
    * Hooks run synchronously after the DB write and audit emit.
    */

@@ -153,8 +153,13 @@ export const guiAppHtml = `<!doctype html>
     }
 
     /* ── Layout ────────────────────────────────────────── */
+    /* minmax(0, 1fr) on the content track lets a wide child (a table with
+       chip-heavy cells) shrink instead of forcing the page wider than the
+       viewport. Without the explicit 0 lower bound, the implicit auto
+       minimum keeps the track at content-width and the whole page scrolls
+       horizontally. */
     .layout {
-      display: grid; grid-template-columns: 220px 1fr;
+      display: grid; grid-template-columns: 220px minmax(0, 1fr);
       height: calc(100vh - 56px);
     }
     nav.sidebar {
@@ -226,6 +231,19 @@ export const guiAppHtml = `<!doctype html>
     tbody tr { cursor: pointer; }
     tbody tr:hover td { background: var(--row-hover); }
     td.muted { color: var(--text-muted); }
+    /* Row cells truncate at 3 lines so a row with many chips or a long text
+       blob stays one consistent visual height instead of wrapping into a
+       paragraph. The wrapping <div class="cell-clip"> is necessary because
+       -webkit-line-clamp doesn't apply to <td> directly in all engines. */
+    td .cell-clip {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      line-height: 1.45;
+      max-height: calc(1.45em * 3);
+      word-break: break-word;
+    }
     .chip {
       display: inline-block; padding: 2px 8px; margin: 1px 3px 1px 0;
       background: var(--accent-soft); color: var(--accent);
@@ -1185,11 +1203,11 @@ export const guiAppHtml = `<!doctype html>
               if (isSecretColumn(tableName, c) && r[c] != null && r[c] !== '') {
                 return '<td class="muted">' + SECRET_MASK + '</td>';
               }
-              return '<td>' + escapeHtml(truncate(r[c], 120)) + '</td>';
+              return '<td><div class="cell-clip">' + escapeHtml(truncate(r[c], 120)) + '</div></td>';
             });
             belongsTo.forEach(function (b) {
               var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === r[b.rel.foreignKey]; });
-              tds.push('<td>' + chipLink(b.rel.table, ref) + '</td>');
+              tds.push('<td><div class="cell-clip">' + chipLink(b.rel.table, ref) + '</div></td>');
             });
             junctions.forEach(function (j) {
               var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === r.id; });
@@ -1198,7 +1216,7 @@ export const guiAppHtml = `<!doctype html>
                 var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === jr[remoteFkCol]; });
                 return ref ? chipLink(j.remoteRel.table, ref) : '';
               }).join('');
-              tds.push('<td>' + (chips || '<span class="muted">—</span>') + '</td>');
+              tds.push('<td><div class="cell-clip">' + (chips || '<span class="muted">—</span>') + '</div></td>');
             });
             if (viewMode === 'trash') {
               tds.push('<td class="row-actions">' +
