@@ -15,6 +15,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Lattice } from '../../src/lattice.js';
+import { registerNativeEntities } from '../../src/framework/native-entities.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(__dirname, 'lattice.config.yml');
@@ -28,7 +29,15 @@ async function main(): Promise<void> {
   rmSync(`${DB_PATH}-wal`, { force: true });
   rmSync(CONTEXT_DIR, { recursive: true, force: true });
 
-  const db = new Lattice({ config: CONFIG_PATH });
+  // Native `secrets` table is encrypted-at-rest; supply a deterministic
+  // key so the seed is reproducible. Real consumers go through
+  // `getOrCreateMasterKey()` in src/framework/user-config.ts; the seed
+  // skips the file dance.
+  const db = new Lattice(
+    { config: CONFIG_PATH },
+    { encryptionKey: process.env.LATTICE_ENCRYPTION_KEY ?? 'lattice-demo-seed-key' },
+  );
+  registerNativeEntities(db);
   // Mirror the dynamic GUI tables so the seed can pre-populate column-meta
   // flags. Keep these in sync with src/gui/server.ts → openConfig.
   db.define('_lattice_gui_column_meta', {

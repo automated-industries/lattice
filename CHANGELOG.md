@@ -6,6 +6,328 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+## [1.13.0] - 2026-05-26
+
+### Added — Local → Cloud → Team-Cloud progression
+
+A one-way state machine for the GUI's Database panel, with matching public API on the npm package. Every new GUI action is a thin wrapper over an exported function:
+
+- **`migrateLatticeData(source, target, options?)`** — copy every user-defined entity + native `secrets` / `files` row from one Lattice to another. Refuses non-empty targets. Encrypted columns round-trip through decrypt-on-read + encrypt-on-write so the operator's master key stays on the machine.
+- **`openTargetLatticeForMigration(configPath, targetUrl, encryptionKey)`** — open a fresh target Lattice with the same user schema + native entities as the source's YAML config. Caller closes when done.
+- **`archiveLocalSqlite(dbPath)`** — rename `<path>.db` (+ `-shm` / `-wal`) to `.db.local-bak`. Idempotent.
+- **`probeCloud(targetUrl)`** — non-destructive `{reachable, dialect, teamEnabled, teamName?}` against any Lattice URL. Never throws.
+- **`TeamsClient.connectToExistingCloud(opts)`** — wraps probe + (optional) `redeem-invite` + credential save + token-file write.
+- **`TeamsClient.upgradeToTeamCloud(opts)`** — wraps atomic `register` + token-file write for the active cloud's label.
+
+All exported from `latticesql` package index.
+
+### Added — Cloud connection probe + connect-existing
+
+GUI routes (thin wrappers):
+
+- `POST /api/dbconfig/probe` — `probeCloud` wrapper.
+- `POST /api/dbconfig/migrate-to-cloud` — migrate + archive + swap.
+- `POST /api/dbconfig/connect-existing` — connect-existing + optional redeem-invite + swap.
+- `POST /api/dbconfig/upgrade-to-team` — atomic register on the active cloud's label.
+
+`GET /api/dbconfig` gains a `state` field — one of `local`, `cloud-connected`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite`.
+
+### Changed — Project Config Database panel rewritten state-machine style
+
+- Panel renders state-specific bodies + a color-coded badge (lime accent for connected, warn orange for needs-invite).
+- Three new wizards: `showMigrateToCloudModal`, `showConnectExistingModal`, `showUpgradeToTeamModal`.
+- "Create team" modal removed — replaced by the narrower "Upgrade to team cloud" wizard that's only available when state is `cloud-connected`.
+- Old SQLite-only `POST /api/dbconfig/save` path preserved for local-state file-path edits; the Postgres save path is now `migrate-to-cloud` or `connect-existing`.
+
+### Changed — User Config Databases catalog
+
+- New `State` column per row (local SQLite rows report `LOCAL`; cloud labels report `UNKNOWN` until probed).
+- New `Add a cloud DB →` button — creates a fresh project via the existing `/api/databases/create` then opens the Connect-to-existing wizard against it.
+
+### Fixed — Form input + placeholder contrast
+
+Step 7's dark-theme restyle didn't override the OS-default input/placeholder colors. Two global CSS rules now set:
+
+- `input, select, textarea { color: var(--text); }`
+- `input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1; }`
+
+Affects every form across the GUI: Data Model editor, Database wizard, User Config Identity, all team modals.
+
+## [1.12.0] - 2026-05-25
+
+### Added — Lattice Teams (Phase 5 + OSS-only redesign)
+
+This release lands the full Lattice Teams feature (multi-user shared cloud Lattice databases) on top of v1.11's `lattice gui`. Highlights:
+
+- **Atomic team bootstrap.** `lattice teams register --cloud <url> --email <e> --name <display> --team-name <team>` creates the user, the team, the creator membership, and the bearer token in one HTTP call.
+- **Email-bound invitations.** `lattice teams invite --team <team> --invitee-email <e>` mints a `latinv_` token tied to the recipient's email; redemption with a different email is rejected `403`.
+- **Native `secrets` + `files` entities** with at-rest encryption on `secrets.value`. Available to any Lattice via `registerNativeEntities()`; auto-registered by `lattice gui`.
+- **Machine-local user config at `~/.lattice/`** — `identity.json`, encrypted `db-credentials.enc`, per-team `keys/<label>.token`, and an auto-generated `master.key`.
+- **GUI restyle** matching the latticesql.com design tokens (dark theme, lime accent, Inter + JetBrains Mono).
+
+Full architecture, schema, and HTTP surface: see [docs/teams.md](docs/teams.md).
+
+### Added — OSS-only redesign on top of Phase 5 (feat/teams)
+
+A follow-on PR layered on the five-phase Lattice Teams branch. Adds machine-local user config, a Database panel in Project Config, native `secrets`/`files` entities with at-rest encryption on plain `define()` tables, email-bound invitations + a singleton team-identity facade, and a GUI restyle that pulls design tokens directly from latticesql.com.
+
+**Native `secrets` and `files` entities.** Every Lattice opened via the GUI server now has framework-shipped `secrets` and `files` tables registered before `init()`. `secrets.value` is encrypted at rest using a new `TableDefinition.encrypted?: boolean | { columns: string[] }` field (same shape as `EntityContextDefinition.encrypted`). The encryption resolver in `src/lattice.ts` walks both entity contexts and registered tables; `defineLate()` also wires encryption for late-registered tables with the `encrypted` flag.
+
+- `src/framework/native-entities.ts` — `NATIVE_ENTITY_DEFS` + `registerNativeEntities(db)`. `secrets` columns: `id, name, kind, value (encrypted), description, created_at, updated_at, deleted_at`. `files` columns: a superset of the legacy `path`/`kind` shape plus content-addressed `sha256` / `blob_path` / `original_name` / `mime` / `size_bytes` / `extraction_status` / `extracted_text` / `description`.
+- `src/framework/blob-store.ts` — `attachBlob(srcPath, latticeRoot)` writes a file into `<root>/data/blobs/<sha256>` (idempotent) and returns metadata suitable for a `files` row.
+
+**Machine-local user config at `~/.lattice/`.** Files, not a Lattice DB.
+
+- `master.key` — AES-256 master key, auto-generated chmod 0600 on first use. `LATTICE_ENCRYPTION_KEY` env var takes precedence.
+- `identity.json` — `{display_name, email}`. Loaded into the active Lattice as `__lattice_user_identity` (singleton row, id='singleton') on every open.
+- `db-credentials.enc` — AES-GCM-encrypted Postgres URLs by label.
+- `keys/<label>.token` — per-team bearer tokens.
+- `src/framework/user-config.ts` exports `getOrCreateMasterKey`, `readIdentity`/`writeIdentity`, `listDbCredentials`/`saveDbCredential`/`getDbCredential`/`deleteDbCredential`, `listTokens`/`readToken`/`writeToken`/`deleteToken`.
+
+**`/api/userconfig/*` GUI endpoints.** Identity get/post (mirrors identity.json into the active Lattice on save) and a catalog of databases (sibling YAML configs + saved Postgres labels).
+
+**Database panel in Project Config.** New `/api/dbconfig/*` endpoints:
+
+- `GET /api/dbconfig` — current shape (sqlite/postgres + redacted params + `teamEnabled` flag from `__lattice_team_identity`).
+- `POST /api/dbconfig/save` — Postgres saves to `db-credentials.enc` and rewrites the active YAML's `db:` to `${LATTICE_DB:<label>}`; SQLite rewrites the path in place using yaml round-tripping.
+- `POST /api/dbconfig/connect` — re-opens the active config path so the YAML rewrite takes effect.
+- `POST /api/dbconfig/test` — instantiates a probe `Lattice(url)` + `init()`; returns `{ ok: false, error }` on failure.
+- `GET /api/dbconfig/labels` — saved Postgres labels.
+
+YAML resolver in `src/config/parser.ts` honours `${LATTICE_DB:<label>}` (looks up via `getDbCredential`, throws on missing), `postgres://...` / `file:` / `:memory:` (passthrough), and the existing relative-path resolve for everything else.
+
+**Email-bound invitations + singleton team identity.**
+
+- `__lattice_users.email` becomes `NOT NULL`. Uniqueness still enforced at the route layer.
+- `__lattice_invitations.invitee_email TEXT NOT NULL` — `redeem-invite` verifies the caller's claimed email matches the bound invitee (case-insensitive) and returns `403` on mismatch.
+- New `__lattice_team_identity` singleton table (`id='singleton', team_id, team_name, creator_email, created_at`). Populated atomically by `POST /api/auth/register`.
+- `POST /api/auth/register` is now an **atomic** bootstrap: body requires `{email, name, team_name}` and the handler creates the user, team, identity row, creator membership, and bearer token in one call. There is no longer a separate `createTeam` step.
+- New singleton routes:
+  - `GET /api/team` — identity + member list, or `{enabled: false}`.
+  - `DELETE /api/team` — creator-only; drops the identity row + soft-deletes the underlying `__lattice_team` row.
+  - `POST /api/team/invitations` — convenience alias for `/api/teams/:id/invitations` that resolves the id from the singleton.
+- `TeamsClient.invite()` gains a required `inviteeEmail` argument; `InviteResponse` echoes the email back. CLI `lattice teams invite` adopts `--invitee-email`.
+- The teams-gui invite endpoint (`POST /api/teams-gui/teams/:id/invitations`) requires `invitee_email` in the request body.
+
+**Multi-team enumeration removed.** One cloud = one team. The following surface is gone:
+
+| Removed                                                       | Replacement                                                          |
+| ------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `POST /api/teams` (create)                                    | `POST /api/auth/register` (atomic with bootstrap user)               |
+| `GET /api/teams` (list)                                       | `GET /api/team` (singleton)                                          |
+| `DELETE /api/teams/:id`                                       | `DELETE /api/team`                                                   |
+| `TeamsClient.createTeam()` / `.listTeams()` / `.deleteTeam()` | `register()` (atomic) / `getSingleton()` (via GET) / `destroyTeam()` |
+| `lattice teams create` (CLI)                                  | `lattice teams register --team-name <name>`                          |
+| CLI `--name` overloaded as team name                          | `--name` = display name; new `--team-name` = team name               |
+
+`TeamsClient.register()` now requires a `teamName` argument and returns `{ user, raw_token, team }`. Existing `/api/teams/:id/{objects,changes,members,invitations,rows,links}` routes (the load-bearing sync engine) are unchanged — the `:id` segment continues to identify the (one) team's UUID.
+
+**GUI: identity + databases panels, email-driven invite modal.**
+
+- User Config view now hosts an **Identity** panel (display_name + email, persisted via `/api/userconfig/identity`) and a **Databases** panel (local + cloud table from `/api/userconfig/databases` with switch-to action), with the existing "Cloud accounts" team-connection list moved below.
+- Create-team and join-team modals prefill display name + email from `identity.json` so operators only type the per-team bits.
+- The per-team-card "Invite" button now opens an email modal (`showInviteByEmailModal`) that threads `invitee_email` through.
+
+**GUI restyle in latticesql.com design tokens.**
+
+- `:root` lifts colors, spacing accents, and font families directly from `lattice-website`'s `tailwind.config.ts` (last-sync comment in the inline `<style>` block flags manual sync).
+- Dark theme (`--bg: #0b0d10`, `--surface: #13171b`, `--accent: #bef264` lime, `--warn: #fb923c`, `--signal: #22d3ee`). Inter for body, JetBrains Mono for code.
+- Primary buttons swap white-on-blue for dark text on lime with `--accent-glow` on hover.
+
+### Added — Lattice Teams (Phase 5: GUI integration)
+
+Fifth and final slice of **Lattice Teams**: the user-facing dev GUI (`lattice gui`) now drives the full Lattice Teams lifecycle. No new top-level sidebar — everything plugs into PR #10's existing **Project Config** and **User Config** settings views, which were placeholder "Coming soon" screens before this PR.
+
+**`/api/teams-gui/*` endpoints (`src/gui/teams-routes.ts`).** A thin, unauthenticated dev-tool API that wraps the user's local `TeamsClient`. Available only in local GUI mode (`teamCloud=false`) — team-cloud mode disables this dispatcher, matching the existing database-switcher gating.
+
+| Method | Route                                            | Wraps                                                                 |
+| ------ | ------------------------------------------------ | --------------------------------------------------------------------- |
+| GET    | `/api/teams-gui/connections`                     | `TeamsClient.listConnections()`                                       |
+| POST   | `/api/teams-gui/connections/register-and-create` | bootstrap-register + createTeam + saveConnection                      |
+| POST   | `/api/teams-gui/connections/join`                | `redeemInvite()` + `saveConnection()`                                 |
+| DELETE | `/api/teams-gui/connections/:teamId`             | self-kick + `deleteConnection()` (creator → 400)                      |
+| POST   | `/api/teams-gui/teams/:id/sync`                  | `pullChanges()` + `drainOutbox()` + refreshes the GUI's `validTables` |
+| GET    | `/api/teams-gui/teams/:id/status`                | `TeamsClient.getStatus()`                                             |
+| GET    | `/api/teams-gui/teams/:id/members`               | `listMembers()`                                                       |
+| POST   | `/api/teams-gui/teams/:id/invitations`           | `invite()`                                                            |
+| DELETE | `/api/teams-gui/teams/:id/members/:userId`       | `kickMember()`                                                        |
+| DELETE | `/api/teams-gui/teams/:id`                       | `deleteTeam()` + `deleteConnection()`                                 |
+| GET    | `/api/teams-gui/teams/:id/shared`                | `listSharedObjects()`                                                 |
+| POST   | `/api/teams-gui/teams/:id/shared`                | serialises local schema + `shareObject()`                             |
+| DELETE | `/api/teams-gui/teams/:id/shared/:table`         | `unshareObject()`                                                     |
+| POST   | `/api/teams-gui/teams/:id/links`                 | `linkRow()`                                                           |
+| DELETE | `/api/teams-gui/teams/:id/links/:table/:pk`      | `unlinkRow()`                                                         |
+| GET    | `/api/teams-gui/links`                           | raw `__lattice_local_links` query                                     |
+
+Upstream `TeamsHttpError`s surface as JSON with their original status code so the SPA can branch on auth/permission failures.
+
+**Cached `TeamsClient` per active DB.** The GUI's `ActiveDb` now holds a `TeamsClient` instance, with `attachWriteHooks()` called on every `openConfig()` so any pre-existing local links resume tracking writes. The cached client is what the SPA's CRUD endpoints write through — a row update via the GUI dashboard fires the same outbox-capture hook as a CLI write.
+
+**`validTables` refresh after sync.** Tables registered at runtime via `defineLate` (from a schema envelope) didn't make it into the GUI's `validTables` set, so the SPA's table viewer 400'd on freshly-synced shared tables. The sync handler now refreshes `validTables` from `lattice.getRegisteredTableNames()` after every pull.
+
+**SPA — Project Config view.** Lists every joined team as a card with role pill, four-stat status grid (last_change_seq, outbox depth, DLQ depth, local links), and inline actions:
+
+- **Sync now** — runs `/teams-gui/teams/:id/sync`, re-renders the card with fresh stats.
+- **Generate invite token** (creator only) — opens a modal with the `latinv_`-prefixed token, click-to-copy.
+- **Leave / Destroy team** — destroys for creators, leaves for members; both clean up the local connection row.
+- **Shared tables** sub-section — list with per-row Unshare button; "Share another table" modal lets the user pick from currently-registered local tables.
+- **Members** sub-section (creator-only) — per-member Kick button.
+- **Create team** — register-and-create flow on a fresh cloud in one modal.
+- **Join via invite** — paste cloud URL + invite token + email + name; redeem + save in one call.
+
+**SPA — User Config view.** Cloud-account list (cloud URL + my user_id + joined_at) with per-cloud Sign out. Same "Add cloud" flow as Project Config's Join. Documents the v1 limitation that each team membership keeps its own bearer token.
+
+**Per-row Link affordance (DEFERRED).** The `POST /api/teams-gui/teams/:id/links` + `DELETE /api/teams-gui/teams/:id/links/:table/:pk` endpoints ship in this PR, and the integration test exercises them end-to-end. The SPA button on the existing table-view row menu is a follow-up — adding it requires fetching link state on every row render, which interacts with the GUI agent's parallel work on the table view. The functionality is fully available via the CLI (`lattice teams link/unlink`) in the meantime.
+
+**New `Lattice.getRegisteredTableNames()`.** Returns the SchemaManager's currently-registered table list. Used by the sync handler to refresh `validTables` and is broadly useful for any consumer that wants to discover runtime-added tables.
+
+### Added — Tests
+
+- `tests/integration/teams-gui.test.ts` — 5 cases covering the full GUI-driven round-trip: register-and-create, share + invite + join + sync (schema propagates to receiver, row updates flow through outbox to receiver), shared-list + members-list + invite generation, leave-as-creator returns 400, team-cloud mode rejects `/api/teams-gui/*` (auth gate fires first).
+
+### Added — Lattice Teams (Phase 4: row link/unlink + sync engine)
+
+Fourth slice of **Lattice Teams**: row-level link/unlink, write-hook capture into a local outbox, polling pull with a replay guard, and auto-unlink on member kick. End-to-end propagation of row updates between two locals now runs through one cloud.
+
+**Cloud endpoints (row layer).**
+
+- `POST /api/teams/:id/objects/:table/links` — link a row: body `{pk, row_snapshot}`. Owner is taken from the bearer token, not trusted from the client. Emits `link` + `upsert` envelopes.
+- `DELETE /api/teams/:id/objects/:table/links/:pk` — unlink. Owner or team creator only. Emits `unlink`.
+- `POST /api/teams/:id/objects/:table/rows` — push an owner-update for a linked row. Body `{pk, payload}`. Cloud rejects non-owners (403). Emits `upsert`.
+- `DELETE /api/teams/:id/objects/:table/rows/:pk` — owner-side delete. Equivalent to unlink for Phase 4 v1.
+- `DELETE /api/teams/:id/members/:userId` — extended: now also auto-unlinks every row owned by the kicked user before the membership row is removed. Each torn-down link emits an `unlink` envelope so other members' pullers drop the row from their local mirrors. Self-kick (= "leave") triggers the same path.
+
+**New cloud table.** `__lattice_row_links` — composite PK `(team_id, table_name, pk)`, `owner_user_id`, `linked_at`.
+
+**New local tables.** `__lattice_local_links` (composite PK, mirrors the cloud's view of which rows are linked + by whom), `__lattice_team_outbox` (pending pushes with `attempts`, `last_error`, `next_attempt_at` for exponential-backoff retry), `__lattice_team_dlq` (envelopes that failed to apply locally; one bad row doesn't stall the stream).
+
+**`WriteHook` API widening (small breaking change in an unreleased internal API).** `WriteHook.handler` now accepts `() => void | Promise<void>` and `Lattice._fireWriteHooks` awaits the return. Callers that need to persist side-effects (the teams outbox is the canonical case) can do so atomically with the user's `await db.insert/update/delete(...)` instead of racing the response. All six `_fireWriteHooks` callsites in `lattice.ts` are now awaited.
+
+**`TeamsClient` sync engine.**
+
+- `linkRow(connection, table, pk)` — reads the local row, POSTs the snapshot, records the link locally, ensures the write-hook is attached for `table`.
+- `unlinkRow(connection, table, pk)` — DELETEs the cloud link + drops the local link row.
+- `ensureWriteHook(table)` — idempotent per-table hook registration. The hook captures local writes to linked rows into `__lattice_team_outbox`, but only for rows the local user actually owns (non-owner writes are local-only divergence; cloud is authoritative).
+- `attachWriteHooks()` — scans `__lattice_local_links` and re-registers hooks for every linked table at session start (hooks are bound to the in-memory Lattice, not the DB).
+- `drainOutbox(connection)` — FIFO drain in `created_at` order. 2xx → delete the outbox row. Failure → bump `attempts`, set `next_attempt_at` to a future ISO timestamp (exponential backoff to 60s).
+- `pullChanges(connection)` — loops the `/changes` endpoint internally until drained. Inside the apply loop, sets `_isReplaying = true` so the write-hook skips outbox insertion — otherwise pulled envelopes would re-push immediately. Individual envelope failures land in `__lattice_team_dlq` so one bad row doesn't stall the stream. Advances `__lattice_team_connections.last_change_seq` after every successful batch.
+- `getStatus(connection)` — surfaces `last_change_seq`, outbox depth + failing count, DLQ depth, and local-link count for the team.
+- The write-hook re-fetches the full row via `lattice.get()` before queueing — Lattice's update hook fires with the partial diff (no PK, no unchanged columns), so the snapshot pushed to the cloud needs to be re-materialised.
+
+**Cloud-side schema materialisation.** `handleShareObject` (Phase 3) now also applies the schema spec to the cloud's own lattice (via the new shared `applySchemaSpec` helper extracted from `TeamsClient.applyCloudSchemaLocally`). Without this, the cloud's lattice had no table to upsert linked rows into. The applier lives in `src/teams/schema-spec.ts` so both client and server share the logic.
+
+**Replay guard correctness.** A pull that materialises Alice's link envelope on Bob's local must NOT immediately push the upsert back to the cloud — that would cause an infinite ping-pong. `TeamsClient._isReplaying` (set during `pullChanges`'s apply block) is checked in `captureWrite` before any outbox insertion.
+
+**Ownership enforcement.**
+
+- Cloud-side: 403 on row pushes from non-owners (security boundary).
+- Local-side: the write-hook checks `__lattice_local_links.owner_user_id === my_user_id_for_this_team` before queueing — non-owners' writes silently no-op (cloud will overwrite via next pull). Belt-and-suspenders.
+
+**CLI additions.** `lattice teams {link, unlink, pull, push, status}`. Each command calls `attachWriteHooks()` at startup so prior links resume tracking writes.
+
+### v1 design notes (documented)
+
+- **Phase 4 has no background polling.** Pull and push are explicit (`lattice teams pull` / `lattice teams push`). A polling loop is a transparent layer over these methods and can land in Phase 5 (GUI) or 4.5 without API changes.
+- **Cursor is single-writer.** The cloud's change-log seq generation uses `MAX(seq) + 1` under the single-Lattice-process invariant. Adding HA cloud replicas later would need a transaction-scoped advisory lock — already documented in routes.ts.
+- **`onUnlink` is "delete the mirrored row"** — `keep` mode is a future per-team setting; Phase 4 hard-deletes on every unlink envelope (with a try/catch for already-missing rows).
+
+### Added — Tests
+
+- `tests/integration/teams-sync.test.ts` — 7 cases covering the full sync flow: link → propagate → drain outbox → receiver pulls update, replay guard verified (receivers' pulls don't push back), non-owner cannot push or unlink (403), non-owner local writes don't reach the outbox, unlink propagates with hard-delete on receiver, kick auto-unlinks every owned row, outbox retry behaviour (success deletes the row; failure leaves it with bumped `attempts` for backoff).
+
+### Added — Lattice Teams (Phase 3: object sharing + schema propagation)
+
+Third slice of **Lattice Teams**: any member can share a table with the team, and other members' locals auto-register the schema on demand.
+
+**Schema spec format (`src/teams/schema-spec.ts`).** Dialect-neutral structured representation of a TableDefinition: each column carries a normalised `type` (TEXT/INTEGER/REAL/BLOB/JSONB) plus `notNull` / `pk` / `default` flags. The serializer parses Lattice's raw SQL type strings into this shape (VARCHAR→TEXT, BIGINT→INTEGER, BYTEA→BLOB, JSON→JSONB, etc.); the deserializer renders dialect-appropriate DDL on the receiver (JSONB collapses to TEXT on SQLite; BLOB renders as BYTEA on Postgres). Relations: `belongsTo` propagates as descriptive metadata, `hasMany` is stripped.
+
+**Cloud endpoints.**
+
+- `POST /api/teams/:id/objects` — share or re-share a table. Re-sharing the same `table_name` bumps `schema_version` and replaces the stored spec.
+- `GET /api/teams/:id/objects` — list shared objects (member-only).
+- `DELETE /api/teams/:id/objects/:table` — soft-delete the share. Only the original sharer or the team creator may unshare.
+- `GET /api/teams/:id/changes?since=<seq>&limit=<n>` — monotonic change-log feed. Phase 3 emits `schema` and `unshare` envelopes; Phase 4 adds row-level ops on the same stream.
+
+**New cloud tables.** `__lattice_shared_objects` (composite PK `(team_id, table_name)`, holds the JSON-serialised spec + schema_version + soft-delete) and `__lattice_change_log` (monotonic `seq` per cloud, `(team_id, table_name, op, payload_json, created_at)`).
+
+**TeamsClient additions.** `shareObject`, `unshareObject`, `listSharedObjects`, `pullChanges`, plus the orchestrator `syncSharedSchemas(connection)` which fetches the team's shared objects + applies each via `applyCloudSchemaLocally`. The applier handles three states:
+
+1. **Table doesn't exist locally** → `defineLate` with the deserialised TableDefinition.
+2. **Table exists, additive change** → `addColumn` for every cloud-only column (no-op when local already matches).
+3. **PK mismatch** (different column name, different count) → `TeamsSchemaConflictError`. `syncSharedSchemas` catches per-table and surfaces conflicts in its return value; `applyCloudSchemaLocally` throws directly so callers can react.
+
+Local extras (columns present on the receiver but absent from the cloud's spec) are preserved silently — when Phase 4 pushes a row, the payload will be filtered to the cloud's columns.
+
+**Cursor semantics.** Phase 3 cloud is single-writer per process, so `nextChangeSeq = MAX(seq) + 1` over `__lattice_change_log` is safe inside the Node event loop. Phase 4's outbox-pushing concurrency will need a transaction-scoped advisory lock around the seq read+insert; documented in routes.ts.
+
+**Lattice public additions.**
+
+- `lattice.introspectColumns(table)` — thin wrapper around the adapter's introspect, used by the schema applier to read the current on-disk columns.
+- `lattice.getDialect()` — returns `'sqlite' | 'postgres'` for dialect-aware DDL rendering.
+- `lattice.getPrimaryKey(table)` — exposes the SchemaManager's PK lookup so the applier can verify compatibility before ALTER.
+- `lattice.addColumn(table, column, typeSpec)` — runtime additive DDL with column-cache refresh; idempotent for already-present columns.
+- `lattice.getRegisteredColumns(table)` — returns the raw column-DDL map for a registered table; used by `lattice teams share` to serialise the local def.
+
+**CLI additions.** `lattice teams share <table> --team <name>` serialises the local TableDefinition and posts to the cloud; `lattice teams unshare`, `lattice teams shared`, `lattice teams sync` follow the same pattern. `sync` runs `syncSharedSchemas` and prints applied + conflict tables; non-zero exit on conflicts.
+
+### Added — Tests
+
+- `tests/integration/teams-sharing.test.ts` — 9 cases: schema-spec helpers (parse/render/serialize/diff), share + auto-register on a receiver, additive ALTER on schema-version bump, PK conflict reported by syncSharedSchemas, schema + unshare envelopes streamed via `/changes`, and unauth'd access blocked by 401.
+
+### Added — Lattice Teams (Phase 2: team management)
+
+Second slice of **Lattice Teams**: identity + team-management endpoints on top of Phase 1's auth scaffolding. `lattice teams <subcommand>` now drives the full create → invite → join → leave/destroy lifecycle.
+
+**Cloud-side endpoints:**
+
+- `POST /api/auth/register` — bootstrap-only (403 once any user exists); creates first user + initial token.
+- `POST /api/auth/redeem-invite` — public; takes `{invite_token, email, name}`, validates + creates a fresh user (one per redemption — v1 limitation, documented below), adds to the team, issues a permanent API token.
+- `GET /api/auth/me` — current user info (handy for debugging + the create-team flow).
+- `POST /api/auth/tokens` — mint additional tokens for the caller.
+- `DELETE /api/auth/tokens/:id` — revoke (idempotent; only the owner can revoke).
+- `POST /api/teams` — caller becomes creator.
+- `GET /api/teams` — teams I'm in.
+- `DELETE /api/teams/:id` — soft-delete (creator only).
+- `GET /api/teams/:id/members` — member-only.
+- `POST /api/teams/:id/invitations` — creator only; returns `latinv_`-prefixed token + expiry.
+- `DELETE /api/teams/:id/members/:userId` — creator can kick others; any member can kick themselves (= leave); creators cannot kick themselves (must destroy the team instead).
+
+**New cloud-side tables:** `__lattice_team`, `__lattice_team_members` (composite PK), `__lattice_invitations`. **New local-side table:** `__lattice_team_connections` (per-team metadata + encrypted API token; Phase 2 currently stores plaintext — encryption-at-rest follow-up captured as a TODO).
+
+**`TeamsClient` (`src/teams/client.ts`)** — local-side orchestrator wrapping the cloud HTTP API + local-table persistence. Idempotent table bootstrap via the new defineLate idempotency. Throws a typed `TeamsHttpError` carrying the response status so callers can branch on auth/permission failures.
+
+**CLI:** `lattice teams <subcommand>` for `register | create | join | list | members | invite | leave | destroy`. Subcommands that operate on an existing team (members/invite/leave/destroy) look the team up locally via `--team <name>` or `--team-id <uuid>`; the create/join flow takes `--cloud --token --name [--email]` and persists the connection after the cloud call returns.
+
+**Invitation tokens** use a distinct `latinv_` prefix and 24-byte (192-bit) entropy, hashed with SHA-256 like API tokens. The bearer-extractor's `lat_` prefix check rejects them — invitation tokens are exchanged via the redeem endpoint, never used as bearer tokens.
+
+**`defineLate` is now idempotent.** A second call for an already-registered table is a no-op (CREATE TABLE IF NOT EXISTS handles the DB side; this skip avoids the SchemaManager throw). Lets `TeamsClient` bootstrap its internal tables on every session start without explicit checks.
+
+### v1 limitations (documented for follow-ups)
+
+- **Every invitation redemption creates a fresh cloud user.** A single human joining two teams on the same cloud ends up with two `user_id`s and two API tokens. Email-based identity merging is a Phase 5-or-later refinement.
+- **Local API tokens are stored in plaintext.** The `__lattice_team_connections.api_token_encrypted` column name reserves the slot for encryption-at-rest; the integration with Lattice's existing AES-256-GCM layer (currently scoped to entity contexts) will land in a follow-up.
+
+### Added — Tests
+
+- `tests/integration/teams-management.test.ts` — 5 cases: full create → invite → join → list → leave → destroy round-trip across two locals + one cloud (one in-process), plus self-kick blocked for creators, invitation tokens rejected as bearers, token revocation, and `findConnectionByName` ambiguity error.
+
+### Added — Lattice Teams (Phase 1: server mode + bearer auth)
+
+First slice of the **Lattice Teams** feature: a single Postgres- or SQLite-backed lattice instance can now boot in **team-cloud server mode**, exposing the HTTP API over a non-localhost interface with bearer-token authentication. The rest of the feature (team management, object sharing, row link/unlink, sync engine, GUI integration) lands in subsequent phases.
+
+- **`lattice serve` CLI command.** New subcommand alongside `lattice gui`. Accepts `--host`, `--port`, `--team-cloud`, and the usual `--config` / `--output`. Without `--team-cloud` it acts like `gui` but without auto-opening a browser; with `--team-cloud` it registers the internal teams tables and gates every request on a bearer token.
+- **`Lattice.defineLate(table, def)`.** Mirror image of `define()` for post-`init()` table registration. Compiles the definition, registers it on the schema manager, and immediately applies its DDL through `SchemaManager.applySchemaForAsync` (which holds the same `pg_advisory_xact_lock` the boot path uses, so concurrent defineLate callers on Postgres serialize). Updates `_columnCache` for the new table so subsequent `query`/`insert`/`update` calls are aware of it.
+- **`SchemaManager.applySchemaForAsync(adapter, name)`.** Per-table version of `applySchema` — pulled out into a shared `_applyOneTable` helper, then wrapped in a `withClient` block on Postgres so the advisory lock covers the DDL window. SQLite falls through to the existing direct-DDL path.
+- **Bearer-token auth (`src/teams/server/auth.ts`).** Tokens are `lat_`-prefixed 256-bit random strings; only their SHA-256 hex hash is stored in `__lattice_api_tokens.token_hash`. `authenticate(req, db)` hashes the incoming bearer, looks it up directly, re-verifies with `timingSafeEqual`, and resolves the linked `__lattice_users` row (rejecting revoked tokens and soft-deleted users). `generateToken()` mints a new raw + hash pair for the issuer to store. scrypt/bcrypt are intentionally not used — they exist to slow down brute-forcing of low-entropy passwords; 256-bit tokens don't need slowdown.
+- **Cloud-side internal tables (`src/teams/internal-tables.ts`).** `__lattice_users` and `__lattice_api_tokens` table definitions. Registered via `defineLate` when a lattice is booted with `teamCloud: true`. Teams, members, shared objects, row links, and the change log are added in later phases.
+- **`startGuiServer` extensions.** `StartGuiServerOptions` gains `host?: string` (default `127.0.0.1`) and `teamCloud?: boolean`. In team-cloud mode: every API request requires a valid bearer token (401 otherwise), the database-switcher endpoints (`/api/databases*`) return 403 (single-user filesystem-trust assumption breaks under multi-user access), and the listen bind uses `host` instead of the previously-hardcoded `127.0.0.1`.
+
+### Added — Tests
+
+- `tests/unit/teams-auth.test.ts` — 11 cases covering: token hash/extract helpers (5), server boots in team-cloud mode and registers internal tables (1), 401 on missing/wrong-prefix/wrong-scheme/unknown-token Authorization headers (3), 200 on valid bearer (1), 401 on revoked token (1), 403 on the database-switcher endpoint in team-cloud mode (1).
+
 ## [1.11.0] — 2026-05-25
 
 ### Added
