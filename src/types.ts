@@ -402,6 +402,23 @@ export interface TableDefinition {
    * @default false
    */
   changelog?: boolean;
+  /**
+   * Encrypt named columns at rest via AES-256-GCM. Same shape as the
+   * `encrypted` option on EntityContextDefinition — `true` to encrypt all
+   * non-structural TEXT columns, or `{ columns: [...] }` to encrypt only
+   * the named ones. Requires `encryptionKey` in Lattice options; init()
+   * throws otherwise.
+   *
+   * Encrypted values are stored as `enc:<base64(iv+tag+ciphertext)>` and
+   * transparently decrypted on read. Plaintext values pass through
+   * unchanged (migration-safe).
+   *
+   * Lets framework-shipped tables (e.g. native `secrets`) encrypt
+   * sensitive columns without going through `defineEntityContext()`.
+   *
+   * @default false
+   */
+  encrypted?: boolean | { columns: string[] };
 }
 
 export interface MultiTableDefinition {
@@ -772,8 +789,15 @@ export interface WriteHook {
   on: ('insert' | 'update' | 'delete')[];
   /** Only fire on update when these columns changed. Omit = fire on any change. */
   watchColumns?: string[];
-  /** Handler function. Runs synchronously after the DB write. */
-  handler: (ctx: WriteHookContext) => void;
+  /**
+   * Handler function. Fires after the DB write completes.
+   *
+   * The handler may return `void` (sync, fire-and-forget) OR a Promise
+   * the write path will await. The async option exists so callers can
+   * persist side-effects (e.g. the Lattice Teams outbox) atomically with
+   * the user's `await db.insert(...)` rather than racing the response.
+   */
+  handler: (ctx: WriteHookContext) => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

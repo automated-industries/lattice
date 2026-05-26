@@ -16,12 +16,34 @@ import {
 } from './data.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
+import { CLOUD_INTERNAL_TABLE_DEFS } from '../teams/internal-tables.js';
+import { authenticate, type AuthContext } from '../teams/server/auth.js';
+import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
+import { TeamsClient } from '../teams/client.js';
+import { dispatchTeamsGuiRoute } from './teams-routes.js';
+import { dispatchUserConfigRoute } from './userconfig-routes.js';
+import { dispatchDbConfigRoute } from './dbconfig-routes.js';
+import { registerNativeEntities } from '../framework/native-entities.js';
+import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
   outputDir: string;
   port?: number;
   openBrowser?: boolean;
+  /**
+   * Bind address. Defaults to `127.0.0.1`. Use `0.0.0.0` (or a specific
+   * interface) to expose the server outside localhost — only meaningful in
+   * combination with `teamCloud: true`, which adds the auth layer.
+   */
+  host?: string;
+  /**
+   * Enable team-cloud server mode: registers the Lattice Teams internal
+   * tables via `defineLate()` after init, and requires a valid bearer
+   * token on every API request. The DB-switcher endpoints are disabled
+   * (they assume single-user filesystem trust).
+   */
+  teamCloud?: boolean;
 }
 
 export interface GuiServerHandle {
@@ -76,7 +98,7 @@ function openUrl(url: string): void {
   child.unref();
 }
 
-function listen(server: Server, port: number): Promise<number> {
+function listen(server: Server, port: number, host: string): Promise<number> {
   return new Promise((resolveListen, reject) => {
     const onError = (err: NodeJS.ErrnoException): void => {
       server.off('listening', onListening);
@@ -89,14 +111,18 @@ function listen(server: Server, port: number): Promise<number> {
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    server.listen(port, '127.0.0.1');
+    server.listen(port, host);
   });
 }
 
-async function listenWithPortFallback(server: Server, startPort: number): Promise<number> {
+async function listenWithPortFallback(
+  server: Server,
+  startPort: number,
+  host: string,
+): Promise<number> {
   for (let port = startPort; port < startPort + 50; port++) {
     try {
-      return await listen(server, port);
+      return await listen(server, port, host);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err;
     }
@@ -291,12 +317,27 @@ interface ActiveDb {
   junctionTables: Set<string>;
   entityContextByTable: Map<string, EntityContextDefinition>;
   softDeletable: Set<string>;
+  /**
+   * Cached `TeamsClient` so sync write-hooks registered via
+   * `attachWriteHooks` persist across requests. Reuses the same Lattice
+   * instance the GUI's CRUD endpoints write through, so a row update
+   * via the GUI dashboard fires the same outbox-capture hook as a
+   * write from outside.
+   */
+  teamsClient: TeamsClient;
 }
 
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   mkdirSync(dirname(parsed.dbPath), { recursive: true });
-  const db = new Lattice({ config: configPath });
+  // Native entities (`secrets`, `files`) include encrypted columns —
+  // every GUI-opened Lattice must have an encryption key. Resolve once
+  // here (env var or auto-generated `~/.lattice/master.key`) and feed
+  // into the Lattice options so `_validateEncryptionConfig` is happy
+  // at init() time.
+  const encryptionKey = getOrCreateMasterKey();
+  const db = new Lattice({ config: configPath }, { encryptionKey });
+  registerNativeEntities(db);
   // GUI-only meta table: per-entity icon overrides edited from the browser.
   // Defined dynamically (not in the user's YAML) so it never appears in
   // /api/entities or any user-facing list.
@@ -323,6 +364,21 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     render: () => '',
     outputFile: '.lattice-gui/column-meta.md',
   });
+  // Machine-local user identity, mirrored into the active Lattice from
+  // ~/.lattice/identity.json on every open. Single-row (`id='singleton'`).
+  // Lets queries inside the active DB reference "who is sitting here"
+  // without reaching across into ~/.lattice/.
+  db.define('__lattice_user_identity', {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      display_name: 'TEXT NOT NULL DEFAULT ""',
+      email: 'TEXT NOT NULL DEFAULT ""',
+      updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+    },
+    primaryKey: 'id',
+    render: () => '',
+    outputFile: '.lattice-native/user-identity.md',
+  });
   // Linear audit log of all mutations the GUI performs. Powers undo/redo
   // and the version-history page. Per-DB (each lattice config has its own).
   db.define('_lattice_gui_audit', {
@@ -341,6 +397,11 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   });
   await db.init();
 
+  // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
+  // active Lattice has a current view of who the operator is. Idempotent:
+  // every open just upserts the single 'singleton' row.
+  await syncUserIdentityRow(db);
+
   const validTables = new Set(parsed.tables.map((t) => t.name));
   const junctionTables = new Set(
     getGuiEntities(configPath, outputDir)
@@ -356,10 +417,16 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
       .filter(({ definition }) => 'deleted_at' in definition.columns)
       .map(({ name }) => name),
   );
+  const teamsClient = new TeamsClient(db);
+  // Re-arm sync write-hooks for any tables that already have local
+  // links (i.e. the user is part of teams + linked rows in a prior
+  // session). Idempotent — safe to call on every openConfig.
+  await teamsClient.attachWriteHooks();
   return {
     configPath,
     outputDir,
     db,
+    teamsClient,
     validTables,
     junctionTables,
     entityContextByTable,
@@ -442,20 +509,91 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
   return configPath;
 }
 
+async function registerTeamCloudTables(db: Lattice): Promise<void> {
+  for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
+    await db.defineLate(name, def);
+  }
+}
+
+/**
+ * Upsert the single `__lattice_user_identity` row from
+ * `~/.lattice/identity.json`. Called from `openConfig` after `init()` —
+ * idempotent (always rewrites the same row). When identity.json is
+ * empty, the row still gets written with empty strings; consumers
+ * (Project Config "Team status" panel) treat empty email as "not set."
+ */
+async function syncUserIdentityRow(db: Lattice): Promise<void> {
+  const identity = readIdentity();
+  const existing = (await db.get('__lattice_user_identity', 'singleton')) as {
+    id: string;
+    display_name: string;
+    email: string;
+  } | null;
+  if (existing) {
+    await db.update('__lattice_user_identity', 'singleton', {
+      display_name: identity.display_name,
+      email: identity.email,
+      updated_at: new Date().toISOString(),
+    });
+  } else {
+    await db.insert('__lattice_user_identity', {
+      id: 'singleton',
+      display_name: identity.display_name,
+      email: identity.email,
+      updated_at: new Date().toISOString(),
+    });
+  }
+}
+
+type RequestWithAuth = IncomingMessage & { authContext?: AuthContext };
+
 export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
   const configPath = resolve(options.configPath);
   const outputDir = resolve(options.outputDir);
   const startPort = options.port ?? 4317;
+  const host = options.host ?? '127.0.0.1';
+  const teamCloud = options.teamCloud ?? false;
 
   // Mutable reference: switching DBs replaces this wholesale.
   let active: ActiveDb = await openConfig(configPath, outputDir);
+  if (teamCloud) {
+    await registerTeamCloudTables(active.db);
+  }
 
   const server = createServer((req, res) => {
     void (async () => {
       try {
-        const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+        const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
+
+        // ── Team-cloud auth gate ──────────────────────────────────────────
+        // Most routes require a valid bearer token. A small allowlist of
+        // bootstrap/redemption endpoints (defined in routes.ts) is exempt
+        // so a new operator can register and invitees can redeem invites
+        // before they have a token.
+        let authContext: AuthContext | null = null;
+        if (teamCloud) {
+          if (!UNAUTHENTICATED_TEAM_PATHS.has(pathname)) {
+            authContext = await authenticate(req, active.db);
+            if (!authContext) {
+              sendJson(res, { error: 'Unauthorized' }, 401);
+              return;
+            }
+            (req as RequestWithAuth).authContext = authContext;
+          }
+        }
+
+        // ── Team-cloud route dispatch ─────────────────────────────────────
+        if (teamCloud) {
+          const handled = await dispatchTeamRoute(req, res, {
+            db: active.db,
+            authContext,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
 
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {
@@ -819,6 +957,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── Database switcher ─────────────────────────────────────────────
+        // Disabled in team-cloud mode — switching the active DB out from
+        // under other members would corrupt their session view and bypass
+        // the team's auth + share contract.
+        if (teamCloud && pathname.startsWith('/api/databases')) {
+          sendJson(res, { error: 'Database switching is disabled in team-cloud mode' }, 403);
+          return;
+        }
         if (method === 'GET' && pathname === '/api/databases') {
           sendJson(res, {
             current: {
@@ -1037,6 +1182,54 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── Teams GUI routes ──────────────────────────────────────────────
+        // Dev-tool surface that wraps the user's TeamsClient. Available
+        // only in local GUI mode — team-cloud mode disables these (the
+        // cloud is the server, not the client).
+        if (!teamCloud && pathname.startsWith('/api/teams-gui/')) {
+          const handled = await dispatchTeamsGuiRoute(req, res, {
+            db: active.db,
+            client: active.teamsClient,
+            pathname,
+            method,
+            validTables: active.validTables,
+          });
+          if (handled) return;
+        }
+
+        // ── User Config routes ───────────────────────────────────────────
+        // Reads + writes machine-local user identity and the saved
+        // cloud-DB credential catalog. Same auth model as the other
+        // GUI dev-tool routes — localhost trust, team-cloud disables.
+        if (!teamCloud && pathname.startsWith('/api/userconfig/')) {
+          const handled = await dispatchUserConfigRoute(req, res, {
+            db: active.db,
+            configPath: active.configPath,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── DB Config routes ─────────────────────────────────────────────
+        // Project Config "Database" panel — read / save / connect / test.
+        // The `swap` callback re-opens the active configPath so the
+        // YAML rewrite written by `/save` takes effect.
+        if (!teamCloud && pathname.startsWith('/api/dbconfig')) {
+          const handled = await dispatchDbConfigRoute(req, res, {
+            db: active.db,
+            configPath: active.configPath,
+            pathname,
+            method,
+            swap: async () => {
+              const next = await openConfig(active.configPath, active.outputDir);
+              active.db.close();
+              active = next;
+            },
+          });
+          if (handled) return;
+        }
+
         sendJson(res, { error: 'Not found' }, 404);
       } catch (err) {
         sendJson(res, { error: (err as Error).message }, 500);
@@ -1044,8 +1237,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     })();
   });
 
-  const port = await listenWithPortFallback(server, startPort);
-  const url = `http://127.0.0.1:${String(port)}`;
+  const port = await listenWithPortFallback(server, startPort, host);
+  // For 0.0.0.0 bindings, advertise via 127.0.0.1 so the printed URL is
+  // actually clickable; real external access uses the operator's known
+  // hostname/IP, not the bind wildcard.
+  const displayHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
+  const url = `http://${displayHost}:${String(port)}`;
   if (options.openBrowser ?? true) openUrl(url);
 
   return {
