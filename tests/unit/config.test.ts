@@ -698,9 +698,12 @@ entityContexts:
 describe('parseConfigFile()', () => {
   it('reads and parses fixture config', () => {
     const result = parseConfigFile(FIXTURE_CONFIG);
-    // The fixture defines 7 first-class entities + 5 junction tables (+ any
+    // The fixture defines 5 first-class entities + 5 junction tables (+ any
     // entities created by manual GUI smoke tests that wrote back to the YAML).
-    expect(result.tables.length).toBeGreaterThanOrEqual(12);
+    // `files` and `secrets` were promoted to framework-native entities
+    // registered by the GUI server (src/framework/native-entities.ts) and
+    // no longer appear in the YAML.
+    expect(result.tables.length).toBeGreaterThanOrEqual(10);
     expect(result.tables.map((t) => t.name)).toEqual(
       expect.arrayContaining([
         'people',
@@ -708,8 +711,6 @@ describe('parseConfigFile()', () => {
         'messages',
         'projects',
         'repositories',
-        'files',
-        'secrets',
         'meeting_people',
         'meeting_projects',
         'project_people',
