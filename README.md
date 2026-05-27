@@ -2159,7 +2159,29 @@ await db.init();
 | `~/.lattice/keys/<label>.token` | Per-joined-team bearer tokens (`chmod 0600`)                                                             |
 | `~/.lattice/db-credentials.enc` | AES-GCM-encrypted Postgres URLs keyed by label                                                           |
 
-The GUI's User Config view edits `identity.json` directly; the Project Config "Database" panel writes saved Postgres URLs into `db-credentials.enc` and rewrites `lattice.config.yml`'s `db:` line to `${LATTICE_DB:<label>}`. The config parser resolves that reference at open time so connection passwords never sit in YAML on disk.
+The GUI's User Settings view edits `identity.json` directly; the Database Settings page writes saved Postgres URLs into `db-credentials.enc` and rewrites `lattice.config.yml`'s `db:` line to `${LATTICE_DB:<label>}`. The config parser resolves that reference at open time so connection passwords never sit in YAML on disk.
+
+`~/.lattice/preferences.json` (v1.13.8+) holds machine-local UI preferences keyed by name. Currently a single flag `show_system_tables: boolean` (default `false`) — see _Sidebar system-tables toggle (v1.13.8+)_ below.
+
+**Information architecture, v1.13.8+.** The GUI treats every database as either Local (single-user SQLite) or Cloud (Postgres, one or more invited team members), with the database itself as the first-class concept. "Team" describes the set of members on a cloud database — there is no separate "create a team" step, and the verbiage for member management ("Invite Team", "Join Team", "Team Members") stays where it belongs. Concretely:
+
+- **Editable database name** at the top of Database Settings. For cloud DBs the rename writes `__lattice_team_identity.team_name` (and broadcasts to every member via the realtime channel below); for local DBs it writes a `name:` key into the YAML config, parsed by `parseConfigFile()` and surfaced as `ParsedConfig.name`. New endpoint `POST /api/dbconfig/rename`.
+- **Three-step Create Database wizard.** Opened from the header dropdown's `+ New database` button and from Lattice Settings → Add new database. Step 1: name + Local|Cloud + cloud credentials. Step 2: starter entities, each with a pre-checked "Share with cloud" checkbox when cloud. Step 3: review + create.
+- **Header dropdown** shows the friendly database name + a Local|Cloud kind chip + a connectivity dot per row (green = cloud live, yellow = local SQLite, red = cloud disconnected). The `+ New database` button at the bottom opens the wizard.
+- **Settings sidebar** is reorganized into Lattice Settings (catalog of all databases this lattice can reach + Add-new entry), Database Settings (renamed from Project Config — editable name header on top, the existing Database panel and cloud-databases list below), Data Model, and User Settings. The legacy `/settings/project-config` route still resolves for back-compat.
+- **Migrate-to-Cloud per-table share checkboxes.** The migrate modal lists every user-defined table with "Share with cloud" pre-checked; uncheck individual tables to keep them cloud-stored but unshared. After the migrate, only checked tables call `shareObject`.
+- **New-entity flow** on a cloud-connected database pre-checks a "Share with cloud" box; the share runs best-effort after the entity is created.
+
+**Realtime cloud subscriptions (v1.13.8+).** Cloud Postgres-backed lattices stream changes to every connected GUI in realtime. A Postgres trigger on `__lattice_change_log` emits `pg_notify('lattice_changes', …)` after every insert; the GUI server holds a dedicated `pg.Client` with `LISTEN lattice_changes` and fans payloads out via a new Server-Sent Events endpoint:
+
+| Route                     | Method | Description                                                                      |
+| ------------------------- | ------ | -------------------------------------------------------------------------------- |
+| `/api/realtime/stream`    | GET    | SSE stream; `event: state` on connection transitions, `event: change` per NOTIFY |
+| `/api/realtime/status`    | GET    | JSON snapshot of `{ mode: 'local'\|'cloud', state, connected }`                  |
+
+The browser's `EventSource` invalidates the entity cache on every `change` event; connection state drives a colored dot in the topbar (green/yellow/red). SQLite databases are unchanged — LISTEN/NOTIFY is Postgres-only and the broker is skipped on those. The trigger installer (`installCloudInternalTriggers`) is exported from `latticesql/teams/internal-tables` for callers that bootstrap cloud schemas outside the GUI.
+
+**Sidebar system-tables toggle (v1.13.8+).** Internal `__lattice_*` and `_lattice_gui_*` tables are hidden from the sidebar by default. Enable the "Show system tables in sidebar" checkbox in User Settings → Preferences to surface them under a "System" section. Persisted to `~/.lattice/preferences.json`; exposed via `GET`/`POST /api/userconfig/preferences`.
 
 ---
 
