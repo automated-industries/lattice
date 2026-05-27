@@ -1,6 +1,43 @@
 import { EventEmitter } from 'node:events';
-import pg from 'pg';
+import { createRequire } from 'node:module';
+import type pg from 'pg';
 import { isPostgresUrl } from '../teams/register-direct.js';
+
+// Lazy-load `pg` via createRequire so the static graph the bundler sees
+// does NOT pull pg into dist/cli.js. v1.13.8 shipped with a top-level
+// `import pg from 'pg'` here, which tsup happily inlined into the ESM
+// CLI bundle. pg's CommonJS internals (`require('events')`, the native
+// pg-native binding shims, etc.) then crashed at first import on every
+// `lattice gui` boot, even for SQLite-only users who never construct
+// a RealtimeBroker. v1.13.9 mirrors the postgres.ts approach: types are
+// type-only (erased at compile time), the runtime symbol is fetched from
+// the consumer's node_modules at the moment the broker connects.
+//
+// Defence-in-depth: tsup.config.ts also lists `pg` in the CLI build's
+// `external` array so a future regression that re-introduces a static
+// import still keeps pg out of the bundle.
+type PgClientCtor = new (config: { connectionString: string }) => pg.Client;
+type PgModule = { Client: PgClientCtor };
+
+let _pgModule: PgModule | null = null;
+function loadPg(): PgModule {
+  if (_pgModule) return _pgModule;
+  const importMetaUrl = (import.meta as { url?: string }).url;
+  const requireFromHere = importMetaUrl
+    ? createRequire(importMetaUrl)
+    : // CJS fallback — Node provides `require` on every CJS module scope.
+      require;
+  try {
+    _pgModule = requireFromHere('pg') as PgModule;
+    return _pgModule;
+  } catch (err) {
+    throw new Error(
+      "RealtimeBroker requires 'pg'. Install with: npm install pg\n" +
+        'Underlying error: ' +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
 
 /**
  * Realtime broker for the GUI server.
@@ -77,7 +114,8 @@ export class RealtimeBroker {
   private async openClient(): Promise<void> {
     if (this.stopped) return;
     this.setState('connecting');
-    const client = new pg.Client({ connectionString: this.url });
+    const pgMod = loadPg();
+    const client = new pgMod.Client({ connectionString: this.url });
     // pg's 'error' on a Client (vs Pool) fires on async errors after
     // connect; the connect() promise rejects on initial failures.
     client.on('error', (err) => {
