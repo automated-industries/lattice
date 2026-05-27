@@ -1341,6 +1341,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const handled = await dispatchTeamsGuiRoute(req, res, {
             db: active.db,
             client: active.teamsClient,
+            configPath: active.configPath,
             pathname,
             method,
             validTables: active.validTables,
