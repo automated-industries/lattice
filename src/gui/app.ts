@@ -1,26 +1,4 @@
-/**
- * Build the GUI single-page-app HTML. The `analyticsEnabled` flag
- * controls whether the GA4 gtag.js loader is injected — flipping it off
- * via `lattice analytics off` (or the User Config → Analytics panel)
- * means zero outbound calls to googletagmanager.com from the browser.
- *
- * The same flag is honored server-side by `emitAnalytics()` in the npm
- * package, so disabling analytics turns off both layers symmetrically.
- */
-export function buildGuiAppHtml(opts: { analyticsEnabled: boolean }): string {
-  const gtagScript = opts.analyticsEnabled
-    ? `<script async src="https://www.googletagmanager.com/gtag/js?id=G-3M1RPJ4ZB3"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-  gtag('config', 'G-3M1RPJ4ZB3', { anonymize_ip: true });
-</script>`
-    : '';
-  return GUI_APP_HTML_TEMPLATE.replace('<!-- ANALYTICS_HEAD -->', gtagScript);
-}
-
-const GUI_APP_HTML_TEMPLATE = `<!doctype html>
+export const guiAppHtml = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -637,7 +615,6 @@ const GUI_APP_HTML_TEMPLATE = `<!doctype html>
     }
     .modal .copy-token:hover { background: var(--row-hover); }
   </style>
-  <!-- ANALYTICS_HEAD -->
 </head>
 <body>
   <header class="topbar">
@@ -791,19 +768,6 @@ const GUI_APP_HTML_TEMPLATE = `<!doctype html>
     }
 
     function fetchJson(url, opts) {
-      // Fire a GA4 event per API call when analytics are enabled. Tagged
-      // with the request path (no body, no query params past the first
-      // '?' chunk) so analytics traces show which GUI surfaces are used
-      // without leaking row data.
-      try {
-        if (typeof window !== 'undefined' && typeof window.gtag === 'function') {
-          var sanitizedPath = String(url).split('?')[0];
-          window.gtag('event', 'lattice_api', {
-            'function': sanitizedPath,
-            'method': (opts && opts.method) || 'GET',
-          });
-        }
-      } catch (_e) { /* never break a fetch on a telemetry failure */ }
       return fetch(url, opts).then(function (r) {
         if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || r.statusText); });
         return r.json();
@@ -2515,47 +2479,11 @@ const GUI_APP_HTML_TEMPLATE = `<!doctype html>
           '<h2>User Config</h2>' +
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
           '<div id="databases-host"></div>' +
-          '<div id="analytics-host"></div>' +
           '<div id="user-teams-host"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
       renderDatabasesPanel(document.getElementById('databases-host'));
-      renderAnalyticsPanel(document.getElementById('analytics-host'));
       renderUserTeamsList(document.getElementById('user-teams-host'));
-    }
-
-    function renderAnalyticsPanel(host) {
-      fetchJson('/api/userconfig/analytics').then(function (cfg) {
-        var checked = cfg.enabled ? 'checked' : '';
-        host.innerHTML =
-          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 10px">Analytics</h3>' +
-            '<p class="lead" style="margin:0 0 10px">Opt-out usage telemetry. Sends function names + package version + a per-install random anonymous_id. No row data, no cloud URLs, no email. Stored at <code>~/.lattice/analytics.json</code>.</p>' +
-            '<label style="display:flex;align-items:center;gap:10px;cursor:pointer">' +
-              '<input type="checkbox" id="analytics-enabled" ' + checked + ' />' +
-              '<span>Send anonymous usage analytics</span>' +
-            '</label>' +
-            '<div style="margin-top:8px;font-size:12px;color:var(--text-muted)">anonymous_id: <code>' + escapeHtml(cfg.anonymous_id || '') + '</code></div>' +
-            '<div class="team-actions" style="margin-top:10px">' +
-              '<button class="btn primary" data-act="analytics-save">Save</button>' +
-            '</div>' +
-            '<div id="analytics-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
-          '</div>';
-        host.querySelector('[data-act="analytics-save"]').addEventListener('click', function () {
-          var enabled = document.getElementById('analytics-enabled').checked;
-          var msg = document.getElementById('analytics-msg');
-          msg.textContent = 'Saving…';
-          fetchJson('/api/userconfig/analytics', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ enabled: enabled }),
-          })
-            .then(function () { msg.textContent = 'Saved. Reload to update the in-browser gtag tag.'; })
-            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
-        });
-      }).catch(function (err) {
-        host.innerHTML = '<div class="placeholder">Failed to load analytics config: ' + escapeHtml(err.message) + '</div>';
-      });
     }
 
     function renderIdentityPanel(host) {
@@ -3418,11 +3346,3 @@ const GUI_APP_HTML_TEMPLATE = `<!doctype html>
   </script>
 </body>
 </html>`;
-
-/**
- * Legacy default export — kept so any external consumer that imported
- * the const string still works. The default form has analytics enabled;
- * callers that want runtime control should use `buildGuiAppHtml` and
- * pass the user's `~/.lattice/analytics.json` `enabled` value.
- */
-export const guiAppHtml = buildGuiAppHtml({ analyticsEnabled: true });

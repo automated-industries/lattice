@@ -49,26 +49,6 @@ sibling YAML config is written to the user's project directory pointing at
 `${LATTICE_DB:<label>}`. The dropdown picks it up on the next `/api/databases`
 read — no more hand-editing the YAML to point at the cloud you just joined.
 
-### Added — Opt-out usage analytics
-
-Function-call telemetry for the npm package + GUI. Default ON. What's sent:
-function name, package version, and a per-install random `anonymous_id`
-(generated lazily on first read of `~/.lattice/analytics.json`). What's
-never sent: email, display name, row data, DB content, file paths, cloud
-URLs.
-
-Opt out at any time:
-
-```
-lattice analytics off            # writes ~/.lattice/analytics.json
-LATTICE_ANALYTICS=off lattice …  # env-var override (CI-friendly)
-```
-
-The npm package POSTs to `https://www.latticesql.com/api/telemetry`,
-which forwards to GA4 Measurement Protocol with the api_secret held
-server-side (never in the public package). Auto-disabled during vitest
-runs.
-
 ### Fixed — `Request cannot be constructed from a URL that includes credentials` on share
 
 `TeamsClient.shareObject`, `unshareObject`, `listSharedObjects`, `linkRow`,

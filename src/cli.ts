@@ -9,7 +9,6 @@ import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { startGuiServer } from './gui/server.js';
 import { discoverOutputDir } from './gui/discover-output-dir.js';
-import { runAnalyticsCommand } from './analytics/cli-commands.js';
 import { runTeamsCommand } from './teams/cli-commands.js';
 
 // ---------------------------------------------------------------------------
@@ -659,9 +658,6 @@ function main(): void {
       break;
     case 'update':
       void runUpdate();
-      break;
-    case 'analytics':
-      runAnalyticsCommand({ subcommand: args.subcommand });
       break;
     default:
       console.error(`Unknown command: ${args.command}`);

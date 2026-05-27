@@ -1,7 +1,6 @@
 import { Lattice } from '../lattice.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from './internal-tables.js';
 import { generateToken } from './server/auth.js';
-import { emitAnalytics } from '../framework/analytics.js';
 
 /**
  * Shape returned by both the HTTP register path and the Postgres-direct
@@ -53,7 +52,6 @@ export async function registerDirectViaPostgres(
   name: string,
   teamName: string,
 ): Promise<DirectRegisterResult> {
-  emitAnalytics('registerDirectViaPostgres');
   if (!isPostgresUrl(cloudUrl)) {
     throw new Error(
       `registerDirectViaPostgres: cloudUrl must be a postgres:// URL (got ${cloudUrl.slice(0, 12)}…)`,

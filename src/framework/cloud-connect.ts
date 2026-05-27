@@ -1,5 +1,4 @@
 import { Lattice } from '../lattice.js';
-import { emitAnalytics } from './analytics.js';
 
 /**
  * Cloud-connect probe — non-destructive inspection of a candidate
@@ -45,7 +44,6 @@ export interface CloudProbeResult {
  * with `reachable: false`.
  */
 export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
-  emitAnalytics('probeCloud');
   const dialect: 'sqlite' | 'postgres' = /^postgres(ql)?:\/\//i.test(targetUrl)
     ? 'postgres'
     : 'sqlite';

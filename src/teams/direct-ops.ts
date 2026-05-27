@@ -29,7 +29,6 @@ import { applySchemaSpec, type SchemaSpec } from './schema-spec.js';
 import { generateInviteToken, generateToken, hashToken } from './server/auth.js';
 import { publishInviteEnvelope } from './invite-relay.js';
 import { isPostgresUrl } from './register-direct.js';
-import { emitAnalytics } from '../framework/analytics.js';
 import type {
   MemberSummary,
   InviteResponse,
@@ -66,7 +65,6 @@ interface TeamRow {
  * soft-deleted.
  */
 export async function listMembersDirect(db: Lattice, teamId: string): Promise<MemberSummary[]> {
-  emitAnalytics('listMembersDirect');
   const members = (await db.query('__lattice_team_members', {
     filters: [{ col: 'team_id', op: 'eq', val: teamId }],
   })) as unknown as MemberRow[];
@@ -111,7 +109,6 @@ export async function inviteDirect(
   expiresInHours = 7 * 24,
   cloudUrl?: string,
 ): Promise<InviteResponse> {
-  emitAnalytics('inviteDirect');
   const team = (await db.get('__lattice_team', teamId)) as unknown as TeamRow | null;
   if (!team || team.deleted_at) {
     throw new Error(`Team not found: ${teamId}`);
@@ -158,7 +155,6 @@ export async function inviteDirect(
  * direct-Postgres clouds).
  */
 export async function kickMemberDirect(db: Lattice, teamId: string, userId: string): Promise<void> {
-  emitAnalytics('kickMemberDirect');
   await db.delete('__lattice_team_members', { team_id: teamId, user_id: userId });
 }
 
@@ -168,7 +164,6 @@ export async function kickMemberDirect(db: Lattice, teamId: string, userId: stri
  * is a direct-Postgres cloud.
  */
 export async function destroyTeamDirect(db: Lattice): Promise<void> {
-  emitAnalytics('destroyTeamDirect');
   // Order matters: members → identity → team. The team row itself
   // stays via soft-delete to preserve historical references; the
   // identity row going away is what the GUI surfaces as "team
@@ -222,7 +217,6 @@ export async function redeemInviteDirect(
   email: string,
   name: string,
 ): Promise<RedeemResponse> {
-  emitAnalytics('redeemInviteDirect');
   if (!isPostgresUrl(cloudUrl)) {
     throw new Error(
       `redeemInviteDirect: cloudUrl must be a postgres:// URL (got ${cloudUrl.slice(0, 12)}…)`,
@@ -384,7 +378,6 @@ export async function shareObjectDirect(
   table: string,
   spec: SchemaSpec,
 ): Promise<ShareObjectResponse> {
-  emitAnalytics('shareObjectDirect');
   const db = await openCloud(cloudUrl);
   try {
     const existing = (await db.query('__lattice_shared_objects', {
@@ -444,7 +437,6 @@ export async function listSharedObjectsDirect(
   cloudUrl: string,
   teamId: string,
 ): Promise<SharedObjectSummary[]> {
-  emitAnalytics('listSharedObjectsDirect');
   const db = await openCloud(cloudUrl);
   try {
     const rows = (await db.query('__lattice_shared_objects', {
@@ -471,7 +463,6 @@ export async function unshareObjectDirect(
   teamId: string,
   table: string,
 ): Promise<void> {
-  emitAnalytics('unshareObjectDirect');
   const db = await openCloud(cloudUrl);
   try {
     const existing = (await db.query('__lattice_shared_objects', {
@@ -542,8 +533,6 @@ export async function getStatusDirect(
   teamId: string,
   teamName: string,
 ): Promise<SyncStatus> {
-  emitAnalytics('getStatusDirect');
-  emitAnalytics('meDirect');
   const links = (await local.query('__lattice_local_links', {
     filters: [{ col: 'team_id', op: 'eq', val: teamId }],
   })) as unknown as unknown[];
@@ -611,8 +600,6 @@ export async function unlinkRowDirect(
   table: string,
   pk: string,
 ): Promise<void> {
-  emitAnalytics('unlinkRowDirect');
-  emitAnalytics('linkRowDirect');
   const cloud = await openCloud(cloudUrl);
   try {
     await cloud.delete('__lattice_row_links', { team_id: teamId, table_name: table, pk });

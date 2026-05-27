@@ -166,12 +166,6 @@ export {
   writeToken,
   deleteToken,
 } from './framework/user-config.js';
-export {
-  emitAnalytics,
-  readAnalyticsConfig,
-  writeAnalyticsConfig,
-} from './framework/analytics.js';
-export type { AnalyticsConfig } from './framework/analytics.js';
 export type { UserIdentity } from './framework/user-config.js';
 export { TeamsClient, TeamsHttpError } from './teams/client.js';
 export type {

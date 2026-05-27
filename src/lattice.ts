@@ -56,7 +56,6 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
 import { parseConfigFile } from './config/parser.js';
-import { emitAnalytics } from './framework/analytics.js';
 import {
   deriveKey,
   encrypt as encryptValue,
@@ -242,7 +241,6 @@ export class Lattice {
    * Throws if called before `init()` (use `define()` instead).
    */
   async defineLate(table: string, def: TableDefinition): Promise<this> {
-    emitAnalytics('defineLate');
     if (!this._initialized) {
       throw new Error(
         'Lattice: defineLate() must be called after init() — use define() during setup',
@@ -332,7 +330,6 @@ export class Lattice {
   }
 
   init(options: InitOptions = {}): Promise<void> {
-    emitAnalytics('init');
     // Synchronous validation phase — anything that should fail loudly with
     // a thrown Error (rather than a rejected Promise) goes here. Existing
     // callers do `expect(() => db.init()).toThrow(...)` to assert config
@@ -390,7 +387,6 @@ export class Lattice {
    * @since 0.17.0
    */
   async migrate(migrations: Migration[]): Promise<void> {
-    emitAnalytics('migrate');
     if (!this._initialized) {
       throw new Error('Lattice: not initialized — call init() first');
     }
@@ -403,7 +399,6 @@ export class Lattice {
   }
 
   close(): void {
-    emitAnalytics('close');
     this._adapter.close();
     this._columnCache.clear();
     this._encryptedTableColumns.clear();
@@ -420,7 +415,6 @@ export class Lattice {
    * Throws if the table doesn't exist or the adapter can't introspect.
    */
   async introspectColumns(table: string): Promise<string[]> {
-    emitAnalytics('introspectColumns');
     if (!this._initialized) {
       throw new Error('Lattice: not initialized — call init() first');
     }
@@ -487,7 +481,6 @@ export class Lattice {
    * no-op (introspect-first; skip the ALTER).
    */
   async addColumn(table: string, column: string, typeSpec: string): Promise<void> {
-    emitAnalytics('addColumn');
     if (!this._initialized) {
       throw new Error('Lattice: not initialized — call init() first');
     }
@@ -630,7 +623,6 @@ export class Lattice {
   // -------------------------------------------------------------------------
 
   async insert(table: string, row: Row): Promise<string> {
-    emitAnalytics('insert');
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
 
@@ -687,7 +679,6 @@ export class Lattice {
   }
 
   async upsert(table: string, row: Row): Promise<string> {
-    emitAnalytics('upsert');
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
 
@@ -735,7 +726,6 @@ export class Lattice {
   }
 
   async upsertBy(table: string, col: string, val: unknown, row: Row): Promise<string> {
-    emitAnalytics('upsertBy');
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
 
@@ -758,7 +748,6 @@ export class Lattice {
   }
 
   async update(table: string, id: PkLookup, row: Partial<Row>): Promise<void> {
-    emitAnalytics('update');
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
@@ -819,7 +808,6 @@ export class Lattice {
   }
 
   async delete(table: string, id: PkLookup): Promise<void> {
-    emitAnalytics('delete');
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
@@ -849,7 +837,6 @@ export class Lattice {
   }
 
   async get(table: string, id: PkLookup): Promise<Row | null> {
-    emitAnalytics('get');
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
 
@@ -1088,7 +1075,6 @@ export class Lattice {
     data: Row,
     opts?: import('./types.js').LinkOptions,
   ): Promise<void> {
-    emitAnalytics('link');
     const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
 
@@ -1111,7 +1097,6 @@ export class Lattice {
    * Delete rows from a junction table matching all given conditions.
    */
   async unlink(junctionTable: string, conditions: Row): Promise<void> {
-    emitAnalytics('unlink');
     const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
 
@@ -1135,7 +1120,6 @@ export class Lattice {
    * and optionally soft-deletes records no longer in the data set.
    */
   async seed(config: SeedConfig): Promise<SeedResult> {
-    emitAnalytics('seed');
     const notInit = this._notInitError<SeedResult>();
     if (notInit) return notInit;
 
@@ -1370,7 +1354,6 @@ export class Lattice {
     id: PkLookup,
     scores: import('./types.js').RewardScores,
   ): Promise<void> {
-    emitAnalytics('reward');
     const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
 
@@ -1407,7 +1390,6 @@ export class Lattice {
    * @returns Matching rows with similarity scores, sorted best-first.
    */
   async search(table: string, query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
-    emitAnalytics('search');
     const notInit = this._notInitError<SearchResult[]>();
     if (notInit) return notInit;
 
@@ -1429,7 +1411,6 @@ export class Lattice {
   }
 
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
-    emitAnalytics('query');
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
 
@@ -1479,7 +1460,6 @@ export class Lattice {
   }
 
   async count(table: string, opts: CountOptions = {}): Promise<number> {
-    emitAnalytics('count');
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
 
@@ -1519,7 +1499,6 @@ export class Lattice {
   // -------------------------------------------------------------------------
 
   async render(outputDir: string): Promise<RenderResult> {
-    emitAnalytics('render');
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
@@ -1529,7 +1508,6 @@ export class Lattice {
   }
 
   async sync(outputDir: string): Promise<SyncResult> {
-    emitAnalytics('sync');
     const notInit = this._notInitError<SyncResult>();
     if (notInit) return notInit;
 
@@ -1554,7 +1532,6 @@ export class Lattice {
    * @since 0.20.0
    */
   async reverseSeed(outputDir: string): Promise<ReverseSeedResult> {
-    emitAnalytics('reverseSeed');
     const notInit = this._notInitError<ReverseSeedResult>();
     if (notInit) return notInit;
 
@@ -1571,7 +1548,6 @@ export class Lattice {
   }
 
   async reconcile(outputDir: string, options: ReconcileOptions = {}): Promise<ReconcileResult> {
-    emitAnalytics('reconcile');
     const notInit = this._notInitError<ReconcileResult>();
     if (notInit) return notInit;
 
@@ -1628,7 +1604,6 @@ export class Lattice {
   }
 
   watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {
-    emitAnalytics('watch');
     const notInit = this._notInitError<StopFn>();
     if (notInit) return notInit;
 
@@ -2021,7 +1996,6 @@ export class Lattice {
    * Get change history for a specific row, newest first.
    */
   async history(table: string, id: string, opts?: { limit?: number }): Promise<ChangeEntry[]> {
-    emitAnalytics('history');
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
@@ -2045,7 +2019,6 @@ export class Lattice {
     since?: string;
     limit?: number;
   }): Promise<ChangeEntry[]> {
-    emitAnalytics('recentChanges');
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
@@ -2079,7 +2052,6 @@ export class Lattice {
    * The rollback itself is recorded as a new changelog entry.
    */
   async rollback(changeId: string): Promise<void> {
-    emitAnalytics('rollback');
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
@@ -2194,7 +2166,6 @@ export class Lattice {
    * all operations up to and including that entry.
    */
   async snapshot(table: string, id: string, changeId: string): Promise<Record<string, unknown>> {
-    emitAnalytics('snapshot');
     const notInit = this._notInitError<Record<string, unknown>>();
     if (notInit) return notInit;
 
@@ -2245,7 +2216,6 @@ export class Lattice {
    * Also callable directly for on-demand cleanup.
    */
   async pruneChangelog(): Promise<void> {
-    emitAnalytics('pruneChangelog');
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
