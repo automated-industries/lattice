@@ -93,6 +93,28 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toMatch(/stat-label">Last seq/);
   });
 
+  it('modal field labels and inputs render with explicit dark-surface contrast', () => {
+    // v1.13.7 left .modal .field label at var(--text-muted) and gave inputs
+    // no explicit background/color — so a browser UA stylesheet or zoom-
+    // overlay rendering the modal body in light mode produced unreadable
+    // light-gray-on-white text. v1.13.8 pins both to explicit surface +
+    // text variables so the labels stay readable regardless of theme.
+    expect(guiAppHtml).toMatch(
+      /\.modal \.field label \{[\s\S]*?color: var\(--text\);[\s\S]*?font-weight: 500;/,
+    );
+    expect(guiAppHtml).toMatch(
+      /\.modal \.field input, \.modal \.field textarea \{[\s\S]*?background: var\(--surface\);[\s\S]*?color: var\(--text\);/,
+    );
+  });
+
+  it('redactUrlCredentials uses an ASCII mask so URL.toString() does not percent-encode it', () => {
+    // v1.13.7 set u.password to a bullet glyph; URL.toString() then
+    // percent-encoded the non-ASCII userinfo character and rendered
+    // "%E2%80%A2" in the GUI. v1.13.8 uses '****' which is ASCII-only.
+    expect(guiAppHtml).toMatch(/u\.password = '\*+'/);
+    expect(guiAppHtml).not.toMatch(/u\.password = '••+'/);
+  });
+
   it('team role pill distinguishes cloud-unreachable from genuine UNKNOWN', () => {
     // Pre-v1.13.4: when listMembers couldn't be reached or returned a
     // list without the local user_id, the role pill said "unknown" —
