@@ -1,5 +1,8 @@
+import { existsSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
+import { saveDbCredentialForTeam } from '../framework/user-config.js';
 import { TeamsClient, TeamsHttpError, type TeamConnection } from '../teams/client.js';
 import { serializeSchema } from '../teams/schema-spec.js';
 
@@ -22,6 +25,8 @@ import { serializeSchema } from '../teams/schema-spec.js';
 interface TeamsGuiContext {
   db: Lattice;
   client: TeamsClient;
+  /** Absolute path to the currently-active YAML config. */
+  configPath: string;
   pathname: string;
   method: string;
   /**
@@ -32,6 +37,38 @@ interface TeamsGuiContext {
    * after every sync.
    */
   validTables: Set<string>;
+}
+
+/**
+ * Write a sibling YAML config that points at a saved db-credential
+ * label. After this lands on disk, listConfigs() picks it up as a
+ * dropdown entry and the user can switch databases without hand-editing
+ * any YAML.
+ *
+ * Skips writing if a file already exists at the target path — the
+ * credential save in saveDbCredentialForTeam disambiguates the label by
+ * appending the short team id, so the YAML file follows suit.
+ * Returns the path written (or the existing path if it was already
+ * present).
+ */
+function writeTeamConfigYaml(
+  activeConfigPath: string,
+  credentialLabel: string,
+  teamName: string,
+): string {
+  const projectDir = dirname(activeConfigPath);
+  const yamlPath = join(projectDir, `${credentialLabel}.yml`);
+  if (existsSync(yamlPath)) return yamlPath;
+  const yaml =
+    `# Joined-team config — managed by lattice gui. Edit entities: to add\n` +
+    `# locally-projected tables of the team's shared data; the cloud DB at\n` +
+    `# ${credentialLabel} is the authoritative source.\n` +
+    `db: \${LATTICE_DB:${credentialLabel}}\n` +
+    `\n` +
+    `# Team: ${teamName.replace(/[\r\n]/g, ' ')}\n` +
+    `entities: {}\n`;
+  writeFileSync(yamlPath, yaml, 'utf8');
+  return yamlPath;
 }
 
 function sendJson(res: ServerResponse, body: unknown, status = 200): void {
@@ -253,6 +290,7 @@ async function dispatchTeamSubroute(
       teamId,
       table,
       spec,
+      conn.my_user_id,
     );
     sendJson(res, result);
     return;
@@ -313,7 +351,24 @@ async function handleJoin(
     my_user_id: result.user.id,
     api_token: result.raw_token,
   });
-  sendJson(res, { ok: true, team: result.team, user: result.user });
+  // Make the joined team's cloud DB switchable in the dropdown: save an
+  // encrypted credential keyed by a sanitized label, then write a
+  // sibling YAML config alongside the active project's config that
+  // points at ${LATTICE_DB:<label>}. listConfigs() will pick it up on
+  // the next /api/databases poll.
+  const credentialLabel = saveDbCredentialForTeam({
+    teamName: result.team.name,
+    teamId: result.team.id,
+    cloudUrl,
+  });
+  const configYamlPath = writeTeamConfigYaml(ctx.configPath, credentialLabel, result.team.name);
+  sendJson(res, {
+    ok: true,
+    team: result.team,
+    user: result.user,
+    credential_label: credentialLabel,
+    config_path: configYamlPath,
+  });
 }
 
 async function handleRegisterAndCreate(
