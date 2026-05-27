@@ -22,11 +22,20 @@
  * connection-credential holder. If the operator can connect to the
  * Postgres, they're authorized.
  */
+import { randomUUID } from 'node:crypto';
 import { Lattice } from '../lattice.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from './internal-tables.js';
+import { applySchemaSpec, type SchemaSpec } from './schema-spec.js';
 import { generateInviteToken, generateToken, hashToken } from './server/auth.js';
 import { isPostgresUrl } from './register-direct.js';
-import type { MemberSummary, InviteResponse, RedeemResponse } from './client.js';
+import type {
+  MemberSummary,
+  InviteResponse,
+  RedeemResponse,
+  ShareObjectResponse,
+  SharedObjectSummary,
+  SyncStatus,
+} from './client.js';
 
 interface MemberRow {
   user_id: string;
@@ -267,5 +276,328 @@ export async function redeemInviteDirect(
     } catch {
       // best-effort
     }
+  }
+}
+
+// ─── Phase 3 / Phase 4 direct-Postgres equivalents ─────────────────────
+//
+// Each opens a fresh Lattice against the cloud Postgres URL, registers
+// the team internal tables, performs the equivalent SQL, then closes.
+// The pattern mirrors `redeemInviteDirect` above. Parameterized writes
+// only — no template-string concatenation into SQL.
+
+interface SharedObjectRow {
+  team_id: string;
+  table_name: string;
+  schema_spec_json: string;
+  schema_version: number;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+async function openCloud(cloudUrl: string): Promise<Lattice> {
+  if (!isPostgresUrl(cloudUrl)) {
+    throw new Error(
+      `direct-ops: cloudUrl must be a postgres:// URL (got ${cloudUrl.slice(0, 12)}…)`,
+    );
+  }
+  const db = new Lattice(cloudUrl);
+  await db.init();
+  for (const [table, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
+    await db.defineLate(table, def);
+  }
+  return db;
+}
+
+function closeQuiet(db: Lattice): void {
+  try {
+    db.close();
+  } catch {
+    // best-effort
+  }
+}
+
+async function appendChangeEnvelopeDirect(
+  db: Lattice,
+  args: {
+    team_id: string;
+    table_name: string | null;
+    pk: string | null;
+    op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete';
+    payload_json: string | null;
+    owner_user_id: string | null;
+  },
+): Promise<number> {
+  // Sequence is monotonic per team — derive from the current max.
+  const existing = (await db.query('__lattice_change_log', {
+    filters: [{ col: 'team_id', op: 'eq', val: args.team_id }],
+    orderBy: 'seq',
+    orderDir: 'desc',
+    limit: 1,
+  })) as unknown as { seq: number }[];
+  const nextSeq = (existing[0]?.seq ?? 0) + 1;
+  await db.insert('__lattice_change_log', {
+    id: randomUUID(),
+    seq: nextSeq,
+    team_id: args.team_id,
+    table_name: args.table_name,
+    pk: args.pk,
+    op: args.op,
+    payload_json: args.payload_json,
+    owner_user_id: args.owner_user_id,
+    created_at: new Date().toISOString(),
+  });
+  return nextSeq;
+}
+
+export async function shareObjectDirect(
+  cloudUrl: string,
+  teamId: string,
+  inviterUserId: string,
+  table: string,
+  spec: SchemaSpec,
+): Promise<ShareObjectResponse> {
+  const db = await openCloud(cloudUrl);
+  try {
+    const existing = (await db.query('__lattice_shared_objects', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamId },
+        { col: 'table_name', op: 'eq', val: table },
+      ],
+      limit: 1,
+    })) as unknown as SharedObjectRow[];
+    const prior = existing[0];
+    const now = new Date().toISOString();
+    let schemaVersion: number;
+    let outSpec: SchemaSpec;
+    if (prior && !prior.deleted_at) {
+      schemaVersion = prior.schema_version + 1;
+      outSpec = { ...spec, schemaVersion };
+      await db.upsert('__lattice_shared_objects', {
+        team_id: teamId,
+        table_name: table,
+        schema_spec_json: JSON.stringify(outSpec),
+        schema_version: schemaVersion,
+        created_by_user_id: prior.created_by_user_id,
+        created_at: prior.created_at,
+        updated_at: now,
+        deleted_at: null,
+      });
+    } else {
+      schemaVersion = 1;
+      outSpec = { ...spec, schemaVersion };
+      await db.upsert('__lattice_shared_objects', {
+        team_id: teamId,
+        table_name: table,
+        schema_spec_json: JSON.stringify(outSpec),
+        schema_version: schemaVersion,
+        created_by_user_id: inviterUserId,
+        created_at: prior?.created_at ?? now,
+        updated_at: now,
+        deleted_at: null,
+      });
+    }
+    await applySchemaSpec(db, table, outSpec);
+    const seq = await appendChangeEnvelopeDirect(db, {
+      team_id: teamId,
+      table_name: table,
+      pk: null,
+      op: 'schema',
+      payload_json: JSON.stringify(outSpec),
+      owner_user_id: null,
+    });
+    return { table, schema_version: schemaVersion, seq, schema_spec: outSpec };
+  } finally {
+    closeQuiet(db);
+  }
+}
+
+export async function listSharedObjectsDirect(
+  cloudUrl: string,
+  teamId: string,
+): Promise<SharedObjectSummary[]> {
+  const db = await openCloud(cloudUrl);
+  try {
+    const rows = (await db.query('__lattice_shared_objects', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamId },
+        { col: 'deleted_at', op: 'isNull' },
+      ],
+    })) as unknown as SharedObjectRow[];
+    return rows.map((r) => ({
+      table: r.table_name,
+      schema_version: r.schema_version,
+      created_by_user_id: r.created_by_user_id,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      schema_spec: JSON.parse(r.schema_spec_json) as SchemaSpec,
+    }));
+  } finally {
+    closeQuiet(db);
+  }
+}
+
+export async function unshareObjectDirect(
+  cloudUrl: string,
+  teamId: string,
+  table: string,
+): Promise<void> {
+  const db = await openCloud(cloudUrl);
+  try {
+    const existing = (await db.query('__lattice_shared_objects', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamId },
+        { col: 'table_name', op: 'eq', val: table },
+        { col: 'deleted_at', op: 'isNull' },
+      ],
+      limit: 1,
+    })) as unknown as SharedObjectRow[];
+    const row = existing[0];
+    if (!row) return;
+    await db.upsert('__lattice_shared_objects', {
+      team_id: teamId,
+      table_name: table,
+      schema_spec_json: row.schema_spec_json,
+      schema_version: row.schema_version,
+      created_by_user_id: row.created_by_user_id,
+      created_at: row.created_at,
+      updated_at: new Date().toISOString(),
+      deleted_at: new Date().toISOString(),
+    });
+    await appendChangeEnvelopeDirect(db, {
+      team_id: teamId,
+      table_name: table,
+      pk: null,
+      op: 'unshare',
+      payload_json: null,
+      owner_user_id: null,
+    });
+  } finally {
+    closeQuiet(db);
+  }
+}
+
+/**
+ * Direct-Postgres `me` — resolve the user identity from the cloud DB by
+ * looking up the user whose `__lattice_api_tokens.token_hash` matches.
+ * Bearer token is required so this is symmetric with the HTTP path.
+ */
+export async function meDirect(
+  cloudUrl: string,
+  bearerToken: string,
+): Promise<{ user: { id: string; email: string | null; name: string | null } }> {
+  const db = await openCloud(cloudUrl);
+  try {
+    const tokens = (await db.query('__lattice_api_tokens', {
+      filters: [{ col: 'token_hash', op: 'eq', val: hashToken(bearerToken) }],
+      limit: 1,
+    })) as unknown as { user_id: string; revoked_at: string | null }[];
+    const tok = tokens[0];
+    if (!tok || tok.revoked_at) throw new Error('Unauthorized');
+    const user = (await db.get('__lattice_users', tok.user_id)) as unknown as UserRow | null;
+    if (!user || user.deleted_at) throw new Error('Unauthorized');
+    return { user: { id: user.id, email: user.email, name: user.name } };
+  } finally {
+    closeQuiet(db);
+  }
+}
+
+/**
+ * Direct-Postgres status — local IS cloud, so there's no outbox-to-cloud
+ * delivery to track. We just count the user's local-link rows for the
+ * team and surface `last_change_seq = null` to signal "no pull cursor."
+ */
+export async function getStatusDirect(
+  local: Lattice,
+  teamId: string,
+  teamName: string,
+): Promise<SyncStatus> {
+  const links = (await local.query('__lattice_local_links', {
+    filters: [{ col: 'team_id', op: 'eq', val: teamId }],
+  })) as unknown as unknown[];
+  return {
+    team_id: teamId,
+    team_name: teamName,
+    last_change_seq: null,
+    outbox_depth: 0,
+    outbox_failing: 0,
+    dlq_depth: 0,
+    local_links: links.length,
+  };
+}
+
+/**
+ * Direct-Postgres linkRow — records the link in both `__lattice_row_links`
+ * on the cloud (already the same DB the operator's local Lattice reads)
+ * and `__lattice_local_links` on the operator's local instance. The HTTP
+ * path's "mirror the row into a separate team-shared table" step has no
+ * analog in direct-mode — the table the user shared IS the team's table.
+ */
+export async function linkRowDirect(
+  local: Lattice,
+  cloudUrl: string,
+  teamId: string,
+  myUserId: string,
+  table: string,
+  pk: string,
+): Promise<{ owner_user_id: string; seq: number }> {
+  const cloud = await openCloud(cloudUrl);
+  let seq: number;
+  try {
+    await cloud.upsert('__lattice_row_links', {
+      team_id: teamId,
+      table_name: table,
+      pk,
+      owner_user_id: myUserId,
+      linked_at: new Date().toISOString(),
+    });
+    seq = await appendChangeEnvelopeDirect(cloud, {
+      team_id: teamId,
+      table_name: table,
+      pk,
+      op: 'link',
+      payload_json: JSON.stringify({ owner_user_id: myUserId }),
+      owner_user_id: myUserId,
+    });
+  } finally {
+    closeQuiet(cloud);
+  }
+  await local.upsert('__lattice_local_links', {
+    team_id: teamId,
+    table_name: table,
+    pk,
+    owner_user_id: myUserId,
+    linked_at: new Date().toISOString(),
+  });
+  return { owner_user_id: myUserId, seq };
+}
+
+export async function unlinkRowDirect(
+  local: Lattice,
+  cloudUrl: string,
+  teamId: string,
+  table: string,
+  pk: string,
+): Promise<void> {
+  const cloud = await openCloud(cloudUrl);
+  try {
+    await cloud.delete('__lattice_row_links', { team_id: teamId, table_name: table, pk });
+    await appendChangeEnvelopeDirect(cloud, {
+      team_id: teamId,
+      table_name: table,
+      pk,
+      op: 'unlink',
+      payload_json: null,
+      owner_user_id: null,
+    });
+  } finally {
+    closeQuiet(cloud);
+  }
+  try {
+    await local.delete('__lattice_local_links', { team_id: teamId, table_name: table, pk });
+  } catch {
+    // Already gone — fine.
   }
 }

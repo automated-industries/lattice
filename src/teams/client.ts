@@ -10,8 +10,14 @@ import {
   destroyTeamDirect,
   inviteDirect,
   kickMemberDirect,
+  linkRowDirect,
   listMembersDirect,
+  listSharedObjectsDirect,
+  meDirect,
   redeemInviteDirect,
+  shareObjectDirect,
+  unlinkRowDirect,
+  unshareObjectDirect,
 } from './direct-ops.js';
 
 /**
@@ -413,6 +419,9 @@ export class TeamsClient {
     cloudUrl: string,
     token: string,
   ): Promise<{ user: { id: string; email: string | null; name: string | null } }> {
+    if (isPostgresUrl(cloudUrl)) {
+      return meDirect(cloudUrl, token);
+    }
     return this.fetchAuthed(cloudUrl, token, 'GET', '/api/auth/me');
   }
 
@@ -429,7 +438,17 @@ export class TeamsClient {
     teamId: string,
     table: string,
     schemaSpec: SchemaSpec,
+    inviterUserId?: string,
   ): Promise<ShareObjectResponse> {
+    if (isPostgresUrl(cloudUrl)) {
+      if (!inviterUserId) {
+        throw new Error(
+          'shareObject: inviterUserId is required for direct-Postgres cloud URLs ' +
+            '(read it from __lattice_team_connections.my_user_id)',
+        );
+      }
+      return shareObjectDirect(cloudUrl, teamId, inviterUserId, table, schemaSpec);
+    }
     return this.fetchAuthed<ShareObjectResponse>(
       cloudUrl,
       token,
@@ -450,6 +469,10 @@ export class TeamsClient {
     teamId: string,
     table: string,
   ): Promise<void> {
+    if (isPostgresUrl(cloudUrl)) {
+      await unshareObjectDirect(cloudUrl, teamId, table);
+      return;
+    }
     await this.fetchAuthed<unknown>(
       cloudUrl,
       token,
@@ -463,6 +486,9 @@ export class TeamsClient {
     token: string,
     teamId: string,
   ): Promise<SharedObjectSummary[]> {
+    if (isPostgresUrl(cloudUrl)) {
+      return listSharedObjectsDirect(cloudUrl, teamId);
+    }
     const r = await this.fetchAuthed<{ objects: SharedObjectSummary[] }>(
       cloudUrl,
       token,
@@ -635,6 +661,18 @@ export class TeamsClient {
     if (!snapshot) {
       throw new Error(`Row not found in local table "${table}" with pk "${pk}"`);
     }
+    if (isPostgresUrl(connection.cloud_url)) {
+      const result = await linkRowDirect(
+        this.local,
+        connection.cloud_url,
+        connection.team_id,
+        connection.my_user_id,
+        table,
+        pk,
+      );
+      this.ensureWriteHook(table);
+      return result;
+    }
     const result = await this.fetchAuthed<{ owner_user_id: string; seq: number }>(
       connection.cloud_url,
       connection.api_token,
@@ -661,6 +699,10 @@ export class TeamsClient {
    */
   async unlinkRow(connection: TeamConnection, table: string, pk: string): Promise<void> {
     await this.ensureLocalTables();
+    if (isPostgresUrl(connection.cloud_url)) {
+      await unlinkRowDirect(this.local, connection.cloud_url, connection.team_id, table, pk);
+      return;
+    }
     await this.fetchAuthed<unknown>(
       connection.cloud_url,
       connection.api_token,
@@ -777,6 +819,13 @@ export class TeamsClient {
    */
   async drainOutbox(connection: TeamConnection): Promise<PushResult> {
     await this.ensureLocalTables();
+    // Direct-Postgres mode: local IS cloud. Writes already landed in
+    // the same DB the cloud reads, so there's nothing to push. Skip
+    // the outbox drain entirely (and avoid the fetch() with embedded
+    // credentials that would 400 anyway).
+    if (isPostgresUrl(connection.cloud_url)) {
+      return { pushed: 0, failed: 0 };
+    }
     const now = new Date().toISOString();
     const rows = (await this.local.query('__lattice_team_outbox', {
       filters: [
@@ -839,6 +888,13 @@ export class TeamsClient {
    */
   async pullChanges(connection: TeamConnection, batchSize = 500): Promise<PullResult> {
     await this.ensureLocalTables();
+    // Direct-Postgres mode: no separate cloud to pull from. fetchChangeBatch
+    // already short-circuits to empty for this case, but pullChanges has
+    // its own loop and would 400 on the credentialed URL — short-circuit
+    // here too.
+    if (isPostgresUrl(connection.cloud_url)) {
+      return { applied: 0, last_seq: 0, dlq_count: 0 };
+    }
     const connRow = (await this.local.get(
       '__lattice_team_connections',
       connection.team_id,

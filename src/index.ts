@@ -159,6 +159,7 @@ export {
   listDbCredentials,
   getDbCredential,
   saveDbCredential,
+  saveDbCredentialForTeam,
   deleteDbCredential,
   listTokens,
   readToken,
