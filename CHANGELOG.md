@@ -8,6 +8,96 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-05-27
+
+### Added — Token + email Teams join via `latticesql.com/api/invites/*` relay
+
+Joining a team previously required the invitee to paste the inviter's full
+`postgres://user:password@host/db` URL — broken UX, since anyone joining the
+team would obviously NOT have the Postgres password. The whole point of an
+invite is to grant access to someone who doesn't already have it.
+
+This release adds a parallel path: the invitee enters **only** their invite
+token (`latinv_…`) + their email. The lattice client posts those to
+`https://www.latticesql.com/api/invites/redeem`; the relay looks up the
+encrypted envelope the inviter published when they minted the token,
+decrypts the cloud URL with a token-derived key, and returns the URL. The
+lattice client then drives the standard redeem flow against the cloud
+Postgres directly. The relay never holds Postgres credentials at rest —
+only an AES-256-GCM ciphertext bound to the token.
+
+- **New method:** `TeamsClient.redeemInviteByToken({ token, email, displayName })`
+  returns the redeem response, the discovered cloud URL, and the
+  switchable db-credential label the team was saved under.
+- **New GUI route:** `POST /api/teams-gui/connections/join-by-token`.
+- **New GUI dialog:** "Join team" now defaults to token + email only. A
+  small `▸ Advanced — paste connection URL` disclosure exposes the legacy
+  URL-paste path for offline / self-hosted setups.
+- **New CLI mode:** `lattice teams join --token <latinv_…> --email <addr> --name "<display>"`
+  uses the relay. Add `--cloud <url>` to fall back to the URL-paste mode.
+
+The cloud-side `redeemInvite` validation is unchanged — the relay only
+shortcuts URL discovery. Defense in depth: the inviter's
+`__lattice_invitations` row in the cloud still enforces token hash,
+email binding, expiry, and single-use.
+
+### Added — Joined team appears in the database dropdown
+
+After a successful token+email join, the team's cloud URL is persisted in
+`~/.lattice/db-credentials.enc` under `<sanitized-team-name>.config` and a
+sibling YAML config is written to the user's project directory pointing at
+`${LATTICE_DB:<label>}`. The dropdown picks it up on the next `/api/databases`
+read — no more hand-editing the YAML to point at the cloud you just joined.
+
+### Added — Opt-out usage analytics
+
+Function-call telemetry for the npm package + GUI. Default ON. What's sent:
+function name, package version, and a per-install random `anonymous_id`
+(generated lazily on first read of `~/.lattice/analytics.json`). What's
+never sent: email, display name, row data, DB content, file paths, cloud
+URLs.
+
+Opt out at any time:
+
+```
+lattice analytics off            # writes ~/.lattice/analytics.json
+LATTICE_ANALYTICS=off lattice …  # env-var override (CI-friendly)
+```
+
+The npm package POSTs to `https://www.latticesql.com/api/telemetry`,
+which forwards to GA4 Measurement Protocol with the api_secret held
+server-side (never in the public package). Auto-disabled during vitest
+runs.
+
+### Fixed — `Request cannot be constructed from a URL that includes credentials` on share
+
+`TeamsClient.shareObject`, `unshareObject`, `listSharedObjects`, `linkRow`,
+`unlinkRow`, and `me` previously routed every call through
+`fetchAuthed(cloudUrl + path)`. When `cloudUrl` is `postgres://user:pass@…`,
+the Fetch API refuses the URL outright. So the "Share a table" button in
+the GUI failed before any work happened — even though every prior step
+of the Migrate / Connect / Invite flows had succeeded.
+
+Each of those methods now dispatches on URL scheme — `http(s)://` keeps
+the HTTP path; `postgres(ql)://` uses a direct-Postgres equivalent in
+`src/teams/direct-ops.ts`. New direct functions: `shareObjectDirect`,
+`unshareObjectDirect`, `listSharedObjectsDirect`, `meDirect`,
+`linkRowDirect`, `unlinkRowDirect`, `getStatusDirect`. All use the
+existing `Lattice` insert/upsert/query/delete API (parameterized SQL
+under the hood — no template-string concatenation). `drainOutbox` and
+`pullChanges` short-circuit to empty for direct-Postgres clouds (local
+IS cloud — nothing to push or pull).
+
+### Security
+
+- AES-256-GCM with 96-bit random IVs, key derived as `SHA-256(rawToken)[0..31]`.
+- AAD binds each ciphertext to `hex(SHA-256(rawToken))` so swapping ciphertexts between KV slots fails decrypt.
+- Redeem endpoint: 30/min + 200/hour per-IP rate limit; 5 bad attempts on the same token hash trigger a 10-minute lockout.
+- Uniform 403 + body + minimum 150ms response time across all redeem failure modes (no oracle distinguishing "unknown token" from "wrong email").
+- Origin-pinned CORS (latticesql.com only in production).
+- Schema-validated payloads (4 KiB publish, 1 KiB redeem, 2 KiB telemetry; SHA-256 hex strictly enforced).
+- No raw tokens or cloud URLs in logs anywhere.
+
 ## [1.13.5] - 2026-05-26
 
 ### Fixed — `redeemInvite` fails with HTTP 404 against Postgres cloud URLs

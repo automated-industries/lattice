@@ -205,6 +205,46 @@ export function saveDbCredential(label: string, url: string): void {
   saveCredentials(creds);
 }
 
+/**
+ * Sanitize an arbitrary team name into a label safe to use as a
+ * filesystem-ish credential key. Same character set as the labels
+ * we already accept (`[A-Za-z0-9._-]+`), spaces become hyphens,
+ * everything else gets stripped.
+ */
+function sanitizeTeamLabel(teamName: string): string {
+  const stripped = teamName
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Za-z0-9._-]+/g, '');
+  if (stripped.length === 0) return 'team';
+  return stripped.startsWith('.') ? `team-${stripped}` : stripped;
+}
+
+/**
+ * Save a joined team's cloud URL as a switchable database credential so
+ * it appears in the GUI's database dropdown alongside local YAML configs.
+ *
+ * Label format: `<sanitized-team-name>.config`. If that label already
+ * exists with a different URL, we suffix `-<short-team-id>` to keep them
+ * disambiguated. Returns the label actually used.
+ */
+export function saveDbCredentialForTeam(opts: {
+  teamName: string;
+  teamId: string;
+  cloudUrl: string;
+}): string {
+  const base = sanitizeTeamLabel(opts.teamName);
+  let label = `${base}.config`;
+  const creds = loadCredentials();
+  if (label in creds && creds[label] !== opts.cloudUrl) {
+    const shortId = opts.teamId.split('-')[0] ?? opts.teamId.slice(0, 8);
+    label = `${base}-${shortId}.config`;
+  }
+  creds[label] = opts.cloudUrl;
+  saveCredentials(creds);
+  return label;
+}
+
 /** Remove the connection URL stored under `label`. No-op if absent. */
 export function deleteDbCredential(label: string): void {
   const creds = loadCredentials();

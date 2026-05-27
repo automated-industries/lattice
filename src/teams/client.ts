@@ -4,14 +4,26 @@ import { LOCAL_INTERNAL_TABLE_DEFS } from './internal-tables.js';
 import { applySchemaSpec, TeamsSchemaConflictError, type SchemaSpec } from './schema-spec.js';
 import type { Row, WriteHookContext } from '../types.js';
 import { probeCloud, type CloudProbeResult } from '../framework/cloud-connect.js';
-import { saveDbCredential, writeToken } from '../framework/user-config.js';
+import {
+  saveDbCredential,
+  saveDbCredentialForTeam,
+  writeToken,
+} from '../framework/user-config.js';
+import { emitAnalytics } from '../framework/analytics.js';
+import { resolveInviteEnvelope } from './invite-relay.js';
 import { isPostgresUrl, registerDirectViaPostgres } from './register-direct.js';
 import {
   destroyTeamDirect,
   inviteDirect,
   kickMemberDirect,
+  linkRowDirect,
   listMembersDirect,
+  listSharedObjectsDirect,
+  meDirect,
   redeemInviteDirect,
+  shareObjectDirect,
+  unlinkRowDirect,
+  unshareObjectDirect,
 } from './direct-ops.js';
 
 /**
@@ -192,6 +204,7 @@ export class TeamsClient {
     name: string,
     teamName: string,
   ): Promise<RegisterResponse> {
+    emitAnalytics('TeamsClient.register');
     return this.fetchUnauthed<RegisterResponse>(cloudUrl, 'POST', '/api/auth/register', {
       email,
       name,
@@ -205,6 +218,7 @@ export class TeamsClient {
     email: string,
     name: string,
   ): Promise<RedeemResponse> {
+    emitAnalytics('TeamsClient.redeemInvite');
     // Dispatch on URL scheme — http(s):// keeps the HTTP teams-server
     // path; postgres(ql):// drives the same INSERT sequence directly
     // against the cloud Postgres. The Fetch API refuses URLs with
@@ -219,6 +233,52 @@ export class TeamsClient {
       email,
       name,
     });
+  }
+
+  /**
+   * Redeem an invite using only the bearer token + email — discovers the
+   * cloud URL by calling latticesql.com/api/invites/redeem, then runs the
+   * standard redeem flow against the cloud. The relay never sees the
+   * Postgres password (it returns the URL to the lattice client, which
+   * uses it locally).
+   *
+   * On success, persists the team's cloud URL as a switchable database
+   * credential (saveDbCredentialForTeam) so the GUI's database dropdown
+   * picks up the new team without the user re-typing anything.
+   */
+  async redeemInviteByToken(opts: {
+    token: string;
+    email: string;
+    displayName: string;
+  }): Promise<{
+    redeem: RedeemResponse;
+    team_id: string;
+    team_name: string;
+    cloud_url: string;
+    credential_label: string;
+  }> {
+    emitAnalytics('TeamsClient.redeemInviteByToken');
+    const envelope = await resolveInviteEnvelope(opts.token, opts.email);
+    const redeem = await this.redeemInvite(
+      envelope.cloud_url,
+      opts.token,
+      opts.email,
+      opts.displayName,
+    );
+
+    const label = saveDbCredentialForTeam({
+      teamName: envelope.team_name,
+      teamId: envelope.team_id,
+      cloudUrl: envelope.cloud_url,
+    });
+
+    return {
+      redeem,
+      team_id: envelope.team_id,
+      team_name: envelope.team_name,
+      cloud_url: envelope.cloud_url,
+      credential_label: label,
+    };
   }
 
   // ── High-level orchestration (v1.13+) ───────────────────────────────────
@@ -252,6 +312,7 @@ export class TeamsClient {
     probe: CloudProbeResult;
     joinedAsMember?: { user_id: string; team_id: string };
   }> {
+    emitAnalytics('TeamsClient.connectToExistingCloud');
     const probe = await probeCloud(opts.cloudUrl);
     if (!probe.reachable) {
       throw new Error(`Cloud DB unreachable: ${probe.error ?? 'unknown error'}`);
@@ -318,6 +379,7 @@ export class TeamsClient {
     email: string;
     displayName: string;
   }): Promise<RegisterResponse> {
+    emitAnalytics('TeamsClient.upgradeToTeamCloud');
     const reg = isPostgresUrl(opts.cloudUrl)
       ? await registerDirectViaPostgres(opts.cloudUrl, opts.email, opts.displayName, opts.teamName)
       : await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
@@ -348,6 +410,7 @@ export class TeamsClient {
 
   /** Destroy the singleton team. Creator-only on the cloud side. */
   async destroyTeam(cloudUrl: string, token: string): Promise<void> {
+    emitAnalytics('TeamsClient.destroyTeam');
     if (isPostgresUrl(cloudUrl)) {
       await destroyTeamDirect(this.local);
       return;
@@ -356,6 +419,7 @@ export class TeamsClient {
   }
 
   async listMembers(cloudUrl: string, token: string, teamId: string): Promise<MemberSummary[]> {
+    emitAnalytics('TeamsClient.listMembers');
     if (isPostgresUrl(cloudUrl)) {
       return listMembersDirect(this.local, teamId);
     }
@@ -376,6 +440,7 @@ export class TeamsClient {
     expiresInHours?: number,
     inviterUserId?: string,
   ): Promise<InviteResponse> {
+    emitAnalytics('TeamsClient.invite');
     if (isPostgresUrl(cloudUrl)) {
       if (!inviterUserId) {
         throw new Error(
@@ -383,7 +448,14 @@ export class TeamsClient {
             '(read it from __lattice_team_connections.my_user_id)',
         );
       }
-      return inviteDirect(this.local, teamId, inviterUserId, inviteeEmail, expiresInHours);
+      return inviteDirect(
+        this.local,
+        teamId,
+        inviterUserId,
+        inviteeEmail,
+        expiresInHours,
+        cloudUrl,
+      );
     }
     const body: Record<string, unknown> = { invitee_email: inviteeEmail };
     if (expiresInHours !== undefined) body.expires_in_hours = expiresInHours;
@@ -397,6 +469,7 @@ export class TeamsClient {
   }
 
   async kickMember(cloudUrl: string, token: string, teamId: string, userId: string): Promise<void> {
+    emitAnalytics('TeamsClient.kickMember');
     if (isPostgresUrl(cloudUrl)) {
       await kickMemberDirect(this.local, teamId, userId);
       return;
@@ -413,6 +486,10 @@ export class TeamsClient {
     cloudUrl: string,
     token: string,
   ): Promise<{ user: { id: string; email: string | null; name: string | null } }> {
+    if (isPostgresUrl(cloudUrl)) {
+    emitAnalytics('TeamsClient.me');
+      return meDirect(cloudUrl, token);
+    }
     return this.fetchAuthed(cloudUrl, token, 'GET', '/api/auth/me');
   }
 
@@ -429,7 +506,18 @@ export class TeamsClient {
     teamId: string,
     table: string,
     schemaSpec: SchemaSpec,
+    inviterUserId?: string,
   ): Promise<ShareObjectResponse> {
+    emitAnalytics('TeamsClient.shareObject');
+    if (isPostgresUrl(cloudUrl)) {
+      if (!inviterUserId) {
+        throw new Error(
+          'shareObject: inviterUserId is required for direct-Postgres cloud URLs ' +
+            '(read it from __lattice_team_connections.my_user_id)',
+        );
+      }
+      return shareObjectDirect(cloudUrl, teamId, inviterUserId, table, schemaSpec);
+    }
     return this.fetchAuthed<ShareObjectResponse>(
       cloudUrl,
       token,
@@ -450,6 +538,11 @@ export class TeamsClient {
     teamId: string,
     table: string,
   ): Promise<void> {
+    emitAnalytics('TeamsClient.unshareObject');
+    if (isPostgresUrl(cloudUrl)) {
+      await unshareObjectDirect(cloudUrl, teamId, table);
+      return;
+    }
     await this.fetchAuthed<unknown>(
       cloudUrl,
       token,
@@ -463,6 +556,10 @@ export class TeamsClient {
     token: string,
     teamId: string,
   ): Promise<SharedObjectSummary[]> {
+    emitAnalytics('TeamsClient.listSharedObjects');
+    if (isPostgresUrl(cloudUrl)) {
+      return listSharedObjectsDirect(cloudUrl, teamId);
+    }
     const r = await this.fetchAuthed<{ objects: SharedObjectSummary[] }>(
       cloudUrl,
       token,
@@ -564,6 +661,7 @@ export class TeamsClient {
     my_user_id: string;
     api_token: string;
   }): Promise<void> {
+    emitAnalytics('TeamsClient.saveConnection');
     await this.ensureLocalTables();
     await this.local.upsert('__lattice_team_connections', {
       team_id: conn.team_id,
@@ -581,6 +679,7 @@ export class TeamsClient {
   }
 
   async listConnections(): Promise<TeamConnection[]> {
+    emitAnalytics('TeamsClient.listConnections');
     await this.ensureLocalTables();
     const rows = (await this.local.query(
       '__lattice_team_connections',
@@ -633,7 +732,20 @@ export class TeamsClient {
     await this.ensureLocalTables();
     const snapshot = await this.local.get(table, pk);
     if (!snapshot) {
+    emitAnalytics('TeamsClient.linkRow');
       throw new Error(`Row not found in local table "${table}" with pk "${pk}"`);
+    }
+    if (isPostgresUrl(connection.cloud_url)) {
+      const result = await linkRowDirect(
+        this.local,
+        connection.cloud_url,
+        connection.team_id,
+        connection.my_user_id,
+        table,
+        pk,
+      );
+      this.ensureWriteHook(table);
+      return result;
     }
     const result = await this.fetchAuthed<{ owner_user_id: string; seq: number }>(
       connection.cloud_url,
@@ -660,7 +772,12 @@ export class TeamsClient {
    * 4 v1 default — receivers' pullers handle their own removal).
    */
   async unlinkRow(connection: TeamConnection, table: string, pk: string): Promise<void> {
+    emitAnalytics('TeamsClient.unlinkRow');
     await this.ensureLocalTables();
+    if (isPostgresUrl(connection.cloud_url)) {
+      await unlinkRowDirect(this.local, connection.cloud_url, connection.team_id, table, pk);
+      return;
+    }
     await this.fetchAuthed<unknown>(
       connection.cloud_url,
       connection.api_token,
@@ -686,6 +803,7 @@ export class TeamsClient {
    * instance, not the underlying DB).
    */
   async attachWriteHooks(): Promise<void> {
+    emitAnalytics('TeamsClient.attachWriteHooks');
     await this.ensureLocalTables();
     const links = (await this.local.query(
       '__lattice_local_links',
@@ -776,7 +894,15 @@ export class TeamsClient {
    * surfaces them via `lattice teams status`.
    */
   async drainOutbox(connection: TeamConnection): Promise<PushResult> {
+    emitAnalytics('TeamsClient.drainOutbox');
     await this.ensureLocalTables();
+    // Direct-Postgres mode: local IS cloud. Writes already landed in
+    // the same DB the cloud reads, so there's nothing to push. Skip
+    // the outbox drain entirely (and avoid the fetch() with embedded
+    // credentials that would 400 anyway).
+    if (isPostgresUrl(connection.cloud_url)) {
+      return { pushed: 0, failed: 0 };
+    }
     const now = new Date().toISOString();
     const rows = (await this.local.query('__lattice_team_outbox', {
       filters: [
@@ -838,7 +964,15 @@ export class TeamsClient {
    * bad row doesn't stall the stream.
    */
   async pullChanges(connection: TeamConnection, batchSize = 500): Promise<PullResult> {
+    emitAnalytics('TeamsClient.pullChanges');
     await this.ensureLocalTables();
+    // Direct-Postgres mode: no separate cloud to pull from. fetchChangeBatch
+    // already short-circuits to empty for this case, but pullChanges has
+    // its own loop and would 400 on the credentialed URL — short-circuit
+    // here too.
+    if (isPostgresUrl(connection.cloud_url)) {
+      return { applied: 0, last_seq: 0, dlq_count: 0 };
+    }
     const connRow = (await this.local.get(
       '__lattice_team_connections',
       connection.team_id,
@@ -960,6 +1094,7 @@ export class TeamsClient {
   // ── Status (Phase 4) ────────────────────────────────────────────────────
 
   async getStatus(connection: TeamConnection): Promise<SyncStatus> {
+    emitAnalytics('TeamsClient.getStatus');
     await this.ensureLocalTables();
     const connRow = (await this.local.get(
       '__lattice_team_connections',

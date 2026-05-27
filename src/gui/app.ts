@@ -2425,23 +2425,48 @@ export const guiAppHtml = `<!doctype html>
     function showJoinTeamModal(kind) {
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
-          '<div class="field"><label>Cloud URL</label>' +
-            '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
-          '</div>' +
-          '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..." autocapitalize="off" autocorrect="off" spellcheck="false"></textarea></div>' +
+          '<div class="field"><label>Invite token</label><textarea name="token" placeholder="latinv_..." autocapitalize="off" autocorrect="off" spellcheck="false"></textarea></div>' +
           '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" autocapitalize="off" /></div>' +
-          '<div class="field"><label>Your display name</label><input name="name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
+          '<div class="field"><label>Your display name</label><input name="display_name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
           '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-          'Use the same Postgres URL the inviter used (postgres://…). Email must match the address the invitation was addressed to.' +
-          '</p>';
+          "Email must match the address the invitation was addressed to. The team's database becomes available in the database dropdown after joining." +
+          '</p>' +
+          '<details style="margin-top:10px;font-size:12px">' +
+            '<summary style="cursor:pointer;color:var(--text-muted)">▸ Advanced — paste connection URL</summary>' +
+            '<div style="margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface-sunken)">' +
+              '<p style="margin:0 0 8px;color:var(--text-muted)">For offline or self-hosted setups where the inviter URL is shared directly.</p>' +
+              '<div class="field"><label>Cloud URL</label>' +
+                '<input name="cloud_url" placeholder="postgres://…" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+              '</div>' +
+            '</div>' +
+          '</details>';
         showModal('Join team', bodyHtml, {
           primaryLabel: 'Join',
           onSubmit: function (scope) {
             var data = collectFormValues(scope);
-            return fetchJson('/api/teams-gui/connections/join', {
+            // Advanced disclosure populates cloud_url — fall back to the
+            // legacy URL-paste path. Default path uses the token+email
+            // relay on latticesql.com to discover the cloud URL.
+            if (data.cloud_url && data.cloud_url.trim().length > 0) {
+              return fetchJson('/api/teams-gui/connections/join', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  cloud_url: data.cloud_url,
+                  invite_token: data.token,
+                  email: data.email,
+                  name: data.display_name,
+                }),
+              }).then(function () { refreshSettingsRoute(kind); });
+            }
+            return fetchJson('/api/teams-gui/connections/join-by-token', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(data),
+              body: JSON.stringify({
+                token: data.token,
+                email: data.email,
+                display_name: data.display_name,
+              }),
             }).then(function () { refreshSettingsRoute(kind); });
           },
         });

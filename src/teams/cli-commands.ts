@@ -32,7 +32,9 @@ const TEAMS_USAGE = [
   'Subcommands:',
   '  register   Bootstrap on a fresh cloud: create user + team in one call',
   '             (requires --cloud --email --name --team-name)',
-  '  join       Redeem an invitation (requires --cloud --token --email --name)',
+  '  join       Redeem an invitation by token + email (uses the latticesql.com',
+  '             relay to discover the cloud URL). Add --cloud for the legacy',
+  '             URL-paste path. Requires --token --email --name.',
   '  list       List your local team connections',
   '  members    List members of the team (--team)',
   '  invite     Generate an invitation (creator only; --team --invitee-email)',
@@ -199,23 +201,42 @@ async function runRegister(args: TeamsCliArgs): Promise<void> {
 }
 
 async function runJoin(args: TeamsCliArgs): Promise<void> {
-  const cloud = requireArg(args, 'cloud', 'cloud');
   const token = requireArg(args, 'token', 'token');
   const email = requireArg(args, 'email', 'email');
   const name = requireArg(args, 'name', 'name');
   const db = await openLocal(args.config);
   try {
     const client = new TeamsClient(db);
-    const result = await client.redeemInvite(cloud, token, email, name);
+    // Two modes:
+    //   1. --cloud + --token + --email + --name  → legacy URL-based join
+    //      (works offline, or against self-hosted clouds not behind the
+    //      latticesql.com relay)
+    //   2. --token + --email + --name (no --cloud) → token+email join via
+    //      the relay; the cloud URL is discovered from the inviter's
+    //      published envelope.
+    if (args.cloud) {
+      const result = await client.redeemInvite(args.cloud, token, email, name);
+      await client.saveConnection({
+        team_id: result.team.id,
+        team_name: result.team.name,
+        cloud_url: args.cloud,
+        my_user_id: result.user.id,
+        api_token: result.raw_token,
+      });
+      console.log(`Joined team "${result.team.name}" (team-id: ${result.team.id}).`);
+      console.log(`Local connection saved.`);
+      return;
+    }
+    const outcome = await client.redeemInviteByToken({ token, email, displayName: name });
     await client.saveConnection({
-      team_id: result.team.id,
-      team_name: result.team.name,
-      cloud_url: cloud,
-      my_user_id: result.user.id,
-      api_token: result.raw_token,
+      team_id: outcome.team_id,
+      team_name: outcome.team_name,
+      cloud_url: outcome.cloud_url,
+      my_user_id: outcome.redeem.user.id,
+      api_token: outcome.redeem.raw_token,
     });
-    console.log(`Joined team "${result.team.name}" (team-id: ${result.team.id}).`);
-    console.log(`Local connection saved.`);
+    console.log(`Joined team "${outcome.team_name}" (team-id: ${outcome.team_id}).`);
+    console.log(`Saved as switchable database "${outcome.credential_label}".`);
   } finally {
     db.close();
   }

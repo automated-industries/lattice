@@ -1,4 +1,6 @@
+import { existsSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { TeamsClient, TeamsHttpError, type TeamConnection } from '../teams/client.js';
 import { serializeSchema } from '../teams/schema-spec.js';
@@ -22,6 +24,8 @@ import { serializeSchema } from '../teams/schema-spec.js';
 interface TeamsGuiContext {
   db: Lattice;
   client: TeamsClient;
+  /** Absolute path to the currently-active YAML config. */
+  configPath: string;
   pathname: string;
   method: string;
   /**
@@ -32,6 +36,38 @@ interface TeamsGuiContext {
    * after every sync.
    */
   validTables: Set<string>;
+}
+
+/**
+ * Write a sibling YAML config that points at a saved db-credential
+ * label. After this lands on disk, listConfigs() picks it up as a
+ * dropdown entry and the user can switch databases without hand-editing
+ * any YAML.
+ *
+ * Skips writing if a file already exists at the target path — the
+ * credential save in saveDbCredentialForTeam disambiguates the label by
+ * appending the short team id, so the YAML file should follow suit.
+ * Returns the path written (or the existing path if it was already
+ * present).
+ */
+function writeTeamConfigYaml(
+  activeConfigPath: string,
+  credentialLabel: string,
+  teamName: string,
+): string {
+  const projectDir = dirname(activeConfigPath);
+  const yamlPath = join(projectDir, `${credentialLabel}.yml`);
+  if (existsSync(yamlPath)) return yamlPath;
+  const yaml =
+    `# Joined-team config — managed by lattice gui. Edit entities: to add\n` +
+    `# locally-projected tables of the team's shared data; the cloud DB at\n` +
+    `# ${credentialLabel} is the authoritative source.\n` +
+    `db: \${LATTICE_DB:${credentialLabel}}\n` +
+    `\n` +
+    `# Team: ${teamName.replace(/[\r\n]/g, ' ')}\n` +
+    `entities: {}\n`;
+  writeFileSync(yamlPath, yaml, 'utf8');
+  return yamlPath;
 }
 
 function sendJson(res: ServerResponse, body: unknown, status = 200): void {
@@ -118,6 +154,11 @@ export async function dispatchTeamsGuiRoute(
 
   if (pathname === '/api/teams-gui/connections/join' && method === 'POST') {
     await tryHandler(res, () => handleJoin(req, res, ctx));
+    return true;
+  }
+
+  if (pathname === '/api/teams-gui/connections/join-by-token' && method === 'POST') {
+    await tryHandler(res, () => handleJoinByToken(req, res, ctx));
     return true;
   }
 
@@ -253,6 +294,7 @@ async function dispatchTeamSubroute(
       teamId,
       table,
       spec,
+      conn.my_user_id,
     );
     sendJson(res, result);
     return;
@@ -314,6 +356,57 @@ async function handleJoin(
     api_token: result.raw_token,
   });
   sendJson(res, { ok: true, team: result.team, user: result.user });
+}
+
+/**
+ * Token+email join: posts {token, email} to latticesql.com, receives the
+ * cloud URL, runs the standard redeem flow, and saves the team's cloud
+ * URL as a switchable db-credential so the dropdown picks it up.
+ *
+ * The invitee never types a Postgres URL. The "Advanced" disclosure in
+ * the Join dialog falls back to the legacy /connections/join route for
+ * offline or self-hosted setups where the relay isn't reachable.
+ */
+async function handleJoinByToken(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: TeamsGuiContext,
+): Promise<void> {
+  const body = await readJson(req);
+  const token = requireString(body, 'token');
+  const email = requireString(body, 'email');
+  const displayName = requireString(body, 'display_name');
+  if (!token || !email || !displayName) {
+    sendJson(res, { error: 'token, email, display_name required' }, 400);
+    return;
+  }
+  let outcome;
+  try {
+    outcome = await ctx.client.redeemInviteByToken({ token, email, displayName });
+  } catch (e) {
+    const message = (e as Error).message;
+    sendJson(res, { error: message }, 400);
+    return;
+  }
+  await ctx.client.saveConnection({
+    team_id: outcome.team_id,
+    team_name: outcome.team_name,
+    cloud_url: outcome.cloud_url,
+    my_user_id: outcome.redeem.user.id,
+    api_token: outcome.redeem.raw_token,
+  });
+  const configYamlPath = writeTeamConfigYaml(
+    ctx.configPath,
+    outcome.credential_label,
+    outcome.team_name,
+  );
+  sendJson(res, {
+    ok: true,
+    team: outcome.redeem.team,
+    user: outcome.redeem.user,
+    credential_label: outcome.credential_label,
+    config_path: configYamlPath,
+  });
 }
 
 async function handleRegisterAndCreate(
