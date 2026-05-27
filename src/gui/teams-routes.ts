@@ -253,6 +253,7 @@ async function dispatchTeamSubroute(
       teamId,
       table,
       spec,
+      conn.my_user_id,
     );
     sendJson(res, result);
     return;
