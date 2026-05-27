@@ -143,8 +143,37 @@ async function entitiesWithCounts(
   outputDir: string,
 ): Promise<GuiEntitiesPayload> {
   const payload = getGuiEntities(configPath, outputDir);
+
+  // Augment the YAML-declared tables with anything the Lattice schema
+  // manager knows about at runtime that the YAML doesn't. This is what
+  // surfaces team-shared tables that were auto-registered via
+  // `applyCloudSchemaLocally` (defineLate under the hood) on `openConfig`:
+  // the project's joined-team `<team-name>.config.yml` carries an empty
+  // `entities: {}` block, but the team's cloud Postgres has shared
+  // tables we just synced into the local schema. Without this merge the
+  // SPA shows "No entities yet" against a joined-team cloud DB.
+  //
+  // Internal `__lattice_*` bookkeeping tables stay hidden — they're not
+  // user-facing entities and the SPA doesn't render them.
+  const yamlNames = new Set(payload.tables.map((t) => t.name));
+  const extraTables = db
+    .getRegisteredTableNames()
+    .filter((name) => !yamlNames.has(name))
+    .filter((name) => !name.startsWith('__lattice_'))
+    .filter((name) => !name.startsWith('_lattice_'))
+    .map((name) => {
+      const cols = db.getRegisteredColumns(name) ?? {};
+      return {
+        name,
+        columns: Object.keys(cols),
+        outputFile: `.schema-only/${name}.md`,
+        relations: {},
+      };
+    });
+  const allTables = [...payload.tables, ...extraTables];
+
   const enrichedTables = await Promise.all(
-    payload.tables.map(async (t) => {
+    allTables.map(async (t) => {
       // Only count live rows when the table has a `deleted_at` column.
       const rowCount = t.columns.includes('deleted_at')
         ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
@@ -536,6 +565,45 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   // links (i.e. the user is part of teams + linked rows in a prior
   // session). Idempotent — safe to call on every openConfig.
   await teamsClient.attachWriteHooks();
+
+  // Auto-discover shared-table schemas for every team this lattice has
+  // joined. Without this, a fresh `lattice gui` against a joined-team
+  // cloud config opens to "No entities yet. Define entities in your
+  // lattice.config.yml or register them via db.define()..." because
+  // the YAML `entities: {}` block carries no schema and the cloud's
+  // `__lattice_shared_objects` rows haven't been replayed into the
+  // local Lattice's in-memory schema. Each `applyCloudSchemaLocally`
+  // calls `defineLate` under the hood — idempotent on re-open.
+  //
+  // Failures here are isolated per-team: a single dead cloud must not
+  // block the GUI from booting. Discovery errors are logged but
+  // swallowed; the user sees a less-populated dropdown rather than
+  // a 500.
+  try {
+    const connections = await teamsClient.listConnections();
+    for (const conn of connections) {
+      try {
+        const result = await teamsClient.syncSharedSchemas(conn);
+        for (const obj of result.applied) {
+          validTables.add(obj.table);
+        }
+        if (result.conflicts.length > 0) {
+          console.warn(
+            `[openConfig] schema conflicts on team ${conn.team_name}:`,
+            result.conflicts.map((c) => `${c.table}: ${c.reason}`).join('; '),
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[openConfig] could not auto-sync shared schemas for team ${conn.team_name}:`,
+          (e as Error).message,
+        );
+      }
+    }
+  } catch (e) {
+    console.warn('[openConfig] could not enumerate team connections:', (e as Error).message);
+  }
+
   return {
     configPath,
     outputDir,
