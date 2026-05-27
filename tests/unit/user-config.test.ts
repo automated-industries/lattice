@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,9 +11,11 @@ import {
   listDbCredentials,
   listTokens,
   readIdentity,
+  readPreferences,
   readToken,
   saveDbCredential,
   writeIdentity,
+  writePreferences,
   writeToken,
 } from '../../src/framework/user-config.js';
 
@@ -83,6 +85,38 @@ describe('framework user-config', () => {
       } as unknown as Parameters<typeof writeIdentity>[0]);
       const back = readIdentity();
       expect(back).toEqual({ display_name: 'A', email: 'a@b' });
+    });
+  });
+
+  describe('preferences.json round-trip', () => {
+    it('returns defaults when the file is missing', () => {
+      const prefs = readPreferences();
+      expect(prefs).toEqual({ show_system_tables: false });
+    });
+
+    it('round-trips write → read', () => {
+      writePreferences({ show_system_tables: true });
+      expect(readPreferences()).toEqual({ show_system_tables: true });
+      writePreferences({ show_system_tables: false });
+      expect(readPreferences()).toEqual({ show_system_tables: false });
+    });
+
+    it('drops unknown extra fields on write (forward-compat)', () => {
+      writePreferences({
+        show_system_tables: true,
+        sidebar_dense: false,
+      } as unknown as Parameters<typeof writePreferences>[0]);
+      const raw = readFileSync(join(tmpDir, 'preferences.json'), 'utf8');
+      expect(raw).toContain('show_system_tables');
+      expect(raw).not.toContain('sidebar_dense');
+    });
+
+    it('falls back to defaults when the file is malformed', () => {
+      const path = join(tmpDir, 'preferences.json');
+      writePreferences({ show_system_tables: true });
+      // Corrupt the file in place.
+      writeFileSync(path, '{not json', 'utf8');
+      expect(readPreferences()).toEqual({ show_system_tables: false });
     });
   });
 

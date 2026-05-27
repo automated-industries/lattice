@@ -17,7 +17,8 @@ import {
 import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
-import { CLOUD_INTERNAL_TABLE_DEFS } from '../teams/internal-tables.js';
+import { CLOUD_INTERNAL_TABLE_DEFS, installCloudInternalTriggers } from '../teams/internal-tables.js';
+import { RealtimeBroker } from './realtime.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
@@ -454,6 +455,14 @@ interface ActiveDb {
    * write from outside.
    */
   teamsClient: TeamsClient;
+  /**
+   * Active LISTEN/NOTIFY broker when the underlying Lattice is backed
+   * by Postgres. Null for SQLite (no realtime). Owned by the active
+   * DB; replaced wholesale on switch.
+   */
+  realtime: RealtimeBroker | null;
+  /** Original db: connection string from the YAML, used to spin up the broker. */
+  dbPath: string;
 }
 
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
@@ -604,6 +613,21 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     console.warn('[openConfig] could not enumerate team connections:', (e as Error).message);
   }
 
+  // Realtime broker — only meaningful when the active DB is Postgres.
+  // The broker connects on creation; status/payload events stream out
+  // via the SSE endpoint. SQLite configs leave this as null and the
+  // status pill reports the local-mode (yellow) state.
+  let realtime: RealtimeBroker | null = null;
+  if (db.getDialect() === 'postgres') {
+    try {
+      realtime = new RealtimeBroker(parsed.dbPath);
+      await realtime.start();
+    } catch (e) {
+      console.warn('[openConfig] realtime broker init failed:', (e as Error).message);
+      realtime = null;
+    }
+  }
+
   return {
     configPath,
     outputDir,
@@ -614,6 +638,8 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     entityContextByTable,
     manifest,
     softDeletable,
+    realtime,
+    dbPath: parsed.dbPath,
   };
 }
 
@@ -692,10 +718,31 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
   return configPath;
 }
 
+/**
+ * Tear down an ActiveDb: stop the realtime broker (if any), then close
+ * the Lattice. Called before reopening or swapping configs so listeners
+ * + pg clients don't leak.
+ */
+async function disposeActive(active: ActiveDb): Promise<void> {
+  if (active.realtime) {
+    try {
+      await active.realtime.stop();
+    } catch {
+      // best-effort
+    }
+  }
+  try {
+    active.db.close();
+  } catch {
+    // best-effort
+  }
+}
+
 async function registerTeamCloudTables(db: Lattice): Promise<void> {
   for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
     await db.defineLate(name, def);
   }
+  await installCloudInternalTriggers(db);
 }
 
 /**
@@ -783,6 +830,59 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sendText(res, guiAppHtml, 200, 'text/html; charset=utf-8');
           return;
         }
+
+        // ── Realtime: connection status + LISTEN/NOTIFY SSE stream ──────────
+        // /api/realtime/status — single-shot JSON snapshot of mode + state.
+        // /api/realtime/stream — Server-Sent Events; one event per NOTIFY
+        // payload plus 'state' events on connection transitions.
+        if (method === 'GET' && pathname === '/api/realtime/status') {
+          const mode: 'local' | 'cloud' = active.realtime ? 'cloud' : 'local';
+          const connected = active.realtime?.state() === 'connected';
+          sendJson(res, { mode, state: active.realtime?.state() ?? 'local', connected });
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/realtime/stream') {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-store, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          });
+          const broker = active.realtime;
+          const initialMode: 'local' | 'cloud' = broker ? 'cloud' : 'local';
+          const writeEvent = (event: string, data: unknown): void => {
+            try {
+              res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+            } catch {
+              // socket closed — handled by 'close' below
+            }
+          };
+          writeEvent('state', {
+            mode: initialMode,
+            state: broker?.state() ?? 'local',
+          });
+          const keepalive = setInterval(() => {
+            try {
+              res.write(`: keepalive\n\n`);
+            } catch {
+              // socket closed
+            }
+          }, 25_000);
+          const offState = broker?.subscribeState((state) => {
+            writeEvent('state', { mode: 'cloud', state });
+          });
+          const offPayload = broker?.subscribePayload((payload) => {
+            writeEvent('change', payload);
+          });
+          const cleanup = (): void => {
+            clearInterval(keepalive);
+            if (offState) offState();
+            if (offPayload) offPayload();
+          };
+          req.on('close', cleanup);
+          req.on('error', cleanup);
+          return;
+        }
         if (method === 'GET' && pathname === '/api/project') {
           sendJson(res, getGuiProject(active.configPath, active.outputDir));
           return;
@@ -830,7 +930,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               updated_at: new Date().toISOString(),
             });
           }
-          active.db.close();
+          await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir);
           sendJson(res, { ok: true, name: entityName });
           return;
@@ -919,7 +1019,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             doc.setIn(['entityContexts', newName], ctx);
           }
           saveConfigDoc(active.configPath, doc);
-          active.db.close();
+          await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir);
           sendJson(res, { ok: true });
           return;
@@ -955,7 +1055,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           if (typeof body.ref === 'string') fieldDef.ref = body.ref;
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
           saveConfigDoc(active.configPath, doc);
-          active.db.close();
+          await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir);
           sendJson(res, { ok: true });
           return;
@@ -990,7 +1090,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           doc.deleteIn(['entities', entityName, 'fields', colName]);
           doc.setIn(['entities', entityName, 'fields', newCol], fieldDef);
           saveConfigDoc(active.configPath, doc);
-          active.db.close();
+          await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir);
           sendJson(res, { ok: true });
           return;
@@ -1203,7 +1303,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
-          active.db.close();
+          await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
           return;
@@ -1216,7 +1316,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
           const next = await openConfig(newConfigPath, active.outputDir);
-          active.db.close();
+          await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
           return;
@@ -1443,7 +1543,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             method,
             swap: async () => {
               const next = await openConfig(active.configPath, active.outputDir);
-              active.db.close();
+              await disposeActive(active);
               active = next;
             },
           });
@@ -1470,14 +1570,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     port,
     url,
     close: () =>
-      new Promise((resolveClose, reject) => {
+      new Promise<void>((resolveClose, reject) => {
         server.close((err) => {
           if (err) {
             reject(err);
             return;
           }
-          active.db.close();
-          resolveClose();
+          void disposeActive(active).then(() => resolveClose());
         });
       }),
   };
