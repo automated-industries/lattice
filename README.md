@@ -2201,6 +2201,8 @@ The cloud rejects redemption if the caller's claimed email doesn't match the inv
 
 **Same flows from the GUI.** The local `lattice gui` Project Config view drives the entire teams lifecycle — create / join, invite by email, share tables, link rows, see sync status. Identity (display name + email) comes from `~/.lattice/identity.json` and is prefilled in every modal.
 
+**Joining via the GUI is one click (v1.13.7+).** When you click "Join via invite" and the redeem succeeds, the team's cloud URL is automatically saved as a switchable database credential and a sibling YAML config is written to your project directory. The new entry shows up in the database dropdown as `<team-name>.config`. Clicking it opens the SPA with the team's shared tables already populated — no YAML editing, no `db.define()` calls.
+
 **Cloud server mode**: `lattice gui --team-cloud` boots the same binary as a cloud server. It exposes the bearer-token-gated `/api/team*` endpoints + the `/objects`/`/changes`/`/rows`/`/links` sync routes, and disables the local dev-tool surface (table viewer, CRUD endpoints, register-and-create modal).
 
 The full architecture, schema, and HTTP surface live in [docs/teams.md](./docs/teams.md).
