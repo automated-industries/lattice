@@ -31,6 +31,19 @@ New direct-Postgres helpers in `src/teams/direct-ops.ts`: `shareObjectDirect`, `
 
 `POST /api/teams-gui/teams/:id/shared` (the GUI's "Share a table" endpoint) now passes `conn.my_user_id` to `TeamsClient.shareObject`. The HTTP path ignores the new arg; the direct-Postgres path requires it because there's no bearer-resolved user identity in the direct flow.
 
+### Fixed — Joined team's cloud DB now appears in the database dropdown
+
+`POST /api/teams-gui/connections/join` (the GUI's "Join via invite" handler) previously saved the team connection but did nothing to make the team's cloud DB switchable — the user had no way to actually USE the team's cloud after joining. The credential lived in the local lattice's `__lattice_team_connections` table, but the database-switcher dropdown reads filesystem YAML configs.
+
+Two pieces wire this together now:
+
+- **`saveDbCredentialForTeam({teamName, teamId, cloudUrl})`** in `src/framework/user-config.ts` — persists the cloud URL into `~/.lattice/db-credentials.enc` under a sanitized label of the form `<team-name>.config`. If a label collision exists with a different URL, suffixes `-<short-team-id>` to keep them distinct. Returns the label actually used.
+- **Sibling YAML write** in `src/gui/teams-routes.ts` `handleJoin` — after `saveConnection`, writes `<credential_label>.yml` to the active project's config directory containing `db: ${LATTICE_DB:<label>}` + an empty `entities:` map. `listConfigs()` picks it up on the next `/api/databases` poll.
+
+After joining, the user can immediately click the new entry in the database dropdown and switch to the team's cloud DB. Both flows (URL-paste GUI Join + the underlying `TeamsClient.redeemInvite`) are unchanged in shape — the dropdown integration is purely additive on top of a successful join.
+
+The new helper `saveDbCredentialForTeam` is re-exported from the package root.
+
 ## [1.13.5] - 2026-05-26
 
 ### Fixed — `redeemInvite` fails with HTTP 404 against Postgres cloud URLs
