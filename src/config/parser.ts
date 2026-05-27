@@ -26,6 +26,12 @@ import type { EntityContextDefinition, EntityFileSource } from '../schema/entity
 export interface ParsedConfig {
   /** Absolute path to the SQLite database file */
   dbPath: string;
+  /**
+   * Optional friendly display name for the database. Surfaces in the
+   * GUI's database switcher and Database Settings page. When absent,
+   * callers fall back to the basename of the config file.
+   */
+  name?: string;
   /** Table definitions in declaration order */
   tables: readonly { name: string; definition: TableDefinition }[];
   /** Entity context definitions in declaration order */
@@ -104,6 +110,10 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
 
   const config = raw as LatticeConfig;
   const dbPath = resolveDbPath(config.db, configDir);
+  // Optional `name:` key — friendly DB name used by the GUI. Silently
+  // ignored when not a non-empty string so older configs keep parsing.
+  const name =
+    typeof cfg.name === 'string' && cfg.name.trim().length > 0 ? cfg.name.trim() : undefined;
 
   const tables: { name: string; definition: TableDefinition }[] = [];
   for (const [entityName, entityDef] of Object.entries(config.entities)) {
@@ -113,7 +123,9 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
 
   const entityContexts = parseEntityContexts(config.entityContexts);
 
-  return { dbPath, tables, entityContexts };
+  return name !== undefined
+    ? { dbPath, name, tables, entityContexts }
+    : { dbPath, tables, entityContexts };
 }
 
 /**

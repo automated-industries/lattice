@@ -8,6 +8,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.8] - 2026-05-27
+
+### Added — Realtime cloud subscriptions
+
+Cloud Postgres-backed lattices now stream changes to every connected GUI in realtime. Mechanism: a Postgres trigger on `__lattice_change_log` emits `pg_notify('lattice_changes', …)` after every insert; the GUI server holds a dedicated `pg.Client` with `LISTEN lattice_changes` and fans payloads out to browsers over a new Server-Sent Events endpoint `GET /api/realtime/stream`. The browser's `EventSource` invalidates the entity cache and refetches the active view; connection state drives a colored status indicator in the topbar (green = cloud live, yellow = local SQLite, red = cloud disconnected). SQLite databases are unchanged — LISTEN/NOTIFY is a Postgres-only feature, and the broker is skipped on those.
+
+New surfaces:
+
+- `GET /api/realtime/stream` — SSE; emits `state` and `change` events.
+- `GET /api/realtime/status` — JSON snapshot of `{ mode, state, connected }`.
+- `src/teams/internal-tables.ts` exports `installCloudInternalTriggers(db)` and `CLOUD_NOTIFY_CHANGE_LOG_SQL`. The installer runs automatically wherever the cloud-internal table set is registered (team-cloud server boot, `redeemInviteDirect`, `openCloud`).
+- `src/gui/realtime.ts` adds `RealtimeBroker` — dedicated pg client, exponential-backoff reconnect, state + payload subscribers.
+
+### Added — Information-architecture refactor: Cloud Database as the first-class concept
+
+Lattice Teams remains the product, but the GUI no longer treats "Team" as a separable entity from the cloud database that hosts it. The mental model is now: one User per machine; many Databases; each Database is Local (single-user SQLite) or Cloud (Postgres, one or more invited team members). A "team" is just the set of members on a cloud database — you don't "Create a team" anymore, you create a cloud database, and a team emerges when you invite people.
+
+- **Three-step Create Database wizard.** A unified modal handles new-DB creation from both the header dropdown and the new Lattice Settings page. Step 1: database name + Local|Cloud radio (with cloud URL + email when cloud). Step 2: starter entities, each with a pre-checked "Share with cloud" checkbox when cloud. Step 3: review and create.
+- **Editable Database name.** Renamed from "team name"; one field for both local and cloud databases. Cloud renames broadcast to every team member via the realtime channel; local writes a `name:` key into the YAML config. New endpoint `POST /api/dbconfig/rename`. ParsedConfig gains an optional `name?: string`.
+- **Header dropdown.** Each entry shows the friendly DB name + a Local|Cloud kind chip + a connectivity dot (green/yellow/red). The "Create blank database" inline form is gone; "+ New database" opens the wizard.
+- **Settings sidebar reorganized.** Lattice Settings (catalog of every DB this lattice can reach + "Add new database"), Database Settings (renames Project Config; editable Name header at the top), Data Model, User Settings. The legacy `/settings/project-config` route still resolves for back-compat.
+- **Migrate-to-Cloud per-table share checkboxes.** The migrate modal now lists every user-defined table with "Share with cloud" pre-checked. Uncheck tables you want kept on the cloud but unshared. After the migrate, only checked tables call `shareObject`.
+- **New-entity flow.** Creating an entity from Data Model on a cloud-connected DB shows a pre-checked "Share with cloud" box. Share runs best-effort after the entity is created.
+- **Vocabulary.** "Create team" → "Create cloud database". "Team Cloud" → "Cloud database". Team language is preserved everywhere it describes member management ("Invite Team", "Join Team", "Team Members") and remains the brand ("Lattice Teams").
+
+### Added — User preferences: show system tables in sidebar
+
+The sidebar's "System" section (tables prefixed `__lattice_*` / `_lattice_gui_*`) is now hidden by default. A new checkbox in User Settings → Preferences reveals them. Backed by `~/.lattice/preferences.json` and the new `GET`/`POST /api/userconfig/preferences` endpoint. `readPreferences()` / `writePreferences()` exported from `src/framework/user-config.ts`.
+
+### Fixed — Modal label contrast + password masking
+
+- `.modal .field label` and inputs no longer fall through to browser UA defaults, which produced unreadable light-gray-on-white labels in some themes. Both pin explicit `var(--surface)` / `var(--text)` for predictable contrast on every theme.
+- `redactUrlCredentials` now masks passwords with the ASCII `'****'` instead of a bullet glyph, so `URL.toString()` stops percent-encoding the userinfo as `%E2%80%A2`.
+
+### Added — Scarf install analytics (opt-out)
+
+`latticesql` now ships with [`@scarf/scarf`](https://www.npmjs.com/package/@scarf/scarf) as a runtime dependency so we can collect anonymous install metrics — package version, Node version, OS, architecture — at `npm install` time. No runtime telemetry is added: the package still makes zero outbound calls after install except the explicit, caller-invoked `checkForUpdate()` / `autoUpdate()` requests to the npm registry.
+
+Opt out per-install (`SCARF_ANALYTICS=false npm install latticesql`), project-wide (`scarf-analytics=false` in `.npmrc`), via the cross-tool standard (`DO_NOT_TRACK=1`), or by disabling postinstall scripts entirely (`--ignore-scripts`). Opting out does not affect functionality. See README § Telemetry and SECURITY.md § Scope for the full disclosure.
+
 ## [1.13.7] - 2026-05-27
 
 ### Fixed — Joining a team cloud is now seamless end-to-end (dropdown + entity auto-discovery)
