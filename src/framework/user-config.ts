@@ -22,7 +22,8 @@ import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
  *   master.key            32-byte AES key (base64). chmod 0600. Auto-
  *                         generated on first use. `LATTICE_ENCRYPTION_KEY`
  *                         env var takes precedence if set.
- *   identity.json         display_name + email (added in a later step).
+ *   identity.json         display_name + email.
+ *   preferences.json      machine-local UI preferences (show_system_tables, ...).
  *   keys/<label>.token    per-joined-team bearer tokens (added later).
  *   db-credentials.enc    encrypted Postgres URLs (added later).
  *
@@ -133,6 +134,62 @@ export function writeIdentity(identity: UserIdentity): void {
     null,
     2,
   );
+  writeFileSync(path, body + '\n', 'utf8');
+  if (platform() !== 'win32') {
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Preferences — `~/.lattice/preferences.json` { show_system_tables, ... }
+// ---------------------------------------------------------------------------
+
+const PREFERENCES_FILENAME = 'preferences.json';
+
+export interface UserPreferences {
+  show_system_tables: boolean;
+}
+
+const DEFAULT_PREFERENCES: UserPreferences = {
+  show_system_tables: false,
+};
+
+/**
+ * Read machine-local user preferences. Returns defaults if the file is
+ * missing or malformed — callers don't need a separate existence check.
+ * Per-key fallback (not all-or-nothing) so a partial file still applies
+ * the known-good keys.
+ */
+export function readPreferences(): UserPreferences {
+  const dir = ensureConfigDir();
+  const path = join(dir, PREFERENCES_FILENAME);
+  if (!existsSync(path)) return { ...DEFAULT_PREFERENCES };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<UserPreferences>;
+    return {
+      show_system_tables:
+        typeof parsed.show_system_tables === 'boolean'
+          ? parsed.show_system_tables
+          : DEFAULT_PREFERENCES.show_system_tables,
+    };
+  } catch {
+    return { ...DEFAULT_PREFERENCES };
+  }
+}
+
+/**
+ * Persist the user preferences. Only the known keys are stored; extras
+ * are silently dropped (forward-compat: an older binary reading a newer
+ * preferences.json applies the keys it understands and leaves the rest).
+ */
+export function writePreferences(prefs: UserPreferences): void {
+  const dir = ensureConfigDir();
+  const path = join(dir, PREFERENCES_FILENAME);
+  const body = JSON.stringify({ show_system_tables: prefs.show_system_tables }, null, 2);
   writeFileSync(path, body + '\n', 'utf8');
   if (platform() !== 'win32') {
     try {
