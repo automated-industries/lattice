@@ -8,6 +8,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.7] - 2026-05-27
+
+### Fixed — Joining a team cloud is now seamless end-to-end (dropdown + entity auto-discovery)
+
+This release closes out the "join a team and start working" UX. v1.13.5 made the invite redeem succeed against direct-Postgres clouds; v1.13.6 fixed the dozen team operations that crashed once you were a member. But the user still had to manually rewire YAML configs to actually USE the team's cloud, and even after switching to it the GUI greeted them with an empty SPA. 1.13.7 wires both pieces.
+
+**1. Joined team's cloud DB now appears in the database dropdown.**
+
+`POST /api/teams-gui/connections/join` (the GUI's "Join via invite" handler) previously saved the team connection but did nothing to make the team's cloud DB switchable — the user had no way to actually USE the team's cloud after joining. The credential lived in the local lattice's `__lattice_team_connections` table, but the database-switcher dropdown reads filesystem YAML configs.
+
+Two helpers wire this together (the code shipped in 1.13.6's tarball but only became user-visible together with the entity-discovery fix below, so we credit the feature here):
+
+- **`saveDbCredentialForTeam({teamName, teamId, cloudUrl})`** in `src/framework/user-config.ts` — persists the cloud URL into `~/.lattice/db-credentials.enc` under a sanitized label of the form `<team-name>.config`. If a label collision exists with a different URL, suffixes `-<short-team-id>` to keep them distinct. Returns the label actually used.
+- **Sibling YAML write** in `src/gui/teams-routes.ts` `handleJoin` — after `saveConnection`, writes `<credential_label>.yml` to the active project's config directory containing `db: ${LATTICE_DB:<label>}` + an empty `entities:` map. `listConfigs()` picks it up on the next `/api/databases` poll.
+
+The new helper `saveDbCredentialForTeam` is re-exported from the package root.
+
+**2. Joined-team cloud now boots with the team's shared tables already populated.**
+
+Even with the dropdown integration above, clicking the new entry opened to:
+
+> _No entities yet. Define entities in your lattice.config.yml or register them via db.define(), then reload._
+
+…because the sibling YAML carried `entities: {}` and the GUI's `/api/entities` endpoint read tables exclusively from `parseConfigFile(configPath).tables`. The cloud Postgres already had the team's shared tables (rows in `__lattice_shared_objects`), but nothing replayed them into the local Lattice's runtime schema or surfaced them to the SPA.
+
+Two more pieces wire that together:
+
+- **`openConfig` auto-discovers shared schemas on every boot.** After `attachWriteHooks`, the GUI server enumerates every row in `__lattice_team_connections` and calls `client.syncSharedSchemas(connection)`. That fetches each team's `__lattice_shared_objects` rows and `defineLate`s them into the local Lattice. The work is idempotent — re-opening the GUI just re-applies the same specs. Per-team failures are logged but isolated; a single unreachable cloud doesn't block GUI boot.
+- **`/api/entities` merges runtime-registered tables with YAML-declared ones.** `entitiesWithCounts` (in `src/gui/server.ts`) now augments the YAML table list with everything the Lattice schema manager knows about that the YAML doesn't — minus the internal `__lattice_*` / `_lattice_*` bookkeeping tables. Tables auto-synced from a team's cloud show up in the dropdown immediately on the next reload.
+
+The fix is purely additive — projects without any team connections behave exactly as before.
+
+**End-to-end UX after this release:** user clicks "Join via invite," enters credentials, clicks Join. The team's cloud DB appears in the database dropdown as `<team-name>.config`. Clicking it opens the SPA with the team's shared tables in the Objects sidebar, ready to query. Zero YAML editing, zero manual schema registration.
+
+---
+
 ## [1.13.6] - 2026-05-27
 
 ### Fixed — Team operations 400 against `postgres://` cloud URLs (share, list, link, me)
@@ -31,18 +67,9 @@ New direct-Postgres helpers in `src/teams/direct-ops.ts`: `shareObjectDirect`, `
 
 `POST /api/teams-gui/teams/:id/shared` (the GUI's "Share a table" endpoint) now passes `conn.my_user_id` to `TeamsClient.shareObject`. The HTTP path ignores the new arg; the direct-Postgres path requires it because there's no bearer-resolved user identity in the direct flow.
 
-### Fixed — Joined team's cloud DB now appears in the database dropdown
+### Added (infrastructure only — full UX in 1.13.7) — `saveDbCredentialForTeam` + sibling YAML write on join
 
-`POST /api/teams-gui/connections/join` (the GUI's "Join via invite" handler) previously saved the team connection but did nothing to make the team's cloud DB switchable — the user had no way to actually USE the team's cloud after joining. The credential lived in the local lattice's `__lattice_team_connections` table, but the database-switcher dropdown reads filesystem YAML configs.
-
-Two pieces wire this together now:
-
-- **`saveDbCredentialForTeam({teamName, teamId, cloudUrl})`** in `src/framework/user-config.ts` — persists the cloud URL into `~/.lattice/db-credentials.enc` under a sanitized label of the form `<team-name>.config`. If a label collision exists with a different URL, suffixes `-<short-team-id>` to keep them distinct. Returns the label actually used.
-- **Sibling YAML write** in `src/gui/teams-routes.ts` `handleJoin` — after `saveConnection`, writes `<credential_label>.yml` to the active project's config directory containing `db: ${LATTICE_DB:<label>}` + an empty `entities:` map. `listConfigs()` picks it up on the next `/api/databases` poll.
-
-After joining, the user can immediately click the new entry in the database dropdown and switch to the team's cloud DB. Both flows (URL-paste GUI Join + the underlying `TeamsClient.redeemInvite`) are unchanged in shape — the dropdown integration is purely additive on top of a successful join.
-
-The new helper `saveDbCredentialForTeam` is re-exported from the package root.
+This release also lays the groundwork for the joined-team dropdown integration (`saveDbCredentialForTeam` in `src/framework/user-config.ts` + a sibling YAML write in `src/gui/teams-routes.ts` `handleJoin`), but the feature only becomes user-visible once 1.13.7 also auto-discovers the team's shared schemas on `openConfig`. See the 1.13.7 entry for the full description.
 
 ## [1.13.5] - 2026-05-26
 
