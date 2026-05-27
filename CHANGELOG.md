@@ -29,7 +29,7 @@ The new helper `saveDbCredentialForTeam` is re-exported from the package root.
 
 Even with the dropdown integration above, clicking the new entry opened to:
 
-> *No entities yet. Define entities in your lattice.config.yml or register them via db.define(), then reload.*
+> _No entities yet. Define entities in your lattice.config.yml or register them via db.define(), then reload._
 
 …because the sibling YAML carried `entities: {}` and the GUI's `/api/entities` endpoint read tables exclusively from `parseConfigFile(configPath).tables`. The cloud Postgres already had the team's shared tables (rows in `__lattice_shared_objects`), but nothing replayed them into the local Lattice's runtime schema or surfaced them to the SPA.
 
