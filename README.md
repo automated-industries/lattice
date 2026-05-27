@@ -2593,40 +2593,14 @@ interface AutoUpdateResult {
 
 ## Telemetry
 
-`latticesql` includes [Scarf](https://scarf.sh) install analytics so we can understand how the package is used in the wild — what versions are running, on what platforms, at roughly what scale. This signal is what lets us prioritize fixes, deprecations, and new features against real usage instead of guesswork.
+`latticesql` installs and runs with **zero telemetry network calls**. No postinstall pings, no runtime beacons, no anonymous-ID files written to your home directory. The only outbound requests the package ever makes are the explicit, caller-invoked `checkForUpdate()` / `autoUpdate()` calls to `registry.npmjs.org` — and you only get those if you call them.
 
-**What is sent — once, at `npm install` time, by the `@scarf/scarf` postinstall hook:**
+To understand who's using the package we rely on two passive signals that require no instrumentation in your install or your runtime:
 
-- Package name + version (e.g. `latticesql@1.13.6`)
-- Node.js version, OS, CPU architecture
-- A coarse, non-identifying hash derived from the install host (Scarf's default — used for deduplication, not identification)
-- The public IP of the install request (visible to any HTTPS endpoint; not stored long-term by Scarf)
+- **A 1×1 tracking pixel** embedded at the bottom of this README, served by [Scarf](https://scarf.sh). It fires when this README is rendered (e.g. on the npmjs.com package page). It sees only what any HTTPS image request sees — the requester's user-agent and IP, which Scarf de-identifies into coarse geo/company aggregates. Block it with any standard ad-blocker, or use a privacy-focused npm UI that doesn't render images, and Scarf sees nothing.
+- **Public npm download counts**, queried by us from npm's own [downloads API](https://api.npmjs.org/downloads/range/last-month/latticesql). These are the same counts npmjs.com itself publishes — no per-user data, just aggregate package downloads.
 
-**What is NOT sent:**
-
-- No data from your application code, schemas, rows, or query strings
-- No environment variables, file paths, hostnames, or usernames
-- No runtime telemetry — `latticesql` makes zero outbound telemetry calls after install. The only network requests it makes at runtime are the explicit `checkForUpdate()` / `autoUpdate()` calls to `registry.npmjs.org`, which you opt into by calling them.
-
-**How to opt out** — any one of these suppresses the install ping:
-
-```bash
-# Per-install (recommended for CI):
-SCARF_ANALYTICS=false npm install latticesql
-
-# Or, project-wide (add to .npmrc):
-scarf-analytics=false
-
-# Or, the cross-tool standard:
-DO_NOT_TRACK=1 npm install latticesql
-
-# Or, disable all postinstall scripts entirely:
-npm install latticesql --ignore-scripts
-```
-
-Opting out has no effect on functionality — the package works identically. The Scarf postinstall is a fire-and-forget HTTPS ping with a short timeout; even when enabled it cannot fail your install.
-
-See Scarf's own [privacy documentation](https://docs.scarf.sh) for the upstream policy.
+Neither signal touches your code, your data, your environment, or your install pipeline. If your network blocks `static.scarf.sh`, the README still renders (image alt text is empty); installs and runtime behavior are identical.
 
 ---
 
@@ -2645,3 +2619,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for the full history.
 ## License
 
 [Apache 2.0](./LICENSE) — includes explicit patent grant (Section 3).
+
+<!-- Scarf README pixel — see § Telemetry above for what it does and how to block it. -->
+
+![](https://static.scarf.sh/a.png?x-pxid=REPLACE_WITH_PIXEL_UUID)
