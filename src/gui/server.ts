@@ -15,7 +15,8 @@ import {
   type GuiEntitiesPayload,
 } from './data.js';
 import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
-import { guiAppHtml } from './app.js';
+import { buildGuiAppHtml } from './app.js';
+import { readAnalyticsConfig } from '../framework/analytics.js';
 import type { Row } from '../types.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from '../teams/internal-tables.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
@@ -712,7 +713,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {
-          sendText(res, guiAppHtml, 200, 'text/html; charset=utf-8');
+          // Read the analytics flag at request time so a `lattice analytics
+          // off` between page loads is honored on the next reload. The
+          // helper has a 60s in-process cache, so the cost is negligible.
+          const analyticsEnabled = readAnalyticsConfig().enabled;
+          const html = buildGuiAppHtml({ analyticsEnabled });
+          sendText(res, html, 200, 'text/html; charset=utf-8');
           return;
         }
         if (method === 'GET' && pathname === '/api/project') {

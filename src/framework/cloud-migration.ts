@@ -2,6 +2,7 @@ import { existsSync, renameSync, unlinkSync } from 'node:fs';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile } from '../config/parser.js';
 import { registerNativeEntities } from './native-entities.js';
+import { emitAnalytics } from './analytics.js';
 
 /**
  * Cloud migration — copy a Lattice's data from one backing store to
@@ -73,6 +74,7 @@ export async function migrateLatticeData(
   target: Lattice,
   options: MigrationOptions = {},
 ): Promise<MigrationResult> {
+  emitAnalytics('migrateLatticeData');
   const batchSize = Math.max(1, options.batchSize ?? 500);
   const onProgress = options.onProgress;
 
@@ -139,6 +141,7 @@ export async function openTargetLatticeForMigration(
   targetUrl: string,
   encryptionKey: string,
 ): Promise<Lattice> {
+  emitAnalytics('openTargetLatticeForMigration');
   const parsed = parseConfigFile(configPath);
   const target = new Lattice(targetUrl, { encryptionKey });
   for (const { name, definition } of parsed.tables) {
@@ -164,6 +167,7 @@ export async function openTargetLatticeForMigration(
  * `files.blob_path` references.
  */
 export function archiveLocalSqlite(dbPath: string): string {
+  emitAnalytics('archiveLocalSqlite');
   if (!existsSync(dbPath)) {
     throw new Error(`archiveLocalSqlite: source file does not exist: ${dbPath}`);
   }

@@ -1,5 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { TableDefinition } from '../types.js';
+import { emitAnalytics } from './analytics.js';
 
 /**
  * Framework-shipped tables that every Lattice can opt into via
@@ -72,6 +73,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
  * at rest.
  */
 export function registerNativeEntities(db: Lattice): void {
+  emitAnalytics('registerNativeEntities');
   const existing = new Set(db.getRegisteredTableNames());
   for (const [name, def] of Object.entries(NATIVE_ENTITY_DEFS)) {
     if (existing.has(name)) continue;

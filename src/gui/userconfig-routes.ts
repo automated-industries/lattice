@@ -8,6 +8,7 @@ import {
   writeIdentity,
   type UserIdentity,
 } from '../framework/user-config.js';
+import { readAnalyticsConfig, writeAnalyticsConfig } from '../framework/analytics.js';
 import { parseConfigFile } from '../config/parser.js';
 
 /**
@@ -138,6 +139,26 @@ export async function dispatchUserConfigRoute(
       writeIdentity(next);
       await upsertIdentityRow(ctx.db, next);
       sendJson(res, next);
+    });
+    return true;
+  }
+
+  if (pathname === '/api/userconfig/analytics' && method === 'GET') {
+    await tryHandler(res, () => {
+      sendJson(res, readAnalyticsConfig());
+      return Promise.resolve();
+    });
+    return true;
+  }
+
+  if (pathname === '/api/userconfig/analytics' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      if (typeof body.enabled !== 'boolean') {
+        sendJson(res, { error: 'enabled (boolean) is required' }, 400);
+        return;
+      }
+      sendJson(res, writeAnalyticsConfig({ enabled: body.enabled }));
     });
     return true;
   }

@@ -68,6 +68,87 @@ import {
 
 ---
 
+## Joining a team (v1.14+ token + email flow)
+
+As of `1.14.0`, the recommended invite flow has two parts:
+
+**Inviter side** (already logged into the cloud as the team creator):
+
+```bash
+lattice teams invite --team <team-id> --invitee-email b@example.com
+# → { raw_token: 'latinv_…', expires_at: '…' }
+```
+
+`inviteDirect` (the direct-Postgres path) additionally publishes an encrypted envelope to
+`https://www.latticesql.com/api/invites/publish` — the relay never sees the Postgres URL
+in cleartext; it only stores `{ ciphertext, iv, email_hash, team_id, team_name, expires_at }`
+keyed by `SHA-256(token)`. Publish is fire-and-forget with a 3s timeout; a relay outage
+doesn't block invite issuance.
+
+**Invitee side** (no Postgres credentials, no cloud URL):
+
+```bash
+lattice teams join --token latinv_<hex> --email b@example.com --name "Bob"
+```
+
+The client posts `{token, email}` to `https://www.latticesql.com/api/invites/redeem`. The
+relay derives a key from the raw token, decrypts the envelope, returns
+`{ cloud_url, team_id, team_name }`. The client then runs the standard redeem flow against
+the cloud Postgres directly. Result: the joined team's cloud URL is saved as a switchable
+db-credential at `~/.lattice/db-credentials.enc` under `<sanitized-team-name>.config`, and
+a sibling YAML config is written to the user's project directory pointing at
+`${LATTICE_DB:<label>}` — the team's DB shows up in the GUI dropdown on the next reload.
+
+```
+┌─────────────────┐                  ┌────────────────────────────┐
+│  Inviter A      │  publish         │  latticesql.com / Vercel   │
+│  TeamsClient    │  envelope ─────▶ │  KV                        │
+│                 │                  │                            │
+│  INSERT row in  │                  │  invite:<sha256(token)> =  │
+│  __lattice_     │                  │   { ciphertext, iv,        │
+│  invitations    │                  │     email_hash, team_id,   │
+└─────────────────┘                  │     team_name, expires_at }│
+                                     └────────────────────────────┘
+                                                  ▲
+                                                  │  POST /api/invites/redeem
+                                                  │  { token, email }
+                                                  │  → { cloud_url, team_id, team_name }
+                                                  │
+┌─────────────────┐                               │
+│  Invitee B      │ ──────────────────────────────┘
+│  TeamsClient    │
+│                 │  (URL discovered) → redeemInviteDirect(cloud_url, token, email, name)
+│  redeemByToken  │  → INSERT user + member row in cloud
+│                 │  → saveDbCredentialForTeam(team) + write sibling YAML config
+└─────────────────┘
+```
+
+`POST /api/auth/redeem-invite` on the cloud is unchanged — it still enforces
+`(token hash match) AND (email match) AND (not expired) AND (not yet redeemed)`. The relay
+only shortcuts URL discovery; defense in depth means a leaked relay envelope is useless
+without the raw token, and the cloud-side row stays the source of truth.
+
+**Legacy URL-paste flow** remains available for offline / self-hosted deployments. In the
+GUI: Join dialog → `▸ Advanced — paste connection URL`. On the CLI:
+
+```bash
+lattice teams join --cloud postgres://… --token latinv_<hex> --email b@example.com --name "Bob"
+```
+
+When `--cloud` is set, the lattice client skips the relay entirely.
+
+**Security parameters** of the relay (full detail in the latticesql.com privacy policy):
+
+- AES-256-GCM with per-envelope 96-bit random IV.
+- Key derived as `SHA-256(rawToken)[0..31]`; AAD = `hex(SHA-256(rawToken))` to bind ciphertext to its KV key.
+- All hash equality checks use `crypto.timingSafeEqual`.
+- Redeem endpoint: 30/min + 200/hour per-IP; 5 bad attempts on a token-hash → 10-minute lockout.
+- Uniform `{ error: "invalid_invite" }` body + ≥150ms response time across all failure modes (no oracle distinguishing "unknown token" from "wrong email").
+- `LATTICE_INVITE_RELAY_BASE` defaults to `https://www.latticesql.com`; non-default values trigger a stderr `WARN` at first use. `LATTICE_DEV=1` permits `http://localhost:*` for local development; otherwise non-https URLs are refused.
+- `LATTICE_INVITE_PUBLISH=off` skips publish entirely (offline / CI).
+
+---
+
 ## Identity & email-bound invitations
 
 `__lattice_users.email` is `NOT NULL`. Every member of the cloud's team has a `__lattice_team_members` row keyed by `(team_id, user_id)`, and the team has a singleton `__lattice_team_identity` row carrying the team name + creator email.
