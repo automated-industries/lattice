@@ -8,6 +8,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.8] - 2026-05-27
+
+### Added — Scarf install analytics (opt-out)
+
+`latticesql` now ships with [`@scarf/scarf`](https://www.npmjs.com/package/@scarf/scarf) as a runtime dependency so we can collect anonymous install metrics — package version, Node version, OS, architecture — at `npm install` time. No runtime telemetry is added: the package still makes zero outbound calls after install except the explicit, caller-invoked `checkForUpdate()` / `autoUpdate()` requests to the npm registry.
+
+Opt out per-install (`SCARF_ANALYTICS=false npm install latticesql`), project-wide (`scarf-analytics=false` in `.npmrc`), via the cross-tool standard (`DO_NOT_TRACK=1`), or by disabling postinstall scripts entirely (`--ignore-scripts`). Opting out does not affect functionality. See README § Telemetry and SECURITY.md § Scope for the full disclosure.
+
 ## [1.13.7] - 2026-05-27
 
 ### Fixed — Joining a team cloud is now seamless end-to-end (dropdown + entity auto-discovery)

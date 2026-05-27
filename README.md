@@ -65,6 +65,7 @@ Lattice has no opinions about your schema, your agents, or your file format. You
 - [Examples](#examples)
 - [Staying up to date](#staying-up-to-date)
   - [Auto-update](#auto-update-v11)
+- [Telemetry](#telemetry)
 - [Contributing](#contributing)
 - [Changelog](#changelog)
 
@@ -2565,6 +2566,45 @@ interface AutoUpdateResult {
   restartRequired: boolean;
 }
 ```
+
+---
+
+## Telemetry
+
+`latticesql` includes [Scarf](https://scarf.sh) install analytics so we can understand how the package is used in the wild — what versions are running, on what platforms, at roughly what scale. This signal is what lets us prioritize fixes, deprecations, and new features against real usage instead of guesswork.
+
+**What is sent — once, at `npm install` time, by the `@scarf/scarf` postinstall hook:**
+
+- Package name + version (e.g. `latticesql@1.13.6`)
+- Node.js version, OS, CPU architecture
+- A coarse, non-identifying hash derived from the install host (Scarf's default — used for deduplication, not identification)
+- The public IP of the install request (visible to any HTTPS endpoint; not stored long-term by Scarf)
+
+**What is NOT sent:**
+
+- No data from your application code, schemas, rows, or query strings
+- No environment variables, file paths, hostnames, or usernames
+- No runtime telemetry — `latticesql` makes zero outbound telemetry calls after install. The only network requests it makes at runtime are the explicit `checkForUpdate()` / `autoUpdate()` calls to `registry.npmjs.org`, which you opt into by calling them.
+
+**How to opt out** — any one of these suppresses the install ping:
+
+```bash
+# Per-install (recommended for CI):
+SCARF_ANALYTICS=false npm install latticesql
+
+# Or, project-wide (add to .npmrc):
+scarf-analytics=false
+
+# Or, the cross-tool standard:
+DO_NOT_TRACK=1 npm install latticesql
+
+# Or, disable all postinstall scripts entirely:
+npm install latticesql --ignore-scripts
+```
+
+Opting out has no effect on functionality — the package works identically. The Scarf postinstall is a fire-and-forget HTTPS ping with a short timeout; even when enabled it cannot fail your install.
+
+See Scarf's own [privacy documentation](https://docs.scarf.sh) for the upstream policy.
 
 ---
 
