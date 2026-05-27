@@ -567,6 +567,65 @@ export async function dispatchDbConfigRoute(
     return true;
   }
 
+  // POST /api/dbconfig/rename — set the friendly database name.
+  //
+  // Cloud: UPDATE __lattice_team_identity.team_name. The realtime
+  // subscription notifies other members; their dropdowns refresh.
+  // Local: write a top-level `name:` key into the active YAML. The
+  // config parser already accepts it; future opens read it back.
+  if (pathname === '/api/dbconfig/rename' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name) {
+        sendJson(res, { error: 'name must be a non-empty string' }, 400);
+        return;
+      }
+      if (name.length > 200) {
+        sendJson(res, { error: 'name must be 200 characters or fewer' }, 400);
+        return;
+      }
+      const info = await describeCurrent(ctx.configPath, ctx.db);
+      if (info.type === 'postgres' && info.teamEnabled) {
+        const updatedAt = new Date().toISOString();
+        const existing = (await ctx.db.get('__lattice_team_identity', 'singleton')) as {
+          id: string;
+        } | null;
+        if (!existing) {
+          sendJson(res, { error: '__lattice_team_identity row missing — cannot rename' }, 500);
+          return;
+        }
+        await ctx.db.update('__lattice_team_identity', 'singleton', {
+          team_name: name,
+          updated_at: updatedAt,
+        });
+        // Also update __lattice_team for the multi-team table — same
+        // friendly name, mirrored so the cloud's per-team row is current.
+        try {
+          const teams = (await ctx.db.query('__lattice_team', { limit: 1 })) as {
+            id: string;
+          }[];
+          if (teams[0]) {
+            await ctx.db.update('__lattice_team', teams[0].id, {
+              name,
+              updated_at: updatedAt,
+            });
+          }
+        } catch {
+          // Older clouds may not have __lattice_team; tolerate.
+        }
+        sendJson(res, { ok: true, kind: 'cloud', name });
+        return;
+      }
+      // Local YAML — write top-level name: key.
+      const doc = parseDocument(readFileSync(ctx.configPath, 'utf8'));
+      doc.set('name', name);
+      writeFileSync(ctx.configPath, doc.toString(), 'utf8');
+      sendJson(res, { ok: true, kind: 'local', name });
+    });
+    return true;
+  }
+
   if (pathname === '/api/dbconfig/upgrade-to-team' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
