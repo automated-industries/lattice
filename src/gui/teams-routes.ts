@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
+import { saveDbCredentialForTeam } from '../framework/user-config.js';
 import { TeamsClient, TeamsHttpError, type TeamConnection } from '../teams/client.js';
 import { serializeSchema } from '../teams/schema-spec.js';
 
@@ -355,7 +356,24 @@ async function handleJoin(
     my_user_id: result.user.id,
     api_token: result.raw_token,
   });
-  sendJson(res, { ok: true, team: result.team, user: result.user });
+  // Make the joined team's cloud DB switchable in the dropdown: save an
+  // encrypted credential keyed by a sanitized label, then write a
+  // sibling YAML config alongside the active project's config that
+  // points at ${LATTICE_DB:<label>}. listConfigs() will pick it up on
+  // the next /api/databases poll.
+  const credentialLabel = saveDbCredentialForTeam({
+    teamName: result.team.name,
+    teamId: result.team.id,
+    cloudUrl,
+  });
+  const configYamlPath = writeTeamConfigYaml(ctx.configPath, credentialLabel, result.team.name);
+  sendJson(res, {
+    ok: true,
+    team: result.team,
+    user: result.user,
+    credential_label: credentialLabel,
+    config_path: configYamlPath,
+  });
 }
 
 /**
