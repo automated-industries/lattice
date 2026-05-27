@@ -80,8 +80,12 @@ export class RealtimeBroker {
     const client = new pg.Client({ connectionString: this.url });
     // pg's 'error' on a Client (vs Pool) fires on async errors after
     // connect; the connect() promise rejects on initial failures.
-    client.on('error', (err) => this.handleClientError(err));
-    client.on('end', () => this.handleClientEnd());
+    client.on('error', (err) => {
+      this.handleClientError(err);
+    });
+    client.on('end', () => {
+      this.handleClientEnd();
+    });
     client.on('notification', (msg) => {
       if (msg.channel !== CHANNEL) return;
       const payload = parsePayload(msg.payload);

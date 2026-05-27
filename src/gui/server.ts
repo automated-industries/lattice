@@ -1612,7 +1612,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             reject(err);
             return;
           }
-          void disposeActive(active).then(() => resolveClose());
+          void disposeActive(active).then(() => {
+            resolveClose();
+          });
         });
       }),
   };
