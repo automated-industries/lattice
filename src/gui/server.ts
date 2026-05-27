@@ -644,15 +644,26 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
 }
 
 /**
+ * Friendly display name for a YAML config: prefer the `name:` key when
+ * the user has set one (via Database Settings → rename), fall back to
+ * the config file's basename minus the .yml extension. Pure function —
+ * safe to use anywhere the GUI renders a DB label.
+ */
+function friendlyConfigName(parsedName: string | undefined, configPath: string): string {
+  if (parsedName && parsedName.trim().length > 0) return parsedName.trim();
+  return basename(configPath).replace(/\.(ya?ml)$/, '');
+}
+
+/**
  * List sibling YAML configs in the same directory as the currently active
  * config. Each entry includes the parsed `db:` value when available so the
  * UI can show the underlying DB filename.
  */
 function listConfigs(
   activeConfigPath: string,
-): { path: string; name: string; dbFile: string; active: boolean }[] {
+): { path: string; name: string; label: string; dbFile: string; active: boolean }[] {
   const dir = dirname(activeConfigPath);
-  const entries: { path: string; name: string; dbFile: string; active: boolean }[] = [];
+  const entries: { path: string; name: string; label: string; dbFile: string; active: boolean }[] = [];
   for (const fname of readdirSync(dir)) {
     if (!fname.endsWith('.yml') && !fname.endsWith('.yaml')) continue;
     const full = join(dir, fname);
@@ -660,7 +671,12 @@ function listConfigs(
       const parsed = parseConfigFile(full);
       entries.push({
         path: full,
+        // `name` stays as the filename basename for compatibility with
+        // existing callers that key by it (URL fragments, sort order).
         name: fname.replace(/\.(ya?ml)$/, ''),
+        // `label` is the friendly DB name — what the user sees in the
+        // dropdown + settings. Falls back to the basename when unset.
+        label: friendlyConfigName(parsed.name, full),
         dbFile: basename(parsed.dbPath),
         active: full === activeConfigPath,
       });
@@ -668,7 +684,7 @@ function listConfigs(
       // Not a valid lattice config — skip silently.
     }
   }
-  return entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries.sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /**
@@ -1264,10 +1280,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'GET' && pathname === '/api/databases') {
+          const parsedActive = parseConfigFile(active.configPath);
+          // For cloud DBs, the friendly name lives on
+          // __lattice_team_identity.team_name. Fall back to the YAML's
+          // optional name: key (used by local DBs), then the basename.
+          let activeLabel: string | undefined;
+          try {
+            const row = (await active.db.get('__lattice_team_identity', 'singleton')) as
+              | { team_name?: string }
+              | null;
+            if (row && typeof row.team_name === 'string' && row.team_name.trim()) {
+              activeLabel = row.team_name.trim();
+            }
+          } catch {
+            // Table absent or unreachable — leave undefined.
+          }
+          const friendlyLabel =
+            activeLabel ?? friendlyConfigName(parsedActive.name, active.configPath);
+          const kind: 'local' | 'cloud' = active.realtime ? 'cloud' : 'local';
           sendJson(res, {
             current: {
               path: active.configPath,
-              dbFile: basename(parseConfigFile(active.configPath).dbPath),
+              dbFile: basename(parsedActive.dbPath),
+              label: friendlyLabel,
+              kind,
             },
             configs: listConfigs(active.configPath),
           });

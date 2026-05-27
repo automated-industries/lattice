@@ -679,9 +679,10 @@ export const guiAppHtml = `<!doctype html>
       </div>
       <div class="section-label">Settings</div>
       <ul id="settings-nav">
-        <li><a href="#/settings/data-model"><span class="nav-icon">⚙</span> Data Model</a></li>
-        <li><a href="#/settings/project-config"><span class="nav-icon">⚙</span> Project Config</a></li>
-        <li><a href="#/settings/user-config"><span class="nav-icon">👤</span> User Config</a></li>
+        <li><a href="#/settings/lattice"><span class="nav-icon">🗂</span> Lattice Settings</a></li>
+        <li><a href="#/settings/database"><span class="nav-icon">⚙</span> Database Settings</a></li>
+        <li><a href="#/settings/data-model"><span class="nav-icon">📐</span> Data Model</a></li>
+        <li><a href="#/settings/user-config"><span class="nav-icon">👤</span> User Settings</a></li>
       </ul>
     </nav>
     <main id="content"></main>
@@ -1014,28 +1015,51 @@ export const guiAppHtml = `<!doctype html>
         nameEl.textContent = '(no databases endpoint)';
         return;
       }
-      nameEl.textContent = data.current.dbFile;
+      // Friendly DB name: prefer current.label (cloud team_name or YAML name:),
+      // fall back to the db file basename.
+      nameEl.textContent = (data.current && data.current.label) || data.current.dbFile || '';
+      // Initial status pill — overridden when the realtime SSE 'state'
+      // event arrives, but avoids a yellow flash before SSE connects.
+      var initialKind = (data.current && data.current.kind) || 'local';
+      setStatusPill(initialKind, initialKind === 'cloud' ? 'connecting' : 'local');
 
       function buildMenu() {
+        var currentPath = data.current && data.current.path;
+        var currentKind = (data.current && data.current.kind) || 'local';
         var items = data.configs.map(function (c) {
+          // Best-effort per-row kind chip: the active row reflects the
+          // server's reported kind; inactive rows fall back to a neutral
+          // "Local" tag (we can't probe every entry on dropdown open).
+          var isActive = c.path === currentPath;
+          var kind = isActive ? currentKind : 'local';
+          var dotClass = isActive && kind === 'cloud'
+            ? 'is-cloud-connected'
+            : kind === 'cloud'
+              ? 'is-cloud-disconnected'
+              : '';
+          var chipText = kind === 'cloud' ? 'Cloud' : 'Local';
+          var chipBg = kind === 'cloud' ? 'var(--accent-soft)' : 'rgba(255,255,255,0.06)';
+          var chipColor = kind === 'cloud' ? 'var(--accent)' : 'var(--text-muted)';
           return '<button class="db-item' + (c.active ? ' active' : '') +
             '" data-path="' + escapeHtml(c.path) + '">' +
-            '<span>' + escapeHtml(c.name) + '</span>' +
-            '<span class="db-item-file">' + escapeHtml(c.dbFile) + '</span>' +
+            '<span class="db-item-status db-status ' + dotClass + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
+              (kind === 'cloud' && isActive ? 'var(--accent)' : kind === 'cloud' ? '#ef4444' : 'var(--warn)') +
+            ';flex-shrink:0"></span>' +
+            '<span style="flex:1;text-align:left">' + escapeHtml(c.label || c.name) + '</span>' +
+            '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' + chipBg + ';color:' + chipColor + ';text-transform:uppercase;letter-spacing:0.04em">' + chipText + '</span>' +
             '</button>';
         }).join('');
         menu.innerHTML =
           '<div class="db-section">Available databases</div>' +
           items +
-          '<div class="db-section">Create new</div>' +
+          '<div class="db-section">New database</div>' +
           '<div class="db-create">' +
-            '<input id="db-create-name" type="text" placeholder="e.g. scratch, demo-2" maxlength="48" />' +
-            '<button class="btn primary" id="db-create-btn" style="width:100%;">Create blank database</button>' +
+            '<button class="btn primary" id="db-create-btn" style="width:100%;">+ New database…</button>' +
           '</div>';
         menu.querySelectorAll('button.db-item').forEach(function (b) {
           b.addEventListener('click', function () {
             var path = b.getAttribute('data-path');
-            if (path === data.current.path) { menu.hidden = true; return; }
+            if (path === currentPath) { menu.hidden = true; return; }
             fetchJson('/api/databases/switch', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -1049,19 +1073,8 @@ export const guiAppHtml = `<!doctype html>
           });
         });
         document.getElementById('db-create-btn').addEventListener('click', function () {
-          var nameInput = document.getElementById('db-create-name');
-          var name = nameInput.value.trim();
-          if (!name) { nameInput.focus(); return; }
-          fetchJson('/api/databases/create', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name: name }),
-          }).then(function () {
-            menu.hidden = true;
-            return reloadEverything();
-          }).then(function () {
-            showToast('Database "' + name + '" created', {});
-          }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
+          menu.hidden = true;
+          showCreateDatabaseWizard();
         });
       }
 
@@ -1148,7 +1161,13 @@ export const guiAppHtml = `<!doctype html>
 
       if (hash === '#/settings/data-model') { renderDataModel(content); return; }
       if (hash === '#/settings/history') { renderHistory(content); return; }
-      if (hash === '#/settings/project-config') { renderProjectConfig(content); return; }
+      if (hash === '#/settings/lattice') { renderLatticeSettings(content); return; }
+      // Database Settings — new v1.13.8 page. The legacy /settings/project-config
+      // route stays wired for back-compat (deep-link tests, existing bookmarks).
+      if (hash === '#/settings/database' || hash === '#/settings/project-config') {
+        renderDatabaseSettings(content);
+        return;
+      }
       if (hash === '#/settings/user-config') { renderUserConfig(content); return; }
       content.innerHTML = '<div class="placeholder"><h2>Unknown route</h2></div>';
     }
@@ -2016,6 +2035,19 @@ export const guiAppHtml = `<!doctype html>
       panel.hidden = false;
       var creating = !tableName;
       if (creating) {
+        // Default-on share-with-cloud checkbox when the active DB is
+        // cloud. The active mode comes from /api/databases (driven by
+        // realtime broker presence); we read the topbar dot's classes
+        // as a cheap proxy when state.dbKind isn't populated yet.
+        var statusEl = document.getElementById('db-status');
+        var isCloud = !!(statusEl && (statusEl.classList.contains('is-cloud-connected') || statusEl.classList.contains('is-cloud-disconnected') || statusEl.classList.contains('is-cloud-connecting')));
+        var shareRow = isCloud
+          ? '<label>Share with cloud</label>' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<input type="checkbox" id="dm-create-share" checked />' +
+              '<span style="font-size:12px;color:var(--text-muted)">Visible to every team member on this cloud database.</span>' +
+            '</div>'
+          : '';
         panel.innerHTML =
           '<h3>+ New entity</h3>' +
           '<div class="dm-edit-grid">' +
@@ -2027,6 +2059,7 @@ export const guiAppHtml = `<!doctype html>
             '<div>' +
               emojiPickerHtml('dm-create-icon', '📋') +
             '</div>' +
+            shareRow +
             '<label></label>' +
             '<div class="dm-row-inline">' +
               '<button class="btn primary" id="dm-create-btn">Create entity</button>' +
@@ -2040,11 +2073,28 @@ export const guiAppHtml = `<!doctype html>
         panel.querySelector('#dm-create-btn').addEventListener('click', function () {
           var name = panel.querySelector('#dm-create-name').value.trim();
           var icon = panel.querySelector('#dm-create-icon').value.trim();
+          var shareEl = panel.querySelector('#dm-create-share');
+          var wantShare = !!(shareEl && shareEl.checked);
           if (!name) { panel.querySelector('#dm-create-name').focus(); return; }
           fetchJson('/api/schema/entities', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ name: name, icon: icon || undefined }),
+          }).then(function () {
+            if (!wantShare) return null;
+            // Look up the team_id to share against. Best-effort —
+            // failure just leaves the entity local-only; user can
+            // share later from Data Model.
+            return fetchJson('/api/teams-gui/connections').then(function (d) {
+              var conns = (d && d.connections) || [];
+              var teamId = conns[0] && conns[0].team_id;
+              if (!teamId) return null;
+              return fetchJson('/api/teams-gui/teams/' + encodeURIComponent(teamId) + '/shared', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ table: name }),
+              }).catch(function () { /* swallow */ });
+            }).catch(function () { /* swallow */ });
           }).then(function () {
             return reloadEverything();
           }).then(function () {
@@ -2461,19 +2511,19 @@ export const guiAppHtml = `<!doctype html>
 
     function renderTeamsEmpty(content, kind) {
       var msg = kind === 'user'
-        ? 'You aren\\'t signed in to any clouds yet. Add a cloud below.'
-        : 'No team memberships yet. Start a team or join one below.';
+        ? 'You aren\\'t signed in to any cloud databases yet. Join one below.'
+        : 'No cloud databases yet. Create one or join via invite below.';
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>' + (kind === 'user' ? 'User Config' : 'Project Config') + '</h2>' +
           '<p class="lead">' + (kind === 'user'
-            ? 'Cloud accounts your local lattice is signed in to.'
-            : 'Teams this project\\'s lattice is joined to. Share tables, link rows, and sync.') + '</p>' +
+            ? 'Cloud databases your local lattice is signed in to.'
+            : 'Cloud databases this project is connected to. Share tables, link rows, and sync.') + '</p>' +
           '<div class="teams-actions">' +
             (kind === 'user'
-              ? '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>'
-              : '<button class="btn primary" id="action-create-team">Create team</button>' +
-                '<button class="btn" id="action-join-team">Join via invite</button>') +
+              ? '<button class="btn primary" id="action-add-cloud">Join Team via invite</button>'
+              : '<button class="btn primary" id="action-create-team">Create cloud database</button>' +
+                '<button class="btn" id="action-join-team">Join Team via invite</button>') +
           '</div>' +
           '<div class="teams-empty">' + escapeHtml(msg) + '</div>' +
         '</div>';
@@ -2484,7 +2534,9 @@ export const guiAppHtml = `<!doctype html>
       var addBtn = document.getElementById('action-add-cloud');
       if (addBtn) addBtn.addEventListener('click', function () { showJoinTeamModal(kind); });
       var createBtn = document.getElementById('action-create-team');
-      if (createBtn) createBtn.addEventListener('click', showCreateTeamModal);
+      // "Create cloud database" routes through the unified wizard so the
+      // create-flow is identical regardless of where the user starts.
+      if (createBtn) createBtn.addEventListener('click', showCreateDatabaseWizard);
       var joinBtn = document.getElementById('action-join-team');
       if (joinBtn) joinBtn.addEventListener('click', function () { showJoinTeamModal(kind); });
     }
@@ -2494,9 +2546,314 @@ export const guiAppHtml = `<!doctype html>
       else if (location.hash === '#/settings/user-config') renderUserConfig(document.getElementById('content'));
     }
 
+    // ────────────────────────────────────────────────────────────
+    // Three-step Create Database wizard. Used from the header dropdown
+    // "+ New database" button and from Lattice Settings → Add new DB.
+    // Step 1: name + kind (+ cloud credentials if cloud)
+    // Step 2: starter entities (with share-to-cloud checkbox when cloud)
+    // Step 3: review + submit
+    // ────────────────────────────────────────────────────────────
+    function showCreateDatabaseWizard() {
+      var wizState = {
+        step: 1,
+        name: '',
+        kind: 'local',
+        cloudUrl: '',
+        email: '',
+        displayName: '',
+        entities: [], // { name: string, share: boolean }
+      };
+      // Prefill identity for the cloud path so the operator doesn't
+      // re-type their email + display name on every wizard run.
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        wizState.email = id.email || '';
+        wizState.displayName = id.display_name || '';
+        openWizard();
+      }).catch(openWizard);
+
+      function openWizard() {
+        var backdrop = document.createElement('div');
+        backdrop.className = 'modal-backdrop';
+        backdrop.innerHTML =
+          '<div class="modal" style="min-width:560px;max-width:640px">' +
+            '<div class="modal-head" id="wiz-head">New database — step 1 of 3</div>' +
+            '<div class="modal-body" id="wiz-body"></div>' +
+            '<div class="modal-foot">' +
+              '<button class="btn" data-act="cancel">Cancel</button>' +
+              '<button class="btn" data-act="back">Back</button>' +
+              '<button class="btn primary" data-act="next">Next</button>' +
+            '</div>' +
+          '</div>';
+        document.body.appendChild(backdrop);
+        function close() { if (backdrop.parentNode) document.body.removeChild(backdrop); }
+        backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
+        backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
+        backdrop.querySelector('[data-act="back"]').addEventListener('click', goBack);
+        backdrop.querySelector('[data-act="next"]').addEventListener('click', goNext);
+        render();
+
+        function render() {
+          var head = backdrop.querySelector('#wiz-head');
+          var body = backdrop.querySelector('#wiz-body');
+          var nextBtn = backdrop.querySelector('[data-act="next"]');
+          var backBtn = backdrop.querySelector('[data-act="back"]');
+          head.textContent = 'New database — step ' + wizState.step + ' of 3';
+          backBtn.style.display = wizState.step === 1 ? 'none' : '';
+          nextBtn.textContent = wizState.step === 3 ? 'Create' : 'Next';
+          if (wizState.step === 1) body.innerHTML = renderStep1();
+          else if (wizState.step === 2) body.innerHTML = renderStep2();
+          else body.innerHTML = renderStep3();
+          wireStepHandlers(body);
+        }
+
+        function renderStep1() {
+          var local = wizState.kind === 'local';
+          var cloudBlock = local ? '' :
+            '<div class="field"><label>Cloud URL</label>' +
+              '<input id="wiz-cloud-url" type="text" value="' + escapeHtml(wizState.cloudUrl) +
+              '" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+              '<p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">Use a session-mode Postgres URL. Supabase users: see the pooler docs for the right host.</p>' +
+            '</div>' +
+            '<div class="field"><label>Your email</label>' +
+              '<input id="wiz-email" type="email" value="' + escapeHtml(wizState.email) + '" autocapitalize="off" />' +
+            '</div>' +
+            '<div class="field"><label>Your display name</label>' +
+              '<input id="wiz-display-name" type="text" value="' + escapeHtml(wizState.displayName) + '" />' +
+            '</div>';
+          return '' +
+            '<div class="field"><label>Database name</label>' +
+              '<input id="wiz-name" type="text" value="' + escapeHtml(wizState.name) +
+              '" placeholder="e.g. my-research, design-system" maxlength="200" />' +
+            '</div>' +
+            '<div class="field"><label>Kind</label>' +
+              '<div style="display:flex;gap:16px;margin-top:4px">' +
+                '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
+                  '<input type="radio" name="wiz-kind" value="local"' + (local ? ' checked' : '') + ' /> Local (SQLite)' +
+                '</label>' +
+                '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
+                  '<input type="radio" name="wiz-kind" value="cloud"' + (local ? '' : ' checked') + ' /> Cloud (Postgres)' +
+                '</label>' +
+              '</div>' +
+              '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
+                'Local databases are single-user SQLite files on your machine. Cloud databases are Postgres, can be shared with invited team members, and stream realtime updates.' +
+              '</p>' +
+            '</div>' +
+            cloudBlock;
+        }
+
+        function renderStep2() {
+          var rows = wizState.entities.map(function (e, idx) {
+            var shareCol = wizState.kind === 'cloud'
+              ? '<td style="text-align:center"><input type="checkbox" data-wiz-share="' + idx + '"' + (e.share ? ' checked' : '') + ' /></td>'
+              : '';
+            return '<tr>' +
+              '<td><input type="text" data-wiz-entity="' + idx + '" value="' + escapeHtml(e.name) + '" placeholder="entity_name" style="width:100%" /></td>' +
+              shareCol +
+              '<td style="text-align:right"><button class="btn" data-wiz-remove="' + idx + '" style="font-size:11px;padding:2px 8px">Remove</button></td>' +
+            '</tr>';
+          }).join('');
+          var shareHeader = wizState.kind === 'cloud'
+            ? '<th style="text-align:center;width:80px">Share with cloud</th>'
+            : '';
+          return '<p class="lead" style="margin:0 0 10px">Optionally add starter entities. You can skip and add them later.</p>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+              '<thead><tr style="text-align:left"><th>Entity name</th>' + shareHeader + '<th style="width:90px"></th></tr></thead>' +
+              '<tbody>' + (rows || '<tr><td colspan="3" style="padding:8px;color:var(--text-muted)">No entities yet.</td></tr>') + '</tbody>' +
+            '</table>' +
+            '<button class="btn" id="wiz-add-entity" style="margin-top:10px">+ Add entity</button>' +
+            (wizState.kind === 'cloud'
+              ? '<p style="font-size:11px;color:var(--text-muted);margin:10px 0 0">' +
+                'Entities with “Share with cloud” checked are visible to every team member. Unchecked entities live on the cloud DB but stay scoped to your own row links.' +
+                '</p>'
+              : '');
+        }
+
+        function renderStep3() {
+          var entityList = wizState.entities.length === 0
+            ? '<em style="color:var(--text-muted)">(none — you can add entities after creating)</em>'
+            : '<ul style="margin:4px 0 0 0;padding-left:18px">' +
+                wizState.entities.map(function (e) {
+                  var tag = wizState.kind === 'cloud'
+                    ? (e.share ? ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:var(--accent-soft);color:var(--accent)">shared</span>'
+                              : ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:rgba(255,255,255,0.06);color:var(--text-muted)">local only</span>')
+                    : '';
+                  return '<li>' + escapeHtml(e.name) + tag + '</li>';
+                }).join('') +
+              '</ul>';
+          var cloudBlock = wizState.kind === 'cloud'
+            ? '<div><strong>Cloud URL</strong>: <code>' + escapeHtml(redactUrlCredentials(wizState.cloudUrl)) + '</code></div>' +
+              '<div><strong>Email</strong>: ' + escapeHtml(wizState.email) + '</div>'
+            : '';
+          return '<p class="lead" style="margin:0 0 10px">Review and create.</p>' +
+            '<div style="display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:13.5px">' +
+              '<div><strong>Name</strong>:</div><div>' + escapeHtml(wizState.name) + '</div>' +
+              '<div><strong>Kind</strong>:</div><div>' + (wizState.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)') + '</div>' +
+            '</div>' +
+            (cloudBlock ? '<div style="margin-top:10px;display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:13.5px">' + cloudBlock + '</div>' : '') +
+            '<div style="margin-top:14px"><strong>Entities</strong>: ' + entityList + '</div>';
+        }
+
+        function wireStepHandlers(scope) {
+          if (wizState.step === 1) {
+            scope.querySelector('#wiz-name').addEventListener('input', function (e) { wizState.name = e.target.value; });
+            scope.querySelectorAll('input[name="wiz-kind"]').forEach(function (radio) {
+              radio.addEventListener('change', function () {
+                wizState.name = (scope.querySelector('#wiz-name') || {}).value || wizState.name;
+                wizState.kind = radio.value;
+                render(); // re-render to show/hide cloud fields
+              });
+            });
+            var cu = scope.querySelector('#wiz-cloud-url'); if (cu) cu.addEventListener('input', function (e) { wizState.cloudUrl = e.target.value; });
+            var em = scope.querySelector('#wiz-email'); if (em) em.addEventListener('input', function (e) { wizState.email = e.target.value; });
+            var dn = scope.querySelector('#wiz-display-name'); if (dn) dn.addEventListener('input', function (e) { wizState.displayName = e.target.value; });
+          } else if (wizState.step === 2) {
+            scope.querySelector('#wiz-add-entity').addEventListener('click', function () {
+              wizState.entities.push({ name: '', share: wizState.kind === 'cloud' });
+              render();
+            });
+            scope.querySelectorAll('input[data-wiz-entity]').forEach(function (input) {
+              input.addEventListener('input', function () {
+                var idx = parseInt(input.getAttribute('data-wiz-entity') || '0', 10);
+                wizState.entities[idx].name = input.value;
+              });
+            });
+            scope.querySelectorAll('input[data-wiz-share]').forEach(function (input) {
+              input.addEventListener('change', function () {
+                var idx = parseInt(input.getAttribute('data-wiz-share') || '0', 10);
+                wizState.entities[idx].share = !!input.checked;
+              });
+            });
+            scope.querySelectorAll('button[data-wiz-remove]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var idx = parseInt(btn.getAttribute('data-wiz-remove') || '0', 10);
+                wizState.entities.splice(idx, 1);
+                render();
+              });
+            });
+          }
+        }
+
+        function goBack() {
+          if (wizState.step > 1) { wizState.step -= 1; render(); }
+        }
+
+        function goNext() {
+          if (wizState.step === 1) {
+            if (!wizState.name.trim()) { alert('Database name is required'); return; }
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,199}$/.test(wizState.name.trim())) {
+              alert('Database name must start with a letter or digit and contain only letters, digits, spaces, dots, underscores, or hyphens'); return;
+            }
+            if (wizState.kind === 'cloud') {
+              if (!/^postgres(ql)?:\\/\\//i.test(wizState.cloudUrl.trim())) { alert('Cloud URL must start with postgres://'); return; }
+              if (!wizState.email.trim()) { alert('Email is required for cloud databases'); return; }
+              if (!wizState.displayName.trim()) { alert('Display name is required for cloud databases'); return; }
+            }
+            wizState.step = 2;
+            render();
+          } else if (wizState.step === 2) {
+            // Validate entity names (if any)
+            for (var i = 0; i < wizState.entities.length; i += 1) {
+              var nm = wizState.entities[i].name.trim();
+              if (!nm) { alert('Entity name on row ' + (i + 1) + ' is empty'); return; }
+              if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(nm)) {
+                alert('Entity name "' + nm + '" is invalid (use a valid identifier).'); return;
+              }
+            }
+            wizState.step = 3;
+            render();
+          } else {
+            submit();
+          }
+        }
+
+        function submit() {
+          var nextBtn = backdrop.querySelector('[data-act="next"]');
+          nextBtn.setAttribute('disabled', 'disabled');
+          nextBtn.textContent = 'Creating…';
+          var promise = wizState.kind === 'local' ? submitLocal() : submitCloud();
+          promise.then(function () {
+            close();
+            return reloadEverything();
+          }).then(function () {
+            showToast('Database "' + wizState.name + '" created', {});
+          }).catch(function (err) {
+            nextBtn.removeAttribute('disabled');
+            nextBtn.textContent = 'Create';
+            alert('Create failed: ' + (err && err.message ? err.message : String(err)));
+          });
+        }
+
+        function submitLocal() {
+          // Slug the name for the YAML filename; the friendly name goes
+          // into the new config's name: key via /api/dbconfig/rename
+          // after the create succeeds.
+          var slug = wizState.name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+          return fetchJson('/api/databases/create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: slug }),
+          }).then(function () {
+            // After the create, the active DB is the new one. Set the
+            // friendly name + add starter entities.
+            return fetchJson('/api/dbconfig/rename', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ name: wizState.name.trim() }),
+            });
+          }).then(function () {
+            return createStarterEntities(wizState.entities);
+          });
+        }
+
+        function submitCloud() {
+          var createdTeamId = null;
+          return fetchJson('/api/teams-gui/connections/register-and-create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              cloud_url: wizState.cloudUrl.trim(),
+              email: wizState.email.trim(),
+              user_name: wizState.displayName.trim(),
+              team_name: wizState.name.trim(),
+            }),
+          }).then(function (result) {
+            createdTeamId = result && result.team && result.team.id;
+            return createStarterEntities(wizState.entities, createdTeamId);
+          });
+        }
+
+        function createStarterEntities(entities, teamId) {
+          if (entities.length === 0) return Promise.resolve();
+          // Sequential creates — order matters for any FK refs the user
+          // adds later, and the volume is small (wizard cap is user-driven).
+          return entities.reduce(function (chain, e) {
+            return chain.then(function () {
+              return fetchJson('/api/schema/entities', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ name: e.name.trim() }),
+              }).then(function () {
+                if (wizState.kind === 'cloud' && e.share && teamId) {
+                  // Share the new entity with the cloud team. Best-effort:
+                  // failure here doesn't roll back the create; the user
+                  // can retry from Data Model → Share later.
+                  return fetchJson('/api/teams-gui/teams/' + encodeURIComponent(teamId) + '/shared', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ table: e.name.trim() }),
+                  }).catch(function () { /* swallow */ });
+                }
+                return null;
+              });
+            });
+          }, Promise.resolve());
+        }
+      }
+    }
+
     function showCreateTeamModal() {
       // Prefill identity from ~/.lattice/identity.json so the user only
-      // enters per-team things (cloud URL + team name) in this modal.
+      // enters per-DB things (cloud URL + DB name) in this modal.
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
           '<div class="field"><label>Cloud URL</label>' +
@@ -2504,12 +2861,12 @@ export const guiAppHtml = `<!doctype html>
           '</div>' +
           '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" autocapitalize="off" /></div>' +
           '<div class="field"><label>Your display name</label><input name="user_name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
-          '<div class="field"><label>Team name</label><input name="team_name" /></div>' +
+          '<div class="field"><label>Database name</label><input name="team_name" /></div>' +
           '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-          'Registers you on the cloud (bootstrap-only — must be a fresh cloud) and creates the team in one step. ' +
-          'Email + display name are pulled from your User Config identity; edit them below to override for this team only.' +
+          'Registers you on the cloud (bootstrap-only — must be a fresh cloud) and creates the cloud database in one step. ' +
+          'Email + display name are pulled from your User Config identity; edit them below to override for this database only.' +
           '</p>';
-        showModal('Create team', bodyHtml, {
+        showModal('Create cloud database', bodyHtml, {
           primaryLabel: 'Create',
           onSubmit: function (scope) {
             var data = collectFormValues(scope);
@@ -2552,15 +2909,14 @@ export const guiAppHtml = `<!doctype html>
     function renderUserConfig(content) {
       content.innerHTML =
         '<div class="teams-page">' +
-          '<h2>User Config</h2>' +
+          '<h2>User Settings</h2>' +
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
           '<div id="preferences-host"></div>' +
-          '<div id="databases-host"></div>' +
           '<div id="user-teams-host"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
       renderPreferencesPanel(document.getElementById('preferences-host'));
-      renderDatabasesPanel(document.getElementById('databases-host'));
+      // Databases catalog moved to Lattice Settings page in v1.13.8.
       renderUserTeamsList(document.getElementById('user-teams-host'));
     }
 
@@ -2742,16 +3098,119 @@ export const guiAppHtml = `<!doctype html>
     }
 
     function renderProjectConfig(content) {
-      // Frame the page; Database + Teams panels populate themselves
-      // asynchronously so a slow cloud probe doesn't block the page.
+      // Legacy entry — Track 4e renames this view to "Database Settings"
+      // and adds an editable name header. The new alias is renderDatabaseSettings.
+      renderDatabaseSettings(content);
+    }
+
+    function renderDatabaseSettings(content) {
+      // Frame the page; the name header + Database + Teams panels each
+      // populate asynchronously so a slow cloud probe doesn't block.
       content.innerHTML =
         '<div class="teams-page">' +
-          '<h2>Project Config</h2>' +
+          '<h2>Database Settings</h2>' +
+          '<div id="db-name-host"><div class="placeholder" style="padding:14px">Loading database name…</div></div>' +
           '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
           '<div id="teams-host"></div>' +
         '</div>';
+      renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
       renderTeamsForProjectConfig(document.getElementById('teams-host'));
+    }
+
+    function renderDatabaseNamePanel(host) {
+      // Pull the current friendly name from /api/databases (which already
+      // resolves cloud team_name → YAML name: → basename fallback).
+      fetchJson('/api/databases').then(function (data) {
+        var current = (data && data.current) || {};
+        var name = current.label || current.dbFile || '';
+        var kind = current.kind === 'cloud' ? 'Cloud' : 'Local';
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 10px">Name</h3>' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<input id="db-name-input" type="text" value="' + escapeHtml(name) + '" maxlength="200" style="flex:1" />' +
+              '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' +
+                (current.kind === 'cloud' ? 'var(--accent-soft)' : 'rgba(255,255,255,0.06)') +
+                ';color:' + (current.kind === 'cloud' ? 'var(--accent)' : 'var(--text-muted)') +
+                ';text-transform:uppercase;letter-spacing:0.04em">' + kind + '</span>' +
+              '<button class="btn primary" id="db-name-save">Save</button>' +
+            '</div>' +
+            '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
+              'Friendly database name shown in the topbar and the dropdown. ' +
+              (current.kind === 'cloud'
+                ? 'For cloud databases, the rename is broadcast to every team member in realtime.'
+                : 'Saved to the YAML config\\'s name: key.') +
+            '</p>' +
+            '<div id="db-name-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
+          '</div>';
+        host.querySelector('#db-name-save').addEventListener('click', function () {
+          var v = (host.querySelector('#db-name-input').value || '').trim();
+          var msg = host.querySelector('#db-name-msg');
+          if (!v) { msg.textContent = 'Name cannot be empty.'; return; }
+          msg.textContent = 'Saving…';
+          fetch('/api/dbconfig/rename', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: v }),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d.error) { msg.textContent = 'Failed: ' + d.error; return; }
+              msg.textContent = 'Saved.';
+              // Refresh the topbar dropdown so the new name shows.
+              return fetchJson('/api/databases').then(renderDbSwitcher);
+            })
+            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+        });
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load database name: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    function renderLatticeSettings(content) {
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>Lattice Settings</h2>' +
+          '<p class="lead">Every database this lattice can connect to — local SQLite files alongside the active config plus saved cloud Postgres credentials.</p>' +
+          '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading databases…</div></div>' +
+        '</div>';
+      var host = document.getElementById('lattice-dbs-host');
+      fetchJson('/api/userconfig/databases').then(function (cat) {
+        var localRows = (cat.local || []).map(function (d) {
+          return '<tr>' +
+            '<td>' + escapeHtml(d.label) + (d.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
+            '<td>Local (SQLite)</td>' +
+            '<td><code>' + escapeHtml(d.dbFile) + '</code></td>' +
+            '<td>' + (d.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(d.configPath) + '">Switch</button>') + '</td>' +
+          '</tr>';
+        }).join('');
+        var cloudRows = (cat.cloud || []).map(function (d) {
+          return '<tr><td>' + escapeHtml(d.label) + '</td><td>Cloud (Postgres)</td><td>(encrypted)</td><td>—</td></tr>';
+        }).join('');
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+              '<h3 style="margin:0">Databases</h3>' +
+              '<button class="btn primary" id="action-add-db">+ Add new database</button>' +
+            '</div>' +
+            '<table style="width:100%;border-collapse:collapse">' +
+              '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>File / source</th><th>Action</th></tr></thead>' +
+              '<tbody>' + (localRows + cloudRows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
+            '</table>' +
+          '</div>';
+        host.querySelectorAll('[data-switch]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var configPath = btn.getAttribute('data-switch');
+            fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
+              .then(function (r) { return r.json(); })
+              .then(function () { renderLatticeSettings(document.getElementById('content')); });
+          });
+        });
+        host.querySelector('#action-add-db').addEventListener('click', showCreateDatabaseWizard);
+      }).catch(function (err) {
+        host.innerHTML = '<div class="placeholder">Failed to load databases: ' + escapeHtml(err.message) + '</div>';
+      });
     }
 
     function renderTeamsForProjectConfig(host) {
@@ -2759,11 +3218,11 @@ export const guiAppHtml = `<!doctype html>
         if (conns.length === 0) {
           host.innerHTML =
             '<div style="margin-top:18px">' +
-              '<h3 style="margin:0 0 8px">Teams</h3>' +
-              '<p class="lead">No team memberships yet. Start a team or join one below.</p>' +
+              '<h3 style="margin:0 0 8px">Cloud databases</h3>' +
+              '<p class="lead">No cloud databases yet. Create one or Join Team via invite below.</p>' +
               '<div class="teams-actions">' +
-                '<button class="btn primary" id="action-create-team">Create team</button>' +
-                '<button class="btn" id="action-join-team">Join via invite</button>' +
+                '<button class="btn primary" id="action-create-team">Create cloud database</button>' +
+                '<button class="btn" id="action-join-team">Join Team via invite</button>' +
               '</div>' +
             '</div>';
           wireTopActions('project');
@@ -2771,11 +3230,11 @@ export const guiAppHtml = `<!doctype html>
         }
         host.innerHTML =
           '<div style="margin-top:18px">' +
-            '<h3 style="margin:0 0 8px">Teams</h3>' +
-            '<p class="lead">Teams this project\\'s lattice is joined to. Click a team to expand sync details, shared tables, and member admin.</p>' +
+            '<h3 style="margin:0 0 8px">Cloud databases</h3>' +
+            '<p class="lead">Cloud databases this project is connected to. Click a database to expand sync details, shared tables, and team member admin.</p>' +
             '<div class="teams-actions">' +
-              '<button class="btn primary" id="action-create-team">Create team</button>' +
-              '<button class="btn" id="action-join-team">Join via invite</button>' +
+              '<button class="btn primary" id="action-create-team">Create cloud database</button>' +
+              '<button class="btn" id="action-join-team">Join Team via invite</button>' +
             '</div>' +
             '<div id="team-cards-host"></div>' +
           '</div>';
@@ -3097,6 +3556,22 @@ export const guiAppHtml = `<!doctype html>
     }
 
     function showMigrateToCloudModal(onClose) {
+      // List every non-system user-defined table so the operator can
+      // opt-OUT of sharing per-table before migrating. Default: every
+      // user table is checked. System tables (__lattice_*, _lattice_*)
+      // are filtered out — they're always migrated and never "shared"
+      // in the team sense.
+      var shareableTables = ((state.entities && state.entities.tables) || [])
+        .filter(function (t) { return !/^_/.test(t.name) && !isJunction(t); })
+        .map(function (t) { return t.name; });
+      var shareRows = shareableTables.length === 0
+        ? '<p style="margin:0;color:var(--text-muted);font-size:12px">No user-defined tables to share yet.</p>'
+        : shareableTables.map(function (t) {
+            return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-weight:400;text-transform:none;letter-spacing:0">' +
+              '<input type="checkbox" class="mig-share" data-table="' + escapeHtml(t) + '" checked />' +
+              '<span style="font-family:ui-monospace,monospace;font-size:12.5px">' + escapeHtml(t) + '</span>' +
+            '</label>';
+          }).join('');
       var bodyHtml =
         '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
           'Enter credentials for a <strong>fresh, empty</strong> Postgres database. ' +
@@ -3105,24 +3580,35 @@ export const guiAppHtml = `<!doctype html>
           'to read from the cloud. This action cannot be undone.' +
         '</p>' +
         postgresFormHtml({}) +
+        '<div style="margin-top:14px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02)">' +
+          '<div style="font-size:12px;color:var(--text);text-transform:uppercase;letter-spacing:0.04em;font-weight:500;margin-bottom:6px">Share with cloud</div>' +
+          '<p style="margin:0 0 8px;font-size:12px;color:var(--text-muted)">' +
+            'Checked tables become visible to every team member you invite. Uncheck any you want to keep ' +
+            'cloud-stored but unshared. You can change this later from Data Model.' +
+          '</p>' +
+          shareRows +
+        '</div>' +
         '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
       showModal('Migrate to cloud', bodyHtml, {
         primaryLabel: 'Migrate →',
-        onSubmit: function () {
+        onSubmit: function (scope) {
           var body = readPostgresWizardForm();
           var msg = document.getElementById('w-msg');
+          // Snapshot which tables the user wants shared before the
+          // migrate runs — we share them after the migrate completes.
+          var tablesToShare = [];
+          scope.querySelectorAll('input.mig-share').forEach(function (cb) {
+            if (cb.checked) tablesToShare.push(cb.getAttribute('data-table'));
+          });
           // Validate Supabase URL pattern + probe the cloud before
           // persisting a credential that would just blow up on the next
-          // open. Saves users from the "Migrate succeeded, switch back
-          // later fails" trap that strikes when the saved credential
-          // has a wrong host/port/user.
+          // open.
           return probeBeforeCredentialSave(body, msg).then(function (probe) {
             if (probe.teamEnabled) {
               throw new Error(
-                'Target is already a teams DB' +
+                'Target is already a cloud DB with a team' +
                 (probe.teamName ? ' (' + probe.teamName + ')' : '') +
-                '. Migrate-to-cloud only works against fresh empty targets — ' +
-                'use Connect to existing cloud instead.'
+                '. Migrate-to-cloud only works against fresh empty targets.'
               );
             }
             msg.textContent = 'Migrating… (this may take a moment for large DBs)';
@@ -3132,10 +3618,42 @@ export const guiAppHtml = `<!doctype html>
               .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
               .then(function (r) {
                 if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
-                if (onClose) onClose();
+                // After the migrate, the active DB has been swapped to
+                // the cloud. Share the checked tables — best-effort; a
+                // share failure surfaces a toast but doesn't undo the
+                // migration. The user can retry from Data Model later.
+                if (tablesToShare.length === 0) {
+                  if (onClose) onClose();
+                  return;
+                }
+                return shareTablesPostMigrate(tablesToShare).finally(function () {
+                  if (onClose) onClose();
+                });
               });
           });
         },
+      });
+    }
+
+    function shareTablesPostMigrate(tables) {
+      // After migrate-to-cloud the user has a single team. Look it up
+      // and share each requested table. Best-effort: errors surface as
+      // toasts, the migrated DB is still good.
+      return fetchJson('/api/teams-gui/connections').then(function (data) {
+        var conns = (data && data.connections) || [];
+        var teamId = conns[0] && conns[0].team_id;
+        if (!teamId) return;
+        return tables.reduce(function (chain, table) {
+          return chain.then(function () {
+            return fetchJson('/api/teams-gui/teams/' + encodeURIComponent(teamId) + '/shared', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ table: table }),
+            }).catch(function (err) {
+              showToast('Share "' + table + '" failed: ' + err.message, {});
+            });
+          });
+        }, Promise.resolve());
       });
     }
 
