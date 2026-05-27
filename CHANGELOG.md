@@ -8,6 +8,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.9] - 2026-05-27
+
+### Fixed — `lattice gui` crashed at boot on v1.13.8 because pg got inlined into the CLI bundle
+
+v1.13.8's `src/gui/realtime.ts` used a top-level `import pg from 'pg'`, and `tsup.config.ts` did not list `pg` in the CLI build's `external` array. tsup happily inlined pg's CommonJS internals — including a `require('events')` shim and the native-binding glue — into the ESM CLI bundle (`dist/cli.js`, which ballooned from ~596 KB to ~770 KB). Every `lattice gui` boot then crashed at first module-evaluate with `Dynamic require of 'events' is not supported`, even for SQLite-only configs that never construct a `RealtimeBroker`.
+
+v1.13.9 is a no-API-surface hotfix:
+
+- **`src/gui/realtime.ts`** switches to a type-only `import type pg from 'pg'` plus a runtime `createRequire(import.meta.url)('pg')` lazy-load that runs only when the broker actually opens a Postgres client. Matches the existing pattern in `src/db/postgres.ts`. The error message when pg is missing is consistent with the PostgresAdapter: `RealtimeBroker requires 'pg'. Install with: npm install pg`.
+- **`tsup.config.ts`** now lists `pg` in `external` on the CLI build (mirroring the library build), so a future regression that re-adds a static `import pg` still can't pull pg into the bundle. Belt and suspenders.
+- **New regression test `tests/unit/cli-pg-bundling.test.ts`** asserts (a) `src/gui/realtime.ts` never statically value-imports `'pg'`, (b) both tsup build entries list `'pg'` in `external`, and (c) when `dist/cli.js` is on disk it contains zero pg-internal markers (`pg-types`, `pg-protocol`, `pg-pool`, `pgpass`, or a bare `require('events')`).
+
+CLI bundle size after fix: ~596 KB (down 174 KB).
+
 ## [1.13.8] - 2026-05-27
 
 ### Added — Realtime cloud subscriptions
