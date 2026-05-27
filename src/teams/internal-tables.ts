@@ -1,4 +1,5 @@
-import type { TableDefinition } from '../types.js';
+import type { Lattice } from '../lattice.js';
+import type { Migration, TableDefinition } from '../types.js';
 
 /**
  * Cloud-side internal tables for the Lattice Teams feature.
@@ -218,3 +219,54 @@ export const LOCAL_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
     outputFile: '.lattice-teams/dlq.md',
   },
 };
+
+/**
+ * Postgres trigger that emits `NOTIFY lattice_changes` after every
+ * `__lattice_change_log` insert. The payload mirrors the row minus the
+ * potentially-large `payload_json` blob — clients re-fetch that by `pk`
+ * if they need it. SQLite has no equivalent; trigger install is a no-op
+ * there.
+ *
+ * Idempotent: `CREATE OR REPLACE FUNCTION` + `DROP TRIGGER IF EXISTS` +
+ * `CREATE TRIGGER` lets future versions update the trigger body by
+ * bumping the migration version.
+ */
+export const CLOUD_NOTIFY_CHANGE_LOG_SQL = `
+CREATE OR REPLACE FUNCTION lattice_notify_change_log() RETURNS trigger AS $LATTICE$
+BEGIN
+  PERFORM pg_notify('lattice_changes', json_build_object(
+    'seq', NEW.seq,
+    'team_id', NEW.team_id,
+    'table_name', NEW.table_name,
+    'pk', NEW.pk,
+    'op', NEW.op,
+    'owner_user_id', NEW.owner_user_id,
+    'created_at', NEW.created_at
+  )::text);
+  RETURN NEW;
+END;
+$LATTICE$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS lattice_notify_change_log_trg ON __lattice_change_log;
+CREATE TRIGGER lattice_notify_change_log_trg
+AFTER INSERT ON __lattice_change_log
+FOR EACH ROW
+EXECUTE FUNCTION lattice_notify_change_log();
+`;
+
+/**
+ * Install the change-log NOTIFY trigger on a cloud Postgres. No-op on
+ * SQLite (LISTEN/NOTIFY is Postgres-only). Idempotent via Lattice's
+ * migration tracker — the version key skips already-applied runs.
+ *
+ * Safe to call on every team-cloud schema setup path. The `internal:`
+ * version prefix marks this as Lattice-managed (not application).
+ */
+export async function installCloudInternalTriggers(db: Lattice): Promise<void> {
+  if (db.getDialect() !== 'postgres') return;
+  const migration: Migration = {
+    version: 'internal:cloud-notify-change-log:v1',
+    sql: CLOUD_NOTIFY_CHANGE_LOG_SQL,
+  };
+  await db.migrate([migration]);
+}

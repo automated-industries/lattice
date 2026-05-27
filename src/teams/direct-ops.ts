@@ -24,7 +24,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Lattice } from '../lattice.js';
-import { CLOUD_INTERNAL_TABLE_DEFS } from './internal-tables.js';
+import { CLOUD_INTERNAL_TABLE_DEFS, installCloudInternalTriggers } from './internal-tables.js';
 import { applySchemaSpec, type SchemaSpec } from './schema-spec.js';
 import { generateInviteToken, generateToken, hashToken } from './server/auth.js';
 import { isPostgresUrl } from './register-direct.js';
@@ -210,6 +210,7 @@ export async function redeemInviteDirect(
     for (const [table, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
       await db.defineLate(table, def);
     }
+    await installCloudInternalTriggers(db);
 
     const invites = (await db.query('__lattice_invitations', {
       filters: [
@@ -308,6 +309,7 @@ async function openCloud(cloudUrl: string): Promise<Lattice> {
   for (const [table, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
     await db.defineLate(table, def);
   }
+  await installCloudInternalTriggers(db);
   return db;
 }
 

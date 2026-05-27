@@ -125,6 +125,16 @@ export const guiAppHtml = `<!doctype html>
       border: 1px solid #2a2f36; border-radius: 6px;
       font-size: 13px; cursor: pointer;
     }
+    /* Realtime connection status indicator inside .db-button.
+       yellow=local SQLite, green=cloud+SSE connected, red=cloud+disconnected. */
+    .db-button .db-status {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; background: var(--warn);
+      flex-shrink: 0;
+    }
+    .db-button .db-status.is-cloud-connected { background: var(--accent); }
+    .db-button .db-status.is-cloud-disconnected { background: #ef4444; }
+    .db-button .db-status.is-cloud-connecting { background: var(--warn); }
     .db-button:hover { background: rgba(255, 255, 255, 0.08); }
     .db-button .db-caret { color: #9aa1ad; font-size: 10px; }
     .db-menu {
@@ -601,11 +611,17 @@ export const guiAppHtml = `<!doctype html>
     .modal .field { margin-bottom: 12px; }
     .modal .field label {
       display: block; margin-bottom: 4px; font-size: 12px;
-      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text); font-weight: 500;
+      text-transform: uppercase; letter-spacing: 0.04em;
     }
     .modal .field input, .modal .field textarea {
-      width: 100%; padding: 6px 8px; border: 1px solid var(--border-strong);
+      width: 100%; padding: 6px 8px;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border-strong);
       border-radius: 4px; font: inherit;
+    }
+    .modal .field input::placeholder, .modal .field textarea::placeholder {
+      color: var(--text-muted);
     }
     .modal .field textarea { min-height: 60px; font-family: ui-monospace, monospace; font-size: 12px; }
     .modal .copy-token {
@@ -645,6 +661,7 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <div class="db-switcher">
       <button class="db-button" id="db-button" title="Switch database">
+        <span class="db-status" id="db-status" title="Local"></span>
         <span class="db-icon">💾</span>
         <span class="db-name" id="db-name">loading…</span>
         <span class="db-caret">▾</span>
@@ -656,8 +673,10 @@ export const guiAppHtml = `<!doctype html>
     <nav class="sidebar">
       <div class="section-label">Objects</div>
       <ul id="object-nav"></ul>
-      <div class="section-label">System</div>
-      <ul id="system-nav"></ul>
+      <div id="system-section" hidden>
+        <div class="section-label">System</div>
+        <ul id="system-nav"></ul>
+      </div>
       <div class="section-label">Settings</div>
       <ul id="settings-nav">
         <li><a href="#/settings/data-model"><span class="nav-icon">⚙</span> Data Model</a></li>
@@ -699,7 +718,14 @@ export const guiAppHtml = `<!doctype html>
     // name isn't in the built-in DISPLAY map.
     var DEFAULT_ICON = '📋';
 
-    var state = { entities: null, rowCache: {}, iconOverrides: {}, columnMeta: {}, systemTables: [] };
+    var state = {
+      entities: null,
+      rowCache: {},
+      iconOverrides: {},
+      columnMeta: {},
+      systemTables: [],
+      preferences: { show_system_tables: false },
+    };
 
     function isSecretColumn(tableName, colName) {
       var t = state.columnMeta[tableName];
@@ -742,8 +768,9 @@ export const guiAppHtml = `<!doctype html>
         if (u.password) {
           // Preserve the username (often useful for identification —
           // e.g. tenant prefixes like postgres.<ref>) but mask the
-          // password portion. URL.password is the decoded form.
-          u.password = '••••••••';
+          // password portion. ASCII mask avoids URL.toString()
+          // percent-encoding non-ASCII characters in userinfo.
+          u.password = '****';
           return u.toString();
         }
         return s;
@@ -784,20 +811,86 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/databases').catch(function () { return null; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
+        fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false }; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[3] || {};
         state.systemTables = (results[4] && results[4].tables) || [];
+        state.preferences = results[5] || { show_system_tables: false };
         renderDbSwitcher(results[2]);
         renderSidebar();
         wireHistoryControls();
         refreshHistoryState();
         renderRoute();
+        startRealtime();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Realtime — Server-Sent Events from /api/realtime/stream.
+    // One EventSource per session; on 'change' events we mark the
+    // current view dirty and refetch via afterMutation() (debounced
+    // to coalesce bursts). On 'state' events we drive the topbar pill.
+    // ────────────────────────────────────────────────────────────
+    var realtimeSource = null;
+    var realtimePending = null;
+    function setStatusPill(mode, state) {
+      var el = document.getElementById('db-status');
+      if (!el) return;
+      el.classList.remove(
+        'is-cloud-connected',
+        'is-cloud-disconnected',
+        'is-cloud-connecting',
+      );
+      if (mode !== 'cloud') {
+        el.title = 'Local database — no realtime channel';
+        return;
+      }
+      if (state === 'connected') {
+        el.classList.add('is-cloud-connected');
+        el.title = 'Cloud database — live';
+      } else if (state === 'connecting') {
+        el.classList.add('is-cloud-connecting');
+        el.title = 'Cloud database — connecting…';
+      } else {
+        el.classList.add('is-cloud-disconnected');
+        el.title = 'Cloud database — disconnected';
+      }
+    }
+    function scheduleRealtimeRefresh() {
+      if (realtimePending) return;
+      realtimePending = setTimeout(function () {
+        realtimePending = null;
+        // afterMutation refreshes entities + the current view. Fire-and-
+        // forget: any error just falls through to next manual action.
+        afterMutation().catch(function () { /* swallow */ });
+      }, 200);
+    }
+    function startRealtime() {
+      if (realtimeSource) {
+        try { realtimeSource.close(); } catch (_) { /* ignore */ }
+        realtimeSource = null;
+      }
+      if (typeof EventSource === 'undefined') return;
+      realtimeSource = new EventSource('/api/realtime/stream');
+      realtimeSource.addEventListener('state', function (ev) {
+        try {
+          var data = JSON.parse(ev.data);
+          setStatusPill(data.mode || 'local', data.state || 'local');
+        } catch (_) { /* ignore malformed */ }
+      });
+      realtimeSource.addEventListener('change', function () {
+        scheduleRealtimeRefresh();
+      });
+      realtimeSource.onerror = function () {
+        // EventSource auto-reconnects; surface the disconnect on the pill
+        // until the server's 'state' event reports recovery.
+        setStatusPill('cloud', 'disconnected');
+      };
     }
 
     /** Reload column meta after a secret-flag change. */
@@ -909,6 +1002,7 @@ export const guiAppHtml = `<!doctype html>
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
         loadedTables = {};
+        startRealtime();
       });
     }
 
@@ -1007,11 +1101,18 @@ export const guiAppHtml = `<!doctype html>
           '"><span class="nav-icon">' + d.icon + '</span> ' + escapeHtml(d.label) + '</a></li>';
       }).join('');
 
+      var section = document.getElementById('system-section');
+      var show = !!(state.preferences && state.preferences.show_system_tables);
+      if (section) section.hidden = !show;
       var sys = document.getElementById('system-nav');
-      sys.innerHTML = (state.systemTables || []).map(function (t) {
-        return '<li><a data-route="#/system/' + t.name + '" href="#/system/' + t.name +
-          '"><span class="nav-icon">⚙</span> ' + escapeHtml(t.name) + '</a></li>';
-      }).join('');
+      if (sys) {
+        sys.innerHTML = show
+          ? (state.systemTables || []).map(function (t) {
+              return '<li><a data-route="#/system/' + t.name + '" href="#/system/' + t.name +
+                '"><span class="nav-icon">⚙</span> ' + escapeHtml(t.name) + '</a></li>';
+            }).join('')
+          : '';
+      }
 
       highlightActive();
     }
@@ -2453,12 +2554,50 @@ export const guiAppHtml = `<!doctype html>
         '<div class="teams-page">' +
           '<h2>User Config</h2>' +
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
+          '<div id="preferences-host"></div>' +
           '<div id="databases-host"></div>' +
           '<div id="user-teams-host"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
+      renderPreferencesPanel(document.getElementById('preferences-host'));
       renderDatabasesPanel(document.getElementById('databases-host'));
       renderUserTeamsList(document.getElementById('user-teams-host'));
+    }
+
+    function renderPreferencesPanel(host) {
+      var prefs = state.preferences || { show_system_tables: false };
+      host.innerHTML =
+        '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+          '<h3 style="margin:0 0 10px">Preferences</h3>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
+            '<input type="checkbox" id="pref-show-system-tables"' +
+              (prefs.show_system_tables ? ' checked' : '') + '>' +
+            '<span>Show system tables in sidebar</span>' +
+          '</label>' +
+          '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
+            'Internal tables prefixed <code>__lattice_</code> are hidden by default. ' +
+            'Enable to inspect them under a "System" section in the sidebar.' +
+          '</p>' +
+          '<div id="pref-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+        '</div>';
+      var checkbox = host.querySelector('#pref-show-system-tables');
+      var msg = host.querySelector('#pref-msg');
+      checkbox.addEventListener('change', function () {
+        var body = { show_system_tables: !!checkbox.checked };
+        msg.textContent = 'Saving…';
+        fetch('/api/userconfig/preferences', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (next) {
+            state.preferences = next;
+            renderSidebar();
+            msg.textContent = 'Saved.';
+          })
+          .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+      });
     }
 
     function renderIdentityPanel(host) {
