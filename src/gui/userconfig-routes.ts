@@ -5,8 +5,11 @@ import type { Lattice } from '../lattice.js';
 import {
   listDbCredentials,
   readIdentity,
+  readPreferences,
   writeIdentity,
+  writePreferences,
   type UserIdentity,
+  type UserPreferences,
 } from '../framework/user-config.js';
 import { parseConfigFile } from '../config/parser.js';
 
@@ -137,6 +140,27 @@ export async function dispatchUserConfigRoute(
       const next: UserIdentity = { display_name, email };
       writeIdentity(next);
       await upsertIdentityRow(ctx.db, next);
+      sendJson(res, next);
+    });
+    return true;
+  }
+
+  if (pathname === '/api/userconfig/preferences' && method === 'GET') {
+    await tryHandler(res, () => {
+      sendJson(res, readPreferences());
+      return Promise.resolve();
+    });
+    return true;
+  }
+
+  if (pathname === '/api/userconfig/preferences' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const next: UserPreferences = {
+        show_system_tables:
+          typeof body.show_system_tables === 'boolean' ? body.show_system_tables : false,
+      };
+      writePreferences(next);
       sendJson(res, next);
     });
     return true;
