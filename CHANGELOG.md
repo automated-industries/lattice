@@ -8,6 +8,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.6] - 2026-05-27
+
+### Fixed — Team operations 400 against `postgres://` cloud URLs (share, list, link, me)
+
+`v1.13.4` added direct-Postgres dispatchers to `listMembers`, `invite`, `kickMember`, `destroyTeam`, and `fetchChangeBatch`, but the same fix didn't propagate to the rest of the cloud-touching `TeamsClient` methods. Every one of them still routed through `fetchAuthed(cloudUrl + path)` — and the Fetch API hard-refuses URLs with embedded credentials. So the GUI's "Share a table" button, the row-link / row-unlink flows, the per-session sync loop, and the `me` identity probe all 400-ed before they left the browser when the operator's cloud connection was a saved Postgres URL (the dominant case after Migrate-to-cloud or Connect-to-existing-cloud).
+
+`TeamsClient` methods that now dispatch on URL scheme — HTTP for `http(s)://`, direct-Postgres for `postgres(ql)://`:
+
+- `shareObject` — calls `shareObjectDirect` (parameterized INSERT/UPSERT on `__lattice_shared_objects` + `applySchemaSpec` + `__lattice_change_log` envelope). Caller must pass `inviterUserId` for the direct path so the row stamps `created_by_user_id` correctly.
+- `unshareObject` — calls `unshareObjectDirect` (soft-deletes the row, appends an `unshare` envelope).
+- `listSharedObjects` — calls `listSharedObjectsDirect` (parameterized query, JSON-parses each row's `schema_spec_json`).
+- `me` — calls `meDirect` (looks up the user by `__lattice_api_tokens.token_hash` matching the bearer; throws `Unauthorized` if the row is missing or the user is soft-deleted).
+- `linkRow` — calls `linkRowDirect` (writes the `__lattice_row_links` row + appends a `link` envelope on the cloud DB, then upserts the local mirror in `__lattice_local_links`).
+- `unlinkRow` — calls `unlinkRowDirect` (deletes the cloud row + appends an `unlink` envelope, then cleans up the local mirror).
+- `drainOutbox` — short-circuits to `{pushed: 0, failed: 0}`. In direct-Postgres mode the operator's local Lattice IS the cloud Lattice; writes already landed in the same DB the cloud reads. There is no separate cloud to push to.
+- `pullChanges` — short-circuits to `{applied: 0, last_seq: 0, dlq_count: 0}` for the same reason. `fetchChangeBatch` already had this short-circuit (added in v1.13.4), but `pullChanges` had its own loop that would have 400-ed against the credentialed URL.
+
+New direct-Postgres helpers in `src/teams/direct-ops.ts`: `shareObjectDirect`, `unshareObjectDirect`, `listSharedObjectsDirect`, `meDirect`, `linkRowDirect`, `unlinkRowDirect`, plus a `getStatusDirect` for symmetry (the existing `getStatus` already worked because it only touches the local DB). All use parameterized writes through the `Lattice` insert/upsert/query/delete API — no template-string SQL.
+
+### Fixed — GUI Share dialog now passes `my_user_id` so the direct-Postgres path can stamp the row
+
+`POST /api/teams-gui/teams/:id/shared` (the GUI's "Share a table" endpoint) now passes `conn.my_user_id` to `TeamsClient.shareObject`. The HTTP path ignores the new arg; the direct-Postgres path requires it because there's no bearer-resolved user identity in the direct flow.
+
+### Fixed — Joined team's cloud DB now appears in the database dropdown
+
+`POST /api/teams-gui/connections/join` (the GUI's "Join via invite" handler) previously saved the team connection but did nothing to make the team's cloud DB switchable — the user had no way to actually USE the team's cloud after joining. The credential lived in the local lattice's `__lattice_team_connections` table, but the database-switcher dropdown reads filesystem YAML configs.
+
+Two pieces wire this together now:
+
+- **`saveDbCredentialForTeam({teamName, teamId, cloudUrl})`** in `src/framework/user-config.ts` — persists the cloud URL into `~/.lattice/db-credentials.enc` under a sanitized label of the form `<team-name>.config`. If a label collision exists with a different URL, suffixes `-<short-team-id>` to keep them distinct. Returns the label actually used.
+- **Sibling YAML write** in `src/gui/teams-routes.ts` `handleJoin` — after `saveConnection`, writes `<credential_label>.yml` to the active project's config directory containing `db: ${LATTICE_DB:<label>}` + an empty `entities:` map. `listConfigs()` picks it up on the next `/api/databases` poll.
+
+After joining, the user can immediately click the new entry in the database dropdown and switch to the team's cloud DB. Both flows (URL-paste GUI Join + the underlying `TeamsClient.redeemInvite`) are unchanged in shape — the dropdown integration is purely additive on top of a successful join.
+
+The new helper `saveDbCredentialForTeam` is re-exported from the package root.
+
 ## [1.13.5] - 2026-05-26
 
 ### Fixed — `redeemInvite` fails with HTTP 404 against Postgres cloud URLs
