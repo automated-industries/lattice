@@ -32,5 +32,14 @@ export default defineConfig([
     target: 'node18',
     outDir: 'dist',
     banner: { js: '#!/usr/bin/env node' },
+    // pg is an optionalDependency. v1.13.8 omitted this and tsup happily
+    // inlined pg's CJS internals (`require('events')`, native binding
+    // shims) into the ESM CLI bundle, breaking every `lattice gui` boot
+    // — even on SQLite-only configs that never reach the realtime broker.
+    // v1.13.9 keeps pg external on both the library AND CLI builds so a
+    // future regression can't re-bundle it accidentally. The runtime
+    // loader in `src/db/postgres.ts` + `src/gui/realtime.ts` resolves pg
+    // from the consumer's node_modules via createRequire at call time.
+    external: ['pg'],
   },
 ]);
