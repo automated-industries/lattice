@@ -8,6 +8,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.7] - 2026-05-27
+
+### Fixed — Joined-team cloud now boots with the team's shared tables already populated
+
+After running "Join via invite" in the GUI, the joined-team's cloud config opened to an empty SPA with the message:
+
+> *No entities yet. Define entities in your lattice.config.yml or register them via db.define(), then reload.*
+
+Cause: the join handler wrote a sibling YAML config with `entities: {}` (since the local project hadn't declared the team's tables) and the GUI's `/api/entities` endpoint read tables exclusively from `parseConfigFile(configPath).tables` — i.e., from the YAML. The cloud Postgres already had the team's shared tables (rows in `__lattice_shared_objects`), but nothing replayed them into the local Lattice's runtime schema or surfaced them to the SPA.
+
+Two pieces wire this together:
+
+1. **`openConfig` auto-discovers shared schemas on every boot.** After `attachWriteHooks`, the GUI server enumerates every row in `__lattice_team_connections` and calls `client.syncSharedSchemas(connection)`. That fetches each team's `__lattice_shared_objects` rows and `defineLate`s them into the local Lattice. The work is idempotent — re-opening the GUI just re-applies the same specs. Per-team failures are logged but isolated; a single unreachable cloud doesn't block GUI boot.
+
+2. **`/api/entities` merges runtime-registered tables with YAML-declared ones.** `entitiesWithCounts` (in `src/gui/server.ts`) now augments the YAML table list with everything the Lattice schema manager knows about that the YAML doesn't — minus the internal `__lattice_*` / `_lattice_*` bookkeeping tables. Tables auto-synced from a team's cloud show up in the dropdown immediately on the next reload.
+
+The fix is purely additive — projects without any team connections behave exactly as before.
+
+---
+
 ## [1.13.6] - 2026-05-27
 
 ### Fixed — Team operations 400 against `postgres://` cloud URLs (share, list, link, me)
