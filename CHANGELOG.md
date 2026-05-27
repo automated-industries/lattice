@@ -15,6 +15,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 Cloud Postgres-backed lattices now stream changes to every connected GUI in realtime. Mechanism: a Postgres trigger on `__lattice_change_log` emits `pg_notify('lattice_changes', …)` after every insert; the GUI server holds a dedicated `pg.Client` with `LISTEN lattice_changes` and fans payloads out to browsers over a new Server-Sent Events endpoint `GET /api/realtime/stream`. The browser's `EventSource` invalidates the entity cache and refetches the active view; connection state drives a colored status indicator in the topbar (green = cloud live, yellow = local SQLite, red = cloud disconnected). SQLite databases are unchanged — LISTEN/NOTIFY is a Postgres-only feature, and the broker is skipped on those.
 
 New surfaces:
+
 - `GET /api/realtime/stream` — SSE; emits `state` and `change` events.
 - `GET /api/realtime/status` — JSON snapshot of `{ mode, state, connected }`.
 - `src/teams/internal-tables.ts` exports `installCloudInternalTriggers(db)` and `CLOUD_NOTIFY_CHANGE_LOG_SQL`. The installer runs automatically wherever the cloud-internal table set is registered (team-cloud server boot, `redeemInviteDirect`, `openCloud`).

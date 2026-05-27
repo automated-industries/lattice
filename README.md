@@ -2174,10 +2174,10 @@ The GUI's User Settings view edits `identity.json` directly; the Database Settin
 
 **Realtime cloud subscriptions (v1.13.8+).** Cloud Postgres-backed lattices stream changes to every connected GUI in realtime. A Postgres trigger on `__lattice_change_log` emits `pg_notify('lattice_changes', …)` after every insert; the GUI server holds a dedicated `pg.Client` with `LISTEN lattice_changes` and fans payloads out via a new Server-Sent Events endpoint:
 
-| Route                     | Method | Description                                                                      |
-| ------------------------- | ------ | -------------------------------------------------------------------------------- |
-| `/api/realtime/stream`    | GET    | SSE stream; `event: state` on connection transitions, `event: change` per NOTIFY |
-| `/api/realtime/status`    | GET    | JSON snapshot of `{ mode: 'local'\|'cloud', state, connected }`                  |
+| Route                  | Method | Description                                                                      |
+| ---------------------- | ------ | -------------------------------------------------------------------------------- |
+| `/api/realtime/stream` | GET    | SSE stream; `event: state` on connection transitions, `event: change` per NOTIFY |
+| `/api/realtime/status` | GET    | JSON snapshot of `{ mode: 'local'\|'cloud', state, connected }`                  |
 
 The browser's `EventSource` invalidates the entity cache on every `change` event; connection state drives a colored dot in the topbar (green/yellow/red). SQLite databases are unchanged — LISTEN/NOTIFY is Postgres-only and the broker is skipped on those. The trigger installer (`installCloudInternalTriggers`) is exported from `latticesql/teams/internal-tables` for callers that bootstrap cloud schemas outside the GUI.
 

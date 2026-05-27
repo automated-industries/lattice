@@ -17,7 +17,10 @@ import {
 import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
-import { CLOUD_INTERNAL_TABLE_DEFS, installCloudInternalTriggers } from '../teams/internal-tables.js';
+import {
+  CLOUD_INTERNAL_TABLE_DEFS,
+  installCloudInternalTriggers,
+} from '../teams/internal-tables.js';
 import { RealtimeBroker } from './realtime.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
@@ -663,7 +666,8 @@ function listConfigs(
   activeConfigPath: string,
 ): { path: string; name: string; label: string; dbFile: string; active: boolean }[] {
   const dir = dirname(activeConfigPath);
-  const entries: { path: string; name: string; label: string; dbFile: string; active: boolean }[] = [];
+  const entries: { path: string; name: string; label: string; dbFile: string; active: boolean }[] =
+    [];
   for (const fname of readdirSync(dir)) {
     if (!fname.endsWith('.yml') && !fname.endsWith('.yaml')) continue;
     const full = join(dir, fname);
@@ -1286,9 +1290,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // optional name: key (used by local DBs), then the basename.
           let activeLabel: string | undefined;
           try {
-            const row = (await active.db.get('__lattice_team_identity', 'singleton')) as
-              | { team_name?: string }
-              | null;
+            const row = (await active.db.get('__lattice_team_identity', 'singleton')) as {
+              team_name?: string;
+            } | null;
             if (row && typeof row.team_name === 'string' && row.team_name.trim()) {
               activeLabel = row.team_name.trim();
             }
