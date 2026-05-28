@@ -46,6 +46,7 @@ describe('AI function dispatch', () => {
       db,
       feed,
       validTables: new Set(['people']),
+      junctionTables: new Set(),
       softDeletable: new Set(['people']),
     };
   });
@@ -134,5 +135,35 @@ describe('AI function dispatch', () => {
     expect(noValues.ok).toBe(false);
     const noId = await executeFunction(ctx, 'get_row', { table: 'people' });
     expect(noId.ok).toBe(false);
+  });
+
+  it('undo reverses a create, redo re-applies it', async () => {
+    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    const undo = await executeFunction(ctx, 'undo', {});
+    expect(undo.ok).toBe(true);
+    expect((await executeFunction(ctx, 'get_row', { table: 'people', id: 'p1' })).ok).toBe(false);
+    const redo = await executeFunction(ctx, 'redo', {});
+    expect(redo.ok).toBe(true);
+    expect((await executeFunction(ctx, 'get_row', { table: 'people', id: 'p1' })).ok).toBe(true);
+  });
+
+  it('undo reports nothing to undo on a clean slate', async () => {
+    const res = await executeFunction(ctx, 'undo', {});
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/nothing to undo/i);
+  });
+
+  it('get_history lists recorded mutations', async () => {
+    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    const hist = await executeFunction(ctx, 'get_history', {});
+    expect(hist.ok).toBe(true);
+    const entries = hist.result as { operation: string; table_name: string }[];
+    expect(entries.some((e) => e.operation === 'insert' && e.table_name === 'people')).toBe(true);
+  });
+
+  it('link rejects a table that is not a registered junction', async () => {
+    const res = await executeFunction(ctx, 'link', { table: 'people', values: { a_id: '1', b_id: '2' } });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unknown table/i);
   });
 });
