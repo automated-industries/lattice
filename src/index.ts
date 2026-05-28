@@ -148,7 +148,16 @@ export type { PostgresAdapterOptions } from './db/postgres.js';
 
 // v1.12 additions — framework-shipped tables, machine-local user config,
 // content-addressed blob store, ed25519-style team auth client.
-export { NATIVE_ENTITY_DEFS, registerNativeEntities } from './framework/native-entities.js';
+export {
+  NATIVE_ENTITY_DEFS,
+  NATIVE_ENTITY_NAMES,
+  isNativeEntity,
+  registerNativeEntities,
+  adoptNativeEntities,
+  listNativeBindings,
+  NATIVE_REGISTRY_TABLE,
+} from './framework/native-entities.js';
+export type { AdoptNativeOptions, AdoptResult } from './framework/native-entities.js';
 export { attachBlob, hashFile } from './framework/blob-store.js';
 export type { BlobMetadata } from './framework/blob-store.js';
 export {

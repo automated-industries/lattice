@@ -121,6 +121,26 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
     render: () => '',
     outputFile: '.lattice-teams/shared-objects.md',
   },
+  // Per-table ownership for a team cloud. Every member connects to the
+  // SAME physical Postgres, so every table exists for everyone at the
+  // SQL level — visibility must be enforced at the application layer.
+  // This table records the creator (owner) of each user-facing table
+  // (including the native `files`/`secrets` objects). The GUI shows a
+  // user only the tables they own PLUS tables present in
+  // `__lattice_shared_objects` (explicitly shared to the team). Tables
+  // without a row here are reconciled to the team creator on open. See
+  // `reconcileObjectOwners` / `listObjectOwners` in `direct-ops.ts`.
+  __lattice_object_owners: {
+    columns: {
+      team_id: 'TEXT NOT NULL',
+      table_name: 'TEXT NOT NULL',
+      owner_user_id: 'TEXT NOT NULL',
+      created_at: 'TEXT NOT NULL',
+    },
+    primaryKey: ['team_id', 'table_name'],
+    render: () => '',
+    outputFile: '.lattice-teams/object-owners.md',
+  },
   __lattice_change_log: {
     columns: {
       id: 'TEXT PRIMARY KEY',
