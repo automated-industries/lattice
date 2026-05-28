@@ -21,7 +21,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
   secrets: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      name: 'TEXT NOT NULL',
+      name: "TEXT NOT NULL DEFAULT ''",
       kind: 'TEXT',
       value: 'TEXT',
       description: 'TEXT',
@@ -76,7 +76,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       // to match the generic, dialect-agnostic native-entity style.
       thread_id: 'TEXT',
       // user | assistant | tool | feed | system
-      role: 'TEXT NOT NULL',
+      role: "TEXT NOT NULL DEFAULT 'user'",
       // JSON payload: text, tool_use / tool_result blocks, attachments, or
       // (for role='feed') the feed-event details.
       content_json: 'TEXT',
