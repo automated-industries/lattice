@@ -254,6 +254,50 @@ export const guiAppHtml = `<!doctype html>
     }
     .feed-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 
+    /* ── Chat bubbles + tool pills ─────────────────────── */
+    .chat-msg { display: flex; animation: feedIn 0.18s ease-out; }
+    .chat-msg.user { justify-content: flex-end; }
+    .chat-msg.assistant { justify-content: flex-start; }
+    .chat-bubble {
+      max-width: 85%; padding: 8px 12px; font-size: 13.5px; line-height: 1.45;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .chat-bubble.user {
+      background: var(--accent); color: #0b0d10;
+      border-radius: 14px 14px 4px 14px;
+    }
+    .chat-bubble.assistant {
+      background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 14px 14px 14px 4px;
+    }
+    .chat-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+    .tool-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 500;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .tool-pill.done { background: var(--surface-2); color: var(--text-muted); }
+    .tool-pill.error { background: rgba(251,146,60,0.14); color: var(--warn); }
+    .tool-pill .spin { display: inline-block; width: 9px; height: 9px;
+      border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%;
+      animation: pillspin 0.7s linear infinite; }
+    @keyframes pillspin { to { transform: rotate(360deg); } }
+    .rail-composer { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 10px 12px; }
+    .rail-composer textarea {
+      width: 100%; resize: none; min-height: 38px; max-height: 120px;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 8px;
+      padding: 8px 10px; font: inherit; font-size: 13.5px;
+    }
+    .rail-composer .composer-row { display: flex; gap: 8px; align-items: flex-end; }
+    .rail-composer .composer-send {
+      flex: 0 0 auto; height: 38px; padding: 0 14px; border: none; border-radius: 8px;
+      background: var(--accent); color: #0b0d10; font-weight: 600; cursor: pointer;
+    }
+    .rail-composer .composer-send:disabled { opacity: 0.4; cursor: default; }
+    .rail-composer .composer-setup { font-size: 12.5px; color: var(--text-muted); text-align: center; }
+    .rail-composer .composer-setup a { color: var(--accent); }
+
     /* ── Dashboard ────────────────────────────────────── */
     .dashboard {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
@@ -762,6 +806,7 @@ export const guiAppHtml = `<!doctype html>
       <div class="rail-feed" id="rail-feed">
         <div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>
       </div>
+      <div class="rail-composer" id="rail-composer"></div>
     </aside>
   </div>
 
@@ -935,6 +980,7 @@ export const guiAppHtml = `<!doctype html>
         startRealtime();
         initRailResize();
         startFeed();
+        renderComposer();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -1106,6 +1152,140 @@ export const guiAppHtml = `<!doctype html>
         }
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Assistant chat composer — POST /api/chat, parse SSE, render
+    // bubbles + tool pills into the same rail feed (interleaved with
+    // activity events). Gated on a configured Claude token.
+    // ────────────────────────────────────────────────────────────
+    var chatHistory = [];
+    var chatBusy = false;
+    function railFeedEl() { return document.getElementById('rail-feed'); }
+    function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
+    function appendUserBubble(text) {
+      railEmptyGone();
+      var feedEl = railFeedEl(); if (!feedEl) return;
+      var msg = document.createElement('div'); msg.className = 'chat-msg user';
+      var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = text;
+      msg.appendChild(b); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+    }
+    function newAssistantBubble() {
+      railEmptyGone();
+      var feedEl = railFeedEl();
+      var msg = document.createElement('div'); msg.className = 'chat-msg assistant';
+      var wrap = document.createElement('div');
+      var tools = document.createElement('div'); tools.className = 'chat-tools';
+      var b = document.createElement('div'); b.className = 'chat-bubble assistant'; b.textContent = '';
+      wrap.appendChild(tools); wrap.appendChild(b);
+      msg.appendChild(wrap); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      return { bubble: b, tools: tools, pills: {} };
+    }
+    var TOOL_VERBS = {
+      create_row: ['Creating row', 'Row created', 'Could not create row'],
+      update_row: ['Updating row', 'Row updated', 'Could not update row'],
+      delete_row: ['Deleting row', 'Row deleted', 'Could not delete row'],
+      list_rows: ['Listing rows', 'Listed rows', 'Could not list rows'],
+      get_row: ['Fetching row', 'Fetched row', 'Could not fetch row'],
+      list_entities: ['Listing tables', 'Listed tables', 'Could not list tables']
+    };
+    function toolLabel(name, state) {
+      var v = TOOL_VERBS[name] || [name, name, name];
+      return state === 'pending' ? v[0] + '…' : (state === 'error' ? v[2] : v[1]);
+    }
+    function addToolPill(ctx, id, name) {
+      var pill = document.createElement('span'); pill.className = 'tool-pill';
+      pill.innerHTML = '<span class="spin"></span>' + escapeHtml(toolLabel(name, 'pending'));
+      pill.setAttribute('data-name', name);
+      ctx.tools.appendChild(pill); ctx.pills[id] = pill;
+    }
+    function resolveToolPill(ctx, id, isError) {
+      var pill = ctx.pills[id]; if (!pill) return;
+      var name = pill.getAttribute('data-name');
+      pill.className = 'tool-pill ' + (isError ? 'error' : 'done');
+      pill.textContent = (isError ? '⚠ ' : '✓ ') + toolLabel(name, isError ? 'error' : 'done');
+    }
+    function parseSse(buffer, onEvent) {
+      var sep;
+      while ((sep = buffer.indexOf('\\n\\n')) >= 0) {
+        var frame = buffer.slice(0, sep); buffer = buffer.slice(sep + 2);
+        var line = frame.split('\\n').find(function (l) { return l.indexOf('data:') === 0; });
+        if (!line) continue;
+        var json = line.slice(5).trim(); if (!json) continue;
+        try { onEvent(JSON.parse(json)); } catch (_) { /* drop malformed */ }
+      }
+      return buffer;
+    }
+    function sendChat(text) {
+      if (chatBusy || !text) return;
+      chatBusy = true;
+      appendUserBubble(text);
+      var historyToSend = chatHistory.slice();
+      chatHistory.push({ role: 'user', text: text });
+      var input = document.getElementById('chat-input');
+      var sendBtn = document.getElementById('chat-send');
+      if (input) { input.value = ''; input.style.height = 'auto'; }
+      if (sendBtn) sendBtn.disabled = true;
+      var actx = null; var assembled = '';
+      fetch('/api/chat', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: text, history: historyToSend })
+      }).then(function (r) {
+        if (!r.ok || !r.body) {
+          return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+        }
+        var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
+        function pump() {
+          return reader.read().then(function (res) {
+            if (res.done) return;
+            buf += dec.decode(res.value, { stream: true });
+            buf = parseSse(buf, function (ev) {
+              if (ev.type === 'assistant_message_start') { actx = newAssistantBubble(); assembled = ''; }
+              else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; actx.bubble.textContent = assembled; railFeedEl().scrollTop = railFeedEl().scrollHeight; }
+              else if (ev.type === 'tool_use' && actx) { addToolPill(actx, ev.id, ev.name); }
+              else if (ev.type === 'tool_result' && actx) { resolveToolPill(actx, ev.toolUseId, ev.isError); }
+              else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); actx.bubble.textContent = (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message; }
+            });
+            return pump();
+          });
+        }
+        return pump();
+      }).then(function () {
+        if (assembled) chatHistory.push({ role: 'assistant', text: assembled });
+      }).catch(function (e) {
+        var c = newAssistantBubble(); c.bubble.textContent = '⚠ ' + e.message;
+      }).finally(function () {
+        chatBusy = false;
+        var sb = document.getElementById('chat-send'); if (sb) sb.disabled = false;
+        var inp = document.getElementById('chat-input'); if (inp) inp.focus();
+      });
+    }
+    function renderComposer() {
+      var host = document.getElementById('rail-composer'); if (!host) return;
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        if (cfg && cfg.hasAnthropicKey) {
+          host.innerHTML =
+            '<div class="composer-row">' +
+              '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
+              '<button class="composer-send" id="chat-send">Send</button>' +
+            '</div>';
+          var input = document.getElementById('chat-input');
+          var sendBtn = document.getElementById('chat-send');
+          input.addEventListener('input', function () {
+            input.style.height = 'auto';
+            input.style.height = Math.min(120, input.scrollHeight) + 'px';
+          });
+          input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(input.value.trim()); }
+          });
+          sendBtn.addEventListener('click', function () { sendChat(input.value.trim()); });
+        } else {
+          host.innerHTML = '<div class="composer-setup">Set a Claude API token in ' +
+            '<a href="#/settings/user-config">User Settings → Assistant</a> to chat.</div>';
+        }
+      }).catch(function () {
+        host.innerHTML = '<div class="composer-setup">Assistant unavailable.</div>';
       });
     }
 
@@ -3195,7 +3375,7 @@ export const guiAppHtml = `<!doctype html>
             body: JSON.stringify({ key: key }),
           })
             .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-            .then(function () { renderAssistantPanel(host); })
+            .then(function () { renderAssistantPanel(host); renderComposer(); })
             .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
         });
         var clearBtn = host.querySelector('#assistant-clear');
@@ -3204,7 +3384,7 @@ export const guiAppHtml = `<!doctype html>
             msg.textContent = 'Clearing…';
             fetch('/api/assistant/key', { method: 'DELETE' })
               .then(function (r) { if (!r.ok) throw new Error('clear failed (' + r.status + ')'); return r.json(); })
-              .then(function () { renderAssistantPanel(host); })
+              .then(function () { renderAssistantPanel(host); renderComposer(); })
               .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
           });
         }
