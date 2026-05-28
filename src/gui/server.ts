@@ -1059,10 +1059,37 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // socket closed
             }
           }, 25_000);
-          const offFeed = active.feed.subscribe((e) => writeFeed(e));
+          // Track keys of this server's own mutations so we can suppress the
+          // Postgres NOTIFY echo of them below (avoids double feed entries on
+          // cloud DBs); genuine other-client changes still come through.
+          const recentSelf = new Map<string, number>();
+          const offFeed = active.feed.subscribe((e) => {
+            recentSelf.set(`${e.table}:${e.rowId}:${e.op}`, Date.now());
+            writeFeed(e);
+          });
+          // Merge the Postgres realtime broker so changes made by OTHER clients
+          // on a shared cloud DB also appear in the feed (SQLite has no broker).
+          const offBroker = active.realtime?.subscribePayload((p) => {
+            const op =
+              p.op === 'INSERT' ? 'insert' : p.op === 'UPDATE' ? 'update' : p.op === 'DELETE' ? 'delete' : null;
+            if (!op || !p.table_name || p.table_name.startsWith('_lattice')) return;
+            const key = `${p.table_name}:${p.pk}:${op}`;
+            const seen = recentSelf.get(key);
+            if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
+            writeFeed({
+              seq: p.seq,
+              table: p.table_name,
+              op,
+              rowId: p.pk,
+              source: 'cli',
+              ts: p.created_at || new Date().toISOString(),
+              summary: `${op} on ${p.table_name} (another client)`,
+            });
+          });
           const cleanup = (): void => {
             clearInterval(keepalive);
             offFeed();
+            if (offBroker) offBroker();
           };
           req.on('close', cleanup);
           req.on('error', cleanup);
