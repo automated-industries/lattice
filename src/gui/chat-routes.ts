@@ -20,6 +20,7 @@ interface ChatContext {
   db: Lattice;
   feed: FeedBus;
   validTables: Set<string>;
+  junctionTables: Set<string>;
   softDeletable: Set<string>;
   pathname: string;
   method: string;
@@ -136,6 +137,7 @@ export async function dispatchChatRoute(
     db: ctx.db,
     feed: ctx.feed,
     validTables: ctx.validTables,
+    junctionTables: ctx.junctionTables,
     softDeletable: ctx.softDeletable,
   };
 
