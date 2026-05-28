@@ -1916,7 +1916,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Chat route ────────────────────────────────────────────────────
         // POST /api/chat — assistant tool loop, streamed as SSE. Executes
         // tool calls against the active DB via the shared mutation chokepoint.
-        if (!teamCloud && pathname === '/api/chat') {
+        if (!teamCloud && pathname.startsWith('/api/chat')) {
           const handled = await dispatchChatRoute(req, res, {
             db: active.db,
             feed: active.feed,
