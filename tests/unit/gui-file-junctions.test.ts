@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileJunctions } from '../../src/gui/data.js';
+import { fileJunctions, entityDescriptions } from '../../src/gui/data.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -57,5 +57,31 @@ describe('fileJunctions', () => {
       ].join('\n'),
     );
     expect(fileJunctions(configPath, outputDir)).toEqual([]);
+  });
+});
+
+describe('entityDescriptions', () => {
+  it('maps entities that declare a description', () => {
+    const { configPath, outputDir } = writeConfig(
+      [
+        'db: ./data/test.db',
+        'entities:',
+        '  projects:',
+        '    description: Active products and initiatives.',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: projects.md',
+        '  people:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: people.md',
+        '',
+      ].join('\n'),
+    );
+    const descriptions = entityDescriptions(configPath, outputDir);
+    expect(descriptions.projects).toBe('Active products and initiatives.');
+    expect('people' in descriptions).toBe(false); // no description declared
   });
 });
