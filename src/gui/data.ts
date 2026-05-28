@@ -3,7 +3,7 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 import { parseConfigFile, type ParsedConfig } from '../config/parser.js';
 import { entityFileNames, readManifest, type LatticeManifest } from '../lifecycle/manifest.js';
 import type { EntityFileSource, EnrichmentLookup } from '../schema/entity-context.js';
-import type { Relation, TableDefinition } from '../types.js';
+import type { BelongsToRelation, Relation, TableDefinition } from '../types.js';
 
 export interface GuiTableSummary {
   name: string;
@@ -444,4 +444,42 @@ export function getGuiEntities(configPath: string, outputDir: string): GuiEntiti
 export function isJunctionTable(table: GuiTableSummary): boolean {
   const belongsTo = Object.values(table.relations).filter((r) => r.type === 'belongsTo');
   return belongsTo.length === 2 && Object.keys(table.relations).length === 2;
+}
+
+/** A junction table that connects the native `files` entity to another entity. */
+export interface FileJunction {
+  /** The junction table name. */
+  junction: string;
+  /** FK column on the junction pointing at `files`. */
+  fileFk: string;
+  /** The entity on the other side of the junction. */
+  otherTable: string;
+  /** FK column on the junction pointing at `otherTable`. */
+  otherFk: string;
+}
+
+/**
+ * Discover the junction tables that link `files` to another entity, with their
+ * foreign-key columns. Used by ingest to auto-link a file to records it relates
+ * to — only where such a junction already exists in the schema.
+ */
+export function fileJunctions(configPath: string, outputDir: string): FileJunction[] {
+  const out: FileJunction[] = [];
+  for (const t of getGuiEntities(configPath, outputDir).tables) {
+    if (!isJunctionTable(t)) continue;
+    const belongsTo = Object.values(t.relations).filter(
+      (r): r is BelongsToRelation => r.type === 'belongsTo',
+    );
+    const fileRel = belongsTo.find((r) => r.table === 'files');
+    const otherRel = belongsTo.find((r) => r.table !== 'files');
+    if (fileRel && otherRel) {
+      out.push({
+        junction: t.name,
+        fileFk: fileRel.foreignKey,
+        otherTable: otherRel.table,
+        otherFk: otherRel.foreignKey,
+      });
+    }
+  }
+  return out;
 }
