@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { statSync } from 'node:fs';
-import { basename, extname, resolve } from 'node:path';
+import { writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { FeedBus } from './ai/feed.js';
 import { createRow, updateRow, type MutationCtx } from './mutations.js';
@@ -153,13 +155,28 @@ async function enrichWithLlm(
   }
 }
 
+function readBuffer(req: IncomingMessage, maxBytes = 50_000_000): Promise<Buffer> {
+  return new Promise((resolve_, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > maxBytes) reject(new Error('upload too large'));
+      else chunks.push(c);
+    });
+    req.on('end', () => resolve_(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+const INGEST_PATHS = new Set(['/api/ingest/text', '/api/ingest/file', '/api/ingest/upload']);
+
 export async function dispatchIngestRoute(
   req: IncomingMessage,
   res: ServerResponse,
   ctx: IngestContext,
 ): Promise<boolean> {
-  if (ctx.method !== 'POST') return false;
-  if (ctx.pathname !== '/api/ingest/text' && ctx.pathname !== '/api/ingest/file') return false;
+  if (ctx.method !== 'POST' || !INGEST_PATHS.has(ctx.pathname)) return false;
 
   const mctx: MutationCtx = {
     db: ctx.db,
@@ -167,6 +184,45 @@ export async function dispatchIngestRoute(
     softDeletable: ctx.softDeletable,
     source: 'ingest',
   };
+
+  // Raw-bytes upload (drag-drop / paperclip from the browser, which can't
+  // expose a local path). Extract then discard the bytes — we keep the text +
+  // description, not the file (path stays null, like a text paste).
+  if (ctx.pathname === '/api/ingest/upload') {
+    const name = (typeof req.headers['x-filename'] === 'string' && req.headers['x-filename']) || 'upload';
+    const mime = req.headers['content-type'] || 'application/octet-stream';
+    let buf: Buffer;
+    try {
+      buf = await readBuffer(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    if (buf.length === 0) {
+      sendJson(res, { error: 'empty upload' }, 400);
+      return true;
+    }
+    const tmp = join(tmpdir(), `lattice-ingest-${crypto.randomUUID()}${extname(name)}`);
+    let result;
+    try {
+      await writeFile(tmp, buf);
+      result = await parseFile(tmp, mime, name);
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {});
+    }
+    const { id } = await createRow(mctx, 'files', {
+      id: crypto.randomUUID(),
+      original_name: name,
+      mime,
+      size_bytes: buf.length,
+      extracted_text: result.text,
+      description: describe(result.text, mime, name),
+      extraction_status: result.skip ? 'skipped' : 'extracted',
+    });
+    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name);
+    sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
+    return true;
+  }
 
   let body: Record<string, unknown>;
   try {
