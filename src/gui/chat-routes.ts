@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { FeedBus } from './ai/feed.js';
-import { getAnthropicApiKey } from './assistant-routes.js';
+import { resolveClaudeAuth } from './assistant-routes.js';
 import { createAnthropicClient, runChat, type LlmMessage } from './ai/chat.js';
 import { formatSseFrame } from './ai/sse.js';
 import type { DispatchCtx } from './ai/dispatch.js';
@@ -134,11 +134,11 @@ export async function dispatchChatRoute(
 
   if (!(ctx.method === 'POST' && ctx.pathname === '/api/chat')) return false;
 
-  const key = await getAnthropicApiKey(ctx.db);
-  if (!key) {
+  const auth = await resolveClaudeAuth(ctx.db);
+  if (!auth) {
     sendJson(
       res,
-      { error: 'No Claude API token configured. Add one in User Settings → Assistant.' },
+      { error: 'No Claude auth configured. Connect a subscription or add an API token in User Settings → Assistant.' },
       400,
     );
     return true;
@@ -188,7 +188,7 @@ export async function dispatchChatRoute(
 
   let assistantText = '';
   try {
-    const client = createAnthropicClient(key);
+    const client = createAnthropicClient(auth);
     for await (const ev of runChat({ client, dispatch, history, userMessage: message })) {
       if (ev.type === 'text_delta') assistantText += ev.delta;
       try {

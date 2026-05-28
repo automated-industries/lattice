@@ -1431,7 +1431,7 @@ export const guiAppHtml = `<!doctype html>
     function renderComposer() {
       var host = document.getElementById('rail-composer'); if (!host) return;
       fetchJson('/api/assistant/config').then(function (cfg) {
-        if (cfg && cfg.hasAnthropicKey) {
+        if (cfg && cfg.hasClaudeAuth) {
           var micHtml = cfg.hasVoiceKey
             ? '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>'
             : '';

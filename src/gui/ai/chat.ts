@@ -138,7 +138,23 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
 
 // ── Real client (lazy-loaded SDK) ───────────────────────────────────────────
 
-type AnthropicCtor = new (config: { apiKey: string }) => AnthropicSdk;
+/**
+ * How to authenticate to Anthropic: a raw API key, or an OAuth Bearer token
+ * (from a connected Claude subscription). `betaHeader` carries an optional
+ * `anthropic-beta` value (sourced from env for the OAuth path — not hardcoded).
+ */
+export interface ClaudeAuth {
+  apiKey?: string | undefined;
+  authToken?: string | undefined;
+  betaHeader?: string | undefined;
+}
+
+interface AnthropicClientConfig {
+  apiKey?: string;
+  authToken?: string;
+  defaultHeaders?: Record<string, string>;
+}
+type AnthropicCtor = new (config: AnthropicClientConfig) => AnthropicSdk;
 interface AnthropicSdk {
   messages: {
     stream(params: Record<string, unknown>): AnthropicMessageStream;
@@ -176,10 +192,17 @@ function loadSdk(): AnthropicCtor {
   return ctor;
 }
 
-/** Build the real Anthropic-backed client. Lazy-loads the SDK at call time. */
-export function createAnthropicClient(apiKey: string): LlmClient {
+/**
+ * Build the real Anthropic-backed client. Lazy-loads the SDK at call time.
+ * Accepts either a raw API key or an OAuth Bearer token (subscription).
+ */
+export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
   const Anthropic = loadSdk();
-  const sdk = new Anthropic({ apiKey });
+  const config: AnthropicClientConfig = {};
+  if (auth.authToken) config.authToken = auth.authToken;
+  else if (auth.apiKey) config.apiKey = auth.apiKey;
+  if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
+  const sdk = new Anthropic(config);
   return {
     async runTurn(params: TurnParams): Promise<TurnResult> {
       const stream = sdk.messages.stream({
