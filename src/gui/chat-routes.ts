@@ -70,29 +70,29 @@ function mapHistory(raw: unknown): LlmMessage[] {
 }
 
 /** Persist one completed exchange to the native chat entities (best-effort). */
-async function persistTurn(db: Lattice, userMessage: string, assistantText: string): Promise<void> {
-  try {
-    const threadId = crypto.randomUUID();
-    await db.insert('chat_threads', { id: threadId, title: userMessage.slice(0, 60) });
-    await db.insert('chat_messages', {
-      id: crypto.randomUUID(),
-      thread_id: threadId,
-      role: 'user',
-      content_json: JSON.stringify({ text: userMessage }),
-      source: 'gui',
-    });
-    await db.insert('chat_messages', {
-      id: crypto.randomUUID(),
-      thread_id: threadId,
-      role: 'assistant',
-      content_json: JSON.stringify({ text: assistantText }),
-      source: 'ai',
-    });
-  } catch (e) {
-    // The stream already reached the user; surface the persistence failure in
-    // the log rather than crashing the request after the fact.
-    console.warn('[chat] failed to persist turn:', (e as Error).message);
+async function ensureThread(db: Lattice, threadId: string | null, title: string): Promise<string> {
+  if (threadId) {
+    const existing = (await db.get('chat_threads', threadId)) as { deleted_at?: string | null } | null;
+    if (existing && !existing.deleted_at) return threadId;
   }
+  const id = crypto.randomUUID();
+  await db.insert('chat_threads', { id, title: title.slice(0, 60) || 'Chat' });
+  return id;
+}
+
+async function persistMessage(
+  db: Lattice,
+  threadId: string,
+  role: 'user' | 'assistant',
+  text: string,
+): Promise<void> {
+  await db.insert('chat_messages', {
+    id: crypto.randomUUID(),
+    thread_id: threadId,
+    role,
+    content_json: JSON.stringify({ text }),
+    source: role === 'user' ? 'gui' : 'ai',
+  });
 }
 
 export async function dispatchChatRoute(
@@ -100,6 +100,38 @@ export async function dispatchChatRoute(
   res: ServerResponse,
   ctx: ChatContext,
 ): Promise<boolean> {
+  // GET /api/chat/threads — conversation list, most recent first.
+  if (ctx.method === 'GET' && ctx.pathname === '/api/chat/threads') {
+    const rows = (await ctx.db.query('chat_threads', { limit: 100 })) as Record<string, unknown>[];
+    const threads = rows
+      .filter((r) => !r.deleted_at)
+      .map((r) => ({ id: String(r.id), title: String(r.title ?? 'Chat'), created_at: String(r.created_at ?? '') }))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    sendJson(res, { threads });
+    return true;
+  }
+
+  // GET /api/chat/threads/:id/messages — replay a conversation.
+  const msgMatch = /^\/api\/chat\/threads\/([^/]+)\/messages$/.exec(ctx.pathname);
+  if (ctx.method === 'GET' && msgMatch) {
+    const threadId = decodeURIComponent(msgMatch[1] ?? '');
+    const rows = (await ctx.db.query('chat_messages', { limit: 1000 })) as Record<string, unknown>[];
+    const messages = rows
+      .filter((r) => r.thread_id === threadId && !r.deleted_at)
+      .map((r) => {
+        let text = '';
+        try {
+          text = (JSON.parse(String(r.content_json ?? '{}')) as { text?: string }).text ?? '';
+        } catch {
+          /* ignore malformed */
+        }
+        return { role: String(r.role), text, created_at: String(r.created_at ?? '') };
+      })
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+    sendJson(res, { messages });
+    return true;
+  }
+
   if (!(ctx.method === 'POST' && ctx.pathname === '/api/chat')) return false;
 
   const key = await getAnthropicApiKey(ctx.db);
@@ -125,12 +157,25 @@ export async function dispatchChatRoute(
     return true;
   }
   const history = mapHistory(body.history);
+  const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
+
+  // Resolve the thread + persist the user message BEFORE streaming so the
+  // thread id can ride back on a header. One thread per conversation; the
+  // client reuses it across turns.
+  let threadId = '';
+  try {
+    threadId = await ensureThread(ctx.db, requestedThread, message);
+    await persistMessage(ctx.db, threadId, 'user', message);
+  } catch (e) {
+    console.warn('[chat] persist user message failed:', (e as Error).message);
+  }
 
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-store, no-transform',
     connection: 'keep-alive',
     'x-accel-buffering': 'no',
+    'x-thread-id': threadId,
   });
 
   const dispatch: DispatchCtx = {
@@ -161,6 +206,12 @@ export async function dispatchChatRoute(
     }
   }
   res.end();
-  await persistTurn(ctx.db, message, assistantText);
+  if (threadId) {
+    try {
+      await persistMessage(ctx.db, threadId, 'assistant', assistantText);
+    } catch (e) {
+      console.warn('[chat] persist assistant message failed:', (e as Error).message);
+    }
+  }
   return true;
 }
