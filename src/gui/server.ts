@@ -37,7 +37,10 @@ import {
   deleteRow,
   linkRows,
   unlinkRows,
-  type AuditOp,
+  parseAudit,
+  undoLast,
+  redoLast,
+  revertEntry,
   type MutationCtx,
 } from './mutations.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
@@ -232,84 +235,6 @@ async function entitiesWithCounts(
 const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
 const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
-
-interface AuditEntry {
-  id: string;
-  ts: string;
-  table_name: string;
-  row_id: string | null;
-  operation: AuditOp;
-  before_json: string | null;
-  after_json: string | null;
-  undone: number;
-}
-
-function parseAudit(row: Record<string, unknown>): AuditEntry {
-  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
-  return {
-    id: String(row.id),
-    ts: String(row.ts),
-    table_name: String(row.table_name),
-    row_id: str(row.row_id),
-    operation: row.operation as AuditOp,
-    before_json: str(row.before_json),
-    after_json: str(row.after_json),
-    undone: Number(row.undone),
-  };
-}
-
-/**
- * Apply the inverse of an audit entry. Used by undo. For redo we apply the
- * forward operation (entry.after_json) instead.
- */
-async function applyInverse(db: Lattice, entry: AuditEntry): Promise<void> {
-  const before = entry.before_json
-    ? (JSON.parse(entry.before_json) as Record<string, unknown>)
-    : null;
-  const after = entry.after_json ? (JSON.parse(entry.after_json) as Record<string, unknown>) : null;
-  switch (entry.operation) {
-    case 'insert':
-      if (entry.row_id) await db.delete(entry.table_name, entry.row_id);
-      break;
-    case 'update':
-      if (entry.row_id && before) await db.update(entry.table_name, entry.row_id, before);
-      break;
-    case 'delete':
-      if (before) await db.insert(entry.table_name, before);
-      break;
-    case 'link':
-      if (after) await db.unlink(entry.table_name, after);
-      break;
-    case 'unlink':
-      if (after) await db.link(entry.table_name, after);
-      break;
-  }
-}
-
-async function applyForward(db: Lattice, entry: AuditEntry): Promise<void> {
-  const before = entry.before_json
-    ? (JSON.parse(entry.before_json) as Record<string, unknown>)
-    : null;
-  const after = entry.after_json ? (JSON.parse(entry.after_json) as Record<string, unknown>) : null;
-  switch (entry.operation) {
-    case 'insert':
-      if (after) await db.insert(entry.table_name, after);
-      break;
-    case 'update':
-      if (entry.row_id && after) await db.update(entry.table_name, entry.row_id, after);
-      break;
-    case 'delete':
-      if (entry.row_id) await db.delete(entry.table_name, entry.row_id);
-      break;
-    case 'link':
-      if (after) await db.link(entry.table_name, after);
-      break;
-    case 'unlink':
-      if (before) await db.unlink(entry.table_name, before);
-      break;
-  }
-  void before; // silence unused warning when not all branches read it
-}
 
 interface ContextFile {
   name: string;
@@ -1352,59 +1277,47 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/history/undo') {
-          const live = (
-            (await active.db.query('_lattice_gui_audit', {
-              filters: [{ col: 'undone', op: 'eq', val: 0 }],
-            })) as Record<string, unknown>[]
-          )
-            .map(parseAudit)
-            .sort((a, b) => b.ts.localeCompare(a.ts));
-          const target = live[0];
-          if (!target) {
+          const entry = await undoLast({
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+          });
+          if (!entry) {
             sendJson(res, { error: 'Nothing to undo' }, 400);
             return;
           }
-          await applyInverse(active.db, target);
-          await active.db.update('_lattice_gui_audit', target.id, { undone: 1 });
-          sendJson(res, { ok: true, entry: target });
+          sendJson(res, { ok: true, entry });
           return;
         }
         if (method === 'POST' && pathname === '/api/history/redo') {
-          const undoneRows = (
-            (await active.db.query('_lattice_gui_audit', {
-              filters: [{ col: 'undone', op: 'eq', val: 1 }],
-            })) as Record<string, unknown>[]
-          )
-            .map(parseAudit)
-            .sort((a, b) => a.ts.localeCompare(b.ts));
-          const target = undoneRows[0];
-          if (!target) {
+          const entry = await redoLast({
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+          });
+          if (!entry) {
             sendJson(res, { error: 'Nothing to redo' }, 400);
             return;
           }
-          await applyForward(active.db, target);
-          await active.db.update('_lattice_gui_audit', target.id, { undone: 0 });
-          sendJson(res, { ok: true, entry: target });
+          sendJson(res, { ok: true, entry });
           return;
         }
         if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {
-          // Revert ONE specific entry (apply its inverse and mark it undone).
           const id = decodeURIComponent(pathname.slice('/api/history/revert/'.length));
-          const row = (await active.db.get('_lattice_gui_audit', id)) as Record<
-            string,
-            unknown
-          > | null;
-          if (!row) {
-            sendJson(res, { error: 'Audit entry not found' }, 404);
+          const result = await revertEntry(
+            { db: active.db, feed: active.feed, softDeletable: active.softDeletable, source: 'gui' },
+            id,
+          );
+          if (!result.ok) {
+            sendJson(
+              res,
+              { error: result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone' },
+              result.reason === 'not_found' ? 404 : 400,
+            );
             return;
           }
-          const entry = parseAudit(row);
-          if (entry.undone === 1) {
-            sendJson(res, { error: 'Entry already undone' }, 400);
-            return;
-          }
-          await applyInverse(active.db, entry);
-          await active.db.update('_lattice_gui_audit', id, { undone: 1 });
           sendJson(res, { ok: true });
           return;
         }
@@ -1813,6 +1726,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             db: active.db,
             feed: active.feed,
             validTables: active.validTables,
+            junctionTables: active.junctionTables,
             softDeletable: active.softDeletable,
             pathname,
             method,
