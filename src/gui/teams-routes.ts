@@ -166,7 +166,7 @@ async function getConnection(ctx: TeamsGuiContext, teamId: string): Promise<Team
   // IS this team's cloud (direct-Postgres mode). The connection metadata
   // (cloud url + my user id) comes from the resolved team context; the
   // bearer token is unused on the direct-Postgres path.
-  if (ctx.cloudUrl && ctx.teamContext && ctx.teamContext.teamId === teamId) {
+  if (ctx.cloudUrl && ctx.teamContext?.teamId === teamId) {
     return {
       team_id: teamId,
       team_name: '',

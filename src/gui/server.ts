@@ -1199,7 +1199,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // team creator) doesn't steal a member's new table. New tables
           // are private to their creator — sharing is an explicit,
           // separate action from the Data Model dialog.
-          if (active.teamContext && active.teamContext.myUserId) {
+          if (active.teamContext?.myUserId) {
             await recordObjectOwner(
               active.db,
               active.teamContext.teamId,
