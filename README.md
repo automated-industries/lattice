@@ -2622,4 +2622,4 @@ See [CHANGELOG.md](./CHANGELOG.md) for the full history.
 
 <!-- Scarf README pixel — see § Telemetry above for what it does and how to block it. -->
 
-![](https://static.scarf.sh/a.png?x-pxid=REPLACE_WITH_PIXEL_UUID)
+![](https://static.scarf.sh/a.png?x-pxid=bcbfdaa1-ef11-455a-bcc8-3ec215709da4)
