@@ -10,6 +10,8 @@ export interface GuiTableSummary {
   columns: string[];
   outputFile: string;
   relations: Record<string, Relation>;
+  /** Human description of the entity, when declared in the config. */
+  description?: string;
   /**
    * Populated by the server when serving /api/entities; absent on direct
    * data.ts use. `null` means the server couldn't determine a count for
@@ -93,7 +95,20 @@ function tableToSummary(name: string, definition: TableDefinition): GuiTableSumm
     columns: Object.keys(definition.columns),
     outputFile: definition.outputFile ?? `.schema-only/${name}.md`,
     relations: definition.relations ?? {},
+    ...(definition.description ? { description: definition.description } : {}),
   };
+}
+
+/**
+ * Map of entity name → human description, for entities that declare one.
+ * Fed to the ingest classifier so it can reason about what each entity is.
+ */
+export function entityDescriptions(configPath: string, outputDir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const t of getGuiEntities(configPath, outputDir).tables) {
+    if (t.description) out[t.name] = t.description;
+  }
+  return out;
 }
 
 function safeResolveInside(baseDir: string, requestedPath: string): string {
