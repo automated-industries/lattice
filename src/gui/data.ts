@@ -12,6 +12,12 @@ export interface GuiTableSummary {
   relations: Record<string, Relation>;
   /** Populated by the server when serving /api/entities; absent on direct data.ts use. */
   rowCount?: number;
+  /** True for framework-shipped native entities (files, secrets). Set by the server. */
+  native?: boolean;
+  /** Team cloud only: this table is shared to the whole team. Set by the server. */
+  shared?: boolean;
+  /** Team cloud only: the operator owns this table. Set by the server. */
+  ownedByMe?: boolean;
 }
 
 export interface GuiFileSummary {
@@ -208,8 +214,47 @@ function objectNameKeys(value: string): string[] {
   return [...keys].filter(Boolean);
 }
 
-export function buildGuiGraph(configPath: string, outputDir: string): GuiGraphPayload {
+export interface BuildGuiGraphOptions {
+  /**
+   * Tables registered on the live Lattice that the YAML doesn't declare
+   * — native entities (files/secrets) and team-shared tables. Added as
+   * graph nodes so the Data Model view shows them. Deduped by name
+   * against the YAML tables.
+   */
+  extraTables?: GuiTableSummary[];
+  /**
+   * Team-cloud visibility predicate. When provided, `table`-type nodes
+   * whose name fails the predicate are dropped (and any edge touching a
+   * dropped node is pruned). Used to hide tables the operator neither
+   * owns nor has shared to them.
+   */
+  visibleFilter?: (tableName: string) => boolean;
+}
+
+export function buildGuiGraph(
+  configPath: string,
+  outputDir: string,
+  options: BuildGuiGraphOptions = {},
+): GuiGraphPayload {
   const data = loadGuiData(configPath, outputDir);
+  // Merge in runtime-registered tables (natives, team-shared) the YAML
+  // doesn't carry, so the Data Model graph isn't empty for cloud DBs.
+  if (options.extraTables && options.extraTables.length > 0) {
+    const seen = new Set(data.tables.map((t) => t.name));
+    for (const extra of options.extraTables) {
+      if (!seen.has(extra.name)) {
+        data.tables.push(extra);
+        seen.add(extra.name);
+      }
+    }
+  }
+  // Apply the team-cloud visibility filter to the table set up front so
+  // nodes, edges, and the junction synthesis below all operate on the
+  // visible subset only.
+  if (options.visibleFilter) {
+    const filter = options.visibleFilter;
+    data.tables = data.tables.filter((t) => filter(t.name));
+  }
   const nodes = new Map<string, GuiGraphNode>();
   const edges = new Map<string, GuiGraphEdge>();
   const fileOwners = new Map<string, GuiEntitySummary>();
@@ -220,15 +265,41 @@ export function buildGuiGraph(configPath: string, outputDir: string): GuiGraphPa
   }
   const knownFileIds = new Set(fileOwners.keys());
 
+  // Junction tables are hidden as nodes ("just the main objects") — they
+  // surface only as the many-to-many edge between the two objects they link.
+  // Filtering here (server-side) means the payload never contains a junction
+  // node, so the chart can't flash a junction box before a client-side filter
+  // catches up.
+  const junctionTableNames = new Set(data.tables.filter(isJunctionTable).map((t) => t.name));
+
   for (const table of data.tables) {
+    if (junctionTableNames.has(table.name)) continue;
     const tableId = `table:${table.name}`;
     addNode(nodes, { id: tableId, label: table.name, type: 'table', table: table.name });
     for (const [relationName, relation] of Object.entries(table.relations)) {
+      // Don't draw an edge into a hidden junction node.
+      if (junctionTableNames.has(relation.table)) continue;
       addEdge(edges, {
         source: tableId,
         target: `table:${relation.table}`,
         type: relation.type,
         label: relationName,
+      });
+    }
+  }
+
+  // Synthesize the many-to-many edge each junction represents, between its two
+  // belongsTo targets (the objects on either side of the join).
+  for (const junction of data.tables.filter(isJunctionTable)) {
+    const [left, right] = Object.values(junction.relations)
+      .filter((r) => r.type === 'belongsTo')
+      .map((r) => r.table);
+    if (left && right) {
+      addEdge(edges, {
+        source: `table:${left}`,
+        target: `table:${right}`,
+        type: 'manyToMany',
+        label: junction.name,
       });
     }
   }
@@ -331,7 +402,16 @@ export function buildGuiGraph(configPath: string, outputDir: string): GuiGraphPa
     }
   }
 
-  return { nodes: [...nodes.values()], edges: [...edges.values()] };
+  // Drop any edge that dangles into a node we didn't emit — chiefly the
+  // hidden junction tables (an entity-context manyToMany source produces an
+  // edge to its junctionTable, which is no longer a node). Keeps the graph
+  // referentially consistent so the client never references a missing node.
+  const presentNodeIds = new Set(nodes.keys());
+  const liveEdges = [...edges.values()].filter(
+    (e) => presentNodeIds.has(e.source) && presentNodeIds.has(e.target),
+  );
+
+  return { nodes: [...nodes.values()], edges: liveEdges };
 }
 
 export function getGuiProject(configPath: string, outputDir: string): GuiProjectSummary {
