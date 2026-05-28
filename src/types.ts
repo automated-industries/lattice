@@ -241,6 +241,12 @@ export interface TableDefinition {
   /** Column name → SQLite type spec (e.g. `'TEXT PRIMARY KEY'`) */
   columns: Record<string, string>;
   /**
+   * Optional human description of what this entity represents. Surfaced in the
+   * GUI and given to the assistant's ingest classifier so it can decide which
+   * records a document relates to. Metadata only — never affects DDL.
+   */
+  description?: string;
+  /**
    * How to render DB rows into text content for the context file.
    *
    * - Pass a `(rows: Row[]) => string` function for full control (v0.1/v0.2 behaviour).
