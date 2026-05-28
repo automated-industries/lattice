@@ -38,6 +38,7 @@ import {
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
+import { FeedBus, type FeedOp } from './ai/feed.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
@@ -276,8 +277,24 @@ interface AuditEntry {
  * Append an audit entry. New entries clear the redo stack — any earlier
  * 'undone' entry can no longer be re-applied once a fresh mutation lands.
  */
+function feedSummary(op: AuditOp, table: string): string {
+  switch (op) {
+    case 'insert':
+      return `Added a row to ${table}`;
+    case 'update':
+      return `Updated a row in ${table}`;
+    case 'delete':
+      return `Removed a row from ${table}`;
+    case 'link':
+      return `Linked rows in ${table}`;
+    case 'unlink':
+      return `Unlinked rows in ${table}`;
+  }
+}
+
 async function appendAudit(
   db: Lattice,
+  feed: FeedBus,
   table: string,
   rowId: string | null,
   op: AuditOp,
@@ -297,6 +314,8 @@ async function appendAudit(
     after_json: after ? JSON.stringify(after) : null,
     undone: 0,
   });
+  // Publish to the sidebar activity feed. AuditOp is a subset of FeedOp.
+  feed.publish({ table, op: op as FeedOp, rowId, source: 'gui', summary: feedSummary(op, table) });
 }
 
 function parseAudit(row: Record<string, unknown>): AuditEntry {
@@ -535,6 +554,13 @@ interface ActiveDb {
    * DB; replaced wholesale on switch.
    */
   realtime: RealtimeBroker | null;
+  /**
+   * In-process activity feed for the sidebar. Unlike {@link ActiveDb.realtime}
+   * (Postgres-only), this works for every dialect — every audited mutation is
+   * published here and streamed to the sidebar over /api/feed/stream. Owned by
+   * the active DB; replaced wholesale on switch (clients reconnect).
+   */
+  feed: FeedBus;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
 }
@@ -799,6 +825,7 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     manifest,
     softDeletable,
     realtime,
+    feed: new FeedBus(),
     dbPath: parsed.dbPath,
   };
 }
@@ -1109,6 +1136,42 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             clearInterval(keepalive);
             if (offState) offState();
             if (offPayload) offPayload();
+          };
+          req.on('close', cleanup);
+          req.on('error', cleanup);
+          return;
+        }
+
+        // ── Activity feed SSE: every audited mutation, for the sidebar ──────
+        // Works for every dialect (SQLite included), unlike /api/realtime/*
+        // which depends on Postgres LISTEN/NOTIFY. On connect we backfill the
+        // most recent events so a freshly opened sidebar isn't blank.
+        if (method === 'GET' && pathname === '/api/feed/stream') {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-store, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          });
+          const writeFeed = (data: unknown): void => {
+            try {
+              res.write(`event: feed\ndata: ${JSON.stringify(data)}\n\n`);
+            } catch {
+              // socket closed — handled by 'close' below
+            }
+          };
+          for (const e of active.feed.recent(20)) writeFeed(e);
+          const keepalive = setInterval(() => {
+            try {
+              res.write(`: keepalive\n\n`);
+            } catch {
+              // socket closed
+            }
+          }, 25_000);
+          const offFeed = active.feed.subscribe((e) => writeFeed(e));
+          const cleanup = (): void => {
+            clearInterval(keepalive);
+            offFeed();
           };
           req.on('close', cleanup);
           req.on('error', cleanup);
@@ -1826,7 +1889,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const body = (await readJsonBody(req)) as Row;
               const newId = await active.db.insert(table, body);
               const inserted = await active.db.get(table, newId);
-              await appendAudit(active.db, table, newId, 'insert', null, inserted);
+              await appendAudit(active.db, active.feed, table, newId, 'insert', null, inserted);
               sendJson(res, { id: newId }, 201);
               return;
             }
@@ -1845,7 +1908,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const before = await active.db.get(table, id);
               await active.db.update(table, id, body);
               const after = await active.db.get(table, id);
-              await appendAudit(active.db, table, id, 'update', before, after);
+              await appendAudit(active.db, active.feed, table, id, 'update', before, after);
               sendJson(res, { ok: true });
               return;
             }
@@ -1855,10 +1918,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               if (!hard && active.softDeletable.has(table)) {
                 await active.db.update(table, id, { deleted_at: new Date().toISOString() });
                 const after = await active.db.get(table, id);
-                await appendAudit(active.db, table, id, 'update', before, after);
+                await appendAudit(active.db, active.feed, table, id, 'update', before, after);
               } else {
                 await active.db.delete(table, id);
-                await appendAudit(active.db, table, id, 'delete', before, null);
+                await appendAudit(active.db, active.feed, table, id, 'delete', before, null);
               }
               sendJson(res, { ok: true });
               return;
@@ -1884,10 +1947,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const body = (await readJsonBody(req)) as Row;
           if (op === 'link') {
             await active.db.link(table, body);
-            await appendAudit(active.db, table, null, 'link', null, body);
+            await appendAudit(active.db, active.feed, table, null, 'link', null, body);
           } else {
             await active.db.unlink(table, body);
-            await appendAudit(active.db, table, null, 'unlink', body, null);
+            await appendAudit(active.db, active.feed, table, null, 'unlink', body, null);
           }
           sendJson(res, { ok: true });
           return;
