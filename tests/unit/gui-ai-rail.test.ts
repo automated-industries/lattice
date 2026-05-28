@@ -30,6 +30,15 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('id="chat-clip"');
   });
 
+  it('wires chat threading (new chat + conversation switcher)', () => {
+    expect(guiAppHtml).toContain('id="rail-threads"');
+    expect(guiAppHtml).toContain('id="rail-newchat"');
+    expect(guiAppHtml).toContain('function refreshThreadList');
+    expect(guiAppHtml).toContain('function loadThread');
+    expect(guiAppHtml).toContain("'/api/chat/threads'");
+    expect(guiAppHtml).toContain('initThreadControls();');
+  });
+
   it('inline SPA script parses without syntax errors', () => {
     // The inline <script> isn't type-checked or bundled, so a syntax error
     // would only surface in the browser. new Function() compiles (but does
