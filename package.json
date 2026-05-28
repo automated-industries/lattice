@@ -54,6 +54,7 @@
     "better-sqlite3": ">=11 <13"
   },
   "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
     "pg": "^8.11.0"
   },
   "devDependencies": {
