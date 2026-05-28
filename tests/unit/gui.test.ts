@@ -703,4 +703,83 @@ describe('isJunctionTable', () => {
     expect(isJunctionTable(byName.get('skills')!)).toBe(false);
     expect(isJunctionTable(byName.get('agent_skills')!)).toBe(true);
   });
+
+  it('hides junction tables as nodes but keeps the many-to-many edge between objects', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const graph = buildGuiGraph(configPath, outputDir);
+    const nodeIds = graph.nodes.map((n) => n.id);
+
+    // agent_skills is a junction (agents <-> skills) — no node for it.
+    expect(nodeIds).not.toContain('table:agent_skills');
+    expect(nodeIds).toContain('table:agents');
+    expect(nodeIds).toContain('table:skills');
+
+    // ...but the m2m relationship survives as an edge between the two objects.
+    const m2m = graph.edges.find(
+      (e) =>
+        e.type === 'manyToMany' &&
+        ((e.source === 'table:agents' && e.target === 'table:skills') ||
+          (e.source === 'table:skills' && e.target === 'table:agents')),
+    );
+    expect(m2m).toBeTruthy();
+    // No edge should dangle into the hidden junction node.
+    expect(graph.edges.some((e) => e.target === 'table:agent_skills')).toBe(false);
+  });
+});
+
+describe('GUI server — native entities + table allowlist', () => {
+  it('makes native files/secrets queryable (regression: "Unknown table")', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    for (const table of ['files', 'secrets']) {
+      const res = await fetch(`${server.url}/api/tables/${table}/rows`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { rows: unknown[] };
+      expect(Array.isArray(body.rows)).toBe(true);
+    }
+
+    // And a row round-trips through the native files table.
+    const post = await fetch(`${server.url}/api/tables/files/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '/x.md', kind: 'markdown' }),
+    });
+    expect(post.status).toBe(201);
+  });
+
+  it('marks native entities in the /api/entities payload', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const entities = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string; native?: boolean }[];
+    };
+    const byName = new Map(entities.tables.map((t) => [t.name, t]));
+    expect(byName.get('files')?.native).toBe(true);
+    expect(byName.get('secrets')?.native).toBe(true);
+    expect(byName.get('agents')?.native).toBeFalsy();
+  });
+
+  it('exposes native-entity bindings via /api/native-entities', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const res = (await fetch(`${server.url}/api/native-entities`).then((r) => r.json())) as {
+      bindings: { entity: string }[];
+    };
+    expect(res.bindings.map((b) => b.entity).sort()).toEqual(['files', 'secrets']);
+  });
+
+  it('still refuses internal bookkeeping tables (security boundary)', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const res = await fetch(`${server.url}/api/tables/__lattice_migrations/rows`);
+    expect(res.status).toBe(400);
+  });
 });

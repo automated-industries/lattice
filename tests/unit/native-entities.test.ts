@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { Lattice } from '../../src/lattice.js';
-import { NATIVE_ENTITY_DEFS, registerNativeEntities } from '../../src/framework/native-entities.js';
+import {
+  NATIVE_ENTITY_DEFS,
+  NATIVE_ENTITY_NAMES,
+  isNativeEntity,
+  registerNativeEntities,
+  adoptNativeEntities,
+  listNativeBindings,
+  NATIVE_REGISTRY_TABLE,
+} from '../../src/framework/native-entities.js';
 import { attachBlob } from '../../src/framework/blob-store.js';
 
 describe('framework native entities', () => {
@@ -139,6 +147,104 @@ describe('framework native entities', () => {
       expect(ma.sha256).toBe(mb.sha256);
       // Both should land at the same blob path.
       expect(ma.blob_path).toBe(mb.blob_path);
+    });
+  });
+
+  describe('NATIVE_ENTITY_NAMES / isNativeEntity (single source of truth)', () => {
+    it('reflects the keys of NATIVE_ENTITY_DEFS', () => {
+      expect([...NATIVE_ENTITY_NAMES].sort()).toEqual(Object.keys(NATIVE_ENTITY_DEFS).sort());
+      expect(isNativeEntity('files')).toBe(true);
+      expect(isNativeEntity('secrets')).toBe(true);
+      expect(isNativeEntity('agents')).toBe(false);
+    });
+  });
+
+  describe('adoptNativeEntities()', () => {
+    it('records "created" bindings on a fresh DB and is idempotent', async () => {
+      // beforeEach already registered + init'd native entities on `db`.
+      const first = await adoptNativeEntities(db);
+      expect(first.map((r) => r.entity).sort()).toEqual(['files', 'secrets']);
+      expect(first.every((r) => r.origin === 'created')).toBe(true);
+
+      // Registry table is internal and populated.
+      expect(db.getRegisteredTableNames()).toContain(NATIVE_REGISTRY_TABLE);
+      const bindings = await listNativeBindings(db);
+      expect(bindings.map((b) => b.entity).sort()).toEqual(['files', 'secrets']);
+
+      // Second call is a no-op upsert — no duplicate bindings.
+      await adoptNativeEntities(db);
+      const again = await listNativeBindings(db);
+      expect(again).toHaveLength(2);
+    });
+
+    it('adopts a pre-existing legacy `files` table, merging native columns without data loss', async () => {
+      const legacyPath = join(tmpDir, 'legacy-files.db');
+      const raw = new Database(legacyPath);
+      raw.exec(
+        'CREATE TABLE files (id TEXT PRIMARY KEY, path TEXT, kind TEXT, deleted_at TEXT)',
+      );
+      raw.prepare('INSERT INTO files (id, path, kind) VALUES (?, ?, ?)').run(
+        'f1',
+        '/legacy/doc.md',
+        'markdown',
+      );
+      raw.close();
+
+      // Open WITHOUT registerNativeEntities — simulates a consumer DB that
+      // already has its own `files` table but never opted into native.
+      const db2 = new Lattice(legacyPath, { encryptionKey: 'adopt-test-key' });
+      await db2.init();
+      const results = await adoptNativeEntities(db2);
+
+      const filesResult = results.find((r) => r.entity === 'files');
+      expect(filesResult?.origin).toBe('adopted');
+
+      // Native columns were merged onto the existing table.
+      const cols = await db2.introspectColumns('files');
+      expect(cols).toContain('sha256');
+      expect(cols).toContain('blob_path');
+      // Legacy columns + the legacy row are preserved (non-destructive).
+      expect(cols).toContain('path');
+      const row = await db2.get('files', 'f1');
+      expect(row!.path).toBe('/legacy/doc.md');
+      expect(row!.kind).toBe('markdown');
+
+      const bindings = await listNativeBindings(db2);
+      expect(bindings.find((b) => b.entity === 'files')?.origin).toBe('adopted');
+      db2.close();
+    });
+
+    it('adopts a legacy plaintext `secrets` table without corrupting reads', async () => {
+      const secPath = join(tmpDir, 'legacy-secrets.db');
+      const raw = new Database(secPath);
+      raw.exec(
+        'CREATE TABLE secrets (id TEXT PRIMARY KEY, name TEXT NOT NULL, value TEXT, deleted_at TEXT)',
+      );
+      raw.prepare('INSERT INTO secrets (id, name, value) VALUES (?, ?, ?)').run(
+        's1',
+        'LEGACY',
+        'plain-value',
+      );
+      raw.close();
+
+      const db3 = new Lattice(secPath, { encryptionKey: 'adopt-secrets-key' });
+      await db3.init();
+      await adoptNativeEntities(db3);
+
+      // Legacy plaintext stays readable — decrypt passes non-enc: values through.
+      const legacy = await db3.get('secrets', 's1');
+      expect(legacy!.value).toBe('plain-value');
+
+      // New writes are encrypted at rest.
+      const id = await db3.insert('secrets', { name: 'NEW', value: 'fresh-secret' });
+      const raw2 = new Database(secPath);
+      const rr = raw2.prepare('SELECT value FROM secrets WHERE id = ?').get(id) as {
+        value: string;
+      };
+      raw2.close();
+      expect(rr.value).toMatch(/^enc:/);
+      expect(await db3.get('secrets', id).then((r) => r!.value)).toBe('fresh-secret');
+      db3.close();
     });
   });
 

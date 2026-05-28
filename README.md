@@ -2150,6 +2150,18 @@ registerNativeEntities(db);
 await db.init();
 ```
 
+`isNativeEntity(name)` / `NATIVE_ENTITY_NAMES` are the single source of truth for "is this table a framework-shipped native object?" — adding a key to `NATIVE_ENTITY_DEFS` flows everywhere automatically (table creation, GUI surfacing, recognition).
+
+**Adopting an existing `files`/`secrets` table (v1.14+).** If a database already has its own `files` or `secrets` table — possibly with a different/legacy column shape — `adoptNativeEntities(db)` (run after `init()`) labels that physical table as THE native object instead of duplicating it: it merges the native column superset non-destructively (`CREATE TABLE IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS`, never dropping data) and records the binding in an internal `__lattice_native_entities` registry. Legacy plaintext `secrets.value` rows stay readable (decrypt passes non-`enc:` values through) and new writes encrypt. `listNativeBindings(db)` reads the bindings. The GUI runs this automatically on every open and exposes the bindings at `GET /api/native-entities`.
+
+```ts
+import { adoptNativeEntities, listNativeBindings } from 'latticesql';
+
+await db.init();
+await adoptNativeEntities(db); // merge + label existing files/secrets as native
+const bindings = await listNativeBindings(db); // [{ entity, tableName, origin }]
+```
+
 **Machine-local user config at `~/.lattice/` (v1.12+).** A small set of files outside any Lattice DB so a user's identity, encrypted master key, saved cloud-DB credentials, and per-team bearer tokens survive switching projects:
 
 | File                            | Purpose                                                                                                  |

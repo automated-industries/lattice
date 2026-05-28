@@ -28,7 +28,12 @@ import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
-import { registerNativeEntities } from '../framework/native-entities.js';
+import {
+  registerNativeEntities,
+  adoptNativeEntities,
+  listNativeBindings,
+  isNativeEntity,
+} from '../framework/native-entities.js';
 import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
@@ -182,7 +187,7 @@ async function entitiesWithCounts(
       const rowCount = t.columns.includes('deleted_at')
         ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
         : await db.count(t.name);
-      return { ...t, rowCount };
+      return { ...t, rowCount, native: isNativeEntity(t.name) };
     }),
   );
   return { ...payload, tables: enrichedTables };
@@ -468,6 +473,24 @@ interface ActiveDb {
   dbPath: string;
 }
 
+/**
+ * Resolve the rendered-context root for a SPECIFIC config, probing relative to
+ * that config's own directory (not the GUI launch cwd). Used when the GUI
+ * switches to / creates a different database so each DB's rendered-context view
+ * reflects its own render — never a stale launch-directory manifest. Returns an
+ * absolute path; when no co-located manifest exists, returns `<configDir>/context`
+ * (which has no manifest → the GUI shows no manifest-sourced entities for that
+ * DB, instead of showing another DB's rendered files).
+ */
+function resolveOutputDirForConfig(configPath: string): string {
+  const base = dirname(resolve(configPath));
+  for (const dir of ['context', '.', 'generated']) {
+    const abs = resolve(base, dir);
+    if (existsSync(join(abs, '.lattice', 'manifest.json'))) return abs;
+  }
+  return resolve(base, 'context');
+}
+
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   mkdirSync(dirname(parsed.dbPath), { recursive: true });
@@ -551,7 +574,23 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   // every open just upserts the single 'singleton' row.
   await syncUserIdentityRow(db);
 
+  // Reconcile + record native-entity bindings (files, secrets). Labels a
+  // pre-existing files/secrets table as THE native object (merging the native
+  // column superset, non-destructively) rather than duplicating it, and
+  // guarantees the tables exist on freshly created DBs. Safe on every open.
+  await adoptNativeEntities(db);
+
+  // Queryable tables = YAML-declared tables PLUS every table registered on the
+  // live Lattice that isn't internal bookkeeping. This includes native
+  // entities (files/secrets), team-shared tables auto-registered below, and
+  // any programmatic db.define(). Mirrors the filter entitiesWithCounts uses
+  // to surface cards, so a card that appears is always queryable (previously
+  // native entities showed as cards but 400'd with "Unknown table").
   const validTables = new Set(parsed.tables.map((t) => t.name));
+  for (const name of db.getRegisteredTableNames()) {
+    if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
+    validTables.add(name);
+  }
   const junctionTables = new Set(
     getGuiEntities(configPath, outputDir)
       .tables.filter(isJunctionTable)
@@ -567,11 +606,15 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   // `lattice render` separately) fall through to this manifest to find
   // their rendered directories.
   const manifest = readManifest(outputDir);
-  const softDeletable = new Set(
-    parsed.tables
-      .filter(({ definition }) => 'deleted_at' in definition.columns)
-      .map(({ name }) => name),
-  );
+  // Any queryable table with a deleted_at column gets soft-delete semantics in
+  // the GUI (filter out deleted rows on list; soft-delete on DELETE). Derived
+  // from the live schema so native files/secrets (which both have deleted_at)
+  // are soft-deleted rather than hard-deleted.
+  const softDeletable = new Set<string>();
+  for (const name of validTables) {
+    const cols = db.getRegisteredColumns(name);
+    if (cols && 'deleted_at' in cols) softDeletable.add(name);
+  }
   const teamsClient = new TeamsClient(db);
   // Re-arm sync write-hooks for any tables that already have local
   // links (i.e. the user is part of teams + linked rows in a prior
@@ -1331,7 +1374,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // raw error verbatim so the UI's toast names the real cause.
           let next: ActiveDb;
           try {
-            next = await openConfig(newPath, active.outputDir);
+            // Resolve the rendered-context root for THIS config (probing its
+            // own directory), not the launch-wide outputDir. Reusing one
+            // outputDir across every DB switch is what bled one DB's rendered
+            // "files" view into another DB that had none of its own.
+            next = await openConfig(newPath, resolveOutputDirForConfig(newPath));
           } catch (e) {
             const err = e as Error & { code?: string };
             console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
@@ -1355,10 +1402,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
-          const next = await openConfig(newConfigPath, active.outputDir);
+          const next = await openConfig(newConfigPath, resolveOutputDirForConfig(newConfigPath));
           await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
+          return;
+        }
+
+        // Native-entity bindings for the active DB — lets the UI badge the
+        // files/secrets cards as "Native". openConfig auto-records these on
+        // every open, so this is a straight read of the registry.
+        if (method === 'GET' && pathname === '/api/native-entities') {
+          sendJson(res, { bindings: await listNativeBindings(active.db) });
           return;
         }
 

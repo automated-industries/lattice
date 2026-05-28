@@ -2607,35 +2607,47 @@ export const guiAppHtml = `<!doctype html>
         }
 
         function renderStep1() {
-          var local = wizState.kind === 'local';
-          var cloudBlock = local ? '' :
-            '<div class="field"><label>Cloud URL</label>' +
-              '<input id="wiz-cloud-url" type="text" value="' + escapeHtml(wizState.cloudUrl) +
-              '" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
-              '<p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">Use a session-mode Postgres URL. Supabase users: see the pooler docs for the right host.</p>' +
-            '</div>' +
-            '<div class="field"><label>Your email</label>' +
-              '<input id="wiz-email" type="email" value="' + escapeHtml(wizState.email) + '" autocapitalize="off" />' +
-            '</div>' +
-            '<div class="field"><label>Your display name</label>' +
-              '<input id="wiz-display-name" type="text" value="' + escapeHtml(wizState.displayName) + '" />' +
-            '</div>';
-          return '' +
+          var kind = wizState.kind;
+          // Join uses the existing invite-redeem modal (opened on Next), so no
+          // name/entities steps — the DB name comes from the team you join.
+          var nameField = kind === 'join' ? '' :
             '<div class="field"><label>Database name</label>' +
               '<input id="wiz-name" type="text" value="' + escapeHtml(wizState.name) +
               '" placeholder="e.g. my-research, design-system" maxlength="200" />' +
-            '</div>' +
+            '</div>';
+          var cloudBlock = '';
+          if (kind === 'cloud') {
+            cloudBlock =
+              '<div class="field"><label>Cloud URL</label>' +
+                '<input id="wiz-cloud-url" type="text" value="' + escapeHtml(wizState.cloudUrl) +
+                '" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
+                '<p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">Use a session-mode Postgres URL. Supabase users: see the pooler docs for the right host.</p>' +
+              '</div>' +
+              '<div class="field"><label>Your email</label>' +
+                '<input id="wiz-email" type="email" value="' + escapeHtml(wizState.email) + '" autocapitalize="off" />' +
+              '</div>' +
+              '<div class="field"><label>Your display name</label>' +
+                '<input id="wiz-display-name" type="text" value="' + escapeHtml(wizState.displayName) + '" />' +
+              '</div>';
+          } else if (kind === 'join') {
+            cloudBlock = '<p style="font-size:12px;color:var(--text-muted);margin:4px 0 0">Click Next to paste your cloud URL and invite token.</p>';
+          }
+          return '' +
+            nameField +
             '<div class="field"><label>Kind</label>' +
-              '<div style="display:flex;gap:16px;margin-top:4px">' +
+              '<div style="display:flex;gap:16px;margin-top:4px;flex-wrap:wrap">' +
                 '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
-                  '<input type="radio" name="wiz-kind" value="local"' + (local ? ' checked' : '') + ' /> Local (SQLite)' +
+                  '<input type="radio" name="wiz-kind" value="local"' + (kind === 'local' ? ' checked' : '') + ' /> New local (SQLite)' +
                 '</label>' +
                 '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
-                  '<input type="radio" name="wiz-kind" value="cloud"' + (local ? '' : ' checked') + ' /> Cloud (Postgres)' +
+                  '<input type="radio" name="wiz-kind" value="cloud"' + (kind === 'cloud' ? ' checked' : '') + ' /> New cloud (Postgres)' +
+                '</label>' +
+                '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
+                  '<input type="radio" name="wiz-kind" value="join"' + (kind === 'join' ? ' checked' : '') + ' /> Join existing cloud (invite)' +
                 '</label>' +
               '</div>' +
               '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
-                'Local databases are single-user SQLite files on your machine. Cloud databases are Postgres, can be shared with invited team members, and stream realtime updates.' +
+                'Local databases are single-user SQLite files on your machine. Cloud databases are Postgres, can be shared with invited team members, and stream realtime updates. Joining connects to a cloud DB you were invited to.' +
               '</p>' +
             '</div>' +
             cloudBlock;
@@ -2695,7 +2707,8 @@ export const guiAppHtml = `<!doctype html>
 
         function wireStepHandlers(scope) {
           if (wizState.step === 1) {
-            scope.querySelector('#wiz-name').addEventListener('input', function (e) { wizState.name = e.target.value; });
+            var nameInput = scope.querySelector('#wiz-name');
+            if (nameInput) nameInput.addEventListener('input', function (e) { wizState.name = e.target.value; });
             scope.querySelectorAll('input[name="wiz-kind"]').forEach(function (radio) {
               radio.addEventListener('change', function () {
                 wizState.name = (scope.querySelector('#wiz-name') || {}).value || wizState.name;
@@ -2739,6 +2752,9 @@ export const guiAppHtml = `<!doctype html>
 
         function goNext() {
           if (wizState.step === 1) {
+            // Join existing cloud: hand off to the invite-redeem modal, which
+            // collects the cloud URL + invite token and connects.
+            if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
             if (!wizState.name.trim()) { alert('Database name is required'); return; }
             if (!/^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,199}$/.test(wizState.name.trim())) {
               alert('Database name must start with a letter or digit and contain only letters, digits, spaces, dots, underscores, or hyphens'); return;
@@ -2912,12 +2928,12 @@ export const guiAppHtml = `<!doctype html>
           '<h2>User Settings</h2>' +
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
           '<div id="preferences-host"></div>' +
-          '<div id="user-teams-host"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
       renderPreferencesPanel(document.getElementById('preferences-host'));
-      // Databases catalog moved to Lattice Settings page in v1.13.8.
-      renderUserTeamsList(document.getElementById('user-teams-host'));
+      // Databases catalog lives on Lattice Settings; per-database cloud/team
+      // config lives on Database Settings. User Settings is identity +
+      // preferences only — every config option in exactly one place.
     }
 
     function renderPreferencesPanel(host) {
@@ -3047,56 +3063,6 @@ export const guiAppHtml = `<!doctype html>
       });
     }
 
-    function renderUserTeamsList(host) {
-      fetchConnections().then(function (conns) {
-        if (conns.length === 0) {
-          host.innerHTML =
-            '<div style="margin-top:18px">' +
-              '<h3 style="margin:0 0 8px">Cloud accounts</h3>' +
-              '<p class="lead">No cloud team memberships yet. Use Project Config → Create team, or join an existing team below.</p>' +
-              '<div class="teams-actions">' +
-                '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>' +
-              '</div>' +
-            '</div>';
-          wireTopActions('user');
-          return;
-        }
-        var rows = conns.map(function (c) {
-          return '<div class="team-card" data-team-id="' + escapeHtml(c.team_id) + '">' +
-            '<h3>' + escapeHtml(c.team_name) +
-              '<button class="btn danger-btn" data-act="signout">Sign out</button>' +
-            '</h3>' +
-            '<div class="team-meta">' +
-              'Cloud: <code>' + escapeHtml(redactUrlCredentials(c.cloud_url)) + '</code> · ' +
-              'User id: <code>' + escapeHtml(c.my_user_id) + '</code> · ' +
-              'Joined ' + escapeHtml(c.joined_at) +
-            '</div>' +
-          '</div>';
-        }).join('');
-        host.innerHTML =
-          '<div style="margin-top:18px">' +
-            '<h3 style="margin:0 0 8px">Cloud accounts</h3>' +
-            '<p class="lead">Each team membership keeps its own bearer token in this Lattice DB.</p>' +
-            '<div class="teams-actions">' +
-              '<button class="btn primary" id="action-add-cloud">Add cloud (join via invite)</button>' +
-            '</div>' +
-            rows +
-          '</div>';
-        wireTopActions('user');
-        host.querySelectorAll('.team-card').forEach(function (card) {
-          var teamId = card.getAttribute('data-team-id');
-          card.querySelector('[data-act="signout"]').addEventListener('click', function () {
-            if (!confirm('Sign out of this team? Your local link tracking will be removed.')) return;
-            fetchJson('/api/teams-gui/connections/' + teamId, { method: 'DELETE' })
-              .then(function () { refreshSettingsRoute(); })
-              .catch(function (err) { alert('Sign out failed: ' + err.message); });
-          });
-        });
-      }).catch(function (err) {
-        host.innerHTML = '<div class="placeholder">Failed to load cloud accounts: ' + escapeHtml(err.message) + '</div>';
-      });
-    }
-
     function renderProjectConfig(content) {
       // Legacy entry — Track 4e renames this view to "Database Settings"
       // and adds an editable name header. The new alias is renderDatabaseSettings.
@@ -3106,16 +3072,19 @@ export const guiAppHtml = `<!doctype html>
     function renderDatabaseSettings(content) {
       // Frame the page; the name header + Database + Teams panels each
       // populate asynchronously so a slow cloud probe doesn't block.
+      // Active database only — name + connection/team config for THIS DB.
+      // The all-databases list lives on Lattice Settings; adding/joining
+      // databases lives in the add-database flow. Team management (invite
+      // token + member list) for the active team cloud renders inline in the
+      // Database panel below.
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Database Settings</h2>' +
           '<div id="db-name-host"><div class="placeholder" style="padding:14px">Loading database name…</div></div>' +
           '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
-          '<div id="teams-host"></div>' +
         '</div>';
       renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
-      renderTeamsForProjectConfig(document.getElementById('teams-host'));
     }
 
     function renderDatabaseNamePanel(host) {
@@ -3172,21 +3141,24 @@ export const guiAppHtml = `<!doctype html>
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Lattice Settings</h2>' +
-          '<p class="lead">Every database this lattice can connect to — local SQLite files alongside the active config plus saved cloud Postgres credentials.</p>' +
+          '<p class="lead">Every database this lattice can switch to. This is the same list as the header dropdown.</p>' +
           '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading databases…</div></div>' +
         '</div>';
       var host = document.getElementById('lattice-dbs-host');
-      fetchJson('/api/userconfig/databases').then(function (cat) {
-        var localRows = (cat.local || []).map(function (d) {
+      // Source the SAME list the header dropdown uses (/api/databases) so the
+      // two are always 1:1, listed by readable label rather than the raw file.
+      fetchJson('/api/databases').then(function (data) {
+        var current = data.current || {};
+        var rows = (data.configs || []).map(function (c) {
+          var kind = c.active
+            ? (current.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)')
+            : '—';
           return '<tr>' +
-            '<td>' + escapeHtml(d.label) + (d.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
-            '<td>Local (SQLite)</td>' +
-            '<td><code>' + escapeHtml(d.dbFile) + '</code></td>' +
-            '<td>' + (d.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(d.configPath) + '">Switch</button>') + '</td>' +
+            '<td>' + escapeHtml(c.label || c.name) + (c.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
+            '<td>' + kind + '</td>' +
+            '<td><code>' + escapeHtml(c.dbFile || '') + '</code></td>' +
+            '<td>' + (c.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(c.path) + '">Switch</button>') + '</td>' +
           '</tr>';
-        }).join('');
-        var cloudRows = (cat.cloud || []).map(function (d) {
-          return '<tr><td>' + escapeHtml(d.label) + '</td><td>Cloud (Postgres)</td><td>(encrypted)</td><td>—</td></tr>';
         }).join('');
         host.innerHTML =
           '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
@@ -3196,7 +3168,7 @@ export const guiAppHtml = `<!doctype html>
             '</div>' +
             '<table style="width:100%;border-collapse:collapse">' +
               '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>File / source</th><th>Action</th></tr></thead>' +
-              '<tbody>' + (localRows + cloudRows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
+              '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
         host.querySelectorAll('[data-switch]').forEach(function (btn) {
@@ -3204,6 +3176,7 @@ export const guiAppHtml = `<!doctype html>
             var configPath = btn.getAttribute('data-switch');
             fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
               .then(function (r) { return r.json(); })
+              .then(function () { return reloadEverything(); })
               .then(function () { renderLatticeSettings(document.getElementById('content')); });
           });
         });
@@ -3336,9 +3309,9 @@ export const guiAppHtml = `<!doctype html>
             (isCreator ? ' · <span style="color:var(--accent)">you are the creator</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
-            (isCreator ? '<button class="btn primary" data-act="open-invite">Invite member</button>' : '') +
-            (isCreator ? '<button class="btn danger" data-act="destroy-team">Destroy team</button>' : '') +
-          '</div>'
+            (isCreator ? '<button class="btn primary" data-act="open-invite">Generate invite token</button>' : '') +
+          '</div>' +
+          '<div id="db-members-host" style="margin-top:12px"><div style="font-size:12px;color:var(--text-muted)">Loading members…</div></div>'
         );
       }
       if (info.state === 'team-cloud-needs-invite') {
@@ -3403,14 +3376,31 @@ export const guiAppHtml = `<!doctype html>
         });
       });
 
-      var destroyBtn = host.querySelector('[data-act="destroy-team"]');
-      if (destroyBtn) destroyBtn.addEventListener('click', function () {
-        if (!confirm('Destroy this team? All member rows are dropped on the cloud. This cannot be undone.')) return;
-        fetch('/api/team', { method: 'DELETE' })
-          .then(function (r) { return r.json(); })
-          .then(function () { setMsg('Destroyed.', true); rerender(); })
-          .catch(function (e) { setMsg('Failed: ' + e.message, false); });
-      });
+      // Inline member list for the active team cloud (replaces the old
+      // separate "Cloud databases" panel). Read-only display + kick for the
+      // creator. Resolved via the active connection's team_id.
+      var membersHost = host.querySelector('#db-members-host');
+      if (membersHost && (info.state === 'team-cloud-creator' || info.state === 'team-cloud-member')) {
+        fetchConnections().then(function (conns) {
+          var conn = conns[0];
+          if (!conn) { membersHost.innerHTML = ''; return; }
+          var teamId = conn.team_id;
+          fetchJson('/api/teams-gui/teams/' + teamId + '/members').then(function (res) {
+            var members = res.members || [];
+            membersHost.innerHTML = renderMembersList(members, conn.my_user_id);
+            membersHost.querySelectorAll('[data-act="kick"]').forEach(function (btn) {
+              var row = btn.closest('[data-user-id]');
+              var userId = row && row.getAttribute('data-user-id');
+              btn.addEventListener('click', function () {
+                if (!confirm('Remove this member from the team?')) return;
+                fetchJson('/api/teams-gui/teams/' + teamId + '/members/' + encodeURIComponent(userId), { method: 'DELETE' })
+                  .then(function () { rerender(); })
+                  .catch(function (e) { setMsg('Kick failed: ' + e.message, false); });
+              });
+            });
+          }).catch(function () { membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Members unavailable.</div>'; });
+        }).catch(function () { membersHost.innerHTML = ''; });
+      }
 
       var rejoinBtn = host.querySelector('[data-act="rejoin-with-token"]');
       if (rejoinBtn) rejoinBtn.addEventListener('click', function () {

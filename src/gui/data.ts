@@ -12,6 +12,8 @@ export interface GuiTableSummary {
   relations: Record<string, Relation>;
   /** Populated by the server when serving /api/entities; absent on direct data.ts use. */
   rowCount?: number;
+  /** True for framework-shipped native entities (files, secrets). Set by the server. */
+  native?: boolean;
 }
 
 export interface GuiFileSummary {
@@ -220,15 +222,41 @@ export function buildGuiGraph(configPath: string, outputDir: string): GuiGraphPa
   }
   const knownFileIds = new Set(fileOwners.keys());
 
+  // Junction tables are hidden as nodes ("just the main objects") — they
+  // surface only as the many-to-many edge between the two objects they link.
+  // Filtering here (server-side) means the payload never contains a junction
+  // node, so the chart can't flash a junction box before a client-side filter
+  // catches up.
+  const junctionTableNames = new Set(data.tables.filter(isJunctionTable).map((t) => t.name));
+
   for (const table of data.tables) {
+    if (junctionTableNames.has(table.name)) continue;
     const tableId = `table:${table.name}`;
     addNode(nodes, { id: tableId, label: table.name, type: 'table', table: table.name });
     for (const [relationName, relation] of Object.entries(table.relations)) {
+      // Don't draw an edge into a hidden junction node.
+      if (junctionTableNames.has(relation.table)) continue;
       addEdge(edges, {
         source: tableId,
         target: `table:${relation.table}`,
         type: relation.type,
         label: relationName,
+      });
+    }
+  }
+
+  // Synthesize the many-to-many edge each junction represents, between its two
+  // belongsTo targets (the objects on either side of the join).
+  for (const junction of data.tables.filter(isJunctionTable)) {
+    const [left, right] = Object.values(junction.relations)
+      .filter((r) => r.type === 'belongsTo')
+      .map((r) => r.table);
+    if (left && right) {
+      addEdge(edges, {
+        source: `table:${left}`,
+        target: `table:${right}`,
+        type: 'manyToMany',
+        label: junction.name,
       });
     }
   }
@@ -331,7 +359,16 @@ export function buildGuiGraph(configPath: string, outputDir: string): GuiGraphPa
     }
   }
 
-  return { nodes: [...nodes.values()], edges: [...edges.values()] };
+  // Drop any edge that dangles into a node we didn't emit — chiefly the
+  // hidden junction tables (an entity-context manyToMany source produces an
+  // edge to its junctionTable, which is no longer a node). Keeps the graph
+  // referentially consistent so the client never references a missing node.
+  const presentNodeIds = new Set(nodes.keys());
+  const liveEdges = [...edges.values()].filter(
+    (e) => presentNodeIds.has(e.source) && presentNodeIds.has(e.target),
+  );
+
+  return { nodes: [...nodes.values()], edges: liveEdges };
 }
 
 export function getGuiProject(configPath: string, outputDir: string): GuiProjectSummary {
