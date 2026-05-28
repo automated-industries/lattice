@@ -13,6 +13,7 @@ import {
   getGuiProject,
   isJunctionTable,
   type GuiEntitiesPayload,
+  type GuiTableSummary,
 } from './data.js';
 import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
 import { guiAppHtml } from './app.js';
@@ -21,6 +22,13 @@ import {
   CLOUD_INTERNAL_TABLE_DEFS,
   installCloudInternalTriggers,
 } from '../teams/internal-tables.js';
+import { recordObjectOwner } from '../teams/direct-ops.js';
+import {
+  type TeamContext,
+  isVisibleInTeam,
+  resolveTeamContext,
+  shareEntityWithTeam,
+} from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
@@ -28,7 +36,12 @@ import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
-import { registerNativeEntities } from '../framework/native-entities.js';
+import {
+  registerNativeEntities,
+  adoptNativeEntities,
+  listNativeBindings,
+  isNativeEntity,
+} from '../framework/native-entities.js';
 import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
@@ -141,26 +154,16 @@ async function listenWithPortFallback(
  * count too — the Data Model UI uses them, even though the Objects sidebar
  * filters them out.
  */
-async function entitiesWithCounts(
-  db: Lattice,
-  configPath: string,
-  outputDir: string,
-): Promise<GuiEntitiesPayload> {
-  const payload = getGuiEntities(configPath, outputDir);
-
-  // Augment the YAML-declared tables with anything the Lattice schema
-  // manager knows about at runtime that the YAML doesn't. This is what
-  // surfaces team-shared tables that were auto-registered via
-  // `applyCloudSchemaLocally` (defineLate under the hood) on `openConfig`:
-  // the project's joined-team `<team-name>.config.yml` carries an empty
-  // `entities: {}` block, but the team's cloud Postgres has shared
-  // tables we just synced into the local schema. Without this merge the
-  // SPA shows "No entities yet" against a joined-team cloud DB.
-  //
-  // Internal `__lattice_*` bookkeeping tables stay hidden — they're not
-  // user-facing entities and the SPA doesn't render them.
-  const yamlNames = new Set(payload.tables.map((t) => t.name));
-  const extraTables = db
+/**
+ * Tables the live Lattice schema manager knows about that the YAML
+ * config doesn't declare — native entities (`files`/`secrets`) and
+ * team-shared tables auto-registered via `applyCloudSchemaLocally`
+ * (defineLate) on open. Internal `__lattice_*` / `_lattice_*`
+ * bookkeeping tables stay hidden. Shared by the entity-card list and
+ * the Data Model graph so both surface the same set.
+ */
+function registeredExtraTables(db: Lattice, yamlNames: Set<string>): GuiTableSummary[] {
+  return db
     .getRegisteredTableNames()
     .filter((name) => !yamlNames.has(name))
     .filter((name) => !name.startsWith('__lattice_'))
@@ -174,15 +177,39 @@ async function entitiesWithCounts(
         relations: {},
       };
     });
-  const allTables = [...payload.tables, ...extraTables];
+}
+
+async function entitiesWithCounts(
+  db: Lattice,
+  configPath: string,
+  outputDir: string,
+  teamContext: TeamContext | null,
+): Promise<GuiEntitiesPayload> {
+  const payload = getGuiEntities(configPath, outputDir);
+
+  const yamlNames = new Set(payload.tables.map((t) => t.name));
+  let allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)];
+
+  // Team-cloud visibility: a member sees only their own tables plus
+  // tables shared to the team. This is what hides the creator's
+  // private files/secrets (and other members' private tables) from
+  // members, and other members' private tables from the creator.
+  if (teamContext) {
+    allTables = allTables.filter((t) => isVisibleInTeam(t.name, teamContext));
+  }
 
   const enrichedTables = await Promise.all(
-    allTables.map(async (t) => {
+    allTables.map(async (t): Promise<GuiTableSummary> => {
       // Only count live rows when the table has a `deleted_at` column.
       const rowCount = t.columns.includes('deleted_at')
         ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
         : await db.count(t.name);
-      return { ...t, rowCount };
+      const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
+      if (teamContext) {
+        base.shared = teamContext.shared.has(t.name);
+        base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
+      }
+      return base;
     }),
   );
   return { ...payload, tables: enrichedTables };
@@ -433,6 +460,8 @@ interface ActiveDb {
   outputDir: string;
   db: Lattice;
   validTables: Set<string>;
+  /** Team-cloud ownership context, or null for local / non-team DBs. */
+  teamContext: TeamContext | null;
   junctionTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
@@ -466,6 +495,24 @@ interface ActiveDb {
   realtime: RealtimeBroker | null;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
+}
+
+/**
+ * Resolve the rendered-context root for a SPECIFIC config, probing relative to
+ * that config's own directory (not the GUI launch cwd). Used when the GUI
+ * switches to / creates a different database so each DB's rendered-context view
+ * reflects its own render — never a stale launch-directory manifest. Returns an
+ * absolute path; when no co-located manifest exists, returns `<configDir>/context`
+ * (which has no manifest → the GUI shows no manifest-sourced entities for that
+ * DB, instead of showing another DB's rendered files).
+ */
+function resolveOutputDirForConfig(configPath: string): string {
+  const base = dirname(resolve(configPath));
+  for (const dir of ['context', '.', 'generated']) {
+    const abs = resolve(base, dir);
+    if (existsSync(join(abs, '.lattice', 'manifest.json'))) return abs;
+  }
+  return resolve(base, 'context');
 }
 
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
@@ -551,7 +598,23 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   // every open just upserts the single 'singleton' row.
   await syncUserIdentityRow(db);
 
+  // Reconcile + record native-entity bindings (files, secrets). Labels a
+  // pre-existing files/secrets table as THE native object (merging the native
+  // column superset, non-destructively) rather than duplicating it, and
+  // guarantees the tables exist on freshly created DBs. Safe on every open.
+  await adoptNativeEntities(db);
+
+  // Queryable tables = YAML-declared tables PLUS every table registered on the
+  // live Lattice that isn't internal bookkeeping. This includes native
+  // entities (files/secrets), team-shared tables auto-registered below, and
+  // any programmatic db.define(). Mirrors the filter entitiesWithCounts uses
+  // to surface cards, so a card that appears is always queryable (previously
+  // native entities showed as cards but 400'd with "Unknown table").
   const validTables = new Set(parsed.tables.map((t) => t.name));
+  for (const name of db.getRegisteredTableNames()) {
+    if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
+    validTables.add(name);
+  }
   const junctionTables = new Set(
     getGuiEntities(configPath, outputDir)
       .tables.filter(isJunctionTable)
@@ -567,11 +630,15 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
   // `lattice render` separately) fall through to this manifest to find
   // their rendered directories.
   const manifest = readManifest(outputDir);
-  const softDeletable = new Set(
-    parsed.tables
-      .filter(({ definition }) => 'deleted_at' in definition.columns)
-      .map(({ name }) => name),
-  );
+  // Any queryable table with a deleted_at column gets soft-delete semantics in
+  // the GUI (filter out deleted rows on list; soft-delete on DELETE). Derived
+  // from the live schema so native files/secrets (which both have deleted_at)
+  // are soft-deleted rather than hard-deleted.
+  const softDeletable = new Set<string>();
+  for (const name of validTables) {
+    const cols = db.getRegisteredColumns(name);
+    if (cols && 'deleted_at' in cols) softDeletable.add(name);
+  }
   const teamsClient = new TeamsClient(db);
   // Re-arm sync write-hooks for any tables that already have local
   // links (i.e. the user is part of teams + linked rows in a prior
@@ -616,6 +683,41 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     console.warn('[openConfig] could not enumerate team connections:', (e as Error).message);
   }
 
+  // ── Team-cloud ownership context ──────────────────────────────────
+  // When the active DB is a team-enabled Postgres cloud, every member
+  // shares the same physical Postgres — so every table physically
+  // exists for everyone. Register the internal tables on this handle
+  // (so direct team ops like kick know composite PKs), resolve who the
+  // operator is + per-table ownership, then restrict the visible /
+  // queryable table set to (tables I own) ∪ (tables shared to the
+  // team). Native files/secrets, owned by the creator, vanish for
+  // members unless explicitly shared.
+  let teamContext: TeamContext | null = null;
+  if (db.getDialect() === 'postgres') {
+    let teamEnabled = false;
+    try {
+      teamEnabled = (await db.get('__lattice_team_identity', 'singleton')) != null;
+    } catch {
+      teamEnabled = false;
+    }
+    if (teamEnabled) {
+      await registerTeamCloudTables(db);
+      try {
+        teamContext = await resolveTeamContext(db, teamsClient, parsed.dbPath, [...validTables]);
+      } catch (e) {
+        console.warn(
+          '[openConfig] could not resolve team ownership context:',
+          (e as Error).message,
+        );
+      }
+    }
+  }
+  if (teamContext) {
+    for (const name of [...validTables]) {
+      if (!isVisibleInTeam(name, teamContext)) validTables.delete(name);
+    }
+  }
+
   // Realtime broker — only meaningful when the active DB is Postgres.
   // The broker connects on creation; status/payload events stream out
   // via the SSE endpoint. SQLite configs leave this as null and the
@@ -637,6 +739,7 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     db,
     teamsClient,
     validTables,
+    teamContext,
     junctionTables,
     entityContextByTable,
     manifest,
@@ -662,12 +765,19 @@ function friendlyConfigName(parsedName: string | undefined, configPath: string):
  * config. Each entry includes the parsed `db:` value when available so the
  * UI can show the underlying DB filename.
  */
-function listConfigs(
-  activeConfigPath: string,
-): { path: string; name: string; label: string; dbFile: string; active: boolean }[] {
+interface ListedConfig {
+  path: string;
+  name: string;
+  label: string;
+  dbFile: string;
+  active: boolean;
+  /** Per-row connection kind so the dropdown can tag each entry without probing. */
+  kind: 'local' | 'cloud';
+}
+
+function listConfigs(activeConfigPath: string): ListedConfig[] {
   const dir = dirname(activeConfigPath);
-  const entries: { path: string; name: string; label: string; dbFile: string; active: boolean }[] =
-    [];
+  const entries: ListedConfig[] = [];
   for (const fname of readdirSync(dir)) {
     if (!fname.endsWith('.yml') && !fname.endsWith('.yaml')) continue;
     const full = join(dir, fname);
@@ -683,6 +793,11 @@ function listConfigs(
         label: friendlyConfigName(parsed.name, full),
         dbFile: basename(parsed.dbPath),
         active: full === activeConfigPath,
+        // `${LATTICE_DB:...}` and postgres:// configs resolve to a
+        // postgres URL; everything else is a local SQLite file. This
+        // lets inactive rows show the correct Cloud/Local tag instead
+        // of defaulting every non-active row to Local.
+        kind: /^postgres(ql)?:\/\//i.test(parsed.dbPath) ? 'cloud' : 'local',
       });
     } catch {
       // Not a valid lattice config — skip silently.
@@ -908,11 +1023,27 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'GET' && pathname === '/api/entities') {
-          sendJson(res, await entitiesWithCounts(active.db, active.configPath, active.outputDir));
+          sendJson(
+            res,
+            await entitiesWithCounts(
+              active.db,
+              active.configPath,
+              active.outputDir,
+              active.teamContext,
+            ),
+          );
           return;
         }
         if (method === 'GET' && pathname === '/api/graph') {
-          sendJson(res, buildGuiGraph(active.configPath, active.outputDir));
+          const yamlNames = new Set(
+            getGuiEntities(active.configPath, active.outputDir).tables.map((t) => t.name),
+          );
+          const ctx = active.teamContext;
+          const graphOpts: import('./data.js').BuildGuiGraphOptions = {
+            extraTables: registeredExtraTables(active.db, yamlNames),
+          };
+          if (ctx) graphOpts.visibleFilter = (name) => isVisibleInTeam(name, ctx);
+          sendJson(res, buildGuiGraph(active.configPath, active.outputDir, graphOpts));
           return;
         }
 
@@ -950,9 +1081,50 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               updated_at: new Date().toISOString(),
             });
           }
+          // Team cloud: record the creator as owner BEFORE re-opening, so
+          // the reopen's reconcile (which assigns unowned tables to the
+          // team creator) doesn't steal a member's new table. New tables
+          // are private to their creator — sharing is an explicit,
+          // separate action from the Data Model dialog.
+          if (active.teamContext?.myUserId) {
+            await recordObjectOwner(
+              active.db,
+              active.teamContext.teamId,
+              entityName,
+              active.teamContext.myUserId,
+            );
+          }
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir);
           sendJson(res, { ok: true, name: entityName });
+          return;
+        }
+
+        // ── Share / unshare an entity with the team (owner-only) ─────────
+        // The Data Model dialog calls this to toggle team visibility of a
+        // table the operator owns. Only the owner may share/unshare; the
+        // team creator can't reach into another member's private tables.
+        if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/share$/.test(pathname)) {
+          const table = decodeURIComponent(pathname.split('/')[4] ?? '');
+          const ctx = active.teamContext;
+          if (!ctx) {
+            sendJson(res, { error: 'Sharing is only available on team cloud databases' }, 400);
+            return;
+          }
+          const body = (await readJsonBody(req)) as { share?: unknown };
+          const result = await shareEntityWithTeam(
+            active.db,
+            active.dbPath,
+            ctx,
+            active.validTables,
+            table,
+            body.share === true,
+          );
+          if (result.status === 200) {
+            await disposeActive(active);
+            active = await openConfig(active.configPath, active.outputDir);
+          }
+          sendJson(res, result.body, result.status);
           return;
         }
 
@@ -1331,7 +1503,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // raw error verbatim so the UI's toast names the real cause.
           let next: ActiveDb;
           try {
-            next = await openConfig(newPath, active.outputDir);
+            // Resolve the rendered-context root for THIS config (probing its
+            // own directory), not the launch-wide outputDir. Reusing one
+            // outputDir across every DB switch is what bled one DB's rendered
+            // "files" view into another DB that had none of its own.
+            next = await openConfig(newPath, resolveOutputDirForConfig(newPath));
           } catch (e) {
             const err = e as Error & { code?: string };
             console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
@@ -1355,10 +1531,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
-          const next = await openConfig(newConfigPath, active.outputDir);
+          const next = await openConfig(newConfigPath, resolveOutputDirForConfig(newConfigPath));
           await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
+          return;
+        }
+
+        // Native-entity bindings for the active DB — lets the UI badge the
+        // files/secrets cards as "Native". openConfig auto-records these on
+        // every open, so this is a straight read of the registry.
+        if (method === 'GET' && pathname === '/api/native-entities') {
+          sendJson(res, { bindings: await listNativeBindings(active.db) });
           return;
         }
 
@@ -1553,6 +1737,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             pathname,
             method,
             validTables: active.validTables,
+            // When the active DB IS the team cloud (direct-Postgres mode),
+            // there's no local connection row — team ops fall back to
+            // this resolved context (cloud url + my identity + role).
+            cloudUrl: active.db.getDialect() === 'postgres' ? active.dbPath : null,
+            teamContext: active.teamContext
+              ? {
+                  teamId: active.teamContext.teamId,
+                  myUserId: active.teamContext.myUserId,
+                  isCreator: active.teamContext.isCreator,
+                  isMember: active.teamContext.isMember,
+                }
+              : null,
           });
           if (handled) return;
         }
@@ -1581,6 +1777,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             configPath: active.configPath,
             pathname,
             method,
+            teamMembership: active.teamContext
+              ? {
+                  joined: active.teamContext.isMember,
+                  isCreator: active.teamContext.isCreator,
+                  teamId: active.teamContext.teamId,
+                  myUserId: active.teamContext.myUserId,
+                }
+              : null,
             swap: async () => {
               const next = await openConfig(active.configPath, active.outputDir);
               await disposeActive(active);

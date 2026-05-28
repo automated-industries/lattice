@@ -248,3 +248,60 @@ describe('discoverOutputDir CLI helper', () => {
     }
   });
 });
+
+describe('GUI cross-database bleed-through — manifest is scoped per active DB', () => {
+  it('does not show a prior DB rendered entities after switching to a DB with none of its own', async () => {
+    // DB A: has a rendered `items/alpha` entity in its own ./context.
+    const rootA = tempDir();
+    const { configPath: configA, outputDir: outputDirA } = writeMinimalConfig(rootA);
+    mkdirSync(join(outputDirA, 'items', 'alpha'), { recursive: true });
+    writeFileSync(join(outputDirA, 'items', 'alpha', 'ITEM.md'), '# Alpha (DB A only)');
+    writeManifest(outputDirA, {
+      version: 2,
+      generated_at: '2026-05-27T00:00:00.000Z',
+      entityContexts: {
+        items: {
+          directoryRoot: 'items',
+          declaredFiles: ['ITEM.md'],
+          protectedFiles: [],
+          entities: { alpha: { 'ITEM.md': { hash: 'h1' } } },
+        },
+      },
+    });
+
+    // DB B: a separate config in a separate directory, with NO rendered
+    // context of its own (empty ./context, no manifest).
+    const rootB = tempDir();
+    const { configPath: configB } = writeMinimalConfig(rootB);
+
+    const server = await startGuiServer({
+      configPath: configA,
+      outputDir: outputDirA,
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    // On DB A, the rendered alpha entity shows.
+    const entitiesA = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      entities: { slug: string }[];
+    };
+    expect(entitiesA.entities.some((e) => e.slug === 'alpha')).toBe(true);
+
+    // Switch to DB B.
+    const sw = await fetch(`${server.url}/api/databases/switch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: configB }),
+    });
+    expect(sw.status).toBe(200);
+
+    // DB B has no co-located manifest, so it must show NONE of DB A's
+    // rendered entities (the cross-DB bleed-through). Manifest is per config.
+    const entitiesB = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      entities: { slug: string }[];
+    };
+    expect(entitiesB.entities.some((e) => e.slug === 'alpha')).toBe(false);
+    expect(entitiesB.entities).toHaveLength(0);
+  });
+});
