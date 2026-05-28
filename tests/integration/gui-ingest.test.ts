@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,8 +6,17 @@ import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
+let savedKey: string | undefined;
+
+beforeEach(() => {
+  // Keep ingest deterministic: no LLM enrichment unless a test opts in.
+  savedKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+});
 
 afterEach(async () => {
+  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = savedKey;
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
