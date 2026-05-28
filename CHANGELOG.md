@@ -26,18 +26,25 @@ and inert until a key is configured).
 - **AI chat with tools.** A function registry mirrors the GUI's operations; a
   shared mutation chokepoint (`createRow`/`updateRow`/`deleteRow`/`link`/…) is
   used by both the HTTP routes and the AI dispatcher, so AI edits are audited,
-  fed to the sidebar, and undoable like UI edits. `POST /api/chat` streams the
-  tool loop (`@anthropic-ai/sdk`, lazy-loaded optionalDependency) as SSE.
+  fed to the sidebar, and undoable like UI edits. The assistant can read
+  (entities, rows, history), write rows, form/remove junction links, and
+  undo/redo/revert; schema + database-lifecycle ops stay UI-only. `POST /api/chat`
+  streams the tool loop (`@anthropic-ai/sdk`, lazy-loaded optionalDependency) as
+  SSE. Conversations persist as `chat_threads`/`chat_messages` with a New-chat +
+  switcher in the rail.
 - **Credentials.** Claude API token + voice keys are stored encrypted in the
   native `secrets` entity (presence-only reads, never echoed); env vars work
   too. Managed in User Settings → Assistant.
 - **Voice input.** Mic capture in the composer → `POST /api/assistant/transcribe`
   via OpenAI Whisper or ElevenLabs Scribe (gated on a voice key).
-- **File ingest.** Reference a local file (`POST /api/ingest/file`) or paste
-  text (`POST /api/ingest/text`) into the native `files` entity — no bytes are
-  copied. Text/code extracted directly; PDFs/office docs via the optional
-  `markitdown` CLI (graceful when absent). With a Claude key, files get an
-  LLM-generated description and a relevance classifier surfaces related records.
+- **File ingest.** Drag a file onto the rail, use the composer paperclip
+  (`POST /api/ingest/upload`), reference a local path (`POST /api/ingest/file`),
+  or paste text (`POST /api/ingest/text`) into the native `files` entity — no
+  bytes are kept. Text/code extracted directly; PDFs/office docs via the
+  optional `markitdown` CLI (graceful when absent). With a Claude key, files get
+  an LLM-generated description and a relevance classifier that **auto-creates a
+  junction link** to a related record when a connecting junction already exists
+  (default action, undoable), or surfaces a suggestion otherwise.
 - **Files detail preview.** Inline image/PDF/text preview + description on the
   files row, served from `GET /api/files/:id/blob`, plus open-in-finder (gated
   by `LATTICE_LOCAL_OPEN`).

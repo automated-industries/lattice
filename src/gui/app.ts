@@ -868,6 +868,8 @@ export const guiAppHtml = `<!doctype html>
       repositories: { label: 'Repositories', icon: '💿' },
       files:        { label: 'Files',        icon: '📄' },
       secrets:      { label: 'Secrets',      icon: '🔐' },
+      chat_threads:  { label: 'Chat Threads',  icon: '💬' },
+      chat_messages: { label: 'Chat Messages', icon: '💬' },
     };
     // Cards shown on the dashboard (Secrets is sidebar-only by design).
     var DASHBOARD_ORDER = ['meetings', 'people', 'messages', 'projects', 'repositories', 'files'];
