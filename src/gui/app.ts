@@ -3156,13 +3156,73 @@ export const guiAppHtml = `<!doctype html>
         '<div class="teams-page">' +
           '<h2>User Settings</h2>' +
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
+          '<div id="assistant-host"></div>' +
           '<div id="preferences-host"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
+      renderAssistantPanel(document.getElementById('assistant-host'));
       renderPreferencesPanel(document.getElementById('preferences-host'));
       // Databases catalog lives on Lattice Settings; per-database cloud/team
       // config lives on Database Settings. User Settings is identity +
       // preferences only — every config option in exactly one place.
+    }
+
+    function renderAssistantPanel(host) {
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        var has = !!(cfg && cfg.hasAnthropicKey);
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 10px">Assistant</h3>' +
+            '<p class="lead" style="margin:0 0 10px;font-size:12px;color:var(--text-muted)">' +
+              'Paste a Claude API token to power the assistant. Stored encrypted in the ' +
+              '<code>secrets</code> table — never shown again once saved. You can also set ' +
+              '<code>ANTHROPIC_API_KEY</code> in the environment instead.' +
+            '</p>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+              '<span class="feed-source" style="background:' + (has ? 'var(--accent-soft)' : 'var(--surface-2)') +
+                ';color:' + (has ? 'var(--accent)' : 'var(--text-muted)') + '">' +
+                (has ? 'Connected' : 'Not set') + '</span>' +
+              '<span style="font-size:12px;color:var(--text-muted)">' +
+                (has ? 'A Claude API token is configured.' : 'No token configured yet.') + '</span>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;align-items:center">' +
+              '<input id="assistant-key" type="password" autocomplete="off" placeholder="' +
+                (has ? '••••••••••••' : 'sk-ant-…') + '" style="flex:1;background:var(--surface-2)">' +
+              '<button id="assistant-save" class="btn">Save</button>' +
+              (has ? '<button id="assistant-clear" class="btn">Clear</button>' : '') +
+            '</div>' +
+            '<div id="assistant-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+          '</div>';
+        var input = host.querySelector('#assistant-key');
+        var msg = host.querySelector('#assistant-msg');
+        host.querySelector('#assistant-save').addEventListener('click', function () {
+          var key = (input.value || '').trim();
+          if (!key) { msg.textContent = 'Enter a token first.'; return; }
+          msg.textContent = 'Saving…';
+          fetch('/api/assistant/key', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ key: key }),
+          })
+            .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+            .then(function () { renderAssistantPanel(host); })
+            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+        });
+        var clearBtn = host.querySelector('#assistant-clear');
+        if (clearBtn) {
+          clearBtn.addEventListener('click', function () {
+            msg.textContent = 'Clearing…';
+            fetch('/api/assistant/key', { method: 'DELETE' })
+              .then(function (r) { if (!r.ok) throw new Error('clear failed (' + r.status + ')'); return r.json(); })
+              .then(function () { renderAssistantPanel(host); })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+        }
+      }).catch(function (e) {
+        host.innerHTML = '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px">' +
+          '<h3 style="margin:0 0 10px">Assistant</h3><div style="font-size:12px;color:var(--warn)">Could not load: ' +
+          escapeHtml(e.message) + '</div></div>';
+      });
     }
 
     function renderPreferencesPanel(host) {
