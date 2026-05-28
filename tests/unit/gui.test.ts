@@ -183,6 +183,45 @@ describe('GUI graph builder', () => {
     ).toBe(true);
   });
 
+  it('adds extraTables (native entities / team-shared) as graph nodes', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const graph = buildGuiGraph(configPath, outputDir, {
+      extraTables: [
+        { name: 'files', columns: ['id', 'path'], outputFile: '', relations: {} },
+        { name: 'secrets', columns: ['id', 'name'], outputFile: '', relations: {} },
+      ],
+    });
+    const nodeIds = graph.nodes.map((n) => n.id);
+    // Native entities, absent from the YAML, now show in the Data Model.
+    expect(nodeIds).toContain('table:files');
+    expect(nodeIds).toContain('table:secrets');
+    // YAML tables still present.
+    expect(nodeIds).toContain('table:agents');
+  });
+
+  it('drops table nodes that fail the team-cloud visibility filter', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const visible = new Set(['agents', 'secrets']);
+    const graph = buildGuiGraph(configPath, outputDir, {
+      extraTables: [
+        { name: 'files', columns: ['id'], outputFile: '', relations: {} },
+        { name: 'secrets', columns: ['id'], outputFile: '', relations: {} },
+      ],
+      visibleFilter: (name) => visible.has(name),
+    });
+    const nodeIds = graph.nodes.map((n) => n.id);
+    expect(nodeIds).toContain('table:agents');
+    expect(nodeIds).toContain('table:secrets');
+    // Not in the visible set → hidden, and no dangling edges reference it.
+    expect(nodeIds).not.toContain('table:files');
+    expect(nodeIds).not.toContain('table:teams');
+    const presentIds = new Set(nodeIds);
+    for (const edge of graph.edges) {
+      expect(presentIds.has(edge.source)).toBe(true);
+      expect(presentIds.has(edge.target)).toBe(true);
+    }
+  });
+
   it('returns an empty entity list when the manifest is missing', () => {
     const root = tempDir();
     const { configPath } = writeFixture(root);
@@ -232,7 +271,7 @@ describe('GUI server', () => {
       entities: unknown[];
     };
     const graph = (await fetch(`${server.url}/api/graph`).then((r) => r.json())) as {
-      nodes: unknown[];
+      nodes: { id: string }[];
       edges: unknown[];
     };
 
@@ -240,6 +279,16 @@ describe('GUI server', () => {
     expect(entities.tables.every((t) => typeof t.rowCount === 'number')).toBe(true);
     expect(graph.nodes.length).toBeGreaterThan(0);
     expect(graph.edges.length).toBeGreaterThan(0);
+
+    // Native entities (files, secrets) are registered at runtime, not in
+    // the YAML — they must still appear in the Data Model graph and the
+    // entity list. Regression guard for the "Data Model is empty" bug.
+    const graphNodeIds = graph.nodes.map((n) => n.id);
+    expect(graphNodeIds).toContain('table:files');
+    expect(graphNodeIds).toContain('table:secrets');
+    const entityNames = entities.tables.map((t) => t.name);
+    expect(entityNames).toContain('files');
+    expect(entityNames).toContain('secrets');
   });
 
   it('round-trips row CRUD via /api/tables/:table/rows', async () => {

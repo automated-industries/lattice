@@ -14,6 +14,10 @@ export interface GuiTableSummary {
   rowCount?: number;
   /** True for framework-shipped native entities (files, secrets). Set by the server. */
   native?: boolean;
+  /** Team cloud only: this table is shared to the whole team. Set by the server. */
+  shared?: boolean;
+  /** Team cloud only: the operator owns this table. Set by the server. */
+  ownedByMe?: boolean;
 }
 
 export interface GuiFileSummary {
@@ -210,8 +214,47 @@ function objectNameKeys(value: string): string[] {
   return [...keys].filter(Boolean);
 }
 
-export function buildGuiGraph(configPath: string, outputDir: string): GuiGraphPayload {
+export interface BuildGuiGraphOptions {
+  /**
+   * Tables registered on the live Lattice that the YAML doesn't declare
+   * — native entities (files/secrets) and team-shared tables. Added as
+   * graph nodes so the Data Model view shows them. Deduped by name
+   * against the YAML tables.
+   */
+  extraTables?: GuiTableSummary[];
+  /**
+   * Team-cloud visibility predicate. When provided, `table`-type nodes
+   * whose name fails the predicate are dropped (and any edge touching a
+   * dropped node is pruned). Used to hide tables the operator neither
+   * owns nor has shared to them.
+   */
+  visibleFilter?: (tableName: string) => boolean;
+}
+
+export function buildGuiGraph(
+  configPath: string,
+  outputDir: string,
+  options: BuildGuiGraphOptions = {},
+): GuiGraphPayload {
   const data = loadGuiData(configPath, outputDir);
+  // Merge in runtime-registered tables (natives, team-shared) the YAML
+  // doesn't carry, so the Data Model graph isn't empty for cloud DBs.
+  if (options.extraTables && options.extraTables.length > 0) {
+    const seen = new Set(data.tables.map((t) => t.name));
+    for (const extra of options.extraTables) {
+      if (!seen.has(extra.name)) {
+        data.tables.push(extra);
+        seen.add(extra.name);
+      }
+    }
+  }
+  // Apply the team-cloud visibility filter to the table set up front so
+  // nodes, edges, and the junction synthesis below all operate on the
+  // visible subset only.
+  if (options.visibleFilter) {
+    const filter = options.visibleFilter;
+    data.tables = data.tables.filter((t) => filter(t.name));
+  }
   const nodes = new Map<string, GuiGraphNode>();
   const edges = new Map<string, GuiGraphEdge>();
   const fileOwners = new Map<string, GuiEntitySummary>();

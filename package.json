@@ -42,8 +42,12 @@
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
+    "@scarf/scarf": "^1.4.0",
     "uuid": "^13.0.0",
     "yaml": "^2.8.3"
+  },
+  "scarfSettings": {
+    "defaultOptIn": true
   },
   "peerDependencies": {
     "better-sqlite3": ">=11 <13"

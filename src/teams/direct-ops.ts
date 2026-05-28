@@ -603,3 +603,98 @@ export async function unlinkRowDirect(
     // Already gone — fine.
   }
 }
+
+// ─── Per-table ownership (direct-Postgres) ──────────────────────────────
+//
+// Every team member connects to the same physical Postgres, so a table
+// created by any member physically exists for everyone. Ownership +
+// opt-in sharing is therefore enforced at the application layer: each
+// table records an owner here, and the GUI shows a user only the tables
+// they own PLUS tables in `__lattice_shared_objects` (shared to the
+// team). These helpers run against the active GUI Lattice handle, which
+// IS the cloud Postgres in direct mode — the internal tables must be
+// registered on it first (see `registerTeamCloudTables` in the GUI).
+
+interface ObjectOwnerRow {
+  team_id: string;
+  table_name: string;
+  owner_user_id: string;
+}
+
+/**
+ * Record `ownerUserId` as the owner of `tableName` for `teamId`.
+ * First-writer-wins: if an owner row already exists it is left
+ * untouched, so a later reconcile can't reassign a table away from the
+ * member who created it.
+ */
+export async function recordObjectOwner(
+  db: Lattice,
+  teamId: string,
+  tableName: string,
+  ownerUserId: string,
+): Promise<void> {
+  const existing = (await db.query('__lattice_object_owners', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: tableName },
+    ],
+    limit: 1,
+  })) as unknown as ObjectOwnerRow[];
+  if (existing[0]) return;
+  await db.upsert('__lattice_object_owners', {
+    team_id: teamId,
+    table_name: tableName,
+    owner_user_id: ownerUserId,
+    created_at: new Date().toISOString(),
+  });
+}
+
+/** Map of table_name → owner_user_id for every owned table in `teamId`. */
+export async function listObjectOwners(
+  db: Lattice,
+  teamId: string,
+): Promise<Map<string, string>> {
+  const rows = (await db.query('__lattice_object_owners', {
+    filters: [{ col: 'team_id', op: 'eq', val: teamId }],
+  })) as unknown as ObjectOwnerRow[];
+  return new Map(rows.map((r) => [r.table_name, r.owner_user_id]));
+}
+
+/**
+ * Assign any candidate table without an owner row to `creatorUserId`.
+ * Backfills ownership for tables that predate the ownership registry
+ * (or were created outside the GUI) so they default to the team
+ * creator rather than being visible to everyone. Idempotent.
+ */
+export async function reconcileObjectOwners(
+  db: Lattice,
+  teamId: string,
+  creatorUserId: string,
+  candidateTables: string[],
+): Promise<void> {
+  if (!creatorUserId) return;
+  const owners = await listObjectOwners(db, teamId);
+  const now = new Date().toISOString();
+  for (const table of candidateTables) {
+    if (owners.has(table)) continue;
+    await db.upsert('__lattice_object_owners', {
+      team_id: teamId,
+      table_name: table,
+      owner_user_id: creatorUserId,
+      created_at: now,
+    });
+  }
+}
+
+/** Resolve a non-deleted user's id by email (case-insensitive). */
+export async function resolveUserIdByEmail(
+  db: Lattice,
+  email: string,
+): Promise<string | null> {
+  if (!email) return null;
+  const users = (await db.query('__lattice_users', {
+    filters: [{ col: 'deleted_at', op: 'isNull' }],
+  })) as unknown as { id: string; email: string | null }[];
+  const match = users.find((u) => (u.email ?? '').toLowerCase() === email.toLowerCase());
+  return match?.id ?? null;
+}

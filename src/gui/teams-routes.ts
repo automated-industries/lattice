@@ -1,10 +1,51 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
-import { saveDbCredentialForTeam } from '../framework/user-config.js';
+import { deleteDbCredential, saveDbCredentialForTeam } from '../framework/user-config.js';
+import { parseConfigFile } from '../config/parser.js';
 import { TeamsClient, TeamsHttpError, type TeamConnection } from '../teams/client.js';
 import { serializeSchema } from '../teams/schema-spec.js';
+
+/**
+ * Remove the local sibling YAML config (and its saved db-credential)
+ * that points at `cloudUrl`, so a team the operator just left/was
+ * removed from disappears from the header dropdown and can no longer be
+ * switched to. Best-effort: a failure here must not fail the leave/kick
+ * itself (the authoritative membership change already happened on the
+ * cloud). Idempotent — does nothing if no matching config is found.
+ */
+function removeTeamConfigForCloud(ctx: TeamsGuiContext, cloudUrl: string): void {
+  try {
+    const dir = dirname(ctx.configPath);
+    for (const fname of readdirSync(dir)) {
+      if (!fname.endsWith('.yml') && !fname.endsWith('.yaml')) continue;
+      const full = join(dir, fname);
+      let resolvedDb: string;
+      try {
+        resolvedDb = parseConfigFile(full).dbPath;
+      } catch {
+        continue; // unparseable or credential gone — skip
+      }
+      if (resolvedDb !== cloudUrl) continue;
+      // Matched the team config. Pull the credential label from the raw
+      // `db: ${LATTICE_DB:<label>}` line so we can drop the credential too.
+      const raw = readFileSync(full, 'utf8');
+      const labelMatch = /^\s*db:\s*\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}/m.exec(raw);
+      if (labelMatch?.[1]) {
+        try {
+          deleteDbCredential(labelMatch[1]);
+        } catch {
+          // credential already gone — fine
+        }
+      }
+      rmSync(full, { force: true });
+    }
+  } catch {
+    // Directory unreadable — leave the config in place; the membership
+    // change on the cloud is what matters.
+  }
+}
 
 /**
  * GUI-side HTTP routes that wrap the local user's `TeamsClient`. These
@@ -37,6 +78,15 @@ interface TeamsGuiContext {
    * after every sync.
    */
   validTables: Set<string>;
+  /**
+   * The active DB's Postgres URL when it IS a team cloud (direct mode),
+   * else null. Used by {@link getConnection} to synthesize a connection
+   * when there's no local `__lattice_team_connections` row — which is
+   * the case when the team cloud itself is the active database.
+   */
+  cloudUrl: string | null;
+  /** Resolved team identity/role for the active cloud DB, or null. */
+  teamContext: { teamId: string; myUserId: string; isCreator: boolean; isMember: boolean } | null;
 }
 
 /**
@@ -59,13 +109,17 @@ function writeTeamConfigYaml(
   const projectDir = dirname(activeConfigPath);
   const yamlPath = join(projectDir, `${credentialLabel}.yml`);
   if (existsSync(yamlPath)) return yamlPath;
+  const safeName = teamName.replace(/[\r\n]/g, ' ');
   const yaml =
     `# Joined-team config — managed by lattice gui. Edit entities: to add\n` +
     `# locally-projected tables of the team's shared data; the cloud DB at\n` +
     `# ${credentialLabel} is the authoritative source.\n` +
     `db: \${LATTICE_DB:${credentialLabel}}\n` +
     `\n` +
-    `# Team: ${teamName.replace(/[\r\n]/g, ' ')}\n` +
+    // `name:` is the friendly label shown in the header dropdown + DB
+    // settings. Writing the team name here lets listConfigs() resolve a
+    // readable label without opening the cloud DB.
+    `name: ${JSON.stringify(safeName)}\n` +
     `entities: {}\n`;
   writeFileSync(yamlPath, yaml, 'utf8');
   return yamlPath;
@@ -104,9 +158,25 @@ function requireString(body: Record<string, unknown>, key: string): string | nul
   return v.trim();
 }
 
-async function getConnection(client: TeamsClient, teamId: string): Promise<TeamConnection | null> {
-  const conns = await client.listConnections();
-  return conns.find((c) => c.team_id === teamId) ?? null;
+async function getConnection(ctx: TeamsGuiContext, teamId: string): Promise<TeamConnection | null> {
+  const conns = await ctx.client.listConnections();
+  const local = conns.find((c) => c.team_id === teamId);
+  if (local) return local;
+  // No local connection row — fall back to the active cloud DB when it
+  // IS this team's cloud (direct-Postgres mode). The connection metadata
+  // (cloud url + my user id) comes from the resolved team context; the
+  // bearer token is unused on the direct-Postgres path.
+  if (ctx.cloudUrl && ctx.teamContext && ctx.teamContext.teamId === teamId) {
+    return {
+      team_id: teamId,
+      team_name: '',
+      cloud_url: ctx.cloudUrl,
+      my_user_id: ctx.teamContext.myUserId,
+      api_token: '',
+      joined_at: '',
+    };
+  }
+  return null;
 }
 
 /**
@@ -197,16 +267,21 @@ async function dispatchTeamSubroute(
   subpath: string,
 ): Promise<void> {
   const { method } = ctx;
-  const conn = await getConnection(ctx.client, teamId);
+  const conn = await getConnection(ctx, teamId);
   if (!conn) {
     sendJson(res, { error: `No local connection for team-id "${teamId}"` }, 404);
     return;
   }
 
-  // /api/teams-gui/teams/:id (DELETE = destroy)
+  // /api/teams-gui/teams/:id (DELETE = destroy) — creator only.
   if (subpath === '' && method === 'DELETE') {
+    if (ctx.teamContext && !ctx.teamContext.isCreator) {
+      sendJson(res, { error: 'Only the team owner can destroy the team' }, 403);
+      return;
+    }
     await ctx.client.destroyTeam(conn.cloud_url, conn.api_token);
     await ctx.client.deleteConnection(teamId);
+    removeTeamConfigForCloud(ctx, conn.cloud_url);
     sendJson(res, { ok: true });
     return;
   }
@@ -254,10 +329,24 @@ async function dispatchTeamSubroute(
     sendJson(res, invite);
     return;
   }
-  // /api/teams-gui/teams/:id/members/:userId (DELETE = kick)
+  // /api/teams-gui/teams/:id/members/:userId (DELETE = kick).
+  // Removing another member requires the team owner; removing yourself
+  // (leaving) is always allowed.
   const kickMatch = /^members\/([^/]+)$/.exec(subpath);
   if (kickMatch && method === 'DELETE') {
-    await ctx.client.kickMember(conn.cloud_url, conn.api_token, teamId, kickMatch[1] ?? '');
+    const targetUserId = kickMatch[1] ?? '';
+    const isSelf = targetUserId === conn.my_user_id;
+    if (!isSelf && ctx.teamContext && !ctx.teamContext.isCreator) {
+      sendJson(res, { error: 'Only the team owner can remove other members' }, 403);
+      return;
+    }
+    await ctx.client.kickMember(conn.cloud_url, conn.api_token, teamId, targetUserId);
+    // If the operator removed themselves, tear down their local pointer
+    // to the cloud so it leaves the dropdown and is no longer accessible.
+    if (isSelf) {
+      await ctx.client.deleteConnection(teamId);
+      removeTeamConfigForCloud(ctx, conn.cloud_url);
+    }
     sendJson(res, { ok: true });
     return;
   }
@@ -401,7 +490,7 @@ async function handleLeave(
   ctx: TeamsGuiContext,
   teamId: string,
 ): Promise<void> {
-  const conn = await getConnection(ctx.client, teamId);
+  const conn = await getConnection(ctx, teamId);
   if (!conn) {
     sendJson(res, { error: `No local connection for team-id "${teamId}"` }, 404);
     return;
@@ -425,5 +514,6 @@ async function handleLeave(
     throw e;
   }
   await ctx.client.deleteConnection(teamId);
+  removeTeamConfigForCloud(ctx, conn.cloud_url);
   sendJson(res, { ok: true });
 }

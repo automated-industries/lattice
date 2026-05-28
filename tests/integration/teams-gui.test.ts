@@ -334,7 +334,10 @@ describe('teams GUI — endpoints', () => {
     });
     expect(destroyRes.status).toBe(200);
 
-    // Connection gone
+    // Connection gone. (removeTeamConfigForCloud is a no-op here: the
+    // local config is a SQLite db, not the http:// cloud_url, so no
+    // sibling YAML matches — the destroy leaves local configs intact,
+    // which is what keeps this server usable for the rest of the test.)
     const afterDestroy = await api(`${sharer.url}/api/teams-gui/connections`);
     expect(afterDestroy.body.connections).toEqual([]);
   });

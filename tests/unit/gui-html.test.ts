@@ -8,8 +8,13 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('id="settings-nav"');
     expect(guiAppHtml).toContain('id="content"');
 
-    // Settings entries
-    expect(guiAppHtml).toContain('href="#/settings/data-model"');
+    // Settings entries. Data Model is no longer a top-level nav item —
+    // it now lives inside Database Settings (renderDataModelInto), so we
+    // assert the Database Settings entry plus the data-model host hook.
+    expect(guiAppHtml).toContain('href="#/settings/database"');
+    expect(guiAppHtml).not.toContain('href="#/settings/data-model"');
+    expect(guiAppHtml).toContain("id=\"data-model-host\"");
+    expect(guiAppHtml).toContain('renderDataModelInto');
 
     // Branding
     expect(guiAppHtml).toContain('Lattice');
@@ -115,14 +120,16 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toMatch(/u\.password = '••+'/);
   });
 
-  it('team role pill distinguishes cloud-unreachable from genuine UNKNOWN', () => {
-    // Pre-v1.13.4: when listMembers couldn't be reached or returned a
-    // list without the local user_id, the role pill said "unknown" —
-    // confusing for the team creator who had just registered. v1.13.4
-    // splits into three labels.
-    expect(guiAppHtml).toContain('(cloud unreachable)');
-    expect(guiAppHtml).toContain('(not in member list)');
-    // The bare 'unknown' string from the old fallback is gone.
-    expect(guiAppHtml).not.toMatch(/myMembership \? myMembership\.role : 'unknown'/);
+  it('team member admin lives in Database Settings, not a legacy team card', () => {
+    // The legacy project-config team-card UI (renderTeamCard /
+    // renderTeamsForProjectConfig / wireTeamCardActions) was removed —
+    // team member admin now lives inline in Database Settings via the
+    // members list. Guard against the dead code creeping back.
+    expect(guiAppHtml).not.toContain('renderTeamCard');
+    expect(guiAppHtml).not.toContain('renderTeamsForProjectConfig');
+    expect(guiAppHtml).not.toContain('wireTeamCardActions');
+    // The live members-list path marks the current operator + per-row actions.
+    expect(guiAppHtml).toContain('renderMembersList');
+    expect(guiAppHtml).toContain('leave-self');
   });
 });
