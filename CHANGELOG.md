@@ -50,10 +50,24 @@ and inert until a key is configured).
   by `LATTICE_LOCAL_OPEN`).
 - **Native chat history.** `chat_threads` + `chat_messages` join `files` +
   `secrets` as native entities, auto-created + adoptable like the others.
-- **Subscription OAuth (PKCE) scaffolding.** A standard, config-gated
-  authorization-code + PKCE flow for connecting a Claude subscription; reads
-  `ANTHROPIC_OAUTH_*` from env (concrete Anthropic endpoints not hardcoded) and
-  is inert until configured.
+- **Subscription OAuth (PKCE).** A standard, config-gated authorization-code +
+  PKCE flow for connecting a Claude subscription; reads `ANTHROPIC_OAUTH_*` from
+  env (concrete Anthropic endpoints not hardcoded) and is inert until
+  configured. The stored token is used as a Bearer `authToken` for chat +
+  ingest, refreshed in place near expiry.
+
+### Fixed
+
+- **Shared-schema sync no longer blanks a joined member's tables.** Applying a
+  cloud schema that added a NOT NULL column without a default to an
+  already-existing local table threw "Cannot add a NOT NULL column with default
+  value NULL"; that error aborted the entire shared-schema sync, so a member who
+  refreshed saw **none** of the team's shared tables. ADD COLUMN now adds such
+  columns nullable (the constraint can't apply to existing rows anyway), and the
+  sync isolates per-table failures so one bad object can't blank the rest.
+- **Native NOT NULL columns carry a DEFAULT** (`secrets.name`,
+  `chat_messages.role`) so the native-entity adopt + ADD COLUMN paths never hit
+  the same NOT-NULL-without-default error.
 
 ## [1.14.0] - 2026-05-27
 
