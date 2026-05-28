@@ -2065,6 +2065,28 @@ npx lattice gui
 npx lattice gui --config ./lattice.config.yml --output ./context --port 4317
 ```
 
+### Assistant sidebar (v2.0+)
+
+The GUI has a fixed right sidebar with a live **activity feed** — every change
+(yours, the assistant's, or an ingest) streams in as it happens.
+
+Add a Claude API token in **User Settings → Assistant** (or set
+`ANTHROPIC_API_KEY`) to enable the **AI assistant**: ask questions about your
+data or instruct edits in natural language. The assistant calls the same
+operations the UI does, so its changes are audited, shown in the feed, and
+undoable. A Claude subscription can be connected instead via OAuth when the
+`ANTHROPIC_OAUTH_*` environment variables are configured.
+
+Optional extras, each enabled by its own key/binary:
+
+- **Voice** — set an OpenAI (Whisper) or ElevenLabs key to dictate into the composer.
+- **File ingest** — reference a local file or paste text; it becomes a row in the
+  native `files` entity with extracted text + (with a Claude key) an
+  LLM-written description and links to related records. PDFs/office docs use the
+  optional [`markitdown`](https://github.com/microsoft/markitdown) CLI when installed.
+
+Chat threads, files, and secrets are all stored as native Lattice entities.
+
 **Options**
 
 | Flag                  | Default                | Description                                              |

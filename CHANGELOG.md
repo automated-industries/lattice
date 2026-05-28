@@ -8,6 +8,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-05-28
+
+A major release that turns the `lattice gui` into an AI-assisted workspace. A
+fixed right sidebar streams a live activity feed and hosts an optional AI
+assistant that can read and edit the database through tools, take voice input,
+and ingest local files. All new state lives as native Lattice entities; the
+library API is unchanged and backwards-compatible (the assistant is GUI-only
+and inert until a key is configured).
+
+### Added — assistant sidebar
+
+- **Activity feed.** Every audited mutation (UI, command, AI, or ingest) is
+  published to an in-process feed and streamed to the sidebar over
+  `GET /api/feed/stream` (works for SQLite too, unlike the Postgres-only
+  realtime broker). Resizable, persisted width.
+- **AI chat with tools.** A function registry mirrors the GUI's operations; a
+  shared mutation chokepoint (`createRow`/`updateRow`/`deleteRow`/`link`/…) is
+  used by both the HTTP routes and the AI dispatcher, so AI edits are audited,
+  fed to the sidebar, and undoable like UI edits. `POST /api/chat` streams the
+  tool loop (`@anthropic-ai/sdk`, lazy-loaded optionalDependency) as SSE.
+- **Credentials.** Claude API token + voice keys are stored encrypted in the
+  native `secrets` entity (presence-only reads, never echoed); env vars work
+  too. Managed in User Settings → Assistant.
+- **Voice input.** Mic capture in the composer → `POST /api/assistant/transcribe`
+  via OpenAI Whisper or ElevenLabs Scribe (gated on a voice key).
+- **File ingest.** Reference a local file (`POST /api/ingest/file`) or paste
+  text (`POST /api/ingest/text`) into the native `files` entity — no bytes are
+  copied. Text/code extracted directly; PDFs/office docs via the optional
+  `markitdown` CLI (graceful when absent). With a Claude key, files get an
+  LLM-generated description and a relevance classifier surfaces related records.
+- **Files detail preview.** Inline image/PDF/text preview + description on the
+  files row, served from `GET /api/files/:id/blob`, plus open-in-finder (gated
+  by `LATTICE_LOCAL_OPEN`).
+- **Native chat history.** `chat_threads` + `chat_messages` join `files` +
+  `secrets` as native entities, auto-created + adoptable like the others.
+- **Subscription OAuth (PKCE) scaffolding.** A standard, config-gated
+  authorization-code + PKCE flow for connecting a Claude subscription; reads
+  `ANTHROPIC_OAUTH_*` from env (concrete Anthropic endpoints not hardcoded) and
+  is inert until configured.
+
 ## [1.14.0] - 2026-05-27
 
 ### Fixed — native entities (`files`/`secrets`) showed as cards but failed with "Unknown table"
