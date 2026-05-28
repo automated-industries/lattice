@@ -306,6 +306,17 @@ export const guiAppHtml = `<!doctype html>
     }
     .rail-composer .composer-mic.recording { background: var(--warn); color: #0b0d10; border-color: var(--warn); }
     .rail-composer .composer-mic.transcribing { color: var(--accent); }
+    .rail-composer .composer-clip {
+      flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;
+      border: 1px solid var(--border-strong); border-radius: 8px;
+      background: var(--surface-2); color: var(--text-muted); cursor: pointer;
+    }
+    .assistant-rail.dragging-file::after {
+      content: 'Drop to ingest'; position: absolute; inset: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--accent-soft); border: 2px dashed var(--accent);
+      color: var(--accent); font-weight: 600; pointer-events: none;
+    }
 
     /* ── File preview (files detail page) ──────────────── */
     .file-preview { margin: 4px 0 16px; }
@@ -1009,6 +1020,7 @@ export const guiAppHtml = `<!doctype html>
         renderRoute();
         startRealtime();
         initRailResize();
+        initRailDragDrop();
         startFeed();
         renderComposer();
       }).catch(function (err) {
@@ -1336,6 +1348,36 @@ export const guiAppHtml = `<!doctype html>
       else if (recState === 'idle') { startRecording(btn, input); }
     }
 
+    // ────────────────────────────────────────────────────────────
+    // File ingest — drag a file onto the rail or use the paperclip.
+    // Browsers can't expose the local path, so we POST the bytes; the
+    // server extracts + summarizes, then discards them (path stays null).
+    // ────────────────────────────────────────────────────────────
+    function uploadFile(file) {
+      railEmptyGone();
+      return fetch('/api/ingest/upload', {
+        method: 'POST',
+        headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': file.name },
+        body: file,
+      })
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); });
+    }
+    function uploadFiles(files) {
+      if (!files) return;
+      for (var i = 0; i < files.length; i++) uploadFile(files[i]);
+    }
+    function initRailDragDrop() {
+      var rail = document.getElementById('assistant-rail'); if (!rail) return;
+      rail.addEventListener('dragover', function (e) { e.preventDefault(); rail.classList.add('dragging-file'); });
+      rail.addEventListener('dragleave', function (e) { if (e.target === rail) rail.classList.remove('dragging-file'); });
+      rail.addEventListener('drop', function (e) {
+        e.preventDefault();
+        rail.classList.remove('dragging-file');
+        if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+      });
+    }
+
     function renderComposer() {
       var host = document.getElementById('rail-composer'); if (!host) return;
       fetchJson('/api/assistant/config').then(function (cfg) {
@@ -1345,12 +1387,20 @@ export const guiAppHtml = `<!doctype html>
             : '';
           host.innerHTML =
             '<div class="composer-row">' +
+              '<button class="composer-clip" id="chat-clip" title="Attach a file">📎</button>' +
               micHtml +
               '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
-            '</div>';
+            '</div>' +
+            '<input type="file" id="chat-file" multiple style="display:none">';
           var input = document.getElementById('chat-input');
           var sendBtn = document.getElementById('chat-send');
+          var clipBtn = document.getElementById('chat-clip');
+          var fileInput = document.getElementById('chat-file');
+          if (clipBtn && fileInput) {
+            clipBtn.addEventListener('click', function () { fileInput.click(); });
+            fileInput.addEventListener('change', function () { uploadFiles(fileInput.files); fileInput.value = ''; });
+          }
           input.addEventListener('input', function () {
             input.style.height = 'auto';
             input.style.height = Math.min(120, input.scrollHeight) + 'px';
