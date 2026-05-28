@@ -3484,6 +3484,11 @@ export const guiAppHtml = `<!doctype html>
               '<code>ELEVENLABS_API_KEY</code>) also work.' +
             '</p>' +
             rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
+            '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+              (cfg.oauthEnabled
+                ? 'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.'
+                : 'Subscription login: set the <code>ANTHROPIC_OAUTH_*</code> env vars to enable.') +
+            '</div>' +
             '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text (set either)</div>' +
             rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…') +
             rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…') +
