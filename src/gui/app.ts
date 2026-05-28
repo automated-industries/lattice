@@ -184,10 +184,27 @@ export const guiAppHtml = `<!doctype html>
       display: grid; grid-template-columns: 220px minmax(0, 1fr) var(--sidebar-width);
       height: calc(100vh - 56px);
     }
+    .rail-handle { display: none; }
     @media (max-width: 720px) {
-      /* Collapse the assistant rail off the grid on narrow viewports. */
+      /* The assistant rail becomes a bottom drawer: composer always reachable,
+         tap the handle to expand the feed/chat to ~62svh. */
       .layout { grid-template-columns: 220px minmax(0, 1fr); }
-      .assistant-rail { display: none; }
+      .assistant-rail {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+        border-left: none; border-top: 1px solid var(--border);
+        max-height: 62svh; box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+      }
+      .rail-resize { display: none; }
+      .rail-handle {
+        display: block; flex: 0 0 auto; height: 22px; cursor: pointer; position: relative;
+      }
+      .rail-handle::after {
+        content: ''; position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
+        width: 40px; height: 4px; border-radius: 2px; background: var(--border-strong);
+      }
+      .assistant-rail:not(.expanded) { max-height: none; }
+      .assistant-rail:not(.expanded) .rail-feed { display: none; }
+      main#content { padding-bottom: 96px; }
     }
     nav.sidebar {
       background: var(--surface); border-right: 1px solid var(--border);
@@ -858,6 +875,7 @@ export const guiAppHtml = `<!doctype html>
     <main id="content"></main>
     <aside class="assistant-rail" id="assistant-rail">
       <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+      <div class="rail-handle" id="rail-handle" title="Expand / collapse"></div>
       <div class="rail-header">
         <span class="rail-title">Assistant</span>
         <select class="rail-threads" id="rail-threads" title="Conversations"></select>
@@ -1041,6 +1059,7 @@ export const guiAppHtml = `<!doctype html>
         renderRoute();
         startRealtime();
         initRailResize();
+        initRailDrawer();
         initRailDragDrop();
         startFeed();
         renderComposer();
@@ -1433,6 +1452,12 @@ export const guiAppHtml = `<!doctype html>
     function uploadFiles(files) {
       if (!files) return;
       for (var i = 0; i < files.length; i++) uploadFile(files[i]);
+    }
+    // Mobile: tapping the handle expands/collapses the bottom drawer.
+    function initRailDrawer() {
+      var handle = document.getElementById('rail-handle');
+      var rail = document.getElementById('assistant-rail');
+      if (handle && rail) handle.addEventListener('click', function () { rail.classList.toggle('expanded'); });
     }
     function initRailDragDrop() {
       var rail = document.getElementById('assistant-rail'); if (!rail) return;
