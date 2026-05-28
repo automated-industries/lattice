@@ -63,6 +63,36 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
     render: () => '',
     outputFile: '.lattice-native/files.md',
   },
+  chat_threads: {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      title: 'TEXT',
+      created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '.lattice-native/chat-threads.md',
+  },
+  chat_messages: {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      // Soft reference to chat_threads.id. Kept as a plain column (no FK)
+      // to match the generic, dialect-agnostic native-entity style.
+      thread_id: 'TEXT',
+      // user | assistant | tool | feed | system
+      role: 'TEXT NOT NULL',
+      // JSON payload: text, tool_use / tool_result blocks, attachments, or
+      // (for role='feed') the feed-event details.
+      content_json: 'TEXT',
+      // ai | gui | cli | ingest — meaningful for role='feed'.
+      source: 'TEXT',
+      created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '.lattice-native/chat-messages.md',
+  },
 };
 
 /**
