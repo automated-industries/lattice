@@ -19,6 +19,7 @@ import {
   getGuiEntities,
   getGuiProject,
   isJunctionTable,
+  fileJunctions,
   type GuiEntitiesPayload,
   type GuiTableSummary,
 } from './data.js';
@@ -1937,6 +1938,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             db: active.db,
             feed: active.feed,
             softDeletable: active.softDeletable,
+            fileJunctions: fileJunctions(active.configPath, active.outputDir),
             pathname,
             method,
           });
