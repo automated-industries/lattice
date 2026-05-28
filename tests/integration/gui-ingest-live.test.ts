@@ -24,7 +24,25 @@ async function boot(): Promise<GuiServerHandle> {
   const configPath = join(root, 'lattice.config.yml');
   writeFileSync(
     configPath,
-    ['db: ./data/test.db', '', 'entities:', '  projects:', '    fields:', '      id: { type: uuid, primaryKey: true }', '      name: { type: text }', '    render: default-list', '    outputFile: projects.md', ''].join('\n'),
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  projects:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '    render: default-list',
+      '    outputFile: projects.md',
+      '  project_files:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      project_id: { type: uuid, ref: projects }',
+      '      file_id: { type: uuid, ref: files }',
+      '    render: default-list',
+      '    outputFile: project-files.md',
+      '',
+    ].join('\n'),
   );
   const server = await startGuiServer({ configPath, outputDir: join(root, 'context'), port: 0, openBrowser: false });
   servers.push(server);
@@ -37,11 +55,13 @@ describe('ingest LLM enrichment (live)', () => {
     async () => {
       const server = await boot();
       // Seed a project.
-      await fetch(`${server.url}/api/tables/projects/rows`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'Apollo Telemetry Pipeline' }),
-      });
+      const projectId = (
+        (await fetch(`${server.url}/api/tables/projects/rows`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Apollo Telemetry Pipeline' }),
+        }).then((r) => r.json())) as { id: string }
+      ).id;
 
       const res = await fetch(`${server.url}/api/ingest/text`, {
         method: 'POST',
@@ -63,6 +83,13 @@ describe('ingest LLM enrichment (live)', () => {
 
       // The classifier related the document to the seeded project.
       expect(body.suggestedLinks.some((m) => m.table === 'projects')).toBe(true);
+
+      // And because a files↔projects junction exists, it auto-created the link
+      // (default action, no confirmation) — a project_files row joins them.
+      const links = (await fetch(`${server.url}/api/tables/project_files/rows`).then((r) => r.json())) as {
+        rows: { file_id: string; project_id: string }[];
+      };
+      expect(links.rows.some((r) => r.file_id === body.id && r.project_id === projectId)).toBe(true);
     },
     60000,
   );
