@@ -28,6 +28,7 @@ export const guiAppHtml = `<!doctype html>
       --danger: #ef4444;
       --danger-deep: #dc2626;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+      --sidebar-width: 380px;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -180,8 +181,13 @@ export const guiAppHtml = `<!doctype html>
        minimum keeps the track at content-width and the whole page scrolls
        horizontally. */
     .layout {
-      display: grid; grid-template-columns: 220px minmax(0, 1fr);
+      display: grid; grid-template-columns: 220px minmax(0, 1fr) var(--sidebar-width);
       height: calc(100vh - 56px);
+    }
+    @media (max-width: 720px) {
+      /* Collapse the assistant rail off the grid on narrow viewports. */
+      .layout { grid-template-columns: 220px minmax(0, 1fr); }
+      .assistant-rail { display: none; }
     }
     nav.sidebar {
       background: var(--surface); border-right: 1px solid var(--border);
@@ -204,6 +210,51 @@ export const guiAppHtml = `<!doctype html>
     nav li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
 
     main#content { padding: 24px; overflow: auto; }
+
+    /* ── Assistant rail (activity feed) ────────────────── */
+    .assistant-rail {
+      position: relative;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      min-width: 0; overflow: hidden;
+    }
+    .rail-resize {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+      cursor: col-resize; background: transparent; z-index: 5;
+      transition: background-color 120ms;
+    }
+    .rail-resize:hover, .rail-resize.dragging { background: var(--accent-soft); }
+    .rail-header {
+      flex: 0 0 auto; padding: 12px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .rail-title {
+      font-size: 11px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .rail-feed {
+      flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .rail-empty { color: var(--text-muted); font-size: 12.5px; text-align: center; padding: 18px 8px; }
+    .feed-item {
+      display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px;
+      align-items: baseline; padding: 7px 9px; border-radius: 8px;
+      background: var(--surface-2); border: 1px solid var(--border);
+      animation: feedIn 0.18s ease-out;
+    }
+    @keyframes feedIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .feed-icon { text-align: center; font-size: 13px; }
+    .feed-body { min-width: 0; }
+    .feed-summary { font-size: 13px; color: var(--text); word-break: break-word; }
+    .feed-meta { margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+    .feed-source {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 1px 6px; border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .feed-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 
     /* ── Dashboard ────────────────────────────────────── */
     .dashboard {
@@ -711,6 +762,15 @@ export const guiAppHtml = `<!doctype html>
       </ul>
     </nav>
     <main id="content"></main>
+    <aside class="assistant-rail" id="assistant-rail">
+      <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+      <div class="rail-header">
+        <span class="rail-title">Activity</span>
+      </div>
+      <div class="rail-feed" id="rail-feed">
+        <div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>
+      </div>
+    </aside>
   </div>
 
   <script>
@@ -881,6 +941,8 @@ export const guiAppHtml = `<!doctype html>
         refreshHistoryState();
         renderRoute();
         startRealtime();
+        initRailResize();
+        startFeed();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -948,6 +1010,111 @@ export const guiAppHtml = `<!doctype html>
         // until the server's 'state' event reports recovery.
         setStatusPill('cloud', 'disconnected');
       };
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Activity feed — SSE from /api/feed/stream. Renders every audited
+    // mutation as a bubble in the assistant rail. Unlike the realtime
+    // channel (Postgres-only), this works for SQLite databases too.
+    // ────────────────────────────────────────────────────────────
+    var feedSource = null;
+    var FEED_ICONS = {
+      insert: '➕', update: '✏️', delete: '🗑',
+      link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
+    };
+    function relTime(iso) {
+      try {
+        var diff = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+        if (diff < 60) return diff + 's ago';
+        var m = Math.round(diff / 60);
+        if (m < 60) return m + 'm ago';
+        var h = Math.round(m / 60);
+        if (h < 24) return h + 'h ago';
+        return new Date(iso).toLocaleDateString();
+      } catch (_) { return ''; }
+    }
+    function renderFeedItem(ev) {
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return;
+      var empty = document.getElementById('rail-empty');
+      if (empty) empty.remove();
+      var item = document.createElement('div');
+      item.className = 'feed-item';
+      var icon = document.createElement('div');
+      icon.className = 'feed-icon';
+      icon.textContent = FEED_ICONS[ev.op] || '•';
+      var body = document.createElement('div');
+      body.className = 'feed-body';
+      var summary = document.createElement('div');
+      summary.className = 'feed-summary';
+      summary.textContent = ev.summary || (String(ev.op || '') + ' ' + String(ev.table || ''));
+      var meta = document.createElement('div');
+      meta.className = 'feed-meta';
+      var src = document.createElement('span');
+      src.className = 'feed-source';
+      src.textContent = ev.source === 'gui' ? 'you' : String(ev.source || '');
+      meta.appendChild(src);
+      body.appendChild(summary);
+      body.appendChild(meta);
+      var time = document.createElement('div');
+      time.className = 'feed-time';
+      time.textContent = relTime(ev.ts);
+      item.appendChild(icon);
+      item.appendChild(body);
+      item.appendChild(time);
+      feedEl.appendChild(item);
+      feedEl.scrollTop = feedEl.scrollHeight;
+    }
+    function startFeed() {
+      if (feedSource) {
+        try { feedSource.close(); } catch (_) { /* ignore */ }
+        feedSource = null;
+      }
+      if (typeof EventSource === 'undefined') return;
+      feedSource = new EventSource('/api/feed/stream');
+      feedSource.addEventListener('feed', function (ev) {
+        try { renderFeedItem(JSON.parse(ev.data)); } catch (_) { /* ignore malformed */ }
+      });
+      // EventSource auto-reconnects on error; no extra handling needed.
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Assistant rail resize — drag the left edge, clamp, persist.
+    // ────────────────────────────────────────────────────────────
+    var RAIL_MIN = 320, RAIL_MAX = 640, RAIL_KEY = 'lattice-rail-width';
+    function applyRailWidth(px) {
+      var w = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(px)));
+      document.documentElement.style.setProperty('--sidebar-width', w + 'px');
+      return w;
+    }
+    function initRailResize() {
+      var saved = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
+      if (!isNaN(saved)) applyRailWidth(saved);
+      var handle = document.getElementById('rail-resize');
+      if (!handle) return;
+      handle.addEventListener('pointerdown', function (e) {
+        e.preventDefault();
+        var startX = e.clientX;
+        var rail = document.getElementById('assistant-rail');
+        var startW = rail ? rail.getBoundingClientRect().width : 380;
+        handle.classList.add('dragging');
+        function move(ev) {
+          // Rail sits on the right; dragging left (smaller clientX) widens it.
+          applyRailWidth(startW - (ev.clientX - startX));
+        }
+        function up() {
+          handle.classList.remove('dragging');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          var cur = parseInt(
+            getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'),
+            10,
+          );
+          if (!isNaN(cur)) window.localStorage.setItem(RAIL_KEY, String(cur));
+        }
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
     }
 
     /** Reload column meta after a secret-flag change. */
@@ -1060,6 +1227,7 @@ export const guiAppHtml = `<!doctype html>
         else renderRoute();
         loadedTables = {};
         startRealtime();
+        startFeed();
       });
     }
 
