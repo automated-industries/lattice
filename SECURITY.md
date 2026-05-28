@@ -21,7 +21,7 @@ You should receive an acknowledgment within 48 hours. We will work with you to u
 
 ## Scope
 
-`latticesql` is a local-first library that runs against SQLite or Postgres and includes an optional local-only browser GUI. At runtime it makes no outbound network requests of its own, with two narrow exceptions: explicit `checkForUpdate()` / `autoUpdate()` calls to `registry.npmjs.org` (opt-in — only fires if the caller invokes them), and a one-time anonymous install ping to Scarf via the `@scarf/scarf` postinstall hook (see the [Telemetry](./README.md#telemetry) section of the README for what is sent and how to opt out). The primary security surface is:
+`latticesql` is a local-first library that runs against SQLite or Postgres and includes an optional local-only browser GUI. At runtime it makes no outbound network requests of its own with one narrow exception: explicit `checkForUpdate()` / `autoUpdate()` calls to `registry.npmjs.org`, which only fire when the caller invokes them. There is no postinstall telemetry. See the [Telemetry](./README.md#telemetry) section of the README for the (passive, README-only) signals used for project analytics. The primary security surface is:
 
 - **SQL injection** via crafted row object keys or values — mitigated by parameterized queries and schema-column validation
 - **Path traversal** via YAML config file paths — applicable only when the developer controls config files

@@ -8,6 +8,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.13.10] - 2026-05-27
+
+### Changed — Replaced `@scarf/scarf` postinstall with a passive README pixel + public npm download stats
+
+v1.13.8 shipped `@scarf/scarf` as a runtime dep to capture install analytics, and v1.13.9 left it in place. In testing against the published tarball we confirmed the postinstall is structurally unable to report direct `npm install latticesql` events — Scarf's `report.js` reads `scarfSettings.allowTopLevel` from the **consumer's** root `package.json`, not the dependency's, so a library author has no way to opt their package in. The hook ran but bailed silently with `"The package depending on Scarf is the root package being installed, but Scarf is not configured to run in this case"` on every direct install, and only emitted reports for the rare transitive-install case. Net effect: the postinstall delivered approximately zero of the install volume to the dashboard.
+
+This release removes the postinstall machinery entirely and replaces it with two passive signals that require no instrumentation in the package itself:
+
+- **`@scarf/scarf` removed from `dependencies`**, `scarfSettings` block removed from `package.json`. Direct installs are now strictly faster (one fewer postinstall script) and quieter (no swallowed error in npm logs). No env-var opt-out is needed because there's nothing to opt out of.
+- **A 1×1 Scarf tracking pixel** added at the bottom of `README.md`, fired only when the README is rendered (e.g. on the npmjs.com package page). Standard ad-blockers and privacy-focused npm UIs prevent the request from firing; alt-text is empty so layout is unchanged.
+- **Public npm download counts**, queried out-of-band against `api.npmjs.org/downloads/range/...` — same data npmjs.com itself publishes, no per-user info.
+
+README § Telemetry and SECURITY.md § Scope rewritten to reflect the new posture: zero postinstall telemetry, zero runtime telemetry except the explicit caller-invoked `checkForUpdate()` / `autoUpdate()` against `registry.npmjs.org`.
+
 ## [1.13.9] - 2026-05-27
 
 ### Fixed — `lattice gui` crashed at boot on v1.13.8 because pg got inlined into the CLI bundle
