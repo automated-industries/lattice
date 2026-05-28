@@ -297,6 +297,13 @@ export const guiAppHtml = `<!doctype html>
     .rail-composer .composer-send:disabled { opacity: 0.4; cursor: default; }
     .rail-composer .composer-setup { font-size: 12.5px; color: var(--text-muted); text-align: center; }
     .rail-composer .composer-setup a { color: var(--accent); }
+    .rail-composer .composer-mic {
+      flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;
+      border: 1px solid var(--border-strong); border-radius: 8px;
+      background: var(--surface-2); color: var(--text-muted); cursor: pointer;
+    }
+    .rail-composer .composer-mic.recording { background: var(--warn); color: #0b0d10; border-color: var(--warn); }
+    .rail-composer .composer-mic.transcribing { color: var(--accent); }
 
     /* ── Dashboard ────────────────────────────────────── */
     .dashboard {
@@ -1261,12 +1268,61 @@ export const guiAppHtml = `<!doctype html>
         var inp = document.getElementById('chat-input'); if (inp) inp.focus();
       });
     }
+    var recState = 'idle';
+    var mediaRecorder = null;
+    var audioChunks = [];
+    function setMicState(btn, state) {
+      recState = state;
+      if (!btn) return;
+      btn.classList.remove('recording', 'transcribing');
+      if (state === 'recording') { btn.classList.add('recording'); btn.textContent = '⏹'; btn.title = 'Stop recording'; btn.disabled = false; }
+      else if (state === 'transcribing') { btn.classList.add('transcribing'); btn.textContent = '…'; btn.title = 'Transcribing…'; btn.disabled = true; }
+      else { btn.textContent = '🎙'; btn.title = 'Record voice'; btn.disabled = false; }
+    }
+    function startRecording(btn, input) {
+      if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
+        alert('Voice recording is not supported in this browser.'); return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        var rec = new MediaRecorder(stream);
+        audioChunks = [];
+        rec.ondataavailable = function (e) { if (e.data && e.data.size) audioChunks.push(e.data); };
+        rec.onstop = function () {
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          var blob = new Blob(audioChunks, { type: rec.mimeType || 'audio/webm' });
+          setMicState(btn, 'transcribing');
+          fetch('/api/assistant/transcribe', { method: 'POST', headers: { 'content-type': blob.type }, body: blob })
+            .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+            .then(function (j) {
+              if (input && j.text) {
+                input.value = (input.value ? input.value + ' ' : '') + j.text;
+                input.dispatchEvent(new Event('input'));
+                input.focus();
+              }
+            })
+            .catch(function (e) { alert('Transcription failed: ' + e.message); })
+            .finally(function () { setMicState(btn, 'idle'); });
+        };
+        rec.start();
+        mediaRecorder = rec;
+        setMicState(btn, 'recording');
+      }).catch(function (e) { alert('Microphone unavailable: ' + e.message); });
+    }
+    function toggleRecording(btn, input) {
+      if (recState === 'recording' && mediaRecorder) { mediaRecorder.stop(); mediaRecorder = null; }
+      else if (recState === 'idle') { startRecording(btn, input); }
+    }
+
     function renderComposer() {
       var host = document.getElementById('rail-composer'); if (!host) return;
       fetchJson('/api/assistant/config').then(function (cfg) {
         if (cfg && cfg.hasAnthropicKey) {
+          var micHtml = cfg.hasVoiceKey
+            ? '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>'
+            : '';
           host.innerHTML =
             '<div class="composer-row">' +
+              micHtml +
               '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
             '</div>';
@@ -1280,6 +1336,8 @@ export const guiAppHtml = `<!doctype html>
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(input.value.trim()); }
           });
           sendBtn.addEventListener('click', function () { sendChat(input.value.trim()); });
+          var micBtn = document.getElementById('chat-mic');
+          if (micBtn) micBtn.addEventListener('click', function () { toggleRecording(micBtn, input); });
         } else {
           host.innerHTML = '<div class="composer-setup">Set a Claude API token in ' +
             '<a href="#/settings/user-config">User Settings → Assistant</a> to chat.</div>';
@@ -3339,55 +3397,65 @@ export const guiAppHtml = `<!doctype html>
 
     function renderAssistantPanel(host) {
       fetchJson('/api/assistant/config').then(function (cfg) {
-        var has = !!(cfg && cfg.hasAnthropicKey);
+        cfg = cfg || {};
+        function rowHtml(idBase, label, has, placeholder) {
+          return '<div style="margin-bottom:12px">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+              '<strong style="font-size:13px">' + label + '</strong>' +
+              '<span class="feed-source" style="background:' + (has ? 'var(--accent-soft)' : 'var(--surface-2)') +
+                ';color:' + (has ? 'var(--accent)' : 'var(--text-muted)') + '">' + (has ? 'Set' : 'Not set') + '</span>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;align-items:center">' +
+              '<input id="' + idBase + '-key" type="password" autocomplete="off" placeholder="' +
+                (has ? '••••••••••••' : placeholder) + '" style="flex:1;background:var(--surface-2)">' +
+              '<button id="' + idBase + '-save" class="btn">Save</button>' +
+              (has ? '<button id="' + idBase + '-clear" class="btn">Clear</button>' : '') +
+            '</div>' +
+          '</div>';
+        }
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
-            '<p class="lead" style="margin:0 0 10px;font-size:12px;color:var(--text-muted)">' +
-              'Paste a Claude API token to power the assistant. Stored encrypted in the ' +
-              '<code>secrets</code> table — never shown again once saved. You can also set ' +
-              '<code>ANTHROPIC_API_KEY</code> in the environment instead.' +
+            '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+              'Keys are stored encrypted in the <code>secrets</code> table — never shown again once ' +
+              'saved. Environment variables (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, ' +
+              '<code>ELEVENLABS_API_KEY</code>) also work.' +
             '</p>' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
-              '<span class="feed-source" style="background:' + (has ? 'var(--accent-soft)' : 'var(--surface-2)') +
-                ';color:' + (has ? 'var(--accent)' : 'var(--text-muted)') + '">' +
-                (has ? 'Connected' : 'Not set') + '</span>' +
-              '<span style="font-size:12px;color:var(--text-muted)">' +
-                (has ? 'A Claude API token is configured.' : 'No token configured yet.') + '</span>' +
-            '</div>' +
-            '<div style="display:flex;gap:8px;align-items:center">' +
-              '<input id="assistant-key" type="password" autocomplete="off" placeholder="' +
-                (has ? '••••••••••••' : 'sk-ant-…') + '" style="flex:1;background:var(--surface-2)">' +
-              '<button id="assistant-save" class="btn">Save</button>' +
-              (has ? '<button id="assistant-clear" class="btn">Clear</button>' : '') +
-            '</div>' +
-            '<div id="assistant-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+            rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
+            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text (set either)</div>' +
+            rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…') +
+            rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…') +
+            '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
-        var input = host.querySelector('#assistant-key');
         var msg = host.querySelector('#assistant-msg');
-        host.querySelector('#assistant-save').addEventListener('click', function () {
-          var key = (input.value || '').trim();
-          if (!key) { msg.textContent = 'Enter a token first.'; return; }
-          msg.textContent = 'Saving…';
-          fetch('/api/assistant/key', {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ key: key }),
-          })
-            .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-            .then(function () { renderAssistantPanel(host); renderComposer(); })
-            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
-        });
-        var clearBtn = host.querySelector('#assistant-clear');
-        if (clearBtn) {
-          clearBtn.addEventListener('click', function () {
+        function wire(idBase, kind) {
+          var input = host.querySelector('#' + idBase + '-key');
+          var saveBtn = host.querySelector('#' + idBase + '-save');
+          if (saveBtn) saveBtn.addEventListener('click', function () {
+            var key = (input.value || '').trim();
+            if (!key) { msg.textContent = 'Enter a key first.'; return; }
+            msg.textContent = 'Saving…';
+            fetch('/api/assistant/key', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ kind: kind, key: key }),
+            })
+              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+              .then(function () { renderAssistantPanel(host); renderComposer(); })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+          var clearBtn = host.querySelector('#' + idBase + '-clear');
+          if (clearBtn) clearBtn.addEventListener('click', function () {
             msg.textContent = 'Clearing…';
-            fetch('/api/assistant/key', { method: 'DELETE' })
+            fetch('/api/assistant/key?kind=' + encodeURIComponent(kind), { method: 'DELETE' })
               .then(function (r) { if (!r.ok) throw new Error('clear failed (' + r.status + ')'); return r.json(); })
               .then(function () { renderAssistantPanel(host); renderComposer(); })
               .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
           });
         }
+        wire('asst-anthropic', 'anthropic');
+        wire('asst-openai', 'openai');
+        wire('asst-elevenlabs', 'elevenlabs');
       }).catch(function (e) {
         host.innerHTML = '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px">' +
           '<h3 style="margin:0 0 10px">Assistant</h3><div style="font-size:12px;color:var(--warn)">Could not load: ' +
