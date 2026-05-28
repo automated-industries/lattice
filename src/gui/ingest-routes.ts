@@ -9,7 +9,7 @@ import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js
 import { parseFile, describe } from './ai/extract.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
-import { getAnthropicApiKey } from './assistant-routes.js';
+import { resolveClaudeAuth } from './assistant-routes.js';
 import { createAnthropicClient } from './ai/chat.js';
 import { summarizeText, classifyLinks, type CatalogEntity, type ClassifyMatch } from './ai/summarize.js';
 
@@ -127,11 +127,12 @@ async function enrichWithLlm(
   name: string,
   junctions: FileJunction[],
 ): Promise<ClassifyMatch[]> {
-  const key = await getAnthropicApiKey(db);
-  if (!key || !text.trim()) return [];
+  if (!text.trim()) return [];
+  const auth = await resolveClaudeAuth(db);
+  if (!auth) return [];
   let client;
   try {
-    client = createAnthropicClient(key);
+    client = createAnthropicClient(auth);
   } catch {
     return [];
   }
