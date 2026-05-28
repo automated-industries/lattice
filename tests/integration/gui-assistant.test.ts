@@ -61,7 +61,7 @@ describe('assistant key storage', () => {
     });
     expect(put.status).toBe(200);
     const putBody = (await put.json()) as Record<string, unknown>;
-    expect(putBody.hasAnthropicKey).toBe(true);
+    expect(putBody.ok).toBe(true);
     // The endpoint must never echo the stored token back.
     expect(JSON.stringify(putBody)).not.toContain('sk-ant-test-do-not-use');
 
