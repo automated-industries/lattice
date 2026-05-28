@@ -202,10 +202,14 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   // like /outputDir/configDir/relative instead of /outputDir/relative.
   const outputFile = entity.outputFile;
 
+  const rawDescription = (entity as { description?: unknown }).description;
+  const description = typeof rawDescription === 'string' && rawDescription.trim() ? rawDescription.trim() : undefined;
+
   return {
     columns,
     render,
     outputFile,
+    ...(description !== undefined ? { description } : {}),
     ...(primaryKey !== undefined ? { primaryKey } : {}),
     ...(Object.keys(relations).length > 0 ? { relations } : {}),
   };
