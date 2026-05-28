@@ -57,6 +57,7 @@ import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchAssistantRoute } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
+import { dispatchFilesRoute } from './files-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
@@ -1995,6 +1996,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             db: active.db,
             feed: active.feed,
             softDeletable: active.softDeletable,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Files: blob serving + open-in-finder ──────────────────────────
+        if (!teamCloud && pathname.startsWith('/api/files/')) {
+          const handled = await dispatchFilesRoute(req, res, {
+            db: active.db,
             pathname,
             method,
           });
