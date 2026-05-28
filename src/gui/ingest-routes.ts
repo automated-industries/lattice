@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { FeedBus } from './ai/feed.js';
-import { createRow, updateRow, type MutationCtx } from './mutations.js';
+import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js';
 import { parseFile, describe } from './ai/extract.js';
+import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import { getAnthropicApiKey } from './assistant-routes.js';
 import { createAnthropicClient } from './ai/chat.js';
@@ -28,6 +29,8 @@ interface IngestContext {
   db: Lattice;
   feed: FeedBus;
   softDeletable: Set<string>;
+  /** Junctions connecting `files` to other entities, for classifier auto-link. */
+  fileJunctions: FileJunction[];
   pathname: string;
   method: string;
 }
@@ -122,6 +125,7 @@ async function enrichWithLlm(
   fileId: string,
   text: string,
   name: string,
+  junctions: FileJunction[],
 ): Promise<ClassifyMatch[]> {
   const key = await getAnthropicApiKey(db);
   if (!key || !text.trim()) return [];
@@ -140,13 +144,25 @@ async function enrichWithLlm(
   try {
     const matches = await classifyLinks(client, text, name, await buildCatalog(db));
     for (const m of matches) {
-      mctx.feed.publish({
-        table: 'files',
-        op: 'update',
-        rowId: fileId,
-        source: 'ingest',
-        summary: `Looks related to ${m.table} (${m.id})`,
-      });
+      const jx = junctions.find((j) => j.otherTable === m.table);
+      if (jx) {
+        // A junction to this entity exists — create the link (default action;
+        // it's audited + undoable via the feed). No confirmation prompt.
+        try {
+          await linkRows(mctx, jx.junction, { [jx.fileFk]: fileId, [jx.otherFk]: m.id });
+        } catch (e) {
+          console.warn(`[ingest] auto-link to ${m.table} failed:`, (e as Error).message);
+        }
+      } else {
+        // No junction connects files to this entity — surface as a suggestion.
+        mctx.feed.publish({
+          table: 'files',
+          op: 'update',
+          rowId: fileId,
+          source: 'ingest',
+          summary: `Looks related to ${m.table} (${m.id})`,
+        });
+      }
     }
     return matches;
   } catch (e) {
@@ -219,7 +235,7 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
     });
-    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name);
+    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions);
     sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
     return true;
   }
@@ -248,7 +264,7 @@ export async function dispatchIngestRoute(
       description: describe(text, 'text/plain', title),
       extraction_status: 'extracted',
     });
-    const suggestedLinks = await enrichWithLlm(mctx, ctx.db, id, text, title);
+    const suggestedLinks = await enrichWithLlm(mctx, ctx.db, id, text, title, ctx.fileJunctions);
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
   }
@@ -293,7 +309,7 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
     });
-    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name);
+    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions);
     sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
   } catch (e) {
     await updateRow(mctx, 'files', id, {
