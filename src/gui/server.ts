@@ -56,6 +56,7 @@ import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchAssistantRoute } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { dispatchIngestRoute } from './ingest-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
@@ -1979,6 +1980,20 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             db: active.db,
             feed: active.feed,
             validTables: active.validTables,
+            softDeletable: active.softDeletable,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Ingest routes ─────────────────────────────────────────────────
+        // Reference a local file / pasted text as a native `files` row and
+        // summarize it. Writes via the shared mutation chokepoint (source=ingest).
+        if (!teamCloud && pathname.startsWith('/api/ingest/')) {
+          const handled = await dispatchIngestRoute(req, res, {
+            db: active.db,
+            feed: active.feed,
             softDeletable: active.softDeletable,
             pathname,
             method,
