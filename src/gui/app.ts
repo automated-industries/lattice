@@ -3600,6 +3600,14 @@ export const guiAppHtml = `<!doctype html>
             '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text (set either)</div>' +
             rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…') +
             rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…') +
+            '<div style="margin:6px 0 2px;display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
+              '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
+                '<option value="auto">Auto</option>' +
+                '<option value="openai">OpenAI Whisper</option>' +
+                '<option value="elevenlabs">ElevenLabs</option>' +
+              '</select>' +
+            '</div>' +
             '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
@@ -3631,6 +3639,21 @@ export const guiAppHtml = `<!doctype html>
         wire('asst-anthropic', 'anthropic');
         wire('asst-openai', 'openai');
         wire('asst-elevenlabs', 'elevenlabs');
+        var sttSel = host.querySelector('#asst-stt');
+        if (sttSel) {
+          sttSel.value = cfg.sttPreference || 'auto';
+          sttSel.addEventListener('change', function () {
+            msg.textContent = 'Saving…';
+            fetch('/api/assistant/stt-provider', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ provider: sttSel.value }),
+            })
+              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+              .then(function () { msg.textContent = 'Saved.'; })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+        }
       }).catch(function (e) {
         host.innerHTML = '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px">' +
           '<h3 style="margin:0 0 10px">Assistant</h3><div style="font-size:12px;color:var(--warn)">Could not load: ' +
