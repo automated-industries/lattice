@@ -163,30 +163,30 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   },
   {
     name: 'link',
-    description: 'Create a many-to-many link between two rows via a junction table.',
+    description:
+      'Create a many-to-many link by inserting a junction row. `values` is the ' +
+      'junction record — its two foreign-key columns (e.g. {project_id, file_id}).',
     mutates: true,
     category: 'row',
     args: obj(
       {
         table: str('Junction table name.'),
-        fromId: str('Primary key on the local side.'),
-        toId: str('Primary key on the related side.'),
+        values: { type: 'object', description: 'Junction row: the two foreign-key columns + ids.' },
       },
-      ['table', 'fromId', 'toId'],
+      ['table', 'values'],
     ),
   },
   {
     name: 'unlink',
-    description: 'Remove a many-to-many link between two rows via a junction table.',
+    description: 'Remove a many-to-many link by its junction row (the two foreign-key columns + ids).',
     mutates: true,
     category: 'row',
     args: obj(
       {
         table: str('Junction table name.'),
-        fromId: str('Primary key on the local side.'),
-        toId: str('Primary key on the related side.'),
+        values: { type: 'object', description: 'Junction row identifying the link to remove.' },
       },
-      ['table', 'fromId', 'toId'],
+      ['table', 'values'],
     ),
   },
 
