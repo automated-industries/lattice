@@ -5,6 +5,10 @@ import type { Lattice } from '../lattice.js';
 import { FeedBus } from './ai/feed.js';
 import { createRow, updateRow, type MutationCtx } from './mutations.js';
 import { parseFile, describe } from './ai/extract.js';
+import { isNativeEntity } from '../framework/native-entities.js';
+import { getAnthropicApiKey } from './assistant-routes.js';
+import { createAnthropicClient } from './ai/chat.js';
+import { summarizeText, classifyLinks, type CatalogEntity, type ClassifyMatch } from './ai/summarize.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -69,6 +73,86 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
+const STRUCTURAL = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+const LABEL_PREF = ['name', 'title', 'slug', 'label'];
+
+/** True for tables that look like pure many-to-many junctions (only FKs). */
+function isLikelyJunction(cols: Record<string, string>): boolean {
+  const meaningful = Object.keys(cols).filter((c) => !STRUCTURAL.has(c));
+  return meaningful.length > 0 && meaningful.every((c) => c.endsWith('_id'));
+}
+
+function labelColumn(cols: Record<string, string>): string | null {
+  for (const p of LABEL_PREF) if (p in cols) return p;
+  const text = Object.keys(cols).find((c) => !STRUCTURAL.has(c) && !c.endsWith('_id'));
+  return text ?? null;
+}
+
+/**
+ * Build a compact catalog of user records for the classifier: each non-native,
+ * non-internal, non-junction entity with a sample of its rows (id + a label).
+ */
+async function buildCatalog(db: Lattice): Promise<CatalogEntity[]> {
+  const out: CatalogEntity[] = [];
+  for (const name of db.getRegisteredTableNames()) {
+    if (name.startsWith('_lattice_') || name.startsWith('__lattice_')) continue;
+    if (isNativeEntity(name)) continue;
+    const cols = db.getRegisteredColumns(name);
+    if (!cols || isLikelyJunction(cols)) continue;
+    const label = labelColumn(cols);
+    const rows = (await db.query(name, { limit: 25 })) as Record<string, unknown>[];
+    const records = rows
+      .filter((r) => !r.deleted_at)
+      .map((r) => ({ id: String(r.id), label: label ? String(r[label] ?? r.id) : String(r.id) }));
+    if (records.length > 0) out.push({ table: name, records });
+  }
+  return out;
+}
+
+/**
+ * When a Claude token is configured, replace the heuristic description with an
+ * LLM summary and surface which existing records the file relates to (as feed
+ * notes). Best-effort: any failure logs + leaves the heuristic description.
+ */
+async function enrichWithLlm(
+  mctx: MutationCtx,
+  db: Lattice,
+  fileId: string,
+  text: string,
+  name: string,
+): Promise<ClassifyMatch[]> {
+  const key = await getAnthropicApiKey(db);
+  if (!key || !text.trim()) return [];
+  let client;
+  try {
+    client = createAnthropicClient(key);
+  } catch {
+    return [];
+  }
+  try {
+    const desc = await summarizeText(client, text, name);
+    if (desc) await updateRow(mctx, 'files', fileId, { description: desc });
+  } catch (e) {
+    console.warn('[ingest] LLM description failed:', (e as Error).message);
+  }
+  try {
+    const matches = await classifyLinks(client, text, name, await buildCatalog(db));
+    for (const m of matches) {
+      mctx.feed.publish({
+        table: 'files',
+        op: 'update',
+        rowId: fileId,
+        source: 'ingest',
+        summary: `Looks related to ${m.table} (${m.id})`,
+      });
+    }
+    return matches;
+  } catch (e) {
+    console.warn('[ingest] classify failed:', (e as Error).message);
+    return [];
+  }
+}
+
 export async function dispatchIngestRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -108,7 +192,8 @@ export async function dispatchIngestRoute(
       description: describe(text, 'text/plain', title),
       extraction_status: 'extracted',
     });
-    sendJson(res, { id, extraction_status: 'extracted' }, 201);
+    const suggestedLinks = await enrichWithLlm(mctx, ctx.db, id, text, title);
+    sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
   }
 
@@ -152,7 +237,8 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
     });
-    sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted' }, 201);
+    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name);
+    sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
   } catch (e) {
     await updateRow(mctx, 'files', id, {
       extraction_status: 'failed',
