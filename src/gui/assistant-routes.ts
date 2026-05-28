@@ -1,6 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { transcribe, type SttProvider } from './ai/transcribe.js';
+import {
+  readOAuthConfig,
+  oauthConfigured,
+  generatePkceVerifier,
+  pkceChallengeFor,
+  generateState,
+  buildAuthorizeUrl,
+  exchangeCodeForTokens,
+} from './ai/oauth.js';
 
 /**
  * GUI endpoints for the assistant's credentials + voice transcription. API
@@ -77,6 +86,28 @@ function readBuffer(req: IncomingMessage, maxBytes = 25_000_000): Promise<Buffer
   });
 }
 
+function parseCookies(req: IncomingMessage): Record<string, string> {
+  const header = req.headers.cookie ?? '';
+  const out: Record<string, string> = {};
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+/** Upsert a single live secret row of a kind (keeping one binding). */
+async function storeSecret(db: Lattice, kind: string, name: string, value: string): Promise<void> {
+  const [first, ...extras] = await liveSecretsOfKind(db, kind);
+  if (first) {
+    await db.update('secrets', first.id, { value, name });
+    for (const extra of extras) await db.update('secrets', extra.id, { deleted_at: new Date().toISOString() });
+  } else {
+    await db.insert('secrets', { id: crypto.randomUUID(), name, kind, value, description: `${name} (assistant).` });
+  }
+}
+
 /** Live (non-deleted) secret rows for a given kind. */
 async function liveSecretsOfKind(db: Lattice, kind: string): Promise<SecretRow[]> {
   const rows = (await db.query('secrets', {
@@ -143,6 +174,7 @@ export async function dispatchAssistantRoute(
       hasElevenlabsKey,
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
+      oauthEnabled: oauthConfigured(),
     });
     return true;
   }
@@ -233,6 +265,51 @@ export async function dispatchAssistantRoute(
       sendJson(res, { text });
     } catch (e) {
       sendJson(res, { error: (e as Error).message }, 502);
+    }
+    return true;
+  }
+
+  // GET /api/assistant/oauth/start — begin the PKCE subscription flow.
+  if (method === 'GET' && pathname === '/api/assistant/oauth/start') {
+    const cfg = readOAuthConfig();
+    if (!cfg) {
+      sendJson(res, { error: 'oauth_not_configured' }, 503);
+      return true;
+    }
+    const verifier = generatePkceVerifier();
+    const state = generateState();
+    const cookieOpts = 'HttpOnly; Path=/; Max-Age=300; SameSite=Lax';
+    res.writeHead(302, {
+      Location: buildAuthorizeUrl(cfg, state, pkceChallengeFor(verifier)),
+      'Set-Cookie': [`lat_oauth_verifier=${verifier}; ${cookieOpts}`, `lat_oauth_state=${state}; ${cookieOpts}`],
+    });
+    res.end();
+    return true;
+  }
+
+  // GET /api/assistant/oauth/callback — exchange the code, store the token.
+  if (method === 'GET' && pathname === '/api/assistant/oauth/callback') {
+    const cfg = readOAuthConfig();
+    const url = new URL(req.url ?? '', 'http://localhost');
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const cookies = parseCookies(req);
+    const verifier = cookies.lat_oauth_verifier;
+    const clear = ['lat_oauth_verifier=; HttpOnly; Path=/; Max-Age=0', 'lat_oauth_state=; HttpOnly; Path=/; Max-Age=0'];
+    const redirect = (flash: string): void => {
+      res.writeHead(302, { Location: `/#/settings/user-config?oauth=${flash}`, 'Set-Cookie': clear });
+      res.end();
+    };
+    if (!cfg || !code || !state || !verifier || state !== cookies.lat_oauth_state) {
+      redirect('error');
+      return true;
+    }
+    try {
+      const tokens = await exchangeCodeForTokens(cfg, code, verifier);
+      await storeSecret(db, 'claude_oauth', 'Claude subscription', JSON.stringify(tokens));
+      redirect('connected');
+    } catch {
+      redirect('error');
     }
     return true;
   }
