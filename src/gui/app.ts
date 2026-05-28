@@ -1029,6 +1029,7 @@ export const guiAppHtml = `<!doctype html>
         startFeed();
         renderComposer();
         initThreadControls();
+        checkNativeSetup();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -1426,6 +1427,30 @@ export const guiAppHtml = `<!doctype html>
         rail.classList.remove('dragging-file');
         if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
       });
+    }
+
+    // Surface a notice when files/secrets aren't bound as native objects — the
+    // assistant key storage + ingest need them. Normally they auto-create on
+    // open; this only shows in the edge case where a pre-existing plaintext
+    // secrets table was skipped (the adopt flow won't silently encrypt it).
+    function checkNativeSetup() {
+      fetchJson('/api/native-entities').then(function (d) {
+        var bound = {};
+        ((d && d.bindings) || []).forEach(function (b) { if (b.origin !== 'skipped') bound[b.entity] = true; });
+        var missing = ['files', 'secrets'].filter(function (e) { return !bound[e]; });
+        if (missing.length === 0) return;
+        var feedEl = railFeedEl(); if (!feedEl) return;
+        railEmptyGone();
+        var card = document.createElement('div');
+        card.className = 'feed-item';
+        var note = 'Set up native ' + missing.join(' + ') + ' to enable the assistant’s key storage and file ingest.';
+        if (missing.indexOf('secrets') >= 0) {
+          note += ' A pre-existing plaintext “secrets” table is left untouched — move its rows to an encrypted native secrets store to use it here.';
+        }
+        card.innerHTML = '<div class="feed-icon">⚠️</div><div class="feed-body"><div class="feed-summary">' +
+          escapeHtml(note) + '</div></div>';
+        feedEl.insertBefore(card, feedEl.firstChild);
+      }).catch(function () { /* ignore */ });
     }
 
     function renderComposer() {
