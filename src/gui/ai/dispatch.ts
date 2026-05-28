@@ -2,7 +2,18 @@ import type { Lattice } from '../../lattice.js';
 import type { Row } from '../../types.js';
 import type { FeedBus } from './feed.js';
 import { getFunction } from './registry.js';
-import { createRow, updateRow, deleteRow, type MutationCtx } from '../mutations.js';
+import {
+  createRow,
+  updateRow,
+  deleteRow,
+  linkRows,
+  unlinkRows,
+  undoLast,
+  redoLast,
+  revertEntry,
+  parseAudit,
+  type MutationCtx,
+} from '../mutations.js';
 
 /**
  * Executes a registry function on behalf of the AI tool loop. Writes flow
@@ -17,14 +28,27 @@ import { createRow, updateRow, deleteRow, type MutationCtx } from '../mutations.
  * that would just error.
  */
 
-/** Registry function names the dispatcher can currently execute. */
+/**
+ * Registry function names the dispatcher can execute. This is the data-and-
+ * history surface — reads, row writes, junction links, and undo/redo/revert.
+ * Schema mutations (create_entity, add_column, …) and database lifecycle
+ * (switch/create) are intentionally excluded: they reshape the workspace and
+ * re-open the active database, which a mid-conversation tool call must not do.
+ * Those stay UI-driven.
+ */
 export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_entities',
   'list_rows',
   'get_row',
+  'get_history',
   'create_row',
   'update_row',
   'delete_row',
+  'link',
+  'unlink',
+  'undo',
+  'redo',
+  'revert',
 ]);
 
 export interface DispatchCtx {
@@ -32,6 +56,8 @@ export interface DispatchCtx {
   feed: FeedBus;
   /** Allowlist of queryable/writable user tables (mirrors the HTTP gate). */
   validTables: Set<string>;
+  /** Junction tables eligible for link/unlink. */
+  junctionTables: Set<string>;
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
 }
@@ -121,6 +147,39 @@ export async function executeFunction(
         const id = requireString(args.id, 'id');
         await deleteRow(mctx, table, id, args.hard === true);
         return { ok: true, result: { ok: true } };
+      }
+      case 'link':
+      case 'unlink': {
+        const table = requireTable(args.table, ctx.junctionTables);
+        if (!args.values || typeof args.values !== 'object') {
+          throw new Error('values object (the junction row) is required');
+        }
+        const values = args.values as Row;
+        if (name === 'link') await linkRows(mctx, table, values);
+        else await unlinkRows(mctx, table, values);
+        return { ok: true, result: { ok: true } };
+      }
+      case 'get_history': {
+        const limit = typeof args.limit === 'number' ? args.limit : 50;
+        const rows = (await ctx.db.query('_lattice_gui_audit', { limit })) as Record<string, unknown>[];
+        let entries = rows.map(parseAudit);
+        if (typeof args.table === 'string') entries = entries.filter((e) => e.table_name === args.table);
+        return { ok: true, result: entries };
+      }
+      case 'undo': {
+        const entry = await undoLast(mctx);
+        return entry ? { ok: true, result: entry } : { ok: false, error: 'Nothing to undo' };
+      }
+      case 'redo': {
+        const entry = await redoLast(mctx);
+        return entry ? { ok: true, result: entry } : { ok: false, error: 'Nothing to redo' };
+      }
+      case 'revert': {
+        const auditId = requireString(args.auditId, 'auditId');
+        const result = await revertEntry(mctx, auditId);
+        return result.ok
+          ? { ok: true, result: result.entry }
+          : { ok: false, error: result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone' };
       }
       default:
         return { ok: false, error: `Function "${name}" is not available to the assistant yet` };
