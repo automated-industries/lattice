@@ -44,6 +44,15 @@ interface DbConfigContext {
   pathname: string;
   method: string;
   /**
+   * Resolved team membership for the active DB (null for non-team DBs).
+   * `joined` is true once the operator's identity resolves to a cloud
+   * member — this is the authoritative "am I in the team?" signal,
+   * replacing the fragile token-file probe that made already-joined
+   * members render the "paste invite token" state. `isCreator` gates
+   * owner-only actions like renaming the cloud DB.
+   */
+  teamMembership: { joined: boolean; isCreator: boolean; teamId: string; myUserId: string } | null;
+  /**
    * Re-open the same configPath after the YAML has been updated.
    * Closes the current Lattice and replaces it. Caller-owned because
    * the parent server holds the mutable `active` reference.
@@ -197,6 +206,29 @@ function computeState(
   return 'team-cloud-member';
 }
 
+/**
+ * Override the YAML-derived state with the operator's resolved team
+ * membership. Membership is the authoritative "am I in this team?"
+ * signal (the operator's identity resolves to a cloud member), so an
+ * already-joined member never renders the "paste invite token" panel,
+ * and a non-member pointed at a team cloud correctly does. Non-team /
+ * local DBs (no membership, or non-postgres) keep their original state.
+ *
+ * Exported for unit testing — the live override needs a Postgres team
+ * cloud, which CI can't spin up; this keeps the decision pure + covered.
+ */
+export function applyTeamMembershipState(
+  info: { type?: string; teamEnabled?: boolean; state?: DbConfigState },
+  membership: { joined: boolean; isCreator: boolean } | null,
+): DbConfigState | undefined {
+  if (!membership || info.type !== 'postgres' || !info.teamEnabled) return info.state;
+  return membership.joined
+    ? membership.isCreator
+      ? 'team-cloud-creator'
+      : 'team-cloud-member'
+    : 'team-cloud-needs-invite';
+}
+
 /** Inspect the YAML's `db:` line + the active Lattice for the team-status flag. */
 async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo> {
   const rawYaml = readFileSync(configPath, 'utf8');
@@ -348,7 +380,22 @@ export async function dispatchDbConfigRoute(
   if (pathname === '/api/dbconfig' && method === 'GET') {
     await tryHandler(res, async () => {
       const info = await describeCurrent(ctx.configPath, ctx.db);
-      sendJson(res, info);
+      // The resolved membership is authoritative for the team-cloud
+      // state — it reflects whether the operator's identity actually
+      // resolves to a team member, not whether a token key-file happens
+      // to be on disk. This is what stops an already-joined member from
+      // rendering the "paste invite token to join" panel.
+      info.state = applyTeamMembershipState(info, ctx.teamMembership) ?? info.state;
+      sendJson(res, {
+        ...info,
+        isCreator: ctx.teamMembership?.isCreator ?? false,
+        // Expose the resolved team identity so the SPA can drive member
+        // admin / invite / leave directly off the active cloud DB,
+        // without a local `__lattice_team_connections` row (which doesn't
+        // exist when the team cloud itself is the active database).
+        teamId: ctx.teamMembership?.teamId ?? null,
+        myUserId: ctx.teamMembership?.myUserId ?? null,
+      });
     });
     return true;
   }
@@ -587,6 +634,12 @@ export async function dispatchDbConfigRoute(
       }
       const info = await describeCurrent(ctx.configPath, ctx.db);
       if (info.type === 'postgres' && info.teamEnabled) {
+        // Renaming a team cloud broadcasts to every member, so only the
+        // team creator may do it. Members get a 403.
+        if (ctx.teamMembership && !ctx.teamMembership.isCreator) {
+          sendJson(res, { error: 'Only the team owner can rename this database' }, 403);
+          return;
+        }
         const updatedAt = new Date().toISOString();
         const existing = (await ctx.db.get('__lattice_team_identity', 'singleton')) as {
           id: string;

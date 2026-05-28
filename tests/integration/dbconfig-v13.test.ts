@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { applyTeamMembershipState } from '../../src/gui/dbconfig-routes.js';
 import {
   getDbCredential,
   saveDbCredential,
@@ -114,6 +115,64 @@ describe('GET /api/dbconfig returns state field', () => {
     expect(r.status).toBe(200);
     expect(r.body.state).toBe('local');
     expect(r.body.type).toBe('sqlite');
+    // Non-team DBs are never "owned" by anyone.
+    expect(r.body.isCreator).toBe(false);
+  });
+});
+
+describe('GET /api/databases reports per-row kind', () => {
+  it('tags every sibling SQLite config as kind:local', async () => {
+    const { handle, root } = await startGui();
+    // Drop a second sibling config in the same directory; listConfigs
+    // scans the dir, so both should appear with a per-row kind.
+    writeFileSync(
+      join(root, 'scratch.config.yml'),
+      ['db: ./data/scratch.db', '', 'name: Scratch', 'entities: {}'].join('\n'),
+    );
+    const r = await api(handle.url, '/api/databases');
+    expect(r.status).toBe(200);
+    const configs = r.body.configs as { name: string; kind: string; label: string }[];
+    expect(configs.length).toBeGreaterThanOrEqual(2);
+    // Every row carries an explicit kind (no defaulting in the client).
+    for (const c of configs) expect(c.kind).toBe('local');
+    // The sibling's friendly label comes from its name: key.
+    expect(configs.some((c) => c.label === 'Scratch')).toBe(true);
+  });
+});
+
+describe('applyTeamMembershipState', () => {
+  const teamInfo = {
+    type: 'postgres',
+    teamEnabled: true,
+    state: 'team-cloud-needs-invite' as const,
+  };
+
+  it('reports a joined member as team-cloud-member (not needs-invite)', () => {
+    expect(applyTeamMembershipState(teamInfo, { joined: true, isCreator: false })).toBe(
+      'team-cloud-member',
+    );
+  });
+
+  it('reports a joined creator as team-cloud-creator', () => {
+    expect(applyTeamMembershipState(teamInfo, { joined: true, isCreator: true })).toBe(
+      'team-cloud-creator',
+    );
+  });
+
+  it('reports a non-joined operator as needs-invite', () => {
+    expect(applyTeamMembershipState(teamInfo, { joined: false, isCreator: false })).toBe(
+      'team-cloud-needs-invite',
+    );
+  });
+
+  it('leaves non-team / local DBs untouched', () => {
+    expect(applyTeamMembershipState({ type: 'sqlite', state: 'local' }, null)).toBe('local');
+    expect(
+      applyTeamMembershipState(
+        { type: 'postgres', teamEnabled: false, state: 'cloud-connected' },
+        { joined: true, isCreator: false },
+      ),
+    ).toBe('cloud-connected');
   });
 });
 

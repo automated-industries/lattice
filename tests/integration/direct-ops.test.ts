@@ -24,6 +24,10 @@ import {
   kickMemberDirect,
   listMembersDirect,
   redeemInviteDirect,
+  recordObjectOwner,
+  listObjectOwners,
+  reconcileObjectOwners,
+  resolveUserIdByEmail,
 } from '../../src/teams/direct-ops.js';
 
 const dirs: string[] = [];
@@ -105,6 +109,73 @@ describe('direct-ops — listMembersDirect', () => {
     });
 
     expect(await listMembersDirect(db, teamId)).toEqual([]);
+    cleanup();
+  });
+
+  it('surfaces the team creator even when they have no members row', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    const now = new Date().toISOString();
+    const creatorId = await db.insert('__lattice_users', {
+      email: 'owner@example.com',
+      name: 'Owner',
+      created_at: now,
+      updated_at: now,
+    });
+    const memberId = await db.insert('__lattice_users', {
+      email: 'mem@example.com',
+      name: 'Mem',
+      created_at: now,
+      updated_at: now,
+    });
+    const teamId = await db.insert('__lattice_team', {
+      name: 'Atlas',
+      created_by_user_id: creatorId,
+      created_at: now,
+      updated_at: now,
+    });
+    // Only the member has a members row — the creator does not.
+    await db.insert('__lattice_team_members', {
+      team_id: teamId,
+      user_id: memberId,
+      role: 'member',
+      joined_at: now,
+    });
+
+    const members = await listMembersDirect(db, teamId);
+    const byId = new Map(members.map((m) => [m.user_id, m]));
+    expect(byId.get(creatorId)?.role).toBe('creator');
+    expect(byId.get(memberId)?.role).toBe('member');
+    expect(members).toHaveLength(2);
+    cleanup();
+  });
+
+  it('relabels a creator with a stored member row as creator', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    const now = new Date().toISOString();
+    const creatorId = await db.insert('__lattice_users', {
+      email: 'owner2@example.com',
+      name: 'Owner2',
+      created_at: now,
+      updated_at: now,
+    });
+    const teamId = await db.insert('__lattice_team', {
+      name: 'Atlas2',
+      created_by_user_id: creatorId,
+      created_at: now,
+      updated_at: now,
+    });
+    // Stored role is the (wrong) 'member' — listMembersDirect must
+    // still report the owner as 'creator'.
+    await db.insert('__lattice_team_members', {
+      team_id: teamId,
+      user_id: creatorId,
+      role: 'member',
+      joined_at: now,
+    });
+
+    const members = await listMembersDirect(db, teamId);
+    expect(members).toHaveLength(1);
+    expect(members[0]?.role).toBe('creator');
     cleanup();
   });
 });
@@ -212,5 +283,84 @@ describe('direct-ops — redeemInviteDirect scheme guard', () => {
     await expect(
       redeemInviteDirect('/tmp/local.db', 'latinv_dead', 'a@b.com', 'A'),
     ).rejects.toThrow(/must be a postgres/);
+  });
+});
+
+describe('direct-ops — object ownership', () => {
+  const TEAM = 'team-1';
+
+  it('records an owner and reads it back', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    await recordObjectOwner(db, TEAM, 'Projects', 'user-a');
+    const owners = await listObjectOwners(db, TEAM);
+    expect(owners.get('Projects')).toBe('user-a');
+    cleanup();
+  });
+
+  it('is first-writer-wins — a later record does NOT reassign ownership', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    await recordObjectOwner(db, TEAM, 'Projects', 'user-a');
+    // A reconcile or a second create must not steal the table from its
+    // original owner.
+    await recordObjectOwner(db, TEAM, 'Projects', 'user-b');
+    const owners = await listObjectOwners(db, TEAM);
+    expect(owners.get('Projects')).toBe('user-a');
+    cleanup();
+  });
+
+  it('scopes owners by team_id', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    await recordObjectOwner(db, 'team-1', 'Shared', 'user-a');
+    await recordObjectOwner(db, 'team-2', 'Shared', 'user-b');
+    expect((await listObjectOwners(db, 'team-1')).get('Shared')).toBe('user-a');
+    expect((await listObjectOwners(db, 'team-2')).get('Shared')).toBe('user-b');
+    cleanup();
+  });
+
+  it('reconcile assigns unowned candidates to the creator but leaves owned ones alone', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    // member already owns one table; the rest are unowned (e.g. natives).
+    await recordObjectOwner(db, TEAM, 'MemberTable', 'member-1');
+    await reconcileObjectOwners(db, TEAM, 'creator-1', [
+      'MemberTable',
+      'files',
+      'secrets',
+      'OwnerTable',
+    ]);
+    const owners = await listObjectOwners(db, TEAM);
+    expect(owners.get('MemberTable')).toBe('member-1'); // untouched
+    expect(owners.get('files')).toBe('creator-1');
+    expect(owners.get('secrets')).toBe('creator-1');
+    expect(owners.get('OwnerTable')).toBe('creator-1');
+    cleanup();
+  });
+
+  it('reconcile is a no-op when the creator id is empty (degrade safely)', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    await reconcileObjectOwners(db, TEAM, '', ['files', 'secrets']);
+    expect((await listObjectOwners(db, TEAM)).size).toBe(0);
+    cleanup();
+  });
+
+  it('resolveUserIdByEmail is case-insensitive and skips soft-deleted users', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    const now = new Date().toISOString();
+    const id = await db.insert('__lattice_users', {
+      email: 'Owner@Example.com',
+      name: 'Owner',
+      created_at: now,
+      updated_at: now,
+    });
+    await db.insert('__lattice_users', {
+      email: 'gone@example.com',
+      name: 'Gone',
+      created_at: now,
+      updated_at: now,
+      deleted_at: now,
+    });
+    expect(await resolveUserIdByEmail(db, 'owner@example.com')).toBe(id);
+    expect(await resolveUserIdByEmail(db, 'gone@example.com')).toBeNull();
+    expect(await resolveUserIdByEmail(db, '')).toBeNull();
+    cleanup();
   });
 });

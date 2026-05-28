@@ -76,11 +76,15 @@ export class SQLiteAdapter implements StorageAdapter {
       upperType.includes('RANDOM()');
 
     if (hasNonConstantDefault) {
+      // Defaults may be written bare (`DEFAULT datetime('now')`) or wrapped in
+      // parens (`DEFAULT (datetime('now'))`) — the native-entity defs use the
+      // parenthesised form. Tolerate an optional wrapping paren so the whole
+      // non-constant default is stripped either way.
       const safeType = typeSpec
         .replace(/\bNOT\s+NULL\b/gi, '')
-        .replace(/\bDEFAULT\s+CURRENT_TIMESTAMP\b/gi, '')
-        .replace(/\bDEFAULT\s+datetime\([^)]*\)/gi, '')
-        .replace(/\bDEFAULT\s+RANDOM\(\)/gi, '')
+        .replace(/\bDEFAULT\s+\(?\s*CURRENT_TIMESTAMP\s*\)?/gi, '')
+        .replace(/\bDEFAULT\s+\(?\s*datetime\([^)]*\)\s*\)?/gi, '')
+        .replace(/\bDEFAULT\s+\(?\s*RANDOM\(\)\s*\)?/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
       this.run(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${safeType || 'TEXT'}`);

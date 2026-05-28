@@ -183,6 +183,45 @@ describe('GUI graph builder', () => {
     ).toBe(true);
   });
 
+  it('adds extraTables (native entities / team-shared) as graph nodes', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const graph = buildGuiGraph(configPath, outputDir, {
+      extraTables: [
+        { name: 'files', columns: ['id', 'path'], outputFile: '', relations: {} },
+        { name: 'secrets', columns: ['id', 'name'], outputFile: '', relations: {} },
+      ],
+    });
+    const nodeIds = graph.nodes.map((n) => n.id);
+    // Native entities, absent from the YAML, now show in the Data Model.
+    expect(nodeIds).toContain('table:files');
+    expect(nodeIds).toContain('table:secrets');
+    // YAML tables still present.
+    expect(nodeIds).toContain('table:agents');
+  });
+
+  it('drops table nodes that fail the team-cloud visibility filter', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const visible = new Set(['agents', 'secrets']);
+    const graph = buildGuiGraph(configPath, outputDir, {
+      extraTables: [
+        { name: 'files', columns: ['id'], outputFile: '', relations: {} },
+        { name: 'secrets', columns: ['id'], outputFile: '', relations: {} },
+      ],
+      visibleFilter: (name) => visible.has(name),
+    });
+    const nodeIds = graph.nodes.map((n) => n.id);
+    expect(nodeIds).toContain('table:agents');
+    expect(nodeIds).toContain('table:secrets');
+    // Not in the visible set → hidden, and no dangling edges reference it.
+    expect(nodeIds).not.toContain('table:files');
+    expect(nodeIds).not.toContain('table:teams');
+    const presentIds = new Set(nodeIds);
+    for (const edge of graph.edges) {
+      expect(presentIds.has(edge.source)).toBe(true);
+      expect(presentIds.has(edge.target)).toBe(true);
+    }
+  });
+
   it('returns an empty entity list when the manifest is missing', () => {
     const root = tempDir();
     const { configPath } = writeFixture(root);
@@ -232,7 +271,7 @@ describe('GUI server', () => {
       entities: unknown[];
     };
     const graph = (await fetch(`${server.url}/api/graph`).then((r) => r.json())) as {
-      nodes: unknown[];
+      nodes: { id: string }[];
       edges: unknown[];
     };
 
@@ -240,6 +279,30 @@ describe('GUI server', () => {
     expect(entities.tables.every((t) => typeof t.rowCount === 'number')).toBe(true);
     expect(graph.nodes.length).toBeGreaterThan(0);
     expect(graph.edges.length).toBeGreaterThan(0);
+
+    // Native entities (files, secrets) are registered at runtime, not in
+    // the YAML — they must still appear in the Data Model graph and the
+    // entity list. Regression guard for the "Data Model is empty" bug.
+    const graphNodeIds = graph.nodes.map((n) => n.id);
+    expect(graphNodeIds).toContain('table:files');
+    expect(graphNodeIds).toContain('table:secrets');
+    const entityNames = entities.tables.map((t) => t.name);
+    expect(entityNames).toContain('files');
+    expect(entityNames).toContain('secrets');
+  });
+
+  it('rejects share on a non-team (local) database with 400', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+    const res = await fetch(`${server.url}/api/schema/entities/agents/share`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ share: true }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/team cloud/i);
   });
 
   it('round-trips row CRUD via /api/tables/:table/rows', async () => {
@@ -702,5 +765,84 @@ describe('isJunctionTable', () => {
     expect(isJunctionTable(byName.get('teams')!)).toBe(false);
     expect(isJunctionTable(byName.get('skills')!)).toBe(false);
     expect(isJunctionTable(byName.get('agent_skills')!)).toBe(true);
+  });
+
+  it('hides junction tables as nodes but keeps the many-to-many edge between objects', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const graph = buildGuiGraph(configPath, outputDir);
+    const nodeIds = graph.nodes.map((n) => n.id);
+
+    // agent_skills is a junction (agents <-> skills) — no node for it.
+    expect(nodeIds).not.toContain('table:agent_skills');
+    expect(nodeIds).toContain('table:agents');
+    expect(nodeIds).toContain('table:skills');
+
+    // ...but the m2m relationship survives as an edge between the two objects.
+    const m2m = graph.edges.find(
+      (e) =>
+        e.type === 'manyToMany' &&
+        ((e.source === 'table:agents' && e.target === 'table:skills') ||
+          (e.source === 'table:skills' && e.target === 'table:agents')),
+    );
+    expect(m2m).toBeTruthy();
+    // No edge should dangle into the hidden junction node.
+    expect(graph.edges.some((e) => e.target === 'table:agent_skills')).toBe(false);
+  });
+});
+
+describe('GUI server — native entities + table allowlist', () => {
+  it('makes native files/secrets queryable (regression: "Unknown table")', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    for (const table of ['files', 'secrets']) {
+      const res = await fetch(`${server.url}/api/tables/${table}/rows`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { rows: unknown[] };
+      expect(Array.isArray(body.rows)).toBe(true);
+    }
+
+    // And a row round-trips through the native files table.
+    const post = await fetch(`${server.url}/api/tables/files/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '/x.md', kind: 'markdown' }),
+    });
+    expect(post.status).toBe(201);
+  });
+
+  it('marks native entities in the /api/entities payload', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const entities = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string; native?: boolean }[];
+    };
+    const byName = new Map(entities.tables.map((t) => [t.name, t]));
+    expect(byName.get('files')?.native).toBe(true);
+    expect(byName.get('secrets')?.native).toBe(true);
+    expect(byName.get('agents')?.native).toBeFalsy();
+  });
+
+  it('exposes native-entity bindings via /api/native-entities', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const res = (await fetch(`${server.url}/api/native-entities`).then((r) => r.json())) as {
+      bindings: { entity: string }[];
+    };
+    expect(res.bindings.map((b) => b.entity).sort()).toEqual(['files', 'secrets']);
+  });
+
+  it('still refuses internal bookkeeping tables (security boundary)', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const res = await fetch(`${server.url}/api/tables/__lattice_migrations/rows`);
+    expect(res.status).toBe(400);
   });
 });
