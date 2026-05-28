@@ -8,6 +8,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-05-27
+
+### Fixed — native entities (`files`/`secrets`) showed as cards but failed with "Unknown table"
+
+`registerNativeEntities()` + `init()` create and register the native `files`/`secrets` tables on every GUI-opened database, and `/api/entities` listed them as cards — but the GUI's row endpoint allowlist (`validTables`) was built only from the YAML-declared tables, so clicking a native card returned `400 Unknown table`. `validTables` (and `softDeletable`) are now derived from the live Lattice schema (`getRegisteredTableNames()`, minus internal `__lattice_`/`_lattice_` tables), so any registered non-internal table — native entities, team-shared tables, programmatic `db.define()` — is queryable by the same registry that surfaces it as a card. Internal bookkeeping tables remain non-queryable (security boundary preserved).
+
+### Fixed — rendered-context view bled across databases
+
+The GUI resolved the rendered-context root (`outputDir`, holding `.lattice/manifest.json`) once at launch and reused it for every database switch, so the manifest-sourced "entities/files" view showed the launch directory's rendered content for _every_ database — a database with no rendered context of its own displayed another database's files. The switch/create paths now resolve `outputDir` per config, probing the config's own directory; a database with no co-located manifest correctly shows no manifest-sourced entities.
+
+### Fixed — SQLite `ALTER TABLE ADD COLUMN` rejected parenthesised non-constant defaults
+
+`SQLiteAdapter.addColumn` stripped `DEFAULT datetime('now')` / `CURRENT_TIMESTAMP` / `RANDOM()` before the ALTER (SQLite rejects non-constant defaults on add-column), but only matched the bare form. The native-entity defs use the parenthesised form `DEFAULT (datetime('now'))`, so adopting a legacy table that lacked `created_at`/`updated_at` threw `Cannot add a column with non-constant default`. The strip now tolerates an optional wrapping paren.
+
+### Added — normalized native-entity concept + adopt/label existing tables
+
+- `NATIVE_ENTITY_NAMES` / `isNativeEntity()` — a single source of truth derived from `NATIVE_ENTITY_DEFS`. Adding a key to `NATIVE_ENTITY_DEFS` now flows everywhere (creation, GUI surfacing, recognition) with no hard-coded `'files'`/`'secrets'` literals.
+- `adoptNativeEntities(db, { onConflict? })` — post-init reconcile that records, in a new internal `__lattice_native_entities` registry, which physical table is bound to each native entity. A pre-existing `files`/`secrets` table is _adopted_ (its native column superset merged in, non-destructively) and labelled the native object rather than duplicated. Legacy plaintext `secrets.value` stays readable (decrypt passes non-`enc:` values through) and new writes encrypt. `listNativeBindings(db)` reads the bindings. The GUI runs this on every open and exposes `GET /api/native-entities`; `/api/entities` now marks native tables with `native: true`. New databases created through the GUI get the native tables at creation time (additive DDL — no breaking change; library `init()` default behaviour is unchanged).
+
+### Changed — GUI settings consolidation (every config option in one place)
+
+- The header database dropdown and **Lattice Settings → Databases** now read the same `/api/databases` list, so they are 1:1 and both show readable labels rather than raw filenames.
+- **Database Settings** shows only the _active_ database (name, connection/state, and — for a team cloud — inline invite-token generation + member list). The separate "Cloud Databases" panel, its Create/Join buttons, and the "Destroy team" button were removed.
+- The add-database flow offers a third option, **Join existing cloud (via invite)**, alongside new-local and new-cloud.
+- **User Settings** is now identity + preferences only; the "Cloud accounts" section was removed.
+- The Data Model graph no longer renders junction tables as nodes (filtered server-side in `buildGuiGraph`); they appear only as the many-to-many edge between the two objects they link, eliminating the brief junction-box flash.
+- Database Settings name input is now black-on-white (was white-on-white in the dark theme).
+
+### Added — per-table ownership + opt-in sharing for team cloud databases
+
+Every member of a team cloud connects to the same physical Postgres, so every table physically exists for everyone at the SQL level. Visibility is now enforced at the application layer via a new internal `__lattice_object_owners` table (`team_id`, `table_name`, `owner_user_id`): each user-created table records its creator as owner, and a user sees only the tables they own **plus** tables explicitly shared to the team (present in `__lattice_shared_objects`).
+
+- **Ownership is recorded at creation** (`recordObjectOwner`, first-writer-wins) and **reconciled on open** (`reconcileObjectOwners` assigns any unowned table — including the native `files`/`secrets` objects — to the team creator), so visibility is deterministic.
+- **Native objects are private to the creator by default.** `files`/`secrets` are owned by the database creator and are no longer visible (or queryable) to other members unless explicitly shared. The visibility filter gates the queryable `validTables` allowlist, not just the display, so a member can't read another user's secrets.
+- **Sharing is an explicit action**, not a side effect of creation. The Data Model entity editor shows a **Share with team / Unshare from team** toggle for tables you own (`POST /api/schema/entities/:name/share`); only the owner may toggle it. The previous default-checked "Share with cloud" checkbox on entity creation was removed — new entities are private until shared.
+- The Data Model graph and `/api/entities` list are filtered to the visible set; `/api/entities` rows now carry `shared` / `ownedByMe` flags on team clouds.
+
+### Fixed — Data Model was empty (no native entities or team-shared tables)
+
+The Data Model graph (`/api/graph`) was built from the YAML-declared tables only, so framework-registered native entities (`files`/`secrets`) and team-shared tables never appeared — the page rendered just the legend. `buildGuiGraph` now accepts the runtime-registered tables (and a visibility filter), so native entities and visible team tables show as nodes.
+
+### Fixed — kicking a team member failed with `column "id" does not exist`
+
+The team-cloud internal tables (including `__lattice_team_members`, whose primary key is the composite `(team_id, user_id)`) were only registered on the active Lattice handle in the dedicated `--team-cloud` HTTP server mode, never in the normal direct-Postgres GUI. With the schema unregistered, `delete()` fell back to a non-existent `"id"` primary-key column. `openConfig` now registers the cloud internal tables whenever the active DB is a team-enabled Postgres, so composite-key deletes (kick, leave, destroy) target the right columns.
+
+### Fixed — an already-joined member saw the "paste invite token to join" panel
+
+Database Settings derived the team-cloud state from whether a token key-file happened to be on disk, so a joined member could resolve to `team-cloud-needs-invite` and be shown the join form again. State is now derived from the operator's resolved membership (does their identity map to a cloud member?). The join form only appears for operators pointed at a team cloud they have not joined; joined members get the member/creator view plus a **Leave team** (member) / **Destroy team** (creator) button.
+
+### Changed — additional GUI consolidation + polish
+
+- The header dropdown shows each database's friendly display name and a per-row **Cloud/Local** tag with the correct status color — inactive cloud databases no longer mis-render as Local. Joined-team config files now persist a `name:` key so the label resolves without opening the cloud.
+- Renaming a cloud database is restricted to the team owner; members see the name field read-only.
+- Joining a team via invite now auto-switches to the joined cloud database and refreshes — no manual page reload needed.
+- The Data Model now lives inside **Database Settings** rather than as a separate sidebar item.
+- Async action buttons disable and show an inline spinner while their request is in flight, preventing duplicate submissions during slow round-trips.
+- Bare text inputs (Database Settings name, Lattice Settings, invite token) now render on the dark surface instead of light-on-white.
+
+### Fixed — team-cloud member administration when the cloud DB is active
+
+When the team cloud was itself the active database (direct-Postgres mode), the SPA's member list, invite, kick, and leave actions all failed with "No local team connection found" — they keyed off the local `__lattice_team_connections` row, which only exists in whichever DB was active when you joined, not in the cloud DB you're now viewing.
+
+- The active team identity (`teamId`, `myUserId`, `isCreator`, `isMember`) is now resolved server-side from the cloud DB and exposed on `/api/dbconfig`; the SPA drives member admin off that instead of a local connection row. Server-side, `getConnection` falls back to a synthetic connection built from the active cloud DB when no local row exists.
+- **Membership is authoritative** — `resolveTeamContext` checks for a live `__lattice_team_members` row, so a kicked/left operator correctly resolves to "not a member."
+- **Kick is owner-only** — the kick route 403s a non-creator removing another member (the direct-Postgres path had no server in front to authorize it); removing yourself (leave) is always allowed.
+- **Members list** marks "you", and your own row carries the **Leave** (member) / **Destroy team** (creator) action; other rows carry **Kick**, shown only to the creator. The separate top-level Leave/Destroy button was removed. The team owner is always shown in the list (resolved from `__lattice_team.created_by_user_id` and labeled `creator`) even when they have no explicit `__lattice_team_members` row.
+- **Leaving tears down local access** — leave/destroy now removes the team's local sibling config + saved credential, so the left DB disappears from the dropdown and can't be switched to; the SPA switches to another database and navigates off the (now-gone) DB page. This keeps the API and the UI in lockstep: a database you can no longer see is also no longer reachable.
+- The **Join via invite** modal locks the email + display-name fields (read-only, sourced from User Settings) so you always join as yourself and the email matches the invite binding.
+
+### Reverted — restored the `@scarf/scarf` install-analytics postinstall
+
+1.13.10 dropped the `@scarf/scarf` dependency in favor of a passive README pixel. That removal is reverted: `@scarf/scarf` is restored as a dependency with `scarfSettings.defaultOptIn`, the README **Telemetry** section again documents the postinstall ping (what is sent, what is not, and the `SCARF_ANALYTICS=false` / `DO_NOT_TRACK=1` / `--ignore-scripts` opt-outs), the SECURITY **Scope** note again lists the install ping, and the README tracking pixel was removed.
+
 ## [1.13.10] - 2026-05-27
 
 ### Changed — Replaced `@scarf/scarf` postinstall with a passive README pixel + public npm download stats
