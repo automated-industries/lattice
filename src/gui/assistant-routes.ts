@@ -9,7 +9,11 @@ import {
   generateState,
   buildAuthorizeUrl,
   exchangeCodeForTokens,
+  refreshAccessToken,
 } from './ai/oauth.js';
+import type { ClaudeAuth } from './ai/chat.js';
+
+const CLAUDE_OAUTH_KIND = 'claude_oauth';
 
 /**
  * GUI endpoints for the assistant's credentials + voice transcription. API
@@ -153,6 +157,51 @@ async function hasCredential(db: Lattice, name: CredentialName, envVar: string):
   return Boolean(await secretValue(db, CREDENTIALS[name].kind)) || Boolean(process.env[envVar]);
 }
 
+interface StoredOAuthTokens {
+  access_token: string;
+  refresh_token?: string | undefined;
+  expires_at?: number | undefined;
+}
+
+/**
+ * Resolve how the assistant should authenticate to Anthropic. Prefers a
+ * connected Claude subscription (OAuth Bearer token, refreshed in place when
+ * near expiry) and falls back to a raw API key (secret row or env). Returns
+ * null when nothing is configured.
+ */
+export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null> {
+  const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
+  const oauthRaw = await secretValue(db, CLAUDE_OAUTH_KIND);
+  if (oauthRaw) {
+    try {
+      let tokens = JSON.parse(oauthRaw) as StoredOAuthTokens;
+      const cfg = readOAuthConfig();
+      if (cfg && tokens.refresh_token && tokens.expires_at && Date.now() > tokens.expires_at - 60_000) {
+        const refreshed = await refreshAccessToken(cfg, tokens.refresh_token);
+        tokens = {
+          access_token: refreshed.access_token,
+          refresh_token: refreshed.refresh_token ?? tokens.refresh_token,
+          expires_at: refreshed.expires_at,
+        };
+        await storeSecret(db, CLAUDE_OAUTH_KIND, 'Claude subscription', JSON.stringify(tokens));
+      }
+      if (tokens.access_token) return { authToken: tokens.access_token, betaHeader };
+    } catch {
+      // Malformed token blob — fall through to the API-key path.
+    }
+  }
+  const apiKey = (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null;
+  return apiKey ? { apiKey } : null;
+}
+
+/** Whether any Claude auth (subscription OR API key) is configured. */
+export async function hasClaudeAuth(db: Lattice): Promise<boolean> {
+  return (
+    Boolean(await secretValue(db, CLAUDE_OAUTH_KIND)) ||
+    (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY'))
+  );
+}
+
 export async function dispatchAssistantRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -172,6 +221,7 @@ export async function dispatchAssistantRoute(
       hasAnthropicKey,
       hasOpenaiKey,
       hasElevenlabsKey,
+      hasClaudeAuth: await hasClaudeAuth(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       oauthEnabled: oauthConfigured(),
