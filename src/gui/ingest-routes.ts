@@ -31,6 +31,8 @@ interface IngestContext {
   softDeletable: Set<string>;
   /** Junctions connecting `files` to other entities, for classifier auto-link. */
   fileJunctions: FileJunction[];
+  /** Entity name → human description, fed to the classifier catalog. */
+  entityDescriptions: Record<string, string>;
   pathname: string;
   method: string;
 }
@@ -97,7 +99,10 @@ function labelColumn(cols: Record<string, string>): string | null {
  * Build a compact catalog of user records for the classifier: each non-native,
  * non-internal, non-junction entity with a sample of its rows (id + a label).
  */
-async function buildCatalog(db: Lattice): Promise<CatalogEntity[]> {
+async function buildCatalog(
+  db: Lattice,
+  descriptions: Record<string, string>,
+): Promise<CatalogEntity[]> {
   const out: CatalogEntity[] = [];
   for (const name of db.getRegisteredTableNames()) {
     if (name.startsWith('_lattice_') || name.startsWith('__lattice_')) continue;
@@ -109,7 +114,13 @@ async function buildCatalog(db: Lattice): Promise<CatalogEntity[]> {
     const records = rows
       .filter((r) => !r.deleted_at)
       .map((r) => ({ id: String(r.id), label: label ? String(r[label] ?? r.id) : String(r.id) }));
-    if (records.length > 0) out.push({ table: name, records });
+    if (records.length > 0) {
+      out.push({
+        table: name,
+        records,
+        ...(descriptions[name] ? { description: descriptions[name] } : {}),
+      });
+    }
   }
   return out;
 }
@@ -126,6 +137,7 @@ async function enrichWithLlm(
   text: string,
   name: string,
   junctions: FileJunction[],
+  descriptions: Record<string, string>,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
@@ -143,7 +155,7 @@ async function enrichWithLlm(
     console.warn('[ingest] LLM description failed:', (e as Error).message);
   }
   try {
-    const matches = await classifyLinks(client, text, name, await buildCatalog(db));
+    const matches = await classifyLinks(client, text, name, await buildCatalog(db, descriptions));
     for (const m of matches) {
       const jx = junctions.find((j) => j.otherTable === m.table);
       if (jx) {
@@ -236,7 +248,7 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
     });
-    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions);
+    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions, ctx.entityDescriptions);
     sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
     return true;
   }
@@ -265,7 +277,7 @@ export async function dispatchIngestRoute(
       description: describe(text, 'text/plain', title),
       extraction_status: 'extracted',
     });
-    const suggestedLinks = await enrichWithLlm(mctx, ctx.db, id, text, title, ctx.fileJunctions);
+    const suggestedLinks = await enrichWithLlm(mctx, ctx.db, id, text, title, ctx.fileJunctions, ctx.entityDescriptions);
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
   }
@@ -310,7 +322,7 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
     });
-    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions);
+    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions, ctx.entityDescriptions);
     sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
   } catch (e) {
     await updateRow(mctx, 'files', id, {
