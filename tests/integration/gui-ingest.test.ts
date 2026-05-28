@@ -97,6 +97,25 @@ describe('ingest routes', () => {
     expect(String(row.description)).toMatch(/binary file/i);
   });
 
+  it('ingests raw uploaded bytes, extracting text and leaving path null', async () => {
+    const { server: sp } = boot();
+    const server = await sp;
+    servers.push(server);
+
+    const res = await fetch(`${server.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/markdown', 'x-filename': 'dropped.md' },
+      body: '# Dropped\nlazy dog jumps',
+    });
+    expect(res.status).toBe(201);
+    const { id, extraction_status } = (await res.json()) as { id: string; extraction_status: string };
+    expect(extraction_status).toBe('extracted');
+    const row = await getFile(server.url, id);
+    expect(row.original_name).toBe('dropped.md');
+    expect(row.path == null).toBe(true); // bytes discarded — referenced by content, not path
+    expect(String(row.extracted_text)).toContain('lazy dog');
+  });
+
   it('400s on a missing path', async () => {
     const { server: sp } = boot();
     const server = await sp;
