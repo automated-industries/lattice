@@ -45,6 +45,7 @@ import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
+import { dispatchAssistantRoute } from './assistant-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
@@ -1992,6 +1993,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const handled = await dispatchUserConfigRoute(req, res, {
             db: active.db,
             configPath: active.configPath,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Assistant routes ─────────────────────────────────────────────
+        // Claude API-token storage for the sidebar assistant. Stored as an
+        // encrypted row in the native `secrets` entity; presence-only reads.
+        if (!teamCloud && pathname.startsWith('/api/assistant/')) {
+          const handled = await dispatchAssistantRoute(req, res, {
+            db: active.db,
             pathname,
             method,
           });
