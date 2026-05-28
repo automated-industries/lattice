@@ -111,6 +111,73 @@ describe('direct-ops — listMembersDirect', () => {
     expect(await listMembersDirect(db, teamId)).toEqual([]);
     cleanup();
   });
+
+  it('surfaces the team creator even when they have no members row', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    const now = new Date().toISOString();
+    const creatorId = await db.insert('__lattice_users', {
+      email: 'owner@example.com',
+      name: 'Owner',
+      created_at: now,
+      updated_at: now,
+    });
+    const memberId = await db.insert('__lattice_users', {
+      email: 'mem@example.com',
+      name: 'Mem',
+      created_at: now,
+      updated_at: now,
+    });
+    const teamId = await db.insert('__lattice_team', {
+      name: 'Atlas',
+      created_by_user_id: creatorId,
+      created_at: now,
+      updated_at: now,
+    });
+    // Only the member has a members row — the creator does not.
+    await db.insert('__lattice_team_members', {
+      team_id: teamId,
+      user_id: memberId,
+      role: 'member',
+      joined_at: now,
+    });
+
+    const members = await listMembersDirect(db, teamId);
+    const byId = new Map(members.map((m) => [m.user_id, m]));
+    expect(byId.get(creatorId)?.role).toBe('creator');
+    expect(byId.get(memberId)?.role).toBe('member');
+    expect(members).toHaveLength(2);
+    cleanup();
+  });
+
+  it('relabels a creator with a stored member row as creator', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    const now = new Date().toISOString();
+    const creatorId = await db.insert('__lattice_users', {
+      email: 'owner2@example.com',
+      name: 'Owner2',
+      created_at: now,
+      updated_at: now,
+    });
+    const teamId = await db.insert('__lattice_team', {
+      name: 'Atlas2',
+      created_by_user_id: creatorId,
+      created_at: now,
+      updated_at: now,
+    });
+    // Stored role is the (wrong) 'member' — listMembersDirect must
+    // still report the owner as 'creator'.
+    await db.insert('__lattice_team_members', {
+      team_id: teamId,
+      user_id: creatorId,
+      role: 'member',
+      joined_at: now,
+    });
+
+    const members = await listMembersDirect(db, teamId);
+    expect(members).toHaveLength(1);
+    expect(members[0]?.role).toBe('creator');
+    cleanup();
+  });
 });
 
 describe('direct-ops — inviteDirect', () => {
