@@ -30,7 +30,16 @@ import {
   shareEntityWithTeam,
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
-import { FeedBus, type FeedOp } from './ai/feed.js';
+import { FeedBus } from './ai/feed.js';
+import {
+  createRow,
+  updateRow,
+  deleteRow,
+  linkRows,
+  unlinkRows,
+  type AuditOp,
+  type MutationCtx,
+} from './mutations.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
@@ -221,8 +230,6 @@ const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
 const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
 
-type AuditOp = 'insert' | 'update' | 'delete' | 'link' | 'unlink';
-
 interface AuditEntry {
   id: string;
   ts: string;
@@ -232,51 +239,6 @@ interface AuditEntry {
   before_json: string | null;
   after_json: string | null;
   undone: number;
-}
-
-/**
- * Append an audit entry. New entries clear the redo stack — any earlier
- * 'undone' entry can no longer be re-applied once a fresh mutation lands.
- */
-function feedSummary(op: AuditOp, table: string): string {
-  switch (op) {
-    case 'insert':
-      return `Added a row to ${table}`;
-    case 'update':
-      return `Updated a row in ${table}`;
-    case 'delete':
-      return `Removed a row from ${table}`;
-    case 'link':
-      return `Linked rows in ${table}`;
-    case 'unlink':
-      return `Unlinked rows in ${table}`;
-  }
-}
-
-async function appendAudit(
-  db: Lattice,
-  feed: FeedBus,
-  table: string,
-  rowId: string | null,
-  op: AuditOp,
-  before: unknown,
-  after: unknown,
-): Promise<void> {
-  const undone = (await db.query('_lattice_gui_audit', {
-    filters: [{ col: 'undone', op: 'eq', val: 1 }],
-  })) as { id: string }[];
-  for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
-  await db.insert('_lattice_gui_audit', {
-    id: crypto.randomUUID(),
-    table_name: table,
-    row_id: rowId,
-    operation: op,
-    before_json: before ? JSON.stringify(before) : null,
-    after_json: after ? JSON.stringify(after) : null,
-    undone: 0,
-  });
-  // Publish to the sidebar activity feed. AuditOp is a subset of FeedOp.
-  feed.publish({ table, op: op as FeedOp, rowId, source: 'gui', summary: feedSummary(op, table) });
 }
 
 function parseAudit(row: Record<string, unknown>): AuditEntry {
@@ -1702,6 +1664,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
+          const mctx: MutationCtx = {
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+          };
 
           if (id === null) {
             if (method === 'GET') {
@@ -1720,9 +1688,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
             if (method === 'POST') {
               const body = (await readJsonBody(req)) as Row;
-              const newId = await active.db.insert(table, body);
-              const inserted = await active.db.get(table, newId);
-              await appendAudit(active.db, active.feed, table, newId, 'insert', null, inserted);
+              const { id: newId } = await createRow(mctx, table, body);
               sendJson(res, { id: newId }, 201);
               return;
             }
@@ -1738,24 +1704,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
             if (method === 'PATCH') {
               const body = (await readJsonBody(req)) as Partial<Row>;
-              const before = await active.db.get(table, id);
-              await active.db.update(table, id, body);
-              const after = await active.db.get(table, id);
-              await appendAudit(active.db, active.feed, table, id, 'update', before, after);
+              await updateRow(mctx, table, id, body);
               sendJson(res, { ok: true });
               return;
             }
             if (method === 'DELETE') {
               const hard = url.searchParams.get('hard') === 'true';
-              const before = await active.db.get(table, id);
-              if (!hard && active.softDeletable.has(table)) {
-                await active.db.update(table, id, { deleted_at: new Date().toISOString() });
-                const after = await active.db.get(table, id);
-                await appendAudit(active.db, active.feed, table, id, 'update', before, after);
-              } else {
-                await active.db.delete(table, id);
-                await appendAudit(active.db, active.feed, table, id, 'delete', before, null);
-              }
+              await deleteRow(mctx, table, id, hard);
               sendJson(res, { ok: true });
               return;
             }
@@ -1778,12 +1733,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const body = (await readJsonBody(req)) as Row;
+          const linkCtx: MutationCtx = {
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+          };
           if (op === 'link') {
-            await active.db.link(table, body);
-            await appendAudit(active.db, active.feed, table, null, 'link', null, body);
+            await linkRows(linkCtx, table, body);
           } else {
-            await active.db.unlink(table, body);
-            await appendAudit(active.db, active.feed, table, null, 'unlink', body, null);
+            await unlinkRows(linkCtx, table, body);
           }
           sendJson(res, { ok: true });
           return;
