@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { extname, basename } from 'node:path';
+import { spawn } from 'node:child_process';
 
 /**
  * Core text extraction for ingested files. Handles the dependency-free cases
@@ -39,6 +40,56 @@ const TEXT_EXT = new Set([
 
 const TEXT_MIME = /^(text\/|application\/(json|xml|xhtml\+xml|x-yaml|yaml|toml))/;
 
+/** Formats the optional `markitdown` CLI can convert to text when installed. */
+const MARKITDOWN_EXT = new Set([
+  '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.epub', '.rtf', '.odt', '.ods', '.odp',
+]);
+const MARKITDOWN_TIMEOUT_MS = 120_000;
+const MARKITDOWN_MAX_BYTES = 50_000_000;
+
+/**
+ * Try the optional `markitdown` CLI to extract text from PDFs/office docs.
+ * Resolves to the text on success, or null when the binary is absent, errors,
+ * times out, or produces nothing — callers then fall back to skip. Never
+ * throws (graceful degradation when the optional dependency isn't installed).
+ */
+function runMarkitdown(path: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const bin = process.env.MARKITDOWN_BIN ?? 'markitdown';
+    let child;
+    try {
+      child = spawn(bin, [path], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let out = '';
+    let bytes = 0;
+    let settled = false;
+    const finish = (v: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, MARKITDOWN_TIMEOUT_MS);
+    child.stdout.on('data', (c: Buffer) => {
+      bytes += c.length;
+      if (bytes > MARKITDOWN_MAX_BYTES) {
+        child.kill();
+        finish(null);
+      } else {
+        out += c.toString('utf8');
+      }
+    });
+    child.on('error', () => finish(null)); // binary not installed
+    child.on('close', (code) => finish(code === 0 && out.trim() ? out.trim() : null));
+  });
+}
+
 export function languageOf(name: string): string | null {
   return CODE_LANGS[extname(name).toLowerCase()] ?? null;
 }
@@ -68,6 +119,10 @@ export async function parseFile(
   }
   if ((mimeHint && TEXT_MIME.test(mimeHint)) || TEXT_EXT.has(ext)) {
     return { text: truncate(await readFile(path, 'utf8')) };
+  }
+  if (MARKITDOWN_EXT.has(ext)) {
+    const md = await runMarkitdown(path);
+    if (md) return { text: truncate(md) };
   }
   return { text: '', skip: true };
 }
