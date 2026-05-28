@@ -340,6 +340,14 @@ export const guiAppHtml = `<!doctype html>
       border-radius: 8px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word;
     }
     .file-preview .file-unsupported { color: var(--text-muted); font-size: 13px; padding: 10px 0; }
+    .file-preview .md-body { font-size: 13.5px; line-height: 1.55; color: var(--text); max-height: 60vh; overflow: auto; padding: 4px 2px; }
+    .file-preview .md-body h1, .file-preview .md-body h2, .file-preview .md-body h3,
+    .file-preview .md-body h4 { margin: 12px 0 6px; line-height: 1.3; }
+    .file-preview .md-body ul { margin: 6px 0; padding-left: 20px; }
+    .file-preview .md-body code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .file-preview .md-body pre { background: var(--surface-2); padding: 10px; border-radius: 8px; overflow: auto; }
+    .file-preview .md-body pre code { background: none; padding: 0; }
+    .file-preview .md-body a { color: var(--accent); }
     .file-preview .file-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
 
     /* ── Dashboard ────────────────────────────────────── */
@@ -2140,6 +2148,49 @@ export const guiAppHtml = `<!doctype html>
     // ────────────────────────────────────────────────────────────
     // Detail view (with edit / delete)
     // ────────────────────────────────────────────────────────────
+    // Minimal, safe Markdown → HTML for file previews. Escapes first, then
+    // applies a known-tag subset (headings, lists, bold/italic, inline code,
+    // paragraphs). Regexes use char classes + fromCharCode for the backtick so
+    // there are no backslashes/backticks to fight the inline template literal.
+    var MD_MIMES = [
+      'text/markdown',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ];
+    function mdToHtml(src) {
+      var bt = String.fromCharCode(96);
+      function inline(s) {
+        s = s.replace(new RegExp(bt + '([^' + bt + ']+?)' + bt, 'g'), '<code>$1</code>');
+        s = s.replace(new RegExp('[*][*]([^*]+?)[*][*]', 'g'), '<strong>$1</strong>');
+        s = s.replace(new RegExp('[*]([^*]+?)[*]', 'g'), '<em>$1</em>');
+        return s;
+      }
+      var lines = escapeHtml(src).split('\\n');
+      var html = '';
+      var inList = false;
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i];
+        var h = 0;
+        while (ln.charAt(h) === '#' && h < 6) h++;
+        if (h > 0 && ln.charAt(h) === ' ') {
+          if (inList) { html += '</ul>'; inList = false; }
+          html += '<h' + h + '>' + inline(ln.slice(h + 1)) + '</h' + h + '>';
+          continue;
+        }
+        if (ln.indexOf('- ') === 0 || ln.indexOf('* ') === 0) {
+          if (!inList) { html += '<ul>'; inList = true; }
+          html += '<li>' + inline(ln.slice(2)) + '</li>';
+          continue;
+        }
+        if (inList) { html += '</ul>'; inList = false; }
+        if (ln.trim() !== '') html += '<p>' + inline(ln) + '</p>';
+      }
+      if (inList) html += '</ul>';
+      return html;
+    }
+
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
@@ -2151,6 +2202,8 @@ export const guiAppHtml = `<!doctype html>
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
       } else if (mime === 'application/pdf' && row.path) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
+      } else if (row.extracted_text && MD_MIMES.indexOf(mime) >= 0) {
+        html += '<div class="md-body">' + mdToHtml(String(row.extracted_text).slice(0, 40000)) + '</div>';
       } else if (row.extracted_text) {
         html += '<pre>' + escapeHtml(String(row.extracted_text).slice(0, 20000)) + '</pre>';
       } else {
