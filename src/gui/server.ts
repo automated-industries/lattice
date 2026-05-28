@@ -55,6 +55,7 @@ import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchAssistantRoute } from './assistant-routes.js';
+import { dispatchChatRoute } from './chat-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
@@ -1964,6 +1965,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (!teamCloud && pathname.startsWith('/api/assistant/')) {
           const handled = await dispatchAssistantRoute(req, res, {
             db: active.db,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Chat route ────────────────────────────────────────────────────
+        // POST /api/chat — assistant tool loop, streamed as SSE. Executes
+        // tool calls against the active DB via the shared mutation chokepoint.
+        if (!teamCloud && pathname === '/api/chat') {
+          const handled = await dispatchChatRoute(req, res, {
+            db: active.db,
+            feed: active.feed,
+            validTables: active.validTables,
+            softDeletable: active.softDeletable,
             pathname,
             method,
           });
