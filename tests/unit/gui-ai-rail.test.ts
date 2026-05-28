@@ -51,6 +51,13 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('class="md-body"');
   });
 
+  it('provides a mobile bottom-drawer handle + toggle', () => {
+    expect(guiAppHtml).toContain('id="rail-handle"');
+    expect(guiAppHtml).toContain('function initRailDrawer');
+    expect(guiAppHtml).toContain('initRailDrawer();');
+    expect(guiAppHtml).toContain('@media (max-width: 720px)');
+  });
+
   it('inline SPA script parses without syntax errors', () => {
     // The inline <script> isn't type-checked or bundled, so a syntax error
     // would only surface in the browser. new Function() compiles (but does
