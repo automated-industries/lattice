@@ -80,6 +80,45 @@ describe('assistant key storage', () => {
     expect(cfg2.hasAnthropicKey).toBe(false);
   });
 
+  it('stores + clears an explicit voice-provider preference', async () => {
+    const { configPath, outputDir } = writeMinimalConfig();
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const cfg0 = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
+      sttPreference: string;
+    };
+    expect(cfg0.sttPreference).toBe('auto');
+
+    const put = await fetch(`${server.url}/api/assistant/stt-provider`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'elevenlabs' }),
+    });
+    expect(put.status).toBe(200);
+    const cfg1 = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
+      sttPreference: string;
+    };
+    expect(cfg1.sttPreference).toBe('elevenlabs');
+
+    await fetch(`${server.url}/api/assistant/stt-provider`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'auto' }),
+    });
+    const cfg2 = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
+      sttPreference: string;
+    };
+    expect(cfg2.sttPreference).toBe('auto');
+
+    const bad = await fetch(`${server.url}/api/assistant/stt-provider`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'nope' }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it('rejects an empty key with 400', async () => {
     const { configPath, outputDir } = writeMinimalConfig();
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
