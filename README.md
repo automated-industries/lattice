@@ -2096,7 +2096,7 @@ The convergence means you don't need to duplicate entity-context definitions in 
 - **Dashboard** (`#/`) — one card per first-class entity with live row counts.
 - **Table view** (`#/objects/<entity>`) — intrinsic columns, `belongsTo` chips, and a column per junction this entity participates in.
 - **Detail view** (`#/objects/<entity>/<id>`) — read mode by default; `Edit` flips cells into inputs (`Save` PATCHes, `Cancel` reverts).
-- **Data Model** (`#/settings/data-model`) — entity-level graph plus a side panel for adding / removing junction-table links between rows.
+- **Data Model** (inside **Database Settings**, v1.14+) — entity-level graph including the native `files`/`secrets` objects, with a per-entity editor. On a team cloud each table you own carries a **Share with team / Unshare** toggle. (Pre-1.14 this was a separate `#/settings/data-model` nav item; that hash still resolves for back-compat.)
 
 **Internal tables added on first open**
 
@@ -2124,6 +2124,10 @@ These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entitie
 | `/tables/:table/rows/:id`  | DELETE | `db.delete(table, id)`        |
 | `/tables/:junction/link`   | POST   | `db.link(junction, body)`     |
 | `/tables/:junction/unlink` | POST   | `db.unlink(junction, body)`   |
+| `/schema/entities`         | POST   | create a new entity/table     |
+| `/schema/entities/:name/share` | POST | share/unshare a table you own with the team (cloud, owner-only) |
+
+On a team cloud, `/entities` and `/graph` (and the queryable `/tables/*` allowlist) are filtered to the tables you own plus tables shared to the team — so the API surface matches exactly what the GUI shows; a table you can't see is not reachable. `/entities` rows carry `shared` / `ownedByMe` flags in that mode.
 
 The server only binds to `127.0.0.1` and has no authentication. See [SECURITY.md](./SECURITY.md) for the threat model — do not expose this port to a non-loopback interface.
 
@@ -2234,7 +2238,9 @@ The cloud rejects redemption if the caller's claimed email doesn't match the inv
 
 **Other subcommands** (`lattice teams help` for the full list): `list`, `members`, `leave`, `destroy`, `share`, `unshare`, `shared`, `sync`, `link`, `unlink`, `pull`, `push`, `status`.
 
-**Same flows from the GUI.** The local `lattice gui` Project Config view drives the entire teams lifecycle — create / join, invite by email, share tables, link rows, see sync status. Identity (display name + email) comes from `~/.lattice/identity.json` and is prefilled in every modal.
+**Per-table ownership + opt-in sharing (v1.14+).** Team members share one physical Postgres, so visibility is enforced at the app layer via a `__lattice_object_owners` table: each table records its creator, and a user sees only the tables they own plus tables explicitly shared to the team. The native `files`/`secrets` objects are owned by the database creator and private by default. Sharing is an explicit, owner-only action (not a side effect of creating a table). The filter gates API access, not just the display.
+
+**Same flows from the GUI (v1.14+).** The local `lattice gui` drives the entire teams lifecycle from **Database Settings**: rename (owner-only), invite by email (owner-only), the inline Members list (the owner is always shown as `creator`; your own row offers Leave/Destroy; non-owners can't kick), share/unshare from the Data Model, and sync status. Member admin is resolved from `GET /api/dbconfig` against the active cloud DB, so it works even when the team cloud itself is the active database. Identity (display name + email) comes from `~/.lattice/identity.json` and is locked in the Join modal. Leaving a team removes the local config + credential and switches you to another database.
 
 **Joining via the GUI is one click (v1.13.7+).** When you click "Join via invite" and the redeem succeeds, the team's cloud URL is automatically saved as a switchable database credential and a sibling YAML config is written to your project directory. The new entry shows up in the database dropdown as `<team-name>.config`. Clicking it opens the SPA with the team's shared tables already populated — no YAML editing, no `db.define()` calls.
 
