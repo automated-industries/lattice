@@ -231,7 +231,16 @@ export const guiAppHtml = `<!doctype html>
     }
     .rail-title {
       font-size: 11px; font-weight: 600; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.06em;
+      text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto;
+    }
+    .rail-threads {
+      flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px;
+    }
+    .rail-newchat {
+      flex: 0 0 auto; width: 26px; height: 26px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface-2); color: var(--text-muted);
+      cursor: pointer; font-size: 14px; line-height: 1;
     }
     .rail-feed {
       flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
@@ -842,7 +851,9 @@ export const guiAppHtml = `<!doctype html>
     <aside class="assistant-rail" id="assistant-rail">
       <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
       <div class="rail-header">
-        <span class="rail-title">Activity</span>
+        <span class="rail-title">Assistant</span>
+        <select class="rail-threads" id="rail-threads" title="Conversations"></select>
+        <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
       </div>
       <div class="rail-feed" id="rail-feed">
         <div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>
@@ -1023,6 +1034,7 @@ export const guiAppHtml = `<!doctype html>
         initRailDragDrop();
         startFeed();
         renderComposer();
+        initThreadControls();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -1206,6 +1218,48 @@ export const guiAppHtml = `<!doctype html>
     var chatBusy = false;
     function railFeedEl() { return document.getElementById('rail-feed'); }
     function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
+    var currentThreadId = null;
+    function clearChat() {
+      chatHistory = [];
+      var feedEl = railFeedEl();
+      if (feedEl) feedEl.innerHTML = '<div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>';
+    }
+    function newChat() {
+      currentThreadId = null;
+      clearChat();
+      var sel = document.getElementById('rail-threads');
+      if (sel) sel.value = '';
+    }
+    function refreshThreadList() {
+      var sel = document.getElementById('rail-threads'); if (!sel) return;
+      fetchJson('/api/chat/threads').then(function (d) {
+        var threads = (d && d.threads) || [];
+        var opts = '<option value="">＋ New conversation</option>';
+        threads.forEach(function (t) {
+          opts += '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.title || 'Chat') + '</option>';
+        });
+        sel.innerHTML = opts;
+        sel.value = currentThreadId || '';
+      }).catch(function () { /* ignore */ });
+    }
+    function loadThread(id) {
+      fetchJson('/api/chat/threads/' + encodeURIComponent(id) + '/messages').then(function (d) {
+        var msgs = (d && d.messages) || [];
+        clearChat();
+        currentThreadId = id;
+        msgs.forEach(function (m) {
+          if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
+          else if (m.role === 'assistant') { var c = newAssistantBubble(); c.bubble.textContent = m.text; chatHistory.push({ role: 'assistant', text: m.text }); }
+        });
+      }).catch(function (e) { showToast('Could not load conversation: ' + e.message, {}); });
+    }
+    function initThreadControls() {
+      var sel = document.getElementById('rail-threads');
+      var btn = document.getElementById('rail-newchat');
+      if (btn) btn.addEventListener('click', newChat);
+      if (sel) sel.addEventListener('change', function () { if (sel.value) loadThread(sel.value); else newChat(); });
+      refreshThreadList();
+    }
     function appendUserBubble(text) {
       railEmptyGone();
       var feedEl = railFeedEl(); if (!feedEl) return;
@@ -1272,11 +1326,12 @@ export const guiAppHtml = `<!doctype html>
       var actx = null; var assembled = '';
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: text, history: historyToSend })
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
         }
+        var tid = r.headers.get('x-thread-id'); if (tid) currentThreadId = tid;
         var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
         function pump() {
           return reader.read().then(function (res) {
@@ -1295,6 +1350,7 @@ export const guiAppHtml = `<!doctype html>
         return pump();
       }).then(function () {
         if (assembled) chatHistory.push({ role: 'assistant', text: assembled });
+        refreshThreadList();
       }).catch(function (e) {
         var c = newAssistantBubble(); c.bubble.textContent = '⚠ ' + e.message;
       }).finally(function () {
