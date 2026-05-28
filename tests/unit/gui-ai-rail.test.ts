@@ -22,6 +22,14 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('initRailResize();');
   });
 
+  it('wires file ingest (drag-drop + paperclip) into the rail', () => {
+    expect(guiAppHtml).toContain('function uploadFile');
+    expect(guiAppHtml).toContain('function initRailDragDrop');
+    expect(guiAppHtml).toContain("'/api/ingest/upload'");
+    expect(guiAppHtml).toContain('initRailDragDrop();');
+    expect(guiAppHtml).toContain('id="chat-clip"');
+  });
+
   it('inline SPA script parses without syntax errors', () => {
     // The inline <script> isn't type-checked or bundled, so a syntax error
     // would only surface in the browser. new Function() compiles (but does
