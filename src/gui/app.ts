@@ -305,6 +305,21 @@ export const guiAppHtml = `<!doctype html>
     .rail-composer .composer-mic.recording { background: var(--warn); color: #0b0d10; border-color: var(--warn); }
     .rail-composer .composer-mic.transcribing { color: var(--accent); }
 
+    /* ── File preview (files detail page) ──────────────── */
+    .file-preview { margin: 4px 0 16px; }
+    .file-preview .file-desc {
+      margin: 0 0 10px; padding: 10px 12px; font-size: 13.5px; color: var(--text);
+      background: var(--accent-soft); border-radius: 8px; border: 1px solid var(--border);
+    }
+    .file-preview img { max-width: 100%; max-height: 60vh; border: 1px solid var(--border); border-radius: 8px; display: block; }
+    .file-preview iframe { width: 100%; height: 60vh; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+    .file-preview pre {
+      max-height: 50vh; overflow: auto; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word;
+    }
+    .file-preview .file-unsupported { color: var(--text-muted); font-size: 13px; padding: 10px 0; }
+    .file-preview .file-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+
     /* ── Dashboard ────────────────────────────────────── */
     .dashboard {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
@@ -1984,6 +1999,51 @@ export const guiAppHtml = `<!doctype html>
     // ────────────────────────────────────────────────────────────
     // Detail view (with edit / delete)
     // ────────────────────────────────────────────────────────────
+    function renderFilePreview(row) {
+      var host = document.getElementById('file-preview'); if (!host || !row) return;
+      var id = row.id;
+      var mime = row.mime || '';
+      var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
+      var html = '';
+      if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
+      if (mime.indexOf('image/') === 0 && row.path) {
+        html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
+      } else if (mime === 'application/pdf' && row.path) {
+        html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
+      } else if (row.extracted_text) {
+        html += '<pre>' + escapeHtml(String(row.extracted_text).slice(0, 20000)) + '</pre>';
+      } else {
+        html += '<div class="file-unsupported">No inline preview for this file type' +
+          (mime ? ' (' + escapeHtml(mime) + ')' : '') + '.</div>';
+      }
+      if (row.path) {
+        html += '<div class="file-actions">' +
+          '<button class="btn" id="file-open">Open in Finder</button>' +
+          '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' +
+        '</div>';
+      }
+      host.innerHTML = html;
+      var openBtn = document.getElementById('file-open');
+      if (openBtn) openBtn.addEventListener('click', function () {
+        fetch('/api/files/' + encodeURIComponent(id) + '/open-in-finder', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            if (j && j.enabled === false) {
+              if (row.path && navigator.clipboard) {
+                navigator.clipboard.writeText(row.path).then(function () {
+                  showToast('Path copied — set LATTICE_LOCAL_OPEN=1 to open directly', {});
+                });
+              } else {
+                showToast('Set LATTICE_LOCAL_OPEN=1 to open files locally', {});
+              }
+            } else if (j && j.opened === false) {
+              showToast('Could not open: ' + (j.error || 'unknown'), {});
+            }
+          })
+          .catch(function (e) { showToast('Open failed: ' + e.message, {}); });
+      });
+    }
+
     function renderDetail(content, tableName, id) {
       var t = tableByName(tableName);
       if (!t) {
@@ -2082,12 +2142,14 @@ export const guiAppHtml = `<!doctype html>
               '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
               '<div class="actions">' + actions + '</div>' +
             '</div>' +
+            (tableName === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
             '<div id="row-context"></div>';
 
           // Skip the context fetch while editing — the just-PATCHed row may
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
+          if (!editing && tableName === 'files') renderFilePreview(row);
 
           // Junction link/unlink handlers (active in both read and edit modes).
           content.querySelectorAll('.remove-link').forEach(function (btn) {
