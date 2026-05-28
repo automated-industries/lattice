@@ -69,9 +69,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
  * `'files'` / `'secrets'`. Add a key to NATIVE_ENTITY_DEFS and it flows
  * everywhere automatically.
  */
-export const NATIVE_ENTITY_NAMES: ReadonlySet<string> = new Set(
-  Object.keys(NATIVE_ENTITY_DEFS),
-);
+export const NATIVE_ENTITY_NAMES: ReadonlySet<string> = new Set(Object.keys(NATIVE_ENTITY_DEFS));
 
 /** True when `name` is a framework-shipped native entity (see {@link NATIVE_ENTITY_DEFS}). */
 export function isNativeEntity(name: string): boolean {

@@ -16,7 +16,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed — rendered-context view bled across databases
 
-The GUI resolved the rendered-context root (`outputDir`, holding `.lattice/manifest.json`) once at launch and reused it for every database switch, so the manifest-sourced "entities/files" view showed the launch directory's rendered content for *every* database — a database with no rendered context of its own displayed another database's files. The switch/create paths now resolve `outputDir` per config, probing the config's own directory; a database with no co-located manifest correctly shows no manifest-sourced entities.
+The GUI resolved the rendered-context root (`outputDir`, holding `.lattice/manifest.json`) once at launch and reused it for every database switch, so the manifest-sourced "entities/files" view showed the launch directory's rendered content for _every_ database — a database with no rendered context of its own displayed another database's files. The switch/create paths now resolve `outputDir` per config, probing the config's own directory; a database with no co-located manifest correctly shows no manifest-sourced entities.
 
 ### Fixed — SQLite `ALTER TABLE ADD COLUMN` rejected parenthesised non-constant defaults
 
@@ -25,12 +25,12 @@ The GUI resolved the rendered-context root (`outputDir`, holding `.lattice/manif
 ### Added — normalized native-entity concept + adopt/label existing tables
 
 - `NATIVE_ENTITY_NAMES` / `isNativeEntity()` — a single source of truth derived from `NATIVE_ENTITY_DEFS`. Adding a key to `NATIVE_ENTITY_DEFS` now flows everywhere (creation, GUI surfacing, recognition) with no hard-coded `'files'`/`'secrets'` literals.
-- `adoptNativeEntities(db, { onConflict? })` — post-init reconcile that records, in a new internal `__lattice_native_entities` registry, which physical table is bound to each native entity. A pre-existing `files`/`secrets` table is *adopted* (its native column superset merged in, non-destructively) and labelled the native object rather than duplicated. Legacy plaintext `secrets.value` stays readable (decrypt passes non-`enc:` values through) and new writes encrypt. `listNativeBindings(db)` reads the bindings. The GUI runs this on every open and exposes `GET /api/native-entities`; `/api/entities` now marks native tables with `native: true`. New databases created through the GUI get the native tables at creation time (additive DDL — no breaking change; library `init()` default behaviour is unchanged).
+- `adoptNativeEntities(db, { onConflict? })` — post-init reconcile that records, in a new internal `__lattice_native_entities` registry, which physical table is bound to each native entity. A pre-existing `files`/`secrets` table is _adopted_ (its native column superset merged in, non-destructively) and labelled the native object rather than duplicated. Legacy plaintext `secrets.value` stays readable (decrypt passes non-`enc:` values through) and new writes encrypt. `listNativeBindings(db)` reads the bindings. The GUI runs this on every open and exposes `GET /api/native-entities`; `/api/entities` now marks native tables with `native: true`. New databases created through the GUI get the native tables at creation time (additive DDL — no breaking change; library `init()` default behaviour is unchanged).
 
 ### Changed — GUI settings consolidation (every config option in one place)
 
 - The header database dropdown and **Lattice Settings → Databases** now read the same `/api/databases` list, so they are 1:1 and both show readable labels rather than raw filenames.
-- **Database Settings** shows only the *active* database (name, connection/state, and — for a team cloud — inline invite-token generation + member list). The separate "Cloud Databases" panel, its Create/Join buttons, and the "Destroy team" button were removed.
+- **Database Settings** shows only the _active_ database (name, connection/state, and — for a team cloud — inline invite-token generation + member list). The separate "Cloud Databases" panel, its Create/Join buttons, and the "Destroy team" button were removed.
 - The add-database flow offers a third option, **Join existing cloud (via invite)**, alongside new-local and new-cloud.
 - **User Settings** is now identity + preferences only; the "Cloud accounts" section was removed.
 - The Data Model graph no longer renders junction tables as nodes (filtered server-side in `buildGuiGraph`); they appear only as the many-to-many edge between the two objects they link, eliminating the brief junction-box flash.

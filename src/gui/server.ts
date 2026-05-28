@@ -748,7 +748,10 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
       try {
         teamContext = await resolveTeamContext(db, teamsClient, parsed.dbPath, [...validTables]);
       } catch (e) {
-        console.warn('[openConfig] could not resolve team ownership context:', (e as Error).message);
+        console.warn(
+          '[openConfig] could not resolve team ownership context:',
+          (e as Error).message,
+        );
       }
     }
   }
@@ -828,7 +831,8 @@ async function resolveTeamContext(
   if (!myUserId) {
     try {
       const conns = await teamsClient.listConnections();
-      const conn = conns.find((c) => c.cloud_url === cloudUrl) ?? conns.find((c) => c.team_id === teamId);
+      const conn =
+        conns.find((c) => c.cloud_url === cloudUrl) ?? conns.find((c) => c.team_id === teamId);
       myUserId = conn?.my_user_id ?? '';
     } catch {
       // leave empty
@@ -1143,7 +1147,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (method === 'GET' && pathname === '/api/entities') {
           sendJson(
             res,
-            await entitiesWithCounts(active.db, active.configPath, active.outputDir, active.teamContext),
+            await entitiesWithCounts(
+              active.db,
+              active.configPath,
+              active.outputDir,
+              active.teamContext,
+            ),
           );
           return;
         }

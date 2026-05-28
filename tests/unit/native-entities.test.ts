@@ -180,14 +180,10 @@ describe('framework native entities', () => {
     it('adopts a pre-existing legacy `files` table, merging native columns without data loss', async () => {
       const legacyPath = join(tmpDir, 'legacy-files.db');
       const raw = new Database(legacyPath);
-      raw.exec(
-        'CREATE TABLE files (id TEXT PRIMARY KEY, path TEXT, kind TEXT, deleted_at TEXT)',
-      );
-      raw.prepare('INSERT INTO files (id, path, kind) VALUES (?, ?, ?)').run(
-        'f1',
-        '/legacy/doc.md',
-        'markdown',
-      );
+      raw.exec('CREATE TABLE files (id TEXT PRIMARY KEY, path TEXT, kind TEXT, deleted_at TEXT)');
+      raw
+        .prepare('INSERT INTO files (id, path, kind) VALUES (?, ?, ?)')
+        .run('f1', '/legacy/doc.md', 'markdown');
       raw.close();
 
       // Open WITHOUT registerNativeEntities — simulates a consumer DB that
@@ -220,11 +216,9 @@ describe('framework native entities', () => {
       raw.exec(
         'CREATE TABLE secrets (id TEXT PRIMARY KEY, name TEXT NOT NULL, value TEXT, deleted_at TEXT)',
       );
-      raw.prepare('INSERT INTO secrets (id, name, value) VALUES (?, ?, ?)').run(
-        's1',
-        'LEGACY',
-        'plain-value',
-      );
+      raw
+        .prepare('INSERT INTO secrets (id, name, value) VALUES (?, ?, ?)')
+        .run('s1', 'LEGACY', 'plain-value');
       raw.close();
 
       const db3 = new Lattice(secPath, { encryptionKey: 'adopt-secrets-key' });

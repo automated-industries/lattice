@@ -682,10 +682,7 @@ export async function recordObjectOwner(
 }
 
 /** Map of table_name → owner_user_id for every owned table in `teamId`. */
-export async function listObjectOwners(
-  db: Lattice,
-  teamId: string,
-): Promise<Map<string, string>> {
+export async function listObjectOwners(db: Lattice, teamId: string): Promise<Map<string, string>> {
   const rows = (await db.query('__lattice_object_owners', {
     filters: [{ col: 'team_id', op: 'eq', val: teamId }],
   })) as unknown as ObjectOwnerRow[];
@@ -719,10 +716,7 @@ export async function reconcileObjectOwners(
 }
 
 /** Resolve a non-deleted user's id by email (case-insensitive). */
-export async function resolveUserIdByEmail(
-  db: Lattice,
-  email: string,
-): Promise<string | null> {
+export async function resolveUserIdByEmail(db: Lattice, email: string): Promise<string | null> {
   if (!email) return null;
   const users = (await db.query('__lattice_users', {
     filters: [{ col: 'deleted_at', op: 'isNull' }],

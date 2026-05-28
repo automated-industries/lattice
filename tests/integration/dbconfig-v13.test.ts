@@ -141,7 +141,11 @@ describe('GET /api/databases reports per-row kind', () => {
 });
 
 describe('applyTeamMembershipState', () => {
-  const teamInfo = { type: 'postgres', teamEnabled: true, state: 'team-cloud-needs-invite' as const };
+  const teamInfo = {
+    type: 'postgres',
+    teamEnabled: true,
+    state: 'team-cloud-needs-invite' as const,
+  };
 
   it('reports a joined member as team-cloud-member (not needs-invite)', () => {
     expect(applyTeamMembershipState(teamInfo, { joined: true, isCreator: false })).toBe(
@@ -164,7 +168,10 @@ describe('applyTeamMembershipState', () => {
   it('leaves non-team / local DBs untouched', () => {
     expect(applyTeamMembershipState({ type: 'sqlite', state: 'local' }, null)).toBe('local');
     expect(
-      applyTeamMembershipState({ type: 'postgres', teamEnabled: false, state: 'cloud-connected' }, { joined: true, isCreator: false }),
+      applyTeamMembershipState(
+        { type: 'postgres', teamEnabled: false, state: 'cloud-connected' },
+        { joined: true, isCreator: false },
+      ),
     ).toBe('cloud-connected');
   });
 });

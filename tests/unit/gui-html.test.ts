@@ -13,7 +13,7 @@ describe('guiAppHtml', () => {
     // assert the Database Settings entry plus the data-model host hook.
     expect(guiAppHtml).toContain('href="#/settings/database"');
     expect(guiAppHtml).not.toContain('href="#/settings/data-model"');
-    expect(guiAppHtml).toContain("id=\"data-model-host\"");
+    expect(guiAppHtml).toContain('id="data-model-host"');
     expect(guiAppHtml).toContain('renderDataModelInto');
 
     // Branding

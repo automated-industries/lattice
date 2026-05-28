@@ -2112,20 +2112,20 @@ These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entitie
 
 **HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
 
-| Route                      | Method | Lattice call                  |
-| -------------------------- | ------ | ----------------------------- |
-| `/project`                 | GET    | (config + manifest summary)   |
-| `/entities`                | GET    | tables + `db.count` per table |
-| `/graph`                   | GET    | (schema graph for Data Model) |
-| `/tables/:table/rows`      | GET    | `db.query(table, …)`          |
-| `/tables/:table/rows`      | POST   | `db.insert(table, body)`      |
-| `/tables/:table/rows/:id`  | GET    | `db.get(table, id)`           |
-| `/tables/:table/rows/:id`  | PATCH  | `db.update(table, id, body)`  |
-| `/tables/:table/rows/:id`  | DELETE | `db.delete(table, id)`        |
-| `/tables/:junction/link`   | POST   | `db.link(junction, body)`     |
-| `/tables/:junction/unlink` | POST   | `db.unlink(junction, body)`   |
-| `/schema/entities`         | POST   | create a new entity/table     |
-| `/schema/entities/:name/share` | POST | share/unshare a table you own with the team (cloud, owner-only) |
+| Route                          | Method | Lattice call                                                    |
+| ------------------------------ | ------ | --------------------------------------------------------------- |
+| `/project`                     | GET    | (config + manifest summary)                                     |
+| `/entities`                    | GET    | tables + `db.count` per table                                   |
+| `/graph`                       | GET    | (schema graph for Data Model)                                   |
+| `/tables/:table/rows`          | GET    | `db.query(table, …)`                                            |
+| `/tables/:table/rows`          | POST   | `db.insert(table, body)`                                        |
+| `/tables/:table/rows/:id`      | GET    | `db.get(table, id)`                                             |
+| `/tables/:table/rows/:id`      | PATCH  | `db.update(table, id, body)`                                    |
+| `/tables/:table/rows/:id`      | DELETE | `db.delete(table, id)`                                          |
+| `/tables/:junction/link`       | POST   | `db.link(junction, body)`                                       |
+| `/tables/:junction/unlink`     | POST   | `db.unlink(junction, body)`                                     |
+| `/schema/entities`             | POST   | create a new entity/table                                       |
+| `/schema/entities/:name/share` | POST   | share/unshare a table you own with the team (cloud, owner-only) |
 
 On a team cloud, `/entities` and `/graph` (and the queryable `/tables/*` allowlist) are filtered to the tables you own plus tables shared to the team — so the API surface matches exactly what the GUI shows; a table you can't see is not reachable. `/entities` rows carry `shared` / `ownedByMe` flags in that mode.
 

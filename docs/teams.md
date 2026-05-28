@@ -142,13 +142,13 @@ LOCAL  →  CLOUD CONNECTED  →  TEAM CLOUD (creator | member | needs-invite)
 
 State detection (returned by `GET /api/dbconfig` as the `state` field; `isCreator`, `teamId`, and `myUserId` are returned alongside it for the SPA's member-admin UI):
 
-| State                     | Detection                                                                                                                  |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `local`                   | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                             |
-| `cloud-connected`         | YAML resolves to a Postgres URL, `__lattice_team_identity` row absent.                                                     |
+| State                     | Detection                                                                                                                          |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `local`                   | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                     |
+| `cloud-connected`         | YAML resolves to a Postgres URL, `__lattice_team_identity` row absent.                                                             |
 | `team-cloud-creator`      | YAML is cloud, identity row present, and the operator's resolved identity is a team member whose user id matches the team creator. |
-| `team-cloud-member`       | YAML is cloud, identity row present, operator is a member but not the creator.                                             |
-| `team-cloud-needs-invite` | YAML is cloud, identity row present, but the operator is **not** a member (no `__lattice_team_members` row resolves for them). |
+| `team-cloud-member`       | YAML is cloud, identity row present, operator is a member but not the creator.                                                     |
+| `team-cloud-needs-invite` | YAML is cloud, identity row present, but the operator is **not** a member (no `__lattice_team_members` row resolves for them).     |
 
 > **v1.14 change:** membership is now the authoritative signal — the state is derived from whether the operator's identity resolves to a live `__lattice_team_members` row, not from whether a `~/.lattice/keys/<label>.token` file happens to be on disk. This stopped an already-joined member from being shown the "paste invite token to join" panel.
 
@@ -230,7 +230,7 @@ Subcommands:
 `lattice gui` (no `--team-cloud`) drives the same flows from a browser. As of v1.14 the settings sidebar has three entries and **Database Settings is the hub for everything about the active database** — there is no separate "Teams" or "Project Config" page:
 
 - **Lattice Settings** — the catalog of every database this lattice can switch to (the same list as the header dropdown), plus an Add-new-database entry. Each row shows a Local | Cloud tag.
-- **Database Settings** — everything about the *active* database:
+- **Database Settings** — everything about the _active_ database:
   - **Name** — editable for the owner; read-only for members. Cloud renames write `__lattice_team_identity.team_name` and broadcast to every member in realtime; local renames write a `name:` key into the YAML.
   - **Database** — connection summary + state badge. For a team cloud it shows the **Members** list inline (the owner is always listed as `creator`, and your own row is marked "(you)").
   - **Data Model** — the entity graph (moved here from a separate nav item), including the native `files`/`secrets` objects, with a **Share with team / Unshare** toggle on each table you own.
@@ -269,8 +269,8 @@ Cloud-side:
 | `__lattice_team_identity`  | `id='singleton', team_id, team_name, creator_email, created_at`                                                                        |
 | `__lattice_team_members`   | `(team_id, user_id) PK, role IN ('creator','member'), joined_at`                                                                       |
 | `__lattice_invitations`    | `id, team_id, token_hash UNIQUE, invitee_email NOT NULL, invited_by_user_id, created_at, expires_at, redeemed_at, redeemed_by_user_id` |
-| `__lattice_shared_objects` | `(team_id, table_name) PK, schema_spec_json, schema_version, …` — tables shared to the whole team                                       |
-| `__lattice_object_owners`  | `(team_id, table_name) PK, owner_user_id, created_at` — creator of every user-facing table; drives per-user visibility (v1.14+)         |
+| `__lattice_shared_objects` | `(team_id, table_name) PK, schema_spec_json, schema_version, …` — tables shared to the whole team                                      |
+| `__lattice_object_owners`  | `(team_id, table_name) PK, owner_user_id, created_at` — creator of every user-facing table; drives per-user visibility (v1.14+)        |
 | `__lattice_change_log`     | `id, seq (monotonic), team_id, table_name, pk, op, payload_json, owner_user_id, created_at`                                            |
 | `__lattice_row_links`      | `(team_id, table_name, pk) PK, owner_user_id, linked_at`                                                                               |
 
