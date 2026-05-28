@@ -39,6 +39,12 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('initThreadControls();');
   });
 
+  it('checks native-entity setup on boot', () => {
+    expect(guiAppHtml).toContain('function checkNativeSetup');
+    expect(guiAppHtml).toContain("'/api/native-entities'");
+    expect(guiAppHtml).toContain('checkNativeSetup();');
+  });
+
   it('inline SPA script parses without syntax errors', () => {
     // The inline <script> isn't type-checked or bundled, so a syntax error
     // would only surface in the browser. new Function() compiles (but does
