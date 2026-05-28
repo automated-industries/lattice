@@ -144,11 +144,17 @@ export interface VoiceCredential {
  * configured. Falls back to OPENAI_API_KEY / ELEVENLABS_API_KEY env vars.
  * Returns null when no voice key is available.
  */
+const STT_PROVIDER_KIND = 'stt_provider';
+
 export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential | null> {
   const openai = (await secretValue(db, CREDENTIALS.openai.kind)) ?? process.env.OPENAI_API_KEY ?? null;
-  if (openai) return { provider: 'openai', apiKey: openai };
   const eleven =
     (await secretValue(db, CREDENTIALS.elevenlabs.kind)) ?? process.env.ELEVENLABS_API_KEY ?? null;
+  const pref = await secretValue(db, STT_PROVIDER_KIND);
+  // Honor an explicit choice when its key is available, else infer (OpenAI first).
+  if (pref === 'elevenlabs' && eleven) return { provider: 'elevenlabs', apiKey: eleven };
+  if (pref === 'openai' && openai) return { provider: 'openai', apiKey: openai };
+  if (openai) return { provider: 'openai', apiKey: openai };
   if (eleven) return { provider: 'elevenlabs', apiKey: eleven };
   return null;
 }
@@ -224,8 +230,34 @@ export async function dispatchAssistantRoute(
       hasClaudeAuth: await hasClaudeAuth(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
+      sttPreference: (await secretValue(db, STT_PROVIDER_KIND)) ?? 'auto',
       oauthEnabled: oauthConfigured(),
     });
+    return true;
+  }
+
+  // PUT /api/assistant/stt-provider { provider } — explicit voice provider choice.
+  if (method === 'PUT' && pathname === '/api/assistant/stt-provider') {
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const provider = typeof body.provider === 'string' ? body.provider : 'auto';
+    if (!['auto', 'openai', 'elevenlabs'].includes(provider)) {
+      sendJson(res, { error: `unknown provider: ${provider}` }, 400);
+      return true;
+    }
+    if (provider === 'auto') {
+      for (const row of await liveSecretsOfKind(db, STT_PROVIDER_KIND)) {
+        await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+      }
+    } else {
+      await storeSecret(db, STT_PROVIDER_KIND, 'Voice provider preference', provider);
+    }
+    sendJson(res, { ok: true });
     return true;
   }
 
