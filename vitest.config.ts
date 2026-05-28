@@ -30,6 +30,14 @@ export default defineConfig({
         // Same story: `registerDirectViaPostgres` is the postgres://
         // branch of `register`, gated on a real Postgres connection.
         'src/teams/register-direct.ts',
+        // Team-cloud ownership glue (resolveTeamContext / isVisibleInTeam /
+        // shareEntityWithTeam). These only run when the active GUI database
+        // is a team-enabled postgres:// cloud — they open/query the cloud
+        // directly and short-circuit against the SQLite test harness, same
+        // as direct-ops.ts. The pure ownership helpers they build on are
+        // unit-tested in tests/integration/direct-ops.test.ts; the SQL
+        // behaviour is exercised manually against a real cloud at release.
+        'src/gui/team-context.ts',
       ],
       thresholds: {
         lines: 80,
