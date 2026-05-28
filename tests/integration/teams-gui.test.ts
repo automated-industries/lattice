@@ -305,6 +305,54 @@ describe('teams GUI — endpoints', () => {
     expect(new Date(inviteRes.body.expires_at).getTime()).toBeGreaterThan(Date.now());
   });
 
+  it('creator kicks a member via the members route', async () => {
+    const cloud = await startCloud();
+    const creator = await startLocalGui(true);
+    const create = await api(`${creator.url}/api/teams-gui/connections/register-and-create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        cloud_url: cloud.url,
+        email: 'alice@example.com',
+        user_name: 'Alice',
+        team_name: 'Atlas',
+      }),
+    });
+    const teamId = create.body.team.id as string;
+
+    // Invite + join a second member.
+    const invite = await api(`${creator.url}/api/teams-gui/teams/${teamId}/invitations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ invitee_email: 'bob@example.com' }),
+    });
+    const bob = await startLocalGui(true);
+    const join = await api(`${bob.url}/api/teams-gui/connections/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        cloud_url: cloud.url,
+        invite_token: invite.body.raw_token,
+        email: 'bob@example.com',
+        name: 'Bob',
+      }),
+    });
+    const bobUserId = (join.body.user as { id: string }).id;
+
+    let members = await api(`${creator.url}/api/teams-gui/teams/${teamId}/members`);
+    expect(members.body.members).toHaveLength(2);
+
+    // Creator removes Bob.
+    const kick = await api(`${creator.url}/api/teams-gui/teams/${teamId}/members/${bobUserId}`, {
+      method: 'DELETE',
+    });
+    expect(kick.status).toBe(200);
+
+    members = await api(`${creator.url}/api/teams-gui/teams/${teamId}/members`);
+    expect(members.body.members).toHaveLength(1);
+    expect(members.body.members[0]?.role).toBe('creator');
+  });
+
   it('leave + destroy cleanly remove the local connection', async () => {
     const cloud = await startCloud();
     const sharer = await startLocalGui(true);

@@ -291,6 +291,20 @@ describe('GUI server', () => {
     expect(entityNames).toContain('secrets');
   });
 
+  it('rejects share on a non-team (local) database with 400', async () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+    const res = await fetch(`${server.url}/api/schema/entities/agents/share`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ share: true }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/team cloud/i);
+  });
+
   it('round-trips row CRUD via /api/tables/:table/rows', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });

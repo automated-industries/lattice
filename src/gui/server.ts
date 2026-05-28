@@ -22,16 +22,13 @@ import {
   CLOUD_INTERNAL_TABLE_DEFS,
   installCloudInternalTriggers,
 } from '../teams/internal-tables.js';
+import { recordObjectOwner } from '../teams/direct-ops.js';
 import {
-  listObjectOwners,
-  reconcileObjectOwners,
-  recordObjectOwner,
-  resolveUserIdByEmail,
-  listSharedObjectsDirect,
-  shareObjectDirect,
-  unshareObjectDirect,
-} from '../teams/direct-ops.js';
-import { serializeSchema } from '../teams/schema-spec.js';
+  type TeamContext,
+  isVisibleInTeam,
+  resolveTeamContext,
+  shareEntityWithTeam,
+} from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
@@ -457,46 +454,6 @@ function readRowContext(
   });
 }
 
-/**
- * Resolved team-cloud ownership context for the active DB. Present only
- * when the active DB is a team-enabled Postgres cloud. Every member
- * connects to the same physical Postgres, so visibility is enforced
- * here: a user sees the tables they own PLUS tables shared to the team.
- */
-interface TeamContext {
-  teamId: string;
-  /** Resolved cloud user id of the operator sitting at this GUI. */
-  myUserId: string;
-  /** Cloud user id of the team creator, or null if unresolved. */
-  creatorUserId: string | null;
-  isCreator: boolean;
-  /**
-   * True when the operator currently has a `__lattice_team_members` row.
-   * This is the authoritative "am I in the team?" signal — distinct from
-   * `myUserId` resolving (which only means their email maps to a user
-   * that may since have been kicked / left).
-   */
-  isMember: boolean;
-  /** table_name → owner_user_id for every owned table on the team. */
-  owners: Map<string, string>;
-  /** Tables explicitly shared to the whole team. */
-  shared: Set<string>;
-}
-
-/**
- * True when `tableName` should be visible to the operator in the given
- * team context: it's shared to the team, owned by the operator, or has
- * no ownership record at all (unowned tables degrade to visible so a
- * failed reconcile never hides data — security-relevant native objects
- * always get an owner via reconcile, so they don't hit this branch).
- */
-function isVisibleInTeam(tableName: string, ctx: TeamContext): boolean {
-  if (ctx.shared.has(tableName)) return true;
-  const owner = ctx.owners.get(tableName);
-  if (owner === undefined) return true;
-  return owner === ctx.myUserId;
-}
-
 /** Everything tied to a single open lattice config / DB. Swapped wholesale when the user picks a different DB. */
 interface ActiveDb {
   configPath: string;
@@ -790,85 +747,6 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     realtime,
     dbPath: parsed.dbPath,
   };
-}
-
-/**
- * Resolve the team-cloud ownership context for a direct-Postgres team
- * DB. Identity comes from the singleton `__lattice_team_identity` row;
- * the operator's cloud user id is resolved from the local
- * `__lattice_user_identity` email (the email they registered/redeemed
- * with), falling back to the saved team connection. Unowned candidate
- * tables are reconciled to the creator so visibility is deterministic.
- * Returns null when the identity row is missing or has no team_id.
- */
-async function resolveTeamContext(
-  db: Lattice,
-  teamsClient: TeamsClient,
-  cloudUrl: string,
-  candidateTables: string[],
-): Promise<TeamContext | null> {
-  const identity = (await db.get('__lattice_team_identity', 'singleton')) as {
-    team_id?: string;
-    creator_email?: string;
-  } | null;
-  if (!identity?.team_id) return null;
-  const teamId = identity.team_id;
-  const creatorUserId = identity.creator_email
-    ? await resolveUserIdByEmail(db, identity.creator_email)
-    : null;
-
-  // Resolve "me": prefer the operator's mirrored identity email, fall
-  // back to the saved team connection's my_user_id.
-  let myUserId = '';
-  try {
-    const me = (await db.get('__lattice_user_identity', 'singleton')) as {
-      email?: string;
-    } | null;
-    if (me?.email) myUserId = (await resolveUserIdByEmail(db, me.email)) ?? '';
-  } catch {
-    myUserId = '';
-  }
-  if (!myUserId) {
-    try {
-      const conns = await teamsClient.listConnections();
-      const conn =
-        conns.find((c) => c.cloud_url === cloudUrl) ?? conns.find((c) => c.team_id === teamId);
-      myUserId = conn?.my_user_id ?? '';
-    } catch {
-      // leave empty
-    }
-  }
-
-  // Authoritative membership: do I currently have a team_members row?
-  let isMember = false;
-  if (myUserId) {
-    try {
-      const rows = (await db.query('__lattice_team_members', {
-        filters: [
-          { col: 'team_id', op: 'eq', val: teamId },
-          { col: 'user_id', op: 'eq', val: myUserId },
-        ],
-        limit: 1,
-      })) as unknown as unknown[];
-      isMember = rows.length > 0;
-    } catch {
-      isMember = false;
-    }
-  }
-
-  if (creatorUserId) {
-    await reconcileObjectOwners(db, teamId, creatorUserId, candidateTables);
-  }
-  const owners = await listObjectOwners(db, teamId);
-  let shared = new Set<string>();
-  try {
-    const summaries = await listSharedObjectsDirect(cloudUrl, teamId);
-    shared = new Set(summaries.map((s) => s.table));
-  } catch {
-    // Shared-object table unreachable — treat as nothing shared.
-  }
-  const isCreator = !!creatorUserId && myUserId === creatorUserId;
-  return { teamId, myUserId, creatorUserId, isCreator, isMember, owners, shared };
 }
 
 /**
@@ -1233,33 +1111,20 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Sharing is only available on team cloud databases' }, 400);
             return;
           }
-          if (!active.validTables.has(table)) {
-            sendJson(res, { error: `Unknown entity: ${table}` }, 400);
-            return;
-          }
-          if (ctx.owners.get(table) !== ctx.myUserId) {
-            sendJson(res, { error: 'Only the table owner can change sharing' }, 403);
-            return;
-          }
           const body = (await readJsonBody(req)) as { share?: unknown };
-          const wantShare = body.share === true;
-          if (wantShare) {
-            const cols = active.db.getRegisteredColumns(table);
-            if (!cols) {
-              sendJson(res, { error: `Table "${table}" is not registered` }, 404);
-              return;
-            }
-            const spec = serializeSchema(
-              { columns: cols, render: () => '', outputFile: '' },
-              active.db.getPrimaryKey(table),
-            );
-            await shareObjectDirect(active.dbPath, ctx.teamId, ctx.myUserId, table, spec);
-          } else {
-            await unshareObjectDirect(active.dbPath, ctx.teamId, table);
+          const result = await shareEntityWithTeam(
+            active.db,
+            active.dbPath,
+            ctx,
+            active.validTables,
+            table,
+            body.share === true,
+          );
+          if (result.status === 200) {
+            await disposeActive(active);
+            active = await openConfig(active.configPath, active.outputDir);
           }
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
-          sendJson(res, { ok: true, table, shared: wantShare });
+          sendJson(res, result.body, result.status);
           return;
         }
 
