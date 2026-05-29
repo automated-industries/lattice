@@ -2101,6 +2101,8 @@ The convergence means you don't need to duplicate entity-context definitions in 
 
 **Dashboard renders every entity (v1.13.3+).** Previously the dashboard cards filtered through a hardcoded entity list (`meetings`, `people`, `messages`, `projects`, `repositories`, `files`). Installs whose YAML declared different names saw a blank dashboard. Now every first-class entity gets a card; the hardcoded list survives as an ordering preference only.
 
+**Approximate row counts on Postgres (v1.14.1+).** The dashboard / entity-list view reads row counts from `pg_class.reltuples` (the planner statistic maintained by `ANALYZE` / autovacuum) so that a single query covers every table. Older versions issued one `COUNT(*)` per table in parallel, which exhausted small connection pools (e.g. a 95-table database against Supabase's 15-slot session pooler). The trade is that list-view counts are approximate and include soft-deleted rows for tables that have a `deleted_at` column; per-table drill-in still shows exact filtered counts. SQLite-backed installs are unaffected and continue to show exact, soft-delete-aware counts (no pool to exhaust).
+
 **Views**
 
 - **Dashboard** (`#/`) — one card per first-class entity with live row counts.
