@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import {
   getDbCredential,
@@ -248,7 +248,10 @@ describe('config parser — ${LATTICE_DB:<label>} resolver', () => {
   });
 
   it('resolves relative SQLite paths against the config directory', () => {
-    const r = resolveDbPath('./data/foo.db', '/some/dir');
-    expect(r).toBe('/some/dir/data/foo.db');
+    const dir = resolve('/some/dir');
+    const r = resolveDbPath('./data/foo.db', dir);
+    // Compare against the platform-native resolution (drive letter +
+    // backslashes on Windows) — resolveDbPath returns a real fs path.
+    expect(r).toBe(resolve(dir, 'data/foo.db'));
   });
 });

@@ -9,6 +9,8 @@ import { serializeSchema, type SchemaSpec } from './schema-spec.js';
  */
 export interface TeamsCliArgs {
   subcommand?: string | undefined;
+  /** Third positional for two-level subcommands, e.g. `dlq` → `list`. */
+  action?: string | undefined;
   config: string;
   cloud?: string | undefined;
   token?: string | undefined;
@@ -24,6 +26,8 @@ export interface TeamsCliArgs {
   userId?: string | undefined;
   table?: string | undefined;
   pk?: string | undefined;
+  /** For `dlq retry` / `dlq purge`: a specific DLQ entry id (optional). */
+  id?: string | undefined;
 }
 
 const TEAMS_USAGE = [
@@ -47,6 +51,7 @@ const TEAMS_USAGE = [
   '  pull       Pull change envelopes (--team)',
   '  push       Drain the outbox (--team)',
   '  status     Show sync status (--team)',
+  '  dlq        Inspect the dead-letter queue: dlq list|retry|purge (--team [--id])',
   '',
   'Options:',
   '  --cloud <url>          Cloud server URL (e.g. http://localhost:4317)',
@@ -59,6 +64,7 @@ const TEAMS_USAGE = [
   '  --team-id <uuid>       Team id (disambiguates duplicate names)',
   '  --table <name>         Table name (for share / unshare / link / unlink)',
   '  --pk <id>              Row primary key (for link / unlink)',
+  '  --id <uuid>            DLQ entry id (for dlq retry / purge — omit for all)',
   '  --expires <hours>      Invitation expiry in hours (default: 168 = 7 days)',
   '  --user-id <uuid>       User id to kick',
   '  --config, -c <path>    Local lattice config (default: ./lattice.config.yml)',
@@ -120,6 +126,9 @@ export async function runTeamsCommand(args: TeamsCliArgs): Promise<void> {
         return;
       case 'status':
         await runStatus(args);
+        return;
+      case 'dlq':
+        await runDlq(args);
         return;
       default:
         console.error(`Unknown teams subcommand: ${sub}`);
@@ -485,6 +494,53 @@ async function runStatus(args: TeamsCliArgs): Promise<void> {
       `Outbox depth:    ${status.outbox_depth.toString()}  (failing: ${status.outbox_failing.toString()})`,
     );
     console.log(`DLQ depth:       ${status.dlq_depth.toString()}`);
+    if (status.dlq_depth > 0) {
+      console.log(`  → inspect with: lattice teams dlq list --team "${status.team_name}"`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+async function runDlq(args: TeamsCliArgs): Promise<void> {
+  const action = args.action ?? 'list';
+  const db = await openLocal(args.config);
+  try {
+    const client = new TeamsClient(db);
+    await client.attachWriteHooks();
+    const conn = await resolveConnection(client, args);
+    switch (action) {
+      case 'list': {
+        const entries = await client.listDlq(conn);
+        if (entries.length === 0) {
+          console.log(`DLQ for "${conn.team_name}" is empty.`);
+          return;
+        }
+        console.log(`DLQ for "${conn.team_name}" — ${entries.length.toString()} entry(ies):`);
+        for (const e of entries) {
+          const target = e.table_name ? `${e.table_name}${e.pk ? `/${e.pk}` : ''}` : '(schema)';
+          console.log(`  ${e.id}  [${e.op}] ${target}  @ ${e.created_at}`);
+          console.log(`      error: ${e.error}`);
+        }
+        return;
+      }
+      case 'retry': {
+        const result = await client.retryDlq(conn, args.id);
+        console.log(
+          `Retried ${result.retried.toString()} DLQ entry(ies) for "${conn.team_name}": ` +
+            `${result.succeeded.toString()} applied, ${result.failed.toString()} still failing.`,
+        );
+        if (result.failed > 0) process.exit(1);
+        return;
+      }
+      case 'purge': {
+        const removed = await client.purgeDlq(conn, args.id);
+        console.log(`Purged ${removed.toString()} DLQ entry(ies) for "${conn.team_name}".`);
+        return;
+      }
+      default:
+        throw new Error(`Unknown dlq action "${action}" — use list | retry | purge`);
+    }
   } finally {
     db.close();
   }

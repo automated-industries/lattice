@@ -40,6 +40,24 @@ describe('framework native entities', () => {
       expect(names).toContain('files');
     });
 
+    it('every NOT NULL native column has a DEFAULT (so ADD COLUMN is always safe)', () => {
+      // Regression: adding a NOT NULL column without a default via ALTER TABLE
+      // ADD COLUMN fails ("Cannot add a NOT NULL column with default value
+      // NULL") on both SQLite and Postgres. The native-entity adopt + team
+      // shared-schema sync paths use ADD COLUMN, so any NOT NULL native column
+      // must carry a DEFAULT.
+      const offenders: string[] = [];
+      for (const [entity, def] of Object.entries(NATIVE_ENTITY_DEFS)) {
+        for (const [col, type] of Object.entries(def.columns)) {
+          const t = type.toUpperCase();
+          if (t.includes('NOT NULL') && !t.includes('DEFAULT') && !t.includes('PRIMARY KEY')) {
+            offenders.push(`${entity}.${col}`);
+          }
+        }
+      }
+      expect(offenders).toEqual([]);
+    });
+
     it('is idempotent — second call is a no-op', () => {
       expect(() => {
         registerNativeEntities(db);
@@ -52,7 +70,7 @@ describe('framework native entities', () => {
     it('exports the canonical column shapes via NATIVE_ENTITY_DEFS', () => {
       expect(NATIVE_ENTITY_DEFS.secrets.columns).toMatchObject({
         id: 'TEXT PRIMARY KEY',
-        name: 'TEXT NOT NULL',
+        name: "TEXT NOT NULL DEFAULT ''",
         value: 'TEXT',
       });
       expect(NATIVE_ENTITY_DEFS.secrets.encrypted).toEqual({ columns: ['value'] });
@@ -92,11 +110,17 @@ describe('framework native entities', () => {
     it('throws at init time when a table has encrypted columns but no key is configured', () => {
       const dbPath2 = join(tmpDir, 'no-key.db');
       const db2 = new Lattice(dbPath2);
-      registerNativeEntities(db2);
-      // The validation runs in init()'s synchronous prefix so consumers
-      // get a thrown Error rather than a Promise rejection — see the
-      // comment on Lattice.init().
-      expect(() => db2.init()).toThrow(/encryptionKey/);
+      try {
+        registerNativeEntities(db2);
+        // The validation runs in init()'s synchronous prefix so consumers
+        // get a thrown Error rather than a Promise rejection — see the
+        // comment on Lattice.init().
+        expect(() => db2.init()).toThrow(/encryptionKey/);
+      } finally {
+        // Close the handle so Windows can unlink the file in afterEach (open
+        // files are locked on Windows; unlinking one throws EBUSY).
+        db2.close();
+      }
     });
   });
 

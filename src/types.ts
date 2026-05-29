@@ -644,12 +644,42 @@ export interface LinkOptions {
 }
 
 /**
+ * A junction link that {@link Lattice.seed} could not create because its
+ * target row did not resolve. Surfaced (never silently dropped) in
+ * {@link SeedResult.unresolvedLinks} so callers can reconcile — create the
+ * missing target, then re-seed — instead of ending up with a record that
+ * cites a relationship in text but has no link in the graph.
+ */
+export interface UnresolvedLink {
+  /** Natural-key value of the source record whose link failed to resolve. */
+  record: string;
+  /** Field on the source record that held the array of target names. */
+  field: string;
+  /** The target name that did not resolve to an existing row. */
+  name: string;
+  /** Junction table the link would have been written to. */
+  junction: string;
+  /** Table the name was looked up in. */
+  resolveTable: string;
+  /** Column on the target table the name was matched against. */
+  resolveBy: string;
+}
+
+/**
  * Result from {@link Lattice.seed}.
  */
 export interface SeedResult {
   upserted: number;
   linked: number;
   softDeleted: number;
+  /**
+   * Links whose target row did not resolve. Empty when every link
+   * resolved. Always present, so callers can check
+   * `result.unresolvedLinks.length` without a guard. With
+   * `onUnresolvedLink: 'throw'`, {@link Lattice.seed} throws a
+   * `SeedReconciliationError` carrying these instead of returning them.
+   */
+  unresolvedLinks: UnresolvedLink[];
 }
 
 /**
@@ -688,6 +718,15 @@ export interface SeedConfig {
   softDeleteMissing?: boolean;
   /** Organization ID for org-scoped tables. */
   orgId?: string;
+  /**
+   * How to handle a junction link whose target row doesn't resolve.
+   * - `'collect'` (default): record it in {@link SeedResult.unresolvedLinks}
+   *   and continue. Preserves the historical non-throwing behavior.
+   * - `'throw'`: abort the seed with a `SeedReconciliationError` listing
+   *   every unresolved link. Use for pipelines that must never leave a
+   *   record citing a relationship that has no link in the graph.
+   */
+  onUnresolvedLink?: 'collect' | 'throw';
 }
 
 // ---------------------------------------------------------------------------
