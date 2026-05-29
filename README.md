@@ -804,6 +804,16 @@ await db.seed({
 });
 ```
 
+A junction link whose target row doesn't resolve is **never silently dropped**. `SeedResult.unresolvedLinks` lists every such link (source record, field, target name, junction). Pass `onUnresolvedLink: 'throw'` to abort with a `SeedReconciliationError` instead — for pipelines that must never leave a record citing a relationship that has no link in the graph:
+
+```typescript
+const result = await db.seed({ ...config, onUnresolvedLink: 'collect' });
+if (result.unresolvedLinks.length) {
+  // create the missing targets, then re-seed
+  console.warn('unresolved links:', result.unresolvedLinks);
+}
+```
+
 ### `buildReport()` (v0.14+)
 
 ```typescript
