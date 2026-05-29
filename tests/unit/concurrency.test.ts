@@ -30,16 +30,16 @@ describe('mapWithConcurrency', () => {
   it('runs every item exactly once', async () => {
     const seen: number[] = [];
     const items = Array.from({ length: 13 }, (_, i) => i);
-    const out = await mapWithConcurrency(items, 5, async (n) => {
+    const out = await mapWithConcurrency(items, 5, (n) => {
       seen.push(n);
-      return n * 2;
+      return Promise.resolve(n * 2);
     });
     expect(seen.sort((a, b) => a - b)).toEqual(items);
     expect(out).toEqual(items.map((n) => n * 2));
   });
 
   it('handles an empty input', async () => {
-    const out = await mapWithConcurrency([], 4, async () => {
+    const out = await mapWithConcurrency([], 4, () => {
       throw new Error('should not be called');
     });
     expect(out).toEqual([]);
