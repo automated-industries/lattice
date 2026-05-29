@@ -418,4 +418,172 @@ describe('teams sync — end-to-end', () => {
       alice.db.close();
     }
   });
+
+  it('surfaces a non-owner local edit as a DLQ divergence entry instead of silently overwriting', async () => {
+    const cloud = await startCloud();
+    const { alice, aliceToken, teamId } = await bootstrapTeamWithTasks(cloud);
+    const { bob } = await inviteAndJoinBob(cloud, alice.client, aliceToken, teamId);
+
+    try {
+      const aliceConn = (await alice.client.listConnections())[0]!;
+      const bobConn = (await bob.client.listConnections())[0]!;
+
+      const taskId = await alice.db.insert('tasks', { title: 'shared', status: 'open', score: 1 });
+      await alice.client.linkRow(aliceConn, 'tasks', taskId);
+      await bob.client.pullChanges(bobConn); // materialize row + stamp synced_hash
+      await bob.client.attachWriteHooks();
+
+      // Bob edits the mirrored row locally — he's not the owner, so nothing
+      // is pushed; the edit lives only in his local mirror.
+      await bob.db.update('tasks', taskId, { status: 'bob-local-edit' });
+      expect((await bob.client.getStatus(bobConn)).outbox_depth).toBe(0);
+
+      // Alice makes the authoritative change and pushes it.
+      await alice.db.update('tasks', taskId, { status: 'alice-authoritative', score: 9 });
+      await alice.client.drainOutbox(aliceConn);
+
+      // Bob pulls — last-write-wins still converges the row to Alice's state,
+      // but Bob's lost edit is now captured in the DLQ rather than vanishing.
+      await bob.client.pullChanges(bobConn);
+      const converged = (await bob.db.get('tasks', taskId)) as { status: string } | null;
+      expect(converged?.status).toBe('alice-authoritative');
+
+      const dlq = await bob.client.listDlq(bobConn);
+      expect(dlq).toHaveLength(1);
+      expect(dlq[0]?.op).toBe('divergence');
+      expect(dlq[0]?.table_name).toBe('tasks');
+      expect(dlq[0]?.pk).toBe(taskId);
+      const payload = dlq[0]?.envelope.payload as {
+        incoming: { status: string };
+        local_overwritten: { status: string };
+      };
+      expect(payload.local_overwritten.status).toBe('bob-local-edit');
+      expect(payload.incoming.status).toBe('alice-authoritative');
+    } finally {
+      alice.db.close();
+      bob.db.close();
+    }
+  });
+
+  it('does not flag divergence when the local mirror was untouched', async () => {
+    const cloud = await startCloud();
+    const { alice, aliceToken, teamId } = await bootstrapTeamWithTasks(cloud);
+    const { bob } = await inviteAndJoinBob(cloud, alice.client, aliceToken, teamId);
+
+    try {
+      const aliceConn = (await alice.client.listConnections())[0]!;
+      const bobConn = (await bob.client.listConnections())[0]!;
+
+      const taskId = await alice.db.insert('tasks', { title: 'clean', status: 'open' });
+      await alice.client.linkRow(aliceConn, 'tasks', taskId);
+      await bob.client.pullChanges(bobConn);
+
+      // Alice updates; Bob never touched his mirror.
+      await alice.db.update('tasks', taskId, { status: 'updated' });
+      await alice.client.drainOutbox(aliceConn);
+      await bob.client.pullChanges(bobConn);
+
+      expect(((await bob.db.get('tasks', taskId)) as { status: string }).status).toBe('updated');
+      expect(await bob.client.listDlq(bobConn)).toHaveLength(0);
+    } finally {
+      alice.db.close();
+      bob.db.close();
+    }
+  });
+
+  it('DLQ is inspectable and retryable: a failed envelope replays once its dependency lands', async () => {
+    const cloud = await startCloud();
+    const { alice, aliceToken, teamId } = await bootstrapTeamWithTasks(cloud);
+    const { bob } = await inviteAndJoinBob(cloud, alice.client, aliceToken, teamId);
+
+    try {
+      const bobConn = (await bob.client.listConnections())[0]!;
+      await bob.client.pullChanges(bobConn); // ensures local teams tables exist
+
+      // Simulate a poison envelope a pull would DLQ: an upsert for a table
+      // Bob doesn't have locally yet (out-of-order delivery).
+      const envelope = {
+        seq: 9999,
+        table_name: 'widgets',
+        pk: 'w1',
+        op: 'upsert',
+        payload: { id: 'w1', label: 'arrived-early' },
+        owner_user_id: null,
+        created_at: new Date('2020-01-01T00:00:00.000Z').toISOString(),
+      };
+      await bob.db.insert('__lattice_team_dlq', {
+        id: 'dlq-poison-1',
+        team_id: bobConn.team_id,
+        envelope_json: JSON.stringify(envelope),
+        error: 'no such table: widgets',
+        created_at: new Date().toISOString(),
+      });
+
+      // Inspectable: listDlq parses and surfaces it.
+      const before = await bob.client.listDlq(bobConn);
+      expect(before).toHaveLength(1);
+      expect(before[0]?.table_name).toBe('widgets');
+      expect(before[0]?.op).toBe('upsert');
+
+      // Retry while the dependency is still missing → stays in the DLQ.
+      const r1 = await bob.client.retryDlq(bobConn);
+      expect(r1).toMatchObject({ retried: 1, succeeded: 0, failed: 1 });
+      expect(await bob.client.listDlq(bobConn)).toHaveLength(1);
+
+      // Dependency lands: the table now exists locally.
+      await bob.db.defineLate('widgets', {
+        columns: { id: 'TEXT PRIMARY KEY', label: 'TEXT' },
+        render: () => '',
+        outputFile: 'widgets.md',
+      });
+
+      // Retry again → applies cleanly and drains the DLQ.
+      const r2 = await bob.client.retryDlq(bobConn);
+      expect(r2).toMatchObject({ retried: 1, succeeded: 1, failed: 0 });
+      expect(await bob.client.listDlq(bobConn)).toHaveLength(0);
+      expect((await bob.db.get('widgets', 'w1')) as { label: string }).toMatchObject({
+        label: 'arrived-early',
+      });
+    } finally {
+      alice.db.close();
+      bob.db.close();
+    }
+  });
+
+  it('DLQ purge removes entries without applying them', async () => {
+    const cloud = await startCloud();
+    const { alice, aliceToken, teamId } = await bootstrapTeamWithTasks(cloud);
+    const { bob } = await inviteAndJoinBob(cloud, alice.client, aliceToken, teamId);
+
+    try {
+      const bobConn = (await bob.client.listConnections())[0]!;
+      await bob.client.pullChanges(bobConn);
+
+      await bob.db.insert('__lattice_team_dlq', {
+        id: 'dlq-purge-1',
+        team_id: bobConn.team_id,
+        envelope_json: JSON.stringify({
+          seq: 1,
+          table_name: 'widgets',
+          pk: 'w1',
+          op: 'upsert',
+          payload: { id: 'w1' },
+          owner_user_id: null,
+          created_at: new Date('2020-01-01T00:00:00.000Z').toISOString(),
+        }),
+        error: 'no such table: widgets',
+        created_at: new Date().toISOString(),
+      });
+
+      expect(await bob.client.listDlq(bobConn)).toHaveLength(1);
+      const removed = await bob.client.purgeDlq(bobConn);
+      expect(removed).toBe(1);
+      expect(await bob.client.listDlq(bobConn)).toHaveLength(0);
+      // Not applied: widgets table was never created locally.
+      await expect(bob.db.get('widgets', 'w1')).rejects.toThrow();
+    } finally {
+      alice.db.close();
+      bob.db.close();
+    }
+  });
 });

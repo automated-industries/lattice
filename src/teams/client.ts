@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import { LOCAL_INTERNAL_TABLE_DEFS } from './internal-tables.js';
 import { applySchemaSpec, TeamsSchemaConflictError, type SchemaSpec } from './schema-spec.js';
@@ -94,7 +94,14 @@ export interface ChangeEnvelope {
   seq: number;
   table_name: string | null;
   pk: string | null;
-  op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete';
+  /**
+   * Cloud-emitted ops are `schema`/`unshare`/`link`/`unlink`/`upsert`/`delete`.
+   * `divergence` is a client-side-only marker the puller writes into the DLQ
+   * when a non-owner local edit was overwritten by an owner update — it is
+   * never emitted by the cloud, and applying it is a no-op (the LWW overwrite
+   * already happened; the entry exists so the lost local content is visible).
+   */
+  op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete' | 'divergence';
   payload: unknown;
   owner_user_id: string | null;
   created_at: string;
@@ -119,6 +126,35 @@ export interface LocalLinkRow {
   pk: string;
   owner_user_id: string;
   linked_at: string;
+  synced_hash?: string | null;
+}
+
+/**
+ * A parsed dead-letter-queue entry — a change envelope that failed to apply
+ * during a pull (or a non-owner-overwrite divergence notice), surfaced so an
+ * operator can inspect and retry instead of it sitting invisible behind a
+ * count. See {@link TeamsClient.listDlq}.
+ */
+export interface DlqEntry {
+  id: string;
+  team_id: string;
+  /** Table the failed envelope targeted (null for schema-level ops). */
+  table_name: string | null;
+  /** Primary key the failed envelope targeted (null for schema-level ops). */
+  pk: string | null;
+  /** The envelope op, e.g. `upsert` / `link` / `divergence`. */
+  op: string;
+  /** The error that caused the envelope to land in the DLQ. */
+  error: string;
+  created_at: string;
+  /** The full envelope as stored, for retry / inspection. */
+  envelope: ChangeEnvelope;
+}
+
+export interface DlqRetryResult {
+  retried: number;
+  succeeded: number;
+  failed: number;
 }
 
 export interface SyncStatus {
@@ -998,9 +1034,14 @@ export class TeamsClient {
       }
       case 'upsert': {
         if (!env.table_name || !env.payload) return;
-        await this.local.upsert(env.table_name, env.payload as Row);
+        await this.applyUpsertEnvelope(connection, env, env.payload as Row);
         return;
       }
+      case 'divergence':
+        // Client-side-only DLQ marker — never arrives from the cloud, and the
+        // last-write-wins overwrite it records already happened. No-op so a
+        // DLQ retry simply clears the notice.
+        return;
       case 'delete': {
         if (!env.table_name || !env.pk) return;
         try {
@@ -1011,6 +1052,188 @@ export class TeamsClient {
         return;
       }
     }
+  }
+
+  /**
+   * Apply an `upsert` envelope to a local row, guarding against silently
+   * clobbering a non-owner's local edit.
+   *
+   * A non-owner who edits a mirrored row locally produces no outbox entry
+   * (only owners push), so the next owner update would overwrite it with no
+   * trace. Before the last-write-wins overwrite, this compares the current
+   * local row against the hash captured at the last sync (`synced_hash` on
+   * the link row): if they differ, the local copy diverged, so we record a
+   * `divergence` entry in the DLQ — capturing the lost local content — then
+   * still apply (LWW keeps sync converging). The loss is now visible via
+   * `lattice teams dlq list` instead of being silent.
+   *
+   * Owner rows are never overwritten by foreign upserts, so they skip the
+   * check. `synced_hash` is (re)stamped from the stored row after every apply.
+   */
+  private async applyUpsertEnvelope(
+    connection: TeamConnection,
+    env: ChangeEnvelope,
+    payload: Row,
+  ): Promise<void> {
+    const table = env.table_name;
+    const pk = env.pk;
+    if (!table) return;
+
+    const link = pk ? await this.findLocalLink(connection.team_id, table, pk) : null;
+
+    if (
+      link &&
+      pk &&
+      link.owner_user_id !== connection.my_user_id &&
+      typeof link.synced_hash === 'string' &&
+      link.synced_hash.length > 0
+    ) {
+      const current = await this.local.get(table, pk);
+      if (current && stableRowHash(current) !== link.synced_hash) {
+        await this.local.insert('__lattice_team_dlq', {
+          id: randomUUID(),
+          team_id: connection.team_id,
+          envelope_json: JSON.stringify({
+            ...env,
+            op: 'divergence',
+            payload: { incoming: payload, local_overwritten: current },
+          }),
+          error:
+            'non-owner local edit overwritten by owner update (last-write-wins); ' +
+            'lost local content captured in payload.local_overwritten',
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    await this.local.upsert(table, payload);
+
+    // Re-stamp the link's synced_hash from the row as actually stored, so the
+    // next pull's divergence check has a faithful baseline.
+    if (link && pk) {
+      const stored = await this.local.get(table, pk);
+      if (stored) {
+        await this.local.update(
+          '__lattice_local_links',
+          { team_id: connection.team_id, table_name: table, pk },
+          { synced_hash: stableRowHash(stored) },
+        );
+      }
+    }
+  }
+
+  private async findLocalLink(
+    teamId: string,
+    table: string,
+    pk: string,
+  ): Promise<LocalLinkRow | null> {
+    const rows = (await this.local.query('__lattice_local_links', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamId },
+        { col: 'table_name', op: 'eq', val: table },
+        { col: 'pk', op: 'eq', val: pk },
+      ],
+    })) as unknown as LocalLinkRow[];
+    return rows[0] ?? null;
+  }
+
+  // ── Dead-letter queue: inspect / retry / purge (1.14.x) ──────────────────
+  // The DLQ used to be write-only — failed pull envelopes landed there and
+  // could only be counted via `teams status`, never inspected or replayed.
+  // These methods make it observable and recoverable: an envelope that failed
+  // because its dependency hadn't arrived yet (out-of-order delivery) can be
+  // retried once the dependency lands, instead of being lost behind an
+  // ever-advancing pull cursor.
+
+  /**
+   * List the DLQ entries for a team, newest first, with the stored envelope
+   * parsed for inspection.
+   */
+  async listDlq(connection: TeamConnection): Promise<DlqEntry[]> {
+    await this.ensureLocalTables();
+    const rows = (await this.local.query('__lattice_team_dlq', {
+      filters: [{ col: 'team_id', op: 'eq', val: connection.team_id }],
+      orderBy: 'created_at',
+      orderDir: 'desc',
+    })) as unknown as {
+      id: string;
+      team_id: string;
+      envelope_json: string;
+      error: string;
+      created_at: string;
+    }[];
+    return rows.map((r) => {
+      const envelope = JSON.parse(r.envelope_json) as ChangeEnvelope;
+      return {
+        id: r.id,
+        team_id: r.team_id,
+        table_name: envelope.table_name ?? null,
+        pk: envelope.pk ?? null,
+        op: envelope.op,
+        error: r.error,
+        created_at: r.created_at,
+        envelope,
+      };
+    });
+  }
+
+  /**
+   * Replay DLQ entries through {@link applyEnvelope}. With `id`, retries just
+   * that entry; otherwise retries every entry for the team (oldest first, so
+   * dependencies replay before dependents). An entry that applies cleanly is
+   * deleted; one that fails again stays, with its `error` refreshed. Runs
+   * under the replay guard so a re-applied row isn't pushed back to the cloud.
+   */
+  async retryDlq(connection: TeamConnection, id?: string): Promise<DlqRetryResult> {
+    await this.ensureLocalTables();
+    const filters = [{ col: 'team_id', op: 'eq' as const, val: connection.team_id }];
+    if (id) filters.push({ col: 'id', op: 'eq' as const, val: id });
+    const rows = (await this.local.query('__lattice_team_dlq', {
+      filters,
+      orderBy: 'created_at',
+      orderDir: 'asc',
+    })) as unknown as { id: string; envelope_json: string }[];
+
+    let succeeded = 0;
+    let failed = 0;
+    this._isReplaying = true;
+    try {
+      for (const row of rows) {
+        const envelope = JSON.parse(row.envelope_json) as ChangeEnvelope;
+        try {
+          await this.applyEnvelope(connection, envelope);
+          await this.local.delete('__lattice_team_dlq', row.id);
+          succeeded++;
+        } catch (e) {
+          await this.local.update('__lattice_team_dlq', row.id, {
+            error: (e as Error).message,
+          });
+          failed++;
+        }
+      }
+    } finally {
+      this._isReplaying = false;
+    }
+    return { retried: rows.length, succeeded, failed };
+  }
+
+  /**
+   * Delete DLQ entries without applying them. With `id`, purges just that
+   * entry; otherwise purges every entry for the team. Returns the count
+   * removed. Use to discard divergence notices or envelopes that will never
+   * apply.
+   */
+  async purgeDlq(connection: TeamConnection, id?: string): Promise<number> {
+    await this.ensureLocalTables();
+    const filters = [{ col: 'team_id', op: 'eq' as const, val: connection.team_id }];
+    if (id) filters.push({ col: 'id', op: 'eq' as const, val: id });
+    const rows = (await this.local.query('__lattice_team_dlq', {
+      filters,
+    })) as unknown as { id: string }[];
+    for (const row of rows) {
+      await this.local.delete('__lattice_team_dlq', row.id);
+    }
+    return rows.length;
   }
 
   // ── Status (Phase 4) ────────────────────────────────────────────────────
@@ -1093,6 +1316,18 @@ async function doFetch<T>(
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/$/, '');
+}
+
+/**
+ * Order-independent content hash of a row, for detecting whether a locally
+ * mirrored row was edited since the last sync. Keys are sorted so JSON key
+ * order can't produce false positives; values are JSON-serialized with
+ * `undefined`/missing normalized to `null`.
+ */
+function stableRowHash(row: Row): string {
+  const keys = Object.keys(row).sort();
+  const canonical = JSON.stringify(keys.map((k) => [k, row[k] ?? null]));
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 export class TeamsHttpError extends Error {
