@@ -25,6 +25,8 @@ export const guiAppHtml = `<!doctype html>
       --row-hover: #1a1f25;
       --signal: #22d3ee;
       --warn: #fb923c;
+      --danger: #ef4444;
+      --danger-deep: #dc2626;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
       --sidebar-width: 380px;
     }
@@ -637,6 +639,12 @@ export const guiAppHtml = `<!doctype html>
     .btn.primary:hover { background: var(--accent-glow); border-color: var(--accent-glow); }
     .btn.danger { color: var(--warn); border-color: rgba(251, 146, 60, 0.4); }
     .btn.danger:hover { background: rgba(251, 146, 60, 0.12); }
+    /* Solid red for genuinely destructive, irreversible actions (delete database). */
+    .btn.destructive { background: var(--danger); color: #fff; border-color: var(--danger); font-weight: 600; }
+    .btn.destructive:hover { background: var(--danger-deep); border-color: var(--danger-deep); }
+    .btn.destructive:disabled { opacity: 0.45; cursor: not-allowed; }
+    .danger-zone { margin-top: 18px; padding: 14px; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; background: rgba(239, 68, 68, 0.05); }
+    .danger-zone h3 { margin: 0 0 6px; color: var(--danger); }
     .btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
     .btn.ghost:hover { background: var(--row-hover); color: var(--text); }
     .view-header .actions { margin-left: auto; display: flex; gap: 8px; }
@@ -3209,6 +3217,7 @@ export const guiAppHtml = `<!doctype html>
     function showModal(title, bodyHtml, opts) {
       opts = opts || {};
       var primaryLabel = opts.primaryLabel || 'Save';
+      var primaryClass = opts.primaryClass || 'primary';
       var backdrop = document.createElement('div');
       backdrop.className = 'modal-backdrop';
       backdrop.innerHTML =
@@ -3217,10 +3226,11 @@ export const guiAppHtml = `<!doctype html>
           '<div class="modal-body">' + bodyHtml + '</div>' +
           '<div class="modal-foot">' +
             '<button class="btn" data-act="cancel">Cancel</button>' +
-            '<button class="btn primary" data-act="ok">' + escapeHtml(primaryLabel) + '</button>' +
+            '<button class="btn ' + primaryClass + '" data-act="ok">' + escapeHtml(primaryLabel) + '</button>' +
           '</div>' +
         '</div>';
       document.body.appendChild(backdrop);
+      if (opts.onBody) opts.onBody(backdrop);
       function close() { if (backdrop.parentNode) document.body.removeChild(backdrop); }
       backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
       backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
@@ -3911,10 +3921,79 @@ export const guiAppHtml = `<!doctype html>
           '<div id="db-name-host"><div class="placeholder" style="padding:14px">Loading database name…</div></div>' +
           '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
           '<div id="data-model-host"><div class="placeholder" style="padding:18px">Loading data model…</div></div>' +
+          '<div id="db-danger-host"></div>' +
         '</div>';
       renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
       renderDataModelInto(document.getElementById('data-model-host'));
+      renderDatabaseDangerZone(document.getElementById('db-danger-host'));
+    }
+
+    // Confirmation modal for the irreversible delete. Gated on typing the exact
+    // database name; the OK button is solid red (destructive) and disabled until
+    // the name matches. onDone(result) runs after a successful delete.
+    function confirmDeleteDatabase(path, label, onDone) {
+      var safeLabel = (label || '').trim() || 'this database';
+      var body =
+        '<p style="margin:0 0 10px">Permanently delete <strong>' + escapeHtml(safeLabel) + '</strong>? ' +
+        'This removes its configuration and, for a local database, deletes the underlying SQLite file. ' +
+        'For a cloud database only the local connection is forgotten — the remote data is left untouched. ' +
+        '<strong style="color:var(--danger)">This cannot be undone.</strong></p>' +
+        '<p style="margin:0 0 6px;font-size:12px;color:var(--text-muted)">Type <strong>' + escapeHtml(safeLabel) + '</strong> to confirm:</p>' +
+        '<input id="confirm-db-name" type="text" autocomplete="off" style="width:100%" />';
+      showModal('Delete database', body, {
+        primaryLabel: 'Delete database',
+        primaryClass: 'destructive',
+        onBody: function (backdrop) {
+          var input = backdrop.querySelector('#confirm-db-name');
+          var ok = backdrop.querySelector('[data-act="ok"]');
+          ok.disabled = true;
+          input.addEventListener('input', function () {
+            ok.disabled = (input.value || '').trim() !== safeLabel;
+          });
+          setTimeout(function () { input.focus(); }, 0);
+        },
+        onSubmit: function (backdrop) {
+          var v = (backdrop.querySelector('#confirm-db-name').value || '').trim();
+          if (v !== safeLabel) return Promise.reject(new Error('Type the database name exactly to confirm.'));
+          return fetch('/api/databases/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: path }),
+          })
+            .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
+            .then(function (res) {
+              if (!res.d || res.d.error) throw new Error((res.d && res.d.error) || ('HTTP ' + res.status));
+              if (onDone) return onDone(res.d);
+            });
+        },
+      });
+    }
+
+    function renderDatabaseDangerZone(host) {
+      if (!host) return;
+      fetchJson('/api/databases').then(function (data) {
+        var current = (data && data.current) || {};
+        var label = current.label || current.dbFile || '';
+        var path = current.path || '';
+        if (!path) { host.innerHTML = ''; return; }
+        host.innerHTML =
+          '<div class="danger-zone">' +
+            '<h3>Danger zone</h3>' +
+            '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+              'Permanently delete this database. The configuration is removed and, for a local database, the underlying SQLite file is deleted. This cannot be undone.' +
+            '</p>' +
+            '<button class="btn destructive" id="db-delete-btn">Delete database</button>' +
+          '</div>';
+        host.querySelector('#db-delete-btn').addEventListener('click', function () {
+          confirmDeleteDatabase(path, label, function () {
+            // We just deleted the active DB; the server switched to a fallback.
+            return reloadEverything().then(function () {
+              renderDatabaseSettings(document.getElementById('content'));
+            });
+          });
+        });
+      }).catch(function () { host.innerHTML = ''; });
     }
 
     function renderDatabaseNamePanel(host) {
@@ -3996,11 +4075,14 @@ export const guiAppHtml = `<!doctype html>
           var kind = c.active
             ? (current.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)')
             : '—';
+          var rowLabel = c.label || c.name;
+          var del = '<button class="btn danger" data-delete-path="' + escapeHtml(c.path) + '" data-delete-label="' + escapeHtml(rowLabel) + '">Delete</button>';
+          var actions = (c.active ? '' : '<button class="btn" data-switch="' + escapeHtml(c.path) + '">Switch</button> ') + del;
           return '<tr>' +
-            '<td>' + escapeHtml(c.label || c.name) + (c.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
+            '<td>' + escapeHtml(rowLabel) + (c.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>' + kind + '</td>' +
             '<td><code>' + escapeHtml(c.dbFile || '') + '</code></td>' +
-            '<td>' + (c.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(c.path) + '">Switch</button>') + '</td>' +
+            '<td>' + actions + '</td>' +
           '</tr>';
         }).join('');
         host.innerHTML =
@@ -4021,6 +4103,21 @@ export const guiAppHtml = `<!doctype html>
               .then(function (r) { return r.json(); })
               .then(function () { return reloadEverything(); })
               .then(function () { renderLatticeSettings(document.getElementById('content')); });
+          });
+        });
+        host.querySelectorAll('[data-delete-path]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            confirmDeleteDatabase(
+              btn.getAttribute('data-delete-path'),
+              btn.getAttribute('data-delete-label'),
+              function () {
+                // Deleting any row may have switched the active DB (if it was
+                // the active one); refetch everything, then re-render the list.
+                return reloadEverything().then(function () {
+                  renderLatticeSettings(document.getElementById('content'));
+                });
+              },
+            );
           });
         });
         host.querySelector('#action-add-db').addEventListener('click', showCreateDatabaseWizard);

@@ -56,6 +56,17 @@ and inert until a key is configured).
   configured. The stored token is used as a Bearer `authToken` for chat +
   ingest, refreshed in place near expiry.
 
+### Added — database management
+
+- **Delete a database (destructive).** A red, confirmation-gated **Delete
+  database** action in the Database Settings danger zone and per-row in Lattice
+  Settings. `POST /api/databases/delete` removes the YAML config and — for a
+  local SQLite database — the underlying `.db` file plus its `-wal`/`-shm`/
+  `-journal` sidecars; for a cloud database only the local connection is
+  forgotten (the remote Postgres is never touched). Deleting the active database
+  switches to a sibling first; deleting the only database is refused. The
+  confirmation requires typing the database name. Disabled in team-cloud mode.
+
 ### Fixed
 
 - **Shared-schema sync no longer blanks a joined member's tables.** Applying a
