@@ -22,6 +22,7 @@ import type {
   WriteHookContext,
   SeedConfig,
   SeedResult,
+  UnresolvedLink,
   ReportConfig,
   ReportResult,
   ReportSectionResult,
@@ -1127,6 +1128,7 @@ export class Lattice {
     let linked = 0;
     let softDeleted = 0;
     const keys: string[] = [];
+    const unresolvedLinks: UnresolvedLink[] = [];
 
     for (const record of config.data) {
       const rawKey = record[config.naturalKey];
@@ -1163,7 +1165,21 @@ export class Lattice {
           const resolveTable = spec.resolveTable ?? field;
           for (const name of names) {
             const target = await this.getByNaturalKey(resolveTable, spec.resolveBy, name);
-            if (!target) continue;
+            if (!target) {
+              // Reconciliation point: the link's target doesn't exist. Surface
+              // it instead of silently dropping (Rule: no silent failures) —
+              // otherwise the source row cites a relationship in text but has
+              // no link in the graph.
+              unresolvedLinks.push({
+                record: naturalKeyVal,
+                field,
+                name,
+                junction: spec.junction,
+                resolveTable,
+                resolveBy: spec.resolveBy,
+              });
+              continue;
+            }
 
             const linkData: Row = {
               [this._inferFk(config.table)]: id,
@@ -1187,7 +1203,11 @@ export class Lattice {
       );
     }
 
-    return { upserted, linked, softDeleted };
+    if (config.onUnresolvedLink === 'throw' && unresolvedLinks.length > 0) {
+      throw new SeedReconciliationError(config.table, unresolvedLinks);
+    }
+
+    return { upserted, linked, softDeleted, unresolvedLinks };
   }
 
   /** Infer FK column name from table name (e.g., 'rule' → 'rule_id'). */
@@ -2257,6 +2277,29 @@ export class Lattice {
     if (this._initialized) {
       throw new Error(`Lattice: ${method}() must be called before init()`);
     }
+  }
+}
+
+/**
+ * Thrown by {@link Lattice.seed} when `onUnresolvedLink: 'throw'` is set and
+ * one or more junction links could not be created because their target rows
+ * did not resolve. Carries the full list so the caller can report or
+ * reconcile every missing target at once rather than discovering them one
+ * silent drop at a time.
+ */
+export class SeedReconciliationError extends Error {
+  constructor(
+    public readonly table: string,
+    public readonly unresolvedLinks: UnresolvedLink[],
+  ) {
+    const detail = unresolvedLinks
+      .map((u) => `${u.field}="${u.name}" (→ ${u.resolveTable}.${u.resolveBy})`)
+      .join(', ');
+    super(
+      `seed("${table}"): ${String(unresolvedLinks.length)} unresolved link(s) — ` +
+        `target row(s) not found: ${detail}. Create the missing target(s) and re-seed.`,
+    );
+    this.name = 'SeedReconciliationError';
   }
 }
 
