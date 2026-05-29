@@ -1,6 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
@@ -30,6 +37,7 @@ import {
   shareEntityWithTeam,
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
+import { isPostgresUrl } from '../teams/register-direct.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
@@ -907,9 +915,10 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
  * with a missing saved credential still classifies as cloud instead of throwing.
  */
 export function sqliteFileForConfig(configPath: string): string | null {
-  const raw = String(parseDocument(readFileSync(configPath, 'utf8')).get('db') ?? '').trim();
+  const dbVal = parseDocument(readFileSync(configPath, 'utf8')).get('db');
+  const raw = (typeof dbVal === 'string' ? dbVal : '').trim();
   if (!raw) return null;
-  if (isPostgresUrl(raw) || /^\$\{LATTICE_DB:/.test(raw)) return null;
+  if (isPostgresUrl(raw) || raw.startsWith('${LATTICE_DB:')) return null;
   if (raw === ':memory:' || raw.startsWith('file:')) return null;
   return resolve(dirname(configPath), raw);
 }
@@ -1983,6 +1992,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             resolveClose();
           });
         });
+        // Force-drop lingering keep-alive / SSE connections (the realtime
+        // `/api/realtime/stream` EventSource stays open indefinitely), so
+        // close() doesn't hang waiting for a browser tab to disconnect.
+        if (typeof server.closeAllConnections === 'function') {
+          server.closeAllConnections();
+        }
       }),
   };
 }

@@ -54,7 +54,11 @@ function writeConfig(dir: string, name: string, dbName: string): string {
 }
 
 type ApiResult = { status: number; body: Record<string, unknown> };
-async function api(base: string, path: string, init: { method?: string; body?: unknown } = {}): Promise<ApiResult> {
+async function api(
+  base: string,
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<ApiResult> {
   const res = await fetch(`${base}${path}`, {
     method: init.method ?? 'GET',
     headers: init.body ? { 'content-type': 'application/json' } : undefined,
@@ -64,7 +68,12 @@ async function api(base: string, path: string, init: { method?: string; body?: u
   return { status: res.status, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} };
 }
 
-async function bootWithTwo(): Promise<{ handle: GuiServerHandle; dir: string; aPath: string; bPath: string }> {
+async function bootWithTwo(): Promise<{
+  handle: GuiServerHandle;
+  dir: string;
+  aPath: string;
+  bPath: string;
+}> {
   const dir = mkdtempSync(join(tmpdir(), 'lattice-del-'));
   dirs.push(dir);
   mkdirSync(join(dir, 'data'), { recursive: true });
@@ -91,7 +100,10 @@ describe('POST /api/databases/delete', () => {
     const betaDb = join(dir, 'data', 'beta.db');
     writeFileSync(betaDb, '');
 
-    const r = await api(handle.url, '/api/databases/delete', { method: 'POST', body: { path: bPath } });
+    const r = await api(handle.url, '/api/databases/delete', {
+      method: 'POST',
+      body: { path: bPath },
+    });
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
     expect(r.body.switchedTo).toBeNull();
@@ -113,7 +125,10 @@ describe('POST /api/databases/delete', () => {
     // alpha was opened on boot, so its db file exists.
     expect(existsSync(alphaDb)).toBe(true);
 
-    const r = await api(handle.url, '/api/databases/delete', { method: 'POST', body: { path: aPath } });
+    const r = await api(handle.url, '/api/databases/delete', {
+      method: 'POST',
+      body: { path: aPath },
+    });
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
     expect(resolve(r.body.switchedTo as string)).toBe(resolve(bPath));
@@ -142,7 +157,10 @@ describe('POST /api/databases/delete', () => {
     });
     servers.push(handle);
 
-    const r = await api(handle.url, '/api/databases/delete', { method: 'POST', body: { path: only } });
+    const r = await api(handle.url, '/api/databases/delete', {
+      method: 'POST',
+      body: { path: only },
+    });
     expect(r.status).toBe(400);
     expect(String(r.body.error)).toContain('only database');
     expect(existsSync(only)).toBe(true);
@@ -151,7 +169,10 @@ describe('POST /api/databases/delete', () => {
   it('rejects an unknown config path', async () => {
     const { handle, dir } = await bootWithTwo();
     const bogus = join(dir, 'data', 'not-a-config.yml');
-    const r = await api(handle.url, '/api/databases/delete', { method: 'POST', body: { path: bogus } });
+    const r = await api(handle.url, '/api/databases/delete', {
+      method: 'POST',
+      body: { path: bogus },
+    });
     expect(r.status).toBe(400);
     expect(String(r.body.error)).toContain('known database config');
   });

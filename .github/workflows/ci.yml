@@ -7,14 +7,14 @@ on:
     branches: [main]
 
 jobs:
-  ci:
-    name: Lint, typecheck, test, build
+  # Full quality gate on Linux, with a real Postgres so the integration tests
+  # that gate on LATTICE_TEST_PG_URL actually run. Lint + format + coverage
+  # live here only (platform-independent — no need to duplicate on Windows).
+  linux:
+    name: Lint, typecheck, test, build (ubuntu + postgres)
     runs-on: ubuntu-latest
 
     services:
-      # Postgres service for the integration tests in tests/integration/.
-      # Tests gate on LATTICE_TEST_PG_URL so they skip on local SQLite-only
-      # contributors, but always run in CI.
       postgres:
         image: postgres:16
         env:
@@ -65,3 +65,81 @@ jobs:
 
       - name: Verify CJS require
         run: node -e "const m = require('./dist/index.cjs'); if (!m.Lattice) throw new Error('CJS export missing'); console.log('CJS OK');"
+
+  # Windows leg: no Postgres (GitHub service containers are Linux-only), so the
+  # PG-gated integration tests skip and the SQLite suite runs. This is what
+  # catches Windows-only regressions like the mkdir-on-postgres-URL crash and
+  # the import.meta.url version read.
+  windows:
+    name: Typecheck, test, build (windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+      - name: Verify ESM import
+        run: node -e "import('./dist/index.js').then(m => { if (!m.Lattice) throw new Error('ESM export missing'); console.log('ESM OK'); })"
+
+      - name: Verify CJS require
+        run: node -e "const m = require('./dist/index.cjs'); if (!m.Lattice) throw new Error('CJS export missing'); console.log('CJS OK');"
+
+  # Browser-level frontend tests for the `lattice gui` SPA. Separate job so it
+  # runs in parallel with the unit/typecheck jobs rather than blocking them.
+  e2e:
+    name: Playwright e2e (chromium)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+      - name: Run e2e tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
