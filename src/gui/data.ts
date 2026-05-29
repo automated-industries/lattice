@@ -10,8 +10,13 @@ export interface GuiTableSummary {
   columns: string[];
   outputFile: string;
   relations: Record<string, Relation>;
-  /** Populated by the server when serving /api/entities; absent on direct data.ts use. */
-  rowCount?: number;
+  /**
+   * Populated by the server when serving /api/entities; absent on direct
+   * data.ts use. `null` means the server couldn't determine a count for
+   * this table (e.g. a never-analyzed table on the Postgres approximate-
+   * count path) — the SPA renders these as "—".
+   */
+  rowCount?: number | null;
   /** True for framework-shipped native entities (files, secrets). Set by the server. */
   native?: boolean;
   /** Team cloud only: this table is shared to the whole team. Set by the server. */
