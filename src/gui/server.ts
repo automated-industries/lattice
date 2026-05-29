@@ -517,7 +517,19 @@ function resolveOutputDirForConfig(configPath: string): string {
 
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
-  mkdirSync(dirname(parsed.dbPath), { recursive: true });
+  // Only ensure a parent directory for real filesystem DB paths. When `db:` is
+  // a connection string (postgres://…), a `file:` URL, or `:memory:`,
+  // parseConfigFile passes it through verbatim, so `parsed.dbPath` is the URL —
+  // not a path. dirname() of such a value yields a string containing ':',
+  // which is illegal in a Windows path, so mkdirSync throws ENOENT and the GUI
+  // dies before it ever connects. The mkdir is meaningless for those anyway.
+  if (
+    !/^postgres(ql)?:\/\//i.test(parsed.dbPath) &&
+    !parsed.dbPath.startsWith('file:') &&
+    parsed.dbPath !== ':memory:'
+  ) {
+    mkdirSync(dirname(parsed.dbPath), { recursive: true });
+  }
   // Native entities (`secrets`, `files`) include encrypted columns —
   // every GUI-opened Lattice must have an encryption key. Resolve once
   // here (env var or auto-generated `~/.lattice/master.key`) and feed
