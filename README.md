@@ -804,6 +804,16 @@ await db.seed({
 });
 ```
 
+A junction link whose target row doesn't resolve is **never silently dropped**. `SeedResult.unresolvedLinks` lists every such link (source record, field, target name, junction). Pass `onUnresolvedLink: 'throw'` to abort with a `SeedReconciliationError` instead — for pipelines that must never leave a record citing a relationship that has no link in the graph:
+
+```typescript
+const result = await db.seed({ ...config, onUnresolvedLink: 'collect' });
+if (result.unresolvedLinks.length) {
+  // create the missing targets, then re-seed
+  console.warn('unresolved links:', result.unresolvedLinks);
+}
+```
+
 ### `buildReport()` (v0.14+)
 
 ```typescript
@@ -2091,6 +2101,8 @@ The convergence means you don't need to duplicate entity-context definitions in 
 
 **Dashboard renders every entity (v1.13.3+).** Previously the dashboard cards filtered through a hardcoded entity list (`meetings`, `people`, `messages`, `projects`, `repositories`, `files`). Installs whose YAML declared different names saw a blank dashboard. Now every first-class entity gets a card; the hardcoded list survives as an ordering preference only.
 
+**Approximate row counts on Postgres (v1.14.1+).** The dashboard / entity-list view reads row counts from `pg_class.reltuples` (the planner statistic maintained by `ANALYZE` / autovacuum) so that a single query covers every table. Older versions issued one `COUNT(*)` per table in parallel, which exhausted small connection pools (e.g. a 95-table database against Supabase's 15-slot session pooler). The trade is that list-view counts are approximate and include soft-deleted rows for tables that have a `deleted_at` column; per-table drill-in still shows exact filtered counts. SQLite-backed installs are unaffected and continue to show exact, soft-delete-aware counts (no pool to exhaust).
+
 **Views**
 
 - **Dashboard** (`#/`) — one card per first-class entity with live row counts.
@@ -2236,7 +2248,15 @@ lattice teams join \
 
 The cloud rejects redemption if the caller's claimed email doesn't match the invitation's `invitee_email` (case-insensitive). Sharing an invite token in a public channel is therefore safe — only the addressee can redeem it.
 
-**Other subcommands** (`lattice teams help` for the full list): `list`, `members`, `leave`, `destroy`, `share`, `unshare`, `shared`, `sync`, `link`, `unlink`, `pull`, `push`, `status`.
+**Other subcommands** (`lattice teams help` for the full list): `list`, `members`, `leave`, `destroy`, `share`, `unshare`, `shared`, `sync`, `link`, `unlink`, `pull`, `push`, `status`, `dlq`.
+
+**Dead-letter queue (v1.15+).** A pulled change envelope that fails to apply (e.g. it arrived before the row/table it depends on), and any non-owner-overwrite divergence notice, lands in `__lattice_team_dlq`. Inspect and recover it instead of losing it behind the pull cursor:
+
+```bash
+lattice teams dlq list  --team <name>            # show entries (op, target, error)
+lattice teams dlq retry --team <name> [--id <id>] # replay; a late dependency now applies cleanly
+lattice teams dlq purge --team <name> [--id <id>] # discard without applying
+```
 
 **Per-table ownership + opt-in sharing (v1.14+).** Team members share one physical Postgres, so visibility is enforced at the app layer via a `__lattice_object_owners` table: each table records its creator, and a user sees only the tables they own plus tables explicitly shared to the team. The native `files`/`secrets` objects are owned by the database creator and private by default. Sharing is an explicit, owner-only action (not a side effect of creating a table). The filter gates API access, not just the display.
 

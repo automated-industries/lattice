@@ -1,6 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
@@ -30,6 +37,7 @@ import {
   shareEntityWithTeam,
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
+import { isPostgresUrl } from '../teams/register-direct.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
@@ -43,6 +51,8 @@ import {
   isNativeEntity,
 } from '../framework/native-entities.js';
 import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
+import type { StorageAdapter } from '../db/adapter.js';
+import { countManyPostgres } from './count-many.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -198,12 +208,42 @@ async function entitiesWithCounts(
     allTables = allTables.filter((t) => isVisibleInTeam(t.name, teamContext));
   }
 
+  // Postgres: collapse the per-table COUNT(*) fan-out to one query against
+  // pg_class. The naive Promise.all path below issues N parallel COUNTs
+  // through the connection pool; on a session pooler with a small slot
+  // budget (e.g. Supabase's 15-slot session pooler), N > slots locks up
+  // the pool the moment two clients refresh at once.
+  //
+  // `reltuples` is approximate (maintained by ANALYZE / autovacuum). For
+  // the entity-list view that's the right tradeoff — operators are
+  // picking which table to open, not auditing row counts. The trade is
+  // that tables with a `deleted_at` column now include soft-deleted rows
+  // in this number; per-table drill-in still shows the filtered count.
+  const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+  const useBatched = adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
+  const approxCounts = useBatched
+    ? await countManyPostgres(
+        adapter,
+        allTables.map((t) => t.name),
+      )
+    : new Map<string, number>();
+
   const enrichedTables = await Promise.all(
     allTables.map(async (t): Promise<GuiTableSummary> => {
-      // Only count live rows when the table has a `deleted_at` column.
-      const rowCount = t.columns.includes('deleted_at')
-        ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
-        : await db.count(t.name);
+      let rowCount: number | null;
+      if (useBatched) {
+        // Postgres: use the batched approximate count when we have it.
+        // Tables absent from pg_class (newly defineLate'd, never analyzed)
+        // get `null` so the SPA renders them as "—". No fallback per-table
+        // COUNT: the whole point of this branch is to avoid the fan-out.
+        rowCount = approxCounts.get(t.name) ?? null;
+      } else {
+        // SQLite: in-process, no pool. Keep the exact, soft-delete-aware
+        // count we've always shipped.
+        rowCount = t.columns.includes('deleted_at')
+          ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
+          : await db.count(t.name);
+      }
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
       if (teamContext) {
         base.shared = teamContext.shared.has(t.name);
@@ -440,7 +480,9 @@ function readRowContext(
   }
   return fileNames.map((filename) => {
     const absPath = join(entityDir, filename);
-    const relPath = join(directoryRoot, slug, filename);
+    // POSIX-joined: relPath is a logical id returned to the browser, not a
+    // filesystem path (absPath above is the native one for the read).
+    const relPath = [directoryRoot, slug, filename].join('/');
     if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
     let content = readFileSync(absPath, 'utf8');
     // Redact `<secretCol>: …` lines from the rendered markdown so the secret
@@ -517,7 +559,19 @@ function resolveOutputDirForConfig(configPath: string): string {
 
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
-  mkdirSync(dirname(parsed.dbPath), { recursive: true });
+  // Only ensure a parent directory for real filesystem DB paths. When `db:` is
+  // a connection string (postgres://…), a `file:` URL, or `:memory:`,
+  // parseConfigFile passes it through verbatim, so `parsed.dbPath` is the URL —
+  // not a path. dirname() of such a value yields a string containing ':',
+  // which is illegal in a Windows path, so mkdirSync throws ENOENT and the GUI
+  // dies before it ever connects. The mkdir is meaningless for those anyway.
+  if (
+    !/^postgres(ql)?:\/\//i.test(parsed.dbPath) &&
+    !parsed.dbPath.startsWith('file:') &&
+    parsed.dbPath !== ':memory:'
+  ) {
+    mkdirSync(dirname(parsed.dbPath), { recursive: true });
+  }
   // Native entities (`secrets`, `files`) include encrypted columns —
   // every GUI-opened Lattice must have an encryption key. Resolve once
   // here (env var or auto-generated `~/.lattice/master.key`) and feed
@@ -851,6 +905,48 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
   // Ensure the data dir exists so opening the new config doesn't fail.
   mkdirSync(join(dir, 'data'), { recursive: true });
   return configPath;
+}
+
+/**
+ * The on-disk db file behind a local SQLite config, or null when the config
+ * points at a Postgres URL / `${LATTICE_DB:label}` / `:memory:` / `file:` (in
+ * which case there is no local file for us to remove). Classifies from the raw
+ * `db:` YAML line — deliberately NOT via parseConfigFile, so a cloud config
+ * with a missing saved credential still classifies as cloud instead of throwing.
+ */
+export function sqliteFileForConfig(configPath: string): string | null {
+  const dbVal = parseDocument(readFileSync(configPath, 'utf8')).get('db');
+  const raw = (typeof dbVal === 'string' ? dbVal : '').trim();
+  if (!raw) return null;
+  if (isPostgresUrl(raw) || raw.startsWith('${LATTICE_DB:')) return null;
+  if (raw === ':memory:' || raw.startsWith('file:')) return null;
+  return resolve(dirname(configPath), raw);
+}
+
+/**
+ * Permanently delete a database: its YAML config and — for a local SQLite DB —
+ * the underlying `.db` file plus its `-wal`/`-shm`/`-journal` siblings.
+ * Destructive + irreversible; the caller is responsible for confirmation and
+ * (when deleting the active DB) switching away first so the file handle is
+ * released before we unlink. For cloud configs only the local YAML is removed —
+ * the remote Postgres database is shared and is never touched from here.
+ */
+export function deleteDatabaseFiles(targetConfigPath: string): {
+  deletedConfig: string;
+  deletedDbFile: string | null;
+} {
+  const sqliteFile = sqliteFileForConfig(targetConfigPath);
+  unlinkSync(targetConfigPath);
+  let deletedDbFile: string | null = null;
+  if (sqliteFile && existsSync(sqliteFile)) {
+    unlinkSync(sqliteFile);
+    deletedDbFile = sqliteFile;
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      const sidecar = sqliteFile + suffix;
+      if (existsSync(sidecar)) unlinkSync(sidecar);
+    }
+  }
+  return { deletedConfig: basename(targetConfigPath), deletedDbFile };
 }
 
 /**
@@ -1537,6 +1633,78 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sendJson(res, { ok: true, path: active.configPath });
           return;
         }
+        if (method === 'POST' && pathname === '/api/databases/delete') {
+          const body = (await readJsonBody(req)) as { path?: unknown };
+          if (typeof body.path !== 'string' || !body.path.trim()) {
+            sendJson(res, { error: 'path must be a non-empty string' }, 400);
+            return;
+          }
+          const target = resolve(body.path);
+          // Only delete a config we actually list (same directory as the
+          // active config). This stops the endpoint from being coaxed into
+          // unlinking arbitrary files outside the database set.
+          const known = listConfigs(active.configPath);
+          const match = known.find((c) => resolve(c.path) === target);
+          if (!match) {
+            sendJson(res, { error: `Not a known database config: ${target}` }, 400);
+            return;
+          }
+          // When deleting the active database we must switch away first so the
+          // SQLite file handle is released (and the server keeps an active DB).
+          let switchedTo: string | null = null;
+          if (resolve(active.configPath) === target) {
+            const fallback = known.find((c) => resolve(c.path) !== target);
+            if (!fallback) {
+              sendJson(
+                res,
+                {
+                  error:
+                    'Cannot delete the only database. Create or add another database first, then delete this one.',
+                },
+                400,
+              );
+              return;
+            }
+            let next: ActiveDb;
+            try {
+              next = await openConfig(fallback.path, resolveOutputDirForConfig(fallback.path));
+            } catch (e) {
+              const err = e as Error & { code?: string };
+              const codePrefix = err.code ? `[${err.code}] ` : '';
+              sendJson(
+                res,
+                {
+                  error: `Cannot delete: failed to switch to ${fallback.path} first: ${codePrefix}${err.message}`,
+                },
+                500,
+              );
+              return;
+            }
+            await disposeActive(active);
+            active = next;
+            switchedTo = active.configPath;
+          }
+          // Surface any filesystem failure loudly (the fail-loudly rule) rather than
+          // half-deleting silently.
+          let deleted: { deletedConfig: string; deletedDbFile: string | null };
+          try {
+            deleted = deleteDatabaseFiles(target);
+          } catch (e) {
+            sendJson(
+              res,
+              { error: `Failed to delete database files: ${(e as Error).message}` },
+              500,
+            );
+            return;
+          }
+          sendJson(res, {
+            ok: true,
+            deletedConfig: deleted.deletedConfig,
+            deletedDbFile: deleted.deletedDbFile,
+            switchedTo,
+          });
+          return;
+        }
 
         // Native-entity bindings for the active DB — lets the UI badge the
         // files/secrets cards as "Native". openConfig auto-records these on
@@ -1824,6 +1992,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             resolveClose();
           });
         });
+        // Force-drop lingering keep-alive / SSE connections (the realtime
+        // `/api/realtime/stream` EventSource stays open indefinitely), so
+        // close() doesn't hang waiting for a browser tab to disconnect.
+        if (typeof server.closeAllConnections === 'function') {
+          server.closeAllConnections();
+        }
       }),
   };
 }
