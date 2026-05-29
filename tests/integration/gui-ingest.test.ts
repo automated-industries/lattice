@@ -27,14 +27,33 @@ function boot(): { root: string; server: Promise<GuiServerHandle> } {
   const configPath = join(root, 'lattice.config.yml');
   writeFileSync(
     configPath,
-    ['db: ./data/test.db', '', 'entities:', '  notes:', '    fields:', '      id: { type: uuid, primaryKey: true }', '      body: { type: text }', '    render: default-list', '    outputFile: notes.md', ''].join('\n'),
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  notes:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      body: { type: text }',
+      '    render: default-list',
+      '    outputFile: notes.md',
+      '',
+    ].join('\n'),
   );
-  const server = startGuiServer({ configPath, outputDir: join(root, 'context'), port: 0, openBrowser: false });
+  const server = startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
   return { root, server };
 }
 
 async function getFile(url: string, id: string): Promise<Record<string, unknown>> {
-  return (await fetch(`${url}/api/tables/files/rows/${id}`).then((r) => r.json())) as Record<string, unknown>;
+  return (await fetch(`${url}/api/tables/files/rows/${id}`).then((r) => r.json())) as Record<
+    string,
+    unknown
+  >;
 }
 
 describe('ingest routes', () => {
@@ -70,7 +89,10 @@ describe('ingest routes', () => {
       body: JSON.stringify({ path: docPath }),
     });
     expect(res.status).toBe(201);
-    const { id, extraction_status } = (await res.json()) as { id: string; extraction_status: string };
+    const { id, extraction_status } = (await res.json()) as {
+      id: string;
+      extraction_status: string;
+    };
     expect(extraction_status).toBe('extracted');
     const row = await getFile(server.url, id);
     expect(row.path).toBe(docPath);
@@ -90,7 +112,10 @@ describe('ingest routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: binPath }),
     });
-    const { id, extraction_status } = (await res.json()) as { id: string; extraction_status: string };
+    const { id, extraction_status } = (await res.json()) as {
+      id: string;
+      extraction_status: string;
+    };
     expect(extraction_status).toBe('skipped');
     const row = await getFile(server.url, id);
     expect(row.path).toBe(binPath);
@@ -108,7 +133,10 @@ describe('ingest routes', () => {
       body: '# Dropped\nlazy dog jumps',
     });
     expect(res.status).toBe(201);
-    const { id, extraction_status } = (await res.json()) as { id: string; extraction_status: string };
+    const { id, extraction_status } = (await res.json()) as {
+      id: string;
+      extraction_status: string;
+    };
     expect(extraction_status).toBe('extracted');
     const row = await getFile(server.url, id);
     expect(row.original_name).toBe('dropped.md');

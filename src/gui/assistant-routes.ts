@@ -60,12 +60,15 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let raw = '';
     req.setEncoding('utf8');
-    req.on('data', (chunk) => {
+    req.on('data', (chunk: string) => {
       raw += chunk;
       if (raw.length > 1_000_000) reject(new Error('payload too large'));
     });
     req.on('end', () => {
-      if (!raw) return resolve({});
+      if (!raw) {
+        resolve({});
+        return;
+      }
       try {
         resolve(JSON.parse(raw) as Record<string, unknown>);
       } catch {
@@ -85,7 +88,9 @@ function readBuffer(req: IncomingMessage, maxBytes = 25_000_000): Promise<Buffer
       if (size > maxBytes) reject(new Error('audio too large'));
       else chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('end', () => {
+      resolve(Buffer.concat(chunks));
+    });
     req.on('error', reject);
   });
 }
@@ -106,9 +111,16 @@ async function storeSecret(db: Lattice, kind: string, name: string, value: strin
   const [first, ...extras] = await liveSecretsOfKind(db, kind);
   if (first) {
     await db.update('secrets', first.id, { value, name });
-    for (const extra of extras) await db.update('secrets', extra.id, { deleted_at: new Date().toISOString() });
+    for (const extra of extras)
+      await db.update('secrets', extra.id, { deleted_at: new Date().toISOString() });
   } else {
-    await db.insert('secrets', { id: crypto.randomUUID(), name, kind, value, description: `${name} (assistant).` });
+    await db.insert('secrets', {
+      id: crypto.randomUUID(),
+      name,
+      kind,
+      value,
+      description: `${name} (assistant).`,
+    });
   }
 }
 
@@ -131,7 +143,9 @@ async function secretValue(db: Lattice, kind: string): Promise<string | null> {
  * back to the `ANTHROPIC_API_KEY` env var. Server-side only.
  */
 export async function getAnthropicApiKey(db: Lattice): Promise<string | null> {
-  return (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null;
+  return (
+    (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null
+  );
 }
 
 export interface VoiceCredential {
@@ -147,7 +161,8 @@ export interface VoiceCredential {
 const STT_PROVIDER_KIND = 'stt_provider';
 
 export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential | null> {
-  const openai = (await secretValue(db, CREDENTIALS.openai.kind)) ?? process.env.OPENAI_API_KEY ?? null;
+  const openai =
+    (await secretValue(db, CREDENTIALS.openai.kind)) ?? process.env.OPENAI_API_KEY ?? null;
   const eleven =
     (await secretValue(db, CREDENTIALS.elevenlabs.kind)) ?? process.env.ELEVENLABS_API_KEY ?? null;
   const pref = await secretValue(db, STT_PROVIDER_KIND);
@@ -176,13 +191,20 @@ interface StoredOAuthTokens {
  * null when nothing is configured.
  */
 export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null> {
+  // Treat an empty env var the same as unset, so `||` (not `??`) is correct here.
+  // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
   const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
   const oauthRaw = await secretValue(db, CLAUDE_OAUTH_KIND);
   if (oauthRaw) {
     try {
       let tokens = JSON.parse(oauthRaw) as StoredOAuthTokens;
       const cfg = readOAuthConfig();
-      if (cfg && tokens.refresh_token && tokens.expires_at && Date.now() > tokens.expires_at - 60_000) {
+      if (
+        cfg &&
+        tokens.refresh_token &&
+        tokens.expires_at &&
+        Date.now() > tokens.expires_at - 60_000
+      ) {
         const refreshed = await refreshAccessToken(cfg, tokens.refresh_token);
         tokens = {
           access_token: refreshed.access_token,
@@ -196,7 +218,8 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
       // Malformed token blob — fall through to the API-key path.
     }
   }
-  const apiKey = (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null;
+  const apiKey =
+    (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null;
   return apiKey ? { apiKey } : null;
 }
 
@@ -335,8 +358,9 @@ export async function dispatchAssistantRoute(
       sendJson(res, { error: 'empty audio' }, 400);
       return true;
     }
-    const mime = req.headers['content-type'] || 'audio/webm';
-    const ext = mime.includes('mp4') || mime.includes('m4a') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm';
+    const mime = req.headers['content-type'] ?? 'audio/webm';
+    const ext =
+      mime.includes('mp4') || mime.includes('m4a') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm';
     try {
       const text = await transcribe({
         provider: voice.provider,
@@ -363,7 +387,10 @@ export async function dispatchAssistantRoute(
     const cookieOpts = 'HttpOnly; Path=/; Max-Age=300; SameSite=Lax';
     res.writeHead(302, {
       Location: buildAuthorizeUrl(cfg, state, pkceChallengeFor(verifier)),
-      'Set-Cookie': [`lat_oauth_verifier=${verifier}; ${cookieOpts}`, `lat_oauth_state=${state}; ${cookieOpts}`],
+      'Set-Cookie': [
+        `lat_oauth_verifier=${verifier}; ${cookieOpts}`,
+        `lat_oauth_state=${state}; ${cookieOpts}`,
+      ],
     });
     res.end();
     return true;
@@ -377,9 +404,15 @@ export async function dispatchAssistantRoute(
     const state = url.searchParams.get('state');
     const cookies = parseCookies(req);
     const verifier = cookies.lat_oauth_verifier;
-    const clear = ['lat_oauth_verifier=; HttpOnly; Path=/; Max-Age=0', 'lat_oauth_state=; HttpOnly; Path=/; Max-Age=0'];
+    const clear = [
+      'lat_oauth_verifier=; HttpOnly; Path=/; Max-Age=0',
+      'lat_oauth_state=; HttpOnly; Path=/; Max-Age=0',
+    ];
     const redirect = (flash: string): void => {
-      res.writeHead(302, { Location: `/#/settings/user-config?oauth=${flash}`, 'Set-Cookie': clear });
+      res.writeHead(302, {
+        Location: `/#/settings/user-config?oauth=${flash}`,
+        'Set-Cookie': clear,
+      });
       res.end();
     };
     if (!cfg || !code || !state || !verifier || state !== cookies.lat_oauth_state) {

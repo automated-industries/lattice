@@ -74,7 +74,7 @@ export async function createRow(
   values: Row,
 ): Promise<{ id: string; row: Row | null }> {
   const id = await ctx.db.insert(table, values);
-  const row = (await ctx.db.get(table, id)) as Row | null;
+  const row = await ctx.db.get(table, id);
   await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source);
   return { id, row };
 }
@@ -87,7 +87,7 @@ export async function updateRow(
 ): Promise<{ row: Row | null }> {
   const before = await ctx.db.get(table, id);
   await ctx.db.update(table, id, values);
-  const after = (await ctx.db.get(table, id)) as Row | null;
+  const after = await ctx.db.get(table, id);
   await appendAudit(ctx.db, ctx.feed, table, id, 'update', before, after, ctx.source);
   return { row: after };
 }
@@ -194,9 +194,11 @@ async function applyForward(db: Lattice, entry: AuditEntry): Promise<void> {
 }
 
 async function liveAudit(db: Lattice, undone: 0 | 1): Promise<AuditEntry[]> {
-  return ((await db.query('_lattice_gui_audit', {
-    filters: [{ col: 'undone', op: 'eq', val: undone }],
-  })) as Record<string, unknown>[]).map(parseAudit);
+  return (
+    (await db.query('_lattice_gui_audit', {
+      filters: [{ col: 'undone', op: 'eq', val: undone }],
+    })) as Record<string, unknown>[]
+  ).map(parseAudit);
 }
 
 /** Undo the most recent live mutation. Returns the reverted entry, or null. */

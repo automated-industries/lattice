@@ -113,13 +113,18 @@ export async function exchangeCodeForTokens(
     body: body.toString(),
   });
   if (!res.ok) {
-    throw new Error(`token exchange failed (${res.status}): ${(await res.text().catch(() => '')).slice(0, 300)}`);
+    throw new Error(
+      `token exchange failed (${String(res.status)}): ${(await res.text().catch(() => '')).slice(0, 300)}`,
+    );
   }
   return parseTokenResponse(await res.json());
 }
 
 /** Refresh an access token using a refresh token. */
-export async function refreshAccessToken(cfg: OAuthConfig, refreshToken: string): Promise<OAuthTokens> {
+export async function refreshAccessToken(
+  cfg: OAuthConfig,
+  refreshToken: string,
+): Promise<OAuthTokens> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     client_id: cfg.clientId,
@@ -131,9 +136,11 @@ export async function refreshAccessToken(cfg: OAuthConfig, refreshToken: string)
     body: body.toString(),
   });
   if (!res.ok) {
-    throw new Error(`token refresh failed (${res.status}): ${(await res.text().catch(() => '')).slice(0, 300)}`);
+    throw new Error(
+      `token refresh failed (${String(res.status)}): ${(await res.text().catch(() => '')).slice(0, 300)}`,
+    );
   }
   const tokens = parseTokenResponse(await res.json());
-  if (!tokens.refresh_token) tokens.refresh_token = refreshToken; // providers often omit it on refresh
+  tokens.refresh_token ??= refreshToken; // providers often omit it on refresh
   return tokens;
 }

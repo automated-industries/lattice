@@ -161,9 +161,13 @@ export async function executeFunction(
       }
       case 'get_history': {
         const limit = typeof args.limit === 'number' ? args.limit : 50;
-        const rows = (await ctx.db.query('_lattice_gui_audit', { limit })) as Record<string, unknown>[];
+        const rows = (await ctx.db.query('_lattice_gui_audit', { limit })) as Record<
+          string,
+          unknown
+        >[];
         let entries = rows.map(parseAudit);
-        if (typeof args.table === 'string') entries = entries.filter((e) => e.table_name === args.table);
+        if (typeof args.table === 'string')
+          entries = entries.filter((e) => e.table_name === args.table);
         return { ok: true, result: entries };
       }
       case 'undo': {
@@ -179,7 +183,11 @@ export async function executeFunction(
         const result = await revertEntry(mctx, auditId);
         return result.ok
           ? { ok: true, result: result.entry }
-          : { ok: false, error: result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone' };
+          : {
+              ok: false,
+              error:
+                result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone',
+            };
       }
       default:
         return { ok: false, error: `Function "${name}" is not available to the assistant yet` };

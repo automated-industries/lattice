@@ -45,7 +45,10 @@ describe('oauth helpers', () => {
   });
 
   it('parses a token response and derives absolute expiry', () => {
-    const t = parseTokenResponse({ access_token: 'at', refresh_token: 'rt', expires_in: 100, scope: 'x' }, 1000);
+    const t = parseTokenResponse(
+      { access_token: 'at', refresh_token: 'rt', expires_in: 100, scope: 'x' },
+      1000,
+    );
     expect(t.access_token).toBe('at');
     expect(t.refresh_token).toBe('rt');
     expect(t.expires_at).toBe(1000 + 100 * 1000);
