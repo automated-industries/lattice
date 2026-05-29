@@ -2248,7 +2248,15 @@ lattice teams join \
 
 The cloud rejects redemption if the caller's claimed email doesn't match the invitation's `invitee_email` (case-insensitive). Sharing an invite token in a public channel is therefore safe — only the addressee can redeem it.
 
-**Other subcommands** (`lattice teams help` for the full list): `list`, `members`, `leave`, `destroy`, `share`, `unshare`, `shared`, `sync`, `link`, `unlink`, `pull`, `push`, `status`.
+**Other subcommands** (`lattice teams help` for the full list): `list`, `members`, `leave`, `destroy`, `share`, `unshare`, `shared`, `sync`, `link`, `unlink`, `pull`, `push`, `status`, `dlq`.
+
+**Dead-letter queue (v1.15+).** A pulled change envelope that fails to apply (e.g. it arrived before the row/table it depends on), and any non-owner-overwrite divergence notice, lands in `__lattice_team_dlq`. Inspect and recover it instead of losing it behind the pull cursor:
+
+```bash
+lattice teams dlq list  --team <name>            # show entries (op, target, error)
+lattice teams dlq retry --team <name> [--id <id>] # replay; a late dependency now applies cleanly
+lattice teams dlq purge --team <name> [--id <id>] # discard without applying
+```
 
 **Per-table ownership + opt-in sharing (v1.14+).** Team members share one physical Postgres, so visibility is enforced at the app layer via a `__lattice_object_owners` table: each table records its creator, and a user sees only the tables they own plus tables explicitly shared to the team. The native `files`/`secrets` objects are owned by the database creator and private by default. Sharing is an explicit, owner-only action (not a side effect of creating a table). The filter gates API access, not just the display.
 
