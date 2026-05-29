@@ -472,7 +472,9 @@ function readRowContext(
   }
   return fileNames.map((filename) => {
     const absPath = join(entityDir, filename);
-    const relPath = join(directoryRoot, slug, filename);
+    // POSIX-joined: relPath is a logical id returned to the browser, not a
+    // filesystem path (absPath above is the native one for the read).
+    const relPath = [directoryRoot, slug, filename].join('/');
     if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
     let content = readFileSync(absPath, 'utf8');
     // Redact `<secretCol>: …` lines from the rendered markdown so the secret
