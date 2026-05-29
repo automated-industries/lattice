@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { basename, isAbsolute, relative, resolve } from 'node:path';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
 import {
@@ -426,7 +426,10 @@ export async function dispatchDbConfigRoute(
       // stays portable.
       const abs = resolveRelativeToConfig(ctx.configPath, parsed.path);
       const rel = relative(resolve(ctx.configPath, '..'), abs);
-      const dbLine = rel.startsWith('..') ? abs : './' + rel;
+      // Always write a POSIX-separated relative path so the YAML is portable
+      // and stable across platforms (path.relative yields backslashes on
+      // Windows, which would otherwise leak into the committed config).
+      const dbLine = rel.startsWith('..') ? abs : './' + rel.split(sep).join('/');
       rewriteDbLine(ctx.configPath, dbLine);
       sendJson(res, { ok: true, type: 'sqlite', path: dbLine });
     });
