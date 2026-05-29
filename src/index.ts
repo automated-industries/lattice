@@ -1,4 +1,4 @@
-export { Lattice } from './lattice.js';
+export { Lattice, SeedReconciliationError } from './lattice.js';
 export type { PkLookup, LatticeConfigInput } from './lattice.js';
 export { parseConfigFile, parseConfigString } from './config/parser.js';
 export type { ParsedConfig } from './config/parser.js';
@@ -71,6 +71,7 @@ export type {
   SeedConfig,
   SeedLinkSpec,
   SeedResult,
+  UnresolvedLink,
   ReportSection,
   ReportConfig,
   ReportSectionResult,
