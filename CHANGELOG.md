@@ -8,6 +8,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-05-29
+
+Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.
+
+### Added — AI assistant sidebar
+
+- **Chat with tools** — `POST /api/chat` streams a Claude tool-calling loop over SSE. A function registry mirrors the GUI's mutation primitives (`createRow`/`updateRow`/`deleteRow`/`link`/`undo`/`redo`), so assistant edits are audited, fed to the activity rail, and undoable.
+- **Activity feed + realtime** — an in-process feed bus streams every audited mutation (UI, AI, ingest) to the rail via `GET /api/feed/stream`; the Postgres realtime broker is merged in so other clients' changes appear too.
+- **Voice input** — `POST /api/assistant/transcribe` routes to Whisper or ElevenLabs Scribe, with an explicit provider choice.
+- **File ingest** — reference local files or paste text (`/api/ingest/*`); text/code extracted directly, PDFs/office docs via optional `markitdown`. With a Claude key, an LLM summarizes + classifies relevance and auto-creates junction links; the files detail view renders markdown / office-doc previews safely inline.
+- **Native chat entities** — `chat_threads` + `chat_messages` join `files`/`secrets` as first-class native entities; real per-conversation threads with a switcher.
+- **Credentials & OAuth** — Claude/OpenAI/ElevenLabs keys stored encrypted in the native `secrets` entity; Claude subscription OAuth (PKCE) scaffolding reads `ANTHROPIC_OAUTH_*` env vars.
+- **Responsive rail** — resizable sidebar (persisted) + a mobile bottom-drawer under 720px.
+- **Browser e2e coverage** — Playwright specs for the assistant rail, composer key-gating, feed stream, and file-ingest preview (the rail-independent delete-database spec ships in 1.15.0).
+
 ## [1.15.0] - 2026-05-29
 
 ### Added — delete a database from the GUI (destructive, confirmation-gated)
