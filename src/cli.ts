@@ -18,6 +18,8 @@ import { runTeamsCommand } from './teams/cli-commands.js';
 interface ParsedArgs {
   command?: string | undefined;
   subcommand?: string | undefined;
+  /** Third positional for two-level subcommands, e.g. `teams dlq list`. */
+  action?: string | undefined;
   config: string;
   out: string;
   output: string;
@@ -56,10 +58,13 @@ interface ParsedArgs {
   userId?: string | undefined;
   table?: string | undefined;
   pk?: string | undefined;
+  /** --id <uuid> — a specific DLQ entry (teams dlq retry / purge). */
+  id?: string | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
   let command: string | undefined;
+  let action: string | undefined;
   let config = './lattice.config.yml';
   let out = './generated';
   let output = './context';
@@ -90,6 +95,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let userId: string | undefined;
   let table: string | undefined;
   let pk: string | undefined;
+  let id: string | undefined;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -99,6 +105,12 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (command === 'teams' && argv[1] !== undefined && !argv[1].startsWith('-')) {
       subcommand = argv[1];
       i = 2;
+      // `lattice teams <subcommand> <action>` — third positional for
+      // two-level subcommands like `teams dlq list|retry|purge`.
+      if (argv[2] !== undefined && !argv[2].startsWith('-')) {
+        action = argv[2];
+        i = 3;
+      }
     }
   }
 
@@ -184,6 +196,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--pk' && i + 1 < argv.length) {
       i++;
       pk = argv[i];
+    } else if (arg === '--id' && i + 1 < argv.length) {
+      i++;
+      id = argv[i];
     }
     i++;
   }
@@ -191,6 +206,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   return {
     command,
     subcommand,
+    action,
     config,
     out,
     output,
@@ -220,6 +236,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     userId,
     table,
     pk,
+    id,
   };
 }
 
@@ -641,6 +658,7 @@ function main(): void {
     case 'teams':
       void runTeamsCommand({
         subcommand: args.subcommand,
+        action: args.action,
         config: args.config,
         cloud: args.cloud,
         token: args.token,
@@ -654,6 +672,7 @@ function main(): void {
         userId: args.userId,
         table: args.table,
         pk: args.pk,
+        id: args.id,
       });
       break;
     case 'update':

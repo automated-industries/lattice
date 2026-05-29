@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Lattice } from '../../src/lattice.js';
+import { Lattice, SeedReconciliationError } from '../../src/lattice.js';
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -199,6 +199,122 @@ describe('seed()', () => {
     expect(row).not.toBeNull();
     expect(row?.name).toBe('Alice');
     expect(row?.role).toBe('engineer');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// seed() junction reconciliation — unresolved links must be surfaced,
+// never silently dropped (Rule: no silent failures)
+// ---------------------------------------------------------------------------
+
+describe('seed() junction reconciliation', () => {
+  let db: Lattice;
+
+  beforeEach(async () => {
+    db = new Lattice(':memory:');
+    // Singular source-table name so seed()'s FK inference (table + '_id')
+    // matches the junction's `meeting_id` column.
+    db.define('meeting', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        slug: 'TEXT NOT NULL',
+        title: 'TEXT',
+        deleted_at: 'TEXT',
+      },
+      render: () => '',
+      outputFile: 'meeting.md',
+    });
+    db.define('people', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        slug: 'TEXT NOT NULL',
+        name: 'TEXT',
+        deleted_at: 'TEXT',
+      },
+      render: () => '',
+      outputFile: 'people.md',
+    });
+    db.define('meeting_people', {
+      columns: {
+        meeting_id: 'TEXT NOT NULL',
+        person_id: 'TEXT NOT NULL',
+      },
+      primaryKey: ['meeting_id', 'person_id'],
+      render: () => '',
+      outputFile: 'meeting-people.md',
+    });
+    await db.init();
+    // Only alice exists — bob is deliberately absent so links to him don't resolve.
+    await db.seed({
+      table: 'people',
+      naturalKey: 'slug',
+      data: [{ slug: 'alice', name: 'Alice' }],
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function seedMeeting(onUnresolvedLink?: 'collect' | 'throw') {
+    return db.seed({
+      table: 'meeting',
+      naturalKey: 'slug',
+      data: [{ slug: 'standup', title: 'Standup', attendees: ['alice', 'bob'] }],
+      linkTo: {
+        attendees: {
+          junction: 'meeting_people',
+          foreignKey: 'person_id',
+          resolveBy: 'slug',
+          resolveTable: 'people',
+        },
+      },
+      ...(onUnresolvedLink ? { onUnresolvedLink } : {}),
+    });
+  }
+
+  it('default mode collects unresolved links and links the resolvable ones', async () => {
+    const result = await seedMeeting();
+    // alice linked, bob surfaced as unresolved (not silently dropped).
+    expect(result.linked).toBe(1);
+    expect(result.unresolvedLinks).toHaveLength(1);
+    expect(result.unresolvedLinks[0]).toMatchObject({
+      record: 'standup',
+      field: 'attendees',
+      name: 'bob',
+      junction: 'meeting_people',
+      resolveTable: 'people',
+      resolveBy: 'slug',
+    });
+    // The resolvable link really landed in the junction table.
+    const junction = await db.query('meeting_people');
+    expect(junction).toHaveLength(1);
+  });
+
+  it("'throw' mode raises SeedReconciliationError listing the missing target", async () => {
+    await expect(seedMeeting('throw')).rejects.toBeInstanceOf(SeedReconciliationError);
+    try {
+      await seedMeeting('throw');
+      expect.unreachable('seed should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(SeedReconciliationError);
+      const err = e as SeedReconciliationError;
+      expect(err.table).toBe('meeting');
+      expect(err.unresolvedLinks).toHaveLength(1);
+      expect(err.unresolvedLinks[0]?.name).toBe('bob');
+      expect(err.message).toContain('bob');
+    }
+  });
+
+  it('reports empty unresolvedLinks when every target resolves', async () => {
+    await db.seed({
+      table: 'people',
+      naturalKey: 'slug',
+      data: [{ slug: 'bob', name: 'Bob' }],
+    });
+    const result = await seedMeeting('throw');
+    expect(result.unresolvedLinks).toHaveLength(0);
+    expect(result.linked).toBe(2);
   });
 });
 
