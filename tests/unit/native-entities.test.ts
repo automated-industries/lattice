@@ -135,11 +135,17 @@ describe('framework native entities', () => {
     it('throws at init time when a table has encrypted columns but no key is configured', () => {
       const dbPath2 = join(tmpDir, 'no-key.db');
       const db2 = new Lattice(dbPath2);
-      registerNativeEntities(db2);
-      // The validation runs in init()'s synchronous prefix so consumers
-      // get a thrown Error rather than a Promise rejection — see the
-      // comment on Lattice.init().
-      expect(() => db2.init()).toThrow(/encryptionKey/);
+      try {
+        registerNativeEntities(db2);
+        // The validation runs in init()'s synchronous prefix so consumers
+        // get a thrown Error rather than a Promise rejection — see the
+        // comment on Lattice.init().
+        expect(() => db2.init()).toThrow(/encryptionKey/);
+      } finally {
+        // Close the handle so Windows can unlink the file in afterEach (open
+        // files are locked on Windows; unlinking one throws EBUSY).
+        db2.close();
+      }
     });
   });
 

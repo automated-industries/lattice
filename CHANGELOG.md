@@ -89,7 +89,11 @@ and inert until a key is configured).
   with a leading slash on Windows) to `fileURLToPath()`. Saving a SQLite
   database from the Database panel now writes a POSIX-separated relative `db:`
   path (`path.relative` yields backslashes on Windows, which would otherwise
-  leak a non-portable path into the committed config).
+  leak a non-portable path into the committed config). Logical paths surfaced
+  to the browser or persisted to the DB — the data-model graph's `file:` node
+  ids, `/context` file paths, and `attachBlob`'s stored `blob_path` — are now
+  POSIX-separated on every OS (they were OS-native, so they diverged on
+  Windows).
 - **`startGuiServer().close()` no longer hangs on an open feed stream.** The
   activity feed's `/api/feed/stream` SSE connection stays open indefinitely, so
   a browser tab kept `server.close()` waiting for it to drain. `close()` now
