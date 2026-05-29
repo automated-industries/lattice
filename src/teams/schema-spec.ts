@@ -109,6 +109,20 @@ export function renderColumnType(spec: ColumnSpec, dialect: Dialect): string {
 }
 
 /**
+ * Render a ColumnSpec for an ALTER TABLE ADD COLUMN on an *existing* table.
+ * SQLite and Postgres both reject adding a NOT NULL column without a default
+ * ("Cannot add a NOT NULL column with default value NULL"), so such columns
+ * are added nullable — the constraint can't be retroactively enforced on
+ * existing rows anyway, and cloud-synced rows still carry their values.
+ */
+export function renderAddColumnType(spec: ColumnSpec, dialect: Dialect): string {
+  if (spec.notNull && spec.default === undefined) {
+    return renderColumnType({ ...spec, notNull: false }, dialect);
+  }
+  return renderColumnType(spec, dialect);
+}
+
+/**
  * Serialise a Lattice TableDefinition (plus the resolved PK column
  * list) into a SchemaSpec. `pkCols` comes from the SchemaManager's
  * `getPrimaryKey(table)` since TableDefinition.primaryKey can be left
@@ -259,7 +273,7 @@ export async function applySchemaSpec(
   for (const colName of addColumns) {
     const colSpec = spec.columns[colName];
     if (!colSpec) continue;
-    const sqlType = renderColumnType(colSpec, db.getDialect());
+    const sqlType = renderAddColumnType(colSpec, db.getDialect());
     await db.addColumn(table, colName, sqlType);
   }
   return addColumns.length > 0;
