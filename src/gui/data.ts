@@ -122,7 +122,9 @@ function collectEntities(outputDir: string, manifest: LatticeManifest | null): G
   for (const [table, entry] of Object.entries(manifest.entityContexts)) {
     for (const [slug, fileEntry] of Object.entries(entry.entities)) {
       const files = entityFileNames(fileEntry).map((filename) =>
-        fileSummary(outputDir, join(entry.directoryRoot, slug, filename)),
+        // POSIX-joined: this relative path is a logical id surfaced to the
+        // browser (graph node ids, /context paths) and must not vary by OS.
+        fileSummary(outputDir, [entry.directoryRoot, slug, filename].join('/')),
       );
       result.push({
         table,
@@ -366,14 +368,20 @@ export function buildGuiGraph(
       if (!file.exists) continue;
       const absPath = safeResolveInside(outputDir, file.path);
       const content = readFileSync(absPath, 'utf8');
-      const fileDir = file.path.includes(sep) ? file.path.slice(0, file.path.lastIndexOf(sep)) : '';
+      // file.path is POSIX-separated (see collectEntities); split on '/' so this
+      // works regardless of the host OS separator.
+      const fileDir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '';
       for (const href of markdownLinks(content)) {
         let relTarget: string;
         try {
+          // path.relative yields OS separators; normalize to POSIX so the id
+          // matches the POSIX node ids built above.
           relTarget = relative(
             resolve(outputDir),
             safeResolveInside(outputDir, join(fileDir, href)),
-          );
+          )
+            .split(sep)
+            .join('/');
         } catch {
           continue;
         }
