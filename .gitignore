@@ -9,6 +9,9 @@ coverage/
 .env
 .DS_Store
 docs-generated/
+test-results/
+playwright-report/
+playwright/.cache/
 *.key
 *.pem
 *.secret

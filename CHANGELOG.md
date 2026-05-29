@@ -8,6 +8,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-05-29
+
+### Added — delete a database from the GUI (destructive, confirmation-gated)
+
+A new `POST /api/databases/delete` endpoint plus a name-gated confirm modal removes a saved database's YAML config and (for local SQLite) its `.db` file and `-wal`/`-shm`/`-journal` sidecars. It switches to a sibling first when the active database is deleted, refuses to delete the only database, rejects unknown paths, leaves remote Postgres data untouched, and surfaces filesystem failures loudly rather than half-deleting.
+
+### Added — Playwright e2e harness + Windows CI matrix
+
+Browser-level e2e tests for the GUI SPA (`tests/e2e/*.spec.ts`, `playwright.config.ts`, `test:e2e` script) — each spec boots its own `startGuiServer({ port: 0 })`, no shared web server. CI splits into three jobs: linux (lint/format/typecheck/coverage/build + Postgres), windows (typecheck/test/build — catches Windows-only path regressions; service containers are Linux-only so PG tests skip there), and e2e (Playwright chromium, cached).
+
+### Fixed — `lattice gui` crashed on Windows for `postgres://` databases
+
+`openConfig()` ran `mkdir` on the `db:` value unconditionally, but a `postgres://…:5432/…` URL contains `:`, an illegal Windows path character — so opening any Postgres database in the GUI hard-crashed on Windows. The mkdir is now skipped for non-file `db:` connection strings. Separately, `lattice --version` crashed on Windows because it read a percent-encoded `import.meta.url` pathname; it now uses `fileURLToPath()`.
+
+### Fixed — GUI `/api/entities` exhausted the connection pool at scale
+
+The GUI listed entity counts with an unbounded `Promise.all` of one `COUNT(*)` per entity, so a ~95-entity cloud database fired ~95 concurrent counts and exhausted a 15-slot Postgres session pooler (`EMAXCONN`). Counts now run with bounded concurrency and a fast estimated-count path on Postgres (`pg_class.reltuples`, with an exact fallback when the estimate is `<= 0`).
+
+### Fixed — Windows non-portable `db:` paths surfaced to the config / browser
+
+The GUI Database panel's SQLite save used `path.relative`, which yields backslash separators on Windows and leaked a non-portable path into the committed YAML; relative `db:` paths are now POSIX-normalized. Logical paths surfaced to the browser/DB are likewise normalized to forward slashes.
+
+### Fixed — `startGuiServer().close()` could hang on an open SSE connection
+
+A browser tab subscribed to the long-lived `/api/realtime/stream` SSE route kept a keep-alive socket open, so `close()` hung waiting for it to drain (blocking programmatic shutdown / tests). `close()` now force-drops lingering connections via `server.closeAllConnections()` (Node 18.2+).
+
+### Changed — de-flaked the parallel-pool Postgres timing test
+
+The concurrent-vs-baseline pool test compared parallel wall-time against an absolute floor that was sensitive to connection-setup jitter on CI. It now warms the whole pool first, then asserts a concurrent batch beats a serialized baseline (a relative comparison that states the actual property under test).
+
 ### Fixed — shared-schema sync blanked a joined member's tables
 
 A member on a team DB could refresh and see **none** of the shared tables. Applying a cloud schema that adds a `NOT NULL` column (no default) to an already-existing local table threw `Cannot add a NOT NULL column with default value NULL` (SQLite + Postgres both reject this via `ADD COLUMN`); that non-conflict error aborted the **entire** shared-schema sync, so the member got zero tables. `renderAddColumnType()` now adds such columns nullable on an existing table (the constraint can't be enforced on existing rows anyway, and cloud-synced rows still carry values), and `syncSharedSchemas()` isolates per-table failures — a single unappliable object is recorded as a conflict and skipped, so the rest of the team's shared tables still sync.
