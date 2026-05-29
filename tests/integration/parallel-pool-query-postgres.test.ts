@@ -15,12 +15,20 @@
  *   `sum(individual durations)`. This test asserts that.
  *
  * The shape of the assertion:
- *   - Run one query first to measure baseline single-call wall time.
- *   - Run 10 of those same queries concurrently with `Promise.all`.
- *   - Assert that the wall time of the parallel batch is significantly
- *     less than 10× single-call time. We use a generous 5× factor to
- *     avoid flake on slow CI runners while still catching the
- *     "everything serialized" regression (which would be ~10×).
+ *   - Warm the *whole* pool first (a concurrent batch) so every pool client
+ *     has established its TCP + auth connection. This is essential: the
+ *     earlier version warmed only a single client, so the first parallel
+ *     batch silently paid one-time connection handshakes for the other N-1
+ *     clients — inflating its wall time and making an absolute-millisecond
+ *     threshold flake on fast loopback connections (single-call ≈ 0ms, but
+ *     the cold parallel batch ≈ 60ms+).
+ *   - Measure a serialized baseline (N sequential calls) and a concurrent
+ *     batch (N at once), both against the now-warm pool.
+ *   - Assert the concurrent batch is faster than the serialized baseline.
+ *     This is a *relative* comparison — it states the actual property under
+ *     test (pg.Pool parallelizes; the synckit regression serializes, making
+ *     parallel ≈ serial) without depending on absolute query latency, which
+ *     is what made the old `< max((N-2)*single, 50)` assertion flaky.
  *
  * How to run locally:
  *   LATTICE_TEST_PG_URL=postgres://... npm test
@@ -62,44 +70,36 @@ describe.skipIf(!PG_URL)('Lattice.query parallel pool (Postgres async integratio
     db.close();
   });
 
-  it('parallel query batch wall time is sub-linear in the batch size (proves pg.Pool concurrency)', async () => {
-    // Use `pg_sleep(0.1)` injected via a custom WHERE clause that always
-    // matches but forces a measurable per-query duration. Lattice's
-    // `query()` doesn't expose raw SQL, so we use the public API plus a
-    // per-row `id IN ($pg_sleep(0.1) || row_id_list)` trick — actually no,
-    // simpler: we just rely on plain queries. With 10 of them concurrent
-    // they should still finish in dramatically less than 10x single-call
-    // time as long as the pool is being used.
-    //
-    // To make the timing differential noticeable on a fast loopback
-    // connection, we run a heavier query — count(*) over the seeded rows
-    // 10 times. On the synckit/Atomics.wait path these would serialize
-    // through the worker; on the pg.Pool path they parallelize across pool
-    // clients.
+  it('a concurrent query batch beats the serialized baseline (proves pg.Pool concurrency)', async () => {
+    const N = 20;
 
-    // Warm-up to avoid first-call setup overhead skewing the baseline.
-    await db.count(tableName);
-
-    // Baseline: single call.
-    const tStart1 = Date.now();
-    await db.count(tableName);
-    const single = Date.now() - tStart1;
-
-    // Concurrent batch.
-    const N = 10;
-    const tStartN = Date.now();
+    // Warm the WHOLE pool: fire N concurrent queries so every pool client
+    // establishes its TCP + auth connection now. Without this, the first
+    // measured parallel batch pays one-time connection handshakes for every
+    // client beyond the one a single-call warm-up touched — which inflated
+    // its wall time and made the old absolute-threshold assertion flaky on
+    // fast loopback connections.
     await Promise.all(Array.from({ length: N }, () => db.count(tableName)));
-    const parallel = Date.now() - tStartN;
 
-    // Lower bound on what "parallel" means: the batch must beat the
-    // serialized worst case by a meaningful margin. The regression we want
-    // to catch is "everything serialized via synckit", which would push
-    // parallel ≈ N × single. We assert parallel < (N - 2) × single — generous
-    // enough to absorb pool/network jitter but tight enough that a fully
-    // serialized regression (where parallel ≈ N × single) fails the
-    // assertion. The 50ms floor prevents sub-millisecond loopback timings
-    // from being dominated by relative noise.
-    expect(parallel).toBeLessThan(Math.max((N - 2) * single, 50));
+    // Serialized baseline: N sequential calls against the warm pool. This is
+    // the synckit worst case the rewrite eliminated — every query waits for
+    // the previous one.
+    const tSerial = Date.now();
+    for (let i = 0; i < N; i++) await db.count(tableName);
+    const serial = Date.now() - tSerial;
+
+    // Concurrent batch against the same warm pool.
+    const tParallel = Date.now();
+    await Promise.all(Array.from({ length: N }, () => db.count(tableName)));
+    const parallel = Date.now() - tParallel;
+
+    // pg.Pool parallelizes across clients, so N concurrent queries complete in
+    // a few waves rather than N back-to-back round-trips — the concurrent
+    // batch must be strictly faster than the serialized baseline. A synckit-
+    // style serialization regression makes parallel ≈ serial (or worse) and
+    // fails here. Relative comparison, so it doesn't depend on absolute query
+    // latency (the source of the previous flake).
+    expect(parallel).toBeLessThan(serial);
   });
 
   it('large concurrent reads return correct row counts', async () => {

@@ -21,7 +21,12 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
   secrets: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      name: 'TEXT NOT NULL',
+      // NOT NULL needs a DEFAULT so ALTER TABLE ADD COLUMN succeeds when this
+      // native shape is merged onto a pre-existing table (the adopt + team
+      // shared-schema sync paths use ADD COLUMN; SQLite + Postgres both reject
+      // a NOT NULL add without a default). Every insert sets `name` explicitly,
+      // so the default is never observed in practice.
+      name: "TEXT NOT NULL DEFAULT ''",
       kind: 'TEXT',
       value: 'TEXT',
       description: 'TEXT',
