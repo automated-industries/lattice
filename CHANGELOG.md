@@ -87,6 +87,12 @@ and inert until a key is configured).
   get a parent dir created (Postgres URLs, `file:` URLs, and `:memory:` skip it).
   `lattice --version` also switched from `new URL(...).pathname` (percent-encoded
   with a leading slash on Windows) to `fileURLToPath()`.
+- **`startGuiServer().close()` no longer hangs on an open feed stream.** The
+  activity feed's `/api/feed/stream` SSE connection stays open indefinitely, so
+  a browser tab kept `server.close()` waiting for it to drain. `close()` now
+  force-drops lingering keep-alive/SSE connections (`closeAllConnections`) so it
+  resolves promptly even with a tab open. This also unblocks browser-level e2e
+  teardown.
 - **`/api/entities` no longer exhausts the connection pool at scale.** It fired
   one `COUNT(*)` per entity with an unbounded `Promise.all`; a ~95-entity cloud
   database opened ~95 concurrent counts against a 15-slot Supabase session

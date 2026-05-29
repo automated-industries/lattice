@@ -1,6 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
@@ -802,9 +809,10 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
  * with a missing saved credential still classifies as cloud instead of throwing.
  */
 export function sqliteFileForConfig(configPath: string): string | null {
-  const raw = String(parseDocument(readFileSync(configPath, 'utf8')).get('db') ?? '').trim();
+  const rawNode = parseDocument(readFileSync(configPath, 'utf8')).get('db');
+  const raw = typeof rawNode === 'string' ? rawNode.trim() : '';
   if (!raw) return null;
-  if (isPostgresUrl(raw) || /^\$\{LATTICE_DB:/.test(raw)) return null;
+  if (isPostgresUrl(raw) || raw.startsWith('${LATTICE_DB:')) return null;
   if (raw === ':memory:' || raw.startsWith('file:')) return null;
   return resolve(dirname(configPath), raw);
 }
@@ -1032,16 +1040,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // cloud DBs); genuine other-client changes still come through.
           const recentSelf = new Map<string, number>();
           const offFeed = active.feed.subscribe((e) => {
-            recentSelf.set(`${e.table}:${e.rowId}:${e.op}`, Date.now());
+            recentSelf.set(`${String(e.table)}:${String(e.rowId)}:${e.op}`, Date.now());
             writeFeed(e);
           });
           // Merge the Postgres realtime broker so changes made by OTHER clients
           // on a shared cloud DB also appear in the feed (SQLite has no broker).
           const offBroker = active.realtime?.subscribePayload((p) => {
             const op =
-              p.op === 'INSERT' ? 'insert' : p.op === 'UPDATE' ? 'update' : p.op === 'DELETE' ? 'delete' : null;
+              p.op === 'INSERT'
+                ? 'insert'
+                : p.op === 'UPDATE'
+                  ? 'update'
+                  : p.op === 'DELETE'
+                    ? 'delete'
+                    : null;
             if (!op || !p.table_name || p.table_name.startsWith('_lattice')) return;
-            const key = `${p.table_name}:${p.pk}:${op}`;
+            const key = `${p.table_name}:${String(p.pk)}:${op}`;
             const seen = recentSelf.get(key);
             if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
             writeFeed({
@@ -1398,13 +1412,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {
           const id = decodeURIComponent(pathname.slice('/api/history/revert/'.length));
           const result = await revertEntry(
-            { db: active.db, feed: active.feed, softDeletable: active.softDeletable, source: 'gui' },
+            {
+              db: active.db,
+              feed: active.feed,
+              softDeletable: active.softDeletable,
+              source: 'gui',
+            },
             id,
           );
           if (!result.ok) {
             sendJson(
               res,
-              { error: result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone' },
+              {
+                error:
+                  result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone',
+              },
               result.reason === 'not_found' ? 404 : 400,
             );
             return;
@@ -1980,6 +2002,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             resolveClose();
           });
         });
+        // Force-drop lingering keep-alive / SSE connections (the activity
+        // feed's `/api/feed/stream` EventSource stays open indefinitely), so
+        // close() doesn't hang waiting for a browser tab to disconnect.
+        if (typeof server.closeAllConnections === 'function') {
+          server.closeAllConnections();
+        }
       }),
   };
 }
