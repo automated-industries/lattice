@@ -219,6 +219,7 @@ Subcommands:
   pull       Pull change envelopes (--team)
   push       Drain the outbox (--team)
   status     Show sync status (--team)
+  dlq        Inspect the dead-letter queue: dlq list|retry|purge (--team [--id])
 ```
 
 `--name` is the user's display name; `--team-name` is the team's name. They were previously overloaded onto a single `--name` flag — that was clarified in v1.12.
@@ -257,6 +258,27 @@ In direct-Postgres team mode every member connects to the **same physical Postgr
 
 ---
 
+## Conflict resolution & sync semantics
+
+This is what the sync loop actually does today — read it before designing a multi-writer workflow on top of Teams.
+
+- **Last-write-wins, no version comparison.** Applying a pulled `upsert` envelope is a blind `local.upsert(table, payload)`. There is no `updated_at` / version-vector check, no causal ordering, and no merge step — whichever write the cloud serializes last is the one everyone ends up with. The cloud `__lattice_change_log.seq` is a monotonic **delivery cursor** (so a receiver knows where it left off), not a conflict signal.
+- **Single-writer per row (owner-only push).** A row is owned by whoever first `link`ed it (`__lattice_row_links.owner_user_id`). The cloud rejects a push to a row from anyone but its owner with `403`. So in practice two members can't both push the _same_ row — only its owner can. Different rows can have different owners.
+- **Non-owner local edits are overwritten on the next pull.** A non-owner can still edit a mirrored row in their own local DB. That edit produces **no** outbox entry (only owners push), so it never reaches the cloud — and the owner's next update overwrites it. As of **v1.14+** this is no longer silent: before the overwrite, the puller compares the current local row against `__lattice_local_links.synced_hash` (the hash captured at the last sync) and, if they differ, writes a **`divergence`** entry to the DLQ capturing both the lost local content and the incoming row. The row still converges to the owner's state (LWW); the loss is now visible.
+- **DLQ = pull-apply failures + divergence notices.** When a pulled envelope throws while applying (e.g. it arrived before the table/dependency it needs), it lands in `__lattice_team_dlq` and the pull cursor advances past it — so one bad envelope doesn't stall the stream, but the envelope isn't lost. Inspect and recover with:
+
+  ```
+  lattice teams dlq list  --team <name>           # show entries (op, target, error)
+  lattice teams dlq retry --team <name> [--id <id>]  # replay; succeeds clear, failures stay
+  lattice teams dlq purge --team <name> [--id <id>]  # discard without applying
+  ```
+
+  `retry` replays through the normal apply path, so an envelope that failed because its dependency hadn't arrived yet applies cleanly once the dependency lands. (Push failures are different — they stay in the **outbox** and retry automatically with exponential backoff; they never enter the DLQ.)
+
+- **Recommended operating practice.** Until the conflict rate on your team is understood, review `lattice teams dlq list` periodically (e.g. weekly). A non-empty DLQ means either an out-of-order delivery to replay or a divergence to reconcile — both want a human's eye.
+
+---
+
 ## Schema reference
 
 Cloud-side:
@@ -276,13 +298,13 @@ Cloud-side:
 
 Local-side:
 
-| Table                        | Columns                                                                                         |
-| ---------------------------- | ----------------------------------------------------------------------------------------------- |
-| `__lattice_user_identity`    | Singleton (`id='singleton'`) mirroring `~/.lattice/identity.json`.                              |
-| `__lattice_team_connections` | `team_id PK, team_name, cloud_url, my_user_id, api_token_encrypted, last_change_seq, joined_at` |
-| `__lattice_local_links`      | Same shape as `__lattice_row_links` (used by write-hook capture + receiver mirrors)             |
-| `__lattice_team_outbox`      | FIFO outbox of local writes pending push to the cloud                                           |
-| `__lattice_team_dlq`         | Dead-letter for envelopes that failed too many push attempts                                    |
+| Table                        | Columns                                                                                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `__lattice_user_identity`    | Singleton (`id='singleton'`) mirroring `~/.lattice/identity.json`.                                                                                           |
+| `__lattice_team_connections` | `team_id PK, team_name, cloud_url, my_user_id, api_token_encrypted, last_change_seq, joined_at`                                                              |
+| `__lattice_local_links`      | `__lattice_row_links` shape plus `synced_hash` (last-applied row hash, for divergence detection on receiver mirrors — v1.14+)                                |
+| `__lattice_team_outbox`      | FIFO outbox of local writes pending **push** to the cloud (retries with exponential backoff)                                                                 |
+| `__lattice_team_dlq`         | Dead-letter for change envelopes that failed to apply on **pull**, plus non-owner-overwrite divergence notices (inspect/retry/purge via `lattice teams dlq`) |
 
 ---
 

@@ -49,8 +49,7 @@ export async function attachBlob(srcPath: string, latticeRoot: string): Promise<
     throw new Error(`attachBlob: ${srcPath} is not a regular file`);
   }
   const sha256 = await hashFile(srcPath);
-  const relDir = join('data', 'blobs');
-  const blobDir = join(latticeRoot, relDir);
+  const blobDir = join(latticeRoot, 'data', 'blobs');
   mkdirSync(blobDir, { recursive: true });
   const destAbs = join(blobDir, sha256);
   if (!existsSync(destAbs)) {
@@ -58,7 +57,9 @@ export async function attachBlob(srcPath: string, latticeRoot: string): Promise<
   }
   return {
     sha256,
-    blob_path: join(relDir, sha256),
+    // POSIX separators: blob_path is persisted to the DB and must stay portable
+    // across machines (path.join would emit backslashes on Windows).
+    blob_path: `data/blobs/${sha256}`,
     size_bytes: stats.size,
     original_name: basename(srcPath),
   };

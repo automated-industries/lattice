@@ -340,6 +340,17 @@ lattice teams <subcommand> [options]
 | `pull`     | Pull change envelopes from the cloud + apply locally (`--team`)                            |
 | `push`     | Drain the local outbox to the cloud (`--team`)                                             |
 | `status`   | Show sync stats (outbox depth, DLQ depth, last seq) (`--team`)                             |
+| `dlq`      | Inspect the dead-letter queue: `dlq list\|retry\|purge` (`--team [--id <id>]`) (v1.15+)    |
+
+**Dead-letter queue (v1.15+).** Pulled envelopes that fail to apply — e.g. one that arrived before the table/row it depends on — land in `__lattice_team_dlq` (alongside non-owner-overwrite divergence notices) instead of being lost behind the advancing pull cursor:
+
+```sh
+lattice teams dlq list  --team Atlas               # show entries (op, target, error)
+lattice teams dlq retry --team Atlas [--id <id>]   # replay through the normal apply path
+lattice teams dlq purge --team Atlas [--id <id>]   # discard without applying
+```
+
+`retry` re-applies the envelope, so a once-failing change applies cleanly once its dependency lands.
 
 **Bootstrap example**:
 
