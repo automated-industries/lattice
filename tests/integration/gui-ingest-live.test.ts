@@ -44,7 +44,12 @@ async function boot(): Promise<GuiServerHandle> {
       '',
     ].join('\n'),
   );
-  const server = await startGuiServer({ configPath, outputDir: join(root, 'context'), port: 0, openBrowser: false });
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
   servers.push(server);
   return server;
 }
@@ -72,10 +77,15 @@ describe('ingest LLM enrichment (live)', () => {
         }),
       });
       expect(res.status).toBe(201);
-      const body = (await res.json()) as { id: string; suggestedLinks: { table: string; id: string }[] };
+      const body = (await res.json()) as {
+        id: string;
+        suggestedLinks: { table: string; id: string }[];
+      };
 
       // Description was replaced by an LLM summary (not the raw heuristic prefix).
-      const row = (await fetch(`${server.url}/api/tables/files/rows/${body.id}`).then((r) => r.json())) as {
+      const row = (await fetch(`${server.url}/api/tables/files/rows/${body.id}`).then((r) =>
+        r.json(),
+      )) as {
         description: string;
       };
       expect(typeof row.description).toBe('string');
@@ -86,10 +96,14 @@ describe('ingest LLM enrichment (live)', () => {
 
       // And because a files↔projects junction exists, it auto-created the link
       // (default action, no confirmation) — a project_files row joins them.
-      const links = (await fetch(`${server.url}/api/tables/project_files/rows`).then((r) => r.json())) as {
+      const links = (await fetch(`${server.url}/api/tables/project_files/rows`).then((r) =>
+        r.json(),
+      )) as {
         rows: { file_id: string; project_id: string }[];
       };
-      expect(links.rows.some((r) => r.file_id === body.id && r.project_id === projectId)).toBe(true);
+      expect(links.rows.some((r) => r.file_id === body.id && r.project_id === projectId)).toBe(
+        true,
+      );
     },
     60000,
   );

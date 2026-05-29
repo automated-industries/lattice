@@ -11,7 +11,12 @@ import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import { resolveClaudeAuth } from './assistant-routes.js';
 import { createAnthropicClient } from './ai/chat.js';
-import { summarizeText, classifyLinks, type CatalogEntity, type ClassifyMatch } from './ai/summarize.js';
+import {
+  summarizeText,
+  classifyLinks,
+  type CatalogEntity,
+  type ClassifyMatch,
+} from './ai/summarize.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -38,13 +43,28 @@ interface IngestContext {
 }
 
 const MIME_BY_EXT: Record<string, string> = {
-  '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.heic': 'image/heic',
-  '.txt': 'text/plain', '.md': 'text/markdown', '.markdown': 'text/markdown', '.csv': 'text/csv',
-  '.tsv': 'text/tab-separated-values', '.json': 'application/json', '.html': 'text/html',
-  '.htm': 'text/html', '.xml': 'application/xml', '.yaml': 'application/x-yaml',
-  '.yml': 'application/x-yaml', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.doc': 'application/msword', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.heic': 'image/heic',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.json': 'application/json',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.xml': 'application/xml',
+  '.yaml': 'application/x-yaml',
+  '.yml': 'application/x-yaml',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.doc': 'application/msword',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
 
@@ -64,12 +84,15 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve_, reject) => {
     let raw = '';
     req.setEncoding('utf8');
-    req.on('data', (c) => {
+    req.on('data', (c: string) => {
       raw += c;
       if (raw.length > 10_000_000) reject(new Error('payload too large'));
     });
     req.on('end', () => {
-      if (!raw) return resolve_({});
+      if (!raw) {
+        resolve_({});
+        return;
+      }
       try {
         resolve_(JSON.parse(raw) as Record<string, unknown>);
       } catch {
@@ -193,7 +216,9 @@ function readBuffer(req: IncomingMessage, maxBytes = 50_000_000): Promise<Buffer
       if (size > maxBytes) reject(new Error('upload too large'));
       else chunks.push(c);
     });
-    req.on('end', () => resolve_(Buffer.concat(chunks)));
+    req.on('end', () => {
+      resolve_(Buffer.concat(chunks));
+    });
     req.on('error', reject);
   });
 }
@@ -218,8 +243,9 @@ export async function dispatchIngestRoute(
   // expose a local path). Extract then discard the bytes — we keep the text +
   // description, not the file (path stays null, like a text paste).
   if (ctx.pathname === '/api/ingest/upload') {
-    const name = (typeof req.headers['x-filename'] === 'string' && req.headers['x-filename']) || 'upload';
-    const mime = req.headers['content-type'] || 'application/octet-stream';
+    const name =
+      (typeof req.headers['x-filename'] === 'string' && req.headers['x-filename']) || 'upload';
+    const mime = req.headers['content-type'] ?? 'application/octet-stream';
     let buf: Buffer;
     try {
       buf = await readBuffer(req);
@@ -237,7 +263,7 @@ export async function dispatchIngestRoute(
       await writeFile(tmp, buf);
       result = await parseFile(tmp, mime, name);
     } finally {
-      await rm(tmp, { force: true }).catch(() => {});
+      await rm(tmp, { force: true }).catch(() => undefined);
     }
     const { id } = await createRow(mctx, 'files', {
       id: crypto.randomUUID(),
@@ -248,8 +274,22 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
     });
-    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions, ctx.entityDescriptions);
-    sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
+    const suggestedLinks = result.skip
+      ? []
+      : await enrichWithLlm(
+          mctx,
+          ctx.db,
+          id,
+          result.text,
+          name,
+          ctx.fileJunctions,
+          ctx.entityDescriptions,
+        );
+    sendJson(
+      res,
+      { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks },
+      201,
+    );
     return true;
   }
 
@@ -267,7 +307,8 @@ export async function dispatchIngestRoute(
       sendJson(res, { error: 'text is required' }, 400);
       return true;
     }
-    const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Pasted text';
+    const title =
+      typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Pasted text';
     const { id } = await createRow(mctx, 'files', {
       id: crypto.randomUUID(),
       original_name: title,
@@ -277,7 +318,15 @@ export async function dispatchIngestRoute(
       description: describe(text, 'text/plain', title),
       extraction_status: 'extracted',
     });
-    const suggestedLinks = await enrichWithLlm(mctx, ctx.db, id, text, title, ctx.fileJunctions, ctx.entityDescriptions);
+    const suggestedLinks = await enrichWithLlm(
+      mctx,
+      ctx.db,
+      id,
+      text,
+      title,
+      ctx.fileJunctions,
+      ctx.entityDescriptions,
+    );
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
   }
@@ -322,8 +371,22 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
     });
-    const suggestedLinks = result.skip ? [] : await enrichWithLlm(mctx, ctx.db, id, result.text, name, ctx.fileJunctions, ctx.entityDescriptions);
-    sendJson(res, { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks }, 201);
+    const suggestedLinks = result.skip
+      ? []
+      : await enrichWithLlm(
+          mctx,
+          ctx.db,
+          id,
+          result.text,
+          name,
+          ctx.fileJunctions,
+          ctx.entityDescriptions,
+        );
+    sendJson(
+      res,
+      { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks },
+      201,
+    );
   } catch (e) {
     await updateRow(mctx, 'files', id, {
       extraction_status: 'failed',

@@ -2,7 +2,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseFile, describe as describeFile, isCodeFile, languageOf } from '../../src/gui/ai/extract.js';
+import {
+  parseFile,
+  describe as describeFile,
+  isCodeFile,
+  languageOf,
+} from '../../src/gui/ai/extract.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -61,7 +66,9 @@ describe('extract', () => {
 
   it('describe() summarizes text and falls back for binaries', () => {
     expect(describeFile('  hello   world  ', 'text/plain', 'a.txt')).toBe('hello world');
-    expect(describeFile('', 'application/pdf', 'doc.pdf')).toBe('Binary file: doc.pdf (application/pdf)');
+    expect(describeFile('', 'application/pdf', 'doc.pdf')).toBe(
+      'Binary file: doc.pdf (application/pdf)',
+    );
     const long = 'x'.repeat(500);
     expect(describeFile(long, 'text/plain', 'a.txt').endsWith('…')).toBe(true);
   });

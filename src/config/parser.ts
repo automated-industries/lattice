@@ -203,7 +203,8 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   const outputFile = entity.outputFile;
 
   const rawDescription = (entity as { description?: unknown }).description;
-  const description = typeof rawDescription === 'string' && rawDescription.trim() ? rawDescription.trim() : undefined;
+  const description =
+    typeof rawDescription === 'string' && rawDescription.trim() ? rawDescription.trim() : undefined;
 
   return {
     columns,

@@ -34,16 +34,24 @@ function sendJson(res: ServerResponse, body: unknown, status = 200): void {
   res.end(JSON.stringify(body));
 }
 
+/** Coerce an unknown DB column to a string, with a fallback for null/non-string. */
+function asStr(v: unknown, fallback = ''): string {
+  return typeof v === 'string' ? v : fallback;
+}
+
 function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let raw = '';
     req.setEncoding('utf8');
-    req.on('data', (c) => {
+    req.on('data', (c: string) => {
       raw += c;
       if (raw.length > 2_000_000) reject(new Error('payload too large'));
     });
     req.on('end', () => {
-      if (!raw) return resolve({});
+      if (!raw) {
+        resolve({});
+        return;
+      }
       try {
         resolve(JSON.parse(raw) as Record<string, unknown>);
       } catch {
@@ -72,7 +80,9 @@ function mapHistory(raw: unknown): LlmMessage[] {
 /** Persist one completed exchange to the native chat entities (best-effort). */
 async function ensureThread(db: Lattice, threadId: string | null, title: string): Promise<string> {
   if (threadId) {
-    const existing = (await db.get('chat_threads', threadId)) as { deleted_at?: string | null } | null;
+    const existing = (await db.get('chat_threads', threadId)) as {
+      deleted_at?: string | null;
+    } | null;
     if (existing && !existing.deleted_at) return threadId;
   }
   const id = crypto.randomUUID();
@@ -105,7 +115,11 @@ export async function dispatchChatRoute(
     const rows = (await ctx.db.query('chat_threads', { limit: 100 })) as Record<string, unknown>[];
     const threads = rows
       .filter((r) => !r.deleted_at)
-      .map((r) => ({ id: String(r.id), title: String(r.title ?? 'Chat'), created_at: String(r.created_at ?? '') }))
+      .map((r) => ({
+        id: asStr(r.id),
+        title: asStr(r.title, 'Chat'),
+        created_at: asStr(r.created_at),
+      }))
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
     sendJson(res, { threads });
     return true;
@@ -115,17 +129,20 @@ export async function dispatchChatRoute(
   const msgMatch = /^\/api\/chat\/threads\/([^/]+)\/messages$/.exec(ctx.pathname);
   if (ctx.method === 'GET' && msgMatch) {
     const threadId = decodeURIComponent(msgMatch[1] ?? '');
-    const rows = (await ctx.db.query('chat_messages', { limit: 1000 })) as Record<string, unknown>[];
+    const rows = (await ctx.db.query('chat_messages', { limit: 1000 })) as Record<
+      string,
+      unknown
+    >[];
     const messages = rows
       .filter((r) => r.thread_id === threadId && !r.deleted_at)
       .map((r) => {
         let text = '';
         try {
-          text = (JSON.parse(String(r.content_json ?? '{}')) as { text?: string }).text ?? '';
+          text = (JSON.parse(asStr(r.content_json, '{}')) as { text?: string }).text ?? '';
         } catch {
           /* ignore malformed */
         }
-        return { role: String(r.role), text, created_at: String(r.created_at ?? '') };
+        return { role: asStr(r.role), text, created_at: asStr(r.created_at) };
       })
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
     sendJson(res, { messages });
@@ -138,7 +155,10 @@ export async function dispatchChatRoute(
   if (!auth) {
     sendJson(
       res,
-      { error: 'No Claude auth configured. Connect a subscription or add an API token in User Settings → Assistant.' },
+      {
+        error:
+          'No Claude auth configured. Connect a subscription or add an API token in User Settings → Assistant.',
+      },
       400,
     );
     return true;
