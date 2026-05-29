@@ -8,6 +8,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-05-29
+
+### Fixed — `lattice gui` against Postgres exhausted the connection pool on databases with many tables
+
+Pointing `lattice gui` at a Postgres database with N tables caused every `/api/entities` request to fan out N parallel `COUNT(*)` queries through the connection pool (`Promise.all` over `db.count(table)`). On managed pools with a small slot budget — Supabase's session pooler caps at 15 — N > 15 hit `EMAXCONNSESSION` the moment a second client refreshed. Concretely: a 95-table Postgres database locked the GUI's entity-list view on the second concurrent load.
+
+The Postgres path now collapses the fan-out to a single query against `pg_class.reltuples`, returning approximate row counts for every table in one round-trip:
+
+```sql
+SELECT c.relname, c.reltuples::bigint
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema()
+  AND c.relkind IN ('r','v','m','p')
+  AND c.relname = ANY($1);
+```
+
+`reltuples` is the planner statistic maintained by `ANALYZE` / autovacuum. For the entity-list browse view this is the right tradeoff — operators pick which table to open, not audit row counts. The trade is that tables with a `deleted_at` column now include soft-deleted rows in this list-view count; per-table drill-in still shows exact filtered counts.
+
+The SQLite path is unchanged: it's embedded, no pool, and the per-table fan-out is genuinely cheap. SQLite users see exact, soft-delete-aware counts as before.
+
+`GuiTableSummary.rowCount` was widened from `number?` to `number | null` so tables that aren't in `pg_class` yet (newly `defineLate`'d, never analyzed) can be explicitly surfaced as "no count available" rather than missing the field. The SPA already handled `rowCount != null`, so the rendering is unchanged.
+
+New helper `countManyPostgres()` lives in `src/gui/count-many.ts` with unit tests in `tests/unit/count-many.test.ts` that pin the "one query regardless of table count" invariant.
+
 ## [1.14.0] - 2026-05-27
 
 ### Fixed — native entities (`files`/`secrets`) showed as cards but failed with "Unknown table"
