@@ -586,10 +586,14 @@ export class TeamsClient {
         const changed = await this.applyCloudSchemaLocally(obj.table, obj.schema_spec);
         if (changed) applied.push({ table: obj.table, schema_version: obj.schema_version });
       } catch (e) {
+        // Isolate per-table failures: a single object that can't be applied
+        // (PK conflict, or any DDL error) is recorded and skipped, so the rest
+        // of the team's shared tables still sync. Previously a non-conflict
+        // error aborted the whole sync, leaving a joined member with NO tables.
         if (e instanceof TeamsSchemaConflictError) {
           conflicts.push({ table: e.table, reason: e.reason });
         } else {
-          throw e;
+          conflicts.push({ table: obj.table, reason: (e as Error).message });
         }
       }
     }

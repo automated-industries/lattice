@@ -8,6 +8,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — shared-schema sync blanked a joined member's tables
+
+A member on a team DB could refresh and see **none** of the shared tables. Applying a cloud schema that adds a `NOT NULL` column (no default) to an already-existing local table threw `Cannot add a NOT NULL column with default value NULL` (SQLite + Postgres both reject this via `ADD COLUMN`); that non-conflict error aborted the **entire** shared-schema sync, so the member got zero tables. `renderAddColumnType()` now adds such columns nullable on an existing table (the constraint can't be enforced on existing rows anyway, and cloud-synced rows still carry values), and `syncSharedSchemas()` isolates per-table failures — a single unappliable object is recorded as a conflict and skipped, so the rest of the team's shared tables still sync.
+
+### Fixed — native `secrets.name` `NOT NULL` column lacked a `DEFAULT`
+
+`secrets.name` was `NOT NULL` with no default, so merging the native shape onto a pre-existing table via `ALTER TABLE ADD COLUMN` (the adopt + team shared-schema sync paths) failed with `Cannot add a NOT NULL column with default value NULL`. It now carries `DEFAULT ''`; every insert sets `name` explicitly, so the default is never observed in practice. A regression test asserts every `NOT NULL` native column has a `DEFAULT` (or is the PK).
+
 ### Fixed — `seed()` silently dropped junction links to unresolved targets
 
 `Lattice.seed()` skipped any `linkTo` link whose target row didn't resolve (`if (!target) continue`) and `link()` swallows non-matching inserts via `INSERT OR IGNORE`, so a record could cite a relationship in its rendered text while having no link in the graph — with no error, log, or signal. `SeedResult` now carries an `unresolvedLinks: UnresolvedLink[]` array surfacing every dropped link (source record, field, target name, junction, resolve table/column). The new `SeedConfig.onUnresolvedLink: 'collect' | 'throw'` option (default `'collect'`, preserving existing behavior) makes `seed()` throw a `SeedReconciliationError` listing all unresolved links for pipelines that must never leave a dangling reference. `SeedReconciliationError` and `UnresolvedLink` are exported from the package root.
