@@ -86,7 +86,10 @@ and inert until a key is configured).
   is now guarded by `shouldMkdirForDbPath()` — only real filesystem SQLite paths
   get a parent dir created (Postgres URLs, `file:` URLs, and `:memory:` skip it).
   `lattice --version` also switched from `new URL(...).pathname` (percent-encoded
-  with a leading slash on Windows) to `fileURLToPath()`.
+  with a leading slash on Windows) to `fileURLToPath()`. Saving a SQLite
+  database from the Database panel now writes a POSIX-separated relative `db:`
+  path (`path.relative` yields backslashes on Windows, which would otherwise
+  leak a non-portable path into the committed config).
 - **`startGuiServer().close()` no longer hangs on an open feed stream.** The
   activity feed's `/api/feed/stream` SSE connection stays open indefinitely, so
   a browser tab kept `server.close()` waiting for it to drain. `close()` now
