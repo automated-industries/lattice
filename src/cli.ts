@@ -1,5 +1,6 @@
 import { resolve, dirname } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { parse } from 'yaml';
 import type { LatticeConfig } from './config/types.js';
@@ -298,7 +299,9 @@ function printHelp(): void {
 
 function getVersion(): string {
   try {
-    const pkgPath = new URL('../package.json', import.meta.url).pathname;
+    // fileURLToPath (not .pathname): on Windows .pathname is percent-encoded
+    // with a leading slash (/C:/…), which fs can't read.
+    const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version: string };
     return pkg.version;
   } catch {

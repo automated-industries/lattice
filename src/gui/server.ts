@@ -32,6 +32,7 @@ import {
   shareEntityWithTeam,
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
+import { isPostgresUrl } from '../teams/register-direct.js';
 import { FeedBus } from './ai/feed.js';
 import {
   createRow,
@@ -434,9 +435,22 @@ function resolveOutputDirForConfig(configPath: string): string {
   return resolve(base, 'context');
 }
 
+/**
+ * Whether the GUI should `mkdir` the parent directory of a `db:` value.
+ * Only true for real filesystem SQLite paths — NOT for Postgres URLs,
+ * `file:` URLs, or `:memory:`. Calling `dirname()` on a `postgres://…:5432/…`
+ * URL yields a string containing `:`, which is an illegal path char on
+ * Windows (`mkdirSync` throws) — Mac tolerates `:` so the bug only bit Windows.
+ */
+export function shouldMkdirForDbPath(dbPath: string): boolean {
+  return !isPostgresUrl(dbPath) && !dbPath.startsWith('file:') && dbPath !== ':memory:';
+}
+
 async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
-  mkdirSync(dirname(parsed.dbPath), { recursive: true });
+  if (shouldMkdirForDbPath(parsed.dbPath)) {
+    mkdirSync(dirname(parsed.dbPath), { recursive: true });
+  }
   // Native entities (`secrets`, `files`) include encrypted columns —
   // every GUI-opened Lattice must have an encryption key. Resolve once
   // here (env var or auto-generated `~/.lattice/master.key`) and feed
