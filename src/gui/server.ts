@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
@@ -898,6 +898,47 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
 }
 
 /**
+ * The on-disk db file behind a local SQLite config, or null when the config
+ * points at a Postgres URL / `${LATTICE_DB:label}` / `:memory:` / `file:` (in
+ * which case there is no local file for us to remove). Classifies from the raw
+ * `db:` YAML line — deliberately NOT via parseConfigFile, so a cloud config
+ * with a missing saved credential still classifies as cloud instead of throwing.
+ */
+export function sqliteFileForConfig(configPath: string): string | null {
+  const raw = String(parseDocument(readFileSync(configPath, 'utf8')).get('db') ?? '').trim();
+  if (!raw) return null;
+  if (isPostgresUrl(raw) || /^\$\{LATTICE_DB:/.test(raw)) return null;
+  if (raw === ':memory:' || raw.startsWith('file:')) return null;
+  return resolve(dirname(configPath), raw);
+}
+
+/**
+ * Permanently delete a database: its YAML config and — for a local SQLite DB —
+ * the underlying `.db` file plus its `-wal`/`-shm`/`-journal` siblings.
+ * Destructive + irreversible; the caller is responsible for confirmation and
+ * (when deleting the active DB) switching away first so the file handle is
+ * released before we unlink. For cloud configs only the local YAML is removed —
+ * the remote Postgres database is shared and is never touched from here.
+ */
+export function deleteDatabaseFiles(targetConfigPath: string): {
+  deletedConfig: string;
+  deletedDbFile: string | null;
+} {
+  const sqliteFile = sqliteFileForConfig(targetConfigPath);
+  unlinkSync(targetConfigPath);
+  let deletedDbFile: string | null = null;
+  if (sqliteFile && existsSync(sqliteFile)) {
+    unlinkSync(sqliteFile);
+    deletedDbFile = sqliteFile;
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      const sidecar = sqliteFile + suffix;
+      if (existsSync(sidecar)) unlinkSync(sidecar);
+    }
+  }
+  return { deletedConfig: basename(targetConfigPath), deletedDbFile };
+}
+
+/**
  * Tear down an ActiveDb: stop the realtime broker (if any), then close
  * the Lattice. Called before reopening or swapping configs so listeners
  * + pg clients don't leak.
@@ -1579,6 +1620,78 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/databases/delete') {
+          const body = (await readJsonBody(req)) as { path?: unknown };
+          if (typeof body.path !== 'string' || !body.path.trim()) {
+            sendJson(res, { error: 'path must be a non-empty string' }, 400);
+            return;
+          }
+          const target = resolve(body.path);
+          // Only delete a config we actually list (same directory as the
+          // active config). This stops the endpoint from being coaxed into
+          // unlinking arbitrary files outside the database set.
+          const known = listConfigs(active.configPath);
+          const match = known.find((c) => resolve(c.path) === target);
+          if (!match) {
+            sendJson(res, { error: `Not a known database config: ${target}` }, 400);
+            return;
+          }
+          // When deleting the active database we must switch away first so the
+          // SQLite file handle is released (and the server keeps an active DB).
+          let switchedTo: string | null = null;
+          if (resolve(active.configPath) === target) {
+            const fallback = known.find((c) => resolve(c.path) !== target);
+            if (!fallback) {
+              sendJson(
+                res,
+                {
+                  error:
+                    'Cannot delete the only database. Create or add another database first, then delete this one.',
+                },
+                400,
+              );
+              return;
+            }
+            let next: ActiveDb;
+            try {
+              next = await openConfig(fallback.path, resolveOutputDirForConfig(fallback.path));
+            } catch (e) {
+              const err = e as Error & { code?: string };
+              const codePrefix = err.code ? `[${err.code}] ` : '';
+              sendJson(
+                res,
+                {
+                  error: `Cannot delete: failed to switch to ${fallback.path} first: ${codePrefix}${err.message}`,
+                },
+                500,
+              );
+              return;
+            }
+            await disposeActive(active);
+            active = next;
+            switchedTo = active.configPath;
+          }
+          // Surface any filesystem failure loudly (the fail-loudly rule) rather than
+          // half-deleting silently.
+          let deleted: { deletedConfig: string; deletedDbFile: string | null };
+          try {
+            deleted = deleteDatabaseFiles(target);
+          } catch (e) {
+            sendJson(
+              res,
+              { error: `Failed to delete database files: ${(e as Error).message}` },
+              500,
+            );
+            return;
+          }
+          sendJson(res, {
+            ok: true,
+            deletedConfig: deleted.deletedConfig,
+            deletedDbFile: deleted.deletedDbFile,
+            switchedTo,
+          });
           return;
         }
 
