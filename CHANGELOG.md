@@ -8,6 +8,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — `seed()` silently dropped junction links to unresolved targets
+
+`Lattice.seed()` skipped any `linkTo` link whose target row didn't resolve (`if (!target) continue`) and `link()` swallows non-matching inserts via `INSERT OR IGNORE`, so a record could cite a relationship in its rendered text while having no link in the graph — with no error, log, or signal. `SeedResult` now carries an `unresolvedLinks: UnresolvedLink[]` array surfacing every dropped link (source record, field, target name, junction, resolve table/column). The new `SeedConfig.onUnresolvedLink: 'collect' | 'throw'` option (default `'collect'`, preserving existing behavior) makes `seed()` throw a `SeedReconciliationError` listing all unresolved links for pipelines that must never leave a dangling reference. `SeedReconciliationError` and `UnresolvedLink` are exported from the package root.
+
+### Added — Teams dead-letter queue is now inspectable, retryable, and purgeable
+
+`__lattice_team_dlq` was write-only: failed pull envelopes landed there and could only be counted via `teams status`, never seen or replayed, so an envelope that failed because it arrived before its dependency was effectively lost behind the advancing pull cursor. New `TeamsClient.listDlq()` / `retryDlq(id?)` / `purgeDlq(id?)` and CLI `lattice teams dlq list|retry|purge --team <name> [--id <id>]` make the queue observable and recoverable — `retry` replays through the normal apply path, so a late-arriving dependency lets the envelope apply cleanly. `teams status` now points at `dlq list` when the depth is non-zero.
+
+### Added — non-owner local edits are no longer silently overwritten on pull
+
+A non-owner who edited a mirrored row locally produced no outbox entry (only owners push), so the owner's next update overwrote it with no trace. `__lattice_local_links` gains a `synced_hash` column (additive; backfilled on the next session, populated on each applied upsert). Before a last-write-wins overwrite of a non-owned row, the puller compares the current local row's hash against `synced_hash` and, on a mismatch, records a `divergence` entry in the DLQ capturing both the lost local content and the incoming row. The row still converges to the owner's state; the loss is now visible via `teams dlq list`.
+
+### Changed — `docs/teams.md` documents the real sync semantics
+
+Added a "Conflict resolution & sync semantics" section (last-write-wins, owner-only push, non-owner overwrite behavior, DLQ vs. outbox) and corrected the schema-reference description of `__lattice_team_dlq` (it holds pull-apply failures + divergence notices, not push-attempt failures — push retries live in the outbox).
+
 ## [1.14.0] - 2026-05-27
 
 ### Fixed — native entities (`files`/`secrets`) showed as cards but failed with "Unknown table"
