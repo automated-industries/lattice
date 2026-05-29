@@ -9,15 +9,19 @@ import { runChat, type LlmClient, type TurnResult } from '../../src/gui/ai/chat.
 import type { ChatStreamEvent } from '../../src/gui/ai/sse.js';
 
 /** A scripted LlmClient that returns a queued result per call, streaming text. */
-function scriptedClient(turns: Array<{ text: string; toolUses?: TurnResult['toolUses'] }>): LlmClient {
+function scriptedClient(turns: { text: string; toolUses?: TurnResult['toolUses'] }[]): LlmClient {
   let i = 0;
   return {
-    async runTurn(params) {
+    runTurn(params) {
       const turn = turns[Math.min(i, turns.length - 1)];
       i++;
       for (const ch of (turn?.text ?? '').split(' ')) params.onText(ch + ' ');
       const toolUses = turn?.toolUses ?? [];
-      return { stopReason: toolUses.length ? 'tool_use' : 'end_turn', text: turn?.text ?? '', toolUses };
+      return Promise.resolve({
+        stopReason: toolUses.length ? 'tool_use' : 'end_turn',
+        text: turn?.text ?? '',
+        toolUses,
+      });
     },
   };
 }
@@ -82,7 +86,11 @@ describe('chat tool loop', () => {
       {
         text: 'Adding that now.',
         toolUses: [
-          { id: 'tu1', name: 'create_row', input: { table: 'people', values: { id: 'p1', name: 'Ada' } } },
+          {
+            id: 'tu1',
+            name: 'create_row',
+            input: { table: 'people', values: { id: 'p1', name: 'Ada' } },
+          },
         ],
       },
       { text: 'Done — added Ada.' },
