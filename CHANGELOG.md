@@ -8,6 +8,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-05-29
+
+### Added — delete a database from the GUI (destructive, confirmation-gated)
+
+A new `POST /api/databases/delete` endpoint plus a name-gated confirm modal removes a saved database's YAML config and (for local SQLite) its `.db` file and `-wal`/`-shm`/`-journal` sidecars. It switches to a sibling first when the active database is deleted, refuses to delete the only database, rejects unknown paths, leaves remote Postgres data untouched, and surfaces filesystem failures loudly rather than half-deleting.
+
+### Added — Playwright e2e harness + Windows CI matrix
+
+Browser-level e2e tests for the GUI SPA (`tests/e2e/*.spec.ts`, `playwright.config.ts`, `test:e2e` script) — each spec boots its own `startGuiServer({ port: 0 })`, no shared web server. CI splits into three jobs: linux (lint/format/typecheck/coverage/build + Postgres), windows (typecheck/test/build — catches Windows-only path regressions; service containers are Linux-only so PG tests skip there), and e2e (Playwright chromium, cached).
+
+### Fixed — `lattice gui` crashed on Windows for `postgres://` databases
+
+`openConfig()` ran `mkdir` on the `db:` value unconditionally, but a `postgres://…:5432/…` URL contains `:`, an illegal Windows path character — so opening any Postgres database in the GUI hard-crashed on Windows. The mkdir is now skipped for non-file `db:` connection strings. Separately, `lattice --version` crashed on Windows because it read a percent-encoded `import.meta.url` pathname; it now uses `fileURLToPath()`.
+
+### Fixed — GUI `/api/entities` exhausted the connection pool at scale
+
+The GUI listed entity counts with an unbounded `Promise.all` of one `COUNT(*)` per entity, so a ~95-entity cloud database fired ~95 concurrent counts and exhausted a 15-slot Postgres session pooler (`EMAXCONN`). Counts now run with bounded concurrency and a fast estimated-count path on Postgres (`pg_class.reltuples`, with an exact fallback when the estimate is `<= 0`).
+
+### Fixed — Windows non-portable `db:` paths surfaced to the config / browser
+
+The GUI Database panel's SQLite save used `path.relative`, which yields backslash separators on Windows and leaked a non-portable path into the committed YAML; relative `db:` paths are now POSIX-normalized. Logical paths surfaced to the browser/DB are likewise normalized to forward slashes.
+
+### Fixed — `startGuiServer().close()` could hang on an open SSE connection
+
+A browser tab subscribed to the long-lived `/api/realtime/stream` SSE route kept a keep-alive socket open, so `close()` hung waiting for it to drain (blocking programmatic shutdown / tests). `close()` now force-drops lingering connections via `server.closeAllConnections()` (Node 18.2+).
+
+### Changed — de-flaked the parallel-pool Postgres timing test
+
+The concurrent-vs-baseline pool test compared parallel wall-time against an absolute floor that was sensitive to connection-setup jitter on CI. It now warms the whole pool first, then asserts a concurrent batch beats a serialized baseline (a relative comparison that states the actual property under test).
+
+### Fixed — shared-schema sync blanked a joined member's tables
+
+A member on a team DB could refresh and see **none** of the shared tables. Applying a cloud schema that adds a `NOT NULL` column (no default) to an already-existing local table threw `Cannot add a NOT NULL column with default value NULL` (SQLite + Postgres both reject this via `ADD COLUMN`); that non-conflict error aborted the **entire** shared-schema sync, so the member got zero tables. `renderAddColumnType()` now adds such columns nullable on an existing table (the constraint can't be enforced on existing rows anyway, and cloud-synced rows still carry values), and `syncSharedSchemas()` isolates per-table failures — a single unappliable object is recorded as a conflict and skipped, so the rest of the team's shared tables still sync.
+
+### Fixed — native `secrets.name` `NOT NULL` column lacked a `DEFAULT`
+
+`secrets.name` was `NOT NULL` with no default, so merging the native shape onto a pre-existing table via `ALTER TABLE ADD COLUMN` (the adopt + team shared-schema sync paths) failed with `Cannot add a NOT NULL column with default value NULL`. It now carries `DEFAULT ''`; every insert sets `name` explicitly, so the default is never observed in practice. A regression test asserts every `NOT NULL` native column has a `DEFAULT` (or is the PK).
+
+### Fixed — `seed()` silently dropped junction links to unresolved targets
+
+`Lattice.seed()` skipped any `linkTo` link whose target row didn't resolve (`if (!target) continue`) and `link()` swallows non-matching inserts via `INSERT OR IGNORE`, so a record could cite a relationship in its rendered text while having no link in the graph — with no error, log, or signal. `SeedResult` now carries an `unresolvedLinks: UnresolvedLink[]` array surfacing every dropped link (source record, field, target name, junction, resolve table/column). The new `SeedConfig.onUnresolvedLink: 'collect' | 'throw'` option (default `'collect'`, preserving existing behavior) makes `seed()` throw a `SeedReconciliationError` listing all unresolved links for pipelines that must never leave a dangling reference. `SeedReconciliationError` and `UnresolvedLink` are exported from the package root.
+
+### Added — Teams dead-letter queue is now inspectable, retryable, and purgeable
+
+`__lattice_team_dlq` was write-only: failed pull envelopes landed there and could only be counted via `teams status`, never seen or replayed, so an envelope that failed because it arrived before its dependency was effectively lost behind the advancing pull cursor. New `TeamsClient.listDlq()` / `retryDlq(id?)` / `purgeDlq(id?)` and CLI `lattice teams dlq list|retry|purge --team <name> [--id <id>]` make the queue observable and recoverable — `retry` replays through the normal apply path, so a late-arriving dependency lets the envelope apply cleanly. `teams status` now points at `dlq list` when the depth is non-zero.
+
+### Added — non-owner local edits are no longer silently overwritten on pull
+
+A non-owner who edited a mirrored row locally produced no outbox entry (only owners push), so the owner's next update overwrote it with no trace. `__lattice_local_links` gains a `synced_hash` column (additive; backfilled on the next session, populated on each applied upsert). Before a last-write-wins overwrite of a non-owned row, the puller compares the current local row's hash against `synced_hash` and, on a mismatch, records a `divergence` entry in the DLQ capturing both the lost local content and the incoming row. The row still converges to the owner's state; the loss is now visible via `teams dlq list`.
+
+### Changed — `docs/teams.md` documents the real sync semantics
+
+Added a "Conflict resolution & sync semantics" section (last-write-wins, owner-only push, non-owner overwrite behavior, DLQ vs. outbox) and corrected the schema-reference description of `__lattice_team_dlq` (it holds pull-apply failures + divergence notices, not push-attempt failures — push retries live in the outbox).
+
 ## [1.14.0] - 2026-05-27
 
 ### Fixed — native entities (`files`/`secrets`) showed as cards but failed with "Unknown table"

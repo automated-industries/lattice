@@ -206,6 +206,14 @@ export const LOCAL_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
       pk: 'TEXT NOT NULL',
       owner_user_id: 'TEXT NOT NULL',
       linked_at: 'TEXT NOT NULL',
+      // Stable hash of the row payload as of the last applied sync. Lets the
+      // puller detect a non-owner local edit before a last-write-wins
+      // overwrite clobbers it: if the current local row hashes differently,
+      // the local copy diverged since last sync. Additive column — older
+      // local DBs get it via _addMissingColumns on the next session, NULL
+      // until the row's next applied upsert (NULL = "never synced, skip
+      // divergence check"). See TeamsClient.applyEnvelope.
+      synced_hash: 'TEXT',
     },
     primaryKey: ['team_id', 'table_name', 'pk'],
     render: () => '',
