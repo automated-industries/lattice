@@ -14,7 +14,11 @@ const SUMMARY_SYSTEM =
   'no "This document". Plain text only.';
 
 /** Generate a 1-2 sentence description of a document's text. */
-export async function summarizeText(client: LlmClient, text: string, name: string): Promise<string> {
+export async function summarizeText(
+  client: LlmClient,
+  text: string,
+  name: string,
+): Promise<string> {
   const turn = await client.runTurn({
     model: DEFAULT_MODEL,
     system: SUMMARY_SYSTEM,
@@ -25,7 +29,7 @@ export async function summarizeText(client: LlmClient, text: string, name: strin
       },
     ],
     tools: [],
-    onText: () => {},
+    onText: () => undefined,
   });
   return turn.text.trim();
 }

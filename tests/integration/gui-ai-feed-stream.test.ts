@@ -44,7 +44,9 @@ async function waitForFeedEvent(
   timeoutMs = 4000,
 ): Promise<Record<string, unknown>> {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const timer = setTimeout(() => {
+    ac.abort();
+  }, timeoutMs);
   try {
     const res = await fetch(`${url}/api/feed/stream`, { signal: ac.signal });
     const reader = res.body!.getReader();

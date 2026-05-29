@@ -25,24 +25,69 @@ export interface ExtractResult {
 const MAX_TEXT = 200_000;
 
 const CODE_LANGS: Record<string, string> = {
-  '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
-  '.mjs': 'javascript', '.cjs': 'javascript', '.py': 'python', '.rb': 'ruby', '.go': 'go',
-  '.rs': 'rust', '.java': 'java', '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp',
-  '.cs': 'csharp', '.php': 'php', '.swift': 'swift', '.kt': 'kotlin', '.sh': 'shell',
-  '.sql': 'sql', '.css': 'css', '.scss': 'scss', '.vue': 'vue', '.svelte': 'svelte',
-  '.lua': 'lua', '.r': 'r',
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.mjs': 'javascript',
+  '.cjs': 'javascript',
+  '.py': 'python',
+  '.rb': 'ruby',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.java': 'java',
+  '.c': 'c',
+  '.h': 'c',
+  '.cpp': 'cpp',
+  '.cc': 'cpp',
+  '.cs': 'csharp',
+  '.php': 'php',
+  '.swift': 'swift',
+  '.kt': 'kotlin',
+  '.sh': 'shell',
+  '.sql': 'sql',
+  '.css': 'css',
+  '.scss': 'scss',
+  '.vue': 'vue',
+  '.svelte': 'svelte',
+  '.lua': 'lua',
+  '.r': 'r',
 };
 
 const TEXT_EXT = new Set([
-  '.txt', '.md', '.markdown', '.rst', '.csv', '.tsv', '.json', '.yaml', '.yml',
-  '.xml', '.toml', '.ini', '.log', '.html', '.htm',
+  '.txt',
+  '.md',
+  '.markdown',
+  '.rst',
+  '.csv',
+  '.tsv',
+  '.json',
+  '.yaml',
+  '.yml',
+  '.xml',
+  '.toml',
+  '.ini',
+  '.log',
+  '.html',
+  '.htm',
 ]);
 
 const TEXT_MIME = /^(text\/|application\/(json|xml|xhtml\+xml|x-yaml|yaml|toml))/;
 
 /** Formats the optional `markitdown` CLI can convert to text when installed. */
 const MARKITDOWN_EXT = new Set([
-  '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.epub', '.rtf', '.odt', '.ods', '.odp',
+  '.pdf',
+  '.docx',
+  '.doc',
+  '.pptx',
+  '.ppt',
+  '.xlsx',
+  '.xls',
+  '.epub',
+  '.rtf',
+  '.odt',
+  '.ods',
+  '.odp',
 ]);
 const MARKITDOWN_TIMEOUT_MS = 120_000;
 const MARKITDOWN_MAX_BYTES = 50_000_000;
@@ -85,8 +130,12 @@ function runMarkitdown(path: string): Promise<string | null> {
         out += c.toString('utf8');
       }
     });
-    child.on('error', () => finish(null)); // binary not installed
-    child.on('close', (code) => finish(code === 0 && out.trim() ? out.trim() : null));
+    child.on('error', () => {
+      finish(null);
+    }); // binary not installed
+    child.on('close', (code) => {
+      finish(code === 0 && out.trim() ? out.trim() : null);
+    });
   });
 }
 

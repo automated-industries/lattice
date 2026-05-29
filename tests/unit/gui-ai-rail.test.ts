@@ -68,6 +68,9 @@ describe('assistant rail markup + wiring', () => {
     expect(open).toBeGreaterThan(-1);
     expect(close).toBeGreaterThan(open);
     const body = guiAppHtml.slice(open + '<script>'.length, close);
+    // Intentional: new Function() compiles (without executing) the inline SPA
+    // script to surface syntax errors that bundling/tsc never sees.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
     expect(() => new Function(body)).not.toThrow();
   });
 });

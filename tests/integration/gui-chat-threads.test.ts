@@ -18,9 +18,25 @@ async function boot(): Promise<GuiServerHandle> {
   const configPath = join(root, 'lattice.config.yml');
   writeFileSync(
     configPath,
-    ['db: ./data/test.db', '', 'entities:', '  notes:', '    fields:', '      id: { type: uuid, primaryKey: true }', '      body: { type: text }', '    render: default-list', '    outputFile: notes.md', ''].join('\n'),
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  notes:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      body: { type: text }',
+      '    render: default-list',
+      '    outputFile: notes.md',
+      '',
+    ].join('\n'),
   );
-  const server = await startGuiServer({ configPath, outputDir: join(root, 'context'), port: 0, openBrowser: false });
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
   servers.push(server);
   return server;
 }
@@ -58,7 +74,9 @@ describe('chat thread endpoints', () => {
     };
     expect(list.threads.some((t) => t.id === 't1' && t.title === 'Greetings')).toBe(true);
 
-    const replay = (await fetch(`${server.url}/api/chat/threads/t1/messages`).then((r) => r.json())) as {
+    const replay = (await fetch(`${server.url}/api/chat/threads/t1/messages`).then((r) =>
+      r.json(),
+    )) as {
       messages: { role: string; text: string }[];
     };
     expect(replay.messages.map((m) => [m.role, m.text])).toEqual([
