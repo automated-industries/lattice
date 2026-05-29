@@ -1494,6 +1494,33 @@ export class Lattice {
     return Number(row?.n ?? 0);
   }
 
+  /**
+   * Fast, approximate live-row count for a whole table (no filters). On
+   * Postgres this reads `pg_class.reltuples` — O(1), no table scan — so a
+   * dashboard can size many tables without firing one `COUNT(*)` per table
+   * (which exhausted the connection pool at ~95 entities). On SQLite, where
+   * there is no cheap estimate, it delegates to the exact `count()`.
+   *
+   * Accuracy guard: when the Postgres estimate is `<= 0` (never analyzed → -1,
+   * or genuinely empty → 0) it falls back to exact `count()`, so a freshly
+   * populated-but-unanalyzed table never reports 0.
+   */
+  async estimatedCount(table: string): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+
+    if (this.getDialect() === 'postgres') {
+      const row = await getAsyncOrSync(
+        this._adapter,
+        'SELECT reltuples::bigint AS n FROM pg_class WHERE oid = to_regclass(?)',
+        [`"${table}"`],
+      );
+      const est = Number(row?.n ?? -1);
+      if (est > 0) return est;
+    }
+    return this.count(table);
+  }
+
   // -------------------------------------------------------------------------
   // Sync
   // -------------------------------------------------------------------------

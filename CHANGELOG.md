@@ -68,6 +68,22 @@ and inert until a key is configured).
 - **Native NOT NULL columns carry a DEFAULT** (`secrets.name`,
   `chat_messages.role`) so the native-entity adopt + ADD COLUMN paths never hit
   the same NOT-NULL-without-default error.
+- **`lattice gui` no longer crashes on Windows with a Postgres `db:`.**
+  `openConfig()` unconditionally ran `mkdirSync(dirname(dbPath))`; for a
+  `postgres://…:5432/…` URL the dirname contains `:`, which is a legal path
+  char on macOS but illegal on Windows, so the GUI threw at launch. The mkdir
+  is now guarded by `shouldMkdirForDbPath()` — only real filesystem SQLite paths
+  get a parent dir created (Postgres URLs, `file:` URLs, and `:memory:` skip it).
+  `lattice --version` also switched from `new URL(...).pathname` (percent-encoded
+  with a leading slash on Windows) to `fileURLToPath()`.
+- **`/api/entities` no longer exhausts the connection pool at scale.** It fired
+  one `COUNT(*)` per entity with an unbounded `Promise.all`; a ~95-entity cloud
+  database opened ~95 concurrent counts against a 15-slot Supabase session
+  pooler and hit `EMAXCONN`. Counts now run through a bounded `mapWithConcurrency`
+  (cap 4, well under the app pool of 10) and use `db.estimatedCount()` —
+  `pg_class.reltuples` on Postgres (O(1), no table scan; falls back to exact
+  `COUNT` when the estimate is ≤ 0, e.g. a never-analyzed table) and exact
+  `COUNT` on SQLite.
 
 ## [1.14.0] - 2026-05-27
 

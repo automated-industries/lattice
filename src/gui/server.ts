@@ -19,6 +19,7 @@ import {
 } from './data.js';
 import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
 import { guiAppHtml } from './app.js';
+import { mapWithConcurrency } from './concurrency.js';
 import type { Row } from '../types.js';
 import {
   CLOUD_INTERNAL_TABLE_DEFS,
@@ -199,6 +200,8 @@ function registeredExtraTables(db: Lattice, yamlNames: Set<string>): GuiTableSum
     });
 }
 
+const ENTITY_COUNT_CONCURRENCY = 4;
+
 async function entitiesWithCounts(
   db: Lattice,
   configPath: string,
@@ -218,19 +221,23 @@ async function entitiesWithCounts(
     allTables = allTables.filter((t) => isVisibleInTeam(t.name, teamContext));
   }
 
-  const enrichedTables = await Promise.all(
-    allTables.map(async (t): Promise<GuiTableSummary> => {
-      // Only count live rows when the table has a `deleted_at` column.
-      const rowCount = t.columns.includes('deleted_at')
-        ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
-        : await db.count(t.name);
+  // Bounded fan-out: a schema with ~95 entities once fired 95 concurrent
+  // COUNT(*)s and exhausted the 15-slot Supabase session pooler (EMAXCONN).
+  // Cap in-flight counts well under the app pool (10) + pooler (15), leaving
+  // headroom for the realtime broker + team sync. estimatedCount is O(1) on
+  // Postgres (pg_class.reltuples), exact on SQLite.
+  const enrichedTables = await mapWithConcurrency(
+    allTables,
+    ENTITY_COUNT_CONCURRENCY,
+    async (t): Promise<GuiTableSummary> => {
+      const rowCount = await db.estimatedCount(t.name);
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
       if (teamContext) {
         base.shared = teamContext.shared.has(t.name);
         base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
       }
       return base;
-    }),
+    },
   );
   return { ...payload, tables: enrichedTables };
 }
