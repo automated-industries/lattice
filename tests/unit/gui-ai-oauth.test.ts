@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   generatePkceVerifier,
   pkceChallengeFor,
@@ -7,6 +7,8 @@ import {
   parseTokenResponse,
   readOAuthConfig,
   oauthConfigured,
+  exchangeCodeForTokens,
+  refreshAccessToken,
   type OAuthConfig,
 } from '../../src/gui/ai/oauth.js';
 
@@ -73,5 +75,57 @@ describe('oauth helpers', () => {
     expect(parsed?.clientId).toBe('cid');
     expect(parsed?.scopes).toEqual(['one', 'two']);
     expect(oauthConfigured(env)).toBe(true);
+  });
+});
+
+describe('oauth token endpoints (fetch-backed)', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  function mockFetch(
+    status: number,
+    body: unknown,
+  ): { calls: { url: string; init: RequestInit }[] } {
+    const calls: { url: string; init: RequestInit }[] = [];
+    globalThis.fetch = ((url: unknown, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return Promise.resolve(
+        new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }),
+      );
+    }) as unknown as typeof fetch;
+    return { calls };
+  }
+
+  it('exchangeCodeForTokens posts the auth-code grant and returns parsed tokens', async () => {
+    const { calls } = mockFetch(200, { access_token: 'at', refresh_token: 'rt', expires_in: 60 });
+    const tokens = await exchangeCodeForTokens(cfg, 'the-code', 'the-verifier');
+    expect(tokens.access_token).toBe('at');
+    expect(tokens.refresh_token).toBe('rt');
+    expect(calls[0]?.url).toBe(cfg.tokenUrl);
+    const sent = String(calls[0]?.init.body);
+    expect(sent).toContain('grant_type=authorization_code');
+    expect(sent).toContain('code=the-code');
+    expect(sent).toContain('code_verifier=the-verifier');
+  });
+
+  it('exchangeCodeForTokens throws (with status) on a non-OK response', async () => {
+    mockFetch(400, 'bad request');
+    await expect(exchangeCodeForTokens(cfg, 'c', 'v')).rejects.toThrow(
+      /token exchange failed \(400\)/,
+    );
+  });
+
+  it('refreshAccessToken carries the old refresh token when the response omits it', async () => {
+    mockFetch(200, { access_token: 'at2' }); // no refresh_token in the response
+    const tokens = await refreshAccessToken(cfg, 'old-refresh');
+    expect(tokens.access_token).toBe('at2');
+    expect(tokens.refresh_token).toBe('old-refresh');
+  });
+
+  it('refreshAccessToken throws (with status) on a non-OK response', async () => {
+    mockFetch(401, 'expired');
+    await expect(refreshAccessToken(cfg, 'rt')).rejects.toThrow(/token refresh failed \(401\)/);
   });
 });
