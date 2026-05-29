@@ -43,6 +43,8 @@ import {
   isNativeEntity,
 } from '../framework/native-entities.js';
 import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
+import type { StorageAdapter } from '../db/adapter.js';
+import { countManyPostgres } from './count-many.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -198,12 +200,42 @@ async function entitiesWithCounts(
     allTables = allTables.filter((t) => isVisibleInTeam(t.name, teamContext));
   }
 
+  // Postgres: collapse the per-table COUNT(*) fan-out to one query against
+  // pg_class. The naive Promise.all path below issues N parallel COUNTs
+  // through the connection pool; on a session pooler with a small slot
+  // budget (e.g. Supabase's 15-slot session pooler), N > slots locks up
+  // the pool the moment two clients refresh at once.
+  //
+  // `reltuples` is approximate (maintained by ANALYZE / autovacuum). For
+  // the entity-list view that's the right tradeoff — operators are
+  // picking which table to open, not auditing row counts. The trade is
+  // that tables with a `deleted_at` column now include soft-deleted rows
+  // in this number; per-table drill-in still shows the filtered count.
+  const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+  const useBatched = adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
+  const approxCounts = useBatched
+    ? await countManyPostgres(
+        adapter,
+        allTables.map((t) => t.name),
+      )
+    : new Map<string, number>();
+
   const enrichedTables = await Promise.all(
     allTables.map(async (t): Promise<GuiTableSummary> => {
-      // Only count live rows when the table has a `deleted_at` column.
-      const rowCount = t.columns.includes('deleted_at')
-        ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
-        : await db.count(t.name);
+      let rowCount: number | null;
+      if (useBatched) {
+        // Postgres: use the batched approximate count when we have it.
+        // Tables absent from pg_class (newly defineLate'd, never analyzed)
+        // get `null` so the SPA renders them as "—". No fallback per-table
+        // COUNT: the whole point of this branch is to avoid the fan-out.
+        rowCount = approxCounts.get(t.name) ?? null;
+      } else {
+        // SQLite: in-process, no pool. Keep the exact, soft-delete-aware
+        // count we've always shipped.
+        rowCount = t.columns.includes('deleted_at')
+          ? await db.count(t.name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
+          : await db.count(t.name);
+      }
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
       if (teamContext) {
         base.shared = teamContext.shared.has(t.name);
