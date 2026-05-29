@@ -18,7 +18,10 @@ function tmp(): string {
 function writeConfig(dir: string, name: string, dbLine: string): string {
   const p = join(dir, name);
   // Quote the db value — bare `:memory:` would be parsed by YAML as a mapping.
-  writeFileSync(p, `db: ${JSON.stringify(dbLine)}\n\nentities:\n  items:\n    fields:\n      id: { type: uuid, primaryKey: true }\n    outputFile: items.md\n`);
+  writeFileSync(
+    p,
+    `db: ${JSON.stringify(dbLine)}\n\nentities:\n  items:\n    fields:\n      id: { type: uuid, primaryKey: true }\n    outputFile: items.md\n`,
+  );
   return p;
 }
 
