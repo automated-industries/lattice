@@ -80,8 +80,10 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       // Soft reference to chat_threads.id. Kept as a plain column (no FK)
       // to match the generic, dialect-agnostic native-entity style.
       thread_id: 'TEXT',
-      // user | assistant | tool | feed | system
-      role: 'TEXT NOT NULL',
+      // user | assistant | tool | feed | system. NOT NULL needs a DEFAULT so
+      // ALTER TABLE ADD COLUMN succeeds when merged onto a pre-existing table
+      // (every insert sets role explicitly, so the default is never observed).
+      role: "TEXT NOT NULL DEFAULT 'user'",
       // JSON payload: text, tool_use / tool_result blocks, attachments, or
       // (for role='feed') the feed-event details.
       content_json: 'TEXT',
