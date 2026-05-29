@@ -18,9 +18,25 @@ async function boot(): Promise<{ root: string; server: GuiServerHandle }> {
   const configPath = join(root, 'lattice.config.yml');
   writeFileSync(
     configPath,
-    ['db: ./data/test.db', '', 'entities:', '  notes:', '    fields:', '      id: { type: uuid, primaryKey: true }', '      body: { type: text }', '    render: default-list', '    outputFile: notes.md', ''].join('\n'),
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  notes:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      body: { type: text }',
+      '    render: default-list',
+      '    outputFile: notes.md',
+      '',
+    ].join('\n'),
   );
-  const server = await startGuiServer({ configPath, outputDir: join(root, 'context'), port: 0, openBrowser: false });
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
   servers.push(server);
   return { root, server };
 }

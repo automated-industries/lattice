@@ -43,7 +43,9 @@ export async function transcribe(opts: TranscribeOptions): Promise<string> {
   const res = await fetch(url, { method: 'POST', headers, body: form });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`Transcription failed (${opts.provider} ${res.status}): ${detail.slice(0, 300)}`);
+    throw new Error(
+      `Transcription failed (${opts.provider} ${String(res.status)}): ${detail.slice(0, 300)}`,
+    );
   }
   const body = (await res.json()) as { text?: unknown };
   if (typeof body.text !== 'string') {

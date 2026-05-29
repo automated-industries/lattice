@@ -178,7 +178,8 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   },
   {
     name: 'unlink',
-    description: 'Remove a many-to-many link by its junction row (the two foreign-key columns + ids).',
+    description:
+      'Remove a many-to-many link by its junction row (the two foreign-key columns + ids).',
     mutates: true,
     category: 'row',
     args: obj(
@@ -239,7 +240,11 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     mutates: true,
     category: 'schema',
     args: obj(
-      { table: str('Table name.'), column: str('Current column name.'), newName: str('New column name.') },
+      {
+        table: str('Table name.'),
+        column: str('Current column name.'),
+        newName: str('New column name.'),
+      },
       ['table', 'column', 'newName'],
     ),
   },

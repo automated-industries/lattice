@@ -39,7 +39,12 @@ describe('fileJunctions', () => {
     );
     const result = fileJunctions(configPath, outputDir);
     expect(result).toEqual([
-      { junction: 'project_files', fileFk: 'file_id', otherTable: 'projects', otherFk: 'project_id' },
+      {
+        junction: 'project_files',
+        fileFk: 'file_id',
+        otherTable: 'projects',
+        otherFk: 'project_id',
+      },
     ]);
   });
 

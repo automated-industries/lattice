@@ -9,34 +9,46 @@ import type { LlmClient, TurnResult } from '../../src/gui/ai/chat.js';
 
 function fixedClient(text: string): LlmClient {
   return {
-    async runTurn(params): Promise<TurnResult> {
+    runTurn(params): Promise<TurnResult> {
       for (const ch of text.split(' ')) params.onText(ch + ' ');
-      return { stopReason: 'end_turn', text, toolUses: [] };
+      return Promise.resolve({ stopReason: 'end_turn', text, toolUses: [] });
     },
   };
 }
 
 const catalog: CatalogEntity[] = [
-  { table: 'projects', description: 'Initiatives', records: [{ id: 'p1', label: 'Alpha' }, { id: 'p2', label: 'Beta' }] },
+  {
+    table: 'projects',
+    description: 'Initiatives',
+    records: [
+      { id: 'p1', label: 'Alpha' },
+      { id: 'p2', label: 'Beta' },
+    ],
+  },
   { table: 'people', records: [{ id: 'u1', label: 'Ada' }] },
 ];
 
 describe('summarize + classify helpers', () => {
   it('summarizeText returns the model text trimmed', async () => {
-    const out = await summarizeText(fixedClient('A short note about widgets.'), 'note.txt', 'widgets');
+    const out = await summarizeText(
+      fixedClient('A short note about widgets.'),
+      'note.txt',
+      'widgets',
+    );
     expect(out).toBe('A short note about widgets.');
   });
 
   it('parseMatches reads a json fence and validates against the catalog', () => {
-    const raw = 'Here:\n```json\n[{"table":"projects","id":"p1"},{"table":"projects","id":"ghost"}]\n```';
+    const raw =
+      'Here:\n```json\n[{"table":"projects","id":"p1"},{"table":"projects","id":"ghost"}]\n```';
     const matches = parseMatches(raw, catalog);
     expect(matches).toEqual([{ table: 'projects', id: 'p1' }]); // ghost id dropped
   });
 
   it('parseMatches tolerates a bare array and rejects unknown tables', () => {
-    expect(parseMatches('[{"table":"people","id":"u1"},{"table":"nope","id":"x"}]', catalog)).toEqual([
-      { table: 'people', id: 'u1' },
-    ]);
+    expect(
+      parseMatches('[{"table":"people","id":"u1"},{"table":"nope","id":"x"}]', catalog),
+    ).toEqual([{ table: 'people', id: 'u1' }]);
   });
 
   it('parseMatches returns [] on non-JSON', () => {
