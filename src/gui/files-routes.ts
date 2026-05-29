@@ -27,7 +27,10 @@ interface FileRow {
 }
 
 function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -64,7 +67,8 @@ export async function dispatchFilesRoute(
     }
     const name = sanitizeFilename(row.original_name ?? 'file');
     res.writeHead(200, {
-      'content-type': row.mime || 'application/octet-stream',
+      'content-type':
+        typeof row.mime === 'string' && row.mime ? row.mime : 'application/octet-stream',
       'content-disposition': `inline; filename="${name}"`,
       'cache-control': 'no-store',
     });
@@ -85,12 +89,16 @@ export async function dispatchFilesRoute(
     }
     const id = decodeURIComponent(openMatch[1] ?? '');
     const row = (await ctx.db.get('files', id)) as FileRow | null;
-    if (!row || !row.path) {
+    if (!row?.path) {
       sendJson(res, { error: 'file has no local path' }, 404);
       return true;
     }
     const opener =
-      process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+      process.platform === 'darwin'
+        ? 'open'
+        : process.platform === 'win32'
+          ? 'explorer'
+          : 'xdg-open';
     try {
       const child = spawn(opener, [row.path], { detached: true, stdio: 'ignore' });
       child.on('error', () => {
