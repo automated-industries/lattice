@@ -94,7 +94,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   try {
     for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
       const deltas: string[] = [];
-      yield { type: 'assistant_message_start', id: `m${loop}` };
+      yield { type: 'assistant_message_start', id: `m${String(loop)}` };
       const turn = await opts.client.runTurn({
         model,
         system: SYSTEM_PROMPT,
@@ -164,11 +164,11 @@ interface AnthropicMessageStream {
   on(event: 'text', cb: (delta: string) => void): void;
   finalMessage(): Promise<{
     stop_reason: string | null;
-    content: Array<
+    content: (
       | { type: 'text'; text: string }
       | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
       | { type: string; [k: string]: unknown }
-    >;
+    )[];
   }>;
 }
 
@@ -188,7 +188,8 @@ function loadSdk(): AnthropicCtor {
     }
   }
   const ctor = _sdk.Anthropic ?? _sdk.default;
-  if (!ctor) throw new Error("Could not resolve the Anthropic constructor from '@anthropic-ai/sdk'");
+  if (!ctor)
+    throw new Error("Could not resolve the Anthropic constructor from '@anthropic-ai/sdk'");
   return ctor;
 }
 
@@ -212,7 +213,9 @@ export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
         messages: params.messages,
         tools: params.tools,
       });
-      stream.on('text', (delta) => params.onText(delta));
+      stream.on('text', (delta) => {
+        params.onText(delta);
+      });
       const final = await stream.finalMessage();
       let text = '';
       const toolUses: ToolUse[] = [];

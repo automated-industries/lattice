@@ -73,7 +73,10 @@ describe('AI function dispatch', () => {
   });
 
   it('get_row and list_rows read back the data', async () => {
-    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'Ada' },
+    });
     const got = await executeFunction(ctx, 'get_row', { table: 'people', id: 'p1' });
     expect(got.ok).toBe(true);
     expect((got.result as { name: string }).name).toBe('Ada');
@@ -84,7 +87,10 @@ describe('AI function dispatch', () => {
   });
 
   it('update_row changes a field', async () => {
-    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'Ada' },
+    });
     const upd = await executeFunction(ctx, 'update_row', {
       table: 'people',
       id: 'p1',
@@ -96,22 +102,33 @@ describe('AI function dispatch', () => {
   });
 
   it('delete_row soft-deletes; list_rows hides it unless includeDeleted', async () => {
-    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'Ada' },
+    });
     const del = await executeFunction(ctx, 'delete_row', { table: 'people', id: 'p1' });
     expect(del.ok).toBe(true);
 
     const hidden = await executeFunction(ctx, 'list_rows', { table: 'people' });
     expect((hidden.result as unknown[]).length).toBe(0);
 
-    const shown = await executeFunction(ctx, 'list_rows', { table: 'people', includeDeleted: true });
+    const shown = await executeFunction(ctx, 'list_rows', {
+      table: 'people',
+      includeDeleted: true,
+    });
     expect((shown.result as unknown[]).length).toBe(1);
   });
 
   it('list_entities reports user tables with row counts', async () => {
-    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'Ada' },
+    });
     const res = await executeFunction(ctx, 'list_entities', {});
     expect(res.ok).toBe(true);
-    const people = (res.result as { name: string; rowCount: number }[]).find((t) => t.name === 'people');
+    const people = (res.result as { name: string; rowCount: number }[]).find(
+      (t) => t.name === 'people',
+    );
     expect(people?.rowCount).toBe(1);
   });
 
@@ -138,7 +155,10 @@ describe('AI function dispatch', () => {
   });
 
   it('undo reverses a create, redo re-applies it', async () => {
-    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'Ada' },
+    });
     const undo = await executeFunction(ctx, 'undo', {});
     expect(undo.ok).toBe(true);
     expect((await executeFunction(ctx, 'get_row', { table: 'people', id: 'p1' })).ok).toBe(false);
@@ -154,7 +174,10 @@ describe('AI function dispatch', () => {
   });
 
   it('get_history lists recorded mutations', async () => {
-    await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada' } });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'Ada' },
+    });
     const hist = await executeFunction(ctx, 'get_history', {});
     expect(hist.ok).toBe(true);
     const entries = hist.result as { operation: string; table_name: string }[];
@@ -162,7 +185,10 @@ describe('AI function dispatch', () => {
   });
 
   it('link rejects a table that is not a registered junction', async () => {
-    const res = await executeFunction(ctx, 'link', { table: 'people', values: { a_id: '1', b_id: '2' } });
+    const res = await executeFunction(ctx, 'link', {
+      table: 'people',
+      values: { a_id: '1', b_id: '2' },
+    });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/unknown table/i);
   });

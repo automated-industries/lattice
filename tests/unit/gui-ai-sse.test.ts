@@ -49,7 +49,14 @@ describe('SSE protocol', () => {
   it('carries a feed event over the same channel', () => {
     const event: StreamEvent = {
       type: 'feed',
-      event: { seq: 1, table: 'people', op: 'insert', rowId: '1', source: 'gui', ts: '2026-01-01T00:00:00.000Z' },
+      event: {
+        seq: 1,
+        table: 'people',
+        op: 'insert',
+        rowId: '1',
+        source: 'gui',
+        ts: '2026-01-01T00:00:00.000Z',
+      },
     };
     const { events } = parseSseFrames(formatSseFrame(event));
     expect(events[0]).toEqual(event);

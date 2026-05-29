@@ -9,9 +9,9 @@ afterEach(() => {
 
 function mockFetch(impl: (url: string, init: RequestInit) => Response): RequestInit[] {
   const calls: RequestInit[] = [];
-  globalThis.fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
+  globalThis.fetch = vi.fn((url: unknown, init?: RequestInit) => {
     calls.push(init ?? {});
-    return impl(String(url), init ?? {});
+    return Promise.resolve(impl(String(url), init ?? {}));
   }) as unknown as typeof fetch;
   return calls;
 }
@@ -53,6 +53,8 @@ describe('transcribe', () => {
 
   it('throws when the response has no text field', async () => {
     mockFetch(() => new Response(JSON.stringify({ nope: true }), { status: 200 }));
-    await expect(transcribe({ provider: 'openai', apiKey: 'x', audio })).rejects.toThrow(/no text/i);
+    await expect(transcribe({ provider: 'openai', apiKey: 'x', audio })).rejects.toThrow(
+      /no text/i,
+    );
   });
 });
