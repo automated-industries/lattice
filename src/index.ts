@@ -218,6 +218,21 @@ export type {
 export { deriveCanonicalContexts } from './framework/canonical-context.js';
 export { importLegacyUserConfig } from './framework/migrate-to-root.js';
 export type { MigrateResult } from './framework/migrate-to-root.js';
+
+// v2.0 — a row can index data that lives elsewhere (local / cloud references).
+export { resolveSource } from './sources/resolver.js';
+export { assertSafeUrl, providerForUrl, isPrivateIp } from './sources/url-safety.js';
+export { ReferenceUnavailableError } from './sources/types.js';
+export type {
+  RefKind,
+  RefProvider,
+  FilesRow,
+  SourceHandle,
+  SourceMetadata,
+  ResolveOptions,
+} from './sources/types.js';
+export { referenceLocalFile, referenceUrl } from './framework/reference-store.js';
+export type { ReferenceMetadata } from './framework/reference-store.js';
 export { TeamsClient, TeamsHttpError } from './teams/client.js';
 export type {
   TeamSummary,

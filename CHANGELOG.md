@@ -16,6 +16,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Auto-render** — `enableAutoRender(outputDir)` debounces a re-render on every insert/update/delete (coalesced into a single render; unchanged files skipped by the manifest hash-diff). Workspaces enable it by default so context is always current and there is never a "no rendered context" state. A bare `new Lattice(dbPath)` is unaffected unless it opts in.
 - **CLI** — `lattice init` scaffolds a root + default workspace and renders the initial tree; `lattice workspace list|create|use` manages workspaces.
 
+### Added — references (a row can index data that lives elsewhere)
+
+- **Reference columns on `files`** — additive, nullable: `ref_kind` (`blob` | `local_ref` | `cloud_ref`; NULL ⇒ owned blob), `ref_uri` (absolute path or URL), `ref_provider` (`fs` | `web` | `gdrive`), `source_json` (provider metadata). Existing inserts are unaffected.
+- **Ingestion API** — `referenceLocalFile(path)` records a local file **without copying it** (the file stays where it is); `referenceUrl(url)` records a cloud reference (validated, not fetched at record time). Both set `extraction_status: 'pending'`.
+- **Unified resolver** — `resolveSource(row, root)` returns a `SourceHandle` (`readContent` / `getMetadata`) for blob, local-file, and URL sources alike, so one set of utilities works for local and cloud.
+- **SSRF guard** — `assertSafeUrl` rejects non-http(s) schemes and private/loopback/link-local/metadata addresses (opt-out via `allowPrivate`).
+- **No-copy render mode** — entity contexts can set `attachFileMode: 'reference'` to index an attached file in place (writes a `<name>.ref.md` pointer) instead of duplicating its bytes.
+
 ## [2.0.0] - 2026-05-29
 
 Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.

@@ -53,6 +53,17 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       size_bytes: 'INTEGER',
       sha256: 'TEXT',
       blob_path: 'TEXT',
+      // Reference mode (v2.0): a row can INDEX data that lives elsewhere
+      // instead of owning a copy. All nullable + additive (back-compat).
+      //   ref_kind     discriminator: 'blob' | 'local_ref' | 'cloud_ref'
+      //                (NULL ⇒ legacy/owned blob)
+      //   ref_uri      durable pointer: absolute local path or remote URL
+      //   ref_provider resolver selector: 'fs' | 'web' | 'gdrive'
+      //   source_json  provider-specific metadata (etag, availability, …)
+      ref_kind: 'TEXT',
+      ref_uri: 'TEXT',
+      ref_provider: 'TEXT',
+      source_json: 'TEXT',
       extraction_status: 'TEXT',
       extracted_text: 'TEXT',
       description: 'TEXT',
