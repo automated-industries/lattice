@@ -63,4 +63,21 @@ describe('resolveSource', () => {
     expect(h.provider).toBe('web');
     expect((await h.readContent()).toString()).toBe('WEB');
   });
+
+  it('cloud_ref refuses a redirect to a private/metadata address (SSRF)', async () => {
+    const root = tmp();
+    const redirect = (() =>
+      Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { location: 'http://169.254.169.254/latest/meta-data' },
+        }),
+      )) as unknown as typeof fetch;
+    const h = resolveSource(
+      { ref_kind: 'cloud_ref', ref_provider: 'web', ref_uri: 'http://93.184.216.34/' },
+      root,
+      { fetcher: redirect, allowPrivate: false },
+    );
+    await expect(h.readContent()).rejects.toThrow(/private/i);
+  });
 });

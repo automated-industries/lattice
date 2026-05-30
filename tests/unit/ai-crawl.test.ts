@@ -49,4 +49,16 @@ describe('crawlUrl', () => {
       crawlUrl('https://example.com/missing', { fetcher: f, allowPrivate: true }),
     ).rejects.toThrow(/HTTP 404/);
   });
+
+  it('blocks a 3xx redirect to a private address (SSRF)', async () => {
+    // First (public) hop is allowed; the 302 Location targets a private host and
+    // must be re-validated + rejected before it is followed.
+    const redirect = (() =>
+      Promise.resolve(
+        new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/admin' } }),
+      )) as unknown as typeof fetch;
+    await expect(
+      crawlUrl('http://93.184.216.34/', { fetcher: redirect, allowPrivate: false }),
+    ).rejects.toThrow(/private/i);
+  });
 });
