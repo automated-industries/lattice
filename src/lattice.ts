@@ -479,6 +479,7 @@ export class Lattice {
       this._autoRenderTimer = undefined;
     }
     this._autoRenderPending = false;
+    this._autoRenderInFlight = false;
     this._adapter.close();
     this._columnCache.clear();
     this._encryptedTableColumns.clear();
@@ -802,6 +803,7 @@ export class Lattice {
     const rawPk = rowWithPk[pkCol];
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     this._sanitizer.emitAudit(table, 'update', pkValue);
+    this._scheduleAutoRender();
     return pkValue;
   }
 
@@ -1171,6 +1173,8 @@ export class Lattice {
       `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
       Object.values(filtered),
     );
+    // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh.
+    this._scheduleAutoRender();
   }
 
   /**
@@ -1188,6 +1192,7 @@ export class Lattice {
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
+    this._scheduleAutoRender();
   }
 
   // -------------------------------------------------------------------------

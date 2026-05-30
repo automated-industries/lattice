@@ -33,5 +33,9 @@ describe('deriveCanonicalContexts', () => {
     expect(slug({ id: 'abc', name: 'My File' })).toBe('my-file');
     // falls back to id when no name-like column value present
     expect(slug({ id: 'abc', name: '' })).toBe('abc');
+    // an all-punctuation/emoji name slugifies to '' — must fall back, never empty
+    const punct = slug({ id: 'abc123', name: '!!!' });
+    expect(punct.length).toBeGreaterThan(0);
+    expect(punct).toBe('abc123');
   });
 });
