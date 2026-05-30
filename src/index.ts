@@ -177,6 +177,47 @@ export {
   deleteToken,
 } from './framework/user-config.js';
 export type { UserIdentity } from './framework/user-config.js';
+
+// v2.0 — the single `.lattice` root + first-class workspaces.
+export {
+  findLatticeRoot,
+  resolveLatticeRoot,
+  ensureLatticeRoot,
+  rootConfigDir,
+  workspacesDir,
+  registryPath,
+  workspaceDir,
+  workspaceDataDir,
+  workspaceContextDir,
+  workspaceBlobsDir,
+  workspaceConfigPath,
+  ROOT_DIRNAME,
+  CONFIG_SUBDIR,
+  WORKSPACES_SUBDIR,
+} from './framework/lattice-root.js';
+export {
+  addWorkspace,
+  listWorkspaces,
+  getWorkspace,
+  getActiveWorkspace,
+  setActiveWorkspace,
+  readRegistry,
+  writeRegistry,
+  resolveWorkspacePaths,
+  workspaceDbPath,
+  defaultWorkspaceYaml,
+  toSafeDirName,
+  LOCAL_DB_RELPATH,
+} from './framework/workspace.js';
+export type {
+  WorkspaceRecord,
+  WorkspaceRegistry,
+  WorkspacePaths,
+  AddWorkspaceOptions,
+} from './framework/workspace.js';
+export { deriveCanonicalContexts } from './framework/canonical-context.js';
+export { importLegacyUserConfig } from './framework/migrate-to-root.js';
+export type { MigrateResult } from './framework/migrate-to-root.js';
 export { TeamsClient, TeamsHttpError } from './teams/client.js';
 export type {
   TeamSummary,
