@@ -856,6 +856,14 @@ export const guiAppHtml = `<!doctype html>
       </button>
       <div class="db-menu" id="db-menu" hidden></div>
     </div>
+    <div class="db-switcher" id="ws-switcher" hidden>
+      <button class="db-button" id="ws-button" title="Switch workspace">
+        <span class="db-icon">📂</span>
+        <span class="db-name" id="ws-name">workspace</span>
+        <span class="db-caret">▾</span>
+      </button>
+      <div class="db-menu" id="ws-menu" hidden></div>
+    </div>
   </header>
   <div class="layout">
     <nav class="sidebar">
@@ -1046,6 +1054,7 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
         fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false }; }),
+        fetchJson('/api/workspaces').catch(function () { return null; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
@@ -1053,6 +1062,7 @@ export const guiAppHtml = `<!doctype html>
         state.systemTables = (results[4] && results[4].tables) || [];
         state.preferences = results[5] || { show_system_tables: false };
         renderDbSwitcher(results[2]);
+        renderWsSwitcher(results[6]);
         renderSidebar();
         wireHistoryControls();
         refreshHistoryState();
@@ -1635,18 +1645,77 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/databases').catch(function () { return null; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
+        fetchJson('/api/workspaces').catch(function () { return null; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[3] || {};
         state.systemTables = (results[4] && results[4].tables) || [];
         renderDbSwitcher(results[2]);
+        renderWsSwitcher(results[5]);
         renderSidebar();
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
         loadedTables = {};
         startRealtime();
         startFeed();
+      });
+    }
+
+    function renderWsSwitcher(data) {
+      var wrap = document.getElementById('ws-switcher');
+      var btn = document.getElementById('ws-button');
+      var menu = document.getElementById('ws-menu');
+      var nameEl = document.getElementById('ws-name');
+      if (!wrap || !btn || !menu || !nameEl) return;
+      var list = (data && data.workspaces) || [];
+      // Only surface the switcher when there is more than one workspace — a
+      // plain (non-workspace) GUI has none, so this stays hidden.
+      if (list.length < 2) { wrap.hidden = true; return; }
+      wrap.hidden = false;
+      var current = list.filter(function (w) { return w.id === (data && data.current); })[0];
+      nameEl.textContent = (current && current.label) || 'workspace';
+
+      function buildMenu() {
+        var items = list.map(function (w) {
+          var isCurrent = w.id === (data && data.current);
+          return '<button class="db-item' + (isCurrent ? ' active' : '') +
+            '" data-id="' + escapeHtml(w.id) + '">' +
+            '<span style="flex:1;text-align:left">' + escapeHtml(w.label) + '</span>' +
+            '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,0.06);color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em">' + escapeHtml(w.kind) + '</span>' +
+            '</button>';
+        }).join('');
+        menu.innerHTML = '<div class="db-section">Workspaces</div>' + items;
+        menu.querySelectorAll('button.db-item').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var id = b.getAttribute('data-id');
+            if (id === (data && data.current)) { menu.hidden = true; return; }
+            withBusy(b, function () {
+              return fetchJson('/api/workspaces/switch', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ id: id }),
+              }).then(function () {
+                menu.hidden = true;
+                return reloadEverything();
+              }).then(function () {
+                showToast('Switched workspace', {});
+              }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
+            });
+          });
+        });
+      }
+
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        if (menu.hidden) buildMenu();
+        menu.hidden = !menu.hidden;
+      };
+      document.addEventListener('click', function (e) {
+        if (menu.hidden) return;
+        if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+          menu.hidden = true;
+        }
       });
     }
 
