@@ -53,6 +53,14 @@ Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assista
 - **Responsive rail** — resizable sidebar (persisted) + a mobile bottom-drawer under 720px.
 - **Browser e2e coverage** — Playwright specs for the assistant rail, composer key-gating, feed stream, and file-ingest preview (the rail-independent delete-database spec ships in 1.15.0).
 
+### Added — file-system workspace (default view) + settings drawer
+
+- **File-system workspace** — the default GUI is now a desktop-style file manager. The home dashboard is unchanged (a card per object), but clicking an object opens its rows as a grid of **folder/file tiles**, and clicking a tile opens an **item view**: the row rendered as a document built from its columns (long-form fields formatted as markdown), with the row's relationships shown as **sub-folders** you can drill into arbitrarily deep (e.g. _Authors → a person → Books → a book → Reviews_). A clickable breadcrumb tracks the path. New `#/fs/<table>[/<id>/<relation>/<id>…]` routes; resolution is entirely client-side over the existing endpoints (no API change). Relationships are derived from the schema — forward `belongsTo` (`ref:`) renders as a parent link; the reverse side + many-to-many junctions become the drill-in folders.
+- **Click-to-edit** — in the item view, click any value to edit it in place; the change saves immediately via `PATCH /api/tables/:t/rows/:id` and is undoable. Identity/system/secret and native-file binary columns stay read-only.
+- **Settings drawer** — a **gear** in the header (top-right) opens a slide-over drawer with **Database**, **Lattice**, and **User** tabs (the existing settings panels, relocated from the left nav) plus an **Advanced mode** toggle. Advanced mode switches the object/row views back to the classic editable **table + row** editor (`renderTable`/`renderDetail`, unchanged); the default is the file-system workspace. The legacy `#/settings/*` hashes still resolve and open the drawer.
+- **Slim collapsible sidebar** — the left object nav is now collapsible (state persisted); settings links moved into the gear drawer.
+- The assistant rail is unchanged in both modes. New Playwright spec `tests/e2e/fs.spec.ts` covers the folder grid, nested drill + breadcrumb, click-to-edit persistence, the Advanced-mode toggle, and the settings drawer.
+
 ## [1.15.0] - 2026-05-29
 
 ### Added — delete a database from the GUI (destructive, confirmation-gated)
