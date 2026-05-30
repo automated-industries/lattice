@@ -1548,7 +1548,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Additive: when the GUI was not opened inside a `.lattice` root,
         // these return empty and the header switcher stays hidden.
         if (method === 'GET' && pathname === '/api/workspaces') {
-          if (!latticeRoot) {
+          if (teamCloud || !latticeRoot) {
+            // Disabled in team-cloud mode (switching the active DB out from
+            // under members would bypass the auth + share contract).
             sendJson(res, { current: null, workspaces: [] });
             return;
           }
@@ -1566,6 +1568,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/workspaces/switch') {
+          if (teamCloud) {
+            sendJson(res, { error: 'Workspace switching is disabled in team-cloud mode' }, 403);
+            return;
+          }
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
