@@ -233,6 +233,23 @@ export type {
 } from './sources/types.js';
 export { referenceLocalFile, referenceUrl } from './framework/reference-store.js';
 export type { ReferenceMetadata } from './framework/reference-store.js';
+
+// v2.0 — AI context organizer (summarize + classify into the user's own schema,
+// creating new objects only when nothing fits). Inert without an LLM client.
+export { organizeSource, summarizeText, classifyLinks, parseMatches } from './ai/index.js';
+export type {
+  OrganizeOptions,
+  OrganizeResult,
+  OrganizedLink,
+  OrganizedCreation,
+  CatalogEntity,
+  CatalogRecord,
+  ClassifyMatch,
+  LlmClient,
+  TurnParams,
+  TurnResult,
+  LlmMessage,
+} from './ai/index.js';
 export { TeamsClient, TeamsHttpError } from './teams/client.js';
 export type {
   TeamSummary,
