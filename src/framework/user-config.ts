@@ -40,15 +40,24 @@ import { findLatticeRoot, rootConfigDir } from './lattice-root.js';
  *   2. `<root>/.config` — when a `.lattice` root is discoverable (via
  *      `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`).
  *      This is what consolidates config into the single per-install `.lattice`
- *      folder. Gated on an *initialized* root (its `.config/` marker exists),
- *      so uninitialized checkouts keep using the legacy location.
+ *      folder, BUT only when adopting the root won't orphan an existing key:
+ *      use the root if it already holds a `master.key`, or — for a fresh
+ *      install — if there is no legacy `~/.lattice/master.key` to strand.
  *   3. `~/.lattice` — legacy fallback, so existing installs keep decrypting.
  */
 export function configDir(): string {
   if (process.env.LATTICE_CONFIG_DIR) return process.env.LATTICE_CONFIG_DIR;
+  const legacy = join(homedir(), '.lattice');
   const root = findLatticeRoot();
-  if (root) return rootConfigDir(root);
-  return join(homedir(), '.lattice');
+  if (root) {
+    const rootDir = rootConfigDir(root);
+    // The root is the encryption home once it holds a key. Before that, only
+    // adopt it for a fresh install (no legacy key to orphan); otherwise keep
+    // using `~/.lattice` so an existing install keeps decrypting its secrets.
+    if (existsSync(join(rootDir, MASTER_KEY_FILENAME))) return rootDir;
+    if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return rootDir;
+  }
+  return legacy;
 }
 
 function ensureConfigDir(): string {

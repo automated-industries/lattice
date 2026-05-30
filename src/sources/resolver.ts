@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
-import { assertSafeUrl } from './url-safety.js';
+import { safeFetch } from './url-safety.js';
 import {
   ReferenceUnavailableError,
   type FilesRow,
@@ -102,10 +102,9 @@ function urlHandle(row: FilesRow, opts: ResolveOptions): SourceHandle {
     provider,
     location: url,
     async readContent(): Promise<Buffer> {
-      await assertSafeUrl(url, allowPrivate);
       let res: Response;
       try {
-        res = await fetchImpl(url, { redirect: 'follow' });
+        res = await safeFetch(url, fetchImpl, { allowPrivate });
       } catch (e) {
         throw new ReferenceUnavailableError(url, (e as Error).message);
       }
@@ -115,8 +114,7 @@ function urlHandle(row: FilesRow, opts: ResolveOptions): SourceHandle {
     },
     async getMetadata(): Promise<SourceMetadata> {
       try {
-        await assertSafeUrl(url, allowPrivate);
-        const res = await fetchImpl(url, { method: 'HEAD', redirect: 'follow' });
+        const res = await safeFetch(url, fetchImpl, { allowPrivate, init: { method: 'HEAD' } });
         if (!res.ok) return meta(false, { extra: { http_status: res.status } });
         const len = res.headers.get('content-length');
         return meta(true, {

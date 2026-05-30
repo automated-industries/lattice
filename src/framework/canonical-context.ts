@@ -109,12 +109,14 @@ function canonicalSlug(def: TableDefinition): (row: Row) => string {
   const pk = typeof pkCol === 'string' && pkCol.length > 0 ? pkCol : 'id';
   const prefer = ['slug', 'name', 'title'].filter((c) => cols.has(c));
   return (row: Row): string => {
+    // Slugify FIRST, then test — an all-punctuation/emoji name slugifies to ''
+    // and must not collapse every such row into the table-root folder.
     for (const c of prefer) {
-      const v = toText(row[c]);
-      if (v.trim().length > 0) return slugify(v);
+      const s = slugify(toText(row[c]));
+      if (s.length > 0) return s;
     }
-    const idVal = toText(row[pk]) || toText(row.id);
-    return idVal.length > 0 ? slugify(idVal) : 'row';
+    const idSlug = slugify(toText(row[pk]) || toText(row.id));
+    return idSlug.length > 0 ? idSlug : 'row';
   };
 }
 
