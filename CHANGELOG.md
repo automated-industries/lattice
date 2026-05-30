@@ -8,6 +8,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — workspace model + auto-render (back end)
+
+- **One `.lattice` root** — a single discoverable folder (via `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`) now holds machine-local config, the workspace registry, each workspace's database + blobs, and the rendered context. `configDir()` consolidates into `<root>/.config` once initialized, with a non-destructive copy migration of any legacy machine-local config (originals preserved) and a homedir fallback.
+- **First-class workspaces** — `Lattice.openWorkspace()` opens a workspace under `.lattice/Workspaces/<name>/`, split into `Data/` (database + blobs) and `Context/` (the rendered SQL→markdown bridge). Registry helpers: `addWorkspace`, `listWorkspaces`, `getActiveWorkspace`, `setActiveWorkspace`, `resolveWorkspacePaths`.
+- **Canonical `Context/` layout** — zero-config, DB-aligned rendering: table→folder, row→subfolder, `<ENTITY>.md` plus relation rollups (e.g. `PROJECTS.md` inside a file, `FILES.md` inside a project). Derived from the schema via `deriveCanonicalContexts`.
+- **Auto-render** — `enableAutoRender(outputDir)` debounces a re-render on every insert/update/delete (coalesced into a single render; unchanged files skipped by the manifest hash-diff). Workspaces enable it by default so context is always current and there is never a "no rendered context" state. A bare `new Lattice(dbPath)` is unaffected unless it opts in.
+- **CLI** — `lattice init` scaffolds a root + default workspace and renders the initial tree; `lattice workspace list|create|use` manages workspaces.
+
 ## [2.0.0] - 2026-05-29
 
 Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.
