@@ -83,8 +83,12 @@ describe('Lattice.openWorkspace', () => {
     db.close();
   });
 
-  it('configDir() resolves into the root .config when a root is active', () => {
+  it('configDir() resolves into the root .config once the root holds a key', () => {
     const root = setupRoot();
+    // The gate only adopts the root for config once it actually holds a key
+    // (or for a fresh install with no legacy key); write one to make this
+    // assertion independent of the test machine's ~/.lattice state.
+    writeFileSync(join(rootConfigDir(root), 'master.key'), 'test-key');
     expect(configDir()).toBe(rootConfigDir(root));
   });
 });

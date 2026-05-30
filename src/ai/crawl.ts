@@ -1,7 +1,7 @@
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import { basename } from 'node:path';
-import { assertSafeUrl } from '../sources/url-safety.js';
+import { assertSafeUrl, safeFetch } from '../sources/url-safety.js';
 
 /**
  * Fetch a URL and extract readable text from it. For HTML, uses Mozilla
@@ -43,12 +43,14 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
 
   let res: Response;
   try {
-    res = await fetchImpl(u.toString(), {
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        'user-agent': opts.userAgent ?? DEFAULT_UA,
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    res = await safeFetch(u.toString(), fetchImpl, {
+      allowPrivate: opts.allowPrivate ?? false,
+      init: {
+        signal: controller.signal,
+        headers: {
+          'user-agent': opts.userAgent ?? DEFAULT_UA,
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
       },
     });
   } finally {
