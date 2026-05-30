@@ -42,7 +42,11 @@ export function providerForUrl(rawUrl: string): RefProvider {
   } catch {
     return 'web';
   }
-  if (host === 'drive.google.com' || host === 'docs.google.com' || host.endsWith('.googleusercontent.com')) {
+  if (
+    host === 'drive.google.com' ||
+    host === 'docs.google.com' ||
+    host.endsWith('.googleusercontent.com')
+  ) {
     return 'gdrive';
   }
   return 'web';
@@ -58,7 +62,8 @@ export function isPrivateIp(ip: string): boolean {
 
 function isPrivateIpv4(ip: string): boolean {
   const parts = ip.split('.').map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
+    return true;
   const [a, b] = parts as [number, number, number, number];
   if (a === 0) return true; // 0.0.0.0/8 "this host"
   if (a === 127) return true; // loopback
@@ -79,7 +84,12 @@ function isPrivateIpv6(ip: string): boolean {
   if (mapped?.[1]) return isPrivateIpv4(mapped[1]);
   const head = lower.split(':')[0] ?? '';
   if (head.startsWith('fc') || head.startsWith('fd')) return true; // fc00::/7 ULA
-  if (head.startsWith('fe8') || head.startsWith('fe9') || head.startsWith('fea') || head.startsWith('feb')) {
+  if (
+    head.startsWith('fe8') ||
+    head.startsWith('fe9') ||
+    head.startsWith('fea') ||
+    head.startsWith('feb')
+  ) {
     return true; // fe80::/10 link-local
   }
   return false;
