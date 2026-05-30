@@ -242,8 +242,11 @@ export {
   classifyLinks,
   parseMatches,
   crawlUrl,
+  enrichKnowledge,
 } from './ai/index.js';
 export type {
+  EnrichOptions,
+  EnrichResult,
   CrawlResult,
   CrawlOptions,
   OrganizeOptions,
