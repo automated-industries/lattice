@@ -24,6 +24,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **SSRF guard** — `assertSafeUrl` rejects non-http(s) schemes and private/loopback/link-local/metadata addresses (opt-out via `allowPrivate`).
 - **No-copy render mode** — entity contexts can set `attachFileMode: 'reference'` to index an attached file in place (writes a `<name>.ref.md` pointer) instead of duplicating its bytes.
 
+### Added — AI context organizer (library)
+
+- **`organizeSource(db, opts)`** — sorts an ingested source into the user's **own schema** by default: summarizes it, classifies which existing records it relates to, and links it to them. It creates a new knowledge object **only when nothing fits** (`createIfNecessary`, default on), and returns a plain-language `message` ("Linked it to 2 existing records… Created a new note… You can change any of this anytime.") for the caller to surface. Every action is an ordinary, editable row.
+- **AI-gated** — with no LLM client (no key/auth), `organizeSource` is a no-op and writes nothing. Lattice never calls a model on its own.
+- **First-class AI library surface** — `summarizeText`, `classifyLinks`, `parseMatches` and the `LlmClient` types are now exported from the package root (and a new `src/ai/` module), not just available inside the GUI.
+
 ## [2.0.0] - 2026-05-29
 
 Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.
