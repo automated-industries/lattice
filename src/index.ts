@@ -236,8 +236,16 @@ export type { ReferenceMetadata } from './framework/reference-store.js';
 
 // v2.0 — AI context organizer (summarize + classify into the user's own schema,
 // creating new objects only when nothing fits). Inert without an LLM client.
-export { organizeSource, summarizeText, classifyLinks, parseMatches } from './ai/index.js';
+export {
+  organizeSource,
+  summarizeText,
+  classifyLinks,
+  parseMatches,
+  crawlUrl,
+} from './ai/index.js';
 export type {
+  CrawlResult,
+  CrawlOptions,
   OrganizeOptions,
   OrganizeResult,
   OrganizedLink,

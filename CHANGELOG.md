@@ -29,6 +29,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **`organizeSource(db, opts)`** — sorts an ingested source into the user's **own schema** by default: summarizes it, classifies which existing records it relates to, and links it to them. It creates a new knowledge object **only when nothing fits** (`createIfNecessary`, default on), and returns a plain-language `message` ("Linked it to 2 existing records… Created a new note… You can change any of this anytime.") for the caller to surface. Every action is an ordinary, editable row.
 - **AI-gated** — with no LLM client (no key/auth), `organizeSource` is a no-op and writes nothing. Lattice never calls a model on its own.
 - **First-class AI library surface** — `summarizeText`, `classifyLinks`, `parseMatches` and the `LlmClient` types are now exported from the package root (and a new `src/ai/` module), not just available inside the GUI.
+- **URL crawl** — `crawlUrl(url)` fetches a cloud reference and extracts readable text + title via Mozilla Readability (with a stripped-DOM fallback), SSRF-guarded, with an injectable fetcher. This fills `extracted_text` for a `cloud_ref` so the organizer can sort it. Adds `@mozilla/readability` + `jsdom` as dependencies.
 
 ## [2.0.0] - 2026-05-29
 
