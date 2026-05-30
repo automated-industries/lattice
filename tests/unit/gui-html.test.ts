@@ -3,18 +3,34 @@ import { guiAppHtml } from '../../src/gui/app.js';
 
 describe('guiAppHtml', () => {
   it('contains the structural DOM hooks the SPA boots against', () => {
-    // Sidebar / nav mount points
+    // Sidebar / content mount points
     expect(guiAppHtml).toContain('id="object-nav"');
-    expect(guiAppHtml).toContain('id="settings-nav"');
     expect(guiAppHtml).toContain('id="content"');
+    // Slim collapsible sidebar — the collapse control replaces the old
+    // static settings nav (which moved into the gear-triggered drawer).
+    expect(guiAppHtml).toContain('id="sidebar-collapse"');
+    expect(guiAppHtml).not.toContain('id="settings-nav"');
 
-    // Settings entries. Data Model is no longer a top-level nav item —
-    // it now lives inside Database Settings (renderDataModelInto), so we
-    // assert the Database Settings entry plus the data-model host hook.
-    expect(guiAppHtml).toContain('href="#/settings/database"');
+    // Settings now live in a slide-over drawer opened by the header gear,
+    // with one tab per existing settings page + the Advanced-mode toggle.
+    expect(guiAppHtml).toContain('id="settings-gear"');
+    expect(guiAppHtml).toContain('id="settings-drawer"');
+    expect(guiAppHtml).toContain('id="drawer-body"');
+    expect(guiAppHtml).toContain('data-tab="database"');
+    expect(guiAppHtml).toContain('data-tab="lattice"');
+    expect(guiAppHtml).toContain('data-tab="user"');
+    expect(guiAppHtml).toContain('id="advanced-toggle"');
+
+    // Data Model still lives inside Database Settings (renderDataModelInto),
+    // now rendered into the drawer body rather than a full page.
     expect(guiAppHtml).not.toContain('href="#/settings/data-model"');
     expect(guiAppHtml).toContain('id="data-model-host"');
     expect(guiAppHtml).toContain('renderDataModelInto');
+
+    // The file-system workspace + classic table editor both ship.
+    expect(guiAppHtml).toContain('renderFsCollection');
+    expect(guiAppHtml).toContain('renderFsItem');
+    expect(guiAppHtml).toContain('renderTable');
 
     // Branding
     expect(guiAppHtml).toContain('Lattice');
