@@ -35,7 +35,8 @@ import type {
   ChangelogOptions,
   ChangeEntry,
 } from './types.js';
-import { readManifest } from './lifecycle/manifest.js';
+import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
+import { existsSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { StorageAdapter } from './db/adapter.js';
 import {
@@ -57,6 +58,14 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
 import { parseConfigFile } from './config/parser.js';
+import { resolveLatticeRoot } from './framework/lattice-root.js';
+import {
+  getActiveWorkspace,
+  getWorkspace,
+  resolveWorkspacePaths,
+  type WorkspaceRecord,
+} from './framework/workspace.js';
+import { deriveCanonicalContexts } from './framework/canonical-context.js';
 import {
   deriveKey,
   encrypt as encryptValue,
@@ -128,6 +137,19 @@ export class Lattice {
   private readonly _loop: SyncLoop;
   private readonly _writeback: WritebackPipeline;
   private _initialized = false;
+
+  // --- Auto-render: keep the SQL→markdown bridge current automatically. ---
+  /**
+   * When set, insert/update/delete debounce-trigger a re-render into this dir.
+   * Configured by {@link enableAutoRender} / {@link Lattice.openWorkspace}.
+   * Undefined = inert: a bare `new Lattice(dbPath)` pays zero overhead and its
+   * behavior is unchanged.
+   */
+  private _autoRenderDir: string | undefined;
+  private _autoRenderTimer: ReturnType<typeof setTimeout> | undefined;
+  private _autoRenderPending = false;
+  private _autoRenderInFlight = false;
+  private _autoRenderDebounceMs = 250;
 
   /** Cache of actual table columns (from PRAGMA), populated after init(). */
   private readonly _columnCache = new Map<string, Set<string>>();
@@ -214,6 +236,57 @@ export class Lattice {
   // -------------------------------------------------------------------------
   // Setup
   // -------------------------------------------------------------------------
+
+  /**
+   * Open a workspace under a `.lattice` root. Resolves the root (the
+   * `LATTICE_ROOT` env override or a `.lattice/.config` found by walking up
+   * from the cwd), looks up the active or named workspace, applies the
+   * canonical DB-aligned `Context/` layout for any table lacking an explicit
+   * entity context, runs `init()`, and — by default — enables auto-render and
+   * renders once so the `Context/` tree exists immediately (no "run lattice
+   * render" step). The returned Lattice is initialized and ready to use.
+   */
+  static async openWorkspace(
+    opts: {
+      root?: string;
+      workspaceId?: string;
+      options?: LatticeOptions;
+      autoRender?: boolean;
+    } = {},
+  ): Promise<Lattice> {
+    const root = opts.root ?? resolveLatticeRoot();
+    const ws: WorkspaceRecord | null = opts.workspaceId
+      ? getWorkspace(root, opts.workspaceId)
+      : getActiveWorkspace(root);
+    if (!ws) {
+      throw new Error(
+        `Lattice: no workspace found under ${root} — run \`lattice init\` to create one`,
+      );
+    }
+    const paths = resolveWorkspacePaths(root, ws);
+    const db = new Lattice({ config: paths.configPath }, opts.options ?? {});
+    // Apply the canonical, DB-aligned Context/ layout for tables without one.
+    const parsed = parseConfigFile(paths.configPath);
+    const existing = db.entityContexts();
+    for (const { table, definition } of deriveCanonicalContexts(parsed.tables)) {
+      if (!existing.has(table)) db.defineEntityContext(table, definition);
+    }
+    await db.init();
+    if (opts.autoRender !== false) {
+      db.enableAutoRender(paths.contextDir);
+      await db.render(paths.contextDir);
+      // Guarantee a manifest exists even for an empty workspace, so there is
+      // never a "no rendered context available" state.
+      if (!existsSync(manifestPath(paths.contextDir))) {
+        writeManifest(paths.contextDir, {
+          version: 2,
+          generated_at: new Date().toISOString(),
+          entityContexts: {},
+        });
+      }
+    }
+    return db;
+  }
 
   define(table: string, def: TableDefinition): this {
     this._assertNotInit('define');
@@ -400,6 +473,12 @@ export class Lattice {
   }
 
   close(): void {
+    this._autoRenderDir = undefined;
+    if (this._autoRenderTimer) {
+      clearTimeout(this._autoRenderTimer);
+      this._autoRenderTimer = undefined;
+    }
+    this._autoRenderPending = false;
     this._adapter.close();
     this._columnCache.clear();
     this._encryptedTableColumns.clear();
@@ -1860,6 +1939,73 @@ export class Lattice {
         for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
       }
     }
+    // Every mutation schedules an auto-render when one is enabled (workspaces
+    // enable it by default). No-op + zero overhead when disabled.
+    this._scheduleAutoRender();
+  }
+
+  /**
+   * Turn on automatic rendering into `outputDir`. After this, every insert /
+   * update / delete debounce-triggers a re-render (coalesced, so a bulk seed
+   * produces a single render, and unchanged files are skipped by the manifest
+   * hash-diff). Workspaces enable this by default; a bare `new Lattice(dbPath)`
+   * is unaffected unless it opts in.
+   */
+  enableAutoRender(outputDir: string, opts: { debounceMs?: number } = {}): this {
+    this._autoRenderDir = outputDir;
+    if (opts.debounceMs != null) this._autoRenderDebounceMs = opts.debounceMs;
+    return this;
+  }
+
+  /** Turn off automatic rendering and cancel any pending render. */
+  disableAutoRender(): this {
+    this._autoRenderDir = undefined;
+    if (this._autoRenderTimer) {
+      clearTimeout(this._autoRenderTimer);
+      this._autoRenderTimer = undefined;
+    }
+    this._autoRenderPending = false;
+    return this;
+  }
+
+  private _scheduleAutoRender(): void {
+    if (!this._autoRenderDir) return;
+    this._autoRenderPending = true;
+    if (this._autoRenderTimer) return;
+    this._autoRenderTimer = setTimeout(() => {
+      this._autoRenderTimer = undefined;
+      void this._runAutoRender();
+    }, this._autoRenderDebounceMs);
+    // Don't keep the event loop alive solely for a pending auto-render.
+    this._autoRenderTimer.unref();
+  }
+
+  private async _runAutoRender(): Promise<void> {
+    const dir = this._autoRenderDir;
+    if (!dir || !this._initialized) return;
+    if (this._autoRenderInFlight) {
+      // A render is mid-flight; mark pending and re-arm when it finishes.
+      this._autoRenderPending = true;
+      return;
+    }
+    if (!this._autoRenderPending) return;
+    this._autoRenderPending = false;
+    this._autoRenderInFlight = true;
+    try {
+      const result = await this._render.render(dir);
+      for (const h of this._renderHandlers) h(result);
+    } catch (err) {
+      for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      this._autoRenderInFlight = false;
+      // Mutations may have arrived while the render was in flight (and hit the
+      // in-flight guard above without arming a timer); re-arm if so.
+      this._rearmAutoRenderIfPending();
+    }
+  }
+
+  private _rearmAutoRenderIfPending(): void {
+    if (this._autoRenderPending) this._scheduleAutoRender();
   }
 
   /**
