@@ -114,10 +114,14 @@ function buildMessage(linked: OrganizedLink[], created: OrganizedCreation[]): st
     const byTable = new Map<string, number>();
     for (const l of linked) byTable.set(l.table, (byTable.get(l.table) ?? 0) + 1);
     const where = [...byTable.entries()].map(([t, n]) => `${String(n)} in ${t}`).join(', ');
-    parts.push(`Linked it to ${String(linked.length)} existing record${linked.length === 1 ? '' : 's'} (${where}).`);
+    parts.push(
+      `Linked it to ${String(linked.length)} existing record${linked.length === 1 ? '' : 's'} (${where}).`,
+    );
   }
   for (const c of created) {
-    parts.push(`Created a new ${singular(c.table)} "${c.title}" because it didn't fit any existing record.`);
+    parts.push(
+      `Created a new ${singular(c.table)} "${c.title}" because it didn't fit any existing record.`,
+    );
   }
   if (parts.length === 0) parts.push('Saved it; nothing else needed organizing.');
   parts.push('You can change any of this anytime.');
