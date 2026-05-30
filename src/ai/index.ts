@@ -13,6 +13,9 @@ export type {
   OrganizedCreation,
 } from './organize.js';
 
+export { crawlUrl } from './crawl.js';
+export type { CrawlResult, CrawlOptions } from './crawl.js';
+
 export { summarizeText, classifyLinks, parseMatches } from '../gui/ai/summarize.js';
 export type { CatalogEntity, CatalogRecord, ClassifyMatch } from '../gui/ai/summarize.js';
 export type { LlmClient, TurnParams, TurnResult, LlmMessage } from '../gui/ai/chat.js';
