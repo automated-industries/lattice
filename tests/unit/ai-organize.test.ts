@@ -118,6 +118,28 @@ describe('organizeSource', () => {
     db.close();
   });
 
+  it('creates a fallback when matches exist but a host linker could not attach them', async () => {
+    const db = await makeDb();
+    const projId = await db.insert('projects', { name: 'Apollo' });
+    const fileId = await db.insert('files', { original_name: 'x.txt' });
+    const catalog: CatalogEntity[] = [
+      { table: 'projects', records: [{ id: projId, label: 'Apollo' }] },
+    ];
+    const client = fakeClient(JSON.stringify([{ table: 'projects', id: projId }]));
+    const res = await organizeSource(db, {
+      fileId,
+      text: 'content',
+      name: 'x.txt',
+      catalog,
+      client,
+      // The host (e.g. the GUI with no junction) reports it could not link.
+      linkExisting: () => Promise.resolve(false),
+    });
+    expect(res.linked).toEqual([]);
+    expect(res.created.length).toBe(1); // nothing attached ⇒ a fallback was created
+    db.close();
+  });
+
   it('respects createIfNecessary: false (link-only, never creates)', async () => {
     const db = await makeDb();
     const fileId = await db.insert('files', { original_name: 'x.txt' });

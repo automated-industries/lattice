@@ -1,6 +1,11 @@
 import type { Lattice } from '../lattice.js';
 import type { LlmClient } from '../gui/ai/chat.js';
-import { classifyLinks, summarizeText, type CatalogEntity } from '../gui/ai/summarize.js';
+import {
+  classifyLinks,
+  summarizeText,
+  type CatalogEntity,
+  type ClassifyMatch,
+} from '../gui/ai/summarize.js';
 
 /**
  * The context organizer. Given an ingested source (a `files` row's text), it
@@ -35,8 +40,20 @@ export interface OrganizeOptions {
    * have `title` + `body` columns. Default `'notes'`.
    */
   fallbackTable?: string;
-  /** Create a fallback object when no existing record matches. Default `true`. */
+  /** Create a fallback object when nothing was attached. Default `true`. */
   createIfNecessary?: boolean;
+  /**
+   * Host-supplied linker: attach the file to an existing record and return
+   * `true` if a link was actually created. Defaults to inserting into
+   * {@link linkTable}. The GUI supplies junction-table linking here.
+   */
+  linkExisting?: (match: ClassifyMatch) => Promise<boolean>;
+  /**
+   * Host-supplied fallback creator: create a new knowledge object and return
+   * its `{ table, id }`, or `null` to skip creation. Defaults to inserting into
+   * {@link fallbackTable}.
+   */
+  createFallback?: (title: string, body: string) => Promise<{ table: string; id: string } | null>;
 }
 
 export interface OrganizedLink {
@@ -71,32 +88,45 @@ export async function organizeSource(db: Lattice, opts: OrganizeOptions): Promis
     return { skipped: true, description: '', linked: [], created: [], message: '' };
   }
 
+  const linkExisting =
+    opts.linkExisting ??
+    (async (m: ClassifyMatch): Promise<boolean> => {
+      await db.insert(linkTable, {
+        file_id: fileId,
+        table_name: m.table,
+        row_id: m.id,
+        relevance: 'related',
+      });
+      return true;
+    });
+  const createFallback =
+    opts.createFallback ??
+    (async (title: string, body: string): Promise<{ table: string; id: string }> => {
+      const id = await db.insert(fallbackTable, { title, body });
+      await db.insert(linkTable, {
+        file_id: fileId,
+        table_name: fallbackTable,
+        row_id: id,
+        relevance: 'primary',
+      });
+      return { table: fallbackTable, id };
+    });
+
   const description = (await summarizeText(client, text, name)).trim();
   const matches = await classifyLinks(client, text, name, catalog);
 
   const linked: OrganizedLink[] = [];
   for (const m of matches) {
-    await db.insert(linkTable, {
-      file_id: fileId,
-      table_name: m.table,
-      row_id: m.id,
-      relevance: 'related',
-    });
-    linked.push({ table: m.table, id: m.id });
+    if (await linkExisting(m)) linked.push({ table: m.table, id: m.id });
   }
 
+  // Create a fallback object only when NOTHING was attached to the user's schema.
   const created: OrganizedCreation[] = [];
-  if (matches.length === 0 && createIfNecessary && text.trim().length > 0) {
+  if (linked.length === 0 && createIfNecessary && text.trim().length > 0) {
     const title = name.replace(/\.[^./\\]+$/, '').trim() || 'Note';
     const body = description.length > 0 ? description : text.slice(0, 2000);
-    const id = await db.insert(fallbackTable, { title, body });
-    await db.insert(linkTable, {
-      file_id: fileId,
-      table_name: fallbackTable,
-      row_id: id,
-      relevance: 'primary',
-    });
-    created.push({ table: fallbackTable, id, title });
+    const result = await createFallback(title, body);
+    if (result) created.push({ table: result.table, id: result.id, title });
   }
 
   return {
