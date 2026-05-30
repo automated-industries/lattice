@@ -10,13 +10,9 @@ import { parseFile, describe } from './ai/extract.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import { resolveClaudeAuth } from './assistant-routes.js';
-import { createAnthropicClient } from './ai/chat.js';
-import {
-  summarizeText,
-  classifyLinks,
-  type CatalogEntity,
-  type ClassifyMatch,
-} from './ai/summarize.js';
+import { createAnthropicClient, type LlmClient } from './ai/chat.js';
+import { organizeSource, type OrganizeResult } from '../ai/organize.js';
+import { type CatalogEntity, type ClassifyMatch } from './ai/summarize.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -165,46 +161,71 @@ async function enrichWithLlm(
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
   if (!auth) return [];
-  let client;
+  let client: LlmClient;
   try {
     client = createAnthropicClient(auth);
   } catch {
     return [];
   }
+
+  // The organizer is the single source of truth: it summarizes, classifies
+  // against the user's OWN schema, and links. The GUI supplies junction-based
+  // linking; fallback-object creation is deferred (no designated knowledge
+  // table yet), so createIfNecessary is off here.
+  let result: OrganizeResult;
   try {
-    const desc = await summarizeText(client, text, name);
-    if (desc) await updateRow(mctx, 'files', fileId, { description: desc });
-  } catch (e) {
-    console.warn('[ingest] LLM description failed:', (e as Error).message);
-  }
-  try {
-    const matches = await classifyLinks(client, text, name, await buildCatalog(db, descriptions));
-    for (const m of matches) {
-      const jx = junctions.find((j) => j.otherTable === m.table);
-      if (jx) {
-        // A junction to this entity exists — create the link (default action;
-        // it's audited + undoable via the feed). No confirmation prompt.
+    result = await organizeSource(db, {
+      fileId,
+      text,
+      name,
+      catalog: await buildCatalog(db, descriptions),
+      client,
+      createIfNecessary: false,
+      linkExisting: async (m): Promise<boolean> => {
+        const jx = junctions.find((j) => j.otherTable === m.table);
+        if (!jx) {
+          // No junction connects files to this entity — surface as a suggestion.
+          mctx.feed.publish({
+            table: 'files',
+            op: 'update',
+            rowId: fileId,
+            source: 'ingest',
+            summary: `Looks related to ${m.table} (${m.id})`,
+          });
+          return false;
+        }
         try {
           await linkRows(mctx, jx.junction, { [jx.fileFk]: fileId, [jx.otherFk]: m.id });
+          return true;
         } catch (e) {
           console.warn(`[ingest] auto-link to ${m.table} failed:`, (e as Error).message);
+          return false;
         }
-      } else {
-        // No junction connects files to this entity — surface as a suggestion.
-        mctx.feed.publish({
-          table: 'files',
-          op: 'update',
-          rowId: fileId,
-          source: 'ingest',
-          summary: `Looks related to ${m.table} (${m.id})`,
-        });
-      }
-    }
-    return matches;
+      },
+    });
   } catch (e) {
-    console.warn('[ingest] classify failed:', (e as Error).message);
+    console.warn('[ingest] organize failed:', (e as Error).message);
     return [];
   }
+
+  if (result.description) {
+    try {
+      await updateRow(mctx, 'files', fileId, { description: result.description });
+    } catch (e) {
+      console.warn('[ingest] description update failed:', (e as Error).message);
+    }
+  }
+  // Surface a transparent, plain-language summary of what was organized.
+  if (!result.skipped && (result.linked.length > 0 || result.created.length > 0)) {
+    mctx.feed.publish({
+      table: 'files',
+      op: 'update',
+      rowId: fileId,
+      source: 'ingest',
+      summary: result.message,
+    });
+  }
+  return result.linked.map((l): ClassifyMatch => ({ table: l.table, id: l.id }));
 }
 
 function readBuffer(req: IncomingMessage, maxBytes = 50_000_000): Promise<Buffer> {
