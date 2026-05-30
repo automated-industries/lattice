@@ -16,6 +16,9 @@ export type {
 export { crawlUrl } from './crawl.js';
 export type { CrawlResult, CrawlOptions } from './crawl.js';
 
+export { enrichKnowledge } from './enrich.js';
+export type { EnrichOptions, EnrichResult } from './enrich.js';
+
 export { summarizeText, classifyLinks, parseMatches } from '../gui/ai/summarize.js';
 export type { CatalogEntity, CatalogRecord, ClassifyMatch } from '../gui/ai/summarize.js';
 export type { LlmClient, TurnParams, TurnResult, LlmMessage } from '../gui/ai/chat.js';
