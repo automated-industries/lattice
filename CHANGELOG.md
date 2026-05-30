@@ -32,6 +32,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **URL crawl** — `crawlUrl(url)` fetches a cloud reference and extracts readable text + title via Mozilla Readability (with a stripped-DOM fallback), SSRF-guarded, with an injectable fetcher. This fills `extracted_text` for a `cloud_ref` so the organizer can sort it. Adds `@mozilla/readability` + `jsdom` as dependencies.
 - **Enrich pass** — `enrichKnowledge(db, opts)` synthesizes a coherent body for a knowledge object (e.g. a `notes` row) from its 2+ linked sources, updating it only when the result is materially better. Schema-agnostic (works over the generic `file_links` table); AI-gated (no-op without a client).
 
+### Added — GUI: workspace switcher
+
+- **Header workspace switcher** — when the GUI is opened inside a `.lattice` root, a header switcher lists the workspaces and switches the active one (`GET /api/workspaces`, `POST /api/workspaces/switch`); switching re-points the GUI at that workspace's config + `Context/`. The switcher is hidden on a plain (non-workspace) GUI, so nothing changes for non-workspace usage. `lattice gui` now opens the active workspace automatically when a root is present. The `Workspaces/` container is never browsed as a folder — switching is header-only.
+
 ## [2.0.0] - 2026-05-29
 
 Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.

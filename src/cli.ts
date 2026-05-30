@@ -572,16 +572,30 @@ async function runWatch(args: ParsedArgs): Promise<void> {
 
 async function runGui(args: ParsedArgs): Promise<void> {
   try {
-    const resolvedOutput = discoverOutputDir(args.output, args.outputExplicit);
-    if (!args.outputExplicit && resolvedOutput !== args.output) {
-      console.log(
-        `Lattice GUI: auto-detected rendered context at "${resolvedOutput}" ` +
-          `(use --output to override).`,
-      );
+    let configPath = resolve(args.config);
+    let outputDir: string;
+    // Prefer the active workspace under a `.lattice` root, unless the user
+    // pointed --config at a specific config explicitly.
+    const root = findLatticeRoot(args.root ?? process.cwd());
+    const ws = root && args.config === './lattice.config.yml' ? getActiveWorkspace(root) : null;
+    if (root && ws) {
+      const paths = resolveWorkspacePaths(root, ws);
+      configPath = paths.configPath;
+      outputDir = paths.contextDir;
+      console.log(`Lattice GUI: opening workspace "${ws.displayName}".`);
+    } else {
+      const resolvedOutput = discoverOutputDir(args.output, args.outputExplicit);
+      if (!args.outputExplicit && resolvedOutput !== args.output) {
+        console.log(
+          `Lattice GUI: auto-detected rendered context at "${resolvedOutput}" ` +
+            `(use --output to override).`,
+        );
+      }
+      outputDir = resolve(resolvedOutput);
     }
     const handle = await startGuiServer({
-      configPath: resolve(args.config),
-      outputDir: resolve(resolvedOutput),
+      configPath,
+      outputDir,
       port: args.port,
       openBrowser: !args.noOpen,
     });

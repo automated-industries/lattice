@@ -12,6 +12,14 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
+import { findLatticeRoot } from '../framework/lattice-root.js';
+import {
+  listWorkspaces,
+  getActiveWorkspace,
+  setActiveWorkspace,
+  getWorkspace,
+  resolveWorkspacePaths,
+} from '../framework/workspace.js';
 import type { LatticeFieldDef } from '../config/types.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 import {
@@ -937,6 +945,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
   // Mutable reference: switching DBs replaces this wholesale.
   let active: ActiveDb = await openConfig(configPath, outputDir);
+  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
+  // the header workspace switcher can list + switch workspaces. `null` ⇒ the
+  // GUI was opened on a plain config; the switcher stays hidden.
+  const latticeRoot = findLatticeRoot(dirname(configPath));
   if (teamCloud) {
     await registerTeamCloudTables(active.db);
   }
@@ -1532,6 +1544,62 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Disabled in team-cloud mode — switching the active DB out from
         // under other members would corrupt their session view and bypass
         // the team's auth + share contract.
+        // ── Workspaces (header switcher) ──────────────────────────────────
+        // Additive: when the GUI was not opened inside a `.lattice` root,
+        // these return empty and the header switcher stays hidden.
+        if (method === 'GET' && pathname === '/api/workspaces') {
+          if (!latticeRoot) {
+            sendJson(res, { current: null, workspaces: [] });
+            return;
+          }
+          const all = listWorkspaces(latticeRoot);
+          const activeWs = getActiveWorkspace(latticeRoot);
+          sendJson(res, {
+            current: activeWs ? activeWs.id : null,
+            workspaces: all.map((w) => ({
+              id: w.id,
+              label: w.displayName,
+              dir: w.dir,
+              kind: w.kind,
+            })),
+          });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/workspaces/switch') {
+          if (!latticeRoot) {
+            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
+            return;
+          }
+          const body = (await readJsonBody(req)) as { id?: unknown };
+          if (typeof body.id !== 'string') {
+            sendJson(res, { error: 'id must be a string' }, 400);
+            return;
+          }
+          const ws = getWorkspace(latticeRoot, body.id);
+          if (!ws) {
+            sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
+            return;
+          }
+          const paths = resolveWorkspacePaths(latticeRoot, ws);
+          let next: ActiveDb;
+          try {
+            next = await openConfig(paths.configPath, paths.contextDir);
+          } catch (e) {
+            const err = e as Error;
+            sendJson(
+              res,
+              { error: `Failed to open workspace ${ws.displayName}: ${err.message}` },
+              500,
+            );
+            return;
+          }
+          setActiveWorkspace(latticeRoot, ws.id);
+          await disposeActive(active);
+          active = next;
+          sendJson(res, { ok: true, id: ws.id });
+          return;
+        }
+
         if (teamCloud && pathname.startsWith('/api/databases')) {
           sendJson(res, { error: 'Database switching is disabled in team-cloud mode' }, 403);
           return;
