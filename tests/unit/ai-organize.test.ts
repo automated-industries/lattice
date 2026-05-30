@@ -17,9 +17,7 @@ function fakeClient(classifyJson: string): LlmClient {
   return {
     runTurn(params: TurnParams): Promise<TurnResult> {
       const isClassify = params.system.includes('existing records');
-      const text = isClassify
-        ? `\`\`\`json\n${classifyJson}\n\`\`\``
-        : 'A short factual summary.';
+      const text = isClassify ? `\`\`\`json\n${classifyJson}\n\`\`\`` : 'A short factual summary.';
       return Promise.resolve({ stopReason: 'end_turn', text, toolUses: [] });
     },
   };
