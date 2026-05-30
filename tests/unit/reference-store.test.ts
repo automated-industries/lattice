@@ -53,7 +53,9 @@ describe('reference-store', () => {
     await expect(referenceUrl('ftp://example.com/x')).rejects.toThrow(/non-http/i);
     await expect(referenceUrl('http://127.0.0.1/x')).rejects.toThrow(/private/i);
     await expect(referenceUrl('http://localhost:8080/x')).rejects.toThrow(/private/i);
-    await expect(referenceUrl('http://169.254.169.254/latest/meta-data')).rejects.toThrow(/private/i);
+    await expect(referenceUrl('http://169.254.169.254/latest/meta-data')).rejects.toThrow(
+      /private/i,
+    );
     // explicit opt-in bypasses the guard
     const ok = await referenceUrl('http://127.0.0.1/x', { allowPrivate: true });
     expect(ok.ref_kind).toBe('cloud_ref');
