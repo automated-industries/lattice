@@ -34,6 +34,34 @@ export async function assertSafeUrl(rawUrl: string, allowPrivate = false): Promi
   return u;
 }
 
+/**
+ * Fetch a URL with SSRF protection that survives redirects. Each hop's target
+ * (including the resolved `Location`) is re-validated with {@link assertSafeUrl}
+ * before it is fetched, so an attacker cannot 302 from a public host to a
+ * private/metadata address. Redirects are followed manually up to `maxRedirects`.
+ */
+export async function safeFetch(
+  rawUrl: string,
+  fetchImpl: typeof fetch,
+  opts: { allowPrivate?: boolean; maxRedirects?: number; init?: RequestInit } = {},
+): Promise<Response> {
+  const allowPrivate = opts.allowPrivate ?? false;
+  const maxRedirects = opts.maxRedirects ?? 5;
+  let current = rawUrl;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const u = await assertSafeUrl(current, allowPrivate);
+    const res = await fetchImpl(u.toString(), { ...opts.init, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      if (!location) return res; // redirect without a target — hand back as-is
+      current = new URL(location, u).toString(); // resolve relative redirects
+      continue;
+    }
+    return res;
+  }
+  throw new Error(`Lattice: too many redirects fetching ${rawUrl}`);
+}
+
 /** Coarse provider tag for a URL. */
 export function providerForUrl(rawUrl: string): RefProvider {
   let host = '';
