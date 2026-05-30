@@ -29,6 +29,7 @@ export const guiAppHtml = `<!doctype html>
       --danger-deep: #dc2626;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
       --sidebar-width: 380px;
+      --nav-width: 220px;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -181,14 +182,14 @@ export const guiAppHtml = `<!doctype html>
        minimum keeps the track at content-width and the whole page scrolls
        horizontally. */
     .layout {
-      display: grid; grid-template-columns: 220px minmax(0, 1fr) var(--sidebar-width);
+      display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--sidebar-width);
       height: calc(100vh - 56px);
     }
     .rail-handle { display: none; }
     @media (max-width: 720px) {
       /* The assistant rail becomes a bottom drawer: composer always reachable,
          tap the handle to expand the feed/chat to ~62svh. */
-      .layout { grid-template-columns: 220px minmax(0, 1fr); }
+      .layout { grid-template-columns: var(--nav-width) minmax(0, 1fr); }
       .assistant-rail {
         position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
         border-left: none; border-top: 1px solid var(--border);
@@ -818,6 +819,149 @@ export const guiAppHtml = `<!doctype html>
       word-break: break-all; cursor: pointer;
     }
     .modal .copy-token:hover { background: var(--row-hover); }
+
+    /* ── Header settings gear (top-right) ───────────────── */
+    #settings-gear {
+      margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; background: transparent; border: 1px solid #2a2f36;
+      border-radius: 6px; cursor: pointer; color: #e6e8eb; flex-shrink: 0;
+    }
+    #settings-gear:hover { background: rgba(255, 255, 255, 0.06); }
+    #settings-gear svg { width: 18px; height: 18px; display: block; }
+
+    /* ── Slim / collapsible left sidebar ────────────────── */
+    .sidebar-collapse {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; margin: 0 0 10px 2px;
+      background: transparent; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text-muted); cursor: pointer;
+    }
+    .sidebar-collapse:hover { background: var(--row-hover); color: var(--text); }
+    .sidebar-collapse svg { width: 14px; height: 14px; transition: transform 0.15s ease; display: block; }
+    body.sidebar-collapsed { --nav-width: 56px; }
+    body.sidebar-collapsed nav.sidebar { padding: 18px 6px; }
+    body.sidebar-collapsed nav.sidebar .section-label,
+    body.sidebar-collapsed nav.sidebar .nav-text { display: none; }
+    body.sidebar-collapsed nav.sidebar .sidebar-collapse svg { transform: rotate(180deg); }
+    body.sidebar-collapsed nav li a { justify-content: center; padding: 7px 0; }
+
+    /* ── File-system workspace (default view) ───────────── */
+    .fs-crumbs {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      font-size: 13px; margin-bottom: 16px; color: var(--text-muted);
+    }
+    .fs-crumbs a { color: var(--accent); }
+    .fs-crumbs a:hover { text-decoration: underline; }
+    .fs-crumbs a:last-child { color: var(--text); }
+    .fs-sep { color: var(--text-muted); font-size: 11px; }
+    .fs-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 14px; max-width: 1100px;
+    }
+    .fs-tile {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      padding: 18px 12px 14px; text-align: center;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; box-shadow: var(--shadow); cursor: pointer;
+      transition: transform 0.05s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .fs-tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .fs-tile-icon { font-size: 40px; line-height: 1; }
+    .fs-tile-label {
+      font-size: 13px; font-weight: 500; color: var(--text);
+      word-break: break-word; overflow: hidden; display: -webkit-box;
+      -webkit-line-clamp: 2; -webkit-box-orient: vertical; max-height: 2.6em; line-height: 1.3;
+    }
+    .fs-folder-count { font-size: 11px; color: var(--text-muted); }
+    .fs-empty { color: var(--text-muted); font-style: italic; padding: 28px 4px; }
+
+    /* Document preview (item view, built from columns) */
+    .fs-doc {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 8px 20px; box-shadow: var(--shadow);
+      max-width: 900px;
+    }
+    .fs-field { padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .fs-field:last-child { border-bottom: none; }
+    .fs-field-label {
+      font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.04em; margin-bottom: 4px;
+    }
+    .fs-field-val { font-size: 14px; line-height: 1.5; }
+    .fs-field-val.ce { cursor: text; border-radius: 6px; margin: -3px -6px; padding: 3px 6px; }
+    .fs-field-val.ce:hover { background: var(--surface-2); outline: 1px dashed var(--border-strong); }
+    .fs-field-val.editing { outline: none; background: transparent; }
+    .fs-field-val.editing input, .fs-field-val.editing textarea, .fs-field-val.editing select {
+      width: 100%; padding: 6px 9px; font: inherit; font-size: 14px;
+      border: 1px solid var(--accent); border-radius: 6px; background: var(--surface);
+    }
+    .fs-field-val.editing textarea { min-height: 80px; resize: vertical; }
+    .fs-field-val .md-body { font-size: 14px; line-height: 1.55; }
+    .fs-field-val .md-body h1, .fs-field-val .md-body h2, .fs-field-val .md-body h3 { margin: 10px 0 6px; line-height: 1.3; }
+    .fs-field-val .md-body ul { margin: 6px 0; padding-left: 20px; }
+    .fs-field-val .md-body code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .fs-empty-val { color: var(--text-muted); }
+    .fs-link { color: var(--accent); }
+    .fs-link:hover { text-decoration: underline; }
+    .fs-rel-title { font-size: 13px; color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.04em; margin: 24px 0 12px; }
+
+    /* ── Settings drawer (slide-over) ───────────────────── */
+    .drawer-backdrop {
+      position: fixed; inset: 0; background: rgba(11, 13, 16, 0.55);
+      z-index: 120; opacity: 0; transition: opacity 0.2s ease;
+    }
+    .drawer-backdrop.open { opacity: 1; }
+    .settings-drawer {
+      position: fixed; top: 0; right: 0; height: 100vh;
+      width: min(620px, 94vw); background: var(--surface);
+      border-left: 1px solid var(--border); box-shadow: -12px 0 32px rgba(0, 0, 0, 0.4);
+      z-index: 130; display: flex; flex-direction: column;
+      transform: translateX(100%); transition: transform 0.22s ease;
+    }
+    .settings-drawer.open { transform: translateX(0); }
+    .drawer-head {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+    }
+    .drawer-title { font-size: 16px; font-weight: 600; }
+    .drawer-close {
+      margin-left: auto; width: 30px; height: 30px; border: 1px solid var(--border);
+      border-radius: 6px; background: transparent; color: var(--text-muted);
+      cursor: pointer; font-size: 16px; line-height: 1;
+    }
+    .drawer-close:hover { background: var(--row-hover); color: var(--text); }
+    .drawer-tabs {
+      flex: 0 0 auto; display: flex; gap: 4px; padding: 10px 14px 0;
+    }
+    .drawer-tab {
+      padding: 7px 14px; border: 1px solid var(--border); border-bottom: none;
+      border-radius: 6px 6px 0 0; background: var(--surface-2); color: var(--text-muted);
+      font-size: 13px; cursor: pointer;
+    }
+    .drawer-tab.active { background: var(--surface); color: var(--text); font-weight: 600; border-color: var(--border-strong); }
+    .drawer-view-toggle {
+      flex: 0 0 auto; padding: 12px 18px; border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border); background: var(--surface-2);
+    }
+    .drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 4px 20px; }
+    .drawer-body .teams-page { padding: 16px 18px; }
+
+    /* Toggle switch (advanced mode) */
+    .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .toggle-track {
+      position: relative; flex: 0 0 auto; width: 38px; height: 22px;
+      background: var(--border-strong); border-radius: 999px; transition: background 0.15s ease;
+    }
+    .toggle-thumb {
+      position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+      background: #fff; border-radius: 50%; transition: transform 0.15s ease;
+    }
+    .toggle input:checked + .toggle-track { background: var(--accent); }
+    .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
+    .toggle-label { font-size: 13.5px; color: var(--text); }
+    .toggle-label small { display: block; font-size: 11px; color: var(--text-muted); }
   </style>
 </head>
 <body>
@@ -864,21 +1008,24 @@ export const guiAppHtml = `<!doctype html>
       </button>
       <div class="db-menu" id="ws-menu" hidden></div>
     </div>
+    <button id="settings-gear" title="Settings" aria-label="Open settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
   </header>
   <div class="layout">
     <nav class="sidebar">
+      <button class="sidebar-collapse" id="sidebar-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
       <div class="section-label">Objects</div>
       <ul id="object-nav"></ul>
       <div id="system-section" hidden>
         <div class="section-label">System</div>
         <ul id="system-nav"></ul>
       </div>
-      <div class="section-label">Settings</div>
-      <ul id="settings-nav">
-        <li><a href="#/settings/lattice"><span class="nav-icon">🗂</span> Lattice Settings</a></li>
-        <li><a href="#/settings/database"><span class="nav-icon">⚙</span> Database Settings</a></li>
-        <li><a href="#/settings/user-config"><span class="nav-icon">👤</span> User Settings</a></li>
-      </ul>
     </nav>
     <main id="content"></main>
     <aside class="assistant-rail" id="assistant-rail">
@@ -895,6 +1042,27 @@ export const guiAppHtml = `<!doctype html>
       <div class="rail-composer" id="rail-composer"></div>
     </aside>
   </div>
+
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <aside class="settings-drawer" id="settings-drawer" hidden aria-label="Settings">
+    <div class="drawer-head">
+      <span class="drawer-title">Settings</span>
+      <button class="drawer-close" id="drawer-close" title="Close" aria-label="Close settings">✕</button>
+    </div>
+    <div class="drawer-tabs" id="drawer-tabs">
+      <button class="drawer-tab" data-tab="database">Database</button>
+      <button class="drawer-tab" data-tab="lattice">Lattice</button>
+      <button class="drawer-tab" data-tab="user">User</button>
+    </div>
+    <div class="drawer-view-toggle">
+      <label class="toggle">
+        <input type="checkbox" id="advanced-toggle">
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Advanced mode <small>Row/table editor instead of the file workspace</small></span>
+      </label>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
 
   <script>
   (function () {
@@ -1061,6 +1229,9 @@ export const guiAppHtml = `<!doctype html>
         state.columnMeta = results[3] || {};
         state.systemTables = (results[4] && results[4].tables) || [];
         state.preferences = results[5] || { show_system_tables: false };
+        document.body.classList.toggle('advanced-mode', advancedMode());
+        document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed());
+        wireSettingsDrawer();
         renderDbSwitcher(results[2]);
         renderWsSwitcher(results[6]);
         renderSidebar();
@@ -1818,11 +1989,12 @@ export const guiAppHtml = `<!doctype html>
     // ────────────────────────────────────────────────────────────
     function renderSidebar() {
       var ul = document.getElementById('object-nav');
+      var prefix = advancedMode() ? '#/objects/' : '#/fs/';
       var firstClass = state.entities.tables.filter(function (t) { return !isJunction(t); });
       ul.innerHTML = firstClass.map(function (t) {
         var d = displayFor(t.name);
-        return '<li><a data-route="#/objects/' + t.name + '" href="#/objects/' + t.name +
-          '"><span class="nav-icon">' + d.icon + '</span> ' + escapeHtml(d.label) + '</a></li>';
+        return '<li><a data-route="' + prefix + t.name + '" href="' + prefix + t.name +
+          '"><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span></a></li>';
       }).join('');
 
       var section = document.getElementById('system-section');
@@ -1833,7 +2005,7 @@ export const guiAppHtml = `<!doctype html>
         sys.innerHTML = show
           ? (state.systemTables || []).map(function (t) {
               return '<li><a data-route="#/system/' + t.name + '" href="#/system/' + t.name +
-                '"><span class="nav-icon">⚙</span> ' + escapeHtml(t.name) + '</a></li>';
+                '"><span class="nav-icon">⚙</span> <span class="nav-text">' + escapeHtml(t.name) + '</span></a></li>';
             }).join('')
           : '';
       }
@@ -1860,6 +2032,15 @@ export const guiAppHtml = `<!doctype html>
 
       if (hash === '#/' || hash === '') { renderDashboard(content); return; }
 
+      // File-system workspace (default mode): #/fs/<table>[/<id>/<rel>/<id>…].
+      // Even segment count → item view; odd → folder/collection view.
+      var fsegs = fsParse(hash);
+      if (fsegs) {
+        if (fsegs.length % 2 === 1) renderFsCollection(content, fsegs);
+        else renderFsItem(content, fsegs);
+        return;
+      }
+
       var m = /^#\\/objects\\/([^/]+)(?:\\/(.+))?$/.exec(hash);
       if (m) {
         if (m[2]) renderDetail(content, m[1], m[2]);
@@ -1870,19 +2051,15 @@ export const guiAppHtml = `<!doctype html>
       var sm = /^#\\/system\\/([^/]+)$/.exec(hash);
       if (sm) { renderSystemTable(content, sm[1]); return; }
 
-      // Data Model now lives inside Database Settings. Keep the legacy
-      // hash working (deep links, internal re-renders) by rendering the
-      // settings page, which contains the Data Model section.
-      if (hash === '#/settings/data-model') { renderDatabaseSettings(content); return; }
+      // Settings live in a slide-over drawer (gear icon, top-right). The legacy
+      // hashes open the drawer to the matching tab over the dashboard, so deep
+      // links and existing bookmarks keep working. Version history stays a page.
       if (hash === '#/settings/history') { renderHistory(content); return; }
-      if (hash === '#/settings/lattice') { renderLatticeSettings(content); return; }
-      // Database Settings — new v1.13.8 page. The legacy /settings/project-config
-      // route stays wired for back-compat (deep-link tests, existing bookmarks).
-      if (hash === '#/settings/database' || hash === '#/settings/project-config') {
-        renderDatabaseSettings(content);
-        return;
+      if (hash === '#/settings/lattice') { renderDashboard(content); openSettingsDrawer('lattice'); return; }
+      if (hash === '#/settings/database' || hash === '#/settings/project-config' || hash === '#/settings/data-model') {
+        renderDashboard(content); openSettingsDrawer('database'); return;
       }
-      if (hash === '#/settings/user-config') { renderUserConfig(content); return; }
+      if (hash === '#/settings/user-config') { renderDashboard(content); openSettingsDrawer('user'); return; }
       content.innerHTML = '<div class="placeholder"><h2>Unknown route</h2></div>';
     }
 
@@ -1926,10 +2103,11 @@ export const guiAppHtml = `<!doctype html>
         return;
       }
 
+      var cardPrefix = advancedMode() ? '#/objects/' : '#/fs/';
       var cards = firstClass.map(function (t) {
         var d = displayFor(t.name);
         var count = (t.rowCount != null) ? t.rowCount : 0;
-        return '<a class="card" href="#/objects/' + t.name + '">' +
+        return '<a class="card" href="' + cardPrefix + t.name + '">' +
           '<div class="card-icon">' + d.icon + '</div>' +
           '<div class="card-label">' + escapeHtml(d.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +
@@ -2521,6 +2699,424 @@ export const guiAppHtml = `<!doctype html>
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // File-system workspace (default view) + settings drawer
+    //
+    // The default GUI presents each object as a folder of file/folder
+    // tiles; clicking a tile opens an "item view" that renders the row
+    // as a document (built from its columns, click-to-edit) plus its
+    // relationships as sub-folders you can drill into. The classic
+    // row/table editor (renderTable / renderDetail) is preserved behind
+    // an "Advanced mode" toggle in the settings drawer.
+    // ════════════════════════════════════════════════════════════
+    var FS_KEYS = { advanced: 'lattice-advanced-mode', sidebar: 'lattice-sidebar-collapsed' };
+
+    function advancedMode() {
+      return window.localStorage.getItem(FS_KEYS.advanced) === '1';
+    }
+    function setAdvancedMode(on) {
+      window.localStorage.setItem(FS_KEYS.advanced, on ? '1' : '0');
+      document.body.classList.toggle('advanced-mode', on);
+      // Preserve context: map the current location between the file-system
+      // (#/fs/…) and the classic (#/objects/…) route families.
+      var cur = location.hash || '#/';
+      var mapped = mapHashForMode(cur, on);
+      renderSidebar();
+      if (mapped && mapped !== cur) location.hash = mapped; // triggers hashchange → renderRoute
+      else renderRoute();
+    }
+    function sidebarCollapsed() {
+      return window.localStorage.getItem(FS_KEYS.sidebar) === '1';
+    }
+    function setSidebarCollapsed(on) {
+      window.localStorage.setItem(FS_KEYS.sidebar, on ? '1' : '0');
+      document.body.classList.toggle('sidebar-collapsed', on);
+    }
+
+    // Parse "#/fs/a/b/c…" into its decoded segment list (or null).
+    function fsParse(hash) {
+      var m = /^#\\/fs\\/(.+)$/.exec(hash || '');
+      if (!m) return null;
+      return m[1].split('/').map(function (s) { return decodeURIComponent(s); });
+    }
+    // Build a "#/fs/…" hash from a segment list.
+    function fsHref(segs) {
+      return '#/fs/' + segs.map(function (s) { return encodeURIComponent(s); }).join('/');
+    }
+    // Resolve the terminal (table, id) of a drill path WITHOUT fetching —
+    // relation metadata alone is enough. Used for mode switching.
+    function fsTerminal(segs) {
+      var table = segs[0];
+      var id = null;
+      var i = 1;
+      while (i < segs.length) {
+        id = segs[i]; i++;
+        if (i < segs.length) {
+          var rel = resolveRelation(table, segs[i]); i++;
+          if (!rel) return { table: table, id: id };
+          table = rel.targetTable; id = null;
+        }
+      }
+      return { table: table, id: id };
+    }
+    function mapHashForMode(hash, advanced) {
+      if (advanced) {
+        var fsegs = fsParse(hash);
+        if (!fsegs) return hash;
+        var term = fsTerminal(fsegs);
+        return term.id
+          ? '#/objects/' + encodeURIComponent(term.table) + '/' + encodeURIComponent(term.id)
+          : '#/objects/' + encodeURIComponent(term.table);
+      }
+      var m = /^#\\/objects\\/([^/]+)(?:\\/(.+))?$/.exec(hash);
+      if (!m) return hash;
+      return m[2]
+        ? '#/fs/' + encodeURIComponent(m[1]) + '/' + encodeURIComponent(m[2])
+        : '#/fs/' + encodeURIComponent(m[1]);
+    }
+
+    // A human label for one row: first non-empty title-ish column; failing that
+    // a short snippet of a body/description field; failing that a short id.
+    function fsDisplayName(row) {
+      if (!row) return '';
+      var primary = row.name || row.title || row.label || row.original_name || row.subject;
+      if (primary) return String(primary);
+      var secondary = row.summary || row.description || row.body || row.content || row.url || row.path;
+      if (secondary) return truncate(String(secondary).replace(/\\s+/g, ' '), 60);
+      return row.id ? '#' + String(row.id).slice(0, 8) : '(untitled)';
+    }
+    // File-type glyph for native files-entity rows.
+    function fileEmoji(row) {
+      var m = (row && row.mime) || '';
+      if (m.indexOf('image/') === 0) return '🖼️';
+      if (m === 'application/pdf') return '📕';
+      if (MD_MIMES.indexOf(m) >= 0 || m.indexOf('text/') === 0) return '📝';
+      return '📄';
+    }
+
+    // The navigable "sub-folder" relations of a table: reverse-1:N (other
+    // entities that belongsTo this one) + many-to-many (junctions). Forward
+    // belongsTo relations are NOT folders — they render as inline parent links.
+    function fsRelations(tableName) {
+      var out = [];
+      var tables = (state.entities && state.entities.tables) || [];
+      // Reverse 1:N — non-junction tables with a belongsTo pointing here.
+      tables.forEach(function (t) {
+        if (isJunction(t)) return;
+        var belongs = Object.entries(t.relations || {}).filter(function (kv) {
+          return kv[1].type === 'belongsTo' && kv[1].table === tableName;
+        });
+        belongs.forEach(function (kv) {
+          var rel = kv[1];
+          // Disambiguate when one source table points here more than once.
+          var token = belongs.length > 1 ? (t.name + '~' + rel.foreignKey) : t.name;
+          var label = displayFor(t.name).label + (belongs.length > 1 ? ' (' + titleCase(kv[0]) + ')' : '');
+          out.push({ token: token, label: label, kind: 'hasMany', targetTable: t.name, foreignKey: rel.foreignKey });
+        });
+      });
+      // Many-to-many — junctions where this table is one side.
+      junctionsFor(tableName).forEach(function (j) {
+        out.push({
+          token: j.junction, label: displayFor(j.remoteRel.table).label, kind: 'm2m',
+          targetTable: j.remoteRel.table, junction: j.junction, localFk: j.localFk, remoteRel: j.remoteRel,
+        });
+      });
+      return out;
+    }
+    function resolveRelation(tableName, token) {
+      return fsRelations(tableName).find(function (r) { return r.token === token; }) || null;
+    }
+    // Resolve the rows on the far side of a relation for one parent row.
+    function fsRelatedRows(parentTable, parentRow, rel) {
+      if (rel.kind === 'hasMany') {
+        return loadAllRows(rel.targetTable).then(function (rows) {
+          return rows.filter(function (r) { return r[rel.foreignKey] === parentRow.id; });
+        });
+      }
+      return Promise.all([loadAllRows(rel.junction), loadAllRows(rel.targetTable)]).then(function (res) {
+        var jrows = res[0], targets = res[1];
+        var ids = {};
+        jrows.forEach(function (jr) {
+          if (jr[rel.localFk] === parentRow.id) ids[jr[rel.remoteRel.foreignKey]] = true;
+        });
+        return targets.filter(function (x) { return ids[x.id]; });
+      });
+    }
+
+    // Walk a drill path, fetching each (table,id) node row and resolving each
+    // relation token. Returns an ordered crumb list: 'node' crumbs (a row) and
+    // 'rel' crumbs (a relation from the preceding node).
+    function fsWalk(segs) {
+      var crumbs = [];
+      var table = segs[0];
+      var i = 1;
+      function step() {
+        if (i >= segs.length) return Promise.resolve();
+        var id = segs[i]; i++;
+        return fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id)).then(function (row) {
+          crumbs.push({ type: 'node', table: table, id: id, row: row });
+          if (i >= segs.length) return;
+          var relToken = segs[i]; i++;
+          var rel = resolveRelation(table, relToken);
+          if (!rel) throw new Error('Unknown relation "' + relToken + '" on ' + table);
+          crumbs.push({ type: 'rel', parentTable: table, parentId: id, parentRow: row, relToken: relToken, rel: rel });
+          table = rel.targetTable;
+          return step();
+        });
+      }
+      return step().then(function () { return crumbs; });
+    }
+
+    function fsBreadcrumb(segs, crumbs) {
+      var parts = ['<a href="#/">Home</a>'];
+      var t0 = segs[0];
+      var prefix = '#/fs/' + encodeURIComponent(t0);
+      parts.push('<a href="' + prefix + '">' + escapeHtml(displayFor(t0).label) + '</a>');
+      (crumbs || []).forEach(function (c) {
+        if (c.type === 'node') {
+          prefix += '/' + encodeURIComponent(c.id);
+          parts.push('<a href="' + prefix + '">' + escapeHtml(fsDisplayName(c.row)) + '</a>');
+        } else {
+          prefix += '/' + encodeURIComponent(c.relToken);
+          parts.push('<a href="' + prefix + '">' + escapeHtml(c.rel.label) + '</a>');
+        }
+      });
+      return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
+    }
+
+    // Columns never offered for click-to-edit (identity / system / file-binary).
+    var READONLY_COLS = ['id', 'created_at', 'updated_at', 'deleted_at', 'original_name',
+      'mime', 'size_bytes', 'path', 'blob_path', 'extracted_text', 'extraction_status'];
+    // Columns rendered as formatted markdown (also any value containing newlines).
+    var FS_LONGFORM = ['body', 'summary', 'transcript', 'description', 'bio', 'notes',
+      'content', 'text', 'abstract', 'review', 'message'];
+
+    function fsIsReadonly(table, col) {
+      return READONLY_COLS.indexOf(col) >= 0 || isSecretColumn(table, col);
+    }
+    // The rendered (display) HTML for a single value — markdown for long-form
+    // fields, masked for secrets, plain otherwise.
+    function fsValInner(table, row, col) {
+      var raw = row[col];
+      if (raw == null || raw === '') return '<span class="fs-empty-val">—</span>';
+      if (isSecretColumn(table, col)) return '<span class="muted">' + SECRET_MASK + '</span>';
+      var s = String(raw);
+      if (FS_LONGFORM.indexOf(col) >= 0 || s.indexOf('\\n') >= 0) {
+        return '<div class="md-body">' + mdToHtml(s.slice(0, 40000)) + '</div>';
+      }
+      return escapeHtml(s);
+    }
+    function fsFieldHtml(table, row, col) {
+      var ro = fsIsReadonly(table, col);
+      var cls = 'fs-field-val' + (ro ? ' readonly' : ' ce');
+      var attr = ro ? '' : ' data-col="' + escapeHtml(col) + '" title="Click to edit"';
+      return '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(fieldLabel(col)) + '</div>' +
+        '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
+    }
+
+    // Collection view — a folder of tiles. Top-level (#/fs/<table>) shows every
+    // row; a nested path (#/fs/<table>/<id>/<rel>) shows the related rows.
+    function renderFsCollection(content, segs) {
+      var topLevel = segs.length === 1;
+      var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
+      crumbsP.then(function (crumbs) {
+        var table, rowsP;
+        if (topLevel) {
+          table = segs[0];
+          if (!tableByName(table)) {
+            content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>';
+            return;
+          }
+          rowsP = fetchRows(table, '');
+        } else {
+          var last = crumbs[crumbs.length - 1];
+          if (!last || last.type !== 'rel') throw new Error('Bad collection path');
+          table = last.rel.targetTable;
+          rowsP = fsRelatedRows(last.parentTable, last.parentRow, last.rel);
+        }
+        return rowsP.then(function (rows) {
+          var d = displayFor(table);
+          var base = fsHref(segs);
+          var tiles = rows.length
+            ? rows.map(function (r) {
+                var icon = (table === 'files') ? fileEmoji(r) : '📁';
+                return '<a class="fs-tile" href="' + base + '/' + encodeURIComponent(r.id) + '">' +
+                  '<div class="fs-tile-icon">' + icon + '</div>' +
+                  '<div class="fs-tile-label">' + escapeHtml(fsDisplayName(r)) + '</div>' +
+                '</a>';
+              }).join('')
+            : '<div class="fs-empty">Nothing here yet.</div>';
+          content.innerHTML =
+            fsBreadcrumb(segs, crumbs) +
+            '<div class="view-header">' +
+              '<span class="entity-icon">' + d.icon + '</span>' +
+              '<h1>' + escapeHtml(d.label) + '</h1>' +
+              '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
+            '</div>' +
+            '<div class="fs-grid">' + tiles + '</div>';
+        });
+      }).catch(function (err) {
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // Item view — one row as a document (click-to-edit) + its relationship folders.
+    function renderFsItem(content, segs) {
+      fsWalk(segs).then(function (crumbs) {
+        var leaf = crumbs[crumbs.length - 1];
+        if (!leaf || leaf.type !== 'node') throw new Error('Bad item path');
+        var table = leaf.table, id = leaf.id, row = leaf.row;
+        var t = tableByName(table);
+        if (!t) { content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'; return; }
+        var d = displayFor(table);
+        var bt = belongsToColumns(t);
+        var rels = fsRelations(table);
+        // Preload belongsTo targets so parent links can show names.
+        Promise.all(bt.map(function (b) { return loadAllRows(b.rel.table); })).then(function () {
+          var fields = [];
+          intrinsicColumns(t).forEach(function (c) { fields.push(fsFieldHtml(table, row, c)); });
+          bt.forEach(function (b) {
+            var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
+            var dd = ref
+              ? '<a class="fs-link" href="#/fs/' + encodeURIComponent(b.rel.table) + '/' + encodeURIComponent(ref.id) + '">📁 ' + escapeHtml(fsDisplayName(ref)) + '</a>'
+              : '<span class="fs-empty-val">—</span>';
+            fields.push('<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) +
+              '</div><div class="fs-field-val">' + dd + '</div></div>');
+          });
+          var base = fsHref(segs);
+          var folderTiles = rels.map(function (rel) {
+            return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
+              '<div class="fs-tile-icon">📁</div>' +
+              '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
+              '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
+            '</a>';
+          }).join('');
+          content.innerHTML =
+            fsBreadcrumb(segs, crumbs) +
+            '<div class="view-header">' +
+              '<span class="entity-icon">' + (table === 'files' ? fileEmoji(row) : d.icon) + '</span>' +
+              '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+            '</div>' +
+            (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
+            '<div class="fs-doc">' + fields.join('') + '</div>' +
+            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
+          if (table === 'files') renderFilePreview(row);
+          wireFsEdit(content, table, id, t, row);
+          rels.forEach(function (rel) {
+            fsRelatedRows(table, row, rel).then(function (rs) {
+              var el = content.querySelector('[data-count-for="' + rel.token + '"]');
+              if (el) el.textContent = rs.length + (rs.length === 1 ? ' item' : ' items');
+            }).catch(function () { /* count is best-effort */ });
+          });
+        });
+      }).catch(function (err) {
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // Click-to-edit on rendered values. Reuses fieldFor() for the input and the
+    // same PATCH → invalidate → refreshEntities chain as renderDetail's save.
+    function wireFsEdit(content, table, id, t, row) {
+      content.querySelectorAll('.fs-field-val.ce').forEach(function (cell) {
+        cell.addEventListener('click', function (e) {
+          if (cell.classList.contains('editing')) return;
+          if (e.target && e.target.closest('a, button, input, textarea, select')) return;
+          var col = cell.getAttribute('data-col');
+          var current = row[col];
+          cell.classList.add('editing');
+          cell.innerHTML = fieldFor(col, current == null ? '' : current, t);
+          var input = cell.querySelector('input, textarea, select');
+          if (!input) { cell.classList.remove('editing'); cell.innerHTML = fsValInner(table, row, col); return; }
+          input.focus();
+          if (input.select) { try { input.select(); } catch (_) { /* ignore */ } }
+          var done = false;
+          function repaint() { cell.classList.remove('editing'); cell.innerHTML = fsValInner(table, row, col); }
+          function finish(save) {
+            if (done) return; done = true;
+            if (!save) { repaint(); return; }
+            var val = input.value === '' ? null : input.value;
+            var before = current == null ? '' : String(current);
+            if ((val == null ? '' : String(val)) === before) { repaint(); return; }
+            var body = {}; body[col] = val;
+            fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), {
+              method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+            }).then(function () {
+              row[col] = val; invalidate(table); return refreshEntities();
+            }).then(function () {
+              repaint(); showToast('Updated', { undo: undoLast });
+            }).catch(function (err) { showToast('Save failed: ' + err.message, {}); repaint(); });
+          }
+          input.addEventListener('blur', function () { finish(true); });
+          input.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+            else if (ev.key === 'Enter' && input.tagName !== 'TEXTAREA') { ev.preventDefault(); finish(true); }
+            else if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); finish(true); }
+          });
+        });
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Settings drawer (gear icon → slide-over). Reuses the existing
+    // settings render functions, one per tab, plus the Advanced toggle.
+    // ────────────────────────────────────────────────────────────
+    var drawerTab = 'user';
+    function openSettingsDrawer(section) {
+      drawerTab = section || drawerTab || 'user';
+      var drawer = document.getElementById('settings-drawer');
+      var backdrop = document.getElementById('drawer-backdrop');
+      if (!drawer || !backdrop) return;
+      backdrop.hidden = false;
+      drawer.hidden = false;
+      var toggle = document.getElementById('advanced-toggle');
+      if (toggle) toggle.checked = advancedMode();
+      // Allow the elements to lay out before transitioning in.
+      window.requestAnimationFrame(function () {
+        drawer.classList.add('open');
+        backdrop.classList.add('open');
+      });
+      selectDrawerTab(drawerTab);
+    }
+    function closeSettingsDrawer() {
+      var drawer = document.getElementById('settings-drawer');
+      var backdrop = document.getElementById('drawer-backdrop');
+      if (!drawer || !backdrop) return;
+      drawer.classList.remove('open');
+      backdrop.classList.remove('open');
+      window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 220);
+    }
+    function selectDrawerTab(tab) {
+      drawerTab = tab;
+      document.querySelectorAll('.drawer-tab').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+      });
+      var body = document.getElementById('drawer-body');
+      if (!body) return;
+      if (tab === 'database') renderDatabaseSettings(body);
+      else if (tab === 'lattice') renderLatticeSettings(body);
+      else renderUserConfig(body);
+    }
+    function wireSettingsDrawer() {
+      var gear = document.getElementById('settings-gear');
+      if (gear) gear.addEventListener('click', function () { openSettingsDrawer('user'); });
+      var closeBtn = document.getElementById('drawer-close');
+      if (closeBtn) closeBtn.addEventListener('click', closeSettingsDrawer);
+      var backdrop = document.getElementById('drawer-backdrop');
+      if (backdrop) backdrop.addEventListener('click', closeSettingsDrawer);
+      document.querySelectorAll('.drawer-tab').forEach(function (b) {
+        b.addEventListener('click', function () { selectDrawerTab(b.getAttribute('data-tab')); });
+      });
+      var toggle = document.getElementById('advanced-toggle');
+      if (toggle) toggle.addEventListener('change', function () { setAdvancedMode(toggle.checked); });
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var drawer = document.getElementById('settings-drawer');
+        if (drawer && !drawer.hidden) closeSettingsDrawer();
+      });
+      var collapse = document.getElementById('sidebar-collapse');
+      if (collapse) collapse.addEventListener('click', function () { setSidebarCollapsed(!sidebarCollapsed()); });
     }
 
     // ────────────────────────────────────────────────────────────
