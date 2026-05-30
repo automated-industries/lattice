@@ -11,6 +11,7 @@ import {
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
+import { findLatticeRoot, rootConfigDir } from './lattice-root.js';
 
 /**
  * Machine-local lattice user config — small files that live outside any
@@ -31,9 +32,23 @@ import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
  * this module. Errors must be thrown without echoing sensitive arguments.
  */
 
-/** Root directory for machine-local lattice config. Override via env. */
+/**
+ * Root directory for machine-local lattice config.
+ *
+ * Resolution order:
+ *   1. `LATTICE_CONFIG_DIR` — explicit override, always wins.
+ *   2. `<root>/.config` — when a `.lattice` root is discoverable (via
+ *      `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`).
+ *      This is what consolidates config into the single per-install `.lattice`
+ *      folder. Gated on an *initialized* root (its `.config/` marker exists),
+ *      so uninitialized checkouts keep using the legacy location.
+ *   3. `~/.lattice` — legacy fallback, so existing installs keep decrypting.
+ */
 export function configDir(): string {
-  return process.env.LATTICE_CONFIG_DIR ?? join(homedir(), '.lattice');
+  if (process.env.LATTICE_CONFIG_DIR) return process.env.LATTICE_CONFIG_DIR;
+  const root = findLatticeRoot();
+  if (root) return rootConfigDir(root);
+  return join(homedir(), '.lattice');
 }
 
 function ensureConfigDir(): string {
