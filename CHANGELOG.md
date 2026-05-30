@@ -30,6 +30,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **AI-gated** — with no LLM client (no key/auth), `organizeSource` is a no-op and writes nothing. Lattice never calls a model on its own.
 - **First-class AI library surface** — `summarizeText`, `classifyLinks`, `parseMatches` and the `LlmClient` types are now exported from the package root (and a new `src/ai/` module), not just available inside the GUI.
 - **URL crawl** — `crawlUrl(url)` fetches a cloud reference and extracts readable text + title via Mozilla Readability (with a stripped-DOM fallback), SSRF-guarded, with an injectable fetcher. This fills `extracted_text` for a `cloud_ref` so the organizer can sort it. Adds `@mozilla/readability` + `jsdom` as dependencies.
+- **Enrich pass** — `enrichKnowledge(db, opts)` synthesizes a coherent body for a knowledge object (e.g. a `notes` row) from its 2+ linked sources, updating it only when the result is materially better. Schema-agnostic (works over the generic `file_links` table); AI-gated (no-op without a client).
 
 ## [2.0.0] - 2026-05-29
 
