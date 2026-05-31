@@ -34,7 +34,6 @@ import type {
   RedeemResponse,
   ShareObjectResponse,
   SharedObjectSummary,
-  SyncStatus,
 } from './client.js';
 
 interface MemberRow {
@@ -536,30 +535,6 @@ export async function meDirect(
   } finally {
     closeQuiet(db);
   }
-}
-
-/**
- * Direct-Postgres status — local IS cloud, so there's no outbox-to-cloud
- * delivery to track. We just count the user's local-link rows for the
- * team and surface `last_change_seq = null` to signal "no pull cursor."
- */
-export async function getStatusDirect(
-  local: Lattice,
-  teamId: string,
-  teamName: string,
-): Promise<SyncStatus> {
-  const links = (await local.query('__lattice_local_links', {
-    filters: [{ col: 'team_id', op: 'eq', val: teamId }],
-  })) as unknown as unknown[];
-  return {
-    team_id: teamId,
-    team_name: teamName,
-    last_change_seq: null,
-    outbox_depth: 0,
-    outbox_failing: 0,
-    dlq_depth: 0,
-    local_links: links.length,
-  };
 }
 
 /**
