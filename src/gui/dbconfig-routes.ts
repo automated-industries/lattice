@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
+import { sendJson, readJson, tryHandler } from './http.js';
 import {
   getDbCredential,
   saveDbCredential,
@@ -58,41 +59,6 @@ interface DbConfigContext {
    * the parent server holds the mutable `active` reference.
    */
   swap: () => Promise<void>;
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve_, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => {
-      raw += chunk;
-      if (raw.length > 1_000_000) req.destroy(new Error('Request body too large'));
-    });
-    req.on('end', () => {
-      try {
-        resolve_(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
-      } catch (e) {
-        reject(new Error(`Invalid JSON body: ${(e as Error).message}`));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-async function tryHandler(res: ServerResponse, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-  } catch (e) {
-    sendJson(res, { error: (e as Error).message }, 500);
-  }
 }
 
 /** Build a Postgres URL from form fields. Percent-encodes user + password. */
