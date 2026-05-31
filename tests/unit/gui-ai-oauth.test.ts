@@ -10,7 +10,7 @@ import {
   exchangeCodeForTokens,
   refreshAccessToken,
   type OAuthConfig,
-} from '../../src/gui/ai/oauth.js';
+} from '../../src/ai/oauth.js';
 
 const cfg: OAuthConfig = {
   authorizeUrl: 'https://example.test/oauth/authorize',

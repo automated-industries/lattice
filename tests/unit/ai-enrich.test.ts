@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/index.js';
 import { enrichKnowledge } from '../../src/ai/enrich.js';
-import type { LlmClient, TurnParams, TurnResult } from '../../src/gui/ai/chat.js';
+import type { LlmClient, TurnParams, TurnResult } from '../../src/ai/llm-client.js';
 
 const dirs: string[] = [];
 afterEach(() => {
