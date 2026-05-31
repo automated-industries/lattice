@@ -10,6 +10,7 @@ import { parseFile, describe } from '../ai/extract.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import { referenceLocalFile } from '../framework/reference-store.js';
+import { sendJson, readJson } from './http.js';
 import { resolveClaudeAuth } from './assistant-routes.js';
 import { createAnthropicClient, type LlmClient } from './ai/chat.js';
 import { organizeSource, type OrganizeResult } from '../ai/organize.js';
@@ -68,37 +69,6 @@ const MIME_BY_EXT: Record<string, string> = {
 
 function mimeFor(name: string): string {
   return MIME_BY_EXT[extname(name).toLowerCase()] ?? 'application/octet-stream';
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve_, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (c: string) => {
-      raw += c;
-      if (raw.length > 10_000_000) reject(new Error('payload too large'));
-    });
-    req.on('end', () => {
-      if (!raw) {
-        resolve_({});
-        return;
-      }
-      try {
-        resolve_(JSON.parse(raw) as Record<string, unknown>);
-      } catch {
-        reject(new Error('invalid JSON body'));
-      }
-    });
-    req.on('error', reject);
-  });
 }
 
 const STRUCTURAL = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
@@ -328,7 +298,7 @@ export async function dispatchIngestRoute(
 
   let body: Record<string, unknown>;
   try {
-    body = await readJson(req);
+    body = await readJson(req, { maxBytes: 10_000_000 });
   } catch (e) {
     sendJson(res, { error: (e as Error).message }, 400);
     return true;

@@ -20,6 +20,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Removed unreferenced internal symbols (the `src/lifecycle/index.ts` barrel, `RegisteredTable`/`RegisteredMulti`, `getAnthropicApiKey`/`ANTHROPIC_KEY_KIND`, `getStatusDirect`, `isInviteToken`).
 - `reverse-seed` `_insertOrIgnore` now uses the `{ changes }` row count from `tx.run` instead of count-before/count-after SELECTs.
 - Internal dedup: a `NOT_DELETED` soft-delete fragment constant (was inlined 5×), a single Postgres polyfill-registration helper, and a one-pass link index in `enrichKnowledge`.
+- **Shared GUI HTTP helpers (`src/gui/http.ts`).** `sendJson` / `readJson` / `tryHandler` were copy-pasted across eight GUI route modules with three divergent body-size caps (1M/2M/10M) and inconsistent error handling. Now a single source of truth: `readJson(req, { maxBytes })` defaults to 1 MB, with explicit per-endpoint overrides (ingest 10 MB, chat 2 MB) so the intended caps are preserved and documented. The cloud Team server keeps its own copies (no GUI dependency).
 
 ### Deprecated — `files.path` / `files.kind`
 
