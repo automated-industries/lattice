@@ -1,6 +1,7 @@
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import { basename } from 'node:path';
+import { createRequire } from 'node:module';
 import { assertSafeUrl, safeFetch } from '../sources/url-safety.js';
 
 /**
@@ -27,6 +28,12 @@ export interface CrawlOptions {
   maxBytes?: number;
   timeoutMs?: number;
   userAgent?: string;
+  /**
+   * Disable the Playwright JS-render fallback (used when the static HTML yields
+   * little text and Playwright is installed). Default false. The fallback
+   * degrades silently when Playwright or a browser is absent.
+   */
+  noJs?: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
@@ -61,11 +68,16 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
     throw new Error(`Lattice: crawl failed for ${rawUrl}: HTTP ${String(res.status)}`);
   }
 
-  const mime = (res.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+  let mime = (res.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const raw = Buffer.from(await res.arrayBuffer());
   const body = raw.length > maxBytes ? raw.subarray(0, maxBytes) : raw;
   const finalUrl = res.url || u.toString();
+
+  // Sniff the mime from the bytes when the server gave us nothing useful.
+  if (mime === '' || mime === 'application/octet-stream') {
+    mime = (await sniffMime(body)) || mime;
+  }
 
   const isHtml = mime.includes('html') || mime.includes('xml');
   if (mime && !isHtml && !mime.startsWith('text/')) {
@@ -98,6 +110,29 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
     // Readability can throw on malformed DOM — fall back to stripped body text.
   }
   if (text.length === 0) text = strippedBodyText(dom);
+
+  // JS-rendered page fallback: if the static HTML yielded little text and
+  // Playwright is available, render the page and re-extract. Silently degrades
+  // when Playwright (or a browser) is absent — the static result stands.
+  if (!opts.noJs && text.length < 200) {
+    const rendered = await renderViaPlaywright(finalUrl, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    if (rendered) {
+      const rdom = new JSDOM(rendered, { url: finalUrl });
+      const rdoc = rdom.window.document as unknown as Document;
+      try {
+        const a = new Readability(rdoc).parse();
+        if (a && a.textContent.trim().length > text.length) {
+          text = a.textContent.trim();
+          if (a.title.trim().length > 0) title = a.title.trim();
+          if (a.excerpt.trim().length > 0) excerpt = a.excerpt.trim();
+        }
+      } catch {
+        // keep the static extraction
+      }
+      if (text.length === 0) text = strippedBodyText(rdom);
+    }
+  }
+
   if (title.length === 0) title = titleFromUrl(finalUrl);
 
   return { url: finalUrl, title, text, excerpt, mime: mime || 'text/html', byteLength: raw.length };
@@ -121,5 +156,57 @@ function titleFromUrl(rawUrl: string): string {
     return last && last !== '/' ? last : u.hostname;
   } catch {
     return rawUrl;
+  }
+}
+
+/** Sniff a mime type from bytes via `file-type`. Returns '' if undetectable. */
+async function sniffMime(body: Buffer): Promise<string> {
+  try {
+    const ft = (await import('file-type')) as unknown as {
+      fileTypeFromBuffer: (b: Uint8Array) => Promise<{ mime: string } | undefined>;
+    };
+    const result = await ft.fileTypeFromBuffer(body);
+    return result?.mime ?? '';
+  } catch {
+    return '';
+  }
+}
+
+interface PwPage {
+  goto(url: string, o: { waitUntil: string; timeout: number }): Promise<unknown>;
+  content(): Promise<string>;
+}
+interface PwBrowser {
+  newPage(): Promise<PwPage>;
+  close(): Promise<void>;
+}
+
+/**
+ * Render a page with headless Chromium (Playwright) and return its HTML, or
+ * `null` if Playwright (or a browser) is unavailable or navigation fails.
+ * Playwright is an optionalDependency, so this is a graceful, best-effort hook.
+ */
+async function renderViaPlaywright(url: string, timeoutMs: number): Promise<string | null> {
+  let chromium: { launch: (o?: { headless?: boolean }) => Promise<PwBrowser> };
+  try {
+    const importMetaUrl = (import.meta as { url?: string }).url;
+    const req = importMetaUrl ? createRequire(importMetaUrl) : require;
+    const pw = req('playwright') as {
+      chromium: { launch: (o?: { headless?: boolean }) => Promise<PwBrowser> };
+    };
+    chromium = pw.chromium;
+  } catch {
+    return null; // Playwright not installed.
+  }
+  let browser: PwBrowser | null = null;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs });
+    return await page.content();
+  } catch {
+    return null; // Browser missing / navigation failed.
+  } finally {
+    if (browser) await browser.close().catch(() => undefined);
   }
 }
