@@ -838,6 +838,7 @@ describe('GUI server — native entities + table allowlist', () => {
       'chat_messages',
       'chat_threads',
       'files',
+      'notes',
       'secrets',
     ]);
   });
