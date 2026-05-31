@@ -33,8 +33,6 @@ const CREDENTIALS = {
 } as const;
 type CredentialName = keyof typeof CREDENTIALS;
 
-export const ANTHROPIC_KEY_KIND = CREDENTIALS.anthropic.kind;
-
 interface AssistantContext {
   db: Lattice;
   pathname: string;
@@ -136,16 +134,6 @@ async function liveSecretsOfKind(db: Lattice, kind: string): Promise<SecretRow[]
 async function secretValue(db: Lattice, kind: string): Promise<string | null> {
   const rows = await liveSecretsOfKind(db, kind);
   return rows.find((r) => typeof r.value === 'string' && r.value.length > 0)?.value ?? null;
-}
-
-/**
- * Resolve the Claude API token. Prefers the encrypted `secrets` row; falls
- * back to the `ANTHROPIC_API_KEY` env var. Server-side only.
- */
-export async function getAnthropicApiKey(db: Lattice): Promise<string | null> {
-  return (
-    (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null
-  );
 }
 
 export interface VoiceCredential {
