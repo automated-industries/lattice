@@ -50,6 +50,7 @@ import { SQLiteAdapter } from './db/sqlite.js';
 import { PostgresAdapter } from './db/postgres.js';
 import { SchemaManager } from './schema/manager.js';
 import type { CompiledTableDef } from './schema/manager.js';
+import { assertSafeIdentifier } from './schema/identifier.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine } from './render/engine.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
@@ -126,6 +127,13 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
   if (options.busyTimeout !== undefined) adapterOpts.busyTimeout = options.busyTimeout;
   return new SQLiteAdapter(sqlitePath, adapterOpts);
 }
+
+/**
+ * Soft-delete filter fragment. A row is "live" when `deleted_at` is NULL or the
+ * empty string (legacy rows used `''`). Interpolated into the WHERE clause of
+ * natural-key lookups so a soft-deleted row never satisfies a uniqueness probe.
+ */
+const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
 
 export class Lattice {
   private readonly _adapter: StorageAdapter;
@@ -565,6 +573,10 @@ export class Lattice {
     if (!this._initialized) {
       throw new Error('Lattice: not initialized — call init() first');
     }
+    // Both names reach an ALTER TABLE string; reject anything that could break
+    // out of the identifier quoting (see src/schema/identifier.ts).
+    assertSafeIdentifier(table, 'table');
+    assertSafeIdentifier(column, 'column');
     const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
     if (!existing.includes(column)) {
       await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
@@ -960,7 +972,7 @@ export class Lattice {
     // Check if record exists
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
       [naturalKeyVal],
     );
 
@@ -1024,7 +1036,7 @@ export class Lattice {
 
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
       [naturalKeyVal],
     );
     if (!existing) return false;
@@ -1075,7 +1087,7 @@ export class Lattice {
       this._adapter,
       `SELECT COUNT(*) as cnt FROM "${table}"
        WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-       AND (deleted_at IS NULL OR deleted_at = '')`,
+       AND ${NOT_DELETED}`,
       [sourceFile, ...currentKeys],
     );
     // Postgres returns COUNT(*) as a string; SQLite returns a number. Coerce
@@ -1087,7 +1099,7 @@ export class Lattice {
         this._adapter,
         `UPDATE "${table}" SET deleted_at = datetime('now'), updated_at = datetime('now')
          WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-         AND (deleted_at IS NULL OR deleted_at = '')`,
+         AND ${NOT_DELETED}`,
         [sourceFile, ...currentKeys],
       );
     }
@@ -1142,7 +1154,7 @@ export class Lattice {
     return (
       (await getAsyncOrSync(
         this._adapter,
-        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
         [naturalKeyVal],
       )) ?? null
     );
