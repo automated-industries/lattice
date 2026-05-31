@@ -715,9 +715,23 @@ export class Lattice {
   // CRUD
   // -------------------------------------------------------------------------
 
+  /**
+   * Defense-in-depth: validate a table (and any dynamic column) identifier
+   * before it is interpolated into a SQL string. The library's threat model is
+   * trusted callers, but this guard means a stray/hostile table or column name
+   * can never break out of the `"…"` quoting on any CRUD path. Accepts every
+   * legitimate identifier (including unregistered/dynamic tables); rejects only
+   * names containing quotes, semicolons, whitespace, etc.
+   */
+  private _assertIdent(table: string, ...cols: string[]): void {
+    assertSafeIdentifier(table, 'table');
+    for (const c of cols) assertSafeIdentifier(c, 'column');
+  }
+
   async insert(table: string, row: Row): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
@@ -774,6 +788,7 @@ export class Lattice {
   async upsert(table: string, row: Row): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
@@ -822,6 +837,7 @@ export class Lattice {
   async upsertBy(table: string, col: string, val: unknown, row: Row): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table, col);
 
     const existing = await getAsyncOrSync(
       this._adapter,
@@ -844,6 +860,7 @@ export class Lattice {
   async update(table: string, id: PkLookup, row: Partial<Row>): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
     const encrypted = this._encryptRow(table, sanitized);
@@ -904,6 +921,7 @@ export class Lattice {
   async delete(table: string, id: PkLookup): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const { clause, params } = this._pkWhere(table, id);
 
@@ -959,6 +977,7 @@ export class Lattice {
   ): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     const cols = this._ensureColumnCache(table);
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
@@ -1033,6 +1052,7 @@ export class Lattice {
   ): Promise<boolean> {
     const notInit = this._notInitError<boolean>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     const existing = await getAsyncOrSync(
       this._adapter,
@@ -1078,6 +1098,7 @@ export class Lattice {
   ): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     if (currentKeys.length === 0) return 0;
 
@@ -1150,6 +1171,7 @@ export class Lattice {
   ): Promise<Row | null> {
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     return (
       (await getAsyncOrSync(
@@ -1529,6 +1551,7 @@ export class Lattice {
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const colErr = this._invalidColumnError<Row[]>(table, [
       ...Object.keys(opts.where ?? {}),
@@ -1578,6 +1601,7 @@ export class Lattice {
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const colErr = this._invalidColumnError<number>(table, [
       ...Object.keys(opts.where ?? {}),
