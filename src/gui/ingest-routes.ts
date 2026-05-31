@@ -169,9 +169,8 @@ async function enrichWithLlm(
   }
 
   // The organizer is the single source of truth: it summarizes, classifies
-  // against the user's OWN schema, and links. The GUI supplies junction-based
-  // linking; fallback-object creation is deferred (no designated knowledge
-  // table yet), so createIfNecessary is off here.
+  // against the user's OWN schema, and links via existing junction tables. When
+  // nothing fits, it creates a row in the designated native `notes` table.
   let result: OrganizeResult;
   try {
     result = await organizeSource(db, {
@@ -180,7 +179,7 @@ async function enrichWithLlm(
       name,
       catalog: await buildCatalog(db, descriptions),
       client,
-      createIfNecessary: false,
+      createIfNecessary: true,
       linkExisting: async (m): Promise<boolean> => {
         const jx = junctions.find((j) => j.otherTable === m.table);
         if (!jx) {
@@ -200,6 +199,17 @@ async function enrichWithLlm(
         } catch (e) {
           console.warn(`[ingest] auto-link to ${m.table} failed:`, (e as Error).message);
           return false;
+        }
+      },
+      createFallback: async (title, body) => {
+        // Nothing fit — capture the source as a native `notes` row pointing
+        // back at the originating file. Audited + undoable via the feed.
+        try {
+          const { id } = await createRow(mctx, 'notes', { title, body, source_file_id: fileId });
+          return { table: 'notes', id };
+        } catch (e) {
+          console.warn('[ingest] note creation failed:', (e as Error).message);
+          return null;
         }
       },
     });

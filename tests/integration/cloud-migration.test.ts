@@ -108,6 +108,7 @@ describe('migrateLatticeData()', () => {
       'chat_threads',
       'files',
       'items',
+      'notes',
       'secrets',
       'tasks',
     ]);

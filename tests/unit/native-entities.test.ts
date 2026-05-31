@@ -216,6 +216,7 @@ describe('framework native entities', () => {
         'chat_messages',
         'chat_threads',
         'files',
+        'notes',
         'secrets',
       ]);
       expect(first.every((r) => r.origin === 'created')).toBe(true);
@@ -227,6 +228,7 @@ describe('framework native entities', () => {
         'chat_messages',
         'chat_threads',
         'files',
+        'notes',
         'secrets',
       ]);
 
