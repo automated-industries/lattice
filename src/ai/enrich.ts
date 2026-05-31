@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
-import type { LlmClient } from '../gui/ai/chat.js';
-import { DEFAULT_MODEL } from '../gui/ai/chat.js';
+import type { LlmClient } from './llm-client.js';
+import { DEFAULT_MODEL } from './llm-client.js';
 
 /**
  * The enrich pass: when a knowledge object (e.g. a `notes` row the organizer
