@@ -19,6 +19,7 @@ import {
   setActiveWorkspace,
 } from './framework/workspace.js';
 import { importLegacyUserConfig } from './framework/migrate-to-root.js';
+import { analyticsEnabled } from './framework/user-config.js';
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -365,7 +366,11 @@ async function runUpdate(): Promise<void> {
 
   console.log(`Updating to ${latest}...`);
   try {
-    execSync('npm install -g latticesql@latest', { stdio: 'inherit' });
+    execSync('npm install -g latticesql@latest', {
+      stdio: 'inherit',
+      // Honor the analytics opt-out on the reinstall (suppresses the Scarf ping).
+      env: analyticsEnabled() ? process.env : { ...process.env, SCARF_ANALYTICS: 'false' },
+    });
     console.log(`Updated latticesql ${currentVersion} → ${latest}`);
   } catch {
     console.error('Update failed. Try running manually: npm install -g latticesql@latest');
