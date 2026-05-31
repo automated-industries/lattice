@@ -11,6 +11,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ### Security — DDL identifier & schema-spec validation
 
 - **Team object sharing now validates every externally-supplied name, type, default, and constraint before it reaches DDL.** A shared object's `table`, column names, column types, defaults, and table constraints were previously rendered verbatim into `CREATE TABLE` / `ALTER TABLE`; on Postgres (simple-query protocol, empty params) a `;` could stack a second statement. New `assertSafeIdentifier` / `assertExternalIdentifier` (`src/schema/identifier.ts`) enforce a strict identifier grammar as a universal last-line defense inside the schema manager's `_ensureTable`/`addColumn` and `Lattice.addColumn`; `validateExternalSchemaSpec` validates the full spec (identifiers, the five primitive types, default grammar, constraint character-set, reserved `_lattice_` prefixes) at the `applySchemaSpec` trust boundary. Legitimate specs are unaffected. Regression tests in `tests/unit/identifier-safety.test.ts`.
+- **Defense-in-depth on the core CRUD surface.** `insert` / `upsert` / `upsertBy` / `update` / `delete` / `query` / `count` and the natural-key methods now validate the `table` (and any dynamic column) identifier via `assertSafeIdentifier` before interpolating it into SQL — every legitimate identifier (including unregistered/dynamic tables) still passes.
+- **Team row push/delete now require the object to still be shared.** `handlePushRow` / `handleDeleteRow` gained the `isObjectShared` precondition that `handleLinkRow` already enforced, so a stale row link cannot mutate a cloud table that has since been unshared.
+- **SSRF guard:** documented the residual DNS-rebinding TOCTOU in `safeFetch` (each redirect hop is already re-validated); full socket-level IP pinning is noted as a deferred follow-up.
 
 ### Maintenance — dead-code removal & simplification
 
