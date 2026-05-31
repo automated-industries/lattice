@@ -243,8 +243,11 @@ export {
   parseMatches,
   crawlUrl,
   enrichKnowledge,
+  describeImage,
 } from './ai/index.js';
 export type {
+  VisionOptions,
+  VisionSenderInput,
   EnrichOptions,
   EnrichResult,
   CrawlResult,

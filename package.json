@@ -43,9 +43,12 @@
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
     "@mozilla/readability": "^0.5.0",
     "@scarf/scarf": "^1.4.0",
+    "file-type": "^19.5.0",
     "jsdom": "^25.0.0",
+    "sharp": "^0.33.5",
     "uuid": "^13.0.0",
     "yaml": "^2.8.3"
   },
@@ -56,7 +59,7 @@
     "better-sqlite3": ">=11 <13"
   },
   "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.71.0",
+    "playwright": "^1.48.0",
     "pg": "^8.11.0"
   },
   "devDependencies": {
