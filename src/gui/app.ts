@@ -2463,6 +2463,11 @@ export const guiAppHtml = `<!doctype html>
       return html;
     }
 
+    // A row is backed by a streamable local file when it has the legacy path
+    // column (deprecated) or a v2.0 local_ref (ref_uri). Cloud refs aren't served.
+    function hasLocalFile(row) {
+      return !!(row.path || (row.ref_kind === 'local_ref' && row.ref_uri));
+    }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
@@ -2470,9 +2475,9 @@ export const guiAppHtml = `<!doctype html>
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
       var html = '';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
-      if (mime.indexOf('image/') === 0 && row.path) {
+      if (mime.indexOf('image/') === 0 && hasLocalFile(row)) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
-      } else if (mime === 'application/pdf' && row.path) {
+      } else if (mime === 'application/pdf' && hasLocalFile(row)) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
       } else if (row.extracted_text && MD_MIMES.indexOf(mime) >= 0) {
         html += '<div class="md-body">' + mdToHtml(String(row.extracted_text).slice(0, 40000)) + '</div>';
@@ -2482,7 +2487,7 @@ export const guiAppHtml = `<!doctype html>
         html += '<div class="file-unsupported">No inline preview for this file type' +
           (mime ? ' (' + escapeHtml(mime) + ')' : '') + '.</div>';
       }
-      if (row.path) {
+      if (hasLocalFile(row)) {
         html += '<div class="file-actions">' +
           '<button class="btn" id="file-open">Open in Finder</button>' +
           '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' +
