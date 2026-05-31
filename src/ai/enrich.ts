@@ -64,6 +64,17 @@ export async function enrichKnowledge(db: Lattice, opts: EnrichOptions): Promise
   const links = await db.query(linkTable);
   const objects = await db.query(knowledgeTable);
 
+  // Index source links by knowledge-object row id in one pass (was an
+  // O(objects × links) rescan inside the loop below).
+  const sourceIdsByObject = new Map<string, string[]>();
+  for (const l of links) {
+    if (String(l.table_name) !== knowledgeTable) continue;
+    const rowId = String(l.row_id);
+    const arr = sourceIdsByObject.get(rowId);
+    if (arr) arr.push(String(l.file_id));
+    else sourceIdsByObject.set(rowId, [String(l.file_id)]);
+  }
+
   const enriched: string[] = [];
   let examined = 0;
 
@@ -73,9 +84,7 @@ export async function enrichKnowledge(db: Lattice, opts: EnrichOptions): Promise
     const id = typeof idVal === 'string' ? idVal : '';
     if (id.length === 0) continue;
 
-    const sourceIds = links
-      .filter((l) => String(l.table_name) === knowledgeTable && String(l.row_id) === id)
-      .map((l) => String(l.file_id));
+    const sourceIds = sourceIdsByObject.get(id) ?? [];
     if (sourceIds.length < minSources) continue;
 
     const rawBody = obj[bodyColumn];

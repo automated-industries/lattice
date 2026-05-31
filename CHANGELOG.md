@@ -8,6 +8,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Security — DDL identifier & schema-spec validation
+
+- **Team object sharing now validates every externally-supplied name, type, default, and constraint before it reaches DDL.** A shared object's `table`, column names, column types, defaults, and table constraints were previously rendered verbatim into `CREATE TABLE` / `ALTER TABLE`; on Postgres (simple-query protocol, empty params) a `;` could stack a second statement. New `assertSafeIdentifier` / `assertExternalIdentifier` (`src/schema/identifier.ts`) enforce a strict identifier grammar as a universal last-line defense inside the schema manager's `_ensureTable`/`addColumn` and `Lattice.addColumn`; `validateExternalSchemaSpec` validates the full spec (identifiers, the five primitive types, default grammar, constraint character-set, reserved `_lattice_` prefixes) at the `applySchemaSpec` trust boundary. Legitimate specs are unaffected. Regression tests in `tests/unit/identifier-safety.test.ts`.
+
+### Maintenance — dead-code removal & simplification
+
+- Removed unreferenced internal symbols (the `src/lifecycle/index.ts` barrel, `RegisteredTable`/`RegisteredMulti`, `getAnthropicApiKey`/`ANTHROPIC_KEY_KIND`, `getStatusDirect`, `isInviteToken`).
+- `reverse-seed` `_insertOrIgnore` now uses the `{ changes }` row count from `tx.run` instead of count-before/count-after SELECTs.
+- Internal dedup: a `NOT_DELETED` soft-delete fragment constant (was inlined 5×), a single Postgres polyfill-registration helper, and a one-pass link index in `enrichKnowledge`.
+
 ### Added — workspace model + auto-render (back end)
 
 - **One `.lattice` root** — a single discoverable folder (via `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`) now holds machine-local config, the workspace registry, each workspace's database + blobs, and the rendered context. `configDir()` consolidates into `<root>/.config` once initialized, with a non-destructive copy migration of any legacy machine-local config (originals preserved) and a homedir fallback.
@@ -963,7 +973,7 @@ First slice of the **Lattice Teams** feature: a single Postgres- or SQLite-backe
 
 ### Fixed
 
-- **`INSERT OR IGNORE ... SELECT ...` with string literals in the SELECT body now translates correctly.** Previously the `ON CONFLICT DO NOTHING` clause was appended per code region in `translateDialect`, which put it directly after the column list when the SELECT body contained string literals (they split the SQL into multiple code regions in the tokenizer). The resulting SQL had the clause before the `SELECT ... FROM ... LIMIT N` tail, which Postgres rejected with `syntax error near '<string literal>'`. Fix: track the `INSERT OR IGNORE` flag across the whole statement and append `ON CONFLICT DO NOTHING` once at the END of the full SQL. Regression test added for the canonical `INSERT OR IGNORE INTO file ... SELECT 'uuid', id, 'name', ... FROM org LIMIT 1` pattern that the Automated Industries app's migrations use.
+- **`INSERT OR IGNORE ... SELECT ...` with string literals in the SELECT body now translates correctly.** Previously the `ON CONFLICT DO NOTHING` clause was appended per code region in `translateDialect`, which put it directly after the column list when the SELECT body contained string literals (they split the SQL into multiple code regions in the tokenizer). The resulting SQL had the clause before the `SELECT ... FROM ... LIMIT N` tail, which Postgres rejected with `syntax error near '<string literal>'`. Fix: track the `INSERT OR IGNORE` flag across the whole statement and append `ON CONFLICT DO NOTHING` once at the END of the full SQL. Regression test added for the canonical `INSERT OR IGNORE INTO file ... SELECT 'uuid', id, 'name', ... FROM org LIMIT 1` pattern that downstream consumer migrations use.
 
 ## [1.6.5] — 2026-04-13
 

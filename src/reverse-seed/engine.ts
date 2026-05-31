@@ -538,10 +538,9 @@ export class ReverseSeedEngine {
    * Insert a row using INSERT OR IGNORE semantics.
    * Filters to valid columns and returns true if a row was actually inserted.
    *
-   * Runs on a `TxClient` so the count-before / insert / count-after sequence
-   * lands on the same upstream connection — under `pg.Pool` adapters, the
-   * three statements would otherwise potentially split across connections
-   * and the "did the insert actually add a row" check would be racy.
+   * Uses the `{ changes }` count from `tx.run` (SQLite `.changes`, Postgres
+   * `rowCount`; zero when a conflict is ignored) to detect whether the row
+   * was added — no count-before/count-after SELECTs needed.
    */
   private async _insertOrIgnore(
     tx: TxClient,
@@ -571,15 +570,12 @@ export class ReverseSeedEngine {
       .join(', ');
     const values = Object.values(filtered);
 
-    const before = await tx.get(`SELECT COUNT(*) AS n FROM "${table}"`);
-    const countBefore = Number(before?.n ?? 0);
+    const result = await tx.run(
+      `INSERT OR IGNORE INTO "${table}" (${cols}) VALUES (${placeholders})`,
+      values,
+    );
 
-    await tx.run(`INSERT OR IGNORE INTO "${table}" (${cols}) VALUES (${placeholders})`, values);
-
-    const after = await tx.get(`SELECT COUNT(*) AS n FROM "${table}"`);
-    const countAfter = Number(after?.n ?? 0);
-
-    return countAfter > countBefore;
+    return result.changes > 0;
   }
 }
 
