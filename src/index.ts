@@ -175,8 +175,11 @@ export {
   readToken,
   writeToken,
   deleteToken,
+  readPreferences,
+  writePreferences,
+  analyticsEnabled,
 } from './framework/user-config.js';
-export type { UserIdentity } from './framework/user-config.js';
+export type { UserIdentity, UserPreferences } from './framework/user-config.js';
 
 // v2.0 — the single `.lattice` root + first-class workspaces.
 export {

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  analyticsEnabled,
   configDir,
   deleteDbCredential,
   deleteToken,
@@ -89,34 +90,69 @@ describe('framework user-config', () => {
   });
 
   describe('preferences.json round-trip', () => {
-    it('returns defaults when the file is missing', () => {
+    it('returns defaults when the file is missing (analytics on by default)', () => {
       const prefs = readPreferences();
-      expect(prefs).toEqual({ show_system_tables: false });
+      expect(prefs).toEqual({ show_system_tables: false, analytics: true });
     });
 
-    it('round-trips write → read', () => {
-      writePreferences({ show_system_tables: true });
-      expect(readPreferences()).toEqual({ show_system_tables: true });
-      writePreferences({ show_system_tables: false });
-      expect(readPreferences()).toEqual({ show_system_tables: false });
+    it('round-trips write → read (incl. analytics consent)', () => {
+      writePreferences({ show_system_tables: true, analytics: true });
+      expect(readPreferences()).toEqual({ show_system_tables: true, analytics: true });
+      writePreferences({ show_system_tables: false, analytics: false });
+      expect(readPreferences()).toEqual({ show_system_tables: false, analytics: false });
     });
 
     it('drops unknown extra fields on write (forward-compat)', () => {
       writePreferences({
         show_system_tables: true,
+        analytics: true,
         sidebar_dense: false,
       } as unknown as Parameters<typeof writePreferences>[0]);
       const raw = readFileSync(join(tmpDir, 'preferences.json'), 'utf8');
       expect(raw).toContain('show_system_tables');
+      expect(raw).toContain('analytics');
       expect(raw).not.toContain('sidebar_dense');
     });
 
     it('falls back to defaults when the file is malformed', () => {
       const path = join(tmpDir, 'preferences.json');
-      writePreferences({ show_system_tables: true });
+      writePreferences({ show_system_tables: true, analytics: false });
       // Corrupt the file in place.
       writeFileSync(path, '{not json', 'utf8');
-      expect(readPreferences()).toEqual({ show_system_tables: false });
+      expect(readPreferences()).toEqual({ show_system_tables: false, analytics: true });
+    });
+  });
+
+  describe('analyticsEnabled() consent gate', () => {
+    const savedDnt = process.env.DO_NOT_TRACK;
+    const savedScarf = process.env.SCARF_ANALYTICS;
+    afterEach(() => {
+      if (savedDnt === undefined) delete process.env.DO_NOT_TRACK;
+      else process.env.DO_NOT_TRACK = savedDnt;
+      if (savedScarf === undefined) delete process.env.SCARF_ANALYTICS;
+      else process.env.SCARF_ANALYTICS = savedScarf;
+    });
+
+    it('defaults to enabled (opt-out model)', () => {
+      delete process.env.DO_NOT_TRACK;
+      delete process.env.SCARF_ANALYTICS;
+      expect(analyticsEnabled()).toBe(true);
+    });
+
+    it('honors the analytics preference', () => {
+      delete process.env.DO_NOT_TRACK;
+      delete process.env.SCARF_ANALYTICS;
+      writePreferences({ show_system_tables: false, analytics: false });
+      expect(analyticsEnabled()).toBe(false);
+    });
+
+    it('env DO_NOT_TRACK / SCARF_ANALYTICS always win over the preference', () => {
+      writePreferences({ show_system_tables: false, analytics: true });
+      process.env.DO_NOT_TRACK = '1';
+      expect(analyticsEnabled()).toBe(false);
+      delete process.env.DO_NOT_TRACK;
+      process.env.SCARF_ANALYTICS = 'false';
+      expect(analyticsEnabled()).toBe(false);
     });
   });
 

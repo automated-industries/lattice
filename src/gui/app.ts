@@ -1103,7 +1103,7 @@ export const guiAppHtml = `<!doctype html>
       iconOverrides: {},
       columnMeta: {},
       systemTables: [],
-      preferences: { show_system_tables: false },
+      preferences: { show_system_tables: false, analytics: true },
     };
 
     function isSecretColumn(tableName, colName) {
@@ -1221,14 +1221,14 @@ export const guiAppHtml = `<!doctype html>
         fetchJson('/api/databases').catch(function () { return null; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
-        fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false }; }),
+        fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false, analytics: true }; }),
         fetchJson('/api/workspaces').catch(function () { return null; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[3] || {};
         state.systemTables = (results[4] && results[4].tables) || [];
-        state.preferences = results[5] || { show_system_tables: false };
+        state.preferences = results[5] || { show_system_tables: false, analytics: true };
         document.body.classList.toggle('advanced-mode', advancedMode());
         document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed());
         wireSettingsDrawer();
@@ -4440,7 +4440,7 @@ export const guiAppHtml = `<!doctype html>
     }
 
     function renderPreferencesPanel(host) {
-      var prefs = state.preferences || { show_system_tables: false };
+      var prefs = state.preferences || { show_system_tables: false, analytics: true };
       host.innerHTML =
         '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
           '<h3 style="margin:0 0 10px">Preferences</h3>' +
@@ -4453,12 +4453,22 @@ export const guiAppHtml = `<!doctype html>
             'Internal tables prefixed <code>__lattice_</code> are hidden by default. ' +
             'Enable to inspect them under a "System" section in the sidebar.' +
           '</p>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:16px">' +
+            '<input type="checkbox" id="pref-analytics"' +
+              (prefs.analytics !== false ? ' checked' : '') + '>' +
+            '<span>Anonymous install analytics</span>' +
+          '</label>' +
+          '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
+            'Lattice sends a one-time anonymous ping to ' +
+            '<a href="https://scarf.sh" target="_blank" rel="noopener">Scarf</a> at install ' +
+            '(package, version, OS — no usage data, no personal data). Uncheck to opt out; ' +
+            'in-app updates (<code>lattice update</code>) suppress it. For a fully clean ' +
+            'install, set <code>SCARF_ANALYTICS=false</code> before installing.' +
+          '</p>' +
           '<div id="pref-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
         '</div>';
-      var checkbox = host.querySelector('#pref-show-system-tables');
       var msg = host.querySelector('#pref-msg');
-      checkbox.addEventListener('change', function () {
-        var body = { show_system_tables: !!checkbox.checked };
+      function savePref(body, after) {
         msg.textContent = 'Saving…';
         fetch('/api/userconfig/preferences', {
           method: 'POST',
@@ -4468,10 +4478,16 @@ export const guiAppHtml = `<!doctype html>
           .then(function (r) { return r.json(); })
           .then(function (next) {
             state.preferences = next;
-            renderSidebar();
+            if (after) after();
             msg.textContent = 'Saved.';
           })
           .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+      }
+      host.querySelector('#pref-show-system-tables').addEventListener('change', function (e) {
+        savePref({ show_system_tables: !!e.target.checked }, renderSidebar);
+      });
+      host.querySelector('#pref-analytics').addEventListener('change', function (e) {
+        savePref({ analytics: !!e.target.checked });
       });
     }
 
