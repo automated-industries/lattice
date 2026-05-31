@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/index.js';
 import { organizeSource } from '../../src/ai/organize.js';
-import type { LlmClient, TurnParams, TurnResult } from '../../src/gui/ai/chat.js';
-import type { CatalogEntity } from '../../src/gui/ai/summarize.js';
+import type { LlmClient, TurnParams, TurnResult } from '../../src/ai/llm-client.js';
+import type { CatalogEntity } from '../../src/ai/summarize.js';
 
 const dirs: string[] = [];
 afterEach(() => {

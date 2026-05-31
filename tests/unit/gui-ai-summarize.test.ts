@@ -4,8 +4,8 @@ import {
   classifyLinks,
   parseMatches,
   type CatalogEntity,
-} from '../../src/gui/ai/summarize.js';
-import type { LlmClient, TurnResult } from '../../src/gui/ai/chat.js';
+} from '../../src/ai/summarize.js';
+import type { LlmClient, TurnResult } from '../../src/ai/llm-client.js';
 
 function fixedClient(text: string): LlmClient {
   return {

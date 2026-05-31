@@ -6,13 +6,13 @@ import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { FeedBus } from './ai/feed.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js';
-import { parseFile, describe } from './ai/extract.js';
+import { parseFile, describe } from '../ai/extract.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import { resolveClaudeAuth } from './assistant-routes.js';
 import { createAnthropicClient, type LlmClient } from './ai/chat.js';
 import { organizeSource, type OrganizeResult } from '../ai/organize.js';
-import { type CatalogEntity, type ClassifyMatch } from './ai/summarize.js';
+import { type CatalogEntity, type ClassifyMatch } from '../ai/summarize.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
