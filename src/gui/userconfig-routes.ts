@@ -156,9 +156,14 @@ export async function dispatchUserConfigRoute(
   if (pathname === '/api/userconfig/preferences' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
+      // Partial update: keep current values for any key the body omits.
+      const current = readPreferences();
       const next: UserPreferences = {
         show_system_tables:
-          typeof body.show_system_tables === 'boolean' ? body.show_system_tables : false,
+          typeof body.show_system_tables === 'boolean'
+            ? body.show_system_tables
+            : current.show_system_tables,
+        analytics: typeof body.analytics === 'boolean' ? body.analytics : current.analytics,
       };
       writePreferences(next);
       sendJson(res, next);
