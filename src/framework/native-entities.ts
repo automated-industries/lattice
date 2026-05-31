@@ -74,6 +74,23 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
     render: () => '',
     outputFile: '.lattice-native/files.md',
   },
+  notes: {
+    // The designated knowledge object the AI organizer creates when an
+    // ingested source doesn't fit any of the user's existing entities.
+    // Ordinary, user-editable rows; `source_file_id` points back at the
+    // originating `files` row.
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      title: 'TEXT',
+      body: 'TEXT',
+      source_file_id: 'TEXT',
+      created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '.lattice-native/notes.md',
+  },
   chat_threads: {
     columns: {
       id: 'TEXT PRIMARY KEY',
