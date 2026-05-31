@@ -1,5 +1,6 @@
 import type { Lattice } from '../lattice.js';
-import type { MemberSummary } from './client.js';
+import type { MemberSummary, SharedObjectSummary, ShareObjectResponse } from './client.js';
+import { applySchemaSpec, type SchemaSpec } from './schema-spec.js';
 
 /**
  * Pure DB logic for team operations — NO auth, NO HTTP, NO connection
@@ -85,4 +86,164 @@ export async function listTeamMembers(db: Lattice, teamId: string): Promise<Memb
     }
   }
   return out;
+}
+
+interface SharedObjectRow {
+  team_id: string;
+  table_name: string;
+  schema_spec_json: string;
+  schema_version: number;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface ChangeEnvelopeEntry {
+  team_id: string;
+  table_name: string | null;
+  pk?: string | null;
+  op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete';
+  payload_json: string | null;
+  owner_user_id?: string | null;
+}
+
+/**
+ * Append a change envelope to `__lattice_change_log` with a per-team-monotonic
+ * `seq`, returning the assigned seq. Single source of truth for both the cloud
+ * HTTP server and the direct-Postgres path.
+ *
+ * (These previously diverged: the HTTP path derived a GLOBAL max seq across all
+ * teams, the direct path a per-team max. With one team per cloud — the singleton
+ * model — they coincide; per-team is the correct cursor semantics, and
+ * `handleListChanges` filters per team regardless.)
+ */
+export async function appendChangeEnvelope(
+  db: Lattice,
+  entry: ChangeEnvelopeEntry,
+): Promise<number> {
+  const rows = (await db.query('__lattice_change_log', {
+    filters: [{ col: 'team_id', op: 'eq', val: entry.team_id }],
+    orderBy: 'seq',
+    orderDir: 'desc',
+    limit: 1,
+  })) as unknown as { seq: number }[];
+  const seq = (rows[0]?.seq ?? 0) + 1;
+  await db.insert('__lattice_change_log', {
+    seq,
+    team_id: entry.team_id,
+    table_name: entry.table_name,
+    pk: entry.pk ?? null,
+    op: entry.op,
+    payload_json: entry.payload_json,
+    owner_user_id: entry.owner_user_id ?? null,
+    created_at: new Date().toISOString(),
+  });
+  return seq;
+}
+
+/**
+ * Share (or re-share) `table` to `teamId`: upsert the `__lattice_shared_objects`
+ * row (bumping `schema_version` on re-share, resetting to 1 for a fresh/previously
+ * -unshared object), materialise the table via `applySchemaSpec`, and append a
+ * `schema` change envelope. Pure DB logic — the caller performs auth.
+ */
+export async function shareObject(
+  db: Lattice,
+  teamId: string,
+  createdByUserId: string,
+  table: string,
+  spec: SchemaSpec,
+): Promise<ShareObjectResponse> {
+  const existing = (await db.query('__lattice_shared_objects', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: table },
+    ],
+    limit: 1,
+  })) as unknown as SharedObjectRow[];
+  const prior = existing[0];
+  const now = new Date().toISOString();
+  let schemaVersion: number;
+  let outSpec: SchemaSpec;
+  if (prior && !prior.deleted_at) {
+    schemaVersion = prior.schema_version + 1;
+    outSpec = { ...spec, schemaVersion };
+    await db.upsert('__lattice_shared_objects', {
+      team_id: teamId,
+      table_name: table,
+      schema_spec_json: JSON.stringify(outSpec),
+      schema_version: schemaVersion,
+      created_by_user_id: prior.created_by_user_id,
+      created_at: prior.created_at,
+      updated_at: now,
+      deleted_at: null,
+    });
+  } else {
+    schemaVersion = 1;
+    outSpec = { ...spec, schemaVersion };
+    await db.upsert('__lattice_shared_objects', {
+      team_id: teamId,
+      table_name: table,
+      schema_spec_json: JSON.stringify(outSpec),
+      schema_version: schemaVersion,
+      created_by_user_id: createdByUserId,
+      created_at: prior?.created_at ?? now,
+      updated_at: now,
+      deleted_at: null,
+    });
+  }
+  await applySchemaSpec(db, table, outSpec);
+  const seq = await appendChangeEnvelope(db, {
+    team_id: teamId,
+    table_name: table,
+    pk: null,
+    op: 'schema',
+    payload_json: JSON.stringify(outSpec),
+    owner_user_id: null,
+  });
+  return { table, schema_version: schemaVersion, seq, schema_spec: outSpec };
+}
+
+/** List a team's live (non-unshared) shared objects. Pure DB read. */
+export async function listSharedObjects(
+  db: Lattice,
+  teamId: string,
+): Promise<SharedObjectSummary[]> {
+  const rows = (await db.query('__lattice_shared_objects', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'deleted_at', op: 'isNull' },
+    ],
+  })) as unknown as SharedObjectRow[];
+  return rows.map((r) => ({
+    table: r.table_name,
+    schema_version: r.schema_version,
+    created_by_user_id: r.created_by_user_id,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    schema_spec: JSON.parse(r.schema_spec_json) as SchemaSpec,
+  }));
+}
+
+/**
+ * Soft-delete `table`'s `__lattice_shared_objects` row and append an `unshare`
+ * change envelope. Pure DB logic — the caller performs auth + the
+ * sharer/creator authorization check (the HTTP path) before invoking this.
+ */
+export async function unshareObject(db: Lattice, teamId: string, table: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db.update(
+    '__lattice_shared_objects',
+    { team_id: teamId, table_name: table },
+    { deleted_at: now, updated_at: now },
+  );
+  await appendChangeEnvelope(db, {
+    team_id: teamId,
+    table_name: table,
+    pk: null,
+    op: 'unshare',
+    payload_json: null,
+    owner_user_id: null,
+  });
 }
