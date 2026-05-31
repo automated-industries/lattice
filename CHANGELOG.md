@@ -38,6 +38,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 - **Header workspace switcher** — when the GUI is opened inside a `.lattice` root, a header switcher lists the workspaces and switches the active one (`GET /api/workspaces`, `POST /api/workspaces/switch`); switching re-points the GUI at that workspace's config + `Context/`. The switcher is hidden on a plain (non-workspace) GUI, so nothing changes for non-workspace usage. `lattice gui` now opens the active workspace automatically when a root is present. The `Workspaces/` container is never browsed as a folder — switching is header-only.
 
+### Added — analytics consent control
+
+- **Anonymous install analytics is now an explicit opt-out consent setting.** Scarf install analytics ships on by default (`scarfSettings.defaultOptIn`); a new `analytics` user preference + a **Settings → User → "Anonymous install analytics"** GUI toggle let users opt out. `analyticsEnabled()` is the consent gate (env `DO_NOT_TRACK` / `SCARF_ANALYTICS` win, then the preference); `lattice update` / `autoUpdate()` reinstalls pass `SCARF_ANALYTICS=false` when opted out. README + SECURITY.md telemetry docs updated to describe the consent model. The original `npm install` ping remains governed at install time by the env-var opt-outs.
+
 ## [2.0.0] - 2026-05-29
 
 Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.

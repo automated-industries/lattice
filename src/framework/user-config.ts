@@ -176,10 +176,18 @@ const PREFERENCES_FILENAME = 'preferences.json';
 
 export interface UserPreferences {
   show_system_tables: boolean;
+  /**
+   * Consent for anonymous install/download analytics via Scarf. Default `true`
+   * (opt-out, matching `scarfSettings.defaultOptIn`). When `false`, in-app
+   * reinstalls (`lattice update` / `autoUpdate`) suppress the Scarf ping and
+   * any future runtime telemetry is disabled. See {@link analyticsEnabled}.
+   */
+  analytics: boolean;
 }
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   show_system_tables: false,
+  analytics: true,
 };
 
 /**
@@ -199,6 +207,8 @@ export function readPreferences(): UserPreferences {
         typeof parsed.show_system_tables === 'boolean'
           ? parsed.show_system_tables
           : DEFAULT_PREFERENCES.show_system_tables,
+      analytics:
+        typeof parsed.analytics === 'boolean' ? parsed.analytics : DEFAULT_PREFERENCES.analytics,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -213,7 +223,11 @@ export function readPreferences(): UserPreferences {
 export function writePreferences(prefs: UserPreferences): void {
   const dir = ensureConfigDir();
   const path = join(dir, PREFERENCES_FILENAME);
-  const body = JSON.stringify({ show_system_tables: prefs.show_system_tables }, null, 2);
+  const body = JSON.stringify(
+    { show_system_tables: prefs.show_system_tables, analytics: prefs.analytics },
+    null,
+    2,
+  );
   writeFileSync(path, body + '\n', 'utf8');
   if (platform() !== 'win32') {
     try {
@@ -222,6 +236,21 @@ export function writePreferences(prefs: UserPreferences): void {
       // best-effort
     }
   }
+}
+
+/**
+ * The consent gate for anonymous install analytics (Scarf). Returns `false`
+ * when the user opted out — via the standard `DO_NOT_TRACK` / `SCARF_ANALYTICS`
+ * env vars (which always win), or via the `analytics` preference. Callers use
+ * this to set the child-process env on `lattice update` reinstalls so the
+ * opt-out is honored, and as the gate for any future runtime telemetry.
+ */
+export function analyticsEnabled(): boolean {
+  const dnt = process.env.DO_NOT_TRACK;
+  if (dnt === '1' || dnt === 'true') return false;
+  const scarf = process.env.SCARF_ANALYTICS;
+  if (scarf === 'false' || scarf === '0') return false;
+  return readPreferences().analytics;
 }
 
 // ---------------------------------------------------------------------------
