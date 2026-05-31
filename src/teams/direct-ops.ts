@@ -28,6 +28,7 @@ import { CLOUD_INTERNAL_TABLE_DEFS, installCloudInternalTriggers } from './inter
 import { applySchemaSpec, type SchemaSpec } from './schema-spec.js';
 import { generateInviteToken, generateToken, hashToken } from './server/auth.js';
 import { isPostgresUrl } from './register-direct.js';
+import { listTeamMembers } from './team-core.js';
 import type {
   MemberSummary,
   InviteResponse,
@@ -70,55 +71,7 @@ interface TeamRow {
  * role, so the owner is never shown as a plain member.
  */
 export async function listMembersDirect(db: Lattice, teamId: string): Promise<MemberSummary[]> {
-  const members = (await db.query('__lattice_team_members', {
-    filters: [{ col: 'team_id', op: 'eq', val: teamId }],
-  })) as unknown as MemberRow[];
-  const team = (await db.get('__lattice_team', teamId)) as {
-    created_by_user_id?: string;
-    created_at?: string;
-  } | null;
-  const creatorUserId = team?.created_by_user_id ?? null;
-
-  const ids = new Set<string>(members.map((m) => m.user_id));
-  if (creatorUserId) ids.add(creatorUserId);
-  if (ids.size === 0) return [];
-
-  const users = (await db.query('__lattice_users', {
-    filters: [
-      { col: 'id', op: 'in', val: [...ids] },
-      { col: 'deleted_at', op: 'isNull' },
-    ],
-  })) as unknown as UserRow[];
-  const userById = new Map(users.map((u) => [u.id, u]));
-
-  const out: MemberSummary[] = [];
-  const seen = new Set<string>();
-  for (const m of members) {
-    const u = userById.get(m.user_id);
-    if (!u) continue;
-    out.push({
-      user_id: m.user_id,
-      email: u.email,
-      name: u.name,
-      role: m.user_id === creatorUserId ? 'creator' : m.role,
-      joined_at: m.joined_at,
-    });
-    seen.add(m.user_id);
-  }
-  // Surface the creator even without a members row (not soft-deleted).
-  if (creatorUserId && !seen.has(creatorUserId)) {
-    const u = userById.get(creatorUserId);
-    if (u) {
-      out.unshift({
-        user_id: creatorUserId,
-        email: u.email,
-        name: u.name,
-        role: 'creator',
-        joined_at: team?.created_at ?? '',
-      });
-    }
-  }
-  return out;
+  return listTeamMembers(db, teamId);
 }
 
 /**

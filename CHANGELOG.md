@@ -15,6 +15,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Team row push/delete now require the object to still be shared.** `handlePushRow` / `handleDeleteRow` gained the `isObjectShared` precondition that `handleLinkRow` already enforced, so a stale row link cannot mutate a cloud table that has since been unshared.
 - **SSRF guard:** documented the residual DNS-rebinding TOCTOU in `safeFetch` (each redirect hop is already re-validated); full socket-level IP pinning is noted as a deferred follow-up.
 
+### Fixed — team member-list role drift
+
+- **The cloud member-list endpoint now surfaces the team creator with `role: 'creator'`**, matching the direct-Postgres path. The two implementations had drifted — `listMembersDirect` always surfaced the creator (even with a stale stored role, or no members row at all), while the HTTP `handleListMembers` returned the raw stored role. Both now delegate to a shared, auth-free `listTeamMembers` core in the new `src/teams/team-core.ts`, so they cannot drift again. Auth stays in the HTTP handler. (First step of the team-ops dual-implementation consolidation; the mutating operations, which interleave HTTP-specific change-envelope bookkeeping, remain a follow-up.)
+
 ### Maintenance — dead-code removal & simplification
 
 - Removed unreferenced internal symbols (the `src/lifecycle/index.ts` barrel, `RegisteredTable`/`RegisteredMulti`, `getAnthropicApiKey`/`ANTHROPIC_KEY_KIND`, `getStatusDirect`, `isInviteToken`).
