@@ -15,9 +15,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Team row push/delete now require the object to still be shared.** `handlePushRow` / `handleDeleteRow` gained the `isObjectShared` precondition that `handleLinkRow` already enforced, so a stale row link cannot mutate a cloud table that has since been unshared.
 - **SSRF guard:** documented the residual DNS-rebinding TOCTOU in `safeFetch` (each redirect hop is already re-validated); full socket-level IP pinning is noted as a deferred follow-up.
 
-### Fixed — team member-list role drift
+### Fixed — team member-list role drift + team-ops consolidation
 
-- **The cloud member-list endpoint now surfaces the team creator with `role: 'creator'`**, matching the direct-Postgres path. The two implementations had drifted — `listMembersDirect` always surfaced the creator (even with a stale stored role, or no members row at all), while the HTTP `handleListMembers` returned the raw stored role. Both now delegate to a shared, auth-free `listTeamMembers` core in the new `src/teams/team-core.ts`, so they cannot drift again. Auth stays in the HTTP handler. (First step of the team-ops dual-implementation consolidation; the mutating operations, which interleave HTTP-specific change-envelope bookkeeping, remain a follow-up.)
+- **The cloud member-list endpoint now surfaces the team creator with `role: 'creator'`**, matching the direct-Postgres path. The two implementations had drifted — `listMembersDirect` always surfaced the creator (even with a stale stored role, or no members row at all), while the HTTP `handleListMembers` returned the raw stored role. Both now delegate to a shared, auth-free core.
+- **The cloud HTTP server (`routes.ts`) and the direct-Postgres path (`direct-ops.ts`) now share their team-operation cores** via the new `src/teams/team-core.ts`: `listTeamMembers`, `appendChangeEnvelope`, `shareObject`, `listSharedObjects`, and `unshareObject`. The `handle*` functions keep token-auth + role/authorization checks and delegate the DB logic; the `*Direct` functions keep only the cloud-connection lifecycle. This kills the duplication-with-drift bug class on those operations.
+- **Change-envelope seq unified to per-team.** The two envelope writers had diverged — the HTTP path derived a _global_ max seq across all teams, the direct path a _per-team_ max. They are now both per-team (the correct cursor semantics; identical under the one-team-per-cloud model, and `handleListChanges` filters per team regardless).
+- The row-level operations (`link`/`unlink`/`push`/`delete`) remain path-specific **by design** — the HTTP path mirrors row snapshots into a separate cloud table, while the direct path operates on the shared table in place; these are genuinely different logic, not duplication.
 
 ### Maintenance — dead-code removal & simplification
 
