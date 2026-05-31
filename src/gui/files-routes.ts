@@ -4,8 +4,9 @@ import { spawn } from 'node:child_process';
 import type { Lattice } from '../lattice.js';
 
 /**
- * Serving + OS integration for ingested files. The `files` row holds a local
- * `path` (ingest references files, it does not copy bytes), so the blob is
+ * Serving + OS integration for ingested files. A `files` row points at a local
+ * file — either the legacy `path` column (DEPRECATED) or a v2.0 `local_ref`
+ * (`ref_uri`); ingest references files, it does not copy bytes — so the blob is
  * streamed straight from disk for inline preview, and "open in Finder" shells
  * the platform opener — gated behind LATTICE_LOCAL_OPEN since it only makes
  * sense when the GUI server shares the user's machine.
@@ -21,9 +22,25 @@ interface FilesContext {
 
 interface FileRow {
   path?: string | null;
+  ref_kind?: string | null;
+  ref_uri?: string | null;
   mime?: string | null;
   original_name?: string | null;
   deleted_at?: string | null;
+}
+
+/**
+ * The local filesystem path a row points at, for the two storage modes this
+ * route can stream: a legacy `path` (DEPRECATED) or a v2.0 `local_ref`
+ * (`ref_uri`). Cloud references (`ref_uri` holds a URL) and owned blobs are not
+ * served from here, so they resolve to null.
+ */
+function localPathOf(row: FileRow): string | null {
+  if (typeof row.path === 'string' && row.path) return row.path;
+  if (row.ref_kind === 'local_ref' && typeof row.ref_uri === 'string' && row.ref_uri) {
+    return row.ref_uri;
+  }
+  return null;
 }
 
 function sendJson(res: ServerResponse, body: unknown, status = 200): void {
@@ -54,12 +71,13 @@ export async function dispatchFilesRoute(
       sendJson(res, { error: 'file not found' }, 404);
       return true;
     }
-    if (!row.path) {
+    const loc = localPathOf(row);
+    if (!loc) {
       sendJson(res, { error: 'this file has no underlying blob (text-only ingest)' }, 404);
       return true;
     }
     try {
-      const st = statSync(row.path);
+      const st = statSync(loc);
       if (!st.isFile()) throw new Error('not a file');
     } catch {
       sendJson(res, { error: 'referenced file is no longer on disk' }, 410);
@@ -72,7 +90,7 @@ export async function dispatchFilesRoute(
       'content-disposition': `inline; filename="${name}"`,
       'cache-control': 'no-store',
     });
-    const stream = createReadStream(row.path);
+    const stream = createReadStream(loc);
     stream.on('error', () => {
       // Headers are already sent; just terminate the response.
       res.destroy();
@@ -89,7 +107,8 @@ export async function dispatchFilesRoute(
     }
     const id = decodeURIComponent(openMatch[1] ?? '');
     const row = (await ctx.db.get('files', id)) as FileRow | null;
-    if (!row?.path) {
+    const loc = row ? localPathOf(row) : null;
+    if (!loc) {
       sendJson(res, { error: 'file has no local path' }, 404);
       return true;
     }
@@ -100,7 +119,7 @@ export async function dispatchFilesRoute(
           ? 'explorer'
           : 'xdg-open';
     try {
-      const child = spawn(opener, [row.path], { detached: true, stdio: 'ignore' });
+      const child = spawn(opener, [loc], { detached: true, stdio: 'ignore' });
       child.on('error', () => {
         /* surfaced below via the catch on spawn throw; nothing to stream */
       });
