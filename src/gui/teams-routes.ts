@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { deleteDbCredential, saveDbCredentialForTeam } from '../framework/user-config.js';
 import { parseConfigFile } from '../config/parser.js';
+import { sendJson, readJson } from './http.js';
 import { TeamsClient, TeamsHttpError, type TeamConnection } from '../teams/client.js';
 import { serializeSchema } from '../teams/schema-spec.js';
 
@@ -123,33 +124,6 @@ function writeTeamConfigYaml(
     `entities: {}\n`;
   writeFileSync(yamlPath, yaml, 'utf8');
   return yamlPath;
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => {
-      raw += chunk;
-      if (raw.length > 1_000_000) req.destroy(new Error('Request body too large'));
-    });
-    req.on('end', () => {
-      try {
-        resolve(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
-      } catch (e) {
-        reject(new Error(`Invalid JSON body: ${(e as Error).message}`));
-      }
-    });
-    req.on('error', reject);
-  });
 }
 
 function requireString(body: Record<string, unknown>, key: string): string | null {

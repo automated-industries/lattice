@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
+import { sendJson, readJson } from './http.js';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
@@ -108,14 +109,6 @@ export interface GuiServerHandle {
   close: () => Promise<void>;
 }
 
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
 function sendText(
   res: ServerResponse,
   body: string,
@@ -124,25 +117,6 @@ function sendText(
 ): void {
   res.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store' });
   res.end(body);
-}
-
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolveBody, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => {
-      raw += chunk;
-      if (raw.length > 1_000_000) req.destroy(new Error('Request body too large'));
-    });
-    req.on('end', () => {
-      try {
-        resolveBody(raw ? JSON.parse(raw) : {});
-      } catch (e) {
-        reject(new Error(`Invalid JSON body: ${(e as Error).message}`));
-      }
-    });
-    req.on('error', reject);
-  });
 }
 
 function openUrl(url: string): void {
@@ -1146,7 +1120,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         // ── Create entity (additive — not in audit log, irreversible from GUI) ──
         if (method === 'POST' && pathname === '/api/schema/entities') {
-          const body = (await readJsonBody(req)) as { name?: unknown; icon?: unknown };
+          const body = (await readJson<unknown>(req)) as { name?: unknown; icon?: unknown };
           const entityName = typeof body.name === 'string' ? body.name.trim() : '';
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(entityName)) {
             sendJson(res, { error: 'Entity name must be a valid identifier' }, 400);
@@ -1208,7 +1182,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Sharing is only available on team cloud databases' }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { share?: unknown };
+          const body = (await readJson<unknown>(req)) as { share?: unknown };
           const result = await shareEntityWithTeam(
             active.db,
             active.dbPath,
@@ -1248,7 +1222,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { secret?: unknown };
+          const body = (await readJson<unknown>(req)) as { secret?: unknown };
           const secret = body.secret === true ? 1 : 0;
           const existing = (
             (await active.db.query('_lattice_gui_column_meta', {
@@ -1286,7 +1260,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { to?: unknown };
+          const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newName = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(newName)) {
             sendJson(res, { error: 'New name must be a valid identifier' }, 400);
@@ -1319,7 +1293,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as {
+          const body = (await readJson<unknown>(req)) as {
             name?: unknown;
             type?: unknown;
             required?: unknown;
@@ -1360,7 +1334,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { to?: unknown };
+          const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newCol = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newCol)) {
             sendJson(res, { error: 'New column name must be a valid identifier' }, 400);
@@ -1576,7 +1550,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { id?: unknown };
+          const body = (await readJson<unknown>(req)) as { id?: unknown };
           if (typeof body.id !== 'string') {
             sendJson(res, { error: 'id must be a string' }, 400);
             return;
@@ -1641,7 +1615,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/switch') {
-          const body = (await readJsonBody(req)) as { path?: unknown };
+          const body = (await readJson<unknown>(req)) as { path?: unknown };
           if (typeof body.path !== 'string') {
             sendJson(res, { error: 'path must be a string' }, 400);
             return;
@@ -1680,7 +1654,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/create') {
-          const body = (await readJsonBody(req)) as { name?: unknown };
+          const body = (await readJson<unknown>(req)) as { name?: unknown };
           if (typeof body.name !== 'string' || !body.name.trim()) {
             sendJson(res, { error: 'name must be a non-empty string' }, 400);
             return;
@@ -1693,7 +1667,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/delete') {
-          const body = (await readJsonBody(req)) as { path?: unknown };
+          const body = (await readJson<unknown>(req)) as { path?: unknown };
           if (typeof body.path !== 'string' || !body.path.trim()) {
             sendJson(res, { error: 'path must be a non-empty string' }, 400);
             return;
@@ -1792,7 +1766,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { icon?: unknown };
+          const body = (await readJson<unknown>(req)) as { icon?: unknown };
           if (typeof body.icon !== 'string') {
             sendJson(res, { error: 'icon must be a string' }, 400);
             return;
@@ -1888,7 +1862,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return;
             }
             if (method === 'POST') {
-              const body = (await readJsonBody(req)) as Row;
+              const body = (await readJson<unknown>(req)) as Row;
               const { id: newId } = await createRow(mctx, table, body);
               sendJson(res, { id: newId }, 201);
               return;
@@ -1904,7 +1878,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return;
             }
             if (method === 'PATCH') {
-              const body = (await readJsonBody(req)) as Partial<Row>;
+              const body = (await readJson<unknown>(req)) as Partial<Row>;
               await updateRow(mctx, table, id, body);
               sendJson(res, { ok: true });
               return;
@@ -1933,7 +1907,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Method ${method} not allowed` }, 405);
             return;
           }
-          const body = (await readJsonBody(req)) as Row;
+          const body = (await readJson<unknown>(req)) as Row;
           const linkCtx: MutationCtx = {
             db: active.db,
             feed: active.feed,
