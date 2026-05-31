@@ -39,6 +39,15 @@ export async function assertSafeUrl(rawUrl: string, allowPrivate = false): Promi
  * (including the resolved `Location`) is re-validated with {@link assertSafeUrl}
  * before it is fetched, so an attacker cannot 302 from a public host to a
  * private/metadata address. Redirects are followed manually up to `maxRedirects`.
+ *
+ * Residual risk — DNS-rebinding TOCTOU: validation resolves the hostname, then
+ * the runtime's fetch resolves it again to open the connection. A hostname whose
+ * authoritative DNS returns a public IP to the first lookup and a private IP to
+ * the second (very low TTL, attacker-controlled zone, for a host the user
+ * explicitly referenced) could slip past. Closing this fully requires pinning
+ * the validated IP at the socket layer (a custom dispatcher/agent), which is
+ * deferred. Deployments that must guarantee it should pin DNS at the network
+ * layer or run the fetch egress through an allow-list proxy.
  */
 export async function safeFetch(
   rawUrl: string,

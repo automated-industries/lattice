@@ -1272,6 +1272,12 @@ async function handlePushRow(
     sendJson(res, { error: 'Not a member of this team' }, 403);
     return;
   }
+  // A stale row link must not be able to mutate a now-unshared cloud table
+  // (matches the handleLinkRow precondition).
+  if (!(await isObjectShared(ctx.db, teamId, tableName))) {
+    sendJson(res, { error: `Object "${tableName}" is not shared with this team` }, 404);
+    return;
+  }
   const body = await readJson(req);
   const pk = requireString(body, 'pk');
   if (!pk) {
@@ -1318,6 +1324,10 @@ async function handleDeleteRow(
 ): Promise<void> {
   if (!ctx.authContext) {
     sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  if (!(await isObjectShared(ctx.db, teamId, tableName))) {
+    sendJson(res, { error: `Object "${tableName}" is not shared with this team` }, 404);
     return;
   }
   const link = await getRowLink(ctx.db, teamId, tableName, pk);
