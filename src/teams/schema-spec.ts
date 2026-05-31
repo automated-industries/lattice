@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { TableDefinition } from '../types.js';
-import { assertExternalIdentifier, assertSafeIdentifier } from '../schema/identifier.js';
+import { assertExternalIdentifier } from '../schema/identifier.js';
 
 /**
  * Dialect-neutral schema representation for objects shared across a
@@ -256,6 +256,11 @@ const VALID_COLUMN_TYPES: ReadonlySet<string> = new Set([
 // function name (e.g. CURRENT_TIMESTAMP), or a parenthesised expression
 // (e.g. `(datetime('now'))`) made only of characters that cannot terminate
 // the statement or open a comment.
+//
+// The parenthesised form intentionally admits expression-shaped content (it has
+// to, to allow `(datetime('now'))`). That is safe in DEFAULT position: it cannot
+// stack a statement (no `;`/`--`) and a DEFAULT clause is a value expression, not
+// a row-returning context — so it is not an injection or exfiltration primitive.
 const SAFE_DEFAULT_RES: readonly RegExp[] = [
   /^NULL$/i,
   /^-?\d+(\.\d+)?$/,
@@ -291,9 +296,11 @@ export function validateExternalSchemaSpec(table: string, spec: SchemaSpec): voi
       throw new Error(`Unsafe column default for "${colName}": ${JSON.stringify(colSpec.default)}`);
     }
   }
+  // PK columns are also rendered into DDL (`PRIMARY KEY ("…")`); hold them to
+  // the same external standard as the column names they must reference.
   const pkCols = Array.isArray(spec.primaryKey) ? spec.primaryKey : [spec.primaryKey];
   for (const pk of pkCols) {
-    assertSafeIdentifier(pk, 'column');
+    assertExternalIdentifier(pk, 'column');
   }
   if (spec.tableConstraints) {
     for (const c of spec.tableConstraints) {
