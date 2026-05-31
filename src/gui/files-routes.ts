@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createReadStream, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import type { Lattice } from '../lattice.js';
+import { sendJson } from './http.js';
 
 /**
  * Serving + OS integration for ingested files. A `files` row points at a local
@@ -41,14 +42,6 @@ function localPathOf(row: FileRow): string | null {
     return row.ref_uri;
   }
   return null;
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
 }
 
 function sanitizeFilename(name: string): string {
