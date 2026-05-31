@@ -25,7 +25,6 @@ import type {
   UnresolvedLink,
   ReportConfig,
   ReportResult,
-  ReportSectionResult,
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
@@ -51,6 +50,8 @@ import { PostgresAdapter } from './db/postgres.js';
 import { SchemaManager } from './schema/manager.js';
 import type { CompiledTableDef } from './schema/manager.js';
 import { assertSafeIdentifier } from './schema/identifier.js';
+import { ChangelogService } from './changelog/service.js';
+import { ReportBuilder } from './report/builder.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine } from './render/engine.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
@@ -137,6 +138,8 @@ const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
 
 export class Lattice {
   private readonly _adapter: StorageAdapter;
+  private _changelogService?: ChangelogService;
+  private _reportBuilder?: ReportBuilder;
   private readonly _schema: SchemaManager;
   private readonly _sanitizer: Sanitizer;
   private readonly _render: RenderEngine;
@@ -1345,137 +1348,16 @@ export class Lattice {
     const notInit = this._notInitError<ReportResult>();
     if (notInit) return notInit;
 
-    const since = this._resolveSince(config.since);
-    const sections: ReportSectionResult[] = [];
-    let allEmpty = true;
-
-    for (const section of config.sections) {
-      const cols = this._ensureColumnCache(section.query.table);
-      const hasTimestamp = cols.has('timestamp');
-      const conditions: string[] = [];
-      const params: unknown[] = [];
-
-      // Time window filter
-      if (hasTimestamp) {
-        conditions.push('timestamp >= ?');
-        params.push(since);
-      }
-
-      // Soft-delete exclusion
-      if (cols.has('deleted_at')) {
-        conditions.push('deleted_at IS NULL');
-      }
-
-      // User filters
-      if (section.query.filters) {
-        for (const f of section.query.filters) {
-          switch (f.op) {
-            case 'eq':
-              conditions.push(`"${f.col}" = ?`);
-              params.push(f.val);
-              break;
-            case 'ne':
-              conditions.push(`"${f.col}" != ?`);
-              params.push(f.val);
-              break;
-            case 'gt':
-              conditions.push(`"${f.col}" > ?`);
-              params.push(f.val);
-              break;
-            case 'gte':
-              conditions.push(`"${f.col}" >= ?`);
-              params.push(f.val);
-              break;
-            case 'lt':
-              conditions.push(`"${f.col}" < ?`);
-              params.push(f.val);
-              break;
-            case 'lte':
-              conditions.push(`"${f.col}" <= ?`);
-              params.push(f.val);
-              break;
-            case 'like':
-              conditions.push(`"${f.col}" LIKE ?`);
-              params.push(f.val);
-              break;
-            case 'isNull':
-              conditions.push(`"${f.col}" IS NULL`);
-              break;
-            case 'isNotNull':
-              conditions.push(`"${f.col}" IS NOT NULL`);
-              break;
-            case 'in': {
-              const arr = f.val as unknown[];
-              if (arr.length > 0) {
-                conditions.push(`"${f.col}" IN (${arr.map(() => '?').join(', ')})`);
-                params.push(...arr);
-              }
-              break;
-            }
-          }
-        }
-      }
-
-      const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
-      const orderBy = section.query.orderBy
-        ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}`
-        : '';
-      const limit = section.query.limit ? ` LIMIT ${String(section.query.limit)}` : '';
-
-      const rows = await allAsyncOrSync(
-        this._adapter,
-        `SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`,
-        params,
-      );
-
-      if (rows.length > 0) allEmpty = false;
-
-      // Format
-      let formatted = '';
-      if (section.format === 'custom' && section.customFormat) {
-        formatted = section.customFormat(rows);
-      } else if (section.format === 'counts' && section.query.groupBy) {
-        const groups = new Map<string, number>();
-        for (const row of rows) {
-          const rawGroupVal = row[section.query.groupBy];
-          const type =
-            typeof rawGroupVal === 'string'
-              ? rawGroupVal
-              : typeof rawGroupVal === 'number'
-                ? String(rawGroupVal)
-                : 'other';
-          const prefix = type.includes('.') ? (type.split('.')[0] ?? type) : type;
-          groups.set(prefix, (groups.get(prefix) ?? 0) + 1);
-        }
-        formatted = [...groups.entries()].map(([k, v]) => `${k}: ${String(v)}`).join('\n');
-      } else if (section.format === 'count_and_list') {
-        const label = (r: Row): string => {
-          const v = r.summary ?? r.name ?? r.title;
-          return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r);
-        };
-        formatted = `Count: ${String(rows.length)}\n` + rows.map((r) => `- ${label(r)}`).join('\n');
-      } else {
-        const label = (r: Row): string => {
-          const v = r.summary ?? r.name ?? r.title;
-          return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r);
-        };
-        formatted = rows.map((r) => `- ${label(r)}`).join('\n');
-      }
-
-      sections.push({ name: section.name, rows, count: rows.length, formatted });
-    }
-
-    return { sections, isEmpty: allEmpty, since };
+    return this._report.buildReport(config);
   }
 
-  /** Parse duration shorthand ('8h', '24h', '7d') into ISO timestamp. */
-  private _resolveSince(since: string): string {
-    const match = /^(\d+)([hmd])$/.exec(since);
-    if (!match) return since; // assume ISO timestamp
-    const [, numStr, unit] = match;
-    const num = parseInt(numStr ?? '0', 10);
-    const ms = unit === 'h' ? num * 3600000 : unit === 'd' ? num * 86400000 : num * 60000;
-    return new Date(Date.now() - ms).toISOString();
+  /** Lazily-constructed report-generation collaborator (see src/report/builder.ts). */
+  private get _report(): ReportBuilder {
+    this._reportBuilder ??= new ReportBuilder({
+      adapter: this._adapter,
+      ensureColumnCache: (table) => this._ensureColumnCache(table),
+    });
+    return this._reportBuilder;
   }
 
   // -------------------------------------------------------------------------
@@ -2179,20 +2061,15 @@ export class Lattice {
   }
 
   /** Parse a raw changelog DB row into a ChangeEntry. */
-  private _parseChangeEntry(row: Row): ChangeEntry {
-    return {
-      id: row.id as string,
-      table: row.table_name as string,
-      rowId: row.row_id as string,
-      operation: row.operation as ChangeEntry['operation'],
-      changes: row.changes ? (JSON.parse(row.changes as string) as Record<string, unknown>) : null,
-      previous: row.previous
-        ? (JSON.parse(row.previous as string) as Record<string, unknown>)
-        : null,
-      source: row.source != null ? (row.source as string) : null,
-      reason: row.reason != null ? (row.reason as string) : null,
-      createdAt: row.created_at as string,
-    };
+  /** Lazily-constructed changelog read/replay collaborator (see src/changelog/service.ts). */
+  private get _changelog(): ChangelogService {
+    this._changelogService ??= new ChangelogService({
+      adapter: this._adapter,
+      pkWhere: (table, id) => this._pkWhere(table, id),
+      appendChangelog: (table, rowId, operation, changes, previous, source, reason) =>
+        this._appendChangelog(table, rowId, operation, changes, previous, source, reason),
+    });
+    return this._changelogService;
   }
 
   // -------------------------------------------------------------------------
@@ -2206,16 +2083,7 @@ export class Lattice {
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
-    const limit = opts?.limit ?? 100;
-    const rows = await allAsyncOrSync(
-      this._adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog
-       WHERE table_name = ? AND row_id = ?
-       ORDER BY rowid DESC
-       LIMIT ?`,
-      [table, id, limit],
-    );
-    return rows.map((r) => this._parseChangeEntry(r));
+    return this._changelog.history(table, id, opts);
   }
 
   /**
@@ -2229,29 +2097,7 @@ export class Lattice {
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
-    const clauses: string[] = [];
-    const params: unknown[] = [];
-
-    if (opts?.table) {
-      clauses.push('table_name = ?');
-      params.push(opts.table);
-    }
-    if (opts?.since) {
-      clauses.push('created_at >= ?');
-      params.push(opts.since);
-    }
-
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-    const limit = opts?.limit ?? 100;
-
-    const rows = await allAsyncOrSync(
-      this._adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog ${where}
-       ORDER BY rowid DESC
-       LIMIT ?`,
-      [...params, limit],
-    );
-    return rows.map((r) => this._parseChangeEntry(r));
+    return this._changelog.recentChanges(opts);
   }
 
   /**
@@ -2262,81 +2108,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
-    const entry = await getAsyncOrSync(
-      this._adapter,
-      `SELECT * FROM __lattice_changelog WHERE id = ?`,
-      [changeId],
-    );
-    if (!entry) {
-      throw new Error(`Lattice: changelog entry "${changeId}" not found`);
-    }
-
-    const parsed = this._parseChangeEntry(entry);
-    const { clause, params: pkParams } = this._pkWhere(parsed.table, parsed.rowId);
-
-    switch (parsed.operation) {
-      case 'insert':
-        // Undo insert → delete the row
-        await runAsyncOrSync(
-          this._adapter,
-          `DELETE FROM "${parsed.table}" WHERE ${clause}`,
-          pkParams,
-        );
-        break;
-
-      case 'update':
-        // Undo update → restore previous values
-        if (!parsed.previous) {
-          throw new Error(
-            `Lattice: changelog entry "${changeId}" has no previous values to restore`,
-          );
-        }
-        {
-          const setCols = Object.keys(parsed.previous)
-            .map((c) => `"${c}" = ?`)
-            .join(', ');
-          await runAsyncOrSync(
-            this._adapter,
-            `UPDATE "${parsed.table}" SET ${setCols} WHERE ${clause}`,
-            [...Object.values(parsed.previous), ...pkParams],
-          );
-        }
-        break;
-
-      case 'delete':
-        // Undo delete → re-insert the row
-        if (!parsed.previous) {
-          throw new Error(`Lattice: changelog entry "${changeId}" has no previous row to restore`);
-        }
-        {
-          const cols = Object.keys(parsed.previous)
-            .map((c) => `"${c}"`)
-            .join(', ');
-          const placeholders = Object.keys(parsed.previous)
-            .map(() => '?')
-            .join(', ');
-          await runAsyncOrSync(
-            this._adapter,
-            `INSERT INTO "${parsed.table}" (${cols}) VALUES (${placeholders})`,
-            Object.values(parsed.previous),
-          );
-        }
-        break;
-
-      default:
-        throw new Error(`Lattice: cannot rollback operation "${parsed.operation}"`);
-    }
-
-    // Record the rollback as a new changelog entry
-    await this._appendChangelog(
-      parsed.table,
-      parsed.rowId,
-      'rollback',
-      parsed.previous, // The values we restored to become the "changes"
-      parsed.changes, // The values we undid become the "previous"
-      'system',
-      `rollback of ${changeId}`,
-    );
+    return this._changelog.rollback(changeId);
   }
 
   /**
@@ -2351,21 +2123,7 @@ export class Lattice {
     const notInit = this._notInitError<Record<string, { old: unknown; new: unknown }>>();
     if (notInit) return notInit;
 
-    const fromSnap = this.snapshot(table, id, fromChangeId);
-    const toSnap = this.snapshot(table, id, toChangeId);
-
-    return Promise.all([fromSnap, toSnap]).then(([fromState, toState]) => {
-      const result: Record<string, { old: unknown; new: unknown }> = {};
-      const allKeys = new Set([...Object.keys(fromState), ...Object.keys(toState)]);
-      for (const key of allKeys) {
-        const oldVal = fromState[key];
-        const newVal = toState[key];
-        if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
-          result[key] = { old: oldVal ?? null, new: newVal ?? null };
-        }
-      }
-      return result;
-    });
+    return this._changelog.diff(table, id, fromChangeId, toChangeId);
   }
 
   /**
@@ -2376,46 +2134,7 @@ export class Lattice {
     const notInit = this._notInitError<Record<string, unknown>>();
     if (notInit) return notInit;
 
-    // Get the target entry's rowid for reliable ordering
-    const target = await getAsyncOrSync(
-      this._adapter,
-      `SELECT rowid FROM __lattice_changelog WHERE id = ?`,
-      [changeId],
-    );
-    if (!target) {
-      throw new Error(`Lattice: changelog entry "${changeId}" not found`);
-    }
-
-    // Get all entries for this row up to and including the target, in insertion order
-    const entries = await allAsyncOrSync(
-      this._adapter,
-      `SELECT * FROM __lattice_changelog
-       WHERE table_name = ? AND row_id = ? AND rowid <= ?
-       ORDER BY rowid ASC`,
-      [table, id, target.rowid],
-    );
-
-    // Replay to build state
-    let state: Record<string, unknown> = {};
-    for (const raw of entries) {
-      const entry = this._parseChangeEntry(raw);
-      switch (entry.operation) {
-        case 'insert':
-          state = { ...state, ...(entry.changes ?? {}) };
-          break;
-        case 'update':
-          state = { ...state, ...(entry.changes ?? {}) };
-          break;
-        case 'delete':
-          state = {};
-          break;
-        case 'rollback':
-          // Rollback restores the "changes" field (which holds what was restored)
-          state = { ...state, ...(entry.changes ?? {}) };
-          break;
-      }
-    }
-    return state;
+    return this._changelog.snapshot(table, id, changeId);
   }
 
   /**
