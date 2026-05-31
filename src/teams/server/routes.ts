@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../../lattice.js';
 import { generateToken, generateInviteToken, hashToken, type AuthContext } from './auth.js';
 import { applySchemaSpec, type SchemaSpec } from '../schema-spec.js';
+import { listTeamMembers } from '../team-core.js';
 
 /**
  * Lattice Teams cloud-side route handlers.
@@ -556,36 +557,10 @@ async function handleListMembers(
     sendJson(res, { error: 'Not a member of this team' }, 403);
     return;
   }
-  const members = (await ctx.db.query('__lattice_team_members', {
-    filters: [{ col: 'team_id', op: 'eq', val: teamId }],
-  })) as unknown as TeamMemberRow[];
-  if (members.length === 0) {
-    sendJson(res, { members: [] });
-    return;
-  }
-  const userIds = members.map((m) => m.user_id);
-  const users = (await ctx.db.query('__lattice_users', {
-    filters: [
-      { col: 'id', op: 'in', val: userIds },
-      { col: 'deleted_at', op: 'isNull' },
-    ],
-  })) as unknown as UserRow[];
-  const userById = new Map(users.map((u) => [u.id, u]));
-  sendJson(res, {
-    members: members
-      .map((m) => {
-        const u = userById.get(m.user_id);
-        if (!u) return null;
-        return {
-          user_id: m.user_id,
-          email: u.email,
-          name: u.name,
-          role: m.role,
-          joined_at: m.joined_at,
-        };
-      })
-      .filter((m): m is NonNullable<typeof m> => m !== null),
-  });
+  // Delegate to the shared core so the cloud path matches the direct path —
+  // notably, the creator is surfaced with role='creator' (previously the HTTP
+  // handler omitted this, a confirmed drift bug).
+  sendJson(res, { members: await listTeamMembers(ctx.db, teamId) });
 }
 
 async function handleKickMember(
