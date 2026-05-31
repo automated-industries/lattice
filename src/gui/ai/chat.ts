@@ -1,7 +1,22 @@
-import { createRequire } from 'node:module';
 import { executeFunction, DISPATCHABLE, type DispatchCtx } from './dispatch.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
 import type { ChatStreamEvent } from './sse.js';
+import { DEFAULT_MODEL } from '../../ai/llm-client.js';
+import type { LlmClient, LlmMessage, ContentBlock } from '../../ai/llm-client.js';
+
+// The model-client core now lives in `src/ai/llm-client.ts` (so library AI
+// features never import from the GUI). Re-export it here so existing GUI
+// importers and tests can keep importing the client from `./ai/chat.js`.
+export { DEFAULT_MODEL, createAnthropicClient } from '../../ai/llm-client.js';
+export type {
+  LlmClient,
+  LlmMessage,
+  ContentBlock,
+  ToolUse,
+  TurnParams,
+  TurnResult,
+  ClaudeAuth,
+} from '../../ai/llm-client.js';
 
 /**
  * The assistant tool loop. Streams an Anthropic turn, executes any tool calls
@@ -10,59 +25,15 @@ import type { ChatStreamEvent } from './sse.js';
  * results back, and repeats until the model stops. Emits the SSE event
  * protocol from {@link ChatStreamEvent} so the server can pipe it to the
  * browser and a test can assert the sequence.
- *
- * All @anthropic-ai/sdk specifics live behind {@link LlmClient}. The real
- * client is built by {@link createAnthropicClient} (lazy-loaded — the SDK is
- * an optionalDependency, mirroring how realtime.ts loads pg). Tests inject a
- * fake client, so the loop compiles and runs without the SDK installed.
  */
 
-export const DEFAULT_MODEL = 'claude-haiku-4-5';
 const MAX_TOOL_LOOPS = 8;
-const MAX_TOKENS = 2048;
 
 const SYSTEM_PROMPT =
   'You are the assistant inside a Lattice database GUI. Help the user inspect ' +
   'and edit their data by calling the provided tools. Prefer reading (listing ' +
   'rows, fetching a row) before writing. When you change data, briefly confirm ' +
   'what you did. Be concise.';
-
-/** A content block in the Anthropic message format we use. */
-export type ContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
-
-export interface LlmMessage {
-  role: 'user' | 'assistant';
-  content: string | ContentBlock[];
-}
-
-export interface ToolUse {
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
-}
-
-export interface TurnResult {
-  stopReason: string;
-  text: string;
-  toolUses: ToolUse[];
-}
-
-export interface TurnParams {
-  model: string;
-  system: string;
-  messages: LlmMessage[];
-  tools: AnthropicTool[];
-  /** Called with each streamed text delta. */
-  onText: (delta: string) => void;
-}
-
-/** The slice of the Anthropic client the loop depends on. */
-export interface LlmClient {
-  runTurn(params: TurnParams): Promise<TurnResult>;
-}
 
 export interface RunChatOptions {
   client: LlmClient;
@@ -134,99 +105,4 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     yield { type: 'error', message: (e as Error).message };
   }
   yield { type: 'done' };
-}
-
-// ── Real client (lazy-loaded SDK) ───────────────────────────────────────────
-
-/**
- * How to authenticate to Anthropic: a raw API key, or an OAuth Bearer token
- * (from a connected Claude subscription). `betaHeader` carries an optional
- * `anthropic-beta` value (sourced from env for the OAuth path — not hardcoded).
- */
-export interface ClaudeAuth {
-  apiKey?: string | undefined;
-  authToken?: string | undefined;
-  betaHeader?: string | undefined;
-}
-
-interface AnthropicClientConfig {
-  apiKey?: string;
-  authToken?: string;
-  defaultHeaders?: Record<string, string>;
-}
-type AnthropicCtor = new (config: AnthropicClientConfig) => AnthropicSdk;
-interface AnthropicSdk {
-  messages: {
-    stream(params: Record<string, unknown>): AnthropicMessageStream;
-  };
-}
-interface AnthropicMessageStream {
-  on(event: 'text', cb: (delta: string) => void): void;
-  finalMessage(): Promise<{
-    stop_reason: string | null;
-    content: (
-      | { type: 'text'; text: string }
-      | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-      | { type: string; [k: string]: unknown }
-    )[];
-  }>;
-}
-
-let _sdk: { Anthropic?: AnthropicCtor; default?: AnthropicCtor } | null = null;
-function loadSdk(): AnthropicCtor {
-  if (!_sdk) {
-    const importMetaUrl = (import.meta as { url?: string }).url;
-    const req = importMetaUrl ? createRequire(importMetaUrl) : require;
-    try {
-      _sdk = req('@anthropic-ai/sdk') as { Anthropic?: AnthropicCtor; default?: AnthropicCtor };
-    } catch (err) {
-      throw new Error(
-        "The assistant requires '@anthropic-ai/sdk'. Install it with: npm install @anthropic-ai/sdk\n" +
-          'Underlying error: ' +
-          (err instanceof Error ? err.message : String(err)),
-      );
-    }
-  }
-  const ctor = _sdk.Anthropic ?? _sdk.default;
-  if (!ctor)
-    throw new Error("Could not resolve the Anthropic constructor from '@anthropic-ai/sdk'");
-  return ctor;
-}
-
-/**
- * Build the real Anthropic-backed client. Lazy-loads the SDK at call time.
- * Accepts either a raw API key or an OAuth Bearer token (subscription).
- */
-export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
-  const Anthropic = loadSdk();
-  const config: AnthropicClientConfig = {};
-  if (auth.authToken) config.authToken = auth.authToken;
-  else if (auth.apiKey) config.apiKey = auth.apiKey;
-  if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
-  const sdk = new Anthropic(config);
-  return {
-    async runTurn(params: TurnParams): Promise<TurnResult> {
-      const stream = sdk.messages.stream({
-        model: params.model,
-        max_tokens: MAX_TOKENS,
-        system: params.system,
-        messages: params.messages,
-        tools: params.tools,
-      });
-      stream.on('text', (delta) => {
-        params.onText(delta);
-      });
-      const final = await stream.finalMessage();
-      let text = '';
-      const toolUses: ToolUse[] = [];
-      for (const block of final.content) {
-        if (block.type === 'text') text += (block as { text: string }).text;
-        else if (block.type === 'tool_use') {
-          const tu = block as { id: string; name: string; input: Record<string, unknown> };
-          toolUses.push({ id: tu.id, name: tu.name, input: tu.input });
-        }
-      }
-      return { stopReason: final.stop_reason ?? 'end_turn', text, toolUses };
-    },
-  };
 }
