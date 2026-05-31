@@ -18,6 +18,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `reverse-seed` `_insertOrIgnore` now uses the `{ changes }` row count from `tx.run` instead of count-before/count-after SELECTs.
 - Internal dedup: a `NOT_DELETED` soft-delete fragment constant (was inlined 5×), a single Postgres polyfill-registration helper, and a one-pass link index in `enrichKnowledge`.
 
+### Deprecated — `files.path` / `files.kind`
+
+- **`files.path` is deprecated in favor of the reference model.** GUI local-file ingestion (`/api/ingest/file`) now records a v2.0 `local_ref` (`ref_kind='local_ref'`, `ref_uri`) via `referenceLocalFile()` instead of writing `path`. The blob/open routes and the GUI preview fall back to `ref_uri` (`resolveSource` already did). `files.kind` is an orphaned column (superseded by `mime` + `ref_kind`). Both columns are retained for back-compat — **not dropped** — and carry deprecation notes.
+- **License metadata:** the Apache copyright holder now reads `Automated Industries (M-Flat Inc)` consistently across `LICENSE` + `NOTICE`; the `NOTICE` package label was corrected to `latticesql` and the placeholder URL to the project homepage.
+
 ### Added — workspace model + auto-render (back end)
 
 - **One `.lattice` root** — a single discoverable folder (via `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`) now holds machine-local config, the workspace registry, each workspace's database + blobs, and the rendered context. `configDir()` consolidates into `<root>/.config` once initialized, with a non-destructive copy migration of any legacy machine-local config (originals preserved) and a homedir fallback.

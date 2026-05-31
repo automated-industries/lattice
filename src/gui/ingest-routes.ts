@@ -9,6 +9,7 @@ import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js
 import { parseFile, describe } from '../ai/extract.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
+import { referenceLocalFile } from '../framework/reference-store.js';
 import { resolveClaudeAuth } from './assistant-routes.js';
 import { createAnthropicClient, type LlmClient } from './ai/chat.js';
 import { organizeSource, type OrganizeResult } from '../ai/organize.js';
@@ -17,8 +18,9 @@ import { type CatalogEntity, type ClassifyMatch } from '../ai/summarize.js';
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
  * snippet) as a row in the native `files` entity and summarize its contents —
- * no bytes are copied into a blob store; `files.path` holds the local path and
- * the preview/extraction read from there. Writes go through the shared
+ * no bytes are copied into a blob store; the row records a v2.0 `local_ref`
+ * (`ref_uri` holds the local path) and the preview/extraction read from there.
+ * Writes go through the shared
  * mutation primitives with source='ingest', so each lands in the audit log +
  * activity feed.
  *
@@ -369,14 +371,12 @@ export async function dispatchIngestRoute(
     return true;
   }
   const abs = resolve(rawPath);
-  let size = 0;
   try {
     const st = statSync(abs);
     if (!st.isFile()) {
       sendJson(res, { error: 'path is not a file' }, 400);
       return true;
     }
-    size = st.size;
   } catch {
     sendJson(res, { error: `file not found: ${abs}` }, 400);
     return true;
@@ -384,13 +384,13 @@ export async function dispatchIngestRoute(
 
   const name = basename(abs);
   const mime = mimeFor(name);
+  // Record a v2.0 local reference (ref_kind='local_ref', ref_uri=abs) rather
+  // than writing the deprecated `path` column. referenceLocalFile populates
+  // original_name / size_bytes / extraction_status; readers fall back to ref_uri.
   const { id } = await createRow(mctx, 'files', {
     id: crypto.randomUUID(),
-    path: abs,
-    original_name: name,
+    ...referenceLocalFile(abs),
     mime,
-    size_bytes: size,
-    extraction_status: 'pending',
   });
 
   // Extract inline (the GUI is local; files are typically small). Failures are

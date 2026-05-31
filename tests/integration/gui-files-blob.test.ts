@@ -105,4 +105,24 @@ describe('files blob + open-in-finder', () => {
     expect(r.status).toBe(404);
     expect(String((await r.json()).error)).toMatch(/no local path/i);
   });
+
+  it('serves the blob for a local_ref file (ref_uri fallback, no path column)', async () => {
+    const s = await boot();
+    // A file ingested by path records a v2.0 local_ref (ref_uri set, path null).
+    const srcDir = mkdtempSync(join(tmpdir(), 'lattice-blob-src-'));
+    dirs.push(srcDir);
+    const filePath = join(srcDir, 'hello.txt');
+    writeFileSync(filePath, 'hello from a local ref');
+    const ingest = await fetch(`${s.url}/api/ingest/file`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: filePath }),
+    });
+    expect(ingest.status).toBe(201);
+    const id = ((await ingest.json()) as { id: string }).id;
+    // The blob route must still stream it via the ref_uri fallback.
+    const r = await fetch(`${s.url}/api/files/${id}/blob`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe('hello from a local ref');
+  });
 });
