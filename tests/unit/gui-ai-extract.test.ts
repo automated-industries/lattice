@@ -7,7 +7,7 @@ import {
   describe as describeFile,
   isCodeFile,
   languageOf,
-} from '../../src/gui/ai/extract.js';
+} from '../../src/ai/extract.js';
 
 const dirs: string[] = [];
 afterEach(() => {

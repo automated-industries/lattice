@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { transcribe } from '../../src/gui/ai/transcribe.js';
+import { transcribe } from '../../src/ai/transcribe.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {

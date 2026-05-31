@@ -1,5 +1,5 @@
-import type { LlmClient } from './chat.js';
-import { DEFAULT_MODEL } from './chat.js';
+import type { LlmClient } from './llm-client.js';
+import { DEFAULT_MODEL } from './llm-client.js';
 
 /**
  * One-shot helpers that reuse the chat {@link LlmClient} (no streaming, no
