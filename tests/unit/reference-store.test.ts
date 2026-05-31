@@ -20,6 +20,13 @@ describe('reference-store', () => {
     expect(cols).toHaveProperty('source_json');
   });
 
+  it('the native notes table exists as the organizer fallback target', () => {
+    const cols = NATIVE_ENTITY_DEFS.notes?.columns ?? {};
+    expect(cols).toHaveProperty('title');
+    expect(cols).toHaveProperty('body');
+    expect(cols).toHaveProperty('source_file_id');
+  });
+
   it('referenceLocalFile records an absolute local_ref without copying', () => {
     const base = mkdtempSync(join(tmpdir(), 'lattice-ref-'));
     dirs.push(base);
