@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
-import { transcribe, type SttProvider } from './ai/transcribe.js';
+import { transcribe, type SttProvider } from '../ai/transcribe.js';
 import {
   readOAuthConfig,
   oauthConfigured,
@@ -10,7 +10,7 @@ import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   refreshAccessToken,
-} from './ai/oauth.js';
+} from '../ai/oauth.js';
 import type { ClaudeAuth } from './ai/chat.js';
 
 const CLAUDE_OAUTH_KIND = 'claude_oauth';

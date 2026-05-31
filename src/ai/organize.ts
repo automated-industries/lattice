@@ -1,11 +1,11 @@
 import type { Lattice } from '../lattice.js';
-import type { LlmClient } from '../gui/ai/chat.js';
+import type { LlmClient } from './llm-client.js';
 import {
   classifyLinks,
   summarizeText,
   type CatalogEntity,
   type ClassifyMatch,
-} from '../gui/ai/summarize.js';
+} from './summarize.js';
 
 /**
  * The context organizer. Given an ingested source (a `files` row's text), it
