@@ -95,7 +95,10 @@ describe('ingest routes', () => {
     };
     expect(extraction_status).toBe('extracted');
     const row = await getFile(server.url, id);
-    expect(row.path).toBe(docPath);
+    // v2.0: a path-ingested file is recorded as a local_ref (ref_uri), not `path`.
+    expect(row.ref_kind).toBe('local_ref');
+    expect(row.ref_uri).toBe(docPath);
+    expect(row.path == null).toBe(true);
     expect(row.mime).toBe('text/markdown');
     expect(String(row.extracted_text)).toContain('quick brown fox');
   });
@@ -118,7 +121,8 @@ describe('ingest routes', () => {
     };
     expect(extraction_status).toBe('skipped');
     const row = await getFile(server.url, id);
-    expect(row.path).toBe(binPath);
+    expect(row.ref_kind).toBe('local_ref');
+    expect(row.ref_uri).toBe(binPath);
     expect(String(row.description)).toMatch(/binary file/i);
   });
 
