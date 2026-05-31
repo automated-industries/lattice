@@ -194,4 +194,29 @@ describe('SQL identifier safety', () => {
       );
     });
   });
+
+  describe('CRUD table/column backstop', () => {
+    let db: Lattice | undefined;
+    afterEach(() => {
+      db?.close();
+      db = undefined;
+    });
+
+    it('rejects a malicious table name on insert / query / upsertBy', async () => {
+      db = new Lattice(':memory:');
+      db.define('widgets', {
+        columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT' },
+        render: () => '',
+        outputFile: 'w.md',
+      });
+      await db.init();
+      const evil = 'widgets"); DROP TABLE __lattice_users; --';
+      await expect(db.insert(evil, { id: 'a' })).rejects.toThrow(/Invalid/);
+      await expect(db.query(evil)).rejects.toThrow(/Invalid/);
+      await expect(db.upsertBy('widgets', 'na"me', 'x', { id: 'a' })).rejects.toThrow(/Invalid/);
+      // Legitimate operations still work.
+      await expect(db.insert('widgets', { id: 'a', name: 'ok' })).resolves.toBe('a');
+      expect((await db.query('widgets')).length).toBe(1);
+    });
+  });
 });
