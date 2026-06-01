@@ -209,6 +209,8 @@ export const css = `
       display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     @media (max-width: 720px) { .topsearch { order: 9; flex-basis: 100%; max-width: none; } }
+    .last-edited { margin: -4px 0 12px; font-size: 12px; color: var(--text-muted); }
+    .last-edited:empty { display: none; }
 
     /* ── Layout ────────────────────────────────────────── */
     /* minmax(0, 1fr) on the content track lets a wide child (a table with
