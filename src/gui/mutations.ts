@@ -1,6 +1,7 @@
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
+import { appendChangeEnvelope } from '../teams/team-core.js';
 
 /**
  * Shared GUI mutation primitives. The HTTP row-CRUD routes write through these
@@ -66,6 +67,44 @@ export interface MutationCtx {
   softDeletable: Set<string>;
   /** Who triggered the mutation — drives the feed source pill. */
   source: FeedSource;
+  /**
+   * Team-cloud context. When set, every row mutation also appends a
+   * `__lattice_change_log` envelope so the Postgres NOTIFY trigger fires and
+   * OTHER clients (and this one's "last edited by" / flash UI) learn of the
+   * change. Null/undefined on local SQLite (no broker, single writer).
+   */
+  team?: { teamId: string; myUserId: string } | null;
+  /**
+   * The originating client's edit time (ISO-8601), recorded on the change
+   * envelope. Set by the offline-replay path from the X-Lattice-Client-Ts
+   * header so replayed edits keep their true order; defaults to now.
+   */
+  clientTs?: string | undefined;
+}
+
+/**
+ * Append a row-level change envelope to the cloud change-log when the active
+ * DB is a team cloud. No-op on local SQLite. `op` is 'upsert' for
+ * insert/update and 'delete' for removals; `after` is the post-image (null on
+ * delete) so the change-log doubles as a recoverable per-row version history.
+ */
+async function emitTeamEnvelope(
+  ctx: MutationCtx,
+  table: string,
+  pk: string | null,
+  op: 'upsert' | 'delete',
+  after: unknown,
+): Promise<void> {
+  if (!ctx.team) return;
+  await appendChangeEnvelope(ctx.db, {
+    team_id: ctx.team.teamId,
+    table_name: table,
+    pk,
+    op,
+    payload_json: after ? JSON.stringify(after) : null,
+    owner_user_id: ctx.team.myUserId,
+    client_ts: ctx.clientTs ?? new Date().toISOString(),
+  });
 }
 
 export async function createRow(
@@ -76,6 +115,7 @@ export async function createRow(
   const id = await ctx.db.insert(table, values);
   const row = await ctx.db.get(table, id);
   await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source);
+  await emitTeamEnvelope(ctx, table, id, 'upsert', row);
   return { id, row };
 }
 
@@ -89,6 +129,7 @@ export async function updateRow(
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
   await appendAudit(ctx.db, ctx.feed, table, id, 'update', before, after, ctx.source);
+  await emitTeamEnvelope(ctx, table, id, 'upsert', after);
   return { row: after };
 }
 
@@ -103,9 +144,13 @@ export async function deleteRow(
     await ctx.db.update(table, id, { deleted_at: new Date().toISOString() });
     const after = await ctx.db.get(table, id);
     await appendAudit(ctx.db, ctx.feed, table, id, 'update', before, after, ctx.source);
+    // A soft-delete is a row UPDATE (deleted_at set) — the post-image carries
+    // the tombstone, so emit an upsert envelope, not a delete.
+    await emitTeamEnvelope(ctx, table, id, 'upsert', after);
   } else {
     await ctx.db.delete(table, id);
     await appendAudit(ctx.db, ctx.feed, table, id, 'delete', before, null, ctx.source);
+    await emitTeamEnvelope(ctx, table, id, 'delete', null);
   }
 }
 
