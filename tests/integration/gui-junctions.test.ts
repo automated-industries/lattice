@@ -195,6 +195,27 @@ describe('Data Model — junction relationships', () => {
     expect(t!.columns).toContain('title'); // data columns intact
   });
 
+  it('rejects a second link to an entity that is already linked (no duplicate links)', async () => {
+    const s = await bootWithTasks();
+    const addLink = (target: string) =>
+      fetch(`${s.url}/api/schema/entities/tasks/links`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+    // tasks already links to people (assignee_id) and articles (articles_id)
+    // from the seed — a second link to either is refused.
+    expect((await addLink('people')).status).toBe(400);
+    expect((await addLink('articles')).status).toBe(400);
+    // No stray <target>_id_2 column was created.
+    const t = (await (await fetch(`${s.url}/api/entities`)).json()) as {
+      tables: { name: string; columns: string[] }[];
+    };
+    const cols = t.tables.find((x) => x.name === 'tasks')!.columns;
+    expect(cols).not.toContain('people_id');
+    expect(cols).not.toContain('articles_id_2');
+  });
+
   it('delete-table refuses while another table links to it, then succeeds once links are gone', async () => {
     const s = await bootWithTasks();
     // `people` is referenced by tasks.assignee_id → deleting it would dangle
