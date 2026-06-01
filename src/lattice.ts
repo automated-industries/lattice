@@ -80,6 +80,7 @@ import {
   removeEmbedding,
   searchByEmbedding,
 } from './search/embeddings.js';
+import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
 
 /**
  * Initialise Lattice from a YAML config file instead of an explicit path.
@@ -454,6 +455,17 @@ export class Lattice {
     const hasEmbeddings = [...this._schema.getTables().values()].some((d) => d.embeddings);
     if (hasEmbeddings) {
       await ensureEmbeddingsTable(this._adapter);
+    }
+
+    // Build full-text-search indexes (FTS5 / tsvector) for opt-in tables only.
+    // Tables without `fts` are untouched — no index, no triggers, no overhead.
+    for (const [name, def] of this._schema.getTables()) {
+      if (!def.fts) continue;
+      const actualCols = await introspectColumnsAsyncOrSync(this._adapter, name);
+      const cols = (def.fts.fields ?? autoFtsColumns(actualCols)).filter((c) =>
+        actualCols.includes(c),
+      );
+      await ensureFtsIndex(this._adapter, name, cols);
     }
 
     // Create changelog table if any table uses changelog tracking
