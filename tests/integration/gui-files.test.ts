@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
 const dirs: string[] = [];
@@ -41,12 +42,30 @@ async function boot(): Promise<{ root: string; server: GuiServerHandle }> {
   return { root, server };
 }
 
-async function ingestFile(url: string, path: string): Promise<string> {
-  const res = await fetch(`${url}/api/ingest/file`, {
+/**
+ * Seed a native `files` row via the GUI's generic row-CRUD route. A
+ * `local_ref` row points at a path on disk (the storage mode the blob route
+ * streams); omitting the path produces a metadata-only row with no blob.
+ */
+async function seedFileRow(
+  url: string,
+  opts: { path?: string; mime?: string; name?: string },
+): Promise<string> {
+  const row: Record<string, unknown> = {
+    id: randomUUID(),
+    original_name: opts.name ?? 'file',
+  };
+  if (opts.mime) row.mime = opts.mime;
+  if (opts.path) {
+    row.ref_kind = 'local_ref';
+    row.ref_uri = opts.path;
+  }
+  const res = await fetch(`${url}/api/tables/files/rows`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify(row),
   });
+  if (res.status !== 201) throw new Error(`seed failed: ${res.status}`);
   return ((await res.json()) as { id: string }).id;
 }
 
@@ -55,7 +74,11 @@ describe('files routes', () => {
     const { root, server } = await boot();
     const docPath = join(root, 'page.html');
     writeFileSync(docPath, '<h1>Hi</h1>');
-    const id = await ingestFile(server.url, docPath);
+    const id = await seedFileRow(server.url, {
+      path: docPath,
+      mime: 'text/html',
+      name: 'page.html',
+    });
 
     const res = await fetch(`${server.url}/api/files/${id}/blob`);
     expect(res.status).toBe(200);
@@ -63,14 +86,9 @@ describe('files routes', () => {
     expect(await res.text()).toBe('<h1>Hi</h1>');
   });
 
-  it('404s the blob for a text-only ingest (no underlying path)', async () => {
+  it('404s the blob for a metadata-only row (no underlying path)', async () => {
     const { server } = await boot();
-    const res = await fetch(`${server.url}/api/ingest/text`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'just text', title: 'note' }),
-    });
-    const { id } = (await res.json()) as { id: string };
+    const id = await seedFileRow(server.url, { name: 'note', mime: 'text/plain' });
     const blob = await fetch(`${server.url}/api/files/${id}/blob`);
     expect(blob.status).toBe(404);
   });
@@ -82,7 +100,7 @@ describe('files routes', () => {
       const { root, server } = await boot();
       const docPath = join(root, 'doc.txt');
       writeFileSync(docPath, 'x');
-      const id = await ingestFile(server.url, docPath);
+      const id = await seedFileRow(server.url, { path: docPath, name: 'doc.txt' });
       const res = await fetch(`${server.url}/api/files/${id}/open-in-finder`, { method: 'POST' });
       expect(res.status).toBe(200);
       expect((await res.json()).enabled).toBe(false);
