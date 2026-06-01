@@ -1674,6 +1674,52 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── Set / clear a column's relationship (ref) ─────────────────────
+        // Makes an existing column a foreign key to another entity (or clears
+        // it). No SQL change — `ref` is config-level; the column already holds
+        // the id. This is how the columns editor edits relationships.
+        if (
+          method === 'POST' &&
+          /^\/api\/schema\/entities\/[^/]+\/columns\/[^/]+\/ref$/.test(pathname)
+        ) {
+          const parts = pathname.split('/');
+          const entityName = decodeURIComponent(parts[4] ?? '');
+          const colName = decodeURIComponent(parts[6] ?? '');
+          if (!active.validTables.has(entityName)) {
+            sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          if (colName === 'id') {
+            sendJson(res, { error: 'The id column cannot be a relationship' }, 400);
+            return;
+          }
+          const fieldPath = ['entities', entityName, 'fields', colName];
+          const docCheck = loadConfigDoc(active.configPath);
+          if (docCheck.getIn(fieldPath) === undefined) {
+            sendJson(res, { error: `Unknown column: ${colName}` }, 400);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { ref?: unknown };
+          const ref = typeof body.ref === 'string' ? body.ref.trim() : '';
+          if (ref && !active.validTables.has(ref)) {
+            sendJson(res, { error: `Unknown related entity: ${ref}` }, 400);
+            return;
+          }
+          if (ref && ref === entityName) {
+            // A self-reference is allowed in principle but rarely intended via
+            // this control; block it to avoid surprising the user.
+            sendJson(res, { error: 'A column cannot reference its own entity here' }, 400);
+            return;
+          }
+          if (ref) docCheck.setIn([...fieldPath, 'ref'], ref);
+          else docCheck.deleteIn([...fieldPath, 'ref']);
+          saveConfigDoc(active.configPath, docCheck);
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          sendJson(res, { ok: true });
+          return;
+        }
+
         // ── Version history (audit log + undo/redo + revert) ──────────────
         if (method === 'GET' && pathname === '/api/history') {
           const limit = Number(url.searchParams.get('limit') ?? '200');
