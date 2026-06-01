@@ -10,6 +10,16 @@ import { checkForUpdate } from './update-check.js';
 import { startGuiServer } from './gui/server.js';
 import { discoverOutputDir } from './gui/discover-output-dir.js';
 import { runTeamsCommand } from './teams/cli-commands.js';
+import { ensureLatticeRoot, findLatticeRoot, rootConfigDir } from './framework/lattice-root.js';
+import {
+  addWorkspace,
+  getActiveWorkspace,
+  listWorkspaces,
+  resolveWorkspacePaths,
+  setActiveWorkspace,
+} from './framework/workspace.js';
+import { importLegacyUserConfig } from './framework/migrate-to-root.js';
+import { analyticsEnabled } from './framework/user-config.js';
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -20,6 +30,8 @@ interface ParsedArgs {
   subcommand?: string | undefined;
   /** Third positional for two-level subcommands, e.g. `teams dlq list`. */
   action?: string | undefined;
+  /** --root <dir> — the `.lattice` root for `init` / `workspace` commands. */
+  root?: string | undefined;
   config: string;
   out: string;
   output: string;
@@ -96,13 +108,18 @@ function parseArgs(argv: string[]): ParsedArgs {
   let table: string | undefined;
   let pk: string | undefined;
   let id: string | undefined;
+  let root: string | undefined;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
     command = argv[0];
     i = 1;
-    // `lattice teams <subcommand>` — pick up the second positional.
-    if (command === 'teams' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+    // `lattice teams|workspace <subcommand>` — pick up the second positional.
+    if (
+      (command === 'teams' || command === 'workspace') &&
+      argv[1] !== undefined &&
+      !argv[1].startsWith('-')
+    ) {
       subcommand = argv[1];
       i = 2;
       // `lattice teams <subcommand> <action>` — third positional for
@@ -199,6 +216,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--id' && i + 1 < argv.length) {
       i++;
       id = argv[i];
+    } else if (arg === '--root' && i + 1 < argv.length) {
+      i++;
+      root = argv[i];
     }
     i++;
   }
@@ -237,6 +257,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     table,
     pk,
     id,
+    root,
   };
 }
 
@@ -253,6 +274,8 @@ function printHelp(): void {
       '  lattice <command> [options]',
       '',
       'Commands:',
+      '  init        Create a .lattice root + a default workspace (auto-renders context)',
+      '  workspace   Manage workspaces (list | create --name <n> | use <id>)',
       '  generate    Generate TypeScript types, SQL migration, and scaffold files',
       '  render      One-shot context generation (writes entity context directories)',
       '  reconcile   Render + cleanup orphaned entity directories and files',
@@ -306,6 +329,10 @@ function printHelp(): void {
       '  --port <number>        Port (default: 4317; auto-increments if busy)',
       '  --team-cloud           Enable Lattice Teams cloud mode (bearer auth required)',
       '',
+      'Options (init / workspace):',
+      '  --root <dir>           The .lattice root location (default: discovered or ./.lattice)',
+      '  --name <display>       Workspace display name (init default workspace / workspace create)',
+      '',
       'Options (global):',
       '  --help, -h             Show this help message',
       '  --version, -v          Print the version number',
@@ -339,7 +366,11 @@ async function runUpdate(): Promise<void> {
 
   console.log(`Updating to ${latest}...`);
   try {
-    execSync('npm install -g latticesql@latest', { stdio: 'inherit' });
+    execSync('npm install -g latticesql@latest', {
+      stdio: 'inherit',
+      // Honor the analytics opt-out on the reinstall (suppresses the Scarf ping).
+      env: analyticsEnabled() ? process.env : { ...process.env, SCARF_ANALYTICS: 'false' },
+    });
     console.log(`Updated latticesql ${currentVersion} → ${latest}`);
   } catch {
     console.error('Update failed. Try running manually: npm install -g latticesql@latest');
@@ -546,18 +577,38 @@ async function runWatch(args: ParsedArgs): Promise<void> {
 
 async function runGui(args: ParsedArgs): Promise<void> {
   try {
-    const resolvedOutput = discoverOutputDir(args.output, args.outputExplicit);
-    if (!args.outputExplicit && resolvedOutput !== args.output) {
-      console.log(
-        `Lattice GUI: auto-detected rendered context at "${resolvedOutput}" ` +
-          `(use --output to override).`,
-      );
+    let configPath = resolve(args.config);
+    let outputDir: string;
+    // Workspace opens keep the rendered Context/ tree synced (canonical
+    // contexts + auto-render); a plain --config GUI serves only what was
+    // rendered externally.
+    let autoRender = false;
+    // Prefer the active workspace under a `.lattice` root, unless the user
+    // pointed --config at a specific config explicitly.
+    const root = findLatticeRoot(args.root ?? process.cwd());
+    const ws = root && args.config === './lattice.config.yml' ? getActiveWorkspace(root) : null;
+    if (root && ws) {
+      const paths = resolveWorkspacePaths(root, ws);
+      configPath = paths.configPath;
+      outputDir = paths.contextDir;
+      autoRender = true;
+      console.log(`Lattice GUI: opening workspace "${ws.displayName}".`);
+    } else {
+      const resolvedOutput = discoverOutputDir(args.output, args.outputExplicit);
+      if (!args.outputExplicit && resolvedOutput !== args.output) {
+        console.log(
+          `Lattice GUI: auto-detected rendered context at "${resolvedOutput}" ` +
+            `(use --output to override).`,
+        );
+      }
+      outputDir = resolve(resolvedOutput);
     }
     const handle = await startGuiServer({
-      configPath: resolve(args.config),
-      outputDir: resolve(resolvedOutput),
+      configPath,
+      outputDir,
       port: args.port,
       openBrowser: !args.noOpen,
+      autoRender,
     });
     console.log(`Lattice GUI listening at ${handle.url}`);
     console.log('Press Ctrl+C to stop.');
@@ -597,6 +648,91 @@ async function runServe(args: ParsedArgs): Promise<void> {
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// init / workspace
+// ---------------------------------------------------------------------------
+
+async function runInit(args: ParsedArgs): Promise<void> {
+  if (args.root) process.env.LATTICE_ROOT = args.root;
+  const root = ensureLatticeRoot(args.root ?? process.cwd());
+
+  const migrated = importLegacyUserConfig(root);
+  if (migrated.migrated) {
+    console.log(
+      `Imported legacy config (${migrated.copied.join(', ')}) into ${rootConfigDir(root)}`,
+    );
+  }
+
+  let ws = getActiveWorkspace(root);
+  if (!ws) {
+    ws = addWorkspace(root, { displayName: args.displayName ?? 'My Workspace' });
+    console.log(`Created workspace "${ws.displayName}"`);
+  } else {
+    console.log(`Using existing workspace "${ws.displayName}"`);
+  }
+
+  // Open once to render the initial Context/ tree (no manual `lattice render`).
+  const db = await Lattice.openWorkspace({ root, workspaceId: ws.id });
+  db.close();
+
+  const paths = resolveWorkspacePaths(root, ws);
+  console.log(`Lattice root: ${root}`);
+  console.log(`Workspace:    ${paths.dir}`);
+  console.log(`Context:      ${paths.contextDir}`);
+}
+
+async function runWorkspace(args: ParsedArgs): Promise<void> {
+  if (args.root) process.env.LATTICE_ROOT = args.root;
+  const root = findLatticeRoot(args.root ?? process.cwd());
+  if (!root) {
+    console.error('No .lattice root found. Run `lattice init` first.');
+    process.exitCode = 1;
+    return;
+  }
+
+  const sub = args.subcommand ?? 'list';
+  switch (sub) {
+    case 'list': {
+      const all = listWorkspaces(root);
+      if (all.length === 0) {
+        console.log('No workspaces. Run `lattice workspace create --name <display name>`.');
+        return;
+      }
+      const active = getActiveWorkspace(root);
+      for (const w of all) {
+        const mark = w.id === active?.id ? '*' : ' ';
+        console.log(`${mark} ${w.displayName}  [${w.kind}]  ${w.dir}  ${w.id}`);
+      }
+      return;
+    }
+    case 'create': {
+      if (!args.displayName) {
+        console.error('Usage: lattice workspace create --name <display name>');
+        process.exitCode = 1;
+        return;
+      }
+      const ws = addWorkspace(root, { displayName: args.displayName });
+      const db = await Lattice.openWorkspace({ root, workspaceId: ws.id });
+      db.close();
+      console.log(`Created workspace "${ws.displayName}" (${ws.dir})`);
+      return;
+    }
+    case 'use': {
+      if (!args.action) {
+        console.error('Usage: lattice workspace use <id>');
+        process.exitCode = 1;
+        return;
+      }
+      setActiveWorkspace(root, args.action);
+      console.log(`Active workspace set to ${args.action}`);
+      return;
+    }
+    default:
+      console.error(`Unknown workspace subcommand: ${sub}`);
+      process.exitCode = 1;
   }
 }
 
@@ -674,6 +810,12 @@ function main(): void {
         pk: args.pk,
         id: args.id,
       });
+      break;
+    case 'init':
+      void runInit(args);
+      break;
+    case 'workspace':
+      void runWorkspace(args);
       break;
     case 'update':
       void runUpdate();
