@@ -148,12 +148,9 @@ test('Advanced mode toggle restores the classic row/table editor', async ({ page
   const card = page.locator('.card').first();
   await expect(card).toHaveAttribute('href', /#\/fs\//);
 
-  // Open the settings drawer and flip Advanced mode on.
-  await page.locator('#settings-gear').click();
-  await expect(page.locator('#settings-drawer')).toHaveClass(/open/);
-  // The checkbox is visually hidden behind a styled track; click the track
-  // (inside the <label>) the way a user would to flip it on.
-  await page.locator('.toggle-track').click();
+  // Flip Advanced mode on via the sidebar toggle. The checkbox is visually
+  // hidden behind a styled track; click the track the way a user would.
+  await page.locator('.sidebar-advanced .toggle-track').click();
   await expect(page.locator('#advanced-toggle')).toBeChecked();
 
   // Object navigation now targets the classic #/objects route …

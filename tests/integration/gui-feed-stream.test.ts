@@ -105,4 +105,26 @@ describe('GUI activity feed stream', () => {
     expect(typeof event.seq).toBe('number');
     expect(typeof event.summary).toBe('string');
   });
+
+  it('backfills the activity rail from the audit log (mirrors version history)', async () => {
+    const { configPath, outputDir } = writeMinimalConfig();
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // Make an edit BEFORE connecting — it lands in the audit log only.
+    const post = await fetch(`${server.url}/api/tables/teams/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Pre-existing Team' }),
+    });
+    const { id } = (await post.json()) as { id: string };
+
+    // A fresh stream connection should backfill that prior edit (it's not in
+    // any in-process feed buffer — only the persistent audit log has it).
+    const event = await waitForFeedEvent(
+      server.url,
+      (e) => e.op === 'insert' && e.table === 'teams' && e.rowId === id,
+    );
+    expect(event.summary).toBe('Added a row to teams');
+  });
 });
