@@ -91,6 +91,27 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     args: obj({ table: str('Table name.'), id: str('Primary key of the row.') }, ['table', 'id']),
   },
   {
+    name: 'search',
+    description:
+      'Full-text search across entities. Returns rows whose text columns contain the query, ' +
+      'grouped by entity with a short snippet per hit. Use this to find records by content ' +
+      '(e.g. "find notes mentioning the budget") before reading or editing them.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        query: str('The text to search for.'),
+        tables: {
+          type: 'array',
+          description: 'Restrict the search to these entity names (optional; default = all).',
+          items: { type: 'string' },
+        },
+        limit: { type: 'integer', description: 'Max hits per entity (default 10).' },
+      },
+      ['query'],
+    ),
+  },
+  {
     name: 'get_row_context',
     description: 'Fetch the Lattice-rendered markdown context for a single row.',
     mutates: false,
