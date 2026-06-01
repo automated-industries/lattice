@@ -1875,6 +1875,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Cannot link to a junction table' }, 400);
             return;
           }
+          // One link per target via this control: refuse if the entity already
+          // has a foreign key pointing at `target` (the UI also excludes it
+          // from the picker). Keeps the data model clean and avoids the
+          // accidental <target>_id / <target>_id_2 duplication.
+          const summary = getGuiEntities(active.configPath, active.outputDir).tables.find(
+            (t) => t.name === entityName,
+          );
+          const alreadyLinked =
+            summary !== undefined &&
+            Object.values(summary.relations).some(
+              (r) => r.type === 'belongsTo' && r.table === target,
+            );
+          if (alreadyLinked) {
+            sendJson(res, { error: `"${entityName}" already links to "${target}"` }, 400);
+            return;
+          }
           // Name the FK <target>_id, de-duplicating against existing columns.
           const existingCols = new Set(
             Object.keys(active.db.getRegisteredColumns(entityName) ?? {}),
