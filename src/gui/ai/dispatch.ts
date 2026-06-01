@@ -2,6 +2,7 @@ import type { Lattice } from '../../lattice.js';
 import type { Row } from '../../types.js';
 import type { FeedBus } from './feed.js';
 import { getFunction } from './registry.js';
+import { fullTextSearch } from '../../search/fts.js';
 import {
   createRow,
   updateRow,
@@ -40,6 +41,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_entities',
   'list_rows',
   'get_row',
+  'search',
   'get_history',
   'create_row',
   'update_row',
@@ -124,6 +126,21 @@ export async function executeFunction(
         const id = requireString(args.id, 'id');
         const row = await ctx.db.get(table, id);
         return row === null ? { ok: false, error: 'Row not found' } : { ok: true, result: row };
+      }
+      case 'search': {
+        const query = requireString(args.query, 'query');
+        // Search the queryable user tables, optionally narrowed by `tables`.
+        let tables = [...ctx.validTables];
+        if (Array.isArray(args.tables) && args.tables.length > 0) {
+          const wanted = new Set(args.tables.filter((t): t is string => typeof t === 'string'));
+          tables = tables.filter((t) => wanted.has(t));
+        }
+        const limit = typeof args.limit === 'number' ? args.limit : 10;
+        const result = await fullTextSearch(ctx.db.adapter, tables, {
+          query,
+          limitPerTable: limit,
+        });
+        return { ok: true, result };
       }
       case 'create_row': {
         const table = requireTable(args.table, ctx.validTables);
