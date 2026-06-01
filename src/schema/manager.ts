@@ -15,16 +15,7 @@ import type {
   BuiltinTemplateName,
 } from '../types.js';
 import type { EntityContextDefinition } from './entity-context.js';
-
-export interface RegisteredTable {
-  name: string;
-  definition: TableDefinition;
-}
-
-export interface RegisteredMulti {
-  name: string;
-  definition: MultiTableDefinition;
-}
+import { assertSafeIdentifier } from './identifier.js';
 
 /**
  * Internal representation of a table definition where `render` has always
@@ -315,8 +306,12 @@ export class SchemaManager {
     columns: Record<string, string>,
     tableConstraints?: string[],
   ): Promise<void> {
+    // Last-line defense: identifiers reach a SQL string here regardless of
+    // caller, so reject any table/column name that could break out of the
+    // double-quote quoting (see src/schema/identifier.ts).
+    assertSafeIdentifier(name, 'table');
     const colDefs = Object.entries(columns)
-      .map(([col, type]) => `"${col}" ${type}`)
+      .map(([col, type]) => `"${assertSafeIdentifier(col, 'column')}" ${type}`)
       .join(', ');
     const constraintDefs =
       tableConstraints && tableConstraints.length > 0 ? ', ' + tableConstraints.join(', ') : '';
@@ -335,6 +330,7 @@ export class SchemaManager {
     const existing = await introspectColumnsAsyncOrSync(adapter, table);
     for (const [col, type] of Object.entries(columns)) {
       if (existing.includes(col)) continue;
+      assertSafeIdentifier(col, 'column');
       // Adapter handles dialect-specific quirks (SQLite non-constant default
       // workarounds, Postgres native DEFAULT NOW(), PK skip, etc.).
       await addColumnAsyncOrSync(adapter, table, col, type);

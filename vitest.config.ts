@@ -17,7 +17,6 @@ export default defineConfig({
         'src/schema/entity-context.ts',
         'src/config/types.ts',
         'src/db/adapter.ts',
-        'src/lifecycle/index.ts',
         // direct-ops.ts implements the postgres:// branch of each cloud
         // team operation by opening `new Lattice(cloudUrl)` against the
         // operator's cloud Postgres. The branches can't run against the

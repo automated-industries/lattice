@@ -73,6 +73,8 @@ export interface RealtimePayload {
   op: string;
   owner_user_id: string | null;
   created_at: string;
+  /** True edit time recorded by the originating client (null on legacy rows). */
+  client_ts: string | null;
 }
 
 export type RealtimeStateHandler = (state: RealtimeState) => void;
@@ -226,6 +228,7 @@ function parsePayload(raw: string | undefined): RealtimePayload | null {
       op: obj.op,
       owner_user_id: typeof obj.owner_user_id === 'string' ? obj.owner_user_id : null,
       created_at: typeof obj.created_at === 'string' ? obj.created_at : '',
+      client_ts: typeof obj.client_ts === 'string' ? obj.client_ts : null,
     };
   } catch {
     return null;
