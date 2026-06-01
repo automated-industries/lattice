@@ -81,6 +81,7 @@ import {
 import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres } from './count-many.js';
+import { fullTextSearch } from '../search/fts.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -1216,6 +1217,39 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active.outputDir,
               active.teamContext,
             ),
+          );
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/search') {
+          const q = url.searchParams.get('q') ?? '';
+          // Candidate tables: registered, non-system, team-visible, optionally
+          // narrowed by ?tables=a,b. Same visibility rules as /api/entities.
+          const yamlSet = new Set(
+            getGuiEntities(active.configPath, active.outputDir).tables.map((t) => t.name),
+          );
+          let names = [
+            ...yamlSet,
+            ...registeredExtraTables(active.db, yamlSet).map((t) => t.name),
+          ].filter((n) => !n.startsWith('_'));
+          const tctx = active.teamContext;
+          if (tctx) names = names.filter((n) => isVisibleInTeam(n, tctx));
+          const restrict = url.searchParams.get('tables');
+          if (restrict) {
+            const wanted = new Set(
+              restrict
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean),
+            );
+            names = names.filter((n) => wanted.has(n));
+          }
+          const limitRaw = Number(url.searchParams.get('limit') ?? '10');
+          sendJson(
+            res,
+            await fullTextSearch(active.db.adapter, names, {
+              query: q,
+              limitPerTable: Number.isFinite(limitRaw) ? limitRaw : 10,
+            }),
           );
           return;
         }
