@@ -59,7 +59,7 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
-import { findEnvelopeByEditId } from '../teams/team-core.js';
+import { findEnvelopeByEditId, appendChangeEnvelope } from '../teams/team-core.js';
 import {
   createRow,
   updateRow,
@@ -70,6 +70,9 @@ import {
   undoLast,
   redoLast,
   revertEntry,
+  recordSchemaAudit,
+  isSchemaOp,
+  type AuditEntry,
   type MutationCtx,
 } from './mutations.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
@@ -321,6 +324,23 @@ function feedActivitySummary(op: string, table: string): string {
       return `Linked rows in ${table}`;
     case 'unlink':
       return `Unlinked rows in ${table}`;
+    case 'schema.create_entity':
+      return `Created table ${table}`;
+    case 'schema.delete_entity':
+      return `Deleted table ${table}`;
+    case 'schema.rename_entity':
+      return `Renamed table ${table}`;
+    case 'schema.add_column':
+      return `Added a column to ${table}`;
+    case 'schema.rename_column':
+      return `Renamed a column on ${table}`;
+    case 'schema.add_link':
+    case 'schema.create_junction':
+      return `Added a link to ${table}`;
+    case 'schema.delete_link':
+      return `Deleted a link on ${table}`;
+    case 'schema.purge':
+      return `Purged ${table}`;
     default:
       return `${op} on ${table}`;
   }
@@ -1136,6 +1156,203 @@ async function syncUserIdentityRow(db: Lattice): Promise<void> {
 
 type RequestWithAuth = IncomingMessage & { authContext?: AuthContext };
 
+// ── Schema history (tracking + soft-delete revert) ────────────────────────
+// Schema/data-model changes are logged to the same `_lattice_gui_audit`
+// history as row edits and are reversible. Deletes are SOFT: the entity/field
+// is removed from the config (hiding it) but the SQL object + data are never
+// dropped, so a revert just re-adds the config entry and the data is intact.
+// No physical DROP ever runs from these paths — only the API-only purge does.
+
+/** Adapter shape used for raw catalog queries (physical-table introspection). */
+type RawAdapter = {
+  allAsync?: (sql: string) => Promise<unknown[]>;
+  dialect: 'sqlite' | 'postgres';
+};
+
+/** All physical user tables in the DB (excludes Lattice-internal `_%` tables). */
+async function listPhysicalUserTables(active: ActiveDb): Promise<string[]> {
+  const adapter = (active.db as unknown as { _adapter: RawAdapter })._adapter;
+  if (!adapter.allAsync) return active.db.getRegisteredTableNames();
+  const sql =
+    adapter.dialect === 'postgres'
+      ? `SELECT tablename AS name FROM pg_tables WHERE schemaname='public' AND tablename NOT LIKE '\\_%' ESCAPE '\\' ORDER BY tablename`
+      : `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name`;
+  return ((await adapter.allAsync(sql)) as { name: string }[]).map((r) => r.name);
+}
+
+async function physicalTableExists(active: ActiveDb, name: string): Promise<boolean> {
+  return (await listPhysicalUserTables(active)).includes(name);
+}
+
+async function physicalColumnExists(
+  active: ActiveDb,
+  table: string,
+  col: string,
+): Promise<boolean> {
+  try {
+    return (await active.db.introspectColumns(table)).includes(col);
+  } catch {
+    return false;
+  }
+}
+
+/** Cloud-only: append a `ddl` change envelope so peers refetch + converge. */
+async function emitDdlEnvelope(active: ActiveDb, table: string | null): Promise<void> {
+  const tc = active.teamContext;
+  if (!tc) return;
+  await appendChangeEnvelope(active.db, {
+    team_id: tc.teamId,
+    table_name: table,
+    pk: null,
+    op: 'ddl',
+    payload_json: null,
+    owner_user_id: tc.myUserId || null,
+  });
+}
+
+/** Record a schema op to the unified history + activity feed + emit a ddl envelope. */
+async function recordSchemaOp(
+  active: ActiveDb,
+  operation: string,
+  table: string,
+  before: unknown,
+  after: unknown,
+  summary: string,
+): Promise<void> {
+  await recordSchemaAudit(active.db, active.feed, table, operation, before, after, summary, 'gui');
+  await emitDdlEnvelope(active, table);
+}
+
+type EntityPayload = { entity: string; entityDef: unknown };
+type FieldPayload = { entity: string; column: string; fieldDef: unknown };
+type RenameEntityPayload = { entity: string };
+type RenameColumnPayload = { entity: string; column: string };
+
+/**
+ * Apply the inverse (revert/undo) or forward (redo) of a schema audit entry:
+ * a config edit (+ RENAME DDL for renames) followed by a re-open. NEVER a
+ * physical DROP — deletes are soft, so re-opening reconciles idempotently with
+ * the data intact. Returns the re-opened `ActiveDb`. Throws (caught by the
+ * route → 400) on a name collision or when the object was permanently purged,
+ * so a revert never silently clobbers or restores an empty shell.
+ */
+async function applySchemaConfig(
+  active: ActiveDb,
+  entry: AuditEntry,
+  direction: 'inverse' | 'forward',
+  autoRender: boolean,
+): Promise<ActiveDb> {
+  const before = entry.before_json
+    ? (JSON.parse(entry.before_json) as Record<string, unknown>)
+    : null;
+  const after = entry.after_json ? (JSON.parse(entry.after_json) as Record<string, unknown>) : null;
+  const doc = loadConfigDoc(active.configPath);
+  const inv = direction === 'inverse';
+  const ddl: string[] = [];
+  const has = (path: string[]): boolean => doc.getIn(path) !== undefined;
+
+  const reAddEntity = async (name: string, def: unknown): Promise<void> => {
+    if (has(['entities', name])) {
+      throw new Error(`Cannot restore "${name}": an entity with that name already exists`);
+    }
+    if (!(await physicalTableExists(active, name))) {
+      throw new Error(`Cannot restore "${name}": it was permanently purged`);
+    }
+    doc.setIn(['entities', name], def);
+  };
+  const removeEntity = (name: string): void => {
+    doc.deleteIn(['entities', name]);
+  };
+  const reAddField = async (entity: string, col: string, def: unknown): Promise<void> => {
+    if (has(['entities', entity, 'fields', col])) {
+      throw new Error(`Cannot restore column "${col}": it already exists on "${entity}"`);
+    }
+    if (!(await physicalColumnExists(active, entity, col))) {
+      throw new Error(`Cannot restore column "${col}": it was permanently purged`);
+    }
+    doc.setIn(['entities', entity, 'fields', col], def);
+  };
+  const removeField = (entity: string, col: string): void => {
+    doc.deleteIn(['entities', entity, 'fields', col]);
+  };
+  const renameEntity = (from: string, to: string): void => {
+    const def: unknown = doc.getIn(['entities', from]);
+    if (def === undefined) throw new Error(`Cannot rename "${from}": not found`);
+    if (has(['entities', to])) throw new Error(`Cannot rename to "${to}": already exists`);
+    doc.deleteIn(['entities', from]);
+    doc.setIn(['entities', to], def);
+    ddl.push(`ALTER TABLE "${from}" RENAME TO "${to}"`);
+  };
+  const renameColumn = (entity: string, from: string, to: string): void => {
+    const def: unknown = doc.getIn(['entities', entity, 'fields', from]);
+    if (def === undefined) throw new Error(`Cannot rename column "${from}": not found`);
+    if (has(['entities', entity, 'fields', to]))
+      throw new Error(`Cannot rename to "${to}": already exists`);
+    doc.deleteIn(['entities', entity, 'fields', from]);
+    doc.setIn(['entities', entity, 'fields', to], def);
+    ddl.push(`ALTER TABLE "${entity}" RENAME COLUMN "${from}" TO "${to}"`);
+  };
+
+  switch (entry.operation) {
+    case 'schema.create_entity':
+    case 'schema.create_junction': {
+      const p = after as unknown as EntityPayload;
+      if (inv) removeEntity(p.entity);
+      else await reAddEntity(p.entity, p.entityDef);
+      break;
+    }
+    case 'schema.delete_entity': {
+      const p = before as unknown as EntityPayload;
+      if (inv) await reAddEntity(p.entity, p.entityDef);
+      else removeEntity(p.entity);
+      break;
+    }
+    case 'schema.add_column':
+    case 'schema.add_link': {
+      const p = after as unknown as FieldPayload;
+      if (inv) removeField(p.entity, p.column);
+      else await reAddField(p.entity, p.column, p.fieldDef);
+      break;
+    }
+    case 'schema.delete_link': {
+      const p = before as unknown as FieldPayload;
+      if (inv) await reAddField(p.entity, p.column, p.fieldDef);
+      else removeField(p.entity, p.column);
+      break;
+    }
+    case 'schema.rename_entity': {
+      const oldN = (before as unknown as RenameEntityPayload).entity;
+      const newN = (after as unknown as RenameEntityPayload).entity;
+      if (inv) renameEntity(newN, oldN);
+      else renameEntity(oldN, newN);
+      break;
+    }
+    case 'schema.rename_column': {
+      const oldC = (before as unknown as RenameColumnPayload).column;
+      const a = after as unknown as RenameColumnPayload;
+      if (inv) renameColumn(a.entity, a.column, oldC);
+      else renameColumn(a.entity, oldC, a.column);
+      break;
+    }
+    default:
+      throw new Error(`Cannot revert unknown schema op: ${entry.operation}`);
+  }
+
+  // Run RENAME DDL on the live connection before re-opening, so the physical
+  // schema matches the edited config. (Config edits are persisted only after
+  // this succeeds; a throw above leaves the on-disk config + `active` intact.)
+  for (const sql of ddl) await execSql(active.db, sql);
+  saveConfigDoc(active.configPath, doc);
+  await disposeActive(active);
+  return openConfig(active.configPath, active.outputDir, autoRender);
+}
+
+/** Human one-liner for an undo/redo/revert of a schema entry (activity feed). */
+function schemaReverseSummary(verb: string, entry: AuditEntry): string {
+  const what = entry.operation.replace('schema.', '').replace(/_/g, ' ');
+  return `${verb} schema change (${what}) on ${entry.table_name}`;
+}
+
 export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
   const configPath = resolve(options.configPath);
   const outputDir = resolve(options.outputDir);
@@ -1427,19 +1644,32 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Entity already exists: ${entityName}` }, 400);
             return;
           }
+          // A soft-deleted table of this name still exists physically (hidden).
+          // Refuse rather than CREATE-collide or silently resurrect its data.
+          if (await physicalTableExists(active, entityName)) {
+            sendJson(
+              res,
+              {
+                error: `A deleted entity "${entityName}" exists — revert it instead, or purge it first.`,
+              },
+              400,
+            );
+            return;
+          }
           await execSql(
             active.db,
             `CREATE TABLE "${entityName}" (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT)`,
           );
-          const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', entityName], {
+          const newEntityDef = {
             fields: {
               id: { type: 'uuid', primaryKey: true },
               name: { type: 'text', required: true },
               deleted_at: { type: 'text' },
             },
             outputFile: entityName.toUpperCase() + '.md',
-          });
+          };
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', entityName], newEntityDef);
           saveConfigDoc(active.configPath, doc);
           // Save icon override if provided
           if (typeof body.icon === 'string' && body.icon.trim()) {
@@ -1464,6 +1694,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.create_entity',
+            entityName,
+            null,
+            { entity: entityName, entityDef: newEntityDef },
+            `Created table ${entityName}`,
+          );
           sendJson(res, { ok: true, name: entityName });
           return;
         }
@@ -1526,6 +1764,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `A table named "${jName}" already exists` }, 400);
             return;
           }
+          if (await physicalTableExists(active, jName)) {
+            sendJson(
+              res,
+              {
+                error: `A deleted relationship "${jName}" exists — revert it instead, or purge it first.`,
+              },
+              400,
+            );
+            return;
+          }
           // Self-referential m2m needs two distinct column names.
           const leftCol = `${left}_id`;
           const rightCol = left === right ? `${right}_id_2` : `${right}_id`;
@@ -1533,15 +1781,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             active.db,
             `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${leftCol}" TEXT, "${rightCol}" TEXT)`,
           );
-          const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', jName], {
+          const newJunctionDef = {
             fields: {
               id: { type: 'uuid', primaryKey: true },
               [leftCol]: { type: 'uuid', ref: left },
               [rightCol]: { type: 'uuid', ref: right },
             },
             outputFile: jName.toUpperCase() + '.md',
-          });
+          };
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', jName], newJunctionDef);
           saveConfigDoc(active.configPath, doc);
           if (active.teamContext?.myUserId) {
             await recordObjectOwner(
@@ -1553,6 +1802,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.create_junction',
+            jName,
+            null,
+            { entity: jName, entityDef: newJunctionDef },
+            `Linked ${left} ↔ ${right}`,
+          );
           sendJson(res, { ok: true, name: jName });
           return;
         }
@@ -1600,25 +1857,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
-          // DROP TABLE with no CASCADE (cascading is itself a data-loss vector).
-          // Surface any adapter error loudly as a 400 rather than a 500.
-          try {
-            await execSql(active.db, `DROP TABLE IF EXISTS "${name}"`);
-          } catch (err) {
-            sendJson(
-              res,
-              {
-                error: `Failed to drop "${name}": ${err instanceof Error ? err.message : String(err)}`,
-              },
-              400,
-            );
-            return;
-          }
+          // SOFT delete: remove the entity from the config (hiding it from the
+          // GUI) but DO NOT drop the SQL table — its rows stay intact so the
+          // history entry can be reverted with no snapshot. Physical removal is
+          // a separate, API-only `POST /api/schema/purge`. Capture the config
+          // block first so revert can re-add it.
           const doc = loadConfigDoc(active.configPath);
+          const deletedEntityDef = (doc.toJS() as { entities?: Record<string, unknown> })
+            .entities?.[name];
           doc.deleteIn(['entities', name]);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.delete_entity',
+            name,
+            { entity: name, entityDef: deletedEntityDef },
+            null,
+            `Deleted table ${name}`,
+          );
           sendJson(res, { ok: true });
           return;
         }
@@ -1764,6 +2022,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.rename_entity',
+            newName,
+            { entity: oldName },
+            { entity: newName },
+            `Renamed table ${oldName} → ${newName}`,
+          );
           sendJson(res, { ok: true });
           return;
         }
@@ -1819,6 +2085,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.add_column',
+            entityName,
+            null,
+            { entity: entityName, column: colName, fieldDef },
+            `Added column ${colName} to ${entityName}`,
+          );
           sendJson(res, { ok: true });
           return;
         }
@@ -1866,6 +2140,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.rename_column',
+            entityName,
+            { entity: entityName, column: colName },
+            { entity: entityName, column: newCol },
+            `Renamed column ${colName} → ${newCol} on ${entityName}`,
+          );
           sendJson(res, { ok: true });
           return;
         }
@@ -1922,11 +2204,20 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             active.db,
             `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${linkType}`,
           );
+          const linkFieldDef = { type: 'uuid', ref: target };
           const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', entityName, 'fields', colName], { type: 'uuid', ref: target });
+          doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.add_link',
+            entityName,
+            null,
+            { entity: entityName, column: colName, fieldDef: linkFieldDef },
+            `Added link ${entityName} → ${target}`,
+          );
           sendJson(res, { ok: true, column: colName });
           return;
         }
@@ -1952,30 +2243,156 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Only the table owner can remove a link' }, 403);
             return;
           }
-          if (!columnRefTarget(active.configPath, entityName, colName)) {
+          const target = columnRefTarget(active.configPath, entityName, colName);
+          if (!target) {
             sendJson(res, { error: `Not a link column: ${colName}` }, 400);
             return;
           }
-          // DROP COLUMN with no CASCADE; surface any adapter error loudly as a
-          // 400 (SQLite refuses to drop an indexed/FK/CHECK column; Postgres
-          // errors on a dependent object) rather than letting it 500.
+          // SOFT delete: remove the FK field from the config (hiding the link)
+          // but DO NOT drop the SQL column — its values stay, so revert restores
+          // them with no snapshot. Capture the field def first for revert.
+          const doc = loadConfigDoc(active.configPath);
+          const deletedFieldDef = (
+            doc.toJS() as { entities?: Record<string, { fields?: Record<string, unknown> }> }
+          ).entities?.[entityName]?.fields?.[colName];
+          doc.deleteIn(['entities', entityName, 'fields', colName]);
+          saveConfigDoc(active.configPath, doc);
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.delete_link',
+            entityName,
+            { entity: entityName, column: colName, fieldDef: deletedFieldDef },
+            null,
+            `Deleted link ${entityName} → ${target}`,
+          );
+          sendJson(res, { ok: true });
+          return;
+        }
+
+        // ── Purge permanently (API only — NOT surfaced in the GUI) ────────
+        // Soft-deleted tables/columns stay physically in the DB so they can be
+        // reverted. This is the escape hatch to physically DROP an orphaned
+        // (soft-deleted) object and reclaim space. Irreversible — after a purge,
+        // the prior soft-delete can no longer be reverted (its data is gone).
+        if (method === 'POST' && pathname === '/api/schema/purge') {
+          const body = (await readJson<unknown>(req)) as {
+            type?: unknown;
+            name?: unknown;
+            column?: unknown;
+          };
+          const type = body.type === 'column' ? 'column' : 'table';
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          const column = typeof body.column === 'string' ? body.column.trim() : '';
+          if (!name) {
+            sendJson(res, { error: 'name is required' }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, name)) {
+            sendJson(res, { error: 'Only the table owner can purge' }, 403);
+            return;
+          }
+          if (type === 'table') {
+            // Must be orphaned: physically present but NOT live (soft-deleted).
+            if (active.validTables.has(name)) {
+              sendJson(
+                res,
+                { error: `"${name}" is a live table — soft-delete it first, then purge.` },
+                400,
+              );
+              return;
+            }
+            if (!(await physicalTableExists(active, name))) {
+              sendJson(res, { error: `No soft-deleted table "${name}" to purge` }, 400);
+              return;
+            }
+            try {
+              await execSql(active.db, `DROP TABLE IF EXISTS "${name}"`);
+            } catch (err) {
+              sendJson(
+                res,
+                {
+                  error: `Failed to purge "${name}": ${err instanceof Error ? err.message : String(err)}`,
+                },
+                400,
+              );
+              return;
+            }
+            // Best-effort gui-meta cleanup (icon + column secret flags).
+            for (const meta of [
+              { table: '_lattice_gui_meta', col: 'entity_name' },
+              { table: '_lattice_gui_column_meta', col: 'table_name' },
+            ]) {
+              const rows = (await active.db.query(meta.table, {
+                filters: [{ col: meta.col, op: 'eq', val: name }],
+              })) as { id: string }[];
+              for (const r of rows) await active.db.delete(meta.table, r.id);
+            }
+            await recordSchemaAudit(
+              active.db,
+              active.feed,
+              name,
+              'schema.purge',
+              { entity: name, type: 'table' },
+              null,
+              `Purged table ${name}`,
+              'gui',
+            );
+            await emitDdlEnvelope(active, name);
+            sendJson(res, { ok: true });
+            return;
+          }
+          // type === 'column': the table is live, the column physically present
+          // but not in the config (soft-deleted link/column).
+          if (!column) {
+            sendJson(res, { error: 'column is required for a column purge' }, 400);
+            return;
+          }
+          if (!active.validTables.has(name)) {
+            sendJson(res, { error: `Unknown table: ${name}` }, 400);
+            return;
+          }
+          const registered = active.db.getRegisteredColumns(name) ?? {};
+          if (column in registered) {
+            sendJson(
+              res,
+              { error: `"${column}" is a live column — soft-delete it first, then purge.` },
+              400,
+            );
+            return;
+          }
+          if (!(await physicalColumnExists(active, name, column))) {
+            sendJson(
+              res,
+              { error: `No soft-deleted column "${column}" on "${name}" to purge` },
+              400,
+            );
+            return;
+          }
           try {
-            await execSql(active.db, `ALTER TABLE "${entityName}" DROP COLUMN "${colName}"`);
+            await execSql(active.db, `ALTER TABLE "${name}" DROP COLUMN "${column}"`);
           } catch (err) {
             sendJson(
               res,
               {
-                error: `Failed to delete link "${colName}": ${err instanceof Error ? err.message : String(err)}`,
+                error: `Failed to purge "${column}": ${err instanceof Error ? err.message : String(err)}`,
               },
               400,
             );
             return;
           }
-          const doc = loadConfigDoc(active.configPath);
-          doc.deleteIn(['entities', entityName, 'fields', colName]);
-          saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaAudit(
+            active.db,
+            active.feed,
+            name,
+            'schema.purge',
+            { entity: name, column, type: 'column' },
+            null,
+            `Purged column ${column} from ${name}`,
+            'gui',
+          );
+          await emitDdlEnvelope(active, name);
           sendJson(res, { ok: true });
           return;
         }
@@ -2015,6 +2432,34 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/history/undo') {
+          // Peek the latest LIVE entry to branch row vs schema. Schema reverts
+          // need config + re-open (which dispose the db row helpers capture), so
+          // they're handled here directly; row ops go through undoLast.
+          const live = (
+            (await active.db.query('_lattice_gui_audit', {
+              filters: [{ col: 'undone', op: 'eq', val: 0 }],
+            })) as Record<string, unknown>[]
+          ).map(parseAudit);
+          const target = live.sort((a, b) => b.ts.localeCompare(a.ts))[0];
+          if (target && isSchemaOp(target.operation)) {
+            try {
+              active = await applySchemaConfig(active, target, 'inverse', autoRender);
+            } catch (err) {
+              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+              return;
+            }
+            await active.db.update('_lattice_gui_audit', target.id, { undone: 1 });
+            active.feed.publish({
+              table: target.table_name,
+              op: 'undo',
+              rowId: null,
+              source: 'gui',
+              summary: schemaReverseSummary('Undid', target),
+            });
+            await emitDdlEnvelope(active, target.table_name);
+            sendJson(res, { ok: true, entry: target });
+            return;
+          }
           const entry = await undoLast({
             db: active.db,
             feed: active.feed,
@@ -2029,6 +2474,31 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/history/redo') {
+          const undone = (
+            (await active.db.query('_lattice_gui_audit', {
+              filters: [{ col: 'undone', op: 'eq', val: 1 }],
+            })) as Record<string, unknown>[]
+          ).map(parseAudit);
+          const target = undone.sort((a, b) => a.ts.localeCompare(b.ts))[0];
+          if (target && isSchemaOp(target.operation)) {
+            try {
+              active = await applySchemaConfig(active, target, 'forward', autoRender);
+            } catch (err) {
+              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+              return;
+            }
+            await active.db.update('_lattice_gui_audit', target.id, { undone: 0 });
+            active.feed.publish({
+              table: target.table_name,
+              op: 'redo',
+              rowId: null,
+              source: 'gui',
+              summary: schemaReverseSummary('Redid', target),
+            });
+            await emitDdlEnvelope(active, target.table_name);
+            sendJson(res, { ok: true, entry: target });
+            return;
+          }
           const entry = await redoLast({
             db: active.db,
             feed: active.feed,
@@ -2044,6 +2514,34 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {
           const id = decodeURIComponent(pathname.slice('/api/history/revert/'.length));
+          const row = (await active.db.get('_lattice_gui_audit', id)) as Record<
+            string,
+            unknown
+          > | null;
+          if (row && isSchemaOp(String(row.operation))) {
+            const target = parseAudit(row);
+            if (target.undone === 1) {
+              sendJson(res, { error: 'Entry already undone' }, 400);
+              return;
+            }
+            try {
+              active = await applySchemaConfig(active, target, 'inverse', autoRender);
+            } catch (err) {
+              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+              return;
+            }
+            await active.db.update('_lattice_gui_audit', id, { undone: 1 });
+            active.feed.publish({
+              table: target.table_name,
+              op: 'undo',
+              rowId: null,
+              source: 'gui',
+              summary: schemaReverseSummary('Reverted', target),
+            });
+            await emitDdlEnvelope(active, target.table_name);
+            sendJson(res, { ok: true });
+            return;
+          }
           const result = await revertEntry(
             {
               db: active.db,

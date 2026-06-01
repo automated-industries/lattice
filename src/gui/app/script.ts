@@ -2427,7 +2427,46 @@ export const appJs = `
       });
     }
 
+    function isSchemaHistoryOp(op) { return String(op).indexOf('schema.') === 0; }
+
+    /** One-line description for a schema/data-model history entry. */
+    function schemaEntryLabel(e) {
+      var p = (e.before_json && safeParse(e.before_json)) ||
+              (e.after_json && safeParse(e.after_json)) || {};
+      var t = '<span class="history-table">' + escapeHtml(e.table_name) + '</span>';
+      var col = escapeHtml((p && p.column) || '');
+      switch (e.operation) {
+        case 'schema.create_entity': return 'Created table ' + t;
+        case 'schema.delete_entity': return 'Deleted table ' + t + ' <span class="muted">(restorable)</span>';
+        case 'schema.rename_entity': return 'Renamed table to ' + t;
+        case 'schema.add_column': return 'Added column <span class="history-table">' + col + '</span> to ' + t;
+        case 'schema.rename_column': return 'Renamed a column on ' + t;
+        case 'schema.add_link': return 'Added a link to ' + t;
+        case 'schema.create_junction': return 'Added a link from ' + t;
+        case 'schema.delete_link': return 'Deleted a link on ' + t + ' <span class="muted">(restorable)</span>';
+        case 'schema.purge': return 'Permanently purged ' + t;
+        default: return 'Schema change on ' + t;
+      }
+    }
+
     function historyEntryHtml(e) {
+      // Schema/data-model entries get a one-line description (no row diff). A
+      // purge is permanent, so it carries no Revert button.
+      if (isSchemaHistoryOp(e.operation)) {
+        var sActions = e.undone
+          ? '<span class="muted" style="font-size:11px;">undone</span>'
+          : (e.operation === 'schema.purge'
+              ? '<span class="muted" style="font-size:11px;">permanent</span>'
+              : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>');
+        return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
+          '<div class="history-meta">' +
+            '<div><span class="history-op op-schema">SCHEMA</span></div>' +
+            '<div style="margin-top:6px;">' + escapeHtml(formatTs(e.ts)) + '</div>' +
+          '</div>' +
+          '<div class="history-summary">' + schemaEntryLabel(e) + '</div>' +
+          '<div class="history-actions">' + sActions + '</div>' +
+        '</div>';
+      }
       var before = e.before_json ? safeParse(e.before_json) : null;
       var after = e.after_json ? safeParse(e.after_json) : null;
       var summary;
