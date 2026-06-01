@@ -2985,10 +2985,15 @@ export const appJs = `
             '" title="Delete this link — drops only this column">Delete link</button>' +
           '</div>';
       }).join('');
-      // Add-link target picker. Excludes self and junction tables (linking TO a
-      // junction is rejected server-side).
+      // Add-link target picker. Excludes self, junction tables (linking TO a
+      // junction is rejected server-side), and any entity this table ALREADY
+      // links to — one link per target via this control (the server rejects
+      // duplicates too). Recomputed on every in-place re-render, so a target
+      // disappears from the dropdown the moment you link it, no refresh.
+      var linkedTargets = {};
+      linkCols.forEach(function (c) { linkedTargets[fkByCol[c]] = 1; });
       var linkTargets = ((state.entities && state.entities.tables) || []).filter(function (rt) {
-        return !isJunction(rt) && rt.name !== tableName;
+        return !isJunction(rt) && rt.name !== tableName && !linkedTargets[rt.name];
       });
       var addLinkHtml = linkTargets.length
         ? '<div class="dm-row-inline" style="margin-top:8px">' +
