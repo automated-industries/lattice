@@ -169,11 +169,15 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   }
 
   const columns: Record<string, string> = {};
+  const fieldTypes: Record<string, string> = {};
   const relations: Record<string, BelongsToRelation> = {};
   let pkFromField: string | undefined;
 
   for (const [fieldName, field] of Object.entries(entity.fields)) {
     columns[fieldName] = fieldToSqliteSpec(field);
+    // Retain the canonical field type so the GUI can display it instead of the
+    // lossy SQL spec (e.g. show `datetime`, not `TEXT NOT NULL DEFAULT …`).
+    fieldTypes[fieldName] = field.type;
 
     if (field.primaryKey) {
       pkFromField = fieldName;
@@ -210,6 +214,7 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     columns,
     render,
     outputFile,
+    ...(Object.keys(fieldTypes).length > 0 ? { fieldTypes } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(primaryKey !== undefined ? { primaryKey } : {}),
     ...(Object.keys(relations).length > 0 ? { relations } : {}),
