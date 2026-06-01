@@ -66,6 +66,48 @@ describe('GUI /api/workspaces', () => {
     expect(getActiveWorkspace(root)?.id).toBe(beta.id);
   });
 
+  it('creates a new workspace and makes it the active one', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'lattice-gws-create-'));
+    dirs.push(base);
+    process.env.LATTICE_ROOT = join(base, '.lattice');
+    const root = ensureLatticeRoot(base);
+    const alpha = addWorkspace(root, { displayName: 'Alpha' });
+    const dbA = await Lattice.openWorkspace({ root, workspaceId: alpha.id });
+    dbA.close();
+
+    const pa = resolveWorkspacePaths(root, alpha);
+    const server = await startGuiServer({
+      configPath: pa.configPath,
+      outputDir: pa.contextDir,
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    const created = (await (
+      await fetch(`${server.url}/api/workspaces/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Gamma' }),
+      })
+    ).json()) as { ok?: boolean; id?: string };
+    expect(created.ok).toBe(true);
+    expect(typeof created.id).toBe('string');
+
+    const list = (await (await fetch(`${server.url}/api/workspaces`)).json()) as WsList;
+    expect(list.workspaces.map((w) => w.label).sort()).toEqual(['Alpha', 'Gamma']);
+    expect(list.current).toBe(created.id); // the new workspace becomes active
+    expect(getActiveWorkspace(root)?.id).toBe(created.id);
+
+    // A blank name is rejected.
+    const bad = await fetch(`${server.url}/api/workspaces/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '  ' }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it('returns empty when the GUI is opened on a plain config (no root)', async () => {
     const base = mkdtempSync(join(tmpdir(), 'lattice-gws-plain-'));
     dirs.push(base);
