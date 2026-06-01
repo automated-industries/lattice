@@ -859,20 +859,12 @@ export const css = `
     #settings-gear svg { width: 18px; height: 18px; display: block; }
 
     /* ── Slim / collapsible left sidebar ────────────────── */
-    .sidebar-collapse {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 26px; height: 26px; margin: 0 0 10px 2px;
-      background: transparent; border: 1px solid var(--border); border-radius: 6px;
-      color: var(--text-muted); cursor: pointer;
+    /* Advanced-mode toggle at the top of the sidebar. */
+    .sidebar-advanced {
+      margin: 0 0 12px 2px; padding: 4px 6px; border-radius: 6px;
     }
-    .sidebar-collapse:hover { background: var(--row-hover); color: var(--text); }
-    .sidebar-collapse svg { width: 14px; height: 14px; transition: transform 0.15s ease; display: block; }
-    body.sidebar-collapsed { --nav-width: 56px; }
-    body.sidebar-collapsed nav.sidebar { padding: 18px 6px; }
-    body.sidebar-collapsed nav.sidebar .section-label,
-    body.sidebar-collapsed nav.sidebar .nav-text { display: none; }
-    body.sidebar-collapsed nav.sidebar .sidebar-collapse svg { transform: rotate(180deg); }
-    body.sidebar-collapsed nav li a { justify-content: center; padding: 7px 0; }
+    .sidebar-advanced:hover { background: var(--row-hover); }
+    .sidebar-advanced .toggle-label { font-size: 12px; color: var(--text-muted); }
 
     /* ── File-system workspace (default view) ───────────── */
     .fs-crumbs {
@@ -984,10 +976,6 @@ export const css = `
       font-size: 13px; cursor: pointer;
     }
     .drawer-tab.active { background: var(--surface); color: var(--text); font-weight: 600; border-color: var(--border-strong); }
-    .drawer-view-toggle {
-      flex: 0 0 auto; padding: 12px 18px; border-top: 1px solid var(--border);
-      border-bottom: 1px solid var(--border); background: var(--surface-2);
-    }
     .drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 4px 20px; }
     .drawer-body .teams-page { padding: 16px 18px; }
 
