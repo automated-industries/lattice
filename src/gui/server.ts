@@ -52,6 +52,7 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
+import { findEnvelopeByEditId } from '../teams/team-core.js';
 import {
   createRow,
   updateRow,
@@ -2151,6 +2152,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const clientTsHeader = req.headers['x-lattice-client-ts'];
+          const editIdHeader = req.headers['x-lattice-edit-id'];
+          const editId = typeof editIdHeader === 'string' ? editIdHeader : undefined;
           const mctx: MutationCtx = {
             db: active.db,
             feed: active.feed,
@@ -2160,7 +2163,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               ? { teamId: active.teamContext.teamId, myUserId: active.teamContext.myUserId }
               : null,
             clientTs: typeof clientTsHeader === 'string' ? clientTsHeader : undefined,
+            editId,
           };
+
+          // Idempotent offline replay: if this edit_id was already applied for
+          // the team, the queued edit is being re-sent after a reconnect — no-op
+          // and echo back the row it targeted, rather than writing a duplicate.
+          if (editId && active.teamContext && method !== 'GET') {
+            const prior = await findEnvelopeByEditId(active.db, active.teamContext.teamId, editId);
+            if (prior) {
+              sendJson(res, { ok: true, idempotent: true, id: prior.pk });
+              return;
+            }
+          }
 
           if (id === null) {
             if (method === 'GET') {
