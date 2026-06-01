@@ -358,6 +358,7 @@ async function dashboardPayload(
 
 const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
 const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
+const ROW_HISTORY_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/history$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
 
 interface ContextFile {
@@ -2031,6 +2032,52 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── Per-row version history (team cloud): the recoverable trail of
+        // every edit to one row, newest first, from __lattice_change_log.
+        // GET /api/tables/:table/rows/:id/history. Empty on local SQLite.
+        const rowHistMatch = ROW_HISTORY_PATH.exec(pathname);
+        if (rowHistMatch && method === 'GET') {
+          const table = decodeURIComponent(rowHistMatch[1] ?? '');
+          const rowId = decodeURIComponent(rowHistMatch[2] ?? '');
+          const tctx = active.teamContext;
+          if (!tctx) {
+            sendJson(res, { history: [] });
+            return;
+          }
+          if (!active.validTables.has(table)) {
+            sendJson(res, { error: `Unknown table: ${table}` }, 400);
+            return;
+          }
+          const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? '50')));
+          const rows = (await active.db.query('__lattice_change_log', {
+            filters: [
+              { col: 'team_id', op: 'eq', val: tctx.teamId },
+              { col: 'table_name', op: 'eq', val: table },
+              { col: 'pk', op: 'eq', val: rowId },
+            ],
+            orderBy: 'seq',
+            orderDir: 'desc',
+            limit,
+          })) as unknown as {
+            seq: number;
+            op: string;
+            owner_user_id: string | null;
+            created_at: string;
+            client_ts: string | null;
+            payload_json: string | null;
+          }[];
+          sendJson(res, {
+            history: rows.map((r) => ({
+              seq: r.seq,
+              op: r.op,
+              ownerUserId: r.owner_user_id,
+              at: r.client_ts ?? r.created_at,
+              payload: r.payload_json ? (JSON.parse(r.payload_json) as unknown) : null,
+            })),
+          });
+          return;
+        }
+
         // ── Row CRUD: /api/tables/:table/rows[/:id] ───────────────────────
         const rowsMatch = ROWS_PATH.exec(pathname);
         if (rowsMatch) {
@@ -2041,11 +2088,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
+          const clientTsHeader = req.headers['x-lattice-client-ts'];
           const mctx: MutationCtx = {
             db: active.db,
             feed: active.feed,
             softDeletable: active.softDeletable,
             source: 'gui',
+            team: active.teamContext
+              ? { teamId: active.teamContext.teamId, myUserId: active.teamContext.myUserId }
+              : null,
+            clientTs: typeof clientTsHeader === 'string' ? clientTsHeader : undefined,
           };
 
           if (id === null) {
