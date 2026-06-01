@@ -2519,6 +2519,12 @@ export const appJs = `
       '🔖', '🔍', '❤️', '🌐', '🌎', '🐙', '🦄', '👤',
     ];
 
+    // Edge styling for the schema graph: a real foreign key vs a many-to-many
+    // join (via a junction). Colors live here, not in CSS, because they're
+    // drawn into the SVG per edge.
+    var DM_FK_COLOR = '#22c55e'; // belongsTo — an enforced reference
+    var DM_M2M_COLOR = '#22d3ee'; // many-to-many — a junction join
+
     function renderDataModelInto(host) {
       host.innerHTML =
         '<div class="dbconfig-panel" style="margin-top:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
@@ -2527,7 +2533,7 @@ export const appJs = `
             '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
           '</div>' +
           '<div class="dm-layout">' +
-            '<div id="graph-mount"></div>' +
+            '<div id="graph-mount"><div class="muted" style="padding:24px">Loading schema graph…</div></div>' +
             '<aside id="dm-panel" hidden></aside>' +
           '</div>' +
         '</div>';
@@ -2536,75 +2542,246 @@ export const appJs = `
         dmShowEntityEditor(null);
       });
 
-      document.getElementById('graph-mount').innerHTML = renderSchemaCards();
-      document.querySelectorAll('#graph-mount .schema-card').forEach(function (card) {
-        card.addEventListener('click', function () {
-          var name = card.getAttribute('data-table');
-          dmShowEntityEditor(name);
-          highlightGraphNode(name);
+      renderSchemaGraph();
+    }
+
+    // Force-directed schema graph (vanilla — no external lib). Nodes are
+    // tables, sized by row count; edges are foreign keys (belongsTo) and
+    // many-to-many joins (junctions surface as a single m2m edge). Drag a node
+    // to reposition, scroll to zoom, drag the background to pan, click a node
+    // to edit the entity.
+    function renderSchemaGraph() {
+      var mount = document.getElementById('graph-mount');
+      if (!mount) return;
+      fetchJson('/api/graph').then(function (graph) {
+        var model = buildSchemaModel(graph);
+        if (!model.nodes.length) {
+          mount.innerHTML = '<div class="muted" style="padding:24px">No entities yet — use “+ New entity”.</div>';
+          return;
+        }
+        forceLayout(model.nodes, model.links);
+        mount.innerHTML = schemaGraphSvg(model);
+        wireSchemaGraph(mount, model);
+        if (dmActiveTable) {
+          dmShowEntityEditor(dmActiveTable);
+          highlightGraphNode(dmActiveTable);
+        }
+      }).catch(function (err) {
+        mount.innerHTML = '<div class="muted" style="padding:24px">Failed to load schema graph: ' +
+          escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // Build {nodes, links} from /api/graph: table nodes (junctions already
+    // collapsed into m2m edges by the server) + belongsTo/manyToMany edges.
+    function buildSchemaModel(graph) {
+      var byName = {};
+      ((state.entities && state.entities.tables) || []).forEach(function (t) { byName[t.name] = t; });
+      var nodes = [];
+      var index = {};
+      (graph.nodes || []).filter(function (n) { return n.type === 'table'; }).forEach(function (n) {
+        var name = n.table || n.label;
+        if (index[name] != null) return;
+        var meta = byName[name] || {};
+        var rc = (meta.rowCount != null) ? meta.rowCount : 0;
+        index[name] = nodes.length;
+        nodes.push({
+          name: name,
+          label: displayFor(name).label,
+          icon: displayFor(name).icon,
+          rowCount: rc,
+          cols: (meta.columns || []).length,
+          r: Math.max(11, Math.min(26, 11 + Math.sqrt(rc))),
+          x: 0, y: 0, vx: 0, vy: 0,
         });
       });
-      if (dmActiveTable) {
-        dmShowEntityEditor(dmActiveTable);
-        highlightGraphNode(dmActiveTable);
+      var seen = {};
+      var links = [];
+      (graph.edges || []).forEach(function (e) {
+        var kind = e.type === 'belongsTo' ? 'fk' : (e.type === 'manyToMany' ? 'm2m' : null);
+        if (!kind) return;
+        var s = String(e.source).replace(/^table:/, '');
+        var t = String(e.target).replace(/^table:/, '');
+        if (index[s] == null || index[t] == null || s === t) return;
+        var key = kind + ':' + s + '|' + t;
+        if (seen[key]) return;
+        seen[key] = true;
+        links.push({ s: s, t: t, si: index[s], ti: index[t], kind: kind, via: e.label || '' });
+      });
+      return { nodes: nodes, links: links, index: index };
+    }
+
+    // A small deterministic force simulation: ~500 settle ticks of pairwise
+    // repulsion + link springs + center gravity. O(n²) repulsion is fine for
+    // schema-scale graphs (tens of tables).
+    function forceLayout(nodes, links) {
+      var n = nodes.length;
+      var W = 1000, H = 700, cx = W / 2, cy = H / 2;
+      var ringR = Math.min(W, H) * 0.32;
+      for (var i = 0; i < n; i++) {
+        var a = (i / Math.max(1, n)) * 2 * Math.PI;
+        nodes[i].x = cx + Math.cos(a) * ringR;
+        nodes[i].y = cy + Math.sin(a) * ringR;
+        nodes[i].vx = 0; nodes[i].vy = 0;
+      }
+      var REPULSION = 9000, SPRING_LEN = 140, SPRING_K = 0.02, GRAVITY = 0.012, DAMP = 0.85;
+      for (var it = 0; it < 500; it++) {
+        for (var p = 0; p < n; p++) {
+          for (var q = p + 1; q < n; q++) {
+            var dx = nodes[p].x - nodes[q].x, dy = nodes[p].y - nodes[q].y;
+            var d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
+            var rep = REPULSION / d2;
+            var fx = (dx / d) * rep, fy = (dy / d) * rep;
+            nodes[p].vx += fx; nodes[p].vy += fy;
+            nodes[q].vx -= fx; nodes[q].vy -= fy;
+          }
+        }
+        links.forEach(function (l) {
+          var a2 = nodes[l.si], b2 = nodes[l.ti];
+          var dx2 = b2.x - a2.x, dy2 = b2.y - a2.y, d3 = Math.sqrt(dx2 * dx2 + dy2 * dy2) + 0.01;
+          var f = (d3 - SPRING_LEN) * SPRING_K, fx2 = (dx2 / d3) * f, fy2 = (dy2 / d3) * f;
+          a2.vx += fx2; a2.vy += fy2; b2.vx -= fx2; b2.vy -= fy2;
+        });
+        for (var m = 0; m < n; m++) {
+          nodes[m].vx += (cx - nodes[m].x) * GRAVITY;
+          nodes[m].vy += (cy - nodes[m].y) * GRAVITY;
+          nodes[m].vx *= DAMP; nodes[m].vy *= DAMP;
+          nodes[m].x += nodes[m].vx; nodes[m].y += nodes[m].vy;
+        }
       }
     }
 
-    // Schema browser: a card per table showing its columns (name : type, with
-    // PK/FK markers) + relationships. Junction tables are surfaced as ↔
-    // relationships, not their own cards. Built from the already-loaded
-    // state.entities (no extra fetch); click a card to edit the entity.
-    function renderSchemaCards() {
-      var tables = ((state.entities && state.entities.tables) || []).filter(function (t) {
-        return !isJunction(t);
+    function schemaGraphSvg(model) {
+      var nodes = model.nodes, links = model.links;
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      nodes.forEach(function (nd) {
+        minX = Math.min(minX, nd.x - nd.r); minY = Math.min(minY, nd.y - nd.r);
+        maxX = Math.max(maxX, nd.x + nd.r); maxY = Math.max(maxY, nd.y + nd.r);
       });
-      if (!tables.length) return '<div class="muted">No entities yet — use “+ New entity”.</div>';
-      var sorted = tables.slice().sort(function (a, b) {
-        return displayFor(a.name).label.localeCompare(displayFor(b.name).label);
-      });
-      return '<div class="schema-grid">' + sorted.map(schemaCard).join('') + '</div>';
-    }
-    function schemaCard(t) {
-      var disp = displayFor(t.name);
-      var bt = belongsToColumns(t);
-      var fkCols = {};
-      bt.forEach(function (b) { fkCols[b.rel.foreignKey] = b.rel.table; });
-      var cols = (t.columns || []).map(function (c) {
-        var type = (t.columnTypes && t.columnTypes[c]) || '';
-        var tag = c === 'id'
-          ? '<span class="schema-tag pk">PK</span>'
-          : (fkCols[c] ? '<span class="schema-tag fk">FK</span>' : '');
-        return '<div class="schema-col">' +
-          '<span class="schema-col-name">' + escapeHtml(c) + '</span>' +
-          (type ? '<span class="schema-col-type">' + escapeHtml(String(type)) + '</span>' : '') +
-          tag +
-          '</div>';
+      var pad = 60;
+      var vb = [minX - pad, minY - pad, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad];
+      var defs =
+        '<defs>' +
+          '<marker id="dm-arrow-fk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+            '<path d="M0,0 L10,5 L0,10 z" fill="' + DM_FK_COLOR + '"/></marker>' +
+          '<marker id="dm-arrow-m2m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+            '<path d="M0,0 L10,5 L0,10 z" fill="' + DM_M2M_COLOR + '"/></marker>' +
+        '</defs>';
+      var edgeSvg = links.map(function (l, i) {
+        var a = nodes[l.si], b = nodes[l.ti];
+        var color = l.kind === 'fk' ? DM_FK_COLOR : DM_M2M_COLOR;
+        var dash = l.kind === 'm2m' ? ' stroke-dasharray="6 4"' : '';
+        var markEnd = ' marker-end="url(#dm-arrow-' + l.kind + ')"';
+        var markStart = l.kind === 'm2m' ? ' marker-start="url(#dm-arrow-m2m)"' : '';
+        var title = l.kind === 'fk'
+          ? l.s + ' → ' + l.t + (l.via ? ' · via ' + l.via : '') + ' (foreign key)'
+          : l.s + ' ↔ ' + l.t + ' (many-to-many)';
+        return '<line class="dm-edge" data-edge="' + i + '" data-s="' + escapeHtml(l.s) + '" data-t="' +
+          escapeHtml(l.t) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' +
+          b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke="' + color + '" stroke-width="1.6"' +
+          dash + markStart + markEnd + ' opacity="0.7"><title>' + escapeHtml(title) + '</title></line>';
       }).join('');
-      var rels = [];
-      bt.forEach(function (b) {
-        rels.push('<span class="schema-rel" title="references">→ ' + escapeHtml(displayFor(b.rel.table).label) + '</span>');
-      });
-      junctionsFor(t.name).forEach(function (j) {
-        rels.push('<span class="schema-rel m2m" title="many-to-many">↔ ' + escapeHtml(displayFor(j.remoteRel.table).label) + '</span>');
-      });
-      var badges = (t.native ? '<span class="schema-badge">native</span>' : '') +
-        (t.shared ? '<span class="schema-badge shared">shared</span>' : '');
-      var count = (t.rowCount != null) ? String(t.rowCount) : '—';
-      return '<button type="button" class="schema-card" data-table="' + escapeHtml(t.name) + '">' +
-        '<div class="schema-card-head">' +
-          '<span class="schema-card-icon">' + disp.icon + '</span>' +
-          '<span class="schema-card-title">' + escapeHtml(disp.label) + '</span>' +
-          badges +
-          '<span class="schema-card-count" title="rows">' + count + '</span>' +
-        '</div>' +
-        '<div class="schema-card-cols">' + cols + '</div>' +
-        (rels.length ? '<div class="schema-card-rels">' + rels.join('') + '</div>' : '') +
-        '</button>';
+      var nodeSvg = nodes.map(function (nd) {
+        return '<g class="gnode" data-table="' + escapeHtml(nd.name) + '" transform="translate(' +
+          nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')">' +
+          '<circle class="gnode-glow" r="' + (nd.r + 8).toFixed(1) + '"/>' +
+          '<circle class="gnode-dot" r="' + nd.r.toFixed(1) + '"/>' +
+          '<text class="gnode-icon" y="' + (nd.r * 0.34).toFixed(1) + '" text-anchor="middle" font-size="' +
+            (nd.r * 0.95).toFixed(1) + '">' + nd.icon + '</text>' +
+          '<text class="gnode-label" y="' + (nd.r + 15).toFixed(1) + '" text-anchor="middle">' +
+            escapeHtml(nd.label) + '</text>' +
+          '<title>' + escapeHtml(nd.label + ' · ' + nd.rowCount + ' rows · ' + nd.cols + ' columns') + '</title>' +
+          '</g>';
+      }).join('');
+      var legend =
+        '<div class="dm-legend">' +
+          '<span style="color:' + DM_FK_COLOR + '"><i></i><span style="color:var(--text-muted)">foreign key</span></span>' +
+          '<span style="color:' + DM_M2M_COLOR + '"><i class="dash"></i><span style="color:var(--text-muted)">many-to-many</span></span>' +
+        '</div>';
+      return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
+        defs + '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>' + legend;
     }
 
     function highlightGraphNode(tableName) {
-      document.querySelectorAll('#graph-mount .schema-card').forEach(function (card) {
-        card.classList.toggle('active', card.getAttribute('data-table') === tableName);
+      document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
+        g.classList.toggle('active', g.getAttribute('data-table') === tableName);
+      });
+    }
+
+    // Wire interactions on the rendered schema graph: node click → editor,
+    // node drag → reposition (live edge updates), background drag → pan, wheel
+    // → zoom. Pan/zoom are done by mutating the SVG viewBox.
+    function wireSchemaGraph(mount, model) {
+      var svg = mount.querySelector('svg.dm-graph');
+      if (!svg) return;
+      var nodeEls = {};
+      mount.querySelectorAll('g.gnode').forEach(function (g) { nodeEls[g.getAttribute('data-table')] = g; });
+      var edgeEls = mount.querySelectorAll('line.dm-edge');
+
+      function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
+      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); }
+      function toData(ev) {
+        var rect = svg.getBoundingClientRect();
+        var b = vb();
+        return {
+          x: b[0] + ((ev.clientX - rect.left) / rect.width) * b[2],
+          y: b[1] + ((ev.clientY - rect.top) / rect.height) * b[3],
+        };
+      }
+      function nodeByName(name) {
+        for (var i = 0; i < model.nodes.length; i++) if (model.nodes[i].name === name) return model.nodes[i];
+        return null;
+      }
+      function updateNode(name) {
+        var nd = nodeByName(name); var g = nodeEls[name];
+        if (!nd || !g) return;
+        g.setAttribute('transform', 'translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')');
+        edgeEls.forEach(function (ln) {
+          if (ln.getAttribute('data-s') === name) { ln.setAttribute('x1', nd.x.toFixed(1)); ln.setAttribute('y1', nd.y.toFixed(1)); }
+          if (ln.getAttribute('data-t') === name) { ln.setAttribute('x2', nd.x.toFixed(1)); ln.setAttribute('y2', nd.y.toFixed(1)); }
+        });
+      }
+
+      // Wheel zoom toward the cursor.
+      svg.addEventListener('wheel', function (ev) {
+        ev.preventDefault();
+        var b = vb(); var pt = toData(ev);
+        var factor = ev.deltaY > 0 ? 1.12 : 0.89;
+        var nw = b[2] * factor, nh = b[3] * factor;
+        setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
+      }, { passive: false });
+
+      // Drag: a node repositions it; the background pans.
+      var drag = null;
+      svg.addEventListener('pointerdown', function (ev) {
+        var g = ev.target.closest && ev.target.closest('g.gnode');
+        if (g) {
+          drag = { kind: 'node', name: g.getAttribute('data-table'), moved: false };
+        } else {
+          var b = vb();
+          drag = { kind: 'pan', sx: ev.clientX, sy: ev.clientY, vb: b };
+        }
+        svg.setPointerCapture(ev.pointerId);
+      });
+      svg.addEventListener('pointermove', function (ev) {
+        if (!drag) return;
+        if (drag.kind === 'node') {
+          var pt = toData(ev); var nd = nodeByName(drag.name);
+          if (nd) { nd.x = pt.x; nd.y = pt.y; updateNode(drag.name); drag.moved = true; }
+        } else {
+          var rect = svg.getBoundingClientRect();
+          var b = drag.vb;
+          setVb([b[0] - (ev.clientX - drag.sx) * (b[2] / rect.width),
+                 b[1] - (ev.clientY - drag.sy) * (b[3] / rect.height), b[2], b[3]]);
+        }
+      });
+      svg.addEventListener('pointerup', function (ev) {
+        if (drag && drag.kind === 'node' && !drag.moved) {
+          dmShowEntityEditor(drag.name);
+          highlightGraphNode(drag.name);
+        }
+        drag = null;
+        try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
       });
     }
 

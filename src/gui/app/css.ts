@@ -473,58 +473,35 @@ export const css = `
     }
     .placeholder h2 { margin: 0 0 8px; color: var(--text); }
 
-    /* Data Model: a schema card grid on top, edit panel below when selected. */
+    /* Data Model: a force-directed schema graph on top, edit panel below. */
     .dm-layout {
       display: flex; flex-direction: column; gap: 20px;
     }
-    #graph-mount { max-height: 64vh; overflow-y: auto; }
-    .schema-grid {
-      display: grid; gap: 12px;
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    #graph-mount {
+      position: relative; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 10px; height: 64vh; overflow: hidden;
     }
-    .schema-card {
-      display: block; width: 100%; text-align: left; cursor: pointer;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 0; overflow: hidden; color: var(--text);
-      transition: border-color 0.1s ease, box-shadow 0.1s ease;
-    }
-    .schema-card:hover { border-color: var(--border-strong); }
-    .schema-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-    .schema-card-head {
-      display: flex; align-items: center; gap: 8px;
-      padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2);
-    }
-    .schema-card-icon { font-size: 15px; }
-    .schema-card-title { font-weight: 600; font-size: 13.5px; flex: 1; min-width: 0;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .schema-card-count {
-      font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px;
-      color: var(--text-muted); background: var(--bg); border-radius: 999px; padding: 1px 8px;
-    }
-    .schema-badge {
-      font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
-      padding: 1px 6px; border-radius: 999px; background: var(--bg); color: var(--text-muted);
-    }
-    .schema-badge.shared { background: var(--accent-soft); color: var(--accent); }
-    .schema-card-cols { padding: 6px 12px; display: flex; flex-direction: column; gap: 2px; }
-    .schema-col { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
-    .schema-col-name { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text); }
-    .schema-col-type { color: var(--text-muted); font-size: 11px; margin-left: auto; }
-    .schema-tag {
-      font-size: 9px; font-weight: 700; letter-spacing: 0.04em; border-radius: 3px;
-      padding: 0 4px; line-height: 1.5;
-    }
-    .schema-tag.pk { background: rgba(212, 161, 6, 0.18); color: #d4a106; }
-    .schema-tag.fk { background: rgba(34, 211, 238, 0.16); color: var(--signal); }
-    .schema-card-rels {
-      display: flex; flex-wrap: wrap; gap: 5px;
-      padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface-2);
-    }
-    .schema-rel {
+    svg.dm-graph { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+    svg.dm-graph:active { cursor: grabbing; }
+    .dm-graph .gnode { cursor: pointer; }
+    .dm-graph .gnode-glow { fill: var(--accent); opacity: 0; transition: opacity 0.1s ease; }
+    .dm-graph .gnode-dot { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.5; transition: stroke 0.1s ease; }
+    .dm-graph .gnode-label { fill: var(--text); font-size: 12px; font-weight: 500; }
+    .dm-graph .gnode-icon { dominant-baseline: middle; }
+    .dm-graph .gnode:hover .gnode-dot { stroke: var(--text-muted); }
+    .dm-graph .gnode.active .gnode-dot { stroke: var(--accent); stroke-width: 2; }
+    .dm-graph .gnode.active .gnode-glow { opacity: 0.18; }
+    .dm-graph .gnode.active .gnode-label { fill: var(--accent); }
+    .dm-edge { transition: opacity 0.1s ease; }
+    .dm-legend {
+      position: absolute; top: 10px; left: 12px; display: flex; gap: 14px;
       font-size: 11px; color: var(--text-muted);
-      background: var(--bg); border-radius: 6px; padding: 1px 7px;
+      background: rgba(11, 13, 16, 0.7); border: 1px solid var(--border);
+      border-radius: 8px; padding: 6px 10px; backdrop-filter: blur(2px);
     }
-    .schema-rel.m2m { color: var(--signal); }
+    .dm-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .dm-legend i { width: 16px; height: 0; border-top: 2px solid currentColor; display: inline-block; }
+    .dm-legend i.dash { border-top-style: dashed; }
     #dm-panel {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; padding: 20px;
