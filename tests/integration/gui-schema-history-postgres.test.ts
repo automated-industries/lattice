@@ -98,13 +98,19 @@ describe.skipIf(!PG_URL)('Schema history (Postgres) — soft-delete + revert', (
     expect(rows.rows.map((r) => r.title)).toEqual(['Keep me']);
   });
 
-  // NOTE: undo/redo operate on the GLOBAL latest audit entry. In production one
-  // Postgres database is one workspace (one audit log), so that's correct; but
-  // the CI/dev Postgres is shared across every test server here, so a global
-  // undo can target another test's entry. Undo/redo is adapter-agnostic config
-  // logic (same applySchemaConfig path as revert), covered by the isolated
-  // SQLite suite — the PG sibling proves the cross-adapter soft-delete + revert
-  // + purge below.
+  it('undo + redo a create-table on Postgres (session-scoped)', async () => {
+    // Undo/redo are scoped to THIS server's session id, so the shared CI/dev
+    // Postgres (every test server writes to one audit log) doesn't let a global
+    // undo target another test's entry — each server only steps through its own.
+    const { s } = await boot();
+    const name = `widgets_${randomBytes(3).toString('hex')}`;
+    expect((await post(s, '/api/schema/entities', { name })).status).toBe(200);
+    expect(await entityNames(s)).toContain(name);
+    expect((await post(s, '/api/history/undo')).status).toBe(200);
+    expect(await entityNames(s)).not.toContain(name);
+    expect((await post(s, '/api/history/redo')).status).toBe(200);
+    expect(await entityNames(s)).toContain(name);
+  });
 
   it('purge physically drops a soft-deleted table; then its revert is refused', async () => {
     const { s, tasks } = await boot();
