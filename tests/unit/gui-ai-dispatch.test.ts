@@ -72,6 +72,31 @@ describe('AI function dispatch', () => {
     expect(events[0]?.source).toBe('ai');
   });
 
+  it('search finds rows by content across validTables, soft-delete aware', async () => {
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'Ada Lovelace' },
+    });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p2', name: 'Alan Turing' },
+    });
+    await executeFunction(ctx, 'delete_row', { table: 'people', id: 'p2' }); // soft-delete
+
+    const hit = await executeFunction(ctx, 'search', { query: 'Ada' });
+    expect(hit.ok).toBe(true);
+    const r = hit.result as { groups: { table: string; hits: { id: string }[] }[] };
+    expect(r.groups[0]?.table).toBe('people');
+    expect(r.groups[0]?.hits.map((h) => h.id)).toEqual(['p1']);
+
+    // The soft-deleted "Alan Turing" row is excluded from results.
+    const none = await executeFunction(ctx, 'search', { query: 'Turing' });
+    expect((none.result as { groups: unknown[] }).groups).toEqual([]);
+
+    // `query` is required.
+    expect((await executeFunction(ctx, 'search', {})).ok).toBe(false);
+  });
+
   it('get_row and list_rows read back the data', async () => {
     await executeFunction(ctx, 'create_row', {
       table: 'people',
