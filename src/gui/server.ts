@@ -256,6 +256,108 @@ async function entitiesWithCounts(
   return { ...payload, tables: enrichedTables };
 }
 
+const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
+const DASHBOARD_STALE_DAYS = 14;
+
+/**
+ * Per-table "last touched" timestamp — the MAX of the first present freshness
+ * column (`updated_at` / `created_at` / `ts`). Postgres runs ONE `UNION ALL`
+ * query to stay pool-safe (same concern that drove the batched count in
+ * {@link entitiesWithCounts}); SQLite runs in-process. Tables with none of
+ * those columns are omitted (no freshness signal). Table/column names come from
+ * the registered schema (introspected), not user input, so they are safe to
+ * interpolate as identifiers.
+ */
+async function tableFreshness(
+  adapter: StorageAdapter,
+  tables: { name: string; columns: string[] }[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const withCol = tables
+    .map((t) => ({ name: t.name, col: FRESHNESS_COLS.find((c) => t.columns.includes(c)) }))
+    .filter((t): t is { name: string; col: string } => t.col !== undefined);
+  if (withCol.length === 0) return out;
+  if (adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function') {
+    const sql = withCol
+      .map((t) => `SELECT '${t.name}' AS t, MAX("${t.col}")::text AS m FROM "${t.name}"`)
+      .join(' UNION ALL ');
+    const rows = (await adapter.allAsync(sql)) as { t: string; m: string | null }[];
+    for (const r of rows) out.set(r.t, r.m);
+  } else {
+    for (const t of withCol) {
+      const rows = adapter.all(`SELECT MAX("${t.col}") AS m FROM "${t.name}"`) as {
+        m: string | null;
+      }[];
+      out.set(t.name, rows[0]?.m ?? null);
+    }
+  }
+  return out;
+}
+
+interface DashboardEntity extends GuiTableSummary {
+  lastUpdatedAt: string | null;
+  stale: boolean;
+}
+
+interface DashboardPayload {
+  generatedAt: string;
+  staleDays: number;
+  totals: { entities: number; rows: number; stale: number };
+  entities: DashboardEntity[];
+  recent: { table: string; op: string; rowId: string | null; ts: string }[];
+}
+
+/**
+ * Workspace overview: per-entity counts (reusing {@link entitiesWithCounts}) +
+ * a freshness timestamp + the recent-activity list (the GUI audit log). This is
+ * a read-only, GUI-only composition — it adds no core write-path behavior and
+ * does not affect a library consumer of Lattice.
+ */
+async function dashboardPayload(
+  db: Lattice,
+  configPath: string,
+  outputDir: string,
+  teamContext: TeamContext | null,
+): Promise<DashboardPayload> {
+  const entityList = await entitiesWithCounts(db, configPath, outputDir, teamContext);
+  // First-class entities only (skip junctions + system tables) — same set the
+  // dashboard cards show.
+  const firstClass = entityList.tables.filter(
+    (t) => !isJunctionTable(t) && !t.name.startsWith('_'),
+  );
+  const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+  const freshness = await tableFreshness(adapter, firstClass);
+  const nowMs = Date.now();
+  const staleMs = DASHBOARD_STALE_DAYS * 86_400_000;
+  let totalRows = 0;
+  let staleCount = 0;
+  const entities: DashboardEntity[] = firstClass.map((t) => {
+    const lastUpdatedAt = freshness.get(t.name) ?? null;
+    const stale = lastUpdatedAt !== null && nowMs - new Date(lastUpdatedAt).getTime() > staleMs;
+    if (typeof t.rowCount === 'number') totalRows += t.rowCount;
+    if (stale) staleCount += 1;
+    return { ...t, lastUpdatedAt, stale };
+  });
+  let recent: DashboardPayload['recent'] = [];
+  try {
+    const raw = (await db.query('_lattice_gui_audit', { limit: 15 })) as Record<string, unknown>[];
+    recent = raw
+      .map(parseAudit)
+      .sort((a, b) => b.ts.localeCompare(a.ts))
+      .slice(0, 15)
+      .map((e) => ({ table: e.table_name, op: e.operation, rowId: e.row_id, ts: e.ts }));
+  } catch {
+    // Audit table absent (a non-GUI-initialized DB) — recent stays empty.
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    staleDays: DASHBOARD_STALE_DAYS,
+    totals: { entities: entities.length, rows: totalRows, stale: staleCount },
+    entities,
+    recent,
+  };
+}
+
 const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
 const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
@@ -1097,6 +1199,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sendJson(
             res,
             await entitiesWithCounts(
+              active.db,
+              active.configPath,
+              active.outputDir,
+              active.teamContext,
+            ),
+          );
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/dashboard') {
+          sendJson(
+            res,
+            await dashboardPayload(
               active.db,
               active.configPath,
               active.outputDir,
