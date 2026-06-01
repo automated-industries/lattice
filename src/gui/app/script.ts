@@ -1166,11 +1166,13 @@ export const appJs = `
         return;
       }
       var t = d.totals || { entities: ents.length, rows: 0, stale: 0 };
-      var stats = '<div class="dash-stats">' +
-        statTile(t.entities, 'entities') +
-        statTile(t.rows, 'rows') +
-        (t.stale > 0 ? statTile(t.stale, 'stale ' + (d.staleDays || 14) + 'd+', 'warn') : '') +
-      '</div>';
+      // Entities / rows count tiles intentionally omitted — the per-entity
+      // cards already show counts. Keep only the stale-data warning (when any).
+      var stats = t.stale > 0
+        ? '<div class="dash-stats">' +
+            statTile(t.stale, 'stale ' + (d.staleDays || 14) + 'd+', 'warn') +
+          '</div>'
+        : '';
       var cardPrefix = advancedMode() ? '#/objects/' : '#/fs/';
       var cards = ents.map(function (e) {
         var disp = displayFor(e.name);
@@ -2490,7 +2492,7 @@ export const appJs = `
             '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
           '</div>' +
           '<div class="dm-layout">' +
-            '<div id="graph-mount"><div class="muted">Loading graph…</div></div>' +
+            '<div id="graph-mount"></div>' +
             '<aside id="dm-panel" hidden></aside>' +
           '</div>' +
         '</div>';
@@ -2499,28 +2501,75 @@ export const appJs = `
         dmShowEntityEditor(null);
       });
 
-      fetchJson('/api/graph').then(function (graph) {
-        document.getElementById('graph-mount').innerHTML = renderGraphSvg(graph);
-        document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
-          g.addEventListener('click', function () {
-            var name = g.getAttribute('data-table');
-            dmShowEntityEditor(name);
-            highlightGraphNode(name);
-          });
+      document.getElementById('graph-mount').innerHTML = renderSchemaCards();
+      document.querySelectorAll('#graph-mount .schema-card').forEach(function (card) {
+        card.addEventListener('click', function () {
+          var name = card.getAttribute('data-table');
+          dmShowEntityEditor(name);
+          highlightGraphNode(name);
         });
-        if (dmActiveTable) {
-          dmShowEntityEditor(dmActiveTable);
-          highlightGraphNode(dmActiveTable);
-        }
-      }).catch(function (err) {
-        document.getElementById('graph-mount').innerHTML =
-          '<div class="muted">Failed to load graph: ' + escapeHtml(err.message) + '</div>';
       });
+      if (dmActiveTable) {
+        dmShowEntityEditor(dmActiveTable);
+        highlightGraphNode(dmActiveTable);
+      }
+    }
+
+    // Schema browser: a card per table showing its columns (name : type, with
+    // PK/FK markers) + relationships. Junction tables are surfaced as ↔
+    // relationships, not their own cards. Built from the already-loaded
+    // state.entities (no extra fetch); click a card to edit the entity.
+    function renderSchemaCards() {
+      var tables = ((state.entities && state.entities.tables) || []).filter(function (t) {
+        return !isJunction(t);
+      });
+      if (!tables.length) return '<div class="muted">No entities yet — use “+ New entity”.</div>';
+      var sorted = tables.slice().sort(function (a, b) {
+        return displayFor(a.name).label.localeCompare(displayFor(b.name).label);
+      });
+      return '<div class="schema-grid">' + sorted.map(schemaCard).join('') + '</div>';
+    }
+    function schemaCard(t) {
+      var disp = displayFor(t.name);
+      var bt = belongsToColumns(t);
+      var fkCols = {};
+      bt.forEach(function (b) { fkCols[b.rel.foreignKey] = b.rel.table; });
+      var cols = (t.columns || []).map(function (c) {
+        var type = (t.columnTypes && t.columnTypes[c]) || '';
+        var tag = c === 'id'
+          ? '<span class="schema-tag pk">PK</span>'
+          : (fkCols[c] ? '<span class="schema-tag fk">FK</span>' : '');
+        return '<div class="schema-col">' +
+          '<span class="schema-col-name">' + escapeHtml(c) + '</span>' +
+          (type ? '<span class="schema-col-type">' + escapeHtml(String(type)) + '</span>' : '') +
+          tag +
+          '</div>';
+      }).join('');
+      var rels = [];
+      bt.forEach(function (b) {
+        rels.push('<span class="schema-rel" title="references">→ ' + escapeHtml(displayFor(b.rel.table).label) + '</span>');
+      });
+      junctionsFor(t.name).forEach(function (j) {
+        rels.push('<span class="schema-rel m2m" title="many-to-many">↔ ' + escapeHtml(displayFor(j.remoteRel.table).label) + '</span>');
+      });
+      var badges = (t.native ? '<span class="schema-badge">native</span>' : '') +
+        (t.shared ? '<span class="schema-badge shared">shared</span>' : '');
+      var count = (t.rowCount != null) ? String(t.rowCount) : '—';
+      return '<button type="button" class="schema-card" data-table="' + escapeHtml(t.name) + '">' +
+        '<div class="schema-card-head">' +
+          '<span class="schema-card-icon">' + disp.icon + '</span>' +
+          '<span class="schema-card-title">' + escapeHtml(disp.label) + '</span>' +
+          badges +
+          '<span class="schema-card-count" title="rows">' + count + '</span>' +
+        '</div>' +
+        '<div class="schema-card-cols">' + cols + '</div>' +
+        (rels.length ? '<div class="schema-card-rels">' + rels.join('') + '</div>' : '') +
+        '</button>';
     }
 
     function highlightGraphNode(tableName) {
-      document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
-        g.classList.toggle('active', g.getAttribute('data-table') === tableName);
+      document.querySelectorAll('#graph-mount .schema-card').forEach(function (card) {
+        card.classList.toggle('active', card.getAttribute('data-table') === tableName);
       });
     }
 
@@ -2861,115 +2910,6 @@ export const appJs = `
           }).catch(function (err) { showToast('Rename column failed: ' + err.message, {}); });
         });
       });
-    }
-
-    function renderGraphSvg(graph) {
-      // Circular layout. Junctions become edges (not nodes).
-      var allTableNodes = graph.nodes.filter(function (n) { return n.type === 'table'; });
-      var junctionNames = new Set(state.entities.tables.filter(isJunction).map(function (t) { return t.name; }));
-      var tableNodes = allTableNodes.filter(function (n) { return !junctionNames.has(n.table || n.label); });
-
-      // Build edges between first-class entities, each tagged with relationship type.
-      var entityEdges = [];
-      state.entities.tables.forEach(function (t) {
-        if (!isJunction(t)) return;
-        var rels = Object.values(t.relations);
-        if (rels.length === 2) {
-          entityEdges.push({
-            source: 'table:' + rels[0].table,
-            target: 'table:' + rels[1].table,
-            type: 'many-to-many',
-            via: t.name,
-          });
-        }
-      });
-      state.entities.tables.forEach(function (t) {
-        if (isJunction(t)) return;
-        Object.values(t.relations || {}).forEach(function (r) {
-          if (r.type === 'belongsTo') {
-            entityEdges.push({
-              source: 'table:' + t.name,
-              target: 'table:' + r.table,
-              type: 'belongs-to',
-              via: r.foreignKey,
-            });
-          }
-        });
-      });
-
-      var cx = 500, cy = 360, r = 250;
-      var nodeRadius = 30;
-      var pos = {};
-      tableNodes.forEach(function (n, i) {
-        var a = (i / tableNodes.length) * Math.PI * 2 - Math.PI / 2;
-        pos[n.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
-      });
-
-      var BELONGS_COLOR = '#2f6feb';
-      var M2M_COLOR = '#a16207';
-
-      // Trim edge endpoints back from the node centre so the arrow heads
-      // sit outside the circle. Markers are 7px tall; pad a little more.
-      function trim(from, to, pad) {
-        var dx = to.x - from.x, dy = to.y - from.y;
-        var len = Math.sqrt(dx * dx + dy * dy);
-        if (len === 0) return to;
-        var k = (len - pad) / len;
-        return { x: from.x + dx * k, y: from.y + dy * k };
-      }
-
-      var edgeSvg = entityEdges.map(function (e) {
-        var a = pos[e.source], b = pos[e.target];
-        if (!a || !b) return '';
-        var color = e.type === 'belongs-to' ? BELONGS_COLOR : M2M_COLOR;
-        var dash = e.type === 'belongs-to' ? '' : ' stroke-dasharray="6 4"';
-        // One arrowhead at the target for belongs-to (child→parent);
-        // arrowheads at both ends for many-to-many.
-        var endTrimmed = trim(a, b, nodeRadius + 4);
-        var startTrimmed = trim(b, a, nodeRadius + 4);
-        var markerEnd = ' marker-end="url(#arrow-' + (e.type === 'belongs-to' ? 'b' : 'm') + ')"';
-        var markerStart = e.type === 'many-to-many'
-          ? ' marker-start="url(#arrow-m)"' : '';
-        return '<line x1="' + startTrimmed.x + '" y1="' + startTrimmed.y +
-          '" x2="' + endTrimmed.x + '" y2="' + endTrimmed.y +
-          '" stroke="' + color + '" stroke-width="1.8"' + dash + markerEnd + markerStart +
-          ' data-edge-type="' + e.type + '" data-via="' + escapeHtml(e.via || '') + '"></line>';
-      }).join('');
-
-      var nodeSvg = tableNodes.map(function (n) {
-        var p = pos[n.id];
-        var tableName = n.table || n.label;
-        var d = displayFor(tableName);
-        return '<g class="gnode" data-table="' + escapeHtml(tableName) + '">' +
-          '<circle cx="' + p.x + '" cy="' + p.y + '" r="' + nodeRadius +
-            '" fill="#e7efff" stroke="' + BELONGS_COLOR + '" stroke-width="1.5" />' +
-          '<text x="' + p.x + '" y="' + (p.y + 7) + '" text-anchor="middle" font-size="20">' + d.icon + '</text>' +
-          '<text x="' + p.x + '" y="' + (p.y + nodeRadius + 18) + '" text-anchor="middle" font-size="12" fill="#e7ecf0">' +
-          escapeHtml(d.label) + '</text></g>';
-      }).join('');
-
-      // Arrow-head markers: "b" = belongs-to (blue), "m" = many-to-many (amber).
-      var defs =
-        '<defs>' +
-          '<marker id="arrow-b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
-            '<path d="M0,0 L10,5 L0,10 z" fill="' + BELONGS_COLOR + '" />' +
-          '</marker>' +
-          '<marker id="arrow-m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
-            '<path d="M0,0 L10,5 L0,10 z" fill="' + M2M_COLOR + '" />' +
-          '</marker>' +
-        '</defs>';
-
-      // Legend in the corner.
-      var legend =
-        '<g class="dm-legend" transform="translate(20, 20)">' +
-          '<line x1="0" y1="6" x2="36" y2="6" stroke="' + BELONGS_COLOR + '" stroke-width="1.8" marker-end="url(#arrow-b)" />' +
-          '<text x="44" y="10" font-size="11" fill="#8b96a3">belongs-to (child → parent)</text>' +
-          '<line x1="0" y1="28" x2="36" y2="28" stroke="' + M2M_COLOR + '" stroke-width="1.8" stroke-dasharray="6 4" marker-start="url(#arrow-m)" marker-end="url(#arrow-m)" />' +
-          '<text x="44" y="32" font-size="11" fill="#8b96a3">many-to-many</text>' +
-        '</g>';
-
-      return '<svg viewBox="0 0 1000 720" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">' +
-        defs + legend + edgeSvg + nodeSvg + '</svg>';
     }
 
     // ────────────────────────────────────────────────────────────
@@ -3460,14 +3400,11 @@ export const appJs = `
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:16px">' +
             '<input type="checkbox" id="pref-analytics"' +
               (prefs.analytics !== false ? ' checked' : '') + '>' +
-            '<span>Anonymous install analytics</span>' +
+            '<span>Send anonymous analytics</span>' +
           '</label>' +
           '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
-            'Lattice sends a one-time anonymous ping to ' +
-            '<a href="https://scarf.sh" target="_blank" rel="noopener">Scarf</a> at install ' +
-            '(package, version, OS — no usage data, no personal data). Uncheck to opt out; ' +
-            'in-app updates (<code>lattice update</code>) suppress it. For a fully clean ' +
-            'install, set <code>SCARF_ANALYTICS=false</code> before installing.' +
+            'Anonymous analytics will be shared with Lattice using ' +
+            '<a href="https://scarf.sh" target="_blank" rel="noopener">Scarf</a>.' +
           '</p>' +
           '<div id="pref-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
         '</div>';
