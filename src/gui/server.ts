@@ -737,6 +737,13 @@ async function openConfig(
       before_json: 'TEXT',
       after_json: 'TEXT',
       undone: 'INTEGER NOT NULL DEFAULT 0',
+      // The GUI session (one per server process) that made the change. The
+      // header undo/redo stack is scoped to the current session — you undo
+      // YOUR OWN recent actions, not another cloud user's edit — while the
+      // version-history per-entry Revert can revert any entry regardless of
+      // session. Nullable + additive (back-compat with pre-1.16 rows); added
+      // idempotently to existing DBs by the schema reconcile.
+      session_id: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
@@ -1218,8 +1225,19 @@ async function recordSchemaOp(
   before: unknown,
   after: unknown,
   summary: string,
+  sessionId: string,
 ): Promise<void> {
-  await recordSchemaAudit(active.db, active.feed, table, operation, before, after, summary, 'gui');
+  await recordSchemaAudit(
+    active.db,
+    active.feed,
+    table,
+    operation,
+    before,
+    after,
+    summary,
+    'gui',
+    sessionId,
+  );
   await emitDdlEnvelope(active, table);
 }
 
@@ -1360,6 +1378,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const host = options.host ?? '127.0.0.1';
   const teamCloud = options.teamCloud ?? false;
   const autoRender = options.autoRender ?? false;
+  // One id per GUI server process. Stamped on every audit entry so the header
+  // undo/redo stack is scoped to THIS session's own actions (you undo what you
+  // did, not another cloud user's edit). The per-entry Revert stays global.
+  const sessionId = crypto.randomUUID();
 
   // Mutable reference: switching DBs replaces this wholesale.
   let active: ActiveDb = await openConfig(configPath, outputDir, autoRender);
@@ -1701,6 +1723,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             null,
             { entity: entityName, entityDef: newEntityDef },
             `Created table ${entityName}`,
+            sessionId,
           );
           sendJson(res, { ok: true, name: entityName });
           return;
@@ -1809,6 +1832,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             null,
             { entity: jName, entityDef: newJunctionDef },
             `Linked ${left} ↔ ${right}`,
+            sessionId,
           );
           sendJson(res, { ok: true, name: jName });
           return;
@@ -1876,6 +1900,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             { entity: name, entityDef: deletedEntityDef },
             null,
             `Deleted table ${name}`,
+            sessionId,
           );
           sendJson(res, { ok: true });
           return;
@@ -2029,6 +2054,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             { entity: oldName },
             { entity: newName },
             `Renamed table ${oldName} → ${newName}`,
+            sessionId,
           );
           sendJson(res, { ok: true });
           return;
@@ -2092,6 +2118,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             null,
             { entity: entityName, column: colName, fieldDef },
             `Added column ${colName} to ${entityName}`,
+            sessionId,
           );
           sendJson(res, { ok: true });
           return;
@@ -2147,6 +2174,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             { entity: entityName, column: colName },
             { entity: entityName, column: newCol },
             `Renamed column ${colName} → ${newCol} on ${entityName}`,
+            sessionId,
           );
           sendJson(res, { ok: true });
           return;
@@ -2217,6 +2245,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             null,
             { entity: entityName, column: colName, fieldDef: linkFieldDef },
             `Added link ${entityName} → ${target}`,
+            sessionId,
           );
           sendJson(res, { ok: true, column: colName });
           return;
@@ -2266,6 +2295,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             { entity: entityName, column: colName, fieldDef: deletedFieldDef },
             null,
             `Deleted link ${entityName} → ${target}`,
+            sessionId,
           );
           sendJson(res, { ok: true });
           return;
@@ -2338,6 +2368,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               null,
               `Purged table ${name}`,
               'gui',
+              sessionId,
             );
             await emitDdlEnvelope(active, name);
             sendJson(res, { ok: true });
@@ -2391,6 +2422,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             null,
             `Purged column ${column} from ${name}`,
             'gui',
+            sessionId,
           );
           await emitDdlEnvelope(active, name);
           sendJson(res, { ok: true });
@@ -2437,7 +2469,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // they're handled here directly; row ops go through undoLast.
           const live = (
             (await active.db.query('_lattice_gui_audit', {
-              filters: [{ col: 'undone', op: 'eq', val: 0 }],
+              filters: [
+                { col: 'undone', op: 'eq', val: 0 },
+                { col: 'session_id', op: 'eq', val: sessionId },
+              ],
             })) as Record<string, unknown>[]
           ).map(parseAudit);
           const target = live.sort((a, b) => b.ts.localeCompare(a.ts))[0];
@@ -2465,6 +2500,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             feed: active.feed,
             softDeletable: active.softDeletable,
             source: 'gui',
+            sessionId,
           });
           if (!entry) {
             sendJson(res, { error: 'Nothing to undo' }, 400);
@@ -2476,7 +2512,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (method === 'POST' && pathname === '/api/history/redo') {
           const undone = (
             (await active.db.query('_lattice_gui_audit', {
-              filters: [{ col: 'undone', op: 'eq', val: 1 }],
+              filters: [
+                { col: 'undone', op: 'eq', val: 1 },
+                { col: 'session_id', op: 'eq', val: sessionId },
+              ],
             })) as Record<string, unknown>[]
           ).map(parseAudit);
           const target = undone.sort((a, b) => a.ts.localeCompare(b.ts))[0];
@@ -2504,6 +2543,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             feed: active.feed,
             softDeletable: active.softDeletable,
             source: 'gui',
+            sessionId,
           });
           if (!entry) {
             sendJson(res, { error: 'Nothing to redo' }, 400);
@@ -3121,6 +3161,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             feed: active.feed,
             softDeletable: active.softDeletable,
             source: 'gui',
+            sessionId,
             team: active.teamContext
               ? { teamId: active.teamContext.teamId, myUserId: active.teamContext.myUserId }
               : null,
@@ -3206,6 +3247,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             feed: active.feed,
             softDeletable: active.softDeletable,
             source: 'gui',
+            sessionId,
           };
           if (op === 'link') {
             await linkRows(linkCtx, table, body);
