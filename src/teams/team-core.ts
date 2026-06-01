@@ -106,6 +106,12 @@ export interface ChangeEnvelopeEntry {
   op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete';
   payload_json: string | null;
   owner_user_id?: string | null;
+  /**
+   * True edit time as recorded by the originating client (ISO-8601). Used to
+   * preserve edit-timestamp order for offline replays; defaults to the
+   * server-receipt time when omitted. Never used for ordering — that's `seq`.
+   */
+  client_ts?: string | null;
 }
 
 /**
@@ -129,6 +135,7 @@ export async function appendChangeEnvelope(
     limit: 1,
   })) as unknown as { seq: number }[];
   const seq = (rows[0]?.seq ?? 0) + 1;
+  const now = new Date().toISOString();
   await db.insert('__lattice_change_log', {
     seq,
     team_id: entry.team_id,
@@ -137,7 +144,8 @@ export async function appendChangeEnvelope(
     op: entry.op,
     payload_json: entry.payload_json,
     owner_user_id: entry.owner_user_id ?? null,
-    created_at: new Date().toISOString(),
+    created_at: now,
+    client_ts: entry.client_ts ?? now,
   });
   return seq;
 }
