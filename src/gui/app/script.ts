@@ -1,4 +1,3 @@
-/* eslint-disable */
 // Extracted verbatim from app.ts — the GUI client script (static template, no interpolation).
 export const appJs = `
   (function () {
@@ -1002,35 +1001,38 @@ export const appJs = `
     // ────────────────────────────────────────────────────────────
     // Dashboard
     // ────────────────────────────────────────────────────────────
-    function renderDashboard(content) {
-      // Show every first-class (non-junction, non-system) entity. The
-      // previous implementation used DASHBOARD_ORDER as the filter — meaning
-      // installs whose YAML declared tables outside the hardcoded list
-      // (e.g. clients / students / vendors) saw a blank dashboard with no
-      // hint why. DASHBOARD_ORDER is now a preference for ordering only;
-      // tables not in it appear after, in declaration order.
-      var preferenceRank = function (name) {
-        var idx = DASHBOARD_ORDER.indexOf(name);
-        return idx === -1 ? DASHBOARD_ORDER.length : idx;
+    function dashboardPreferenceRank(name) {
+      // DASHBOARD_ORDER is a preference for ordering only; tables not in it
+      // appear after, in declaration order.
+      var idx = DASHBOARD_ORDER.indexOf(name);
+      return idx === -1 ? DASHBOARD_ORDER.length : idx;
+    }
+    function statTile(n, label, cls) {
+      return '<div class="stat-tile' + (cls ? ' ' + cls : '') + '">' +
+        '<div class="stat-n">' + escapeHtml(String(n)) + '</div>' +
+        '<div class="stat-l">' + escapeHtml(label) + '</div>' +
+        '</div>';
+    }
+    // Fallback dashboard data from the already-loaded entities list, used if
+    // the /api/dashboard call fails (no freshness/recent, just counts).
+    function dashboardFallback() {
+      var tables = (state.entities.tables || []).filter(function (t) {
+        return !isJunction(t) && t.name.charAt(0) !== '_';
+      });
+      return {
+        totals: { entities: tables.length, rows: 0, stale: 0 },
+        staleDays: 14,
+        entities: tables.map(function (t) {
+          return { name: t.name, rowCount: t.rowCount, lastUpdatedAt: null, stale: false };
+        }),
+        recent: [],
       };
-      var firstClass = (state.entities.tables || [])
-        .filter(function (t) {
-          // Junctions belong on the Data Model page, not as dashboard cards.
-          if (isJunction(t)) return false;
-          // System tables (_lattice_gui_*, __lattice_*) are hidden.
-          if (t.name.charAt(0) === '_') return false;
-          return true;
-        })
-        .slice()
-        .sort(function (a, b) {
-          var ra = preferenceRank(a.name);
-          var rb = preferenceRank(b.name);
-          if (ra !== rb) return ra - rb;
-          // Same preference rank — keep declaration order from the API.
-          return 0;
-        });
-
-      if (firstClass.length === 0) {
+    }
+    function drawDashboard(content, d) {
+      var ents = (d.entities || []).slice().sort(function (a, b) {
+        return dashboardPreferenceRank(a.name) - dashboardPreferenceRank(b.name);
+      });
+      if (ents.length === 0) {
         content.innerHTML =
           '<div class="placeholder">' +
             '<h2>No entities yet</h2>' +
@@ -1038,18 +1040,51 @@ export const appJs = `
           '</div>';
         return;
       }
-
+      var t = d.totals || { entities: ents.length, rows: 0, stale: 0 };
+      var stats = '<div class="dash-stats">' +
+        statTile(t.entities, 'entities') +
+        statTile(t.rows, 'rows') +
+        (t.stale > 0 ? statTile(t.stale, 'stale ' + (d.staleDays || 14) + 'd+', 'warn') : '') +
+      '</div>';
       var cardPrefix = advancedMode() ? '#/objects/' : '#/fs/';
-      var cards = firstClass.map(function (t) {
-        var d = displayFor(t.name);
-        var count = (t.rowCount != null) ? t.rowCount : 0;
-        return '<a class="card" href="' + cardPrefix + t.name + '">' +
-          '<div class="card-icon">' + d.icon + '</div>' +
-          '<div class="card-label">' + escapeHtml(d.label) + '</div>' +
+      var cards = ents.map(function (e) {
+        var disp = displayFor(e.name);
+        var count = (e.rowCount != null) ? e.rowCount : 0;
+        var fresh = e.lastUpdatedAt
+          ? '<div class="card-fresh' + (e.stale ? ' stale' : '') + '" title="Last updated ' +
+              escapeHtml(String(e.lastUpdatedAt)) + '">' + relTime(e.lastUpdatedAt) + '</div>'
+          : '';
+        return '<a class="card" href="' + cardPrefix + e.name + '">' +
+          '<div class="card-icon">' + disp.icon + '</div>' +
+          '<div class="card-label">' + escapeHtml(disp.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +
+          fresh +
           '</a>';
       }).join('');
-      content.innerHTML = '<div class="dashboard">' + cards + '</div>';
+      var recent = '';
+      if (d.recent && d.recent.length) {
+        var items = d.recent.map(function (r) {
+          var ic = FEED_ICONS[r.op] || '•';
+          var label = displayFor(r.table).label;
+          return '<li class="dash-act">' +
+            '<span class="dash-act-ic">' + ic + '</span>' +
+            '<span class="dash-act-txt">' + escapeHtml(String(r.op)) + ' · ' + escapeHtml(label) + '</span>' +
+            '<span class="dash-act-time">' + relTime(r.ts) + '</span>' +
+            '</li>';
+        }).join('');
+        recent = '<div class="dash-recent"><div class="dash-recent-head">Recent activity</div>' +
+          '<ul>' + items + '</ul></div>';
+      }
+      content.innerHTML = stats + '<div class="dashboard">' + cards + '</div>' + recent;
+    }
+    function renderDashboard(content) {
+      // Workspace overview: counts + freshness + recent activity from
+      // /api/dashboard. Falls back to plain cards if the call fails.
+      fetchJson('/api/dashboard').then(function (d) {
+        drawDashboard(content, d);
+      }).catch(function () {
+        drawDashboard(content, dashboardFallback());
+      });
     }
 
     // ────────────────────────────────────────────────────────────
