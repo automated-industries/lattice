@@ -212,6 +212,24 @@ export const css = `
     .last-edited { margin: -4px 0 12px; font-size: 12px; color: var(--text-muted); }
     .last-edited:empty { display: none; }
 
+    /* ── Realtime collaboration cues ───────────────────── */
+    /* Flash a row when another editor changes it. */
+    @keyframes lattice-flash-kf {
+      0%   { background: var(--accent-soft); }
+      100% { background: transparent; }
+    }
+    tr.lattice-flash > td { animation: lattice-flash-kf 1.2s ease-out; }
+    @media (prefers-reduced-motion: reduce) {
+      tr.lattice-flash > td { animation: none; }
+    }
+    /* Unseen-change count next to a sidebar entity. */
+    .nav-badge {
+      display: inline-block; min-width: 16px; text-align: center;
+      margin-left: 4px; padding: 0 5px; border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 10px; font-weight: 600; line-height: 16px; vertical-align: middle;
+    }
+
     /* ── Layout ────────────────────────────────────────── */
     /* minmax(0, 1fr) on the content track lets a wide child (a table with
        chip-heavy cells) shrink instead of forcing the page wider than the
