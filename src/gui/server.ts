@@ -19,6 +19,7 @@ import {
   getActiveWorkspace,
   setActiveWorkspace,
   getWorkspace,
+  addWorkspace,
   resolveWorkspacePaths,
 } from '../framework/workspace.js';
 import type { LatticeFieldDef } from '../config/types.js';
@@ -1691,6 +1692,49 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, id: ws.id });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/workspaces/create') {
+          if (teamCloud) {
+            sendJson(res, { error: 'Workspace creation is disabled in team-cloud mode' }, 403);
+            return;
+          }
+          if (!latticeRoot) {
+            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { name?: unknown };
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          if (!name) {
+            sendJson(res, { error: 'name is required' }, 400);
+            return;
+          }
+          let created;
+          try {
+            created = addWorkspace(latticeRoot, { displayName: name, makeActive: false });
+          } catch (e) {
+            sendJson(res, { error: `Failed to create workspace: ${(e as Error).message}` }, 500);
+            return;
+          }
+          // Open + activate the new workspace (mirror the switch handler).
+          const newPaths = resolveWorkspacePaths(latticeRoot, created);
+          let newActive: ActiveDb;
+          try {
+            newActive = await openConfig(newPaths.configPath, newPaths.contextDir);
+          } catch (e) {
+            sendJson(
+              res,
+              {
+                error: `Created but failed to open ${created.displayName}: ${(e as Error).message}`,
+              },
+              500,
+            );
+            return;
+          }
+          setActiveWorkspace(latticeRoot, created.id);
+          await disposeActive(active);
+          active = newActive;
+          sendJson(res, { ok: true, id: created.id });
           return;
         }
 

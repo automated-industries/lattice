@@ -36,7 +36,7 @@ export const guiAppHtml = `<!doctype html>
       <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
       <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">📜</a>
     </div>
-    <div class="db-switcher">
+    <div class="db-switcher" id="db-switcher-host">
       <button class="db-button" id="db-button" title="Switch database">
         <span class="db-status" id="db-status" title="Local"></span>
         <span class="db-icon">💾</span>
@@ -47,6 +47,7 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <div class="db-switcher" id="ws-switcher" hidden>
       <button class="db-button" id="ws-button" title="Switch workspace">
+        <span class="db-status" id="ws-status" title="Workspace"></span>
         <span class="db-icon">📂</span>
         <span class="db-name" id="ws-name">workspace</span>
         <span class="db-caret">▾</span>

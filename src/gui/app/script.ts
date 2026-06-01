@@ -196,27 +196,27 @@ export const appJs = `
     var realtimeSource = null;
     var realtimePending = null;
     function setStatusPill(mode, state) {
-      var el = document.getElementById('db-status');
-      if (!el) return;
-      el.classList.remove(
-        'is-cloud-connected',
-        'is-cloud-disconnected',
-        'is-cloud-connecting',
-      );
-      if (mode !== 'cloud') {
-        el.title = 'Local database — no realtime channel';
-        return;
-      }
-      if (state === 'connected') {
-        el.classList.add('is-cloud-connected');
-        el.title = 'Cloud database — live';
-      } else if (state === 'connecting') {
-        el.classList.add('is-cloud-connecting');
-        el.title = 'Cloud database — connecting…';
-      } else {
-        el.classList.add('is-cloud-disconnected');
-        el.title = 'Cloud database — disconnected';
-      }
+      // Update both the database-switcher dot and the workspace-switcher dot so
+      // whichever switcher is visible reflects the live realtime status.
+      ['db-status', 'ws-status'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.classList.remove('is-cloud-connected', 'is-cloud-disconnected', 'is-cloud-connecting');
+        if (mode !== 'cloud') {
+          el.title = 'Local — no realtime channel';
+          return;
+        }
+        if (state === 'connected') {
+          el.classList.add('is-cloud-connected');
+          el.title = 'Cloud — live';
+        } else if (state === 'connecting') {
+          el.classList.add('is-cloud-connecting');
+          el.title = 'Cloud — connecting…';
+        } else {
+          el.classList.add('is-cloud-disconnected');
+          el.title = 'Cloud — disconnected';
+        }
+      });
     }
     function scheduleRealtimeRefresh() {
       if (realtimePending) return;
@@ -773,14 +773,24 @@ export const appJs = `
       var btn = document.getElementById('ws-button');
       var menu = document.getElementById('ws-menu');
       var nameEl = document.getElementById('ws-name');
+      var dbHost = document.getElementById('db-switcher-host');
       if (!wrap || !btn || !menu || !nameEl) return;
       var list = (data && data.workspaces) || [];
-      // Only surface the switcher when there is more than one workspace — a
-      // plain (non-workspace) GUI has none, so this stays hidden.
-      if (list.length < 2) { wrap.hidden = true; return; }
+      // In workspace mode (a .lattice root with ≥1 workspace) the Workspaces
+      // switcher is the SINGLE switcher — the per-config database switcher is
+      // redundant there, so hide it. Without a root there are no workspaces, so
+      // the database switcher remains the fallback.
+      if (list.length < 1) {
+        wrap.hidden = true;
+        if (dbHost) dbHost.hidden = false;
+        return;
+      }
       wrap.hidden = false;
+      if (dbHost) dbHost.hidden = true;
       var current = list.filter(function (w) { return w.id === (data && data.current); })[0];
       nameEl.textContent = (current && current.label) || 'workspace';
+      var curKind = (current && current.kind) || 'local';
+      setStatusPill(curKind, curKind === 'cloud' ? 'connecting' : 'local');
 
       function buildMenu() {
         var items = list.map(function (w) {
@@ -791,7 +801,12 @@ export const appJs = `
             '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,0.06);color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em">' + escapeHtml(w.kind) + '</span>' +
             '</button>';
         }).join('');
-        menu.innerHTML = '<div class="db-section">Workspaces</div>' + items;
+        menu.innerHTML =
+          '<div class="db-section">Workspaces</div>' + items +
+          '<div class="db-section">New workspace</div>' +
+          '<div class="db-create">' +
+            '<button class="btn primary" id="ws-create-btn" style="width:100%;">+ New workspace…</button>' +
+          '</div>';
         menu.querySelectorAll('button.db-item').forEach(function (b) {
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-id');
@@ -810,6 +825,9 @@ export const appJs = `
             });
           });
         });
+        document.getElementById('ws-create-btn').addEventListener('click', function () {
+          showCreateWorkspaceInput(menu);
+        });
       }
 
       btn.onclick = function (e) {
@@ -822,6 +840,42 @@ export const appJs = `
         if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
           menu.hidden = true;
         }
+      });
+    }
+
+    // Inline "new workspace" name entry, shown inside the Workspaces menu.
+    function showCreateWorkspaceInput(menu) {
+      var host = menu.querySelector('.db-create');
+      if (!host) return;
+      host.innerHTML =
+        '<input id="ws-new-name" type="text" placeholder="Workspace name" autocomplete="off" ' +
+          'style="width:100%;box-sizing:border-box;padding:7px 10px;margin-bottom:6px;' +
+          'background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px" />' +
+        '<button class="btn primary" id="ws-new-create" style="width:100%;">Create</button>';
+      var input = document.getElementById('ws-new-name');
+      var create = document.getElementById('ws-new-create');
+      input.focus();
+      function submit() {
+        var name = (input.value || '').trim();
+        if (!name) { input.focus(); return; }
+        withBusy(create, function () {
+          return fetchJson('/api/workspaces/create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: name }),
+          }).then(function () {
+            menu.hidden = true;
+            return reloadEverything();
+          }).then(function () {
+            showToast('Created workspace', {});
+          }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
+        });
+      }
+      create.addEventListener('click', submit);
+      input.addEventListener('click', function (e) { e.stopPropagation(); });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
+        else if (e.key === 'Escape') { menu.hidden = true; }
       });
     }
 
