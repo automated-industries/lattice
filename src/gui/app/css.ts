@@ -560,27 +560,18 @@ export const css = `
     .dm-row-inline select { flex: 0 0 110px; }
     .dm-row-inline .btn { height: 32px; font-size: 12.5px; padding: 0 12px; flex-shrink: 0; }
     .dm-cols { display: flex; flex-direction: column; gap: 6px; }
+    /* Columns: name | type | secret. Links live in their own section. */
     .dm-col-row {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
       gap: 8px; align-items: center;
     }
     .dm-col-type {
       font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px;
       color: var(--text-muted); white-space: nowrap;
     }
-    .dm-col-fkname { color: var(--text); }
-    .dm-col-reltext { font-size: 12px; color: var(--signal); white-space: nowrap; }
     .dm-col-row input {
       padding: 7px 10px; font: inherit; border: 1px solid var(--border);
       border-radius: 6px; background: var(--surface); font-size: 13.5px; min-width: 0;
-    }
-    .dm-col-row select.dm-col-ref {
-      padding: 6px 8px; font: inherit; font-size: 12px; border: 1px solid var(--border);
-      border-radius: 6px; background: var(--surface-2); color: var(--text-muted); max-width: 140px;
-    }
-    #dm-newcol-ref {
-      padding: 6px 8px; font: inherit; font-size: 12px; border: 1px solid var(--border);
-      border-radius: 6px; background: var(--surface-2); color: var(--text);
     }
     .dm-col-row .dm-locked {
       padding: 7px 10px; font: inherit; font-size: 13.5px;
@@ -590,7 +581,17 @@ export const css = `
     }
     .dm-col-row .dm-locked-label { font-size: 11px; text-transform: uppercase;
       letter-spacing: 0.04em; color: var(--text-muted); margin-left: auto; }
-    .dm-col-rename { height: 32px; padding: 0 12px; font-size: 12.5px; }
+    /* Links: read-only foreign-key columns (name → target) + Destroy. */
+    .dm-links { display: flex; flex-direction: column; gap: 6px; }
+    .dm-link-row {
+      display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+      gap: 8px; align-items: center;
+    }
+    .dm-link-name {
+      font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px;
+      color: var(--text); white-space: nowrap;
+    }
+    .dm-link-arrow { font-size: 12px; color: var(--signal); white-space: nowrap; }
     .dm-secret-toggle {
       display: inline-flex; align-items: center; gap: 4px;
       font-size: 11px; color: var(--text-muted);

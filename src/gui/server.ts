@@ -290,6 +290,20 @@ function operatorOwnsTable(teamContext: TeamContext | null, table: string): bool
   return teamContext.owners.get(table) === teamContext.myUserId;
 }
 
+// Structural columns Lattice manages — never renamable, retypable, deletable,
+// or maskable from the GUI. `id` is the uuid primary key; the timestamps +
+// soft-delete column carry semantics undo/redo + freshness depend on.
+const SCHEMA_SYSTEM_COLUMNS = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+// The only column types a user may CREATE. `uuid` is reserved for keys
+// (the id PK + foreign keys) and enforced by Lattice, not user-selectable.
+const ALLOWED_COLUMN_TYPES = new Set(['text', 'integer', 'real', 'boolean']);
+
+/** The entity a column references (a foreign-key "link"), or null. */
+function columnRefTarget(configPath: string, entity: string, col: string): string | null {
+  const ref: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'fields', col, 'ref']);
+  return typeof ref === 'string' && ref ? ref : null;
+}
+
 /** One-line activity summary for an audit entry (for the activity-rail backfill). */
 function feedActivitySummary(op: string, table: string): string {
   switch (op) {
@@ -1600,6 +1614,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
             return;
           }
+          if (!operatorOwnsTable(active.teamContext, tableName)) {
+            sendJson(res, { error: 'Only the table owner can edit this column' }, 403);
+            return;
+          }
+          // Secret is meaningful only for scalar data columns. System columns
+          // (id/created_at/updated_at/deleted_at) and links (FK columns) can't
+          // be marked secret — enforce here so the data model stays clean.
+          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+            sendJson(
+              res,
+              { error: `"${colName}" is a system column and cannot be marked secret` },
+              400,
+            );
+            return;
+          }
+          if (columnRefTarget(active.configPath, tableName, colName)) {
+            sendJson(res, { error: 'Link (foreign-key) columns cannot be marked secret' }, 400);
+            return;
+          }
           const body = (await readJson<unknown>(req)) as { secret?: unknown };
           const secret = body.secret === true ? 1 : 0;
           const existing = (
@@ -1686,14 +1719,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             ref?: unknown;
           };
           const colName = typeof body.name === 'string' ? body.name.trim() : '';
-          const colType = (
-            typeof body.type === 'string' ? body.type : 'text'
-          ) as LatticeFieldDef['type'];
+          const colType = typeof body.type === 'string' ? body.type : 'text';
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(colName)) {
             sendJson(res, { error: 'Column name must be a valid identifier' }, 400);
             return;
           }
-          const sqliteType = fieldToSqliteBaseType(colType);
+          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+            sendJson(res, { error: `"${colName}" is a reserved system column` }, 400);
+            return;
+          }
+          // Scalar data columns only. uuid is reserved for keys; relationships
+          // ("links") are created via the dedicated links endpoint, not here.
+          if (!ALLOWED_COLUMN_TYPES.has(colType)) {
+            sendJson(
+              res,
+              { error: 'Column type must be one of: text, integer, real, boolean' },
+              400,
+            );
+            return;
+          }
+          if (typeof body.ref === 'string' && body.ref) {
+            sendJson(res, { error: 'Use “Add link” to create a relationship column' }, 400);
+            return;
+          }
+          const sqliteType = fieldToSqliteBaseType(colType as LatticeFieldDef['type']);
           await execSql(
             active.db,
             `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${sqliteType}`,
@@ -1701,7 +1750,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const doc = loadConfigDoc(active.configPath);
           const fieldDef: Record<string, unknown> = { type: colType };
           if (body.required === true) fieldDef.required = true;
-          if (typeof body.ref === 'string') fieldDef.ref = body.ref;
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
@@ -1730,8 +1778,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'New column name must be a valid identifier' }, 400);
             return;
           }
-          if (colName === 'id') {
-            sendJson(res, { error: 'Cannot rename the id primary key column' }, 400);
+          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+            sendJson(res, { error: `Cannot rename the system column "${colName}"` }, 400);
+            return;
+          }
+          if (columnRefTarget(active.configPath, entityName, colName)) {
+            sendJson(res, { error: 'Foreign-key (link) column names cannot be changed' }, 400);
+            return;
+          }
+          if (SCHEMA_SYSTEM_COLUMNS.has(newCol)) {
+            sendJson(res, { error: `"${newCol}" is a reserved system column` }, 400);
             return;
           }
           await execSql(
@@ -1749,13 +1805,58 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Set / clear a column's relationship (ref) ─────────────────────
-        // Makes an existing column a foreign key to another entity (or clears
-        // it). No SQL change — `ref` is config-level; the column already holds
-        // the id. This is how the columns editor edits relationships.
+        // ── Add a link (foreign key) from an entity to another ───────────
+        // A "link" is a relationship, distinct from a scalar column: it adds a
+        // uuid FK column referencing `target`. Links can't be edited once
+        // created — only destroyed (below). Owner-gated.
+        if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/links$/.test(pathname)) {
+          const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(entityName)) {
+            sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can add a link' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { target?: unknown };
+          const target = typeof body.target === 'string' ? body.target.trim() : '';
+          if (!active.validTables.has(target)) {
+            sendJson(res, { error: 'Target entity must exist' }, 400);
+            return;
+          }
+          if (active.junctionTables.has(target)) {
+            sendJson(res, { error: 'Cannot link to a junction table' }, 400);
+            return;
+          }
+          // Name the FK <target>_id, de-duplicating against existing columns.
+          const existingCols = new Set(
+            Object.keys(active.db.getRegisteredColumns(entityName) ?? {}),
+          );
+          let colName = `${target}_id`;
+          let n = 2;
+          while (existingCols.has(colName)) colName = `${target}_id_${String(n++)}`;
+          const linkType = fieldToSqliteBaseType('uuid');
+          await execSql(
+            active.db,
+            `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${linkType}`,
+          );
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', entityName, 'fields', colName], { type: 'uuid', ref: target });
+          saveConfigDoc(active.configPath, doc);
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          sendJson(res, { ok: true, column: colName });
+          return;
+        }
+
+        // ── Destroy a link (drop the FK column) ──────────────────────────
+        // Links are destroy-only, owner-gated. Junction-internal links are
+        // managed via DELETE …/junctions (delete the whole relationship), not
+        // here, so don't strand a junction with one leg.
         if (
-          method === 'POST' &&
-          /^\/api\/schema\/entities\/[^/]+\/columns\/[^/]+\/ref$/.test(pathname)
+          method === 'DELETE' &&
+          /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)
         ) {
           const parts = pathname.split('/');
           const entityName = decodeURIComponent(parts[4] ?? '');
@@ -1765,34 +1866,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           if (!operatorOwnsTable(active.teamContext, entityName)) {
-            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
+            sendJson(res, { error: 'Only the table owner can remove a link' }, 403);
             return;
           }
-          if (colName === 'id') {
-            sendJson(res, { error: 'The id column cannot be a relationship' }, 400);
+          if (active.junctionTables.has(entityName)) {
+            sendJson(
+              res,
+              { error: 'Remove the whole relationship instead (Delete relationship)' },
+              400,
+            );
             return;
           }
-          const fieldPath = ['entities', entityName, 'fields', colName];
-          const docCheck = loadConfigDoc(active.configPath);
-          if (docCheck.getIn(fieldPath) === undefined) {
-            sendJson(res, { error: `Unknown column: ${colName}` }, 400);
+          if (!columnRefTarget(active.configPath, entityName, colName)) {
+            sendJson(res, { error: `Not a link column: ${colName}` }, 400);
             return;
           }
-          const body = (await readJson<unknown>(req)) as { ref?: unknown };
-          const ref = typeof body.ref === 'string' ? body.ref.trim() : '';
-          if (ref && !active.validTables.has(ref)) {
-            sendJson(res, { error: `Unknown related entity: ${ref}` }, 400);
-            return;
-          }
-          if (ref && ref === entityName) {
-            // A self-reference is allowed in principle but rarely intended via
-            // this control; block it to avoid surprising the user.
-            sendJson(res, { error: 'A column cannot reference its own entity here' }, 400);
-            return;
-          }
-          if (ref) docCheck.setIn([...fieldPath, 'ref'], ref);
-          else docCheck.deleteIn([...fieldPath, 'ref']);
-          saveConfigDoc(active.configPath, docCheck);
+          await execSql(active.db, `ALTER TABLE "${entityName}" DROP COLUMN "${colName}"`);
+          const doc = loadConfigDoc(active.configPath);
+          doc.deleteIn(['entities', entityName, 'fields', colName]);
+          saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
           sendJson(res, { ok: true });
