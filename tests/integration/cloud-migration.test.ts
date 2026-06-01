@@ -103,16 +103,8 @@ describe('migrateLatticeData()', () => {
     opened.push(target);
 
     const result = await migrateLatticeData(source, target);
-    expect(result.tablesCopied.sort()).toEqual([
-      'chat_messages',
-      'chat_threads',
-      'files',
-      'items',
-      'notes',
-      'secrets',
-      'tasks',
-    ]);
-    expect(result.rowsCopied).toBe(4); // 2 items + 1 task + 1 secret (chat tables empty)
+    expect(result.tablesCopied.sort()).toEqual(['files', 'items', 'notes', 'secrets', 'tasks']);
+    expect(result.rowsCopied).toBe(4); // 2 items + 1 task + 1 secret
 
     // Target has the rows
     const targetItems = (await target.query('items', {})) as Record<string, unknown>[];

@@ -58,31 +58,6 @@ describe('framework native entities', () => {
       expect(offenders).toEqual([]);
     });
 
-    it('registers `chat_threads` and `chat_messages` tables', async () => {
-      const names = db.getRegisteredTableNames();
-      expect(names).toContain('chat_threads');
-      expect(names).toContain('chat_messages');
-      expect(isNativeEntity('chat_threads')).toBe(true);
-      expect(isNativeEntity('chat_messages')).toBe(true);
-      expect(NATIVE_ENTITY_NAMES.has('chat_threads')).toBe(true);
-      expect(NATIVE_ENTITY_NAMES.has('chat_messages')).toBe(true);
-      // Physical tables exist + are writable after init. No encrypted columns,
-      // so they never add a keyless-init requirement the way secrets.value does.
-      const threadId = crypto.randomUUID();
-      await db.insert('chat_threads', { id: threadId, title: 'First thread' });
-      await db.insert('chat_messages', {
-        id: crypto.randomUUID(),
-        thread_id: threadId,
-        role: 'user',
-        content_json: JSON.stringify({ text: 'hello' }),
-        source: 'gui',
-      });
-      const threads = (await db.query('chat_threads', {})) as { id: string }[];
-      const messages = (await db.query('chat_messages', {})) as { thread_id: string }[];
-      expect(threads.some((t) => t.id === threadId)).toBe(true);
-      expect(messages.some((m) => m.thread_id === threadId)).toBe(true);
-    });
-
     it('is idempotent — second call is a no-op', () => {
       expect(() => {
         registerNativeEntities(db);
@@ -212,25 +187,13 @@ describe('framework native entities', () => {
     it('records "created" bindings on a fresh DB and is idempotent', async () => {
       // beforeEach already registered + init'd native entities on `db`.
       const first = await adoptNativeEntities(db);
-      expect(first.map((r) => r.entity).sort()).toEqual([
-        'chat_messages',
-        'chat_threads',
-        'files',
-        'notes',
-        'secrets',
-      ]);
+      expect(first.map((r) => r.entity).sort()).toEqual(['files', 'notes', 'secrets']);
       expect(first.every((r) => r.origin === 'created')).toBe(true);
 
       // Registry table is internal and populated.
       expect(db.getRegisteredTableNames()).toContain(NATIVE_REGISTRY_TABLE);
       const bindings = await listNativeBindings(db);
-      expect(bindings.map((b) => b.entity).sort()).toEqual([
-        'chat_messages',
-        'chat_threads',
-        'files',
-        'notes',
-        'secrets',
-      ]);
+      expect(bindings.map((b) => b.entity).sort()).toEqual(['files', 'notes', 'secrets']);
 
       // Second call is a no-op upsert — no duplicate bindings.
       await adoptNativeEntities(db);
