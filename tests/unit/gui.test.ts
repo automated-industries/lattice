@@ -2,8 +2,14 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildGuiGraph, getGuiEntities, isJunctionTable } from '../../src/gui/data.js';
+import {
+  buildGuiGraph,
+  getGuiEntities,
+  isJunctionTable,
+  type GuiTableSummary,
+} from '../../src/gui/data.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import type { BelongsToRelation, Relation } from '../../src/types.js';
 import { writeManifest } from '../../src/lifecycle/manifest.js';
 
 const dirs: string[] = [];
@@ -765,6 +771,69 @@ describe('isJunctionTable', () => {
     expect(isJunctionTable(byName.get('teams')!)).toBe(false);
     expect(isJunctionTable(byName.get('skills')!)).toBe(false);
     expect(isJunctionTable(byName.get('agent_skills')!)).toBe(true);
+  });
+
+  it('is columns-aware: a 2-FK table with data columns is NOT a junction (data-loss regression)', () => {
+    // Regression for the bug where a first-class entity with exactly two
+    // foreign keys (e.g. `tasks` with assignee_id + articles_id + data
+    // columns) was mis-classified as a junction, exposing a "Delete
+    // relationship" → DROP TABLE path. A junction is ONLY id + 2 FKs (+ system
+    // columns), nothing else.
+    const fk = (table: string, foreignKey: string): BelongsToRelation => ({
+      type: 'belongsTo',
+      table,
+      foreignKey,
+    });
+    const mk = (columns: string[], relations: Record<string, Relation>): GuiTableSummary => ({
+      name: 'x',
+      columns,
+      outputFile: 'x.md',
+      relations,
+    });
+
+    // Pure junction: id + exactly 2 FK columns → junction.
+    expect(
+      isJunctionTable(mk(['id', 'a_id', 'b_id'], { a: fk('a', 'a_id'), b: fk('b', 'b_id') })),
+    ).toBe(true);
+    // Pure junction + system columns only → still a junction.
+    expect(
+      isJunctionTable(
+        mk(['id', 'a_id', 'b_id', 'created_at', 'updated_at', 'deleted_at'], {
+          a: fk('a', 'a_id'),
+          b: fk('b', 'b_id'),
+        }),
+      ),
+    ).toBe(true);
+    // Self-referential m2m (both FKs to the same table) → junction.
+    expect(
+      isJunctionTable(mk(['id', 'a_id', 'a_id_2'], { a: fk('a', 'a_id'), a2: fk('a', 'a_id_2') })),
+    ).toBe(true);
+    // THE BUG: 2 FKs + a real data column → first-class entity, NOT a junction.
+    expect(
+      isJunctionTable(
+        mk(['id', 'assignee_id', 'articles_id', 'title', 'status', 'updated_at'], {
+          assignee: fk('people', 'assignee_id'),
+          articles: fk('articles', 'articles_id'),
+        }),
+      ),
+    ).toBe(false);
+    // Payload junction (a join row carrying its own scalar) → NOT a junction.
+    expect(
+      isJunctionTable(
+        mk(['id', 'a_id', 'b_id', 'role'], { a: fk('a', 'a_id'), b: fk('b', 'b_id') }),
+      ),
+    ).toBe(false);
+    // 1 FK and 3 FK are never junctions.
+    expect(isJunctionTable(mk(['id', 'a_id'], { a: fk('a', 'a_id') }))).toBe(false);
+    expect(
+      isJunctionTable(
+        mk(['id', 'a_id', 'b_id', 'c_id'], {
+          a: fk('a', 'a_id'),
+          b: fk('b', 'b_id'),
+          c: fk('c', 'c_id'),
+        }),
+      ),
+    ).toBe(false);
   });
 
   it('hides junction tables as nodes but keeps the many-to-many edge between objects', () => {
