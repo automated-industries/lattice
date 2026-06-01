@@ -19,6 +19,7 @@ export type {
   WritebackValidationResult,
   RewardScores,
   EmbeddingsConfig,
+  FtsConfig,
   SearchOptions,
   SearchResult,
   QueryOptions,
@@ -226,9 +227,16 @@ export type { MigrateResult } from './framework/migrate-to-root.js';
 export { resolveSource } from './sources/resolver.js';
 export { assertSafeUrl, providerForUrl, isPrivateIp } from './sources/url-safety.js';
 
-// Full-text search — generic LIKE engine (Phase 1). Read-only; complements the
-// embeddings-based semantic `Lattice.search`.
-export { fullTextSearch } from './search/fts.js';
+// Full-text search — indexed (opt-in FTS5/tsvector via `TableDefinition.fts`)
+// with a LIKE fallback for unconfigured tables. Read-only at search time;
+// complements the embeddings-based semantic `Lattice.search`.
+export {
+  fullTextSearch,
+  ensureFtsIndex,
+  hasFtsIndex,
+  ftsTableName,
+  autoFtsColumns,
+} from './search/fts.js';
 export type { FtsResult, FtsGroup, FtsHit, FtsOptions } from './search/fts.js';
 export { ReferenceUnavailableError } from './sources/types.js';
 export type {
