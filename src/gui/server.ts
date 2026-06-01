@@ -279,6 +279,24 @@ async function entitiesWithCounts(
 const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
 const DASHBOARD_STALE_DAYS = 14;
 
+/** One-line activity summary for an audit entry (for the activity-rail backfill). */
+function feedActivitySummary(op: string, table: string): string {
+  switch (op) {
+    case 'insert':
+      return `Added a row to ${table}`;
+    case 'update':
+      return `Updated a row in ${table}`;
+    case 'delete':
+      return `Removed a row from ${table}`;
+    case 'link':
+      return `Linked rows in ${table}`;
+    case 'unlink':
+      return `Unlinked rows in ${table}`;
+    default:
+      return `${op} on ${table}`;
+  }
+}
+
 /**
  * Per-table "last touched" timestamp — the MAX of the first present freshness
  * column (`updated_at` / `created_at` / `ts`). Postgres runs ONE `UNION ALL`
@@ -1219,7 +1237,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // socket closed — handled by 'close' below
             }
           };
-          for (const e of active.feed.recent(20)) writeFeed(e);
+          // Backfill from the persistent audit log so the activity rail
+          // mirrors the version history (same source), not just this session's
+          // in-process feed buffer. Newest-first query, emitted oldest→newest
+          // so the rail appends them in order.
+          try {
+            const auditBackfill = (await active.db.query('_lattice_gui_audit', {
+              orderBy: 'ts',
+              orderDir: 'desc',
+              limit: 20,
+            })) as { ts: string; table_name: string; row_id: string | null; operation: string }[];
+            for (const a of auditBackfill.reverse()) {
+              writeFeed({
+                seq: 0,
+                table: a.table_name,
+                op: a.operation,
+                rowId: a.row_id,
+                source: 'gui',
+                ts: a.ts,
+                summary: feedActivitySummary(a.operation, a.table_name),
+              });
+            }
+          } catch {
+            // No audit table yet (fresh DB) — nothing to backfill.
+          }
           const keepalive = setInterval(() => {
             try {
               res.write(`: keepalive\n\n`);
