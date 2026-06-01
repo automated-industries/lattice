@@ -1,13 +1,13 @@
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
-import { FeedBus, type FeedOp, type FeedSource } from './ai/feed.js';
+import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
 
 /**
- * Shared GUI mutation primitives. Both the HTTP row-CRUD routes and the AI
- * tool dispatcher write through these functions, so every mutation — whoever
- * triggered it — appends the same audit-log entry AND publishes the same feed
- * event. This is the single chokepoint that guarantees the sidebar activity
- * feed (and undo/redo) sees every change.
+ * Shared GUI mutation primitives. The HTTP row-CRUD routes write through these
+ * functions, so every mutation — whoever triggered it — appends the same
+ * audit-log entry AND publishes the same feed event. This is the single
+ * chokepoint that guarantees the sidebar activity feed (and undo/redo) sees
+ * every change.
  */
 
 export type AuditOp = 'insert' | 'update' | 'delete' | 'link' | 'unlink';

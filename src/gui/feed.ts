@@ -4,9 +4,9 @@ import { EventEmitter } from 'node:events';
  * In-process activity feed for the GUI sidebar.
  *
  * Every data mutation the server performs — whether driven by a UI button,
- * the command palette, the AI tool loop, or background ingest — is published
- * here as a {@link FeedEvent}. The sidebar subscribes (over SSE) and renders
- * each event as a feed bubble, so the chat doubles as a live activity log.
+ * the command palette, or a CLI write — is published here as a
+ * {@link FeedEvent}. The sidebar subscribes (over SSE) and renders each event
+ * as a feed bubble, so the rail doubles as a live activity log.
  *
  * This bus works for every dialect, including local SQLite. The Postgres-only
  * realtime broker (LISTEN/NOTIFY) covers changes made by *other* clients on a
@@ -28,9 +28,9 @@ export type FeedOp =
 /**
  * Who originated the mutation. Drives the source pill shown next to a feed
  * bubble so the user can tell apart their own clicks, command-palette runs,
- * AI tool calls, and background ingest.
+ * and CLI writes.
  */
-export type FeedSource = 'gui' | 'command' | 'ai' | 'ingest' | 'cli';
+export type FeedSource = 'gui' | 'command' | 'cli';
 
 export interface FeedEvent {
   /** Monotonically increasing per-bus sequence number, assigned on publish. */
