@@ -175,6 +175,7 @@ export const appJs = `
         initRailResize();
         initRailDrawer();
         startFeed();
+        initSearch();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -311,7 +312,84 @@ export const appJs = `
     }
 
     // ────────────────────────────────────────────────────────────
-    // Assistant rail resize — drag the left edge, clamp, persist.
+    // Full-text search — GET /api/search, grouped dropdown, click to open.
+    // ────────────────────────────────────────────────────────────
+    var searchTimer = null;
+    var searchSeq = 0;
+    function hideSearchResults() {
+      var box = document.getElementById('search-results');
+      if (box) { box.hidden = true; box.innerHTML = ''; }
+    }
+    function openSearchHit(table, id) {
+      hideSearchResults();
+      var input = document.getElementById('search-input');
+      if (input) input.value = '';
+      location.hash = '#/objects/' + encodeURIComponent(table) + '/' + encodeURIComponent(id);
+    }
+    function renderSearchResults(result) {
+      var box = document.getElementById('search-results');
+      if (!box) return;
+      var groups = (result && result.groups) || [];
+      if (!groups.length) {
+        box.innerHTML = '<div class="search-empty">No matches</div>';
+        box.hidden = false;
+        return;
+      }
+      var html = '';
+      groups.forEach(function (g) {
+        var disp = displayFor(g.table);
+        html += '<div class="search-group">' +
+          '<div class="search-group-head"><span class="search-group-icon">' + disp.icon +
+          '</span>' + escapeHtml(disp.label) +
+          (g.more ? ' <span class="search-more">' + g.count + '+</span>' : '') + '</div>';
+        g.hits.forEach(function (h) {
+          html += '<button type="button" class="search-hit" data-table="' + escapeHtml(g.table) +
+            '" data-id="' + escapeHtml(h.id) + '">' +
+            '<span class="search-snippet">' + escapeHtml(h.snippet || h.id) + '</span></button>';
+        });
+        html += '</div>';
+      });
+      box.innerHTML = html;
+      box.hidden = false;
+      box.querySelectorAll('.search-hit').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          openSearchHit(btn.getAttribute('data-table'), btn.getAttribute('data-id'));
+        });
+      });
+    }
+    function runSearch(q) {
+      var seq = ++searchSeq;
+      fetchJson('/api/search?q=' + encodeURIComponent(q) + '&limit=6').then(function (result) {
+        if (seq !== searchSeq) return; // a newer query superseded this one
+        renderSearchResults(result);
+      }).catch(function () { /* transient — ignore */ });
+    }
+    function initSearch() {
+      var input = document.getElementById('search-input');
+      var box = document.getElementById('search-results');
+      if (!input || !box) return;
+      input.addEventListener('input', function () {
+        var q = input.value.trim();
+        if (searchTimer) clearTimeout(searchTimer);
+        if (q.length < 2) { hideSearchResults(); return; }
+        searchTimer = setTimeout(function () { runSearch(q); }, 180);
+      });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { hideSearchResults(); input.blur(); }
+        else if (e.key === 'Enter') {
+          var first = box.querySelector('.search-hit');
+          if (first) { e.preventDefault(); first.click(); }
+        }
+      });
+      // Dismiss when a click lands outside the search box.
+      document.addEventListener('click', function (e) {
+        var host = document.getElementById('topsearch');
+        if (host && !host.contains(e.target)) hideSearchResults();
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Activity rail resize — drag the left edge, clamp, persist.
     // ────────────────────────────────────────────────────────────
     var RAIL_MIN = 320, RAIL_MAX = 640, RAIL_KEY = 'lattice-rail-width';
     function applyRailWidth(px) {
