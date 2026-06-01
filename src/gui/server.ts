@@ -279,6 +279,17 @@ async function entitiesWithCounts(
 const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
 const DASHBOARD_STALE_DAYS = 14;
 
+/**
+ * Whether the operator may edit `table`'s schema (rename, columns,
+ * relationships). On a local / single-user DB (no team context) there's no
+ * ownership, so always true. On a team cloud, only the table's owner may edit
+ * it — the same gate the share toggle already uses.
+ */
+function operatorOwnsTable(teamContext: TeamContext | null, table: string): boolean {
+  if (!teamContext) return true;
+  return teamContext.owners.get(table) === teamContext.myUserId;
+}
+
 /** One-line activity summary for an audit entry (for the activity-rail backfill). */
 function feedActivitySummary(op: string, table: string): string {
   switch (op) {
@@ -1458,6 +1469,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Cannot link a junction table' }, 400);
             return;
           }
+          if (
+            !operatorOwnsTable(active.teamContext, left) ||
+            !operatorOwnsTable(active.teamContext, right)
+          ) {
+            sendJson(res, { error: 'You can only relate tables you own' }, 403);
+            return;
+          }
           const requested = typeof body.name === 'string' ? body.name.trim() : '';
           const jName = requested || `${left}_${right}`;
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(jName)) {
@@ -1510,6 +1528,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const jName = decodeURIComponent(pathname.split('/')[4] ?? '');
           if (!active.junctionTables.has(jName)) {
             sendJson(res, { error: `Not a junction relationship: ${jName}` }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, jName)) {
+            sendJson(res, { error: 'Only the relationship owner can remove it' }, 403);
             return;
           }
           await execSql(active.db, `DROP TABLE IF EXISTS "${jName}"`);
@@ -1616,6 +1638,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
             return;
           }
+          if (!operatorOwnsTable(active.teamContext, oldName)) {
+            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
+            return;
+          }
           const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newName = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(newName)) {
@@ -1647,6 +1673,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
           if (!active.validTables.has(entityName)) {
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
             return;
           }
           const body = (await readJson<unknown>(req)) as {
@@ -1690,6 +1720,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
+            return;
+          }
           const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newCol = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newCol)) {
@@ -1728,6 +1762,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const colName = decodeURIComponent(parts[6] ?? '');
           if (!active.validTables.has(entityName)) {
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
             return;
           }
           if (colName === 'id') {
@@ -2116,6 +2154,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/delete') {
+          // Only the database owner may delete a database. On a team cloud
+          // that's the team creator; on a local/single-user DB the operator is
+          // the owner, so it's always allowed.
+          if (active.teamContext && !active.teamContext.isCreator) {
+            sendJson(res, { error: 'Only the database owner can delete a database' }, 403);
+            return;
+          }
           const body = (await readJson<unknown>(req)) as { path?: unknown };
           if (typeof body.path !== 'string' || !body.path.trim()) {
             sendJson(res, { error: 'path must be a non-empty string' }, 400);
