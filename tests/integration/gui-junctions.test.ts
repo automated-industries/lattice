@@ -106,6 +106,35 @@ describe('Data Model — junction relationships', () => {
     expect(graph.nodes.some((n) => n.id === 'table:tags')).toBe(true);
   });
 
+  it('sets and clears a column relationship (foreign key) from the columns editor', async () => {
+    const s = await boot();
+    // Add a relationship column on articles → people (the columns-editor path).
+    const add = await fetch(`${s.url}/api/schema/entities/articles/columns`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'author_id', type: 'uuid', ref: 'tags' }),
+    });
+    expect(add.status).toBe(200);
+    let graph = (await (await fetch(`${s.url}/api/graph`)).json()) as Graph;
+    expect(
+      graph.edges.some(
+        (e) => e.type === 'belongsTo' && e.source === 'table:articles' && e.target === 'table:tags',
+      ),
+    ).toBe(true);
+
+    // Clear the relationship via the ref endpoint — the FK edge disappears.
+    const clr = await fetch(`${s.url}/api/schema/entities/articles/columns/author_id/ref`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ref: '' }),
+    });
+    expect(clr.status).toBe(200);
+    graph = (await (await fetch(`${s.url}/api/graph`)).json()) as Graph;
+    expect(graph.edges.some((e) => e.type === 'belongsTo' && e.target === 'table:tags')).toBe(
+      false,
+    );
+  });
+
   it('rejects linking unknown entities and refuses to DELETE a non-junction', async () => {
     const s = await boot();
     const bad = await fetch(`${s.url}/api/schema/junctions`, {
