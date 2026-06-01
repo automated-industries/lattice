@@ -31,6 +31,11 @@ export interface GuiTableSummary {
    * isn't shared (or on local). Set by the server.
    */
   schemaVersion?: number;
+  /**
+   * Column name → SQL type, for the Data Model schema cards. Set by the server
+   * from the registered schema; absent for tables Lattice can't introspect.
+   */
+  columnTypes?: Record<string, string>;
 }
 
 export interface GuiFileSummary {

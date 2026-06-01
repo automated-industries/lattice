@@ -473,19 +473,58 @@ export const css = `
     }
     .placeholder h2 { margin: 0 0 8px; color: var(--text); }
 
-    /* Data Model: graph on top, edit panel below when an entity is selected. */
+    /* Data Model: a schema card grid on top, edit panel below when selected. */
     .dm-layout {
       display: flex; flex-direction: column; gap: 20px;
     }
-    #graph-mount { background: var(--surface);
-      border: 1px solid var(--border); border-radius: 10px; padding: 16px;
-      min-height: 60vh; overflow: hidden;
+    #graph-mount { max-height: 64vh; overflow-y: auto; }
+    .schema-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     }
-    #graph-mount svg { width: 100%; height: 60vh; display: block; }
-    #graph-mount g.gnode { cursor: pointer; }
-    #graph-mount g.gnode circle { transition: fill 0.1s ease, stroke 0.1s ease; }
-    #graph-mount g.gnode.active circle { fill: var(--accent); stroke: var(--accent); }
-    #graph-mount g.gnode.active text { fill: var(--accent); font-weight: 600; }
+    .schema-card {
+      display: block; width: 100%; text-align: left; cursor: pointer;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0; overflow: hidden; color: var(--text);
+      transition: border-color 0.1s ease, box-shadow 0.1s ease;
+    }
+    .schema-card:hover { border-color: var(--border-strong); }
+    .schema-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .schema-card-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2);
+    }
+    .schema-card-icon { font-size: 15px; }
+    .schema-card-title { font-weight: 600; font-size: 13.5px; flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .schema-card-count {
+      font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px;
+      color: var(--text-muted); background: var(--bg); border-radius: 999px; padding: 1px 8px;
+    }
+    .schema-badge {
+      font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+      padding: 1px 6px; border-radius: 999px; background: var(--bg); color: var(--text-muted);
+    }
+    .schema-badge.shared { background: var(--accent-soft); color: var(--accent); }
+    .schema-card-cols { padding: 6px 12px; display: flex; flex-direction: column; gap: 2px; }
+    .schema-col { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+    .schema-col-name { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text); }
+    .schema-col-type { color: var(--text-muted); font-size: 11px; margin-left: auto; }
+    .schema-tag {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.04em; border-radius: 3px;
+      padding: 0 4px; line-height: 1.5;
+    }
+    .schema-tag.pk { background: rgba(212, 161, 6, 0.18); color: #d4a106; }
+    .schema-tag.fk { background: rgba(34, 211, 238, 0.16); color: var(--signal); }
+    .schema-card-rels {
+      display: flex; flex-wrap: wrap; gap: 5px;
+      padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface-2);
+    }
+    .schema-rel {
+      font-size: 11px; color: var(--text-muted);
+      background: var(--bg); border-radius: 6px; padding: 1px 7px;
+    }
+    .schema-rel.m2m { color: var(--signal); }
     #dm-panel {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; padding: 20px;
