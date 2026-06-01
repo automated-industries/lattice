@@ -49,6 +49,7 @@ import {
 import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
 import { FeedBus } from './feed.js';
+import { fullTextSearch } from '../search/fts.js';
 import {
   createRow,
   updateRow,
@@ -1212,6 +1213,34 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active.outputDir,
               active.teamContext,
             ),
+          );
+          return;
+        }
+        // ── Full-text search across visible tables ────────────────────────
+        // GET /api/search?q=&tables=&limit= — LIKE fallback + indexed (FTS5 /
+        // tsvector) per the engine in src/search/fts.ts. Scoped to validTables
+        // (team-visibility-filtered when in cloud mode).
+        if (method === 'GET' && pathname === '/api/search') {
+          const q = (url.searchParams.get('q') ?? '').trim();
+          if (!q) {
+            sendJson(res, { query: '', groups: [] });
+            return;
+          }
+          const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? '8')));
+          const requested = url.searchParams.get('tables');
+          let tables = [...active.validTables];
+          if (requested) {
+            const want = new Set(
+              requested
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean),
+            );
+            tables = tables.filter((t) => want.has(t));
+          }
+          sendJson(
+            res,
+            await fullTextSearch(active.db.adapter, tables, { query: q, limitPerTable: limit }),
           );
           return;
         }
