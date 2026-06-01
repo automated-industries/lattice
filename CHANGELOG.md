@@ -8,6 +8,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — full-text search
+
+- **Generic full-text search across entities (Phase 1 — LIKE engine).** A new `fullTextSearch(adapter, tables, opts)` (`src/search/fts.ts`, exported from the package root) runs a case-insensitive `OR`-of-`LIKE` over each table's auto-detected text columns (`CAST(… AS TEXT)` so it's valid on both SQLite and Postgres), excludes soft-deleted rows, and returns hits grouped per entity with snippets. A `GET /api/search?q=&tables=&limit=` GUI route exposes it (respecting team visibility), and the GUI gains a **global header search bar** with debounced type-ahead, grouped results, and `/`-to-focus. It is **read-only**: it creates no indexes and adds no write-path behavior, so a bare-library consumer pays zero overhead (a guardrail test locks this in). It complements — does not replace — the embeddings-based semantic `Lattice.search`. _An indexed Phase 2 (SQLite FTS5 / Postgres `tsvector`+GIN, maintained by a per-table-opt-in write hook) is a planned follow-up._
+
 ### Added — GUI: workspace dashboard
 
 - **The GUI home is now a workspace overview, not a bare entity card-grid.** A new read-only `GET /api/dashboard` composes per-entity counts (reusing the pool-safe `entitiesWithCounts`), a freshness timestamp per entity (`MAX(updated_at|created_at|ts)` — one `UNION ALL` query on Postgres, in-process on SQLite), and a recent-activity list (the GUI audit log). The dashboard renders stat tiles (entities / rows / stale), per-card "last updated" with a stale flag (>14 days), and a recent-activity feed. Fully GUI-only + read-only — no core write-path behavior, so a library consumer of `latticesql` is unaffected.
