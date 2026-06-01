@@ -1494,6 +1494,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'You can only relate tables you own' }, 403);
             return;
           }
+          // One many-to-many link per pair (either direction): refuse if a
+          // junction already connects `left` and `right`. Mirrors the picker's
+          // client-side exclusion so the model can't accumulate A_B + B_A.
+          const linksBoth = (j: GuiTableSummary): boolean => {
+            const bt = Object.values(j.relations).filter((r) => r.type === 'belongsTo');
+            const tables = new Set(bt.map((r) => r.table));
+            return bt.length === 2 && tables.has(left) && tables.has(right);
+          };
+          const existingJunction = getGuiEntities(active.configPath, active.outputDir).tables.find(
+            (j) => active.junctionTables.has(j.name) && linksBoth(j),
+          );
+          if (existingJunction) {
+            sendJson(
+              res,
+              { error: `"${left}" and "${right}" are already linked (${existingJunction.name})` },
+              400,
+            );
+            return;
+          }
           const requested = typeof body.name === 'string' ? body.name.trim() : '';
           const jName = requested || `${left}_${right}`;
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(jName)) {
