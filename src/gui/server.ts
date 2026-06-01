@@ -1398,6 +1398,89 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── Create a many-to-many relationship (junction table) ──────────
+        // Creates a junction table with two ref columns linking `left` and
+        // `right`, so it surfaces as an m2m edge in the Data Model graph.
+        if (method === 'POST' && pathname === '/api/schema/junctions') {
+          const body = (await readJson<unknown>(req)) as {
+            left?: unknown;
+            right?: unknown;
+            name?: unknown;
+          };
+          const left = typeof body.left === 'string' ? body.left.trim() : '';
+          const right = typeof body.right === 'string' ? body.right.trim() : '';
+          if (!active.validTables.has(left) || !active.validTables.has(right)) {
+            sendJson(res, { error: 'Both entities must exist' }, 400);
+            return;
+          }
+          if (active.junctionTables.has(left) || active.junctionTables.has(right)) {
+            sendJson(res, { error: 'Cannot link a junction table' }, 400);
+            return;
+          }
+          const requested = typeof body.name === 'string' ? body.name.trim() : '';
+          const jName = requested || `${left}_${right}`;
+          if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(jName)) {
+            sendJson(res, { error: 'Relationship name must be a valid identifier' }, 400);
+            return;
+          }
+          if (
+            active.validTables.has(jName) ||
+            active.db.getRegisteredTableNames().includes(jName)
+          ) {
+            sendJson(res, { error: `A table named "${jName}" already exists` }, 400);
+            return;
+          }
+          // Self-referential m2m needs two distinct column names.
+          const leftCol = `${left}_id`;
+          const rightCol = left === right ? `${right}_id_2` : `${right}_id`;
+          await execSql(
+            active.db,
+            `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${leftCol}" TEXT, "${rightCol}" TEXT)`,
+          );
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', jName], {
+            fields: {
+              id: { type: 'uuid', primaryKey: true },
+              [leftCol]: { type: 'uuid', ref: left },
+              [rightCol]: { type: 'uuid', ref: right },
+            },
+            outputFile: jName.toUpperCase() + '.md',
+          });
+          saveConfigDoc(active.configPath, doc);
+          if (active.teamContext?.myUserId) {
+            await recordObjectOwner(
+              active.db,
+              active.teamContext.teamId,
+              jName,
+              active.teamContext.myUserId,
+            );
+          }
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          sendJson(res, { ok: true, name: jName });
+          return;
+        }
+
+        // ── Remove a many-to-many relationship (drop its junction table) ──
+        // Only drops junctions (tables whose relations are exactly two
+        // belongsTo) — never a first-class entity. Removes the link rows, not
+        // the linked entities' data.
+        if (method === 'DELETE' && /^\/api\/schema\/junctions\/[^/]+$/.test(pathname)) {
+          const jName = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.junctionTables.has(jName)) {
+            sendJson(res, { error: `Not a junction relationship: ${jName}` }, 400);
+            return;
+          }
+          await execSql(active.db, `DROP TABLE IF EXISTS "${jName}"`);
+          const doc = loadConfigDoc(active.configPath);
+          doc.deleteIn(['entities', jName]);
+          saveConfigDoc(active.configPath, doc);
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          sendJson(res, { ok: true });
+          return;
+        }
+
         // ── Share / unshare an entity with the team (owner-only) ─────────
         // The Data Model dialog calls this to toggle team visibility of a
         // table the operator owns. Only the owner may share/unshare; the
