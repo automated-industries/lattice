@@ -72,7 +72,7 @@ describe('team collaboration endpoints (local fallbacks)', () => {
       body: JSON.stringify({ id: randomUUID() }),
     });
     expect(res.status).toBe(400);
-    expect(String(((await res.json()) as { error: string }).error)).toMatch(/unknown table/i);
+    expect(((await res.json()) as { error: string }).error).toMatch(/unknown table/i);
   });
 
   it('GET /api/tables/:table/rows/:id/history returns empty history on local', async () => {
