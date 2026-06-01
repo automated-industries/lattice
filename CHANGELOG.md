@@ -8,9 +8,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
-### Added — full-text search
+### Added — full-text search (via the AI assistant)
 
-- **Generic full-text search across entities (Phase 1 — LIKE engine).** A new `fullTextSearch(adapter, tables, opts)` (`src/search/fts.ts`, exported from the package root) runs a case-insensitive `OR`-of-`LIKE` over each table's auto-detected text columns (`CAST(… AS TEXT)` so it's valid on both SQLite and Postgres), excludes soft-deleted rows, and returns hits grouped per entity with snippets. A `GET /api/search?q=&tables=&limit=` GUI route exposes it (respecting team visibility), and the GUI gains a **global header search bar** with debounced type-ahead, grouped results, and `/`-to-focus. It is **read-only**: it creates no indexes and adds no write-path behavior, so a bare-library consumer pays zero overhead (a guardrail test locks this in). It complements — does not replace — the embeddings-based semantic `Lattice.search`. _An indexed Phase 2 (SQLite FTS5 / Postgres `tsvector`+GIN, maintained by a per-table-opt-in write hook) is a planned follow-up._
+- **Generic full-text search across entities (Phase 1 — LIKE engine).** A new `fullTextSearch(adapter, tables, opts)` (`src/search/fts.ts`, exported from the package root) runs a case-insensitive `OR`-of-`LIKE` over each table's auto-detected text columns (`CAST(… AS TEXT)` so it's valid on both SQLite and Postgres), excludes soft-deleted rows, and returns hits grouped per entity with snippets. It is surfaced as a **`search` tool in the GUI assistant's tool-loop** (`src/gui/ai/registry.ts` + `dispatch.ts`) — ask the assistant to find records by content (e.g. "find notes mentioning the budget") and it searches, then reads or edits as needed (no dedicated search bar). Read-only: it creates no indexes and adds no write-path behavior, so a bare-library consumer pays zero overhead (a guardrail test locks this in). It complements — does not replace — the embeddings-based semantic `Lattice.search`. _An indexed Phase 2 (SQLite FTS5 / Postgres `tsvector`+GIN, maintained by a per-table-opt-in write hook) is a planned follow-up._
 
 ### Added — GUI: workspace dashboard
 

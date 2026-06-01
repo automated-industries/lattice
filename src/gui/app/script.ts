@@ -180,7 +180,6 @@ export const appJs = `
         startFeed();
         renderComposer();
         initThreadControls();
-        initGlobalSearch();
         checkNativeSetup();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
@@ -304,77 +303,6 @@ export const appJs = `
       feedEl.appendChild(item);
       feedEl.scrollTop = feedEl.scrollHeight;
     }
-    // ────────────────────────────────────────────────────────────
-    // Global full-text search (header bar)
-    // ────────────────────────────────────────────────────────────
-    function initGlobalSearch() {
-      var input = document.getElementById('global-search-input');
-      var panel = document.getElementById('search-results');
-      if (!input || !panel) return;
-      var timer = null;
-      var lastQ = '';
-      function hide() { panel.hidden = true; panel.innerHTML = ''; }
-      function navHit(table, id) {
-        hide();
-        input.value = '';
-        var prefix = advancedMode() ? '#/objects/' : '#/fs/';
-        location.hash = prefix + encodeURIComponent(table) + '/' + encodeURIComponent(id);
-      }
-      function render(result) {
-        if (!result.groups || result.groups.length === 0) {
-          panel.innerHTML = '<div class="search-empty">No matches for “' + escapeHtml(result.query) + '”</div>';
-          panel.hidden = false;
-          return;
-        }
-        panel.innerHTML = result.groups.map(function (g) {
-          var disp = displayFor(g.table);
-          var hits = g.hits.map(function (h) {
-            return '<button class="search-hit" data-table="' + escapeHtml(g.table) + '" data-id="' + escapeHtml(h.id) + '">' +
-              '<span class="search-hit-snip">' + escapeHtml(h.snippet || h.id) + '</span>' +
-              '</button>';
-          }).join('');
-          return '<div class="search-group">' +
-            '<div class="search-group-head">' + disp.icon + ' ' + escapeHtml(disp.label) +
-              ' <span class="search-count">' + g.count + (g.more ? '+' : '') + '</span></div>' +
-            hits +
-          '</div>';
-        }).join('');
-        panel.hidden = false;
-        Array.prototype.forEach.call(panel.querySelectorAll('.search-hit'), function (btn) {
-          btn.addEventListener('click', function () {
-            navHit(btn.getAttribute('data-table'), btn.getAttribute('data-id'));
-          });
-        });
-      }
-      function run(q) {
-        fetchJson('/api/search?q=' + encodeURIComponent(q)).then(function (result) {
-          if (q !== lastQ) return; // a newer keystroke already fired
-          render(result);
-        }).catch(function () { hide(); });
-      }
-      input.addEventListener('input', function () {
-        var q = input.value.trim();
-        lastQ = q;
-        if (timer) clearTimeout(timer);
-        if (q.length < 2) { hide(); return; }
-        timer = setTimeout(function () { run(q); }, 180);
-      });
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') { hide(); input.blur(); }
-      });
-      document.addEventListener('click', function (e) {
-        if (!input.contains(e.target) && !panel.contains(e.target)) hide();
-      });
-      document.addEventListener('keydown', function (e) {
-        if (e.key !== '/' || document.activeElement === input) return;
-        var el = document.activeElement;
-        var tag = (el && el.tagName) || '';
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || (el && el.isContentEditable)) return;
-        e.preventDefault();
-        input.focus();
-      });
-    }
-
     function startFeed() {
       if (feedSource) {
         try { feedSource.close(); } catch (_) { /* ignore */ }
