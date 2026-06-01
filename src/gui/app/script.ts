@@ -580,8 +580,9 @@ export const appJs = `
       item.appendChild(icon);
       item.appendChild(body);
       item.appendChild(time);
-      feedEl.appendChild(item);
-      feedEl.scrollTop = feedEl.scrollHeight;
+      // Most-recent on top: prepend new items and keep the view scrolled up.
+      feedEl.insertBefore(item, feedEl.firstChild);
+      feedEl.scrollTop = 0;
     }
     function startFeed() {
       if (feedSource) {
@@ -1062,7 +1063,8 @@ export const appJs = `
       }).join('');
 
       var section = document.getElementById('system-section');
-      var show = !!(state.preferences && state.preferences.show_system_tables);
+      // System tables surface in Advanced View (no separate preference).
+      var show = advancedMode();
       if (section) section.hidden = !show;
       var sys = document.getElementById('system-nav');
       if (sys) {
@@ -2685,6 +2687,9 @@ export const appJs = `
 
       function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
       function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); }
+      // The initial viewBox fits all entities — that's the maximum zoom-out;
+      // don't let the user zoom out past it into empty space.
+      var fitVb = vb();
       function toData(ev) {
         var rect = svg.getBoundingClientRect();
         var b = vb();
@@ -2707,12 +2712,17 @@ export const appJs = `
         });
       }
 
-      // Wheel zoom toward the cursor.
+      // Wheel zoom toward the cursor. Zooming out is capped at the fit view
+      // (snap back to it) so the graph can't shrink into empty space.
       svg.addEventListener('wheel', function (ev) {
         ev.preventDefault();
         var b = vb(); var pt = toData(ev);
         var factor = ev.deltaY > 0 ? 1.12 : 0.89;
         var nw = b[2] * factor, nh = b[3] * factor;
+        if (nw >= fitVb[2] || nh >= fitVb[3]) {
+          setVb(fitVb.slice()); // can't zoom out past all entities
+          return;
+        }
         setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
       }, { passive: false });
 
@@ -2873,27 +2883,56 @@ export const appJs = `
               '>→ ' + escapeHtml(displayFor(rt.name).label) + '</option>';
           }).join('');
       }
+      var isJunc = isJunction(t);
+      function dmShortType(c) {
+        var raw = (t.columnTypes && t.columnTypes[c]) || '';
+        return String(raw)
+          .replace(/\\s*primary key/i, '')
+          .trim()
+          .toLowerCase();
+      }
       var allCols = (t.columns || []);
       var columnsHtml = allCols.map(function (c) {
         var locked = LOCKED_COLUMNS.indexOf(c) !== -1;
+        var typeCell = '<span class="dm-col-type">' + escapeHtml(dmShortType(c)) + '</span>';
         if (locked) {
           return '<div class="dm-col-row">' +
             '<div class="dm-locked">' + escapeHtml(c) +
               '<span class="dm-locked-label">system</span>' +
-            '</div>' +
-            '<span></span><span></span><span></span>' +
+            '</div>' + typeCell + '<span></span><span></span><span></span>' +
+            '</div>';
+        }
+        var fk = refByCol[c];
+        // Junction link columns: fixed — no secret, no relink dropdown, no
+        // rename. They define the many-to-many and shouldn't be re-pointed
+        // individually (use the graph + Delete relationship instead).
+        if (isJunc && fk) {
+          return '<div class="dm-col-row">' +
+            '<div class="dm-locked dm-col-fkname">' + escapeHtml(c) + '</div>' +
+            typeCell +
+            '<span class="dm-col-reltext">→ ' + escapeHtml(displayFor(fk).label) + '</span>' +
+            '<span></span><span></span>' +
             '</div>';
         }
         var secret = isSecretColumn(tableName, c);
+        var secretCell = '<label class="dm-secret-toggle" title="Mask values in the GUI">' +
+          '<input type="checkbox" class="dm-col-secret" data-col="' + escapeHtml(c) + '"' +
+            (secret ? ' checked' : '') + ' /> secret</label>';
+        var refCell = '<select class="dm-col-ref" data-col="' + escapeHtml(c) +
+          '" title="Relationship — link this column to another entity">' + dmRefOptions(fk) + '</select>';
+        // A foreign-key column on a regular entity: its name is read-only (no
+        // rename — that would break the link), but the target can be changed
+        // or cleared via the relationship dropdown.
+        if (fk) {
+          return '<div class="dm-col-row">' +
+            '<div class="dm-locked dm-col-fkname" title="Foreign-key column names cannot be edited">' +
+              escapeHtml(c) + '</div>' +
+            typeCell + refCell + secretCell + '<span></span>' +
+            '</div>';
+        }
         return '<div class="dm-col-row">' +
           '<input class="dm-col-name" data-col="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
-          '<select class="dm-col-ref" data-col="' + escapeHtml(c) +
-            '" title="Relationship — link this column to another entity">' + dmRefOptions(refByCol[c]) + '</select>' +
-          '<label class="dm-secret-toggle" title="Mask values in the GUI">' +
-            '<input type="checkbox" class="dm-col-secret" data-col="' + escapeHtml(c) + '"' +
-              (secret ? ' checked' : '') + ' />' +
-            ' secret' +
-          '</label>' +
+          typeCell + refCell + secretCell +
           '<button class="btn dm-col-rename" data-col="' + escapeHtml(c) + '" title="Rename">↻</button>' +
           '</div>';
       }).join('');
@@ -3684,15 +3723,6 @@ export const appJs = `
         '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
           '<h3 style="margin:0 0 10px">Preferences</h3>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
-            '<input type="checkbox" id="pref-show-system-tables"' +
-              (prefs.show_system_tables ? ' checked' : '') + '>' +
-            '<span>Show system tables in sidebar</span>' +
-          '</label>' +
-          '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
-            'Internal tables prefixed <code>__lattice_</code> are hidden by default. ' +
-            'Enable to inspect them under a "System" section in the sidebar.' +
-          '</p>' +
-          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:16px">' +
             '<input type="checkbox" id="pref-analytics"' +
               (prefs.analytics !== false ? ' checked' : '') + '>' +
             '<span>Send anonymous analytics</span>' +
@@ -3719,9 +3749,6 @@ export const appJs = `
           })
           .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
       }
-      host.querySelector('#pref-show-system-tables').addEventListener('change', function (e) {
-        savePref({ show_system_tables: !!e.target.checked }, renderSidebar);
-      });
       host.querySelector('#pref-analytics').addEventListener('change', function (e) {
         savePref({ analytics: !!e.target.checked });
       });
@@ -4005,12 +4032,12 @@ export const appJs = `
         host.innerHTML =
           '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
-              '<h3 style="margin:0">Databases</h3>' +
-              '<button class="btn primary" id="action-add-db">+ Add new database</button>' +
+              '<h3 style="margin:0">Workspaces</h3>' +
+              '<button class="btn primary" id="action-add-db">+ Add new workspace</button>' +
             '</div>' +
             '<table style="width:100%;border-collapse:collapse">' +
               '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>File / source</th><th>Action</th></tr></thead>' +
-              '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
+              '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No workspaces configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
         host.querySelectorAll('[data-switch]').forEach(function (btn) {
