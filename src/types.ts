@@ -318,6 +318,23 @@ export interface TableDefinition {
    */
   embeddings?: EmbeddingsConfig;
   /**
+   * Opt this table into indexed full-text search. When set, Lattice builds an
+   * inverted index (SQLite FTS5 / Postgres `tsvector` + GIN) in a separate
+   * `__lattice_fts_<table>` table, maintained automatically by DB triggers, and
+   * `fullTextSearch` uses it instead of the `LIKE` fallback. Omitting `fields`
+   * auto-detects the table's text columns (excluding ids / `deleted_at` /
+   * reward bookkeeping).
+   *
+   * Tables WITHOUT this config are completely unaffected — no index, no
+   * triggers, no write-path overhead — so a bare library consumer pays nothing.
+   *
+   * @example
+   * ```ts
+   * fts: { fields: ['title', 'body'] }
+   * ```
+   */
+  fts?: FtsConfig;
+  /**
    * Enable reward tracking for this table. When `true`, Lattice
    * auto-adds `_reward_total REAL DEFAULT 0` and `_reward_count INTEGER
    * DEFAULT 0` columns. Rows are sorted by `_reward_total DESC` before
@@ -441,6 +458,14 @@ export interface MultiTableDefinition {
 // ---------------------------------------------------------------------------
 // Embeddings / semantic search
 // ---------------------------------------------------------------------------
+
+/**
+ * Configuration for indexed full-text search on a table (see `TableDefinition.fts`).
+ */
+export interface FtsConfig {
+  /** Columns to index. Omit to auto-detect the table's text columns. */
+  fields?: string[];
+}
 
 /**
  * Configuration for embedding-based semantic search on a table.
