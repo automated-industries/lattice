@@ -561,12 +561,20 @@ export const css = `
     .dm-row-inline .btn { height: 32px; font-size: 12.5px; padding: 0 12px; flex-shrink: 0; }
     .dm-cols { display: flex; flex-direction: column; gap: 6px; }
     .dm-col-row {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto;
       gap: 8px; align-items: center;
     }
     .dm-col-row input {
       padding: 7px 10px; font: inherit; border: 1px solid var(--border);
       border-radius: 6px; background: var(--surface); font-size: 13.5px; min-width: 0;
+    }
+    .dm-col-row select.dm-col-ref {
+      padding: 6px 8px; font: inherit; font-size: 12px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface-2); color: var(--text-muted); max-width: 140px;
+    }
+    #dm-newcol-ref {
+      padding: 6px 8px; font: inherit; font-size: 12px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface-2); color: var(--text);
     }
     .dm-col-row .dm-locked {
       padding: 7px 10px; font: inherit; font-size: 13.5px;
