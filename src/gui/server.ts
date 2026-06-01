@@ -248,6 +248,8 @@ async function entitiesWithCounts(
       if (teamContext) {
         base.shared = teamContext.shared.has(t.name);
         base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
+        const ver = teamContext.sharedVersions.get(t.name);
+        if (ver !== undefined) base.schemaVersion = ver;
       }
       return base;
     }),
@@ -2136,6 +2138,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const table = decodeURIComponent(rawTable ?? '');
           const id = rawId ? decodeURIComponent(rawId) : null;
           if (!active.validTables.has(table)) {
+            // In team mode, a table that physically exists but isn't visible
+            // was unshared (or never shared to you) — return a distinct 409 so
+            // the client can toast "this was unshared" and refetch, rather than
+            // treating it as a generic unknown table. Owners always retain
+            // visibility, so this only bites non-owners after a de-share.
+            if (active.teamContext && active.db.getRegisteredTableNames().includes(table)) {
+              sendJson(res, { error: 'entity_unshared', table }, 409);
+              return;
+            }
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }

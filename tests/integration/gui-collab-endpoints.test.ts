@@ -64,6 +64,17 @@ describe('team collaboration endpoints (local fallbacks)', () => {
     expect(await getJson(`${s.url}/api/tables/widgets/last-edited`)).toEqual({ edits: {} });
   });
 
+  it('writes to an unknown table return 400 (not the cloud entity_unshared 409) on local', async () => {
+    const s = await boot();
+    const res = await fetch(`${s.url}/api/tables/nope/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: randomUUID() }),
+    });
+    expect(res.status).toBe(400);
+    expect(String(((await res.json()) as { error: string }).error)).toMatch(/unknown table/i);
+  });
+
   it('GET /api/tables/:table/rows/:id/history returns empty history on local', async () => {
     const s = await boot();
     // Create a real row first so the path is exercised against a live id.
