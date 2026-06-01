@@ -561,9 +561,15 @@ export const css = `
     .dm-row-inline .btn { height: 32px; font-size: 12.5px; padding: 0 12px; flex-shrink: 0; }
     .dm-cols { display: flex; flex-direction: column; gap: 6px; }
     .dm-col-row {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto;
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto;
       gap: 8px; align-items: center;
     }
+    .dm-col-type {
+      font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px;
+      color: var(--text-muted); white-space: nowrap;
+    }
+    .dm-col-fkname { color: var(--text); }
+    .dm-col-reltext { font-size: 12px; color: var(--signal); white-space: nowrap; }
     .dm-col-row input {
       padding: 7px 10px; font: inherit; border: 1px solid var(--border);
       border-radius: 6px; background: var(--surface); font-size: 13.5px; min-width: 0;
