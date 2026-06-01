@@ -9,6 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { analyticsEnabled } from './framework/user-config.js';
 
 export interface AutoUpdateResult {
   updated: boolean;
@@ -82,6 +83,8 @@ export async function autoUpdate(opts?: { quiet?: boolean }): Promise<AutoUpdate
       cwd: process.cwd(),
       stdio: opts?.quiet ? 'ignore' : 'inherit',
       timeout: 60_000,
+      // Honor the analytics opt-out on the reinstall (suppresses the Scarf ping).
+      env: analyticsEnabled() ? process.env : { ...process.env, SCARF_ANALYTICS: 'false' },
     });
     result.updated = true;
     result.restartRequired = true;

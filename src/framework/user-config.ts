@@ -11,6 +11,7 @@ import {
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
+import { findLatticeRoot, rootConfigDir } from './lattice-root.js';
 
 /**
  * Machine-local lattice user config — small files that live outside any
@@ -31,9 +32,32 @@ import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
  * this module. Errors must be thrown without echoing sensitive arguments.
  */
 
-/** Root directory for machine-local lattice config. Override via env. */
+/**
+ * Root directory for machine-local lattice config.
+ *
+ * Resolution order:
+ *   1. `LATTICE_CONFIG_DIR` — explicit override, always wins.
+ *   2. `<root>/.config` — when a `.lattice` root is discoverable (via
+ *      `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`).
+ *      This is what consolidates config into the single per-install `.lattice`
+ *      folder, BUT only when adopting the root won't orphan an existing key:
+ *      use the root if it already holds a `master.key`, or — for a fresh
+ *      install — if there is no legacy `~/.lattice/master.key` to strand.
+ *   3. `~/.lattice` — legacy fallback, so existing installs keep decrypting.
+ */
 export function configDir(): string {
-  return process.env.LATTICE_CONFIG_DIR ?? join(homedir(), '.lattice');
+  if (process.env.LATTICE_CONFIG_DIR) return process.env.LATTICE_CONFIG_DIR;
+  const legacy = join(homedir(), '.lattice');
+  const root = findLatticeRoot();
+  if (root) {
+    const rootDir = rootConfigDir(root);
+    // The root is the encryption home once it holds a key. Before that, only
+    // adopt it for a fresh install (no legacy key to orphan); otherwise keep
+    // using `~/.lattice` so an existing install keeps decrypting its secrets.
+    if (existsSync(join(rootDir, MASTER_KEY_FILENAME))) return rootDir;
+    if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return rootDir;
+  }
+  return legacy;
 }
 
 function ensureConfigDir(): string {
@@ -152,10 +176,18 @@ const PREFERENCES_FILENAME = 'preferences.json';
 
 export interface UserPreferences {
   show_system_tables: boolean;
+  /**
+   * Consent for anonymous install/download analytics via Scarf. Default `true`
+   * (opt-out, matching `scarfSettings.defaultOptIn`). When `false`, in-app
+   * reinstalls (`lattice update` / `autoUpdate`) suppress the Scarf ping and
+   * any future runtime telemetry is disabled. See {@link analyticsEnabled}.
+   */
+  analytics: boolean;
 }
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   show_system_tables: false,
+  analytics: true,
 };
 
 /**
@@ -175,6 +207,8 @@ export function readPreferences(): UserPreferences {
         typeof parsed.show_system_tables === 'boolean'
           ? parsed.show_system_tables
           : DEFAULT_PREFERENCES.show_system_tables,
+      analytics:
+        typeof parsed.analytics === 'boolean' ? parsed.analytics : DEFAULT_PREFERENCES.analytics,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -189,7 +223,11 @@ export function readPreferences(): UserPreferences {
 export function writePreferences(prefs: UserPreferences): void {
   const dir = ensureConfigDir();
   const path = join(dir, PREFERENCES_FILENAME);
-  const body = JSON.stringify({ show_system_tables: prefs.show_system_tables }, null, 2);
+  const body = JSON.stringify(
+    { show_system_tables: prefs.show_system_tables, analytics: prefs.analytics },
+    null,
+    2,
+  );
   writeFileSync(path, body + '\n', 'utf8');
   if (platform() !== 'win32') {
     try {
@@ -198,6 +236,21 @@ export function writePreferences(prefs: UserPreferences): void {
       // best-effort
     }
   }
+}
+
+/**
+ * The consent gate for anonymous install analytics (Scarf). Returns `false`
+ * when the user opted out — via the standard `DO_NOT_TRACK` / `SCARF_ANALYTICS`
+ * env vars (which always win), or via the `analytics` preference. Callers use
+ * this to set the child-process env on `lattice update` reinstalls so the
+ * opt-out is honored, and as the gate for any future runtime telemetry.
+ */
+export function analyticsEnabled(): boolean {
+  const dnt = process.env.DO_NOT_TRACK;
+  if (dnt === '1' || dnt === 'true') return false;
+  const scarf = process.env.SCARF_ANALYTICS;
+  if (scarf === 'false' || scarf === '0') return false;
+  return readPreferences().analytics;
 }
 
 // ---------------------------------------------------------------------------

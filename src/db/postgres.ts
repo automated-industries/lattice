@@ -364,33 +364,33 @@ export class PostgresAdapter implements StorageAdapter {
   private async _registerPolyfills(): Promise<void> {
     if (!this._pool) return;
     const pool = this._pool;
-    try {
-      await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
-    } catch (extErr) {
-      console.warn(
-        '[PostgresAdapter] CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
-        extErr instanceof Error ? extErr.message : extErr,
-      );
-    }
-    try {
-      await pool.query(
-        `CREATE OR REPLACE FUNCTION json_extract(doc text, path text)
+    // Each registration is independent and non-fatal: a permission-restricted
+    // provider surfaces a warning rather than blocking pool readiness. `warn`
+    // is the full per-statement warning suffix so the messages stay identical.
+    const register = async (warn: string, sql: string): Promise<void> => {
+      try {
+        await pool.query(sql);
+      } catch (err) {
+        console.warn(`[PostgresAdapter] ${warn}`, err instanceof Error ? err.message : err);
+      }
+    };
+    await register(
+      'CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
+      'CREATE EXTENSION IF NOT EXISTS pgcrypto',
+    );
+    await register(
+      'could not register json_extract polyfill:',
+      `CREATE OR REPLACE FUNCTION json_extract(doc text, path text)
          RETURNS text
          LANGUAGE sql
          IMMUTABLE
          AS $fn$
            SELECT doc::jsonb #>> string_to_array(regexp_replace(path, '^\\$\\.?', ''), '.')
          $fn$;`,
-      );
-    } catch (jeErr) {
-      console.warn(
-        '[PostgresAdapter] could not register json_extract polyfill:',
-        jeErr instanceof Error ? jeErr.message : jeErr,
-      );
-    }
-    try {
-      await pool.query(
-        `CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
+    );
+    await register(
+      'could not register strftime polyfill:',
+      `CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
          RETURNS text
          LANGUAGE plpgsql
          IMMUTABLE
@@ -417,13 +417,7 @@ export class PostgresAdapter implements StorageAdapter {
            );
          END;
          $fn$;`,
-      );
-    } catch (sfErr) {
-      console.warn(
-        '[PostgresAdapter] could not register strftime polyfill:',
-        sfErr instanceof Error ? sfErr.message : sfErr,
-      );
-    }
+    );
   }
 }
 

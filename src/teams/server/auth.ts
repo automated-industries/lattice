@@ -91,11 +91,6 @@ export function generateInviteToken(): { raw: string; hash: string } {
   return { raw, hash: hashToken(raw) };
 }
 
-/** True iff a string has the invite-token shape. */
-export function isInviteToken(value: string): boolean {
-  return value.startsWith(INVITE_PREFIX);
-}
-
 /**
  * Resolve the user behind an incoming request's bearer token. Returns null
  * when the header is absent, the token doesn't match a stored hash, the
