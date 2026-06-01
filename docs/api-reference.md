@@ -1324,3 +1324,24 @@ function cleanupEntityContexts(
   newManifest?: LatticeManifest,
 ): CleanupResult;
 ```
+
+### Full-text search (1.16)
+
+```ts
+function fullTextSearch(
+  adapter: StorageAdapter,
+  tables: string[],
+  opts: { query: string; limitPerTable?: number; textColumns?: Record<string, string[]> },
+): Promise<FtsResult>; // { query, groups: [{ table, count, more, hits: [{ id, snippet }] }] }
+
+function ensureFtsIndex(adapter: StorageAdapter, table: string, cols: string[]): Promise<void>;
+function hasFtsIndex(adapter: StorageAdapter, table: string): Promise<boolean>;
+function ftsTableName(table: string): string; // "__lattice_fts_<table>"
+function autoFtsColumns(cols: string[]): string[]; // text cols minus ids/bookkeeping
+```
+
+A table opts into an inverted index (SQLite FTS5 / Postgres `tsvector` + GIN)
+by declaring `fts: { fields?: string[] }` on its `TableDefinition`; tables
+without `fts` use a LIKE fallback. Indexes are created only for opt-in tables,
+so a bare consumer pays zero write-path overhead. See `docs/workspaces.md` and
+`docs/collaboration.md` for the workspace model and multiplayer cloud editing.
