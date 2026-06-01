@@ -2476,6 +2476,11 @@ export const appJs = `
      * the soft-delete column whose semantics undo/redo depends on. */
     var LOCKED_COLUMNS = ['id', 'deleted_at'];
 
+    /** System columns the API treats as immutable — name + type are fixed and
+     * the columns editor renders them read-only (mirrors SCHEMA_SYSTEM_COLUMNS
+     * on the server, which enforces it). */
+    var SYSTEM_COLUMNS = ['id', 'created_at', 'updated_at', 'deleted_at'];
+
     /** Curated emoji set for entity icons. Click one to select. */
     var EMOJI_PALETTE = [
       '📋', '📅', '👥', '✉️', '📦', '💿', '📄', '🔐',
@@ -2865,24 +2870,6 @@ export const appJs = `
       // default > generic fallback) so the dropdown reflects what's actually
       // rendered elsewhere in the GUI.
       var overrideIcon = d.icon;
-      // Render every column, but render locked ones (id, deleted_at) as
-      // read-only labels — they're structural and renaming would break
-      // soft-delete / version-history semantics.
-      // Relationship editing: a column becomes a foreign key by selecting a
-      // related entity. refTargets = the entities a column may point at;
-      // refByCol = each column's current ref (from the table's belongsTo rels).
-      var refTargets = ((state.entities && state.entities.tables) || []).filter(function (rt) {
-        return !isJunction(rt) && rt.name !== tableName;
-      });
-      var refByCol = {};
-      belongsToColumns(t).forEach(function (b) { refByCol[b.rel.foreignKey] = b.rel.table; });
-      function dmRefOptions(cur) {
-        return '<option value="">— no link</option>' +
-          refTargets.map(function (rt) {
-            return '<option value="' + escapeHtml(rt.name) + '"' + (cur === rt.name ? ' selected' : '') +
-              '>→ ' + escapeHtml(displayFor(rt.name).label) + '</option>';
-          }).join('');
-      }
       var isJunc = isJunction(t);
       function dmShortType(c) {
         var raw = (t.columnTypes && t.columnTypes[c]) || '';
@@ -2891,51 +2878,78 @@ export const appJs = `
           .trim()
           .toLowerCase();
       }
-      var allCols = (t.columns || []);
-      var columnsHtml = allCols.map(function (c) {
-        var locked = LOCKED_COLUMNS.indexOf(c) !== -1;
-        var typeCell = '<span class="dm-col-type">' + escapeHtml(dmShortType(c)) + '</span>';
-        if (locked) {
-          return '<div class="dm-col-row">' +
-            '<div class="dm-locked">' + escapeHtml(c) +
-              '<span class="dm-locked-label">system</span>' +
-            '</div>' + typeCell + '<span></span><span></span><span></span>' +
-            '</div>';
-        }
-        var fk = refByCol[c];
-        // Junction link columns: fixed — no secret, no relink dropdown, no
-        // rename. They define the many-to-many and shouldn't be re-pointed
-        // individually (use the graph + Delete relationship instead).
-        if (isJunc && fk) {
-          return '<div class="dm-col-row">' +
-            '<div class="dm-locked dm-col-fkname">' + escapeHtml(c) + '</div>' +
-            typeCell +
-            '<span class="dm-col-reltext">→ ' + escapeHtml(displayFor(fk).label) + '</span>' +
-            '<span></span><span></span>' +
-            '</div>';
-        }
-        var secret = isSecretColumn(tableName, c);
-        var secretCell = '<label class="dm-secret-toggle" title="Mask values in the GUI">' +
-          '<input type="checkbox" class="dm-col-secret" data-col="' + escapeHtml(c) + '"' +
-            (secret ? ' checked' : '') + ' /> secret</label>';
-        var refCell = '<select class="dm-col-ref" data-col="' + escapeHtml(c) +
-          '" title="Relationship — link this column to another entity">' + dmRefOptions(fk) + '</select>';
-        // A foreign-key column on a regular entity: its name is read-only (no
-        // rename — that would break the link), but the target can be changed
-        // or cleared via the relationship dropdown.
-        if (fk) {
-          return '<div class="dm-col-row">' +
-            '<div class="dm-locked dm-col-fkname" title="Foreign-key column names cannot be edited">' +
-              escapeHtml(c) + '</div>' +
-            typeCell + refCell + secretCell + '<span></span>' +
-            '</div>';
-        }
+      // Split columns into three buckets. The data model separates *columns*
+      // (scalar data) from *links* (foreign keys / relationships) — they're
+      // different things and edit differently:
+      //   • system  — id/created_at/updated_at/deleted_at: name + type fixed,
+      //               read-only (the server enforces this too).
+      //   • link    — a foreign-key column. A link can't be edited once
+      //               created, only destroyed (owner-only). No rename, no
+      //               secret, no re-point.
+      //   • scalar  — editable name + secret flag, staged behind ONE Save.
+      var fkByCol = {};
+      belongsToColumns(t).forEach(function (b) { fkByCol[b.rel.foreignKey] = b.rel.table; });
+      var systemCols = [], scalarCols = [], linkCols = [];
+      (t.columns || []).forEach(function (c) {
+        if (SYSTEM_COLUMNS.indexOf(c) !== -1) systemCols.push(c);
+        else if (fkByCol[c]) linkCols.push(c);
+        else scalarCols.push(c);
+      });
+
+      // ── Columns section (system read-only + editable scalars) ──
+      var sysRows = systemCols.map(function (c) {
         return '<div class="dm-col-row">' +
-          '<input class="dm-col-name" data-col="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
-          typeCell + refCell + secretCell +
-          '<button class="btn dm-col-rename" data-col="' + escapeHtml(c) + '" title="Rename">↻</button>' +
+          '<div class="dm-locked">' + escapeHtml(c) +
+            '<span class="dm-locked-label">system</span></div>' +
+          '<span class="dm-col-type">' + escapeHtml(dmShortType(c)) + '</span>' +
+          '<span></span>' +
           '</div>';
       }).join('');
+      var scalarRows = scalarCols.map(function (c) {
+        var secret = isSecretColumn(tableName, c);
+        return '<div class="dm-col-row">' +
+          '<input class="dm-col-name" data-orig="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
+          '<span class="dm-col-type">' + escapeHtml(dmShortType(c)) + '</span>' +
+          '<label class="dm-secret-toggle" title="Mask values in the GUI">' +
+            '<input type="checkbox" class="dm-col-secret" data-orig="' + escapeHtml(c) + '"' +
+              ' data-was="' + (secret ? '1' : '0') + '"' + (secret ? ' checked' : '') + ' /> secret</label>' +
+          '</div>';
+      }).join('');
+      var columnsHtml = sysRows + scalarRows;
+
+      // ── Links section (read-only; destroy-only) ──
+      var linkRows = linkCols.map(function (c) {
+        var tgt = fkByCol[c];
+        // Junction legs and shared-by-others tables: read-only, no destroy
+        // button (delete the whole relationship instead). Regular owned
+        // tables get a Destroy control.
+        var destroy = isJunc
+          ? '<span></span>'
+          : '<button class="btn danger dm-link-destroy" data-col="' + escapeHtml(c) + '" title="Destroy this link">Destroy</button>';
+        return '<div class="dm-link-row">' +
+          '<span class="dm-link-name">' + escapeHtml(c) + '</span>' +
+          '<span class="dm-link-arrow">→ ' + escapeHtml(displayFor(tgt).label) + '</span>' +
+          destroy +
+          '</div>';
+      }).join('');
+      // Add-link target picker (regular tables only — can't add columns to a
+      // junction). Excludes self and other junction tables.
+      var linkTargets = ((state.entities && state.entities.tables) || []).filter(function (rt) {
+        return !isJunction(rt) && rt.name !== tableName;
+      });
+      var addLinkHtml = isJunc
+        ? ''
+        : (linkTargets.length
+            ? '<div class="dm-row-inline" style="margin-top:8px">' +
+                '<select id="dm-newlink-target" title="Link to entity">' +
+                  linkTargets.map(function (rt) {
+                    return '<option value="' + escapeHtml(rt.name) + '">→ ' + escapeHtml(displayFor(rt.name).label) + '</option>';
+                  }).join('') +
+                '</select>' +
+                '<button class="btn primary" id="dm-newlink-btn">Add link</button>' +
+              '</div>'
+            : '<span class="muted" style="font-size:12px">No other entities to link to.</span>');
+
       // Team-cloud sharing row — only the owner of a table may toggle
       // its team visibility (t.ownedByMe is set by the server only for
       // team clouds). Tables shared to me by others, and all non-team
@@ -2968,25 +2982,34 @@ export const appJs = `
           '</div>' +
           shareRow +
           '<label>Columns</label>' +
-          '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
-          '<label>Add column</label>' +
-          '<div class="dm-row-inline">' +
-            '<input id="dm-newcol-name" placeholder="column_name" />' +
-            '<select id="dm-newcol-type">' +
-              '<option value="text">text</option>' +
-              '<option value="integer">integer</option>' +
-              '<option value="real">real</option>' +
-              '<option value="boolean">boolean</option>' +
-              '<option value="uuid">uuid</option>' +
-              '<option value="relationship">relationship</option>' +
-            '</select>' +
-            '<select id="dm-newcol-ref" hidden title="Related entity">' + dmRefOptions('') + '</select>' +
-            '<label class="dm-secret-toggle">' +
-              '<input type="checkbox" id="dm-newcol-secret" /> secret' +
-            '</label>' +
-            '<button class="btn primary" id="dm-newcol-btn">Add</button>' +
+          '<div>' +
+            '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
+            (scalarCols.length
+              ? '<button class="btn primary" id="dm-cols-save" style="margin-top:8px" disabled>Save changes</button>'
+              : '') +
           '</div>' +
-          (isJunction(t)
+          (isJunc
+            ? ''
+            : '<label>Add column</label>' +
+              '<div class="dm-row-inline">' +
+                '<input id="dm-newcol-name" placeholder="column_name" />' +
+                '<select id="dm-newcol-type">' +
+                  '<option value="text">text</option>' +
+                  '<option value="integer">integer</option>' +
+                  '<option value="real">real</option>' +
+                  '<option value="boolean">boolean</option>' +
+                '</select>' +
+                '<label class="dm-secret-toggle">' +
+                  '<input type="checkbox" id="dm-newcol-secret" /> secret' +
+                '</label>' +
+                '<button class="btn primary" id="dm-newcol-btn">Add</button>' +
+              '</div>') +
+          '<label>Links</label>' +
+          '<div>' +
+            '<div class="dm-links">' + (linkRows || '<span class="muted" style="font-size:12px">No links.</span>') + '</div>' +
+            addLinkHtml +
+          '</div>' +
+          (isJunc
             ? '<label>Relationship</label>' +
               '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
                 '<button class="btn danger" id="dm-delete-junction">Delete relationship</button>' +
@@ -3116,90 +3139,146 @@ export const appJs = `
           showToast('Icon saved', {});
         }).catch(function (err) { showToast('Icon save failed: ' + err.message, {}); });
       });
-      // Add column — additive but not in the audit log, so no undo.
-      // A "relationship" column is a uuid foreign key — reveal the related-
-      // entity picker only for that type.
-      var newcolType = panel.querySelector('#dm-newcol-type');
-      var newcolRef = panel.querySelector('#dm-newcol-ref');
-      if (newcolType && newcolRef) {
-        newcolType.addEventListener('change', function () {
-          newcolRef.hidden = newcolType.value !== 'relationship';
-        });
-      }
-      panel.querySelector('#dm-newcol-btn').addEventListener('click', function () {
+      // Add column — scalar data columns only (text/integer/real/boolean).
+      // uuid is reserved for keys and relationships ("links") are created via
+      // "Add link" below — neither is offered here. Absent on junction tables.
+      var newcolBtn = panel.querySelector('#dm-newcol-btn');
+      if (newcolBtn) newcolBtn.addEventListener('click', function () {
         var name = panel.querySelector('#dm-newcol-name').value.trim();
         var type = panel.querySelector('#dm-newcol-type').value;
         var secret = !!panel.querySelector('#dm-newcol-secret').checked;
         if (!name) return;
-        var isRel = type === 'relationship';
-        var ref = isRel && newcolRef ? newcolRef.value : '';
-        if (isRel && !ref) { showToast('Pick a related entity for the relationship', {}); return; }
-        var colBody = isRel ? { name: name, type: 'uuid', ref: ref } : { name: name, type: type };
-        fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/columns', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(colBody),
-        }).then(function () {
-          if (!secret) return;
-          // Persist the secret flag for the new column.
-          return fetchJson(
-            '/api/gui-meta/columns/' + encodeURIComponent(tableName) + '/' + encodeURIComponent(name),
-            {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ secret: true }),
-            },
-          );
-        }).then(function () {
-          return reloadEverything();
-        }).then(function () {
-          location.hash = '#/settings/database';
-          showToast('Column "' + name + '" added', {});
-        }).catch(function (err) { showToast('Add column failed: ' + err.message, {}); });
-      });
-      // Toggle 'secret' on an existing column.
-      panel.querySelectorAll('input.dm-col-secret').forEach(function (cb) {
-        cb.addEventListener('change', function () {
-          var col = cb.getAttribute('data-col');
-          fetchJson(
-            '/api/gui-meta/columns/' + encodeURIComponent(tableName) + '/' + encodeURIComponent(col),
-            {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ secret: !!cb.checked }),
-            },
-          ).then(refreshColumnMeta).then(function () {
-            showToast(cb.checked ? 'Column "' + col + '" marked secret' : 'Column "' + col + '" no longer secret', {});
-          }).catch(function (err) {
-            cb.checked = !cb.checked; // revert
-            showToast('Failed: ' + err.message, {});
-          });
-        });
-      });
-      // Set / change / clear a column's relationship (foreign key).
-      panel.querySelectorAll('select.dm-col-ref').forEach(function (sel) {
-        var prev = sel.value;
-        sel.addEventListener('change', function () {
-          var col = sel.getAttribute('data-col');
-          var ref = sel.value;
-          fetchJson(
-            '/api/schema/entities/' + encodeURIComponent(tableName) +
-              '/columns/' + encodeURIComponent(col) + '/ref',
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ ref: ref }),
-            },
-          ).then(function () {
+        withBusy(newcolBtn, function () {
+          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/columns', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: name, type: type }),
+          }).then(function () {
+            if (!secret) return;
+            // Persist the secret flag for the new column.
+            return fetchJson(
+              '/api/gui-meta/columns/' + encodeURIComponent(tableName) + '/' + encodeURIComponent(name),
+              {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ secret: true }),
+              },
+            );
+          }).then(function () {
             return reloadEverything();
           }).then(function () {
             location.hash = '#/settings/database';
             dmActiveTable = tableName;
             renderRoute();
-            showToast(ref ? 'Linked "' + col + '" → ' + displayFor(ref).label : 'Removed link on "' + col + '"', {});
-          }).catch(function (err) {
-            sel.value = prev; // revert
-            showToast('Relationship update failed: ' + err.message, {});
+            showToast('Column "' + name + '" added', {});
+          }).catch(function (err) { showToast('Add column failed: ' + err.message, {}); });
+        });
+      });
+      // Save staged column changes (renames + secret flags) in ONE shot.
+      // Column names and secret flags are edited inline and nothing persists
+      // until "Save changes". We diff against the originals (data-orig /
+      // data-was) and POST only the deltas; the server enforces the real
+      // rules (no system rename, scalar types only) so a bad edit 400s loudly.
+      var colsSaveBtn = panel.querySelector('#dm-cols-save');
+      function colsDirty() {
+        var dirty = false;
+        panel.querySelectorAll('input.dm-col-name').forEach(function (inp) {
+          if (inp.value.trim() !== inp.getAttribute('data-orig')) dirty = true;
+        });
+        panel.querySelectorAll('input.dm-col-secret').forEach(function (cb) {
+          if ((cb.checked ? '1' : '0') !== cb.getAttribute('data-was')) dirty = true;
+        });
+        return dirty;
+      }
+      function refreshColsSaveState() { if (colsSaveBtn) colsSaveBtn.disabled = !colsDirty(); }
+      panel.querySelectorAll('input.dm-col-name, input.dm-col-secret').forEach(function (el) {
+        el.addEventListener('input', refreshColsSaveState);
+        el.addEventListener('change', refreshColsSaveState);
+      });
+      if (colsSaveBtn) colsSaveBtn.addEventListener('click', function () {
+        if (colsSaveBtn.disabled) return;
+        withBusy(colsSaveBtn, function () {
+          var ops = [];
+          panel.querySelectorAll('input.dm-col-name').forEach(function (inp) {
+            var orig = inp.getAttribute('data-orig');
+            var to = inp.value.trim();
+            var cb = panel.querySelector('input.dm-col-secret[data-orig="' + orig + '"]');
+            var secretChanged = !!cb && (cb.checked ? '1' : '0') !== cb.getAttribute('data-was');
+            ops.push({
+              orig: orig,
+              to: to,
+              rename: !!to && to !== orig,
+              secretChanged: secretChanged,
+              secret: cb ? !!cb.checked : false,
+            });
+          });
+          var chain = Promise.resolve();
+          ops.forEach(function (op) {
+            chain = chain.then(function () {
+              if (!op.rename) return;
+              return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) +
+                '/columns/' + encodeURIComponent(op.orig) + '/rename', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ to: op.to }),
+              });
+            }).then(function () {
+              if (!op.secretChanged) return;
+              var name = op.rename ? op.to : op.orig;
+              return fetchJson('/api/gui-meta/columns/' + encodeURIComponent(tableName) +
+                '/' + encodeURIComponent(name), {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ secret: op.secret }),
+              });
+            });
+          });
+          return chain.then(function () { return reloadEverything(); })
+            .then(function () {
+              location.hash = '#/settings/database';
+              dmActiveTable = tableName;
+              renderRoute();
+              showToast('Column changes saved', {});
+            }).catch(function (err) { showToast('Save failed: ' + err.message, {}); });
+        });
+      });
+      // Add link — creates a foreign-key column to the chosen entity. Links
+      // can't be edited once created (only destroyed), so there is no relink
+      // control. Absent on junction tables.
+      var newlinkBtn = panel.querySelector('#dm-newlink-btn');
+      if (newlinkBtn) newlinkBtn.addEventListener('click', function () {
+        var target = panel.querySelector('#dm-newlink-target').value;
+        if (!target) return;
+        withBusy(newlinkBtn, function () {
+          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/links', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ target: target }),
+          }).then(function () { return reloadEverything(); })
+            .then(function () {
+              location.hash = '#/settings/database';
+              dmActiveTable = tableName;
+              renderRoute();
+              showToast('Linked to ' + displayFor(target).label, {});
+            }).catch(function (err) { showToast('Add link failed: ' + err.message, {}); });
+        });
+      });
+      // Destroy a link — drops the FK column. Owner-only (server-enforced);
+      // links are destroy-only, never edited in place.
+      panel.querySelectorAll('.dm-link-destroy').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var col = btn.getAttribute('data-col');
+          if (!confirm('Destroy the link "' + col + '"? This drops the column and is irreversible from the GUI.')) return;
+          withBusy(btn, function () {
+            return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) +
+              '/links/' + encodeURIComponent(col), { method: 'DELETE' })
+              .then(function () { return reloadEverything(); })
+              .then(function () {
+                location.hash = '#/settings/database';
+                dmActiveTable = tableName;
+                renderRoute();
+                showToast('Link "' + col + '" destroyed', {});
+              }).catch(function (err) { showToast('Destroy link failed: ' + err.message, {}); });
           });
         });
       });
@@ -3218,30 +3297,6 @@ export const appJs = `
               renderRoute();
               showToast('Relationship removed', {});
             }).catch(function (err) { showToast('Delete failed: ' + err.message, {}); });
-        });
-      });
-      // Rename column — schema change, irreversible.
-      panel.querySelectorAll('.dm-col-rename').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          var col = btn.getAttribute('data-col');
-          var input = panel.querySelector('input.dm-col-name[data-col="' + col + '"]');
-          var to = input.value.trim();
-          if (!to || to === col) return;
-          if (!confirm('Rename column "' + col + '" to "' + to + '"? This is irreversible from the GUI.')) return;
-          fetchJson(
-            '/api/schema/entities/' + encodeURIComponent(tableName) +
-              '/columns/' + encodeURIComponent(col) + '/rename',
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ to: to }),
-            },
-          ).then(function () {
-            return reloadEverything();
-          }).then(function () {
-            location.hash = '#/settings/database';
-            showToast('Column renamed to "' + to + '"', {});
-          }).catch(function (err) { showToast('Rename column failed: ' + err.message, {}); });
         });
       });
     }
