@@ -19,9 +19,12 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 3. **Ingests** agent-written output back into the DB via the writeback pipeline
 4. **Manages** state with full CRUD, natural-key operations, seeding, and soft-delete
 5. **Optimizes** context with token budgets, relevance filtering, enrichment pipelines, and reward-scored memory
-6. **Searches** semantically via bring-your-own embeddings and cosine similarity
+6. **Searches** full-text (FTS5 / `tsvector`, with a LIKE fallback) and semantically (bring-your-own embeddings + cosine similarity)
+7. **Organizes** everything into `.lattice` workspaces with a local browser GUI, a workspace dashboard, changelog/version history, and a SQL↔markdown context bridge that auto-renders on every write
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
+
+**New in 1.16:** the `.lattice` workspace model + auto-render, full-text search, sources/references, a workspace dashboard, and a **multiplayer cloud-editing** experience (live share/de-share, "last edited by", change-flash + counts, and an offline edit queue that replays on reconnect) — all with no AI dependency. See [docs/workspaces.md](docs/workspaces.md) and [docs/collaboration.md](docs/collaboration.md). The AI assistant, chat, and ingest summarization are exclusive to the 2.0 line (2.0 = the 1.16 feature set plus that AI layer).
 
 ---
 
