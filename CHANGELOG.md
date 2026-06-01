@@ -19,6 +19,13 @@ AI layer.) A bare `new Lattice(path)` library consumer keeps a zero-overhead
 `^1.x` contract: workspaces, FTS indexes, native entities, the changelog, and
 all collaboration surface are opt-in or GUI-cloud-gated.
 
+### Changed — GUI: Data Model, dashboard, auto-render, analytics copy
+
+- **Data Model is now a schema card browser** instead of a circular node graph: a responsive card grid, one card per table, showing each column (`name : type`, with PK/FK markers) and its relationships (`→` references, `↔` many-to-many; junctions surface as relationships, not their own cards). Clicking a card opens the existing entity editor (rename/icon/columns/share). Built from the already-loaded entities (column types now surfaced on `/api/entities`).
+- **Workspace GUI keeps rendered context synced at all times.** `lattice gui` on a `.lattice` workspace now derives canonical entity contexts for tables without one and enables auto-render, so every row has up-to-date context and the row view never shows "No rendered context for this row." A plain `lattice gui --config x.yml` is unchanged (serves only externally-rendered context). Fixes context going stale after edits.
+- **Dashboard home** no longer shows the "entities" / "rows" count tiles (the per-entity cards already show counts); only the stale-data warning remains, and only when something is stale.
+- **Analytics consent** is now a single **"Send anonymous analytics"** toggle covering the install ping and any Scarf pixel, with a one-line description ("Anonymous analytics will be shared with Lattice using Scarf"). Default on (opt-out), unchanged.
+
 ### Added — multiplayer cloud editing
 
 When several people open the GUI against the same shared cloud (Postgres) DB:

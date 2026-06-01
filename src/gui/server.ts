@@ -32,7 +32,14 @@ import {
   type GuiEntitiesPayload,
   type GuiTableSummary,
 } from './data.js';
-import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
+import {
+  readManifest,
+  entityFileNames,
+  manifestPath,
+  writeManifest,
+  type LatticeManifest,
+} from '../lifecycle/manifest.js';
+import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import {
@@ -100,6 +107,14 @@ export interface StartGuiServerOptions {
    * (they assume single-user filesystem trust).
    */
   teamCloud?: boolean;
+  /**
+   * Workspace mode: derive canonical entity contexts for tables without one
+   * and keep the rendered Context/ tree synced via auto-render on every write.
+   * Set by `lattice gui` when opening a `.lattice` workspace. Off for a plain
+   * `--config` GUI (which serves only externally-rendered context) and for
+   * team-cloud serve.
+   */
+  autoRender?: boolean;
 }
 
 export interface GuiServerHandle {
@@ -246,6 +261,9 @@ async function entitiesWithCounts(
           : await db.count(t.name);
       }
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
+      // Column → SQL type, for the Data Model schema cards (name : type).
+      const colTypes = db.getRegisteredColumns(t.name);
+      if (colTypes) base.columnTypes = colTypes;
       if (teamContext) {
         base.shared = teamContext.shared.has(t.name);
         base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
@@ -564,7 +582,11 @@ function resolveOutputDirForConfig(configPath: string): string {
   return resolve(base, 'context');
 }
 
-async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
+async function openConfig(
+  configPath: string,
+  outputDir: string,
+  autoRender = false,
+): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
   // a connection string (postgres://…), a `file:` URL, or `:memory:`,
@@ -652,6 +674,19 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
   });
+  // Workspace opens only: give every user table a canonical, DB-aligned entity
+  // context (table → folder, row → subfolder, <ENTITY>.md + relation rollups)
+  // unless the config already declares one. Without this, a table like `tasks`
+  // has no per-row context to render, so the row view shows "No rendered
+  // context". Mirrors Lattice.openWorkspace. NOT applied to a plain
+  // `lattice gui --config x.yml`, which must keep serving exactly what was
+  // rendered externally (the manifest-fallback contract).
+  if (autoRender) {
+    const existingContexts = db.entityContexts();
+    for (const { table, definition } of deriveCanonicalContexts(parsed.tables)) {
+      if (!existingContexts.has(table)) db.defineEntityContext(table, definition);
+    }
+  }
   await db.init();
 
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
@@ -806,6 +841,30 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
       if (!p.table_name) return;
       applySharingToContext(tc, validTables, p.table_name, p.op === 'schema');
     });
+  }
+
+  // Workspace opens only: keep the rendered Context/ tree synced with the DB at
+  // all times — enable debounced auto-render so every insert/update/delete
+  // re-renders (unchanged files skipped via the manifest hash-diff), and do one
+  // initial render so the row-context view has content immediately. With the
+  // canonical contexts derived above, every table renders per-row context, so
+  // the GUI never shows "No rendered context for this row". A plain
+  // `lattice gui --config x.yml` opts out (autoRender=false) and serves only
+  // what was rendered externally.
+  if (autoRender) {
+    db.enableAutoRender(outputDir);
+    try {
+      await db.render(outputDir);
+    } catch (e) {
+      console.warn('[openConfig] initial render failed:', (e as Error).message);
+    }
+    if (!existsSync(manifestPath(outputDir))) {
+      writeManifest(outputDir, {
+        version: 2,
+        generated_at: new Date().toISOString(),
+        entityContexts: {},
+      });
+    }
   }
 
   return {
@@ -1036,9 +1095,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const startPort = options.port ?? 4317;
   const host = options.host ?? '127.0.0.1';
   const teamCloud = options.teamCloud ?? false;
+  const autoRender = options.autoRender ?? false;
 
   // Mutable reference: switching DBs replaces this wholesale.
-  let active: ActiveDb = await openConfig(configPath, outputDir);
+  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender);
   // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
   // GUI was opened on a plain config; the switcher stays hidden.
@@ -1333,7 +1393,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
           }
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
           sendJson(res, { ok: true, name: entityName });
           return;
         }
@@ -1455,7 +1515,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
           sendJson(res, { ok: true });
           return;
         }
@@ -1491,7 +1551,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
           sendJson(res, { ok: true });
           return;
         }
@@ -1526,7 +1586,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           doc.setIn(['entities', entityName, 'fields', newCol], fieldDef);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
           sendJson(res, { ok: true });
           return;
         }
@@ -1735,7 +1795,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const paths = resolveWorkspacePaths(latticeRoot, ws);
           let next: ActiveDb;
           try {
-            next = await openConfig(paths.configPath, paths.contextDir);
+            next = await openConfig(paths.configPath, paths.contextDir, autoRender);
           } catch (e) {
             const err = e as Error;
             sendJson(
@@ -1777,7 +1837,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const newPaths = resolveWorkspacePaths(latticeRoot, created);
           let newActive: ActiveDb;
           try {
-            newActive = await openConfig(newPaths.configPath, newPaths.contextDir);
+            newActive = await openConfig(newPaths.configPath, newPaths.contextDir, autoRender);
           } catch (e) {
             sendJson(
               res,
@@ -1851,7 +1911,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // own directory), not the launch-wide outputDir. Reusing one
             // outputDir across every DB switch is what bled one DB's rendered
             // "files" view into another DB that had none of its own.
-            next = await openConfig(newPath, resolveOutputDirForConfig(newPath));
+            next = await openConfig(newPath, resolveOutputDirForConfig(newPath), autoRender);
           } catch (e) {
             const err = e as Error & { code?: string };
             console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
@@ -1875,7 +1935,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
-          const next = await openConfig(newConfigPath, resolveOutputDirForConfig(newConfigPath));
+          const next = await openConfig(
+            newConfigPath,
+            resolveOutputDirForConfig(newConfigPath),
+            autoRender,
+          );
           await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
@@ -1915,7 +1979,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
             let next: ActiveDb;
             try {
-              next = await openConfig(fallback.path, resolveOutputDirForConfig(fallback.path));
+              next = await openConfig(
+                fallback.path,
+                resolveOutputDirForConfig(fallback.path),
+                autoRender,
+              );
             } catch (e) {
               const err = e as Error & { code?: string };
               const codePrefix = err.code ? `[${err.code}] ` : '';
@@ -2325,7 +2393,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 }
               : null,
             swap: async () => {
-              const next = await openConfig(active.configPath, active.outputDir);
+              const next = await openConfig(active.configPath, active.outputDir, autoRender);
               await disposeActive(active);
               active = next;
             },
