@@ -46,6 +46,7 @@ import {
   resolveTeamContext,
   shareEntityWithTeam,
   applySharingToContext,
+  listTeamUsers,
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
@@ -359,6 +360,7 @@ async function dashboardPayload(
 const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
 const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const ROW_HISTORY_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/history$/;
+const LAST_EDITED_PATH = /^\/api\/tables\/([^/]+)\/last-edited$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
 
 interface ContextFile {
@@ -1260,6 +1262,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           );
           return;
         }
+        // ── Team members (for "last edited by" name resolution) ───────────
+        // GET /api/team/users → { users: [{id,email,name}] }. Empty on local.
+        if (method === 'GET' && pathname === '/api/team/users') {
+          const users = active.teamContext ? await listTeamUsers(active.db) : [];
+          sendJson(res, { users });
+          return;
+        }
         if (method === 'GET' && pathname === '/api/graph') {
           const yamlNames = new Set(
             getGuiEntities(active.configPath, active.outputDir).tables.map((t) => t.name),
@@ -2075,6 +2084,48 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               payload: r.payload_json ? (JSON.parse(r.payload_json) as unknown) : null,
             })),
           });
+          return;
+        }
+
+        // ── Last-edited-by, per row, for one table (team cloud) ───────────
+        // GET /api/tables/:table/last-edited → { edits: { <pk>: {ownerUserId,
+        // at} } } from the change-log (latest seq per pk). Seeds the client's
+        // "last edited by" map for rows touched before this session. Empty on
+        // local SQLite.
+        const lastEditedMatch = LAST_EDITED_PATH.exec(pathname);
+        if (lastEditedMatch && method === 'GET') {
+          const table = decodeURIComponent(lastEditedMatch[1] ?? '');
+          const tctx = active.teamContext;
+          if (!tctx) {
+            sendJson(res, { edits: {} });
+            return;
+          }
+          if (!active.validTables.has(table)) {
+            sendJson(res, { error: `Unknown table: ${table}` }, 400);
+            return;
+          }
+          // Scan recent change-log rows (newest first) and keep the first
+          // (latest) entry per pk — that's the most recent edit to each row.
+          const scan = (await active.db.query('__lattice_change_log', {
+            filters: [
+              { col: 'team_id', op: 'eq', val: tctx.teamId },
+              { col: 'table_name', op: 'eq', val: table },
+            ],
+            orderBy: 'seq',
+            orderDir: 'desc',
+            limit: 2000,
+          })) as unknown as {
+            pk: string | null;
+            owner_user_id: string | null;
+            created_at: string;
+            client_ts: string | null;
+          }[];
+          const edits: Record<string, { ownerUserId: string | null; at: string }> = {};
+          for (const r of scan) {
+            if (!r.pk || edits[r.pk]) continue;
+            edits[r.pk] = { ownerUserId: r.owner_user_id, at: r.client_ts ?? r.created_at };
+          }
+          sendJson(res, { edits });
           return;
         }
 

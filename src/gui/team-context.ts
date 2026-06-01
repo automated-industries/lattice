@@ -64,6 +64,29 @@ export function isVisibleInTeam(tableName: string, ctx: TeamContext): boolean {
   return owner === ctx.myUserId;
 }
 
+/** A team member, for resolving "last edited by" labels. */
+export interface TeamUser {
+  id: string;
+  email: string;
+  name: string | null;
+}
+
+/**
+ * List the team's users from `__lattice_users` (non-deleted). The client
+ * caches this id→name map to render "last edited by". One team per cloud, so
+ * every row is this team's. Returns [] if the table is unreachable.
+ */
+export async function listTeamUsers(db: Lattice): Promise<TeamUser[]> {
+  try {
+    const rows = (await db.query('__lattice_users', {
+      filters: [{ col: 'deleted_at', op: 'isNull' }],
+    })) as unknown as { id: string; email: string; name: string | null }[];
+    return rows.map((r) => ({ id: r.id, email: r.email, name: r.name ?? null }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Apply a share / unshare to an already-resolved {@link TeamContext} in
  * place, without re-opening the active DB. Mutates `ctx.shared` and the
