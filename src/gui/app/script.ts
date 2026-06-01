@@ -2835,6 +2835,22 @@ export const appJs = `
         return;
       }
       var d = displayFor(tableName);
+      // Team cloud: only the table's owner may edit its schema/relationships
+      // (the server enforces this too). A table shared by another member is
+      // shown read-only here, rather than offering controls that would 403.
+      if (t.ownedByMe === false) {
+        var roCols = (t.columns || []).map(function (c) {
+          var tgt = belongsToColumns(t).find(function (b) { return b.rel.foreignKey === c; });
+          return '<div class="dm-col-row"><div class="dm-locked">' + escapeHtml(c) +
+            (tgt ? '<span class="dm-locked-label">→ ' + escapeHtml(displayFor(tgt.rel.table).label) + '</span>' : '') +
+            '</div></div>';
+        }).join('');
+        panel.innerHTML =
+          '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
+          '<div class="muted" style="font-size:12px;margin-bottom:12px">Shared by another member — read-only. Only the table owner can edit its columns and relationships.</div>' +
+          '<div class="dm-cols">' + (roCols || '<span class="muted">No columns</span>') + '</div>';
+        return;
+      }
       // Pre-fill the picker with the effective icon (override > built-in
       // default > generic fallback) so the dropdown reflects what's actually
       // rendered elsewhere in the GUI.
