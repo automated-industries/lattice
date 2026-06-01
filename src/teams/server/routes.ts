@@ -1,7 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../../lattice.js';
 import { generateToken, generateInviteToken, hashToken, type AuthContext } from './auth.js';
-import { applySchemaSpec, type SchemaSpec } from '../schema-spec.js';
+import { type SchemaSpec } from '../schema-spec.js';
+import {
+  listTeamMembers,
+  appendChangeEnvelope,
+  shareObject,
+  listSharedObjects,
+  unshareObject,
+} from '../team-core.js';
 
 /**
  * Lattice Teams cloud-side route handlers.
@@ -556,36 +563,10 @@ async function handleListMembers(
     sendJson(res, { error: 'Not a member of this team' }, 403);
     return;
   }
-  const members = (await ctx.db.query('__lattice_team_members', {
-    filters: [{ col: 'team_id', op: 'eq', val: teamId }],
-  })) as unknown as TeamMemberRow[];
-  if (members.length === 0) {
-    sendJson(res, { members: [] });
-    return;
-  }
-  const userIds = members.map((m) => m.user_id);
-  const users = (await ctx.db.query('__lattice_users', {
-    filters: [
-      { col: 'id', op: 'in', val: userIds },
-      { col: 'deleted_at', op: 'isNull' },
-    ],
-  })) as unknown as UserRow[];
-  const userById = new Map(users.map((u) => [u.id, u]));
-  sendJson(res, {
-    members: members
-      .map((m) => {
-        const u = userById.get(m.user_id);
-        if (!u) return null;
-        return {
-          user_id: m.user_id,
-          email: u.email,
-          name: u.name,
-          role: m.role,
-          joined_at: m.joined_at,
-        };
-      })
-      .filter((m): m is NonNullable<typeof m> => m !== null),
-  });
+  // Delegate to the shared core so the cloud path matches the direct path —
+  // notably, the creator is surfaced with role='creator' (previously the HTTP
+  // handler omitted this, a confirmed drift bug).
+  sendJson(res, { members: await listTeamMembers(ctx.db, teamId) });
 }
 
 async function handleKickMember(
@@ -798,40 +779,6 @@ async function handleCreateSingletonInvitation(
  * multiple concurrent /api/... inserts on the cloud side, this helper
  * will need a transaction-scoped advisory lock.
  */
-async function nextChangeSeq(db: Lattice): Promise<number> {
-  const rows = (await db.query('__lattice_change_log', {
-    orderBy: 'seq',
-    orderDir: 'desc',
-    limit: 1,
-  })) as unknown as { seq: number }[];
-  return (rows[0]?.seq ?? 0) + 1;
-}
-
-async function appendChangeEnvelope(
-  db: Lattice,
-  entry: {
-    team_id: string;
-    table_name: string | null;
-    pk?: string | null;
-    op: string;
-    payload_json: string | null;
-    owner_user_id?: string | null;
-  },
-): Promise<number> {
-  const seq = await nextChangeSeq(db);
-  await db.insert('__lattice_change_log', {
-    seq,
-    team_id: entry.team_id,
-    table_name: entry.table_name,
-    pk: entry.pk ?? null,
-    op: entry.op,
-    payload_json: entry.payload_json,
-    owner_user_id: entry.owner_user_id ?? null,
-    created_at: new Date().toISOString(),
-  });
-  return seq;
-}
-
 async function getRowLink(
   db: Lattice,
   teamId: string,
@@ -935,60 +882,18 @@ async function handleShareObject(
     return;
   }
   const spec = rawSpec as SchemaSpec;
-  const now = new Date().toISOString();
-  // Upsert by composite key: re-sharing the same table bumps schema_version
-  // and updates spec_json. New entry → version 1.
-  const existing = (await ctx.db.query('__lattice_shared_objects', {
-    filters: [
-      { col: 'team_id', op: 'eq', val: teamId },
-      { col: 'table_name', op: 'eq', val: tableName },
-    ],
-    limit: 1,
-  })) as unknown as SharedObjectRow[];
-  const prior = existing[0];
-  let schemaVersion: number;
-  let outSpec: SchemaSpec;
-  if (prior && !prior.deleted_at) {
-    schemaVersion = prior.schema_version + 1;
-    outSpec = { ...spec, schemaVersion };
-    await ctx.db.upsert('__lattice_shared_objects', {
-      team_id: teamId,
-      table_name: tableName,
-      schema_spec_json: JSON.stringify(outSpec),
-      schema_version: schemaVersion,
-      created_by_user_id: prior.created_by_user_id,
-      created_at: prior.created_at,
-      updated_at: now,
-      deleted_at: null,
-    });
-  } else {
-    schemaVersion = 1;
-    outSpec = { ...spec, schemaVersion };
-    await ctx.db.upsert('__lattice_shared_objects', {
-      team_id: teamId,
-      table_name: tableName,
-      schema_spec_json: JSON.stringify(outSpec),
-      schema_version: schemaVersion,
-      created_by_user_id: ctx.authContext.user.id,
-      created_at: prior?.created_at ?? now,
-      updated_at: now,
-      deleted_at: null,
-    });
-  }
-  // Materialise the shared table on the cloud's own lattice so it can
-  // hold mirrored rows for subsequent link / upsert / delete propagation.
-  // Idempotent — re-shares with new columns ALTER additively.
-  await applySchemaSpec(ctx.db, tableName, outSpec);
-  const seq = await appendChangeEnvelope(ctx.db, {
-    team_id: teamId,
-    table_name: tableName,
-    op: 'schema',
-    payload_json: JSON.stringify(outSpec),
-  });
+  const result = await shareObject(ctx.db, teamId, ctx.authContext.user.id, tableName, spec);
+  // schema_version === 1 ⇒ a fresh (or previously-unshared) object → 201; a
+  // re-share of a live object bumps to >= 2 → 200.
   sendJson(
     res,
-    { table: tableName, schema_version: schemaVersion, seq, schema_spec: outSpec },
-    prior && !prior.deleted_at ? 200 : 201,
+    {
+      table: result.table,
+      schema_version: result.schema_version,
+      seq: result.seq,
+      schema_spec: result.schema_spec,
+    },
+    result.schema_version === 1 ? 201 : 200,
   );
 }
 
@@ -1006,21 +911,7 @@ async function handleListSharedObjects(
     sendJson(res, { error: 'Not a member of this team' }, 403);
     return;
   }
-  const rows = (await ctx.db.query('__lattice_shared_objects', {
-    filters: [
-      { col: 'team_id', op: 'eq', val: teamId },
-      { col: 'deleted_at', op: 'isNull' },
-    ],
-  })) as unknown as SharedObjectRow[];
-  const objects = rows.map((r) => ({
-    table: r.table_name,
-    schema_version: r.schema_version,
-    created_by_user_id: r.created_by_user_id,
-    created_at: r.created_at,
-    updated_at: r.updated_at,
-    schema_spec: JSON.parse(r.schema_spec_json) as SchemaSpec,
-  }));
-  sendJson(res, { objects });
+  sendJson(res, { objects: await listSharedObjects(ctx.db, teamId) });
 }
 
 async function handleUnshareObject(
@@ -1059,18 +950,7 @@ async function handleUnshareObject(
     );
     return;
   }
-  const now = new Date().toISOString();
-  await ctx.db.update(
-    '__lattice_shared_objects',
-    { team_id: teamId, table_name: tableName },
-    { deleted_at: now, updated_at: now },
-  );
-  await appendChangeEnvelope(ctx.db, {
-    team_id: teamId,
-    table_name: tableName,
-    op: 'unshare',
-    payload_json: null,
-  });
+  await unshareObject(ctx.db, teamId, tableName);
   sendJson(res, { ok: true });
 }
 
@@ -1272,6 +1152,12 @@ async function handlePushRow(
     sendJson(res, { error: 'Not a member of this team' }, 403);
     return;
   }
+  // A stale row link must not be able to mutate a now-unshared cloud table
+  // (matches the handleLinkRow precondition).
+  if (!(await isObjectShared(ctx.db, teamId, tableName))) {
+    sendJson(res, { error: `Object "${tableName}" is not shared with this team` }, 404);
+    return;
+  }
   const body = await readJson(req);
   const pk = requireString(body, 'pk');
   if (!pk) {
@@ -1318,6 +1204,10 @@ async function handleDeleteRow(
 ): Promise<void> {
   if (!ctx.authContext) {
     sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  if (!(await isObjectShared(ctx.db, teamId, tableName))) {
+    sendJson(res, { error: `Object "${tableName}" is not shared with this team` }, 404);
     return;
   }
   const link = await getRowLink(ctx.db, teamId, tableName, pk);

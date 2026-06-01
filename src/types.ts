@@ -241,6 +241,20 @@ export interface TableDefinition {
   /** Column name → SQLite type spec (e.g. `'TEXT PRIMARY KEY'`) */
   columns: Record<string, string>;
   /**
+   * Column name → canonical Lattice field type (`text`/`integer`/`real`/
+   * `boolean`/`uuid`/`datetime`/`date`), retained from the config so the GUI
+   * can display the declared type instead of the lossy SQL spec in `columns`.
+   * Populated only for config-declared (YAML) tables; absent for tables defined
+   * directly in code via `define()`.
+   */
+  fieldTypes?: Record<string, string>;
+  /**
+   * Optional human description of what this entity represents. Surfaced in the
+   * GUI and given to the assistant's ingest classifier so it can decide which
+   * records a document relates to. Metadata only — never affects DDL.
+   */
+  description?: string;
+  /**
    * How to render DB rows into text content for the context file.
    *
    * - Pass a `(rows: Row[]) => string` function for full control (v0.1/v0.2 behaviour).
@@ -311,6 +325,23 @@ export interface TableDefinition {
    * ```
    */
   embeddings?: EmbeddingsConfig;
+  /**
+   * Opt this table into indexed full-text search. When set, Lattice builds an
+   * inverted index (SQLite FTS5 / Postgres `tsvector` + GIN) in a separate
+   * `__lattice_fts_<table>` table, maintained automatically by DB triggers, and
+   * `fullTextSearch` uses it instead of the `LIKE` fallback. Omitting `fields`
+   * auto-detects the table's text columns (excluding ids / `deleted_at` /
+   * reward bookkeeping).
+   *
+   * Tables WITHOUT this config are completely unaffected — no index, no
+   * triggers, no write-path overhead — so a bare library consumer pays nothing.
+   *
+   * @example
+   * ```ts
+   * fts: { fields: ['title', 'body'] }
+   * ```
+   */
+  fts?: FtsConfig;
   /**
    * Enable reward tracking for this table. When `true`, Lattice
    * auto-adds `_reward_total REAL DEFAULT 0` and `_reward_count INTEGER
@@ -435,6 +466,14 @@ export interface MultiTableDefinition {
 // ---------------------------------------------------------------------------
 // Embeddings / semantic search
 // ---------------------------------------------------------------------------
+
+/**
+ * Configuration for indexed full-text search on a table (see `TableDefinition.fts`).
+ */
+export interface FtsConfig {
+  /** Columns to index. Omit to auto-detect the table's text columns. */
+  fields?: string[];
+}
 
 /**
  * Configuration for embedding-based semantic search on a table.

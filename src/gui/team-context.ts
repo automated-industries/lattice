@@ -48,6 +48,13 @@ export interface TeamContext {
   owners: Map<string, string>;
   /** Tables explicitly shared to the whole team. */
   shared: Set<string>;
+  /**
+   * table_name → its `__lattice_shared_objects.schema_version`, a snapshot at
+   * resolve time. Used as the optimistic-concurrency token for data-model
+   * edits to shared tables (the client sends its base version; the server
+   * rejects a stale write). Re-shares bump the version.
+   */
+  sharedVersions: Map<string, number>;
 }
 
 /**
@@ -62,6 +69,56 @@ export function isVisibleInTeam(tableName: string, ctx: TeamContext): boolean {
   const owner = ctx.owners.get(tableName);
   if (owner === undefined) return true;
   return owner === ctx.myUserId;
+}
+
+/** A team member, for resolving "last edited by" labels. */
+export interface TeamUser {
+  id: string;
+  email: string;
+  name: string | null;
+}
+
+/**
+ * List the team's users from `__lattice_users` (non-deleted). The client
+ * caches this id→name map to render "last edited by". One team per cloud, so
+ * every row is this team's. Returns [] if the table is unreachable.
+ */
+export async function listTeamUsers(db: Lattice): Promise<TeamUser[]> {
+  try {
+    const rows = (await db.query('__lattice_users', {
+      filters: [{ col: 'deleted_at', op: 'isNull' }],
+    })) as unknown as { id: string; email: string; name: string | null }[];
+    return rows.map((r) => ({ id: r.id, email: r.email, name: r.name ?? null }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Apply a share / unshare to an already-resolved {@link TeamContext} in
+ * place, without re-opening the active DB. Mutates `ctx.shared` and the
+ * GUI's `validTables` visibility set so subsequent `/api/entities` reads
+ * reflect the change immediately.
+ *
+ * Used on two paths: the owner's own share route (deterministic update
+ * for the initiating client) and the realtime broker subscription (when
+ * another client's share/unshare envelope arrives over NOTIFY). Both are
+ * idempotent — a repeated `schema` envelope for an already-shared table
+ * is a no-op. A table stays visible to its owner regardless of sharing.
+ */
+export function applySharingToContext(
+  ctx: TeamContext,
+  validTables: Set<string>,
+  table: string,
+  wantShare: boolean,
+): void {
+  if (wantShare) ctx.shared.add(table);
+  else {
+    ctx.shared.delete(table);
+    ctx.sharedVersions.delete(table);
+  }
+  if (isVisibleInTeam(table, ctx)) validTables.add(table);
+  else validTables.delete(table);
 }
 
 /**
@@ -133,14 +190,16 @@ export async function resolveTeamContext(
   }
   const owners = await listObjectOwners(db, teamId);
   let shared = new Set<string>();
+  const sharedVersions = new Map<string, number>();
   try {
     const summaries = await listSharedObjectsDirect(cloudUrl, teamId);
     shared = new Set(summaries.map((s) => s.table));
+    for (const s of summaries) sharedVersions.set(s.table, s.schema_version);
   } catch {
     // Shared-object table unreachable — treat as nothing shared.
   }
   const isCreator = !!creatorUserId && myUserId === creatorUserId;
-  return { teamId, myUserId, creatorUserId, isCreator, isMember, owners, shared };
+  return { teamId, myUserId, creatorUserId, isCreator, isMember, owners, shared, sharedVersions };
 }
 
 /**

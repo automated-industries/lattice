@@ -227,19 +227,33 @@ export class RenderEngine {
 
         mkdirSync(entityDir, { recursive: true });
 
-        // Copy attached file into entity dir (v0.18.3+)
+        // Attach the file referenced by attachFileColumn into the entity dir.
+        // Default mode copies the bytes (v0.18.3+); 'reference' mode indexes
+        // the file in place by writing a small pointer instead of copying.
         if (def.attachFileColumn) {
           const filePath = entityRow[def.attachFileColumn] as string | undefined;
           if (filePath && typeof filePath === 'string' && filePath.length > 0) {
-            const absPath = isAbsolute(filePath) ? filePath : resolve(outputDir, filePath);
-            if (existsSync(absPath)) {
-              const destPath = join(entityDir, basename(absPath));
-              if (!existsSync(destPath)) {
-                try {
-                  copyFileSync(absPath, destPath);
-                  filesWritten.push(destPath);
-                } catch {
-                  // Silently skip copy failures (permission, disk space, etc.)
+            if (def.attachFileMode === 'reference') {
+              // No copy: write `<name>.ref.md` pointing at the durable location
+              // (works for local paths and cloud URLs alike).
+              const refPath = join(entityDir, `${basename(filePath)}.ref.md`);
+              try {
+                atomicWrite(refPath, `# Reference\n\n- **location:** ${filePath}\n`);
+                filesWritten.push(refPath);
+              } catch {
+                // Silently skip write failures (permission, disk space, etc.)
+              }
+            } else {
+              const absPath = isAbsolute(filePath) ? filePath : resolve(outputDir, filePath);
+              if (existsSync(absPath)) {
+                const destPath = join(entityDir, basename(absPath));
+                if (!existsSync(destPath)) {
+                  try {
+                    copyFileSync(absPath, destPath);
+                    filesWritten.push(destPath);
+                  } catch {
+                    // Silently skip copy failures (permission, disk space, etc.)
+                  }
                 }
               }
             }
