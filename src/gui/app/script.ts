@@ -196,7 +196,44 @@ export const appJs = `
     // change envelopes + the /last-edited seed. Both stay empty on local.
     var usersById = {};
     var lastEditedByPk = {};
+    // Count of changes from OTHER editors to tables not currently in view,
+    // shown as a sidebar badge until the user opens that table.
+    var unseenByTable = {};
     function leKey(table, pk) { return String(table) + '|' + String(pk); }
+    // The table whose collection/detail is currently rendered (fs or objects
+    // route), or null on the dashboard/settings.
+    function currentViewTable() {
+      var hash = location.hash || '#/';
+      var f = (typeof fsParse === 'function') ? fsParse(hash) : null;
+      if (f && f.length >= 1) return f[0];
+      var m = /^#\\/objects\\/([^/]+)/.exec(hash);
+      return m ? m[1] : null;
+    }
+    // Briefly highlight a row that just changed (data-id === pk) in the view.
+    function flashRow(pk) {
+      var content = document.getElementById('content');
+      if (!content || !pk) return;
+      var tr = content.querySelector('tr[data-id="' + (window.CSS && CSS.escape ? CSS.escape(pk) : pk) + '"]');
+      if (!tr) return;
+      tr.classList.remove('lattice-flash');
+      void tr.offsetWidth; // reflow so the animation can replay
+      tr.classList.add('lattice-flash');
+      tr.addEventListener('animationend', function handler() {
+        tr.classList.remove('lattice-flash');
+        tr.removeEventListener('animationend', handler);
+      });
+    }
+    function bumpUnseen(table) {
+      if (!table) return;
+      unseenByTable[table] = (unseenByTable[table] || 0) + 1;
+      renderSidebar();
+    }
+    function clearUnseen(table) {
+      if (table && unseenByTable[table]) {
+        unseenByTable[table] = 0;
+        renderSidebar();
+      }
+    }
     function userLabel(uid) {
       if (!uid) return 'someone';
       var u = usersById[uid];
@@ -208,14 +245,26 @@ export const appJs = `
       return '<div class="last-edited">Last edited by ' + escapeHtml(userLabel(e.userId)) +
         ' · ' + escapeHtml(relTime(e.at)) + '</div>';
     }
-    // Apply one realtime change payload to the local collaboration state.
-    // (Phase 2 extends this with row flashing + changed-count badges.)
+    // Row-level data ops (post-Phase-A envelope ops, plus legacy uppercase
+    // forms) that should flash a row / bump a count. Schema/share/link envelopes
+    // don't.
+    function isRowDataOp(op) {
+      return op === 'upsert' || op === 'delete' ||
+        op === 'INSERT' || op === 'UPDATE' || op === 'DELETE';
+    }
+    // Apply one realtime change payload to the local collaboration state:
+    // record "last edited by", and either flash the row (current view) or bump
+    // the table's unseen-change badge (other tables). Own edits land on the
+    // current view (no badge) so we don't bother suppressing the self-echo.
     function onRealtimeChange(p) {
       if (!p || !p.table_name || !p.pk) return;
       lastEditedByPk[leKey(p.table_name, p.pk)] = {
         userId: p.owner_user_id || null,
         at: p.client_ts || p.created_at || '',
       };
+      if (!isRowDataOp(p.op)) return;
+      if (p.table_name === currentViewTable()) flashRow(p.pk);
+      else bumpUnseen(p.table_name);
     }
     // Pull team members once so "last edited by" can show names, not ids.
     function initLastEdited() {
@@ -820,8 +869,13 @@ export const appJs = `
       var firstClass = state.entities.tables.filter(function (t) { return !isJunction(t); });
       ul.innerHTML = firstClass.map(function (t) {
         var d = displayFor(t.name);
+        var unseen = unseenByTable[t.name] || 0;
+        var badge = unseen > 0
+          ? ' <span class="nav-badge" title="' + unseen + ' change' + (unseen === 1 ? '' : 's') +
+            ' from another editor">' + (unseen > 99 ? '99+' : unseen) + '</span>'
+          : '';
         return '<li><a data-route="' + prefix + t.name + '" href="' + prefix + t.name +
-          '"><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span></a></li>';
+          '"><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + badge + '</a></li>';
       }).join('');
 
       var section = document.getElementById('system-section');
@@ -1100,6 +1154,7 @@ export const appJs = `
     var tableViewMode = {};
 
     function renderTable(content, tableName) {
+      clearUnseen(tableName);
       var t = tableByName(tableName);
       if (!t) {
         content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>';
@@ -1790,6 +1845,7 @@ export const appJs = `
     // Collection view — a folder of tiles. Top-level (#/fs/<table>) shows every
     // row; a nested path (#/fs/<table>/<id>/<rel>) shows the related rows.
     function renderFsCollection(content, segs) {
+      clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
       crumbsP.then(function (crumbs) {
