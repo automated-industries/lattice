@@ -1560,6 +1560,18 @@ export const appJs = `
       return html;
     }
 
+    // Drop a leading YAML frontmatter block (--- … ---) so the rendered
+    // document shows the body, not the generator metadata. Uses the same
+    // real-newline split convention as mdToHtml.
+    function stripFrontmatter(s) {
+      var lines = String(s).split('\\n');
+      if (lines[0] !== '---') return String(s);
+      for (var i = 1; i < lines.length; i++) {
+        if (lines[i] === '---') return lines.slice(i + 1).join('\\n').replace(/^\\n+/, '');
+      }
+      return String(s);
+    }
+
     // A row is backed by a streamable local file when it has the legacy path
     // column (deprecated) or a v2.0 local_ref (ref_uri). Cloud refs aren't served.
     function hasLocalFile(row) {
@@ -2103,8 +2115,10 @@ export const appJs = `
             '</div>' +
             (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             '<div class="fs-doc">' + fields.join('') + '</div>' +
+            '<div class="fs-context" id="fs-context"></div>' +
             (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
           if (table === 'files') renderFilePreview(row);
+          loadFsContext(table, id);
           wireFsEdit(content, table, id, t, row);
           rels.forEach(function (rel) {
             fsRelatedRows(table, row, rel).then(function (rs) {
@@ -2461,6 +2475,24 @@ export const appJs = `
         mount.innerHTML = '<div class="context-block"><div class="context-empty">' +
           'Failed to load rendered context: ' + escapeHtml(err.message) + '</div></div>';
       });
+    }
+
+    // Simple (file-workspace) mode: render the row's context files as FORMATTED
+    // markdown (headings/lists/bold) rather than the raw source the advanced
+    // editor shows. Frontmatter is stripped; empty when nothing is rendered.
+    function loadFsContext(tableName, id) {
+      var mount = document.getElementById('fs-context');
+      if (!mount) return;
+      fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' +
+                encodeURIComponent(id) + '/context').then(function (data) {
+        var files = (data && data.files) || [];
+        var blocks = files.map(function (f) {
+          if (!f.content) return '';
+          return '<div class="fs-context-doc"><div class="md-body">' +
+            mdToHtml(stripFrontmatter(f.content)) + '</div></div>';
+        }).filter(Boolean).join('');
+        mount.innerHTML = blocks;
+      }).catch(function () { mount.innerHTML = ''; });
     }
 
     // ────────────────────────────────────────────────────────────
