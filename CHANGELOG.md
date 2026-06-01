@@ -8,6 +8,142 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-06-01
+
+The stable 1.x line gains the domain-agnostic 2.0 features — the `.lattice`
+workspace model + auto-render, full-text search, changelog history,
+sources/references, a workspace dashboard, and a multiplayer cloud-editing
+experience — with **no AI dependency**. (The AI assistant, chat, and ingest
+summarization remain exclusive to the 2.0 line; 2.0 is this release plus that
+AI layer.) A bare `new Lattice(path)` library consumer keeps a zero-overhead
+`^1.x` contract: workspaces, FTS indexes, native entities, the changelog, and
+all collaboration surface are opt-in or GUI-cloud-gated.
+
+### Changed — GUI: Data Model, dashboard, auto-render, analytics copy
+
+- **Data Model is an interactive force-directed schema graph** (vanilla SVG, no external lib): one node per table sized by row count, foreign-key (`belongsTo`) and many-to-many edges (junctions collapse into a single m2m edge rather than their own node). Drag to reposition, scroll to zoom (clamped so you can't zoom past the entities), drag the background to pan, click a node to open the entity editor.
+- **Columns and links are edited separately, with no way to drop a table by accident.** The entity editor splits a table's fields into **Columns** (scalar data) and **Links** (foreign-key relationships):
+  - **Columns:** system columns (`id` / `created_at` / `updated_at` / `deleted_at`) render read-only (name + type fixed). Editable scalar columns expose an inline name + a `secret` flag, staged behind **one "Save changes"** button. **Add column** offers only the scalar types `text` / `integer` / `real` / `boolean` (`uuid` is reserved for keys). Types display canonically (`text`, `uuid`, `datetime`) rather than the raw SQL column spec.
+  - **Links:** read-only (`name → target`). Created via **"Add link"** (the FK column is named `<target>_id`); can't be edited once created, only **deleted individually** — and deleting a link drops _only_ that foreign-key column (`ALTER TABLE … DROP COLUMN`), never a table.
+  - **Whole-table deletion is a separate, deliberate action.** A table is dropped only via a **"Delete table"** danger-zone button that requires typing the table name to confirm, and the server **refuses while any other table still links to it** (so a delete can't leave dangling references). This replaces the old per-table "Delete relationship" control.
+  - **Backend-enforced** so a bad data model can't be created by hand: `POST …/entities/:t/columns` rejects system names, non-scalar types, and any `ref`; `…/columns/:c/rename` rejects system + FK columns; `POST/DELETE …/entities/:t/links` (create + delete only) and `DELETE …/entities/:t/links/:col` (drops the column only) are owner-gated; `DELETE …/entities/:t` (the sole table-drop path) is owner-gated, refuses inbound-FK references, refuses built-in entities, and surfaces any adapter error as a 400 (never a silent 500); the secret-toggle route rejects system + link columns. Canonical field types are surfaced on `/api/entities`.
+  - **Fixed (data loss):** a first-class entity that happened to have exactly two foreign keys (e.g. `tasks` with `assignee_id` + `articles_id` + ordinary columns) was previously mis-classified as a junction table — the editor then showed a "Delete relationship" button wired to a `DROP TABLE`, so one click dropped the whole table. Junction detection (`isJunctionTable`, server + client, in lockstep) is now columns-aware: a table is a junction only if it carries nothing but its two FK columns and system columns. Such an entity now renders as a normal node/sidebar item and is fully editable; the wholesale junction-drop route was removed entirely. Regression tests cover both SQLite and Postgres.
+  - **Saving updates the editor in place** — adding/renaming columns, adding/deleting links, sharing, and renaming no longer re-render the whole settings drawer (which reset scroll); only the editor panel + sidebar refresh, preserving scroll position.
+- **Workspace GUI keeps rendered context synced at all times.** `lattice gui` on a `.lattice` workspace now derives canonical entity contexts for tables without one and enables auto-render, so every row has up-to-date context and the row view never shows "No rendered context for this row." A plain `lattice gui --config x.yml` is unchanged (serves only externally-rendered context). Fixes context going stale after edits.
+- **Dashboard home** no longer shows the "entities" / "rows" count tiles (the per-entity cards already show counts); only the stale-data warning remains, and only when something is stale.
+- **Analytics consent** is now a single **"Send anonymous analytics"** toggle covering the install ping and any Scarf pixel, with a one-line description ("Anonymous analytics will be shared with Lattice using Scarf"). Default on (opt-out), unchanged.
+
+### Added — schema/data-model changes are tracked + reversible (soft-delete model)
+
+- **Every schema change is now in Version History + the Activity rail, alongside row edits.** Creating/renaming/deleting a table, adding/renaming/deleting a column, and adding/deleting a link/relationship each append an entry to the same `_lattice_gui_audit` history (new `schema.*` operations; one additive nullable `session_id` column, reconciled automatically) with a one-line description ("Created table tasks", "Deleted table tasks", "Added column status to tasks", …) and a **Revert** button. Schema ops also participate in the header ↶/↷ undo/redo stack.
+- **Undo/redo is session-scoped — you step through your OWN recent actions.** The header ↶/↷ stack (for both schema and row ops) is scoped to the current GUI session (one per server process), so in a shared cloud you undo what _you_ just did, not another user's edit. The per-entry **Revert** in Version History stays global — revert any entry, any session, any time.
+- **Deletes are soft — data is never destroyed and reverts are exact.** A delete removes the entity/field from the config (hiding it from the GUI) but **never physically `DROP`s** the SQL table/column; the data stays in the database. Revert just re-adds the config entry, and re-opening reconciles idempotently (`CREATE TABLE IF NOT EXISTS` + skip-existing-column), so the table/column comes back with **all its rows/values intact** — no snapshot, no size limit, on both SQLite and Postgres. The only `DROP` the GUI ever performs is the explicit purge below.
+- **Guards.** Reverts re-open the live DB so the in-memory schema never drifts, and surface any failure loudly (the fail-loudly rule) rather than half-applying. Creating a table/column whose name matches a soft-deleted (orphaned) object is refused ("a deleted `<name>` exists — revert it instead"). Reverting a delete whose object was since purged is refused ("permanently purged"). Renames revert via real `ALTER … RENAME`.
+- **Purge — API only.** `POST /api/schema/purge` (`{ type: 'table' | 'column', name, column? }`, owner-gated) physically drops an orphaned (soft-deleted) object to reclaim space and is **not surfaced in the GUI**. It's audit-logged as `schema.purge` and is irreversible.
+- **Multiplayer.** Schema ops, reverts, and purges append a `ddl` change envelope in team/cloud mode so other clients re-fetch and converge (the broker treats `ddl` as a refresh signal, not a sharing toggle). Local SQLite is a single-writer no-op.
+
+### Added — multiplayer cloud editing
+
+When several people open the GUI against the same shared cloud (Postgres) DB:
+
+- **Live share / de-share, no refresh.** Toggling a table's team visibility updates `teamContext.shared` + the visible table set in place (the share route for the initiating client, a realtime broker subscription for everyone else) instead of re-opening the DB and forcing a reload.
+- **Realtime change envelopes for GUI edits.** GUI row writes now append a `__lattice_change_log` envelope (post-image payload, owner, `client_ts`), so the Postgres NOTIFY trigger fires and other clients learn of the change. Previously only the local audit log + activity feed saw GUI edits.
+- **"Last edited by &lt;user&gt; · &lt;time ago&gt;"** on the row detail view, resolved from the change-log + the team roster (`GET /api/team/users`, `GET /api/tables/:t/last-edited`).
+- **Live cues:** a row visible in the current view flashes when another editor changes it (honoring `prefers-reduced-motion`); changes to tables not in view bump a per-table unseen-change badge in the sidebar, cleared when the table is opened.
+- **Offline editing.** When the cloud is unreachable, row edits are persisted to IndexedDB and replayed in edit-timestamp order the moment the realtime channel reconnects — no edits lost. A stable client `edit_id` makes replay idempotent (the server no-ops a re-sent edit via `findEnvelopeByEditId`); `client_ts` preserves true edit order without letting clock skew reorder the canonical `seq`. A top-bar pill shows the pending count.
+- **Conflict handling.** Row edits are last-write-wins by edit timestamp, with every prior version recoverable from the change-log (`GET /api/tables/:t/rows/:id/history`). A write to a table that was de-shared under you returns a distinct `409 entity_unshared` so the client can refetch + toast. `schemaVersion` is surfaced per shared table on `/api/entities` as the optimistic-concurrency token for data-model edits (see `docs/collaboration.md` for the full policy).
+
+### Changed — GUI: a single Workspaces switcher
+
+- **In workspace mode (a `.lattice` root) the header shows ONE "Workspaces" switcher** instead of two overlapping menus. Previously a "database" switcher and a "workspace" switcher sat side by side, both showing the active workspace's name — confusing, since inside a workspace the database switcher only listed that one workspace's own config. Now, whenever workspaces exist, the database switcher is hidden and the Workspaces menu is the single switcher: it lists every workspace, carries the live cloud/local status dot, and gains a **"+ New workspace…"** action (a new `POST /api/workspaces/create` → `addWorkspace` + open + activate). Without a `.lattice` root (a plain `lattice gui` on a single config) the database switcher remains the fallback.
+
+### Added — full-text search
+
+- **Generic full-text search across entities.** A new `fullTextSearch(adapter, tables, opts)` (`src/search/fts.ts`, exported from the package root) returns hits grouped per entity with snippets, excluding soft-deleted rows, with two tiers:
+  - **Indexed (opt-in).** A table opts in via `TableDefinition.fts` (`{ fields?: string[] }`; omit `fields` to auto-detect text columns). On `init`, Lattice builds an inverted index in a separate `__lattice_fts_<table>` table — **SQLite FTS5** / **Postgres `tsvector` + GIN** — kept current automatically by DB triggers (a generated `tsvector` column on Postgres). `fullTextSearch` uses the index when present; FTS5 `snippet()` / Postgres `ts_headline` produce the snippets.
+  - **LIKE fallback.** Tables without `fts` are searched with a case-insensitive `OR`-of-`LIKE` over their text columns (`CAST(… AS TEXT)`, valid on both engines).
+  - **Guardrail.** Index objects + triggers are created **only** for opt-in tables, so a bare `new Lattice(dbPath)` library consumer with no `fts` config gets no index, no triggers, and zero write-path overhead (a unit test asserts this).
+  - **GUI search bar.** A debounced header search input calls `GET /api/search?q=&tables=&limit=` (scoped to the visible tables) and shows grouped results; click or Enter opens the row. Complements — does not replace — the embeddings-based semantic `Lattice.search`.
+
+### Added — GUI: workspace dashboard
+
+- **The GUI home is now a workspace overview, not a bare entity card-grid.** A new read-only `GET /api/dashboard` composes per-entity counts (reusing the pool-safe `entitiesWithCounts`), a freshness timestamp per entity (`MAX(updated_at|created_at|ts)` — one `UNION ALL` query on Postgres, in-process on SQLite), and a recent-activity list (the GUI audit log). The dashboard renders stat tiles (entities / rows / stale), per-card "last updated" with a stale flag (>14 days), and a recent-activity feed. Fully GUI-only + read-only — no core write-path behavior, so a library consumer of `latticesql` is unaffected.
+
+### Security — DDL identifier & schema-spec validation
+
+- **Team object sharing now validates every externally-supplied name, type, default, and constraint before it reaches DDL.** A shared object's `table`, column names, column types, defaults, and table constraints were previously rendered verbatim into `CREATE TABLE` / `ALTER TABLE`; on Postgres (simple-query protocol, empty params) a `;` could stack a second statement. New `assertSafeIdentifier` / `assertExternalIdentifier` (`src/schema/identifier.ts`) enforce a strict identifier grammar as a universal last-line defense inside the schema manager's `_ensureTable`/`addColumn` and `Lattice.addColumn`; `validateExternalSchemaSpec` validates the full spec (identifiers, the five primitive types, default grammar, constraint character-set, reserved `_lattice_` prefixes) at the `applySchemaSpec` trust boundary. Legitimate specs are unaffected. Regression tests in `tests/unit/identifier-safety.test.ts`.
+- **Defense-in-depth on the core CRUD surface.** `insert` / `upsert` / `upsertBy` / `update` / `delete` / `query` / `count` and the natural-key methods now validate the `table` (and any dynamic column) identifier via `assertSafeIdentifier` before interpolating it into SQL — every legitimate identifier (including unregistered/dynamic tables) still passes.
+- **Team row push/delete now require the object to still be shared.** `handlePushRow` / `handleDeleteRow` gained the `isObjectShared` precondition that `handleLinkRow` already enforced, so a stale row link cannot mutate a cloud table that has since been unshared.
+- **SSRF guard:** documented the residual DNS-rebinding TOCTOU in `safeFetch` (each redirect hop is already re-validated); full socket-level IP pinning is noted as a deferred follow-up.
+
+### Fixed — team member-list role drift + team-ops consolidation
+
+- **The cloud member-list endpoint now surfaces the team creator with `role: 'creator'`**, matching the direct-Postgres path. The two implementations had drifted — `listMembersDirect` always surfaced the creator (even with a stale stored role, or no members row at all), while the HTTP `handleListMembers` returned the raw stored role. Both now delegate to a shared, auth-free core.
+- **The cloud HTTP server (`routes.ts`) and the direct-Postgres path (`direct-ops.ts`) now share their team-operation cores** via the new `src/teams/team-core.ts`: `listTeamMembers`, `appendChangeEnvelope`, `shareObject`, `listSharedObjects`, and `unshareObject`. The `handle*` functions keep token-auth + role/authorization checks and delegate the DB logic; the `*Direct` functions keep only the cloud-connection lifecycle. This kills the duplication-with-drift bug class on those operations.
+- **Change-envelope seq unified to per-team.** The two envelope writers had diverged — the HTTP path derived a _global_ max seq across all teams, the direct path a _per-team_ max. They are now both per-team (the correct cursor semantics; identical under the one-team-per-cloud model, and `handleListChanges` filters per team regardless).
+- The row-level operations (`link`/`unlink`/`push`/`delete`) remain path-specific **by design** — the HTTP path mirrors row snapshots into a separate cloud table, while the direct path operates on the shared table in place; these are genuinely different logic, not duplication.
+
+### Maintenance — dead-code removal & simplification
+
+- Removed unreferenced internal symbols (the `src/lifecycle/index.ts` barrel, `RegisteredTable`/`RegisteredMulti`, `getStatusDirect`, `isInviteToken`).
+- `reverse-seed` `_insertOrIgnore` now uses the `{ changes }` row count from `tx.run` instead of count-before/count-after SELECTs.
+- Internal dedup: a `NOT_DELETED` soft-delete fragment constant (was inlined 5×), a single Postgres polyfill-registration helper, and a one-pass link index in `enrichKnowledge`.
+- **`lattice.ts` modularization.** Extracted two cohesive collaborators from the `Lattice` facade — `ChangelogService` (`src/changelog/service.ts`: `history`/`recentChanges`/`rollback`/`snapshot`/`diff` + changelog-row parsing) and `ReportBuilder` (`src/report/builder.ts`: `buildReport` + duration parsing). The public method surface is unchanged: the facade keeps each method, performs the `init()` guard, and delegates to a lazily-constructed collaborator (deps injected, so the collaborators never reach into `Lattice` internals). `lattice.ts` shrank ~280 lines.
+- **Shared GUI HTTP helpers (`src/gui/http.ts`).** `sendJson` / `readJson` / `tryHandler` were copy-pasted across the GUI route modules with divergent body-size caps and inconsistent error handling. Now a single source of truth: `readJson(req, { maxBytes })` defaults to 1 MB, with explicit per-endpoint overrides where a larger body is intended. The cloud Team server keeps its own copies (no GUI dependency).
+- **`gui/app.ts` split.** The 5,436-line single-template-literal GUI document was split into `src/gui/app/css.ts` (stylesheet) and `src/gui/app/script.ts` (client script), assembled by a 114-line `app.ts` shell (`<style>${css}</style>` … `<script>${appJs}</script>`). The served HTML is **byte-for-byte identical** (verified: same length + SHA-256), and the no-build single-string output is preserved.
+
+### Deprecated — `files.path` / `files.kind`
+
+- **`files.path` is deprecated in favor of the reference model.** GUI local-file ingestion (`/api/ingest/file`) now records a v2.0 `local_ref` (`ref_kind='local_ref'`, `ref_uri`) via `referenceLocalFile()` instead of writing `path`. The blob/open routes and the GUI preview fall back to `ref_uri` (`resolveSource` already did). `files.kind` is an orphaned column (superseded by `mime` + `ref_kind`). Both columns are retained for back-compat — **not dropped** — and carry deprecation notes.
+- **License metadata:** the Apache copyright holder now reads `Automated Industries (M-Flat Inc)` consistently across `LICENSE` + `NOTICE`; the `NOTICE` package label was corrected to `latticesql` and the placeholder URL to the project homepage.
+
+### Added — workspace model + auto-render (back end)
+
+- **One `.lattice` root** — a single discoverable folder (via `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`) now holds machine-local config, the workspace registry, each workspace's database + blobs, and the rendered context. `configDir()` consolidates into `<root>/.config` once initialized, with a non-destructive copy migration of any legacy machine-local config (originals preserved) and a homedir fallback.
+- **First-class workspaces** — `Lattice.openWorkspace()` opens a workspace under `.lattice/Workspaces/<name>/`, split into `Data/` (database + blobs) and `Context/` (the rendered SQL→markdown bridge). Registry helpers: `addWorkspace`, `listWorkspaces`, `getActiveWorkspace`, `setActiveWorkspace`, `resolveWorkspacePaths`.
+- **Canonical `Context/` layout** — zero-config, DB-aligned rendering: table→folder, row→subfolder, `<ENTITY>.md` plus relation rollups (e.g. `PROJECTS.md` inside a file, `FILES.md` inside a project). Derived from the schema via `deriveCanonicalContexts`.
+- **Auto-render** — `enableAutoRender(outputDir)` debounces a re-render on every insert/update/delete (coalesced into a single render; unchanged files skipped by the manifest hash-diff). Workspaces enable it by default so context is always current and there is never a "no rendered context" state. A bare `new Lattice(dbPath)` is unaffected unless it opts in.
+- **CLI** — `lattice init` scaffolds a root + default workspace and renders the initial tree; `lattice workspace list|create|use` manages workspaces.
+
+### Added — references (a row can index data that lives elsewhere)
+
+- **Reference columns on `files`** — additive, nullable: `ref_kind` (`blob` | `local_ref` | `cloud_ref`; NULL ⇒ owned blob), `ref_uri` (absolute path or URL), `ref_provider` (`fs` | `web` | `gdrive`), `source_json` (provider metadata). Existing inserts are unaffected.
+- **Ingestion API** — `referenceLocalFile(path)` records a local file **without copying it** (the file stays where it is); `referenceUrl(url)` records a cloud reference (validated, not fetched at record time). Both set `extraction_status: 'pending'`.
+- **Unified resolver** — `resolveSource(row, root)` returns a `SourceHandle` (`readContent` / `getMetadata`) for blob, local-file, and URL sources alike, so one set of utilities works for local and cloud.
+- **SSRF guard** — `assertSafeUrl` rejects non-http(s) schemes and private/loopback/link-local/metadata addresses (opt-out via `allowPrivate`).
+- **No-copy render mode** — entity contexts can set `attachFileMode: 'reference'` to index an attached file in place (writes a `<name>.ref.md` pointer) instead of duplicating its bytes.
+
+### Added — GUI: workspace switcher
+
+- **Header workspace switcher** — when the GUI is opened inside a `.lattice` root, a header switcher lists the workspaces and switches the active one (`GET /api/workspaces`, `POST /api/workspaces/switch`); switching re-points the GUI at that workspace's config + `Context/`. The switcher is hidden on a plain (non-workspace) GUI, so nothing changes for non-workspace usage. `lattice gui` now opens the active workspace automatically when a root is present. The `Workspaces/` container is never browsed as a folder — switching is header-only.
+
+### Added — analytics consent control
+
+- **Anonymous install analytics is now an explicit opt-out consent setting.** Scarf install analytics ships on by default (`scarfSettings.defaultOptIn`); a new `analytics` user preference + a **Settings → User → "Anonymous install analytics"** GUI toggle let users opt out. `analyticsEnabled()` is the consent gate (env `DO_NOT_TRACK` / `SCARF_ANALYTICS` win, then the preference); `lattice update` / `autoUpdate()` reinstalls pass `SCARF_ANALYTICS=false` when opted out. README + SECURITY.md telemetry docs updated to describe the consent model. The original `npm install` ping remains governed at install time by the env-var opt-outs.
+
+## [2.0.0] - 2026-05-29
+
+Builds on 1.16.0 — it is the 1.16 non-AI feature set plus an AI layer. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.
+
+### Added — AI assistant sidebar
+
+- **Chat with tools** — `POST /api/chat` streams a Claude tool-calling loop over SSE. A function registry mirrors the GUI's mutation primitives (`createRow`/`updateRow`/`deleteRow`/`link`/`undo`/`redo`), so assistant edits are audited, fed to the activity rail, and undoable.
+- **Activity feed + realtime** — an in-process feed bus streams every audited mutation (UI, AI, ingest) to the rail via `GET /api/feed/stream`; the Postgres realtime broker is merged in so other clients' changes appear too.
+- **Voice input** — `POST /api/assistant/transcribe` routes to Whisper or ElevenLabs Scribe, with an explicit provider choice.
+- **File ingest** — reference local files or paste text (`/api/ingest/*`); text/code extracted directly, PDFs/office docs via optional `markitdown`. With a Claude key, an LLM summarizes + classifies relevance and auto-creates junction links; the files detail view renders markdown / office-doc previews safely inline.
+- **Native chat entities** — `chat_threads` + `chat_messages` join `files`/`secrets` as first-class native entities; real per-conversation threads with a switcher.
+- **Credentials & OAuth** — Claude/OpenAI/ElevenLabs keys stored encrypted in the native `secrets` entity; Claude subscription OAuth (PKCE) scaffolding reads `ANTHROPIC_OAUTH_*` env vars.
+- **Responsive rail** — resizable sidebar (persisted) + a mobile bottom-drawer under 720px.
+- **Browser e2e coverage** — Playwright specs for the assistant rail, composer key-gating, feed stream, and file-ingest preview (the rail-independent delete-database spec ships in 1.15.0).
+
+### Added — file-system workspace (default view) + settings drawer
+
+- **File-system workspace** — the default GUI is now a desktop-style file manager. The home dashboard is unchanged (a card per object), but clicking an object opens its rows as a grid of **folder/file tiles**, and clicking a tile opens an **item view**: the row rendered as a document built from its columns (long-form fields formatted as markdown), with the row's relationships shown as **sub-folders** you can drill into arbitrarily deep (e.g. _Authors → a person → Books → a book → Reviews_). A clickable breadcrumb tracks the path. New `#/fs/<table>[/<id>/<relation>/<id>…]` routes; resolution is entirely client-side over the existing endpoints (no API change). Relationships are derived from the schema — forward `belongsTo` (`ref:`) renders as a parent link; the reverse side + many-to-many junctions become the drill-in folders.
+- **Click-to-edit** — in the item view, click any value to edit it in place; the change saves immediately via `PATCH /api/tables/:t/rows/:id` and is undoable. Identity/system/secret and native-file binary columns stay read-only.
+- **Settings drawer** — a **gear** in the header (top-right) opens a slide-over drawer with **Database**, **Lattice**, and **User** tabs (the existing settings panels, relocated from the left nav) plus an **Advanced mode** toggle. Advanced mode switches the object/row views back to the classic editable **table + row** editor (`renderTable`/`renderDetail`, unchanged); the default is the file-system workspace. The legacy `#/settings/*` hashes still resolve and open the drawer.
+- **Slim collapsible sidebar** — the left object nav is now collapsible (state persisted); settings links moved into the gear drawer.
+- The assistant rail is unchanged in both modes. New Playwright spec `tests/e2e/fs.spec.ts` covers the folder grid, nested drill + breadcrumb, click-to-edit persistence, the Advanced-mode toggle, and the settings drawer.
+
 ## [1.15.0] - 2026-05-29
 
 ### Added — delete a database from the GUI (destructive, confirmation-gated)
@@ -906,7 +1042,7 @@ First slice of the **Lattice Teams** feature: a single Postgres- or SQLite-backe
 
 ### Fixed
 
-- **`INSERT OR IGNORE ... SELECT ...` with string literals in the SELECT body now translates correctly.** Previously the `ON CONFLICT DO NOTHING` clause was appended per code region in `translateDialect`, which put it directly after the column list when the SELECT body contained string literals (they split the SQL into multiple code regions in the tokenizer). The resulting SQL had the clause before the `SELECT ... FROM ... LIMIT N` tail, which Postgres rejected with `syntax error near '<string literal>'`. Fix: track the `INSERT OR IGNORE` flag across the whole statement and append `ON CONFLICT DO NOTHING` once at the END of the full SQL. Regression test added for the canonical `INSERT OR IGNORE INTO file ... SELECT 'uuid', id, 'name', ... FROM org LIMIT 1` pattern that the Automated Industries app's migrations use.
+- **`INSERT OR IGNORE ... SELECT ...` with string literals in the SELECT body now translates correctly.** Previously the `ON CONFLICT DO NOTHING` clause was appended per code region in `translateDialect`, which put it directly after the column list when the SELECT body contained string literals (they split the SQL into multiple code regions in the tokenizer). The resulting SQL had the clause before the `SELECT ... FROM ... LIMIT N` tail, which Postgres rejected with `syntax error near '<string literal>'`. Fix: track the `INSERT OR IGNORE` flag across the whole statement and append `ON CONFLICT DO NOTHING` once at the END of the full SQL. Regression test added for the canonical `INSERT OR IGNORE INTO file ... SELECT 'uuid', id, 'name', ... FROM org LIMIT 1` pattern that downstream consumer migrations use.
 
 ## [1.6.5] — 2026-04-13
 

@@ -3,13 +3,15 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 import { parseConfigFile, type ParsedConfig } from '../config/parser.js';
 import { entityFileNames, readManifest, type LatticeManifest } from '../lifecycle/manifest.js';
 import type { EntityFileSource, EnrichmentLookup } from '../schema/entity-context.js';
-import type { Relation, TableDefinition } from '../types.js';
+import type { BelongsToRelation, Relation, TableDefinition } from '../types.js';
 
 export interface GuiTableSummary {
   name: string;
   columns: string[];
   outputFile: string;
   relations: Record<string, Relation>;
+  /** Human description of the entity, when declared in the config. */
+  description?: string;
   /**
    * Populated by the server when serving /api/entities; absent on direct
    * data.ts use. `null` means the server couldn't determine a count for
@@ -23,6 +25,25 @@ export interface GuiTableSummary {
   shared?: boolean;
   /** Team cloud only: the operator owns this table. Set by the server. */
   ownedByMe?: boolean;
+  /**
+   * Team cloud only: the shared table's schema_version, used as the
+   * optimistic-concurrency token for data-model edits. Absent when the table
+   * isn't shared (or on local). Set by the server.
+   */
+  schemaVersion?: number;
+  /**
+   * Column name → SQL type, for the Data Model schema cards. Set by the server
+   * from the registered schema; absent for tables Lattice can't introspect.
+   */
+  columnTypes?: Record<string, string>;
+  /**
+   * Column name → canonical Lattice field type (text/integer/real/boolean/
+   * uuid/datetime/date), for the Data Model column editor. Preferred over
+   * `columnTypes` for display (the SQL spec is lossy and noisy). Present for
+   * config-declared (YAML) tables; absent for code-defined tables with no
+   * declared field types, where the editor falls back to `columnTypes`.
+   */
+  fieldTypes?: Record<string, string>;
 }
 
 export interface GuiFileSummary {
@@ -93,7 +114,21 @@ function tableToSummary(name: string, definition: TableDefinition): GuiTableSumm
     columns: Object.keys(definition.columns),
     outputFile: definition.outputFile ?? `.schema-only/${name}.md`,
     relations: definition.relations ?? {},
+    ...(definition.description ? { description: definition.description } : {}),
+    ...(definition.fieldTypes ? { fieldTypes: definition.fieldTypes } : {}),
   };
+}
+
+/**
+ * Map of entity name → human description, for entities that declare one.
+ * Fed to the ingest classifier so it can reason about what each entity is.
+ */
+export function entityDescriptions(configPath: string, outputDir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const t of getGuiEntities(configPath, outputDir).tables) {
+    if (t.description) out[t.name] = t.description;
+  }
+  return out;
 }
 
 function safeResolveInside(baseDir: string, requestedPath: string): string {
@@ -436,12 +471,64 @@ export function getGuiEntities(configPath: string, outputDir: string): GuiEntiti
   return { tables: data.tables, entities: data.entities, hasManifest: data.manifest !== null };
 }
 
+/** Columns a pure junction may carry besides its two FK columns. */
+const JUNCTION_ALLOWED_NONFK = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+
 /**
- * A table is a junction iff it has exactly two `belongsTo` relations.
- * Junction tables are hidden from the Objects sidebar and dashboard cards;
- * their rows are editable via the Data Model view.
+ * A table is a junction iff it joins exactly two entities and carries NO
+ * payload of its own: exactly two `belongsTo` relations AND every column is one
+ * of those two FK columns or a system column (id/created_at/updated_at/
+ * deleted_at). A table with extra scalar/data columns (e.g. `tasks` with a
+ * `title`) is a first-class entity, not a junction — even if it happens to have
+ * two foreign keys. This columns-aware check is the guard against treating a
+ * real entity as a relationship (which previously exposed a DROP-TABLE path).
+ * Junction tables are hidden from the Objects sidebar and dashboard cards and
+ * collapse into a single many-to-many edge in the schema graph.
+ *
+ * NOTE: the client mirror `isJunction` in src/gui/app/script.ts MUST use the
+ * identical predicate — keep them in lockstep.
  */
 export function isJunctionTable(table: GuiTableSummary): boolean {
   const belongsTo = Object.values(table.relations).filter((r) => r.type === 'belongsTo');
-  return belongsTo.length === 2 && Object.keys(table.relations).length === 2;
+  if (belongsTo.length !== 2 || Object.keys(table.relations).length !== 2) return false;
+  const fkCols = new Set(belongsTo.map((r) => r.foreignKey));
+  return table.columns.every((c) => fkCols.has(c) || JUNCTION_ALLOWED_NONFK.has(c));
+}
+
+/** A junction table that connects the native `files` entity to another entity. */
+export interface FileJunction {
+  /** The junction table name. */
+  junction: string;
+  /** FK column on the junction pointing at `files`. */
+  fileFk: string;
+  /** The entity on the other side of the junction. */
+  otherTable: string;
+  /** FK column on the junction pointing at `otherTable`. */
+  otherFk: string;
+}
+
+/**
+ * Discover the junction tables that link `files` to another entity, with their
+ * foreign-key columns. Used by ingest to auto-link a file to records it relates
+ * to — only where such a junction already exists in the schema.
+ */
+export function fileJunctions(configPath: string, outputDir: string): FileJunction[] {
+  const out: FileJunction[] = [];
+  for (const t of getGuiEntities(configPath, outputDir).tables) {
+    if (!isJunctionTable(t)) continue;
+    const belongsTo = Object.values(t.relations).filter(
+      (r): r is BelongsToRelation => r.type === 'belongsTo',
+    );
+    const fileRel = belongsTo.find((r) => r.table === 'files');
+    const otherRel = belongsTo.find((r) => r.table !== 'files');
+    if (fileRel && otherRel) {
+      out.push({
+        junction: t.name,
+        fileFk: fileRel.foreignKey,
+        otherTable: otherRel.table,
+        otherFk: otherRel.foreignKey,
+      });
+    }
+  }
+  return out;
 }

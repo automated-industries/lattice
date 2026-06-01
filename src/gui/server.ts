@@ -10,8 +10,18 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
+import { sendJson, readJson } from './http.js';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
+import { findLatticeRoot } from '../framework/lattice-root.js';
+import {
+  listWorkspaces,
+  getActiveWorkspace,
+  setActiveWorkspace,
+  getWorkspace,
+  addWorkspace,
+  resolveWorkspacePaths,
+} from '../framework/workspace.js';
 import type { LatticeFieldDef } from '../config/types.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 import {
@@ -22,7 +32,14 @@ import {
   type GuiEntitiesPayload,
   type GuiTableSummary,
 } from './data.js';
-import { readManifest, entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
+import {
+  readManifest,
+  entityFileNames,
+  manifestPath,
+  writeManifest,
+  type LatticeManifest,
+} from '../lifecycle/manifest.js';
+import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import {
@@ -35,15 +52,36 @@ import {
   isVisibleInTeam,
   resolveTeamContext,
   shareEntityWithTeam,
+  applySharingToContext,
+  listTeamUsers,
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
+import { FeedBus } from './feed.js';
+import { fullTextSearch } from '../search/fts.js';
+import { findEnvelopeByEditId, appendChangeEnvelope } from '../teams/team-core.js';
+import {
+  createRow,
+  updateRow,
+  deleteRow,
+  linkRows,
+  unlinkRows,
+  parseAudit,
+  undoLast,
+  redoLast,
+  revertEntry,
+  recordSchemaAudit,
+  isSchemaOp,
+  type AuditEntry,
+  type MutationCtx,
+} from './mutations.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
+import { dispatchFilesRoute } from './files-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
@@ -72,6 +110,14 @@ export interface StartGuiServerOptions {
    * (they assume single-user filesystem trust).
    */
   teamCloud?: boolean;
+  /**
+   * Workspace mode: derive canonical entity contexts for tables without one
+   * and keep the rendered Context/ tree synced via auto-render on every write.
+   * Set by `lattice gui` when opening a `.lattice` workspace. Off for a plain
+   * `--config` GUI (which serves only externally-rendered context) and for
+   * team-cloud serve.
+   */
+  autoRender?: boolean;
 }
 
 export interface GuiServerHandle {
@@ -79,14 +125,6 @@ export interface GuiServerHandle {
   port: number;
   url: string;
   close: () => Promise<void>;
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
 }
 
 function sendText(
@@ -97,25 +135,6 @@ function sendText(
 ): void {
   res.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store' });
   res.end(body);
-}
-
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolveBody, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => {
-      raw += chunk;
-      if (raw.length > 1_000_000) req.destroy(new Error('Request body too large'));
-    });
-    req.on('end', () => {
-      try {
-        resolveBody(raw ? JSON.parse(raw) : {});
-      } catch (e) {
-        reject(new Error(`Invalid JSON body: ${(e as Error).message}`));
-      }
-    });
-    req.on('error', reject);
-  });
 }
 
 function openUrl(url: string): void {
@@ -245,9 +264,18 @@ async function entitiesWithCounts(
           : await db.count(t.name);
       }
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
+      // Column → SQL type, for the Data Model schema cards (name : type).
+      const colTypes = db.getRegisteredColumns(t.name);
+      if (colTypes) base.columnTypes = colTypes;
+      // Canonical field types (text/uuid/datetime/…) — preferred for display
+      // over the lossy SQL spec above. Absent for code-defined tables.
+      const fieldTypes = db.getRegisteredFieldTypes(t.name);
+      if (fieldTypes) base.fieldTypes = fieldTypes;
       if (teamContext) {
         base.shared = teamContext.shared.has(t.name);
         base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
+        const ver = teamContext.sharedVersions.get(t.name);
+        if (ver !== undefined) base.schemaVersion = ver;
       }
       return base;
     }),
@@ -255,116 +283,173 @@ async function entitiesWithCounts(
   return { ...payload, tables: enrichedTables };
 }
 
-const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
-const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
-const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
+const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
+const DASHBOARD_STALE_DAYS = 14;
 
-type AuditOp = 'insert' | 'update' | 'delete' | 'link' | 'unlink';
+/**
+ * Whether the operator may edit `table`'s schema (rename, columns,
+ * relationships). On a local / single-user DB (no team context) there's no
+ * ownership, so always true. On a team cloud, only the table's owner may edit
+ * it — the same gate the share toggle already uses.
+ */
+function operatorOwnsTable(teamContext: TeamContext | null, table: string): boolean {
+  if (!teamContext) return true;
+  return teamContext.owners.get(table) === teamContext.myUserId;
+}
 
-interface AuditEntry {
-  id: string;
-  ts: string;
-  table_name: string;
-  row_id: string | null;
-  operation: AuditOp;
-  before_json: string | null;
-  after_json: string | null;
-  undone: number;
+// Structural columns Lattice manages — never renamable, retypable, deletable,
+// or maskable from the GUI. `id` is the uuid primary key; the timestamps +
+// soft-delete column carry semantics undo/redo + freshness depend on.
+const SCHEMA_SYSTEM_COLUMNS = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+// The only column types a user may CREATE. `uuid` is reserved for keys
+// (the id PK + foreign keys) and enforced by Lattice, not user-selectable.
+const ALLOWED_COLUMN_TYPES = new Set(['text', 'integer', 'real', 'boolean']);
+
+/** The entity a column references (a foreign-key "link"), or null. */
+function columnRefTarget(configPath: string, entity: string, col: string): string | null {
+  const ref: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'fields', col, 'ref']);
+  return typeof ref === 'string' && ref ? ref : null;
+}
+
+/** One-line activity summary for an audit entry (for the activity-rail backfill). */
+function feedActivitySummary(op: string, table: string): string {
+  switch (op) {
+    case 'insert':
+      return `Added a row to ${table}`;
+    case 'update':
+      return `Updated a row in ${table}`;
+    case 'delete':
+      return `Removed a row from ${table}`;
+    case 'link':
+      return `Linked rows in ${table}`;
+    case 'unlink':
+      return `Unlinked rows in ${table}`;
+    case 'schema.create_entity':
+      return `Created table ${table}`;
+    case 'schema.delete_entity':
+      return `Deleted table ${table}`;
+    case 'schema.rename_entity':
+      return `Renamed table ${table}`;
+    case 'schema.add_column':
+      return `Added a column to ${table}`;
+    case 'schema.rename_column':
+      return `Renamed a column on ${table}`;
+    case 'schema.add_link':
+    case 'schema.create_junction':
+      return `Added a link to ${table}`;
+    case 'schema.delete_link':
+      return `Deleted a link on ${table}`;
+    case 'schema.purge':
+      return `Purged ${table}`;
+    default:
+      return `${op} on ${table}`;
+  }
 }
 
 /**
- * Append an audit entry. New entries clear the redo stack — any earlier
- * 'undone' entry can no longer be re-applied once a fresh mutation lands.
+ * Per-table "last touched" timestamp — the MAX of the first present freshness
+ * column (`updated_at` / `created_at` / `ts`). Postgres runs ONE `UNION ALL`
+ * query to stay pool-safe (same concern that drove the batched count in
+ * {@link entitiesWithCounts}); SQLite runs in-process. Tables with none of
+ * those columns are omitted (no freshness signal). Table/column names come from
+ * the registered schema (introspected), not user input, so they are safe to
+ * interpolate as identifiers.
  */
-async function appendAudit(
-  db: Lattice,
-  table: string,
-  rowId: string | null,
-  op: AuditOp,
-  before: unknown,
-  after: unknown,
-): Promise<void> {
-  const undone = (await db.query('_lattice_gui_audit', {
-    filters: [{ col: 'undone', op: 'eq', val: 1 }],
-  })) as { id: string }[];
-  for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
-  await db.insert('_lattice_gui_audit', {
-    id: crypto.randomUUID(),
-    table_name: table,
-    row_id: rowId,
-    operation: op,
-    before_json: before ? JSON.stringify(before) : null,
-    after_json: after ? JSON.stringify(after) : null,
-    undone: 0,
-  });
+async function tableFreshness(
+  adapter: StorageAdapter,
+  tables: { name: string; columns: string[] }[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const withCol = tables
+    .map((t) => ({ name: t.name, col: FRESHNESS_COLS.find((c) => t.columns.includes(c)) }))
+    .filter((t): t is { name: string; col: string } => t.col !== undefined);
+  if (withCol.length === 0) return out;
+  if (adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function') {
+    const sql = withCol
+      .map((t) => `SELECT '${t.name}' AS t, MAX("${t.col}")::text AS m FROM "${t.name}"`)
+      .join(' UNION ALL ');
+    const rows = (await adapter.allAsync(sql)) as { t: string; m: string | null }[];
+    for (const r of rows) out.set(r.t, r.m);
+  } else {
+    for (const t of withCol) {
+      const rows = adapter.all(`SELECT MAX("${t.col}") AS m FROM "${t.name}"`) as {
+        m: string | null;
+      }[];
+      out.set(t.name, rows[0]?.m ?? null);
+    }
+  }
+  return out;
 }
 
-function parseAudit(row: Record<string, unknown>): AuditEntry {
-  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+interface DashboardEntity extends GuiTableSummary {
+  lastUpdatedAt: string | null;
+  stale: boolean;
+}
+
+interface DashboardPayload {
+  generatedAt: string;
+  staleDays: number;
+  totals: { entities: number; rows: number; stale: number };
+  entities: DashboardEntity[];
+  recent: { table: string; op: string; rowId: string | null; ts: string }[];
+}
+
+/**
+ * Workspace overview: per-entity counts (reusing {@link entitiesWithCounts}) +
+ * a freshness timestamp + the recent-activity list (the GUI audit log). This is
+ * a read-only, GUI-only composition — it adds no core write-path behavior and
+ * does not affect a library consumer of Lattice.
+ */
+async function dashboardPayload(
+  db: Lattice,
+  configPath: string,
+  outputDir: string,
+  teamContext: TeamContext | null,
+): Promise<DashboardPayload> {
+  const entityList = await entitiesWithCounts(db, configPath, outputDir, teamContext);
+  // First-class entities only (skip junctions + system tables) — same set the
+  // dashboard cards show.
+  const firstClass = entityList.tables.filter(
+    (t) => !isJunctionTable(t) && !t.name.startsWith('_'),
+  );
+  const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+  const freshness = await tableFreshness(adapter, firstClass);
+  const nowMs = Date.now();
+  const staleMs = DASHBOARD_STALE_DAYS * 86_400_000;
+  let totalRows = 0;
+  let staleCount = 0;
+  const entities: DashboardEntity[] = firstClass.map((t) => {
+    const lastUpdatedAt = freshness.get(t.name) ?? null;
+    const stale = lastUpdatedAt !== null && nowMs - new Date(lastUpdatedAt).getTime() > staleMs;
+    if (typeof t.rowCount === 'number') totalRows += t.rowCount;
+    if (stale) staleCount += 1;
+    return { ...t, lastUpdatedAt, stale };
+  });
+  let recent: DashboardPayload['recent'] = [];
+  try {
+    const raw = (await db.query('_lattice_gui_audit', { limit: 15 })) as Record<string, unknown>[];
+    recent = raw
+      .map(parseAudit)
+      .sort((a, b) => b.ts.localeCompare(a.ts))
+      .slice(0, 15)
+      .map((e) => ({ table: e.table_name, op: e.operation, rowId: e.row_id, ts: e.ts }));
+  } catch {
+    // Audit table absent (a non-GUI-initialized DB) — recent stays empty.
+  }
   return {
-    id: String(row.id),
-    ts: String(row.ts),
-    table_name: String(row.table_name),
-    row_id: str(row.row_id),
-    operation: row.operation as AuditOp,
-    before_json: str(row.before_json),
-    after_json: str(row.after_json),
-    undone: Number(row.undone),
+    generatedAt: new Date().toISOString(),
+    staleDays: DASHBOARD_STALE_DAYS,
+    totals: { entities: entities.length, rows: totalRows, stale: staleCount },
+    entities,
+    recent,
   };
 }
 
-/**
- * Apply the inverse of an audit entry. Used by undo. For redo we apply the
- * forward operation (entry.after_json) instead.
- */
-async function applyInverse(db: Lattice, entry: AuditEntry): Promise<void> {
-  const before = entry.before_json
-    ? (JSON.parse(entry.before_json) as Record<string, unknown>)
-    : null;
-  const after = entry.after_json ? (JSON.parse(entry.after_json) as Record<string, unknown>) : null;
-  switch (entry.operation) {
-    case 'insert':
-      if (entry.row_id) await db.delete(entry.table_name, entry.row_id);
-      break;
-    case 'update':
-      if (entry.row_id && before) await db.update(entry.table_name, entry.row_id, before);
-      break;
-    case 'delete':
-      if (before) await db.insert(entry.table_name, before);
-      break;
-    case 'link':
-      if (after) await db.unlink(entry.table_name, after);
-      break;
-    case 'unlink':
-      if (after) await db.link(entry.table_name, after);
-      break;
-  }
-}
-
-async function applyForward(db: Lattice, entry: AuditEntry): Promise<void> {
-  const before = entry.before_json
-    ? (JSON.parse(entry.before_json) as Record<string, unknown>)
-    : null;
-  const after = entry.after_json ? (JSON.parse(entry.after_json) as Record<string, unknown>) : null;
-  switch (entry.operation) {
-    case 'insert':
-      if (after) await db.insert(entry.table_name, after);
-      break;
-    case 'update':
-      if (entry.row_id && after) await db.update(entry.table_name, entry.row_id, after);
-      break;
-    case 'delete':
-      if (entry.row_id) await db.delete(entry.table_name, entry.row_id);
-      break;
-    case 'link':
-      if (after) await db.link(entry.table_name, after);
-      break;
-    case 'unlink':
-      if (before) await db.unlink(entry.table_name, before);
-      break;
-  }
-  void before; // silence unused warning when not all branches read it
-}
+const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
+const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
+const ROW_HISTORY_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/history$/;
+const LAST_EDITED_PATH = /^\/api\/tables\/([^/]+)\/last-edited$/;
+const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
 
 interface ContextFile {
   name: string;
@@ -535,6 +620,13 @@ interface ActiveDb {
    * DB; replaced wholesale on switch.
    */
   realtime: RealtimeBroker | null;
+  /**
+   * In-process activity feed for the sidebar. Unlike {@link ActiveDb.realtime}
+   * (Postgres-only), this works for every dialect — every audited mutation is
+   * published here and streamed to the sidebar over /api/feed/stream. Owned by
+   * the active DB; replaced wholesale on switch (clients reconnect).
+   */
+  feed: FeedBus;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
 }
@@ -557,7 +649,11 @@ function resolveOutputDirForConfig(configPath: string): string {
   return resolve(base, 'context');
 }
 
-async function openConfig(configPath: string, outputDir: string): Promise<ActiveDb> {
+async function openConfig(
+  configPath: string,
+  outputDir: string,
+  autoRender = false,
+): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
   // a connection string (postgres://…), a `file:` URL, or `:memory:`,
@@ -641,10 +737,30 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
       before_json: 'TEXT',
       after_json: 'TEXT',
       undone: 'INTEGER NOT NULL DEFAULT 0',
+      // The GUI session (one per server process) that made the change. The
+      // header undo/redo stack is scoped to the current session — you undo
+      // YOUR OWN recent actions, not another cloud user's edit — while the
+      // version-history per-entry Revert can revert any entry regardless of
+      // session. Nullable + additive (back-compat with pre-1.16 rows); added
+      // idempotently to existing DBs by the schema reconcile.
+      session_id: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
   });
+  // Workspace opens only: give every user table a canonical, DB-aligned entity
+  // context (table → folder, row → subfolder, <ENTITY>.md + relation rollups)
+  // unless the config already declares one. Without this, a table like `tasks`
+  // has no per-row context to render, so the row view shows "No rendered
+  // context". Mirrors Lattice.openWorkspace. NOT applied to a plain
+  // `lattice gui --config x.yml`, which must keep serving exactly what was
+  // rendered externally (the manifest-fallback contract).
+  if (autoRender) {
+    const existingContexts = db.entityContexts();
+    for (const { table, definition } of deriveCanonicalContexts(parsed.tables)) {
+      if (!existingContexts.has(table)) db.defineEntityContext(table, definition);
+    }
+  }
   await db.init();
 
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
@@ -787,6 +903,44 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     }
   }
 
+  // Keep this server's team-visibility set live when ANOTHER client shares
+  // or unshares a table: the share/unshare envelope arrives over NOTIFY, so
+  // we update `teamContext.shared` + `validTables` in place — no DB re-open,
+  // and the browser's existing `change`-driven refetch then sees the new
+  // visibility. `op:'schema'` ⇒ (re)shared, `op:'unshare'` ⇒ unshared.
+  if (realtime && teamContext) {
+    const tc = teamContext;
+    realtime.subscribePayload((p) => {
+      if (p.op !== 'schema' && p.op !== 'unshare') return;
+      if (!p.table_name) return;
+      applySharingToContext(tc, validTables, p.table_name, p.op === 'schema');
+    });
+  }
+
+  // Workspace opens only: keep the rendered Context/ tree synced with the DB at
+  // all times — enable debounced auto-render so every insert/update/delete
+  // re-renders (unchanged files skipped via the manifest hash-diff), and do one
+  // initial render so the row-context view has content immediately. With the
+  // canonical contexts derived above, every table renders per-row context, so
+  // the GUI never shows "No rendered context for this row". A plain
+  // `lattice gui --config x.yml` opts out (autoRender=false) and serves only
+  // what was rendered externally.
+  if (autoRender) {
+    db.enableAutoRender(outputDir);
+    try {
+      await db.render(outputDir);
+    } catch (e) {
+      console.warn('[openConfig] initial render failed:', (e as Error).message);
+    }
+    if (!existsSync(manifestPath(outputDir))) {
+      writeManifest(outputDir, {
+        version: 2,
+        generated_at: new Date().toISOString(),
+        entityContexts: {},
+      });
+    }
+  }
+
   return {
     configPath,
     outputDir,
@@ -799,6 +953,7 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     manifest,
     softDeletable,
     realtime,
+    feed: new FeedBus(),
     dbPath: parsed.dbPath,
   };
 }
@@ -1008,15 +1163,232 @@ async function syncUserIdentityRow(db: Lattice): Promise<void> {
 
 type RequestWithAuth = IncomingMessage & { authContext?: AuthContext };
 
+// ── Schema history (tracking + soft-delete revert) ────────────────────────
+// Schema/data-model changes are logged to the same `_lattice_gui_audit`
+// history as row edits and are reversible. Deletes are SOFT: the entity/field
+// is removed from the config (hiding it) but the SQL object + data are never
+// dropped, so a revert just re-adds the config entry and the data is intact.
+// No physical DROP ever runs from these paths — only the API-only purge does.
+
+/** Adapter shape used for raw catalog queries (physical-table introspection). */
+type RawAdapter = {
+  allAsync?: (sql: string) => Promise<unknown[]>;
+  dialect: 'sqlite' | 'postgres';
+};
+
+/** All physical user tables in the DB (excludes Lattice-internal `_%` tables). */
+async function listPhysicalUserTables(active: ActiveDb): Promise<string[]> {
+  const adapter = (active.db as unknown as { _adapter: RawAdapter })._adapter;
+  if (!adapter.allAsync) return active.db.getRegisteredTableNames();
+  const sql =
+    adapter.dialect === 'postgres'
+      ? `SELECT tablename AS name FROM pg_tables WHERE schemaname='public' AND tablename NOT LIKE '\\_%' ESCAPE '\\' ORDER BY tablename`
+      : `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name`;
+  return ((await adapter.allAsync(sql)) as { name: string }[]).map((r) => r.name);
+}
+
+async function physicalTableExists(active: ActiveDb, name: string): Promise<boolean> {
+  return (await listPhysicalUserTables(active)).includes(name);
+}
+
+async function physicalColumnExists(
+  active: ActiveDb,
+  table: string,
+  col: string,
+): Promise<boolean> {
+  try {
+    return (await active.db.introspectColumns(table)).includes(col);
+  } catch {
+    return false;
+  }
+}
+
+/** Cloud-only: append a `ddl` change envelope so peers refetch + converge. */
+async function emitDdlEnvelope(active: ActiveDb, table: string | null): Promise<void> {
+  const tc = active.teamContext;
+  if (!tc) return;
+  await appendChangeEnvelope(active.db, {
+    team_id: tc.teamId,
+    table_name: table,
+    pk: null,
+    op: 'ddl',
+    payload_json: null,
+    owner_user_id: tc.myUserId || null,
+  });
+}
+
+/** Record a schema op to the unified history + activity feed + emit a ddl envelope. */
+async function recordSchemaOp(
+  active: ActiveDb,
+  operation: string,
+  table: string,
+  before: unknown,
+  after: unknown,
+  summary: string,
+  sessionId: string,
+): Promise<void> {
+  await recordSchemaAudit(
+    active.db,
+    active.feed,
+    table,
+    operation,
+    before,
+    after,
+    summary,
+    'gui',
+    sessionId,
+  );
+  await emitDdlEnvelope(active, table);
+}
+
+type EntityPayload = { entity: string; entityDef: unknown };
+type FieldPayload = { entity: string; column: string; fieldDef: unknown };
+type RenameEntityPayload = { entity: string };
+type RenameColumnPayload = { entity: string; column: string };
+
+/**
+ * Apply the inverse (revert/undo) or forward (redo) of a schema audit entry:
+ * a config edit (+ RENAME DDL for renames) followed by a re-open. NEVER a
+ * physical DROP — deletes are soft, so re-opening reconciles idempotently with
+ * the data intact. Returns the re-opened `ActiveDb`. Throws (caught by the
+ * route → 400) on a name collision or when the object was permanently purged,
+ * so a revert never silently clobbers or restores an empty shell.
+ */
+async function applySchemaConfig(
+  active: ActiveDb,
+  entry: AuditEntry,
+  direction: 'inverse' | 'forward',
+  autoRender: boolean,
+): Promise<ActiveDb> {
+  const before = entry.before_json
+    ? (JSON.parse(entry.before_json) as Record<string, unknown>)
+    : null;
+  const after = entry.after_json ? (JSON.parse(entry.after_json) as Record<string, unknown>) : null;
+  const doc = loadConfigDoc(active.configPath);
+  const inv = direction === 'inverse';
+  const ddl: string[] = [];
+  const has = (path: string[]): boolean => doc.getIn(path) !== undefined;
+
+  const reAddEntity = async (name: string, def: unknown): Promise<void> => {
+    if (has(['entities', name])) {
+      throw new Error(`Cannot restore "${name}": an entity with that name already exists`);
+    }
+    if (!(await physicalTableExists(active, name))) {
+      throw new Error(`Cannot restore "${name}": it was permanently purged`);
+    }
+    doc.setIn(['entities', name], def);
+  };
+  const removeEntity = (name: string): void => {
+    doc.deleteIn(['entities', name]);
+  };
+  const reAddField = async (entity: string, col: string, def: unknown): Promise<void> => {
+    if (has(['entities', entity, 'fields', col])) {
+      throw new Error(`Cannot restore column "${col}": it already exists on "${entity}"`);
+    }
+    if (!(await physicalColumnExists(active, entity, col))) {
+      throw new Error(`Cannot restore column "${col}": it was permanently purged`);
+    }
+    doc.setIn(['entities', entity, 'fields', col], def);
+  };
+  const removeField = (entity: string, col: string): void => {
+    doc.deleteIn(['entities', entity, 'fields', col]);
+  };
+  const renameEntity = (from: string, to: string): void => {
+    const def: unknown = doc.getIn(['entities', from]);
+    if (def === undefined) throw new Error(`Cannot rename "${from}": not found`);
+    if (has(['entities', to])) throw new Error(`Cannot rename to "${to}": already exists`);
+    doc.deleteIn(['entities', from]);
+    doc.setIn(['entities', to], def);
+    ddl.push(`ALTER TABLE "${from}" RENAME TO "${to}"`);
+  };
+  const renameColumn = (entity: string, from: string, to: string): void => {
+    const def: unknown = doc.getIn(['entities', entity, 'fields', from]);
+    if (def === undefined) throw new Error(`Cannot rename column "${from}": not found`);
+    if (has(['entities', entity, 'fields', to]))
+      throw new Error(`Cannot rename to "${to}": already exists`);
+    doc.deleteIn(['entities', entity, 'fields', from]);
+    doc.setIn(['entities', entity, 'fields', to], def);
+    ddl.push(`ALTER TABLE "${entity}" RENAME COLUMN "${from}" TO "${to}"`);
+  };
+
+  switch (entry.operation) {
+    case 'schema.create_entity':
+    case 'schema.create_junction': {
+      const p = after as unknown as EntityPayload;
+      if (inv) removeEntity(p.entity);
+      else await reAddEntity(p.entity, p.entityDef);
+      break;
+    }
+    case 'schema.delete_entity': {
+      const p = before as unknown as EntityPayload;
+      if (inv) await reAddEntity(p.entity, p.entityDef);
+      else removeEntity(p.entity);
+      break;
+    }
+    case 'schema.add_column':
+    case 'schema.add_link': {
+      const p = after as unknown as FieldPayload;
+      if (inv) removeField(p.entity, p.column);
+      else await reAddField(p.entity, p.column, p.fieldDef);
+      break;
+    }
+    case 'schema.delete_link': {
+      const p = before as unknown as FieldPayload;
+      if (inv) await reAddField(p.entity, p.column, p.fieldDef);
+      else removeField(p.entity, p.column);
+      break;
+    }
+    case 'schema.rename_entity': {
+      const oldN = (before as unknown as RenameEntityPayload).entity;
+      const newN = (after as unknown as RenameEntityPayload).entity;
+      if (inv) renameEntity(newN, oldN);
+      else renameEntity(oldN, newN);
+      break;
+    }
+    case 'schema.rename_column': {
+      const oldC = (before as unknown as RenameColumnPayload).column;
+      const a = after as unknown as RenameColumnPayload;
+      if (inv) renameColumn(a.entity, a.column, oldC);
+      else renameColumn(a.entity, oldC, a.column);
+      break;
+    }
+    default:
+      throw new Error(`Cannot revert unknown schema op: ${entry.operation}`);
+  }
+
+  // Run RENAME DDL on the live connection before re-opening, so the physical
+  // schema matches the edited config. (Config edits are persisted only after
+  // this succeeds; a throw above leaves the on-disk config + `active` intact.)
+  for (const sql of ddl) await execSql(active.db, sql);
+  saveConfigDoc(active.configPath, doc);
+  await disposeActive(active);
+  return openConfig(active.configPath, active.outputDir, autoRender);
+}
+
+/** Human one-liner for an undo/redo/revert of a schema entry (activity feed). */
+function schemaReverseSummary(verb: string, entry: AuditEntry): string {
+  const what = entry.operation.replace('schema.', '').replace(/_/g, ' ');
+  return `${verb} schema change (${what}) on ${entry.table_name}`;
+}
+
 export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
   const configPath = resolve(options.configPath);
   const outputDir = resolve(options.outputDir);
   const startPort = options.port ?? 4317;
   const host = options.host ?? '127.0.0.1';
   const teamCloud = options.teamCloud ?? false;
+  const autoRender = options.autoRender ?? false;
+  // One id per GUI server process. Stamped on every audit entry so the header
+  // undo/redo stack is scoped to THIS session's own actions (you undo what you
+  // did, not another cloud user's edit). The per-entry Revert stays global.
+  const sessionId = crypto.randomUUID();
 
   // Mutable reference: switching DBs replaces this wholesale.
-  let active: ActiveDb = await openConfig(configPath, outputDir);
+  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender);
+  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
+  // the header workspace switcher can list + switch workspaces. `null` ⇒ the
+  // GUI was opened on a plain config; the switcher stays hidden.
+  const latticeRoot = findLatticeRoot(dirname(configPath));
   if (teamCloud) {
     await registerTeamCloudTables(active.db);
   }
@@ -1114,6 +1486,98 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           req.on('error', cleanup);
           return;
         }
+
+        // ── Activity feed SSE: every audited mutation, for the sidebar ──────
+        // Works for every dialect (SQLite included), unlike /api/realtime/*
+        // which depends on Postgres LISTEN/NOTIFY. On connect we backfill the
+        // most recent events so a freshly opened sidebar isn't blank.
+        if (method === 'GET' && pathname === '/api/feed/stream') {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-store, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          });
+          const writeFeed = (data: unknown): void => {
+            try {
+              res.write(`event: feed\ndata: ${JSON.stringify(data)}\n\n`);
+            } catch {
+              // socket closed — handled by 'close' below
+            }
+          };
+          // Backfill from the persistent audit log so the activity rail
+          // mirrors the version history (same source), not just this session's
+          // in-process feed buffer. Newest-first query, emitted oldest→newest
+          // so the rail appends them in order.
+          try {
+            const auditBackfill = (await active.db.query('_lattice_gui_audit', {
+              orderBy: 'ts',
+              orderDir: 'desc',
+              limit: 20,
+            })) as { ts: string; table_name: string; row_id: string | null; operation: string }[];
+            for (const a of auditBackfill.reverse()) {
+              writeFeed({
+                seq: 0,
+                table: a.table_name,
+                op: a.operation,
+                rowId: a.row_id,
+                source: 'gui',
+                ts: a.ts,
+                summary: feedActivitySummary(a.operation, a.table_name),
+              });
+            }
+          } catch {
+            // No audit table yet (fresh DB) — nothing to backfill.
+          }
+          const keepalive = setInterval(() => {
+            try {
+              res.write(`: keepalive\n\n`);
+            } catch {
+              // socket closed
+            }
+          }, 25_000);
+          // Track keys of this server's own mutations so we can suppress the
+          // Postgres NOTIFY echo of them below (avoids double feed entries on
+          // cloud DBs); genuine other-client changes still come through.
+          const recentSelf = new Map<string, number>();
+          const offFeed = active.feed.subscribe((e) => {
+            recentSelf.set(`${e.table ?? ''}:${e.rowId ?? ''}:${e.op}`, Date.now());
+            writeFeed(e);
+          });
+          // Merge the Postgres realtime broker so changes made by OTHER clients
+          // on a shared cloud DB also appear in the feed (SQLite has no broker).
+          const offBroker = active.realtime?.subscribePayload((p) => {
+            const op =
+              p.op === 'INSERT'
+                ? 'insert'
+                : p.op === 'UPDATE'
+                  ? 'update'
+                  : p.op === 'DELETE'
+                    ? 'delete'
+                    : null;
+            if (!op || !p.table_name || p.table_name.startsWith('_lattice')) return;
+            const key = `${p.table_name}:${p.pk ?? ''}:${op}`;
+            const seen = recentSelf.get(key);
+            if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
+            writeFeed({
+              seq: p.seq,
+              table: p.table_name,
+              op,
+              rowId: p.pk,
+              source: 'cli',
+              ts: p.created_at || new Date().toISOString(),
+              summary: `${op} on ${p.table_name} (another client)`,
+            });
+          });
+          const cleanup = (): void => {
+            clearInterval(keepalive);
+            offFeed();
+            if (offBroker) offBroker();
+          };
+          req.on('close', cleanup);
+          req.on('error', cleanup);
+          return;
+        }
         if (method === 'GET' && pathname === '/api/project') {
           sendJson(res, getGuiProject(active.configPath, active.outputDir));
           return;
@@ -1128,6 +1592,53 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active.teamContext,
             ),
           );
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/dashboard') {
+          sendJson(
+            res,
+            await dashboardPayload(
+              active.db,
+              active.configPath,
+              active.outputDir,
+              active.teamContext,
+            ),
+          );
+          return;
+        }
+        // ── Full-text search across visible tables ────────────────────────
+        // GET /api/search?q=&tables=&limit= — LIKE fallback + indexed (FTS5 /
+        // tsvector) per the engine in src/search/fts.ts. Scoped to validTables
+        // (team-visibility-filtered when in cloud mode).
+        if (method === 'GET' && pathname === '/api/search') {
+          const q = (url.searchParams.get('q') ?? '').trim();
+          if (!q) {
+            sendJson(res, { query: '', groups: [] });
+            return;
+          }
+          const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? '8')));
+          const requested = url.searchParams.get('tables');
+          let tables = [...active.validTables];
+          if (requested) {
+            const want = new Set(
+              requested
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean),
+            );
+            tables = tables.filter((t) => want.has(t));
+          }
+          sendJson(
+            res,
+            await fullTextSearch(active.db.adapter, tables, { query: q, limitPerTable: limit }),
+          );
+          return;
+        }
+        // ── Team members (for "last edited by" name resolution) ───────────
+        // GET /api/team/users → { users: [{id,email,name}] }. Empty on local.
+        if (method === 'GET' && pathname === '/api/team/users') {
+          const users = active.teamContext ? await listTeamUsers(active.db) : [];
+          sendJson(res, { users });
           return;
         }
         if (method === 'GET' && pathname === '/api/graph') {
@@ -1145,7 +1656,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         // ── Create entity (additive — not in audit log, irreversible from GUI) ──
         if (method === 'POST' && pathname === '/api/schema/entities') {
-          const body = (await readJsonBody(req)) as { name?: unknown; icon?: unknown };
+          const body = (await readJson<unknown>(req)) as { name?: unknown; icon?: unknown };
           const entityName = typeof body.name === 'string' ? body.name.trim() : '';
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(entityName)) {
             sendJson(res, { error: 'Entity name must be a valid identifier' }, 400);
@@ -1155,19 +1666,32 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Entity already exists: ${entityName}` }, 400);
             return;
           }
+          // A soft-deleted table of this name still exists physically (hidden).
+          // Refuse rather than CREATE-collide or silently resurrect its data.
+          if (await physicalTableExists(active, entityName)) {
+            sendJson(
+              res,
+              {
+                error: `A deleted entity "${entityName}" exists — revert it instead, or purge it first.`,
+              },
+              400,
+            );
+            return;
+          }
           await execSql(
             active.db,
             `CREATE TABLE "${entityName}" (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT)`,
           );
-          const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', entityName], {
+          const newEntityDef = {
             fields: {
               id: { type: 'uuid', primaryKey: true },
               name: { type: 'text', required: true },
               deleted_at: { type: 'text' },
             },
             outputFile: entityName.toUpperCase() + '.md',
-          });
+          };
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', entityName], newEntityDef);
           saveConfigDoc(active.configPath, doc);
           // Save icon override if provided
           if (typeof body.icon === 'string' && body.icon.trim()) {
@@ -1191,8 +1715,194 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
           }
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.create_entity',
+            entityName,
+            null,
+            { entity: entityName, entityDef: newEntityDef },
+            `Created table ${entityName}`,
+            sessionId,
+          );
           sendJson(res, { ok: true, name: entityName });
+          return;
+        }
+
+        // ── Create a many-to-many relationship (junction table) ──────────
+        // Creates a junction table with two ref columns linking `left` and
+        // `right`, so it surfaces as an m2m edge in the Data Model graph.
+        if (method === 'POST' && pathname === '/api/schema/junctions') {
+          const body = (await readJson<unknown>(req)) as {
+            left?: unknown;
+            right?: unknown;
+            name?: unknown;
+          };
+          const left = typeof body.left === 'string' ? body.left.trim() : '';
+          const right = typeof body.right === 'string' ? body.right.trim() : '';
+          if (!active.validTables.has(left) || !active.validTables.has(right)) {
+            sendJson(res, { error: 'Both entities must exist' }, 400);
+            return;
+          }
+          if (active.junctionTables.has(left) || active.junctionTables.has(right)) {
+            sendJson(res, { error: 'Cannot link a junction table' }, 400);
+            return;
+          }
+          if (
+            !operatorOwnsTable(active.teamContext, left) ||
+            !operatorOwnsTable(active.teamContext, right)
+          ) {
+            sendJson(res, { error: 'You can only relate tables you own' }, 403);
+            return;
+          }
+          // One many-to-many link per pair (either direction): refuse if a
+          // junction already connects `left` and `right`. Mirrors the picker's
+          // client-side exclusion so the model can't accumulate A_B + B_A.
+          const linksBoth = (j: GuiTableSummary): boolean => {
+            const bt = Object.values(j.relations).filter((r) => r.type === 'belongsTo');
+            const tables = new Set(bt.map((r) => r.table));
+            return bt.length === 2 && tables.has(left) && tables.has(right);
+          };
+          const existingJunction = getGuiEntities(active.configPath, active.outputDir).tables.find(
+            (j) => active.junctionTables.has(j.name) && linksBoth(j),
+          );
+          if (existingJunction) {
+            sendJson(
+              res,
+              { error: `"${left}" and "${right}" are already linked (${existingJunction.name})` },
+              400,
+            );
+            return;
+          }
+          const requested = typeof body.name === 'string' ? body.name.trim() : '';
+          const jName = requested || `${left}_${right}`;
+          if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(jName)) {
+            sendJson(res, { error: 'Relationship name must be a valid identifier' }, 400);
+            return;
+          }
+          if (
+            active.validTables.has(jName) ||
+            active.db.getRegisteredTableNames().includes(jName)
+          ) {
+            sendJson(res, { error: `A table named "${jName}" already exists` }, 400);
+            return;
+          }
+          if (await physicalTableExists(active, jName)) {
+            sendJson(
+              res,
+              {
+                error: `A deleted relationship "${jName}" exists — revert it instead, or purge it first.`,
+              },
+              400,
+            );
+            return;
+          }
+          // Self-referential m2m needs two distinct column names.
+          const leftCol = `${left}_id`;
+          const rightCol = left === right ? `${right}_id_2` : `${right}_id`;
+          await execSql(
+            active.db,
+            `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${leftCol}" TEXT, "${rightCol}" TEXT)`,
+          );
+          const newJunctionDef = {
+            fields: {
+              id: { type: 'uuid', primaryKey: true },
+              [leftCol]: { type: 'uuid', ref: left },
+              [rightCol]: { type: 'uuid', ref: right },
+            },
+            outputFile: jName.toUpperCase() + '.md',
+          };
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', jName], newJunctionDef);
+          saveConfigDoc(active.configPath, doc);
+          if (active.teamContext?.myUserId) {
+            await recordObjectOwner(
+              active.db,
+              active.teamContext.teamId,
+              jName,
+              active.teamContext.myUserId,
+            );
+          }
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.create_junction',
+            jName,
+            null,
+            { entity: jName, entityDef: newJunctionDef },
+            `Linked ${left} ↔ ${right}`,
+            sessionId,
+          );
+          sendJson(res, { ok: true, name: jName });
+          return;
+        }
+
+        // ── Delete a whole table (the single, explicit table-drop path) ───
+        // This is the ONLY DROP TABLE in the GUI. It is deliberately guarded:
+        // owner-gated, never drops a native entity, and REFUSES while any other
+        // table still has a foreign key pointing at it (so a delete can never
+        // leave dangling references / a broken data model — the user removes
+        // those links first). The client gates this behind a type-the-name
+        // confirmation. The old, dangerous DELETE /api/schema/junctions/:name
+        // route (which dropped a "junction" inferred only from FK count, and so
+        // could drop a misclassified first-class entity) has been removed.
+        if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+$/.test(pathname)) {
+          const name = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(name)) {
+            sendJson(res, { error: `Unknown entity: ${name}` }, 400);
+            return;
+          }
+          if (isNativeEntity(name)) {
+            sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, name)) {
+            sendJson(res, { error: 'Only the table owner can delete this table' }, 403);
+            return;
+          }
+          // Inbound-FK guard: refuse if another table links to this one.
+          const inbound: string[] = [];
+          for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
+            if (t.name === name) continue;
+            for (const rel of Object.values(t.relations)) {
+              if (rel.type === 'belongsTo' && rel.table === name) {
+                inbound.push(`${t.name}.${rel.foreignKey}`);
+              }
+            }
+          }
+          if (inbound.length > 0) {
+            sendJson(
+              res,
+              {
+                error: `Cannot delete "${name}" — these links point at it: ${inbound.join(', ')}. Delete those links first.`,
+              },
+              400,
+            );
+            return;
+          }
+          // SOFT delete: remove the entity from the config (hiding it from the
+          // GUI) but DO NOT drop the SQL table — its rows stay intact so the
+          // history entry can be reverted with no snapshot. Physical removal is
+          // a separate, API-only `POST /api/schema/purge`. Capture the config
+          // block first so revert can re-add it.
+          const doc = loadConfigDoc(active.configPath);
+          const deletedEntityDef = (doc.toJS() as { entities?: Record<string, unknown> })
+            .entities?.[name];
+          doc.deleteIn(['entities', name]);
+          saveConfigDoc(active.configPath, doc);
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.delete_entity',
+            name,
+            { entity: name, entityDef: deletedEntityDef },
+            null,
+            `Deleted table ${name}`,
+            sessionId,
+          );
+          sendJson(res, { ok: true });
           return;
         }
 
@@ -1207,18 +1917,23 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Sharing is only available on team cloud databases' }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { share?: unknown };
+          const body = (await readJson<unknown>(req)) as { share?: unknown };
+          const wantShare = body.share === true;
           const result = await shareEntityWithTeam(
             active.db,
             active.dbPath,
             ctx,
             active.validTables,
             table,
-            body.share === true,
+            wantShare,
           );
           if (result.status === 200) {
-            await disposeActive(active);
-            active = await openConfig(active.configPath, active.outputDir);
+            // Update visibility in place instead of re-opening the DB — keeps
+            // the realtime broker connection alive (no LISTEN reconnect) and
+            // lets the client reflect the change with a light /api/entities
+            // refetch. Other clients converge via the broker subscription
+            // wired in openConfig.
+            applySharingToContext(ctx, active.validTables, table, wantShare);
           }
           sendJson(res, result.body, result.status);
           return;
@@ -1247,7 +1962,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { secret?: unknown };
+          if (!operatorOwnsTable(active.teamContext, tableName)) {
+            sendJson(res, { error: 'Only the table owner can edit this column' }, 403);
+            return;
+          }
+          // Secret is meaningful only for scalar data columns. System columns
+          // (id/created_at/updated_at/deleted_at) and links (FK columns) can't
+          // be marked secret — enforce here so the data model stays clean.
+          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+            sendJson(
+              res,
+              { error: `"${colName}" is a system column and cannot be marked secret` },
+              400,
+            );
+            return;
+          }
+          if (columnRefTarget(active.configPath, tableName, colName)) {
+            sendJson(res, { error: 'Link (foreign-key) columns cannot be marked secret' }, 400);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { secret?: unknown };
           const secret = body.secret === true ? 1 : 0;
           const existing = (
             (await active.db.query('_lattice_gui_column_meta', {
@@ -1285,7 +2019,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { to?: unknown };
+          if (!operatorOwnsTable(active.teamContext, oldName)) {
+            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newName = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(newName)) {
             sendJson(res, { error: 'New name must be a valid identifier' }, 400);
@@ -1308,7 +2046,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.rename_entity',
+            newName,
+            { entity: oldName },
+            { entity: newName },
+            `Renamed table ${oldName} → ${newName}`,
+            sessionId,
+          );
           sendJson(res, { ok: true });
           return;
         }
@@ -1318,21 +2065,41 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as {
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as {
             name?: unknown;
             type?: unknown;
             required?: unknown;
             ref?: unknown;
           };
           const colName = typeof body.name === 'string' ? body.name.trim() : '';
-          const colType = (
-            typeof body.type === 'string' ? body.type : 'text'
-          ) as LatticeFieldDef['type'];
+          const colType = typeof body.type === 'string' ? body.type : 'text';
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(colName)) {
             sendJson(res, { error: 'Column name must be a valid identifier' }, 400);
             return;
           }
-          const sqliteType = fieldToSqliteBaseType(colType);
+          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+            sendJson(res, { error: `"${colName}" is a reserved system column` }, 400);
+            return;
+          }
+          // Scalar data columns only. uuid is reserved for keys; relationships
+          // ("links") are created via the dedicated links endpoint, not here.
+          if (!ALLOWED_COLUMN_TYPES.has(colType)) {
+            sendJson(
+              res,
+              { error: 'Column type must be one of: text, integer, real, boolean' },
+              400,
+            );
+            return;
+          }
+          if (typeof body.ref === 'string' && body.ref) {
+            sendJson(res, { error: 'Use “Add link” to create a relationship column' }, 400);
+            return;
+          }
+          const sqliteType = fieldToSqliteBaseType(colType as LatticeFieldDef['type']);
           await execSql(
             active.db,
             `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${sqliteType}`,
@@ -1340,11 +2107,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const doc = loadConfigDoc(active.configPath);
           const fieldDef: Record<string, unknown> = { type: colType };
           if (body.required === true) fieldDef.required = true;
-          if (typeof body.ref === 'string') fieldDef.ref = body.ref;
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.add_column',
+            entityName,
+            null,
+            { entity: entityName, column: colName, fieldDef },
+            `Added column ${colName} to ${entityName}`,
+            sessionId,
+          );
           sendJson(res, { ok: true });
           return;
         }
@@ -1359,14 +2134,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { to?: unknown };
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newCol = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newCol)) {
             sendJson(res, { error: 'New column name must be a valid identifier' }, 400);
             return;
           }
-          if (colName === 'id') {
-            sendJson(res, { error: 'Cannot rename the id primary key column' }, 400);
+          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+            sendJson(res, { error: `Cannot rename the system column "${colName}"` }, 400);
+            return;
+          }
+          if (columnRefTarget(active.configPath, entityName, colName)) {
+            sendJson(res, { error: 'Foreign-key (link) column names cannot be changed' }, 400);
+            return;
+          }
+          if (SCHEMA_SYSTEM_COLUMNS.has(newCol)) {
+            sendJson(res, { error: `"${newCol}" is a reserved system column` }, 400);
             return;
           }
           await execSql(
@@ -1379,7 +2166,265 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           doc.setIn(['entities', entityName, 'fields', newCol], fieldDef);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.rename_column',
+            entityName,
+            { entity: entityName, column: colName },
+            { entity: entityName, column: newCol },
+            `Renamed column ${colName} → ${newCol} on ${entityName}`,
+            sessionId,
+          );
+          sendJson(res, { ok: true });
+          return;
+        }
+
+        // ── Add a link (foreign key) from an entity to another ───────────
+        // A "link" is a relationship, distinct from a scalar column: it adds a
+        // uuid FK column referencing `target`. Links can't be edited once
+        // created — only destroyed (below). Owner-gated.
+        if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/links$/.test(pathname)) {
+          const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(entityName)) {
+            sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can add a link' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { target?: unknown };
+          const target = typeof body.target === 'string' ? body.target.trim() : '';
+          if (!active.validTables.has(target)) {
+            sendJson(res, { error: 'Target entity must exist' }, 400);
+            return;
+          }
+          if (active.junctionTables.has(target)) {
+            sendJson(res, { error: 'Cannot link to a junction table' }, 400);
+            return;
+          }
+          // One link per target via this control: refuse if the entity already
+          // has a foreign key pointing at `target` (the UI also excludes it
+          // from the picker). Keeps the data model clean and avoids the
+          // accidental <target>_id / <target>_id_2 duplication.
+          const summary = getGuiEntities(active.configPath, active.outputDir).tables.find(
+            (t) => t.name === entityName,
+          );
+          const alreadyLinked =
+            summary !== undefined &&
+            Object.values(summary.relations).some(
+              (r) => r.type === 'belongsTo' && r.table === target,
+            );
+          if (alreadyLinked) {
+            sendJson(res, { error: `"${entityName}" already links to "${target}"` }, 400);
+            return;
+          }
+          // Name the FK <target>_id, de-duplicating against existing columns.
+          const existingCols = new Set(
+            Object.keys(active.db.getRegisteredColumns(entityName) ?? {}),
+          );
+          let colName = `${target}_id`;
+          let n = 2;
+          while (existingCols.has(colName)) colName = `${target}_id_${String(n++)}`;
+          const linkType = fieldToSqliteBaseType('uuid');
+          await execSql(
+            active.db,
+            `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${linkType}`,
+          );
+          const linkFieldDef = { type: 'uuid', ref: target };
+          const doc = loadConfigDoc(active.configPath);
+          doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
+          saveConfigDoc(active.configPath, doc);
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.add_link',
+            entityName,
+            null,
+            { entity: entityName, column: colName, fieldDef: linkFieldDef },
+            `Added link ${entityName} → ${target}`,
+            sessionId,
+          );
+          sendJson(res, { ok: true, column: colName });
+          return;
+        }
+
+        // ── Destroy a link (drop the FK column) ──────────────────────────
+        // Links are destroy-only and owner-gated. Each link is managed
+        // individually — including the legs of a (pure) junction table — and
+        // dropping one only drops THAT foreign-key column (ALTER TABLE DROP
+        // COLUMN), never a table. To remove a whole table, use
+        // DELETE /api/schema/entities/:name.
+        if (
+          method === 'DELETE' &&
+          /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)
+        ) {
+          const parts = pathname.split('/');
+          const entityName = decodeURIComponent(parts[4] ?? '');
+          const colName = decodeURIComponent(parts[6] ?? '');
+          if (!active.validTables.has(entityName)) {
+            sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, entityName)) {
+            sendJson(res, { error: 'Only the table owner can remove a link' }, 403);
+            return;
+          }
+          const target = columnRefTarget(active.configPath, entityName, colName);
+          if (!target) {
+            sendJson(res, { error: `Not a link column: ${colName}` }, 400);
+            return;
+          }
+          // SOFT delete: remove the FK field from the config (hiding the link)
+          // but DO NOT drop the SQL column — its values stay, so revert restores
+          // them with no snapshot. Capture the field def first for revert.
+          const doc = loadConfigDoc(active.configPath);
+          const deletedFieldDef = (
+            doc.toJS() as { entities?: Record<string, { fields?: Record<string, unknown> }> }
+          ).entities?.[entityName]?.fields?.[colName];
+          doc.deleteIn(['entities', entityName, 'fields', colName]);
+          saveConfigDoc(active.configPath, doc);
+          await disposeActive(active);
+          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          await recordSchemaOp(
+            active,
+            'schema.delete_link',
+            entityName,
+            { entity: entityName, column: colName, fieldDef: deletedFieldDef },
+            null,
+            `Deleted link ${entityName} → ${target}`,
+            sessionId,
+          );
+          sendJson(res, { ok: true });
+          return;
+        }
+
+        // ── Purge permanently (API only — NOT surfaced in the GUI) ────────
+        // Soft-deleted tables/columns stay physically in the DB so they can be
+        // reverted. This is the escape hatch to physically DROP an orphaned
+        // (soft-deleted) object and reclaim space. Irreversible — after a purge,
+        // the prior soft-delete can no longer be reverted (its data is gone).
+        if (method === 'POST' && pathname === '/api/schema/purge') {
+          const body = (await readJson<unknown>(req)) as {
+            type?: unknown;
+            name?: unknown;
+            column?: unknown;
+          };
+          const type = body.type === 'column' ? 'column' : 'table';
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          const column = typeof body.column === 'string' ? body.column.trim() : '';
+          if (!name) {
+            sendJson(res, { error: 'name is required' }, 400);
+            return;
+          }
+          if (!operatorOwnsTable(active.teamContext, name)) {
+            sendJson(res, { error: 'Only the table owner can purge' }, 403);
+            return;
+          }
+          if (type === 'table') {
+            // Must be orphaned: physically present but NOT live (soft-deleted).
+            if (active.validTables.has(name)) {
+              sendJson(
+                res,
+                { error: `"${name}" is a live table — soft-delete it first, then purge.` },
+                400,
+              );
+              return;
+            }
+            if (!(await physicalTableExists(active, name))) {
+              sendJson(res, { error: `No soft-deleted table "${name}" to purge` }, 400);
+              return;
+            }
+            try {
+              await execSql(active.db, `DROP TABLE IF EXISTS "${name}"`);
+            } catch (err) {
+              sendJson(
+                res,
+                {
+                  error: `Failed to purge "${name}": ${err instanceof Error ? err.message : String(err)}`,
+                },
+                400,
+              );
+              return;
+            }
+            // Best-effort gui-meta cleanup (icon + column secret flags).
+            for (const meta of [
+              { table: '_lattice_gui_meta', col: 'entity_name' },
+              { table: '_lattice_gui_column_meta', col: 'table_name' },
+            ]) {
+              const rows = (await active.db.query(meta.table, {
+                filters: [{ col: meta.col, op: 'eq', val: name }],
+              })) as { id: string }[];
+              for (const r of rows) await active.db.delete(meta.table, r.id);
+            }
+            await recordSchemaAudit(
+              active.db,
+              active.feed,
+              name,
+              'schema.purge',
+              { entity: name, type: 'table' },
+              null,
+              `Purged table ${name}`,
+              'gui',
+              sessionId,
+            );
+            await emitDdlEnvelope(active, name);
+            sendJson(res, { ok: true });
+            return;
+          }
+          // type === 'column': the table is live, the column physically present
+          // but not in the config (soft-deleted link/column).
+          if (!column) {
+            sendJson(res, { error: 'column is required for a column purge' }, 400);
+            return;
+          }
+          if (!active.validTables.has(name)) {
+            sendJson(res, { error: `Unknown table: ${name}` }, 400);
+            return;
+          }
+          const registered = active.db.getRegisteredColumns(name) ?? {};
+          if (column in registered) {
+            sendJson(
+              res,
+              { error: `"${column}" is a live column — soft-delete it first, then purge.` },
+              400,
+            );
+            return;
+          }
+          if (!(await physicalColumnExists(active, name, column))) {
+            sendJson(
+              res,
+              { error: `No soft-deleted column "${column}" on "${name}" to purge` },
+              400,
+            );
+            return;
+          }
+          try {
+            await execSql(active.db, `ALTER TABLE "${name}" DROP COLUMN "${column}"`);
+          } catch (err) {
+            sendJson(
+              res,
+              {
+                error: `Failed to purge "${column}": ${err instanceof Error ? err.message : String(err)}`,
+              },
+              400,
+            );
+            return;
+          }
+          await recordSchemaAudit(
+            active.db,
+            active.feed,
+            name,
+            'schema.purge',
+            { entity: name, column, type: 'column' },
+            null,
+            `Purged column ${column} from ${name}`,
+            'gui',
+            sessionId,
+          );
+          await emitDdlEnvelope(active, name);
           sendJson(res, { ok: true });
           return;
         }
@@ -1419,59 +2464,144 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/history/undo') {
+          // Peek the latest LIVE entry to branch row vs schema. Schema reverts
+          // need config + re-open (which dispose the db row helpers capture), so
+          // they're handled here directly; row ops go through undoLast.
           const live = (
             (await active.db.query('_lattice_gui_audit', {
-              filters: [{ col: 'undone', op: 'eq', val: 0 }],
+              filters: [
+                { col: 'undone', op: 'eq', val: 0 },
+                { col: 'session_id', op: 'eq', val: sessionId },
+              ],
             })) as Record<string, unknown>[]
-          )
-            .map(parseAudit)
-            .sort((a, b) => b.ts.localeCompare(a.ts));
-          const target = live[0];
-          if (!target) {
+          ).map(parseAudit);
+          const target = live.sort((a, b) => b.ts.localeCompare(a.ts))[0];
+          if (target && isSchemaOp(target.operation)) {
+            try {
+              active = await applySchemaConfig(active, target, 'inverse', autoRender);
+            } catch (err) {
+              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+              return;
+            }
+            await active.db.update('_lattice_gui_audit', target.id, { undone: 1 });
+            active.feed.publish({
+              table: target.table_name,
+              op: 'undo',
+              rowId: null,
+              source: 'gui',
+              summary: schemaReverseSummary('Undid', target),
+            });
+            await emitDdlEnvelope(active, target.table_name);
+            sendJson(res, { ok: true, entry: target });
+            return;
+          }
+          const entry = await undoLast({
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+            sessionId,
+          });
+          if (!entry) {
             sendJson(res, { error: 'Nothing to undo' }, 400);
             return;
           }
-          await applyInverse(active.db, target);
-          await active.db.update('_lattice_gui_audit', target.id, { undone: 1 });
-          sendJson(res, { ok: true, entry: target });
+          sendJson(res, { ok: true, entry });
           return;
         }
         if (method === 'POST' && pathname === '/api/history/redo') {
-          const undoneRows = (
+          const undone = (
             (await active.db.query('_lattice_gui_audit', {
-              filters: [{ col: 'undone', op: 'eq', val: 1 }],
+              filters: [
+                { col: 'undone', op: 'eq', val: 1 },
+                { col: 'session_id', op: 'eq', val: sessionId },
+              ],
             })) as Record<string, unknown>[]
-          )
-            .map(parseAudit)
-            .sort((a, b) => a.ts.localeCompare(b.ts));
-          const target = undoneRows[0];
-          if (!target) {
+          ).map(parseAudit);
+          const target = undone.sort((a, b) => a.ts.localeCompare(b.ts))[0];
+          if (target && isSchemaOp(target.operation)) {
+            try {
+              active = await applySchemaConfig(active, target, 'forward', autoRender);
+            } catch (err) {
+              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+              return;
+            }
+            await active.db.update('_lattice_gui_audit', target.id, { undone: 0 });
+            active.feed.publish({
+              table: target.table_name,
+              op: 'redo',
+              rowId: null,
+              source: 'gui',
+              summary: schemaReverseSummary('Redid', target),
+            });
+            await emitDdlEnvelope(active, target.table_name);
+            sendJson(res, { ok: true, entry: target });
+            return;
+          }
+          const entry = await redoLast({
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+            sessionId,
+          });
+          if (!entry) {
             sendJson(res, { error: 'Nothing to redo' }, 400);
             return;
           }
-          await applyForward(active.db, target);
-          await active.db.update('_lattice_gui_audit', target.id, { undone: 0 });
-          sendJson(res, { ok: true, entry: target });
+          sendJson(res, { ok: true, entry });
           return;
         }
         if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {
-          // Revert ONE specific entry (apply its inverse and mark it undone).
           const id = decodeURIComponent(pathname.slice('/api/history/revert/'.length));
           const row = (await active.db.get('_lattice_gui_audit', id)) as Record<
             string,
             unknown
           > | null;
-          if (!row) {
-            sendJson(res, { error: 'Audit entry not found' }, 404);
+          if (row && isSchemaOp(String(row.operation))) {
+            const target = parseAudit(row);
+            if (target.undone === 1) {
+              sendJson(res, { error: 'Entry already undone' }, 400);
+              return;
+            }
+            try {
+              active = await applySchemaConfig(active, target, 'inverse', autoRender);
+            } catch (err) {
+              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+              return;
+            }
+            await active.db.update('_lattice_gui_audit', id, { undone: 1 });
+            active.feed.publish({
+              table: target.table_name,
+              op: 'undo',
+              rowId: null,
+              source: 'gui',
+              summary: schemaReverseSummary('Reverted', target),
+            });
+            await emitDdlEnvelope(active, target.table_name);
+            sendJson(res, { ok: true });
             return;
           }
-          const entry = parseAudit(row);
-          if (entry.undone === 1) {
-            sendJson(res, { error: 'Entry already undone' }, 400);
+          const result = await revertEntry(
+            {
+              db: active.db,
+              feed: active.feed,
+              softDeletable: active.softDeletable,
+              source: 'gui',
+            },
+            id,
+          );
+          if (!result.ok) {
+            sendJson(
+              res,
+              {
+                error:
+                  result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone',
+              },
+              result.reason === 'not_found' ? 404 : 400,
+            );
             return;
           }
-          await applyInverse(active.db, entry);
-          await active.db.update('_lattice_gui_audit', id, { undone: 1 });
           sendJson(res, { ok: true });
           return;
         }
@@ -1547,6 +2677,111 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Disabled in team-cloud mode — switching the active DB out from
         // under other members would corrupt their session view and bypass
         // the team's auth + share contract.
+        // ── Workspaces (header switcher) ──────────────────────────────────
+        // Additive: when the GUI was not opened inside a `.lattice` root,
+        // these return empty and the header switcher stays hidden.
+        if (method === 'GET' && pathname === '/api/workspaces') {
+          if (teamCloud || !latticeRoot) {
+            // Disabled in team-cloud mode (switching the active DB out from
+            // under members would bypass the auth + share contract).
+            sendJson(res, { current: null, workspaces: [] });
+            return;
+          }
+          const all = listWorkspaces(latticeRoot);
+          const activeWs = getActiveWorkspace(latticeRoot);
+          sendJson(res, {
+            current: activeWs ? activeWs.id : null,
+            workspaces: all.map((w) => ({
+              id: w.id,
+              label: w.displayName,
+              dir: w.dir,
+              kind: w.kind,
+            })),
+          });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/workspaces/switch') {
+          if (teamCloud) {
+            sendJson(res, { error: 'Workspace switching is disabled in team-cloud mode' }, 403);
+            return;
+          }
+          if (!latticeRoot) {
+            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { id?: unknown };
+          if (typeof body.id !== 'string') {
+            sendJson(res, { error: 'id must be a string' }, 400);
+            return;
+          }
+          const ws = getWorkspace(latticeRoot, body.id);
+          if (!ws) {
+            sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
+            return;
+          }
+          const paths = resolveWorkspacePaths(latticeRoot, ws);
+          let next: ActiveDb;
+          try {
+            next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+          } catch (e) {
+            const err = e as Error;
+            sendJson(
+              res,
+              { error: `Failed to open workspace ${ws.displayName}: ${err.message}` },
+              500,
+            );
+            return;
+          }
+          setActiveWorkspace(latticeRoot, ws.id);
+          await disposeActive(active);
+          active = next;
+          sendJson(res, { ok: true, id: ws.id });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/workspaces/create') {
+          if (teamCloud) {
+            sendJson(res, { error: 'Workspace creation is disabled in team-cloud mode' }, 403);
+            return;
+          }
+          if (!latticeRoot) {
+            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { name?: unknown };
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          if (!name) {
+            sendJson(res, { error: 'name is required' }, 400);
+            return;
+          }
+          let created;
+          try {
+            created = addWorkspace(latticeRoot, { displayName: name, makeActive: false });
+          } catch (e) {
+            sendJson(res, { error: `Failed to create workspace: ${(e as Error).message}` }, 500);
+            return;
+          }
+          // Open + activate the new workspace (mirror the switch handler).
+          const newPaths = resolveWorkspacePaths(latticeRoot, created);
+          let newActive: ActiveDb;
+          try {
+            newActive = await openConfig(newPaths.configPath, newPaths.contextDir, autoRender);
+          } catch (e) {
+            sendJson(
+              res,
+              {
+                error: `Created but failed to open ${created.displayName}: ${(e as Error).message}`,
+              },
+              500,
+            );
+            return;
+          }
+          setActiveWorkspace(latticeRoot, created.id);
+          await disposeActive(active);
+          active = newActive;
+          sendJson(res, { ok: true, id: created.id });
+          return;
+        }
+
         if (teamCloud && pathname.startsWith('/api/databases')) {
           sendJson(res, { error: 'Database switching is disabled in team-cloud mode' }, 403);
           return;
@@ -1582,7 +2817,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/switch') {
-          const body = (await readJsonBody(req)) as { path?: unknown };
+          const body = (await readJson<unknown>(req)) as { path?: unknown };
           if (typeof body.path !== 'string') {
             sendJson(res, { error: 'path must be a string' }, 400);
             return;
@@ -1603,7 +2838,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // own directory), not the launch-wide outputDir. Reusing one
             // outputDir across every DB switch is what bled one DB's rendered
             // "files" view into another DB that had none of its own.
-            next = await openConfig(newPath, resolveOutputDirForConfig(newPath));
+            next = await openConfig(newPath, resolveOutputDirForConfig(newPath), autoRender);
           } catch (e) {
             const err = e as Error & { code?: string };
             console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
@@ -1621,20 +2856,31 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/create') {
-          const body = (await readJsonBody(req)) as { name?: unknown };
+          const body = (await readJson<unknown>(req)) as { name?: unknown };
           if (typeof body.name !== 'string' || !body.name.trim()) {
             sendJson(res, { error: 'name must be a non-empty string' }, 400);
             return;
           }
           const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
-          const next = await openConfig(newConfigPath, resolveOutputDirForConfig(newConfigPath));
+          const next = await openConfig(
+            newConfigPath,
+            resolveOutputDirForConfig(newConfigPath),
+            autoRender,
+          );
           await disposeActive(active);
           active = next;
           sendJson(res, { ok: true, path: active.configPath });
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/delete') {
-          const body = (await readJsonBody(req)) as { path?: unknown };
+          // Only the database owner may delete a database. On a team cloud
+          // that's the team creator; on a local/single-user DB the operator is
+          // the owner, so it's always allowed.
+          if (active.teamContext && !active.teamContext.isCreator) {
+            sendJson(res, { error: 'Only the database owner can delete a database' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { path?: unknown };
           if (typeof body.path !== 'string' || !body.path.trim()) {
             sendJson(res, { error: 'path must be a non-empty string' }, 400);
             return;
@@ -1667,7 +2913,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
             let next: ActiveDb;
             try {
-              next = await openConfig(fallback.path, resolveOutputDirForConfig(fallback.path));
+              next = await openConfig(
+                fallback.path,
+                resolveOutputDirForConfig(fallback.path),
+                autoRender,
+              );
             } catch (e) {
               const err = e as Error & { code?: string };
               const codePrefix = err.code ? `[${err.code}] ` : '';
@@ -1733,7 +2983,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
             return;
           }
-          const body = (await readJsonBody(req)) as { icon?: unknown };
+          const body = (await readJson<unknown>(req)) as { icon?: unknown };
           if (typeof body.icon !== 'string') {
             sendJson(res, { error: 'icon must be a string' }, 400);
             return;
@@ -1796,6 +3046,94 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── Per-row version history (team cloud): the recoverable trail of
+        // every edit to one row, newest first, from __lattice_change_log.
+        // GET /api/tables/:table/rows/:id/history. Empty on local SQLite.
+        const rowHistMatch = ROW_HISTORY_PATH.exec(pathname);
+        if (rowHistMatch && method === 'GET') {
+          const table = decodeURIComponent(rowHistMatch[1] ?? '');
+          const rowId = decodeURIComponent(rowHistMatch[2] ?? '');
+          const tctx = active.teamContext;
+          if (!tctx) {
+            sendJson(res, { history: [] });
+            return;
+          }
+          if (!active.validTables.has(table)) {
+            sendJson(res, { error: `Unknown table: ${table}` }, 400);
+            return;
+          }
+          const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? '50')));
+          const rows = (await active.db.query('__lattice_change_log', {
+            filters: [
+              { col: 'team_id', op: 'eq', val: tctx.teamId },
+              { col: 'table_name', op: 'eq', val: table },
+              { col: 'pk', op: 'eq', val: rowId },
+            ],
+            orderBy: 'seq',
+            orderDir: 'desc',
+            limit,
+          })) as unknown as {
+            seq: number;
+            op: string;
+            owner_user_id: string | null;
+            created_at: string;
+            client_ts: string | null;
+            payload_json: string | null;
+          }[];
+          sendJson(res, {
+            history: rows.map((r) => ({
+              seq: r.seq,
+              op: r.op,
+              ownerUserId: r.owner_user_id,
+              at: r.client_ts ?? r.created_at,
+              payload: r.payload_json ? (JSON.parse(r.payload_json) as unknown) : null,
+            })),
+          });
+          return;
+        }
+
+        // ── Last-edited-by, per row, for one table (team cloud) ───────────
+        // GET /api/tables/:table/last-edited → { edits: { <pk>: {ownerUserId,
+        // at} } } from the change-log (latest seq per pk). Seeds the client's
+        // "last edited by" map for rows touched before this session. Empty on
+        // local SQLite.
+        const lastEditedMatch = LAST_EDITED_PATH.exec(pathname);
+        if (lastEditedMatch && method === 'GET') {
+          const table = decodeURIComponent(lastEditedMatch[1] ?? '');
+          const tctx = active.teamContext;
+          if (!tctx) {
+            sendJson(res, { edits: {} });
+            return;
+          }
+          if (!active.validTables.has(table)) {
+            sendJson(res, { error: `Unknown table: ${table}` }, 400);
+            return;
+          }
+          // Scan recent change-log rows (newest first) and keep the first
+          // (latest) entry per pk — that's the most recent edit to each row.
+          const scan = (await active.db.query('__lattice_change_log', {
+            filters: [
+              { col: 'team_id', op: 'eq', val: tctx.teamId },
+              { col: 'table_name', op: 'eq', val: table },
+            ],
+            orderBy: 'seq',
+            orderDir: 'desc',
+            limit: 2000,
+          })) as unknown as {
+            pk: string | null;
+            owner_user_id: string | null;
+            created_at: string;
+            client_ts: string | null;
+          }[];
+          const edits: Record<string, { ownerUserId: string | null; at: string }> = {};
+          for (const r of scan) {
+            if (!r.pk || edits[r.pk]) continue;
+            edits[r.pk] = { ownerUserId: r.owner_user_id, at: r.client_ts ?? r.created_at };
+          }
+          sendJson(res, { edits });
+          return;
+        }
+
         // ── Row CRUD: /api/tables/:table/rows[/:id] ───────────────────────
         const rowsMatch = ROWS_PATH.exec(pathname);
         if (rowsMatch) {
@@ -1803,8 +3141,43 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const table = decodeURIComponent(rawTable ?? '');
           const id = rawId ? decodeURIComponent(rawId) : null;
           if (!active.validTables.has(table)) {
+            // In team mode, a table that physically exists but isn't visible
+            // was unshared (or never shared to you) — return a distinct 409 so
+            // the client can toast "this was unshared" and refetch, rather than
+            // treating it as a generic unknown table. Owners always retain
+            // visibility, so this only bites non-owners after a de-share.
+            if (active.teamContext && active.db.getRegisteredTableNames().includes(table)) {
+              sendJson(res, { error: 'entity_unshared', table }, 409);
+              return;
+            }
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
+          }
+          const clientTsHeader = req.headers['x-lattice-client-ts'];
+          const editIdHeader = req.headers['x-lattice-edit-id'];
+          const editId = typeof editIdHeader === 'string' ? editIdHeader : undefined;
+          const mctx: MutationCtx = {
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+            sessionId,
+            team: active.teamContext
+              ? { teamId: active.teamContext.teamId, myUserId: active.teamContext.myUserId }
+              : null,
+            clientTs: typeof clientTsHeader === 'string' ? clientTsHeader : undefined,
+            editId,
+          };
+
+          // Idempotent offline replay: if this edit_id was already applied for
+          // the team, the queued edit is being re-sent after a reconnect — no-op
+          // and echo back the row it targeted, rather than writing a duplicate.
+          if (editId && active.teamContext && method !== 'GET') {
+            const prior = await findEnvelopeByEditId(active.db, active.teamContext.teamId, editId);
+            if (prior) {
+              sendJson(res, { ok: true, idempotent: true, id: prior.pk });
+              return;
+            }
           }
 
           if (id === null) {
@@ -1823,10 +3196,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return;
             }
             if (method === 'POST') {
-              const body = (await readJsonBody(req)) as Row;
-              const newId = await active.db.insert(table, body);
-              const inserted = await active.db.get(table, newId);
-              await appendAudit(active.db, table, newId, 'insert', null, inserted);
+              const body = (await readJson<unknown>(req)) as Row;
+              const { id: newId } = await createRow(mctx, table, body);
               sendJson(res, { id: newId }, 201);
               return;
             }
@@ -1841,25 +3212,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return;
             }
             if (method === 'PATCH') {
-              const body = (await readJsonBody(req)) as Partial<Row>;
-              const before = await active.db.get(table, id);
-              await active.db.update(table, id, body);
-              const after = await active.db.get(table, id);
-              await appendAudit(active.db, table, id, 'update', before, after);
+              const body = (await readJson<unknown>(req)) as Partial<Row>;
+              await updateRow(mctx, table, id, body);
               sendJson(res, { ok: true });
               return;
             }
             if (method === 'DELETE') {
               const hard = url.searchParams.get('hard') === 'true';
-              const before = await active.db.get(table, id);
-              if (!hard && active.softDeletable.has(table)) {
-                await active.db.update(table, id, { deleted_at: new Date().toISOString() });
-                const after = await active.db.get(table, id);
-                await appendAudit(active.db, table, id, 'update', before, after);
-              } else {
-                await active.db.delete(table, id);
-                await appendAudit(active.db, table, id, 'delete', before, null);
-              }
+              await deleteRow(mctx, table, id, hard);
               sendJson(res, { ok: true });
               return;
             }
@@ -1881,13 +3241,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Method ${method} not allowed` }, 405);
             return;
           }
-          const body = (await readJsonBody(req)) as Row;
+          const body = (await readJson<unknown>(req)) as Row;
+          const linkCtx: MutationCtx = {
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            source: 'gui',
+            sessionId,
+          };
           if (op === 'link') {
-            await active.db.link(table, body);
-            await appendAudit(active.db, table, null, 'link', null, body);
+            await linkRows(linkCtx, table, body);
           } else {
-            await active.db.unlink(table, body);
-            await appendAudit(active.db, table, null, 'unlink', body, null);
+            await unlinkRows(linkCtx, table, body);
           }
           sendJson(res, { ok: true });
           return;
@@ -1935,6 +3300,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           if (handled) return;
         }
 
+        // ── Files: blob serving + open-in-finder ──────────────────────────
+        if (!teamCloud && pathname.startsWith('/api/files/')) {
+          const handled = await dispatchFilesRoute(req, res, {
+            db: active.db,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
         // ── DB Config routes ─────────────────────────────────────────────
         // Project Config "Database" panel — read / save / connect / test.
         // The `swap` callback re-opens the active configPath so the
@@ -1954,7 +3329,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 }
               : null,
             swap: async () => {
-              const next = await openConfig(active.configPath, active.outputDir);
+              const next = await openConfig(active.configPath, active.outputDir, autoRender);
               await disposeActive(active);
               active = next;
             },
