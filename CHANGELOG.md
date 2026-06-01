@@ -8,17 +8,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-06-01
+
+The stable 1.x line gains the domain-agnostic 2.0 features — the `.lattice`
+workspace model + auto-render, full-text search, changelog history,
+sources/references, a workspace dashboard, and a multiplayer cloud-editing
+experience — with **no AI dependency**. (The AI assistant, chat, and ingest
+summarization remain exclusive to the 2.0 line; 2.0 is this release plus that
+AI layer.) A bare `new Lattice(path)` library consumer keeps a zero-overhead
+`^1.x` contract: workspaces, FTS indexes, native entities, the changelog, and
+all collaboration surface are opt-in or GUI-cloud-gated.
+
+### Added — multiplayer cloud editing
+
+When several people open the GUI against the same shared cloud (Postgres) DB:
+
+- **Live share / de-share, no refresh.** Toggling a table's team visibility updates `teamContext.shared` + the visible table set in place (the share route for the initiating client, a realtime broker subscription for everyone else) instead of re-opening the DB and forcing a reload.
+- **Realtime change envelopes for GUI edits.** GUI row writes now append a `__lattice_change_log` envelope (post-image payload, owner, `client_ts`), so the Postgres NOTIFY trigger fires and other clients learn of the change. Previously only the local audit log + activity feed saw GUI edits.
+- **"Last edited by &lt;user&gt; · &lt;time ago&gt;"** on the row detail view, resolved from the change-log + the team roster (`GET /api/team/users`, `GET /api/tables/:t/last-edited`).
+- **Live cues:** a row visible in the current view flashes when another editor changes it (honoring `prefers-reduced-motion`); changes to tables not in view bump a per-table unseen-change badge in the sidebar, cleared when the table is opened.
+- **Offline editing.** When the cloud is unreachable, row edits are persisted to IndexedDB and replayed in edit-timestamp order the moment the realtime channel reconnects — no edits lost. A stable client `edit_id` makes replay idempotent (the server no-ops a re-sent edit via `findEnvelopeByEditId`); `client_ts` preserves true edit order without letting clock skew reorder the canonical `seq`. A top-bar pill shows the pending count.
+- **Conflict handling.** Row edits are last-write-wins by edit timestamp, with every prior version recoverable from the change-log (`GET /api/tables/:t/rows/:id/history`). A write to a table that was de-shared under you returns a distinct `409 entity_unshared` so the client can refetch + toast. `schemaVersion` is surfaced per shared table on `/api/entities` as the optimistic-concurrency token for data-model edits (see `docs/collaboration.md` for the full policy).
+
 ### Changed — GUI: a single Workspaces switcher
 
 - **In workspace mode (a `.lattice` root) the header shows ONE "Workspaces" switcher** instead of two overlapping menus. Previously a "database" switcher and a "workspace" switcher sat side by side, both showing the active workspace's name — confusing, since inside a workspace the database switcher only listed that one workspace's own config. Now, whenever workspaces exist, the database switcher is hidden and the Workspaces menu is the single switcher: it lists every workspace, carries the live cloud/local status dot, and gains a **"+ New workspace…"** action (a new `POST /api/workspaces/create` → `addWorkspace` + open + activate). Without a `.lattice` root (a plain `lattice gui` on a single config) the database switcher remains the fallback.
 
-### Added — full-text search (via the AI assistant)
+### Added — full-text search
 
-- **Generic full-text search across entities, surfaced via the AI assistant.** A new `fullTextSearch(adapter, tables, opts)` (`src/search/fts.ts`, exported from the package root) returns hits grouped per entity with snippets, excluding soft-deleted rows, with two tiers:
+- **Generic full-text search across entities.** A new `fullTextSearch(adapter, tables, opts)` (`src/search/fts.ts`, exported from the package root) returns hits grouped per entity with snippets, excluding soft-deleted rows, with two tiers:
   - **Indexed (opt-in).** A table opts in via `TableDefinition.fts` (`{ fields?: string[] }`; omit `fields` to auto-detect text columns). On `init`, Lattice builds an inverted index in a separate `__lattice_fts_<table>` table — **SQLite FTS5** / **Postgres `tsvector` + GIN** — kept current automatically by DB triggers (a generated `tsvector` column on Postgres). `fullTextSearch` uses the index when present; FTS5 `snippet()` / Postgres `ts_headline` produce the snippets.
   - **LIKE fallback.** Tables without `fts` are searched with a case-insensitive `OR`-of-`LIKE` over their text columns (`CAST(… AS TEXT)`, valid on both engines).
   - **Guardrail.** Index objects + triggers are created **only** for opt-in tables, so a bare `new Lattice(dbPath)` library consumer with no `fts` config gets no index, no triggers, and zero write-path overhead (a unit test asserts this).
-  - Surfaced as a **`search` tool in the GUI assistant's tool-loop** (`src/gui/ai/registry.ts` + `dispatch.ts`) — ask the assistant to find records by content (e.g. "find notes mentioning the budget") and it searches, then reads or edits as needed (no dedicated search bar). Complements — does not replace — the embeddings-based semantic `Lattice.search`.
+  - **GUI search bar.** A debounced header search input calls `GET /api/search?q=&tables=&limit=` (scoped to the visible tables) and shows grouped results; click or Enter opens the row. Complements — does not replace — the embeddings-based semantic `Lattice.search`.
 
 ### Added — GUI: workspace dashboard
 
@@ -40,11 +62,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Maintenance — dead-code removal & simplification
 
-- Removed unreferenced internal symbols (the `src/lifecycle/index.ts` barrel, `RegisteredTable`/`RegisteredMulti`, `getAnthropicApiKey`/`ANTHROPIC_KEY_KIND`, `getStatusDirect`, `isInviteToken`).
+- Removed unreferenced internal symbols (the `src/lifecycle/index.ts` barrel, `RegisteredTable`/`RegisteredMulti`, `getStatusDirect`, `isInviteToken`).
 - `reverse-seed` `_insertOrIgnore` now uses the `{ changes }` row count from `tx.run` instead of count-before/count-after SELECTs.
 - Internal dedup: a `NOT_DELETED` soft-delete fragment constant (was inlined 5×), a single Postgres polyfill-registration helper, and a one-pass link index in `enrichKnowledge`.
 - **`lattice.ts` modularization.** Extracted two cohesive collaborators from the `Lattice` facade — `ChangelogService` (`src/changelog/service.ts`: `history`/`recentChanges`/`rollback`/`snapshot`/`diff` + changelog-row parsing) and `ReportBuilder` (`src/report/builder.ts`: `buildReport` + duration parsing). The public method surface is unchanged: the facade keeps each method, performs the `init()` guard, and delegates to a lazily-constructed collaborator (deps injected, so the collaborators never reach into `Lattice` internals). `lattice.ts` shrank ~280 lines.
-- **Shared GUI HTTP helpers (`src/gui/http.ts`).** `sendJson` / `readJson` / `tryHandler` were copy-pasted across eight GUI route modules with three divergent body-size caps (1M/2M/10M) and inconsistent error handling. Now a single source of truth: `readJson(req, { maxBytes })` defaults to 1 MB, with explicit per-endpoint overrides (ingest 10 MB, chat 2 MB) so the intended caps are preserved and documented. The cloud Team server keeps its own copies (no GUI dependency).
+- **Shared GUI HTTP helpers (`src/gui/http.ts`).** `sendJson` / `readJson` / `tryHandler` were copy-pasted across the GUI route modules with divergent body-size caps and inconsistent error handling. Now a single source of truth: `readJson(req, { maxBytes })` defaults to 1 MB, with explicit per-endpoint overrides where a larger body is intended. The cloud Team server keeps its own copies (no GUI dependency).
 - **`gui/app.ts` split.** The 5,436-line single-template-literal GUI document was split into `src/gui/app/css.ts` (stylesheet) and `src/gui/app/script.ts` (client script), assembled by a 114-line `app.ts` shell (`<style>${css}</style>` … `<script>${appJs}</script>`). The served HTML is **byte-for-byte identical** (verified: same length + SHA-256), and the no-build single-string output is preserved.
 
 ### Deprecated — `files.path` / `files.kind`
@@ -68,16 +90,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **SSRF guard** — `assertSafeUrl` rejects non-http(s) schemes and private/loopback/link-local/metadata addresses (opt-out via `allowPrivate`).
 - **No-copy render mode** — entity contexts can set `attachFileMode: 'reference'` to index an attached file in place (writes a `<name>.ref.md` pointer) instead of duplicating its bytes.
 
-### Added — AI context organizer (library)
-
-- **`organizeSource(db, opts)`** — the context organizer: sorts an ingested source into the user's **own schema** by default — summarizes it, classifies which existing records it relates to, and links it to them — and creates a new knowledge object **only when nothing was attached** (`createIfNecessary`). It returns a plain-language `message` ("Linked it to 2 existing records… Created a new note… You can change any of this anytime.") for the caller to surface. Linking + fallback creation are pluggable (`linkExisting` / `createFallback`) so a host can use its own model; the defaults use a generic `file_links` table + a `notes` fallback. Every action is an ordinary, editable row.
-- **Wired into GUI file ingestion** — `/api/ingest/*` now routes through `organizeSource`: with a Claude key, an ingested file is summarized, classified, and linked into your existing entities (via their junction tables); when nothing fits, it creates a row in the designated native `notes` table (pointing back at the source file via `source_file_id`). The transparent `message` is published to the activity rail.
-- **AI-gated** — with no LLM client (no key/auth) the organizer is a no-op and writes nothing. Lattice never calls a model on its own.
-- **AI core lives in `src/ai/`** — the LLM client (`src/ai/llm-client.ts`), plus `summarize`/`extract`/`oauth`/`transcribe` and the organizer/crawl/enrich modules, are now in `src/ai/` (moved out of `src/gui/ai/`); `src/ai` never imports from `src/gui`. The GUI's chat loop (`runChat`, dispatch, tools, registry) stays in `src/gui/ai/` and imports the client from `src/ai`. `organizeSource`, `crawlUrl`, `enrichKnowledge`, plus `summarizeText` / `classifyLinks` / `parseMatches` and the `LlmClient` types are exported from the package root.
-- **URL crawl** — `crawlUrl(url)` fetches a cloud reference and extracts readable text + title via Mozilla Readability (with a stripped-DOM fallback), SSRF-guarded (redirects re-validated per hop), with an injectable fetcher. This fills `extracted_text` for a `cloud_ref` so the organizer can sort it. Adds `@mozilla/readability` + `jsdom` as dependencies.
-- **Enrich pass** — `enrichKnowledge(db, opts)` synthesizes a coherent body for a knowledge object (e.g. a `notes` row) from its 2+ linked sources, updating it only when the result is materially better. Schema-agnostic (works over the generic `file_links` table); AI-gated (no-op without a client).
-- **Batteries-included extraction** — `@anthropic-ai/sdk` is now a hard dependency (alongside `sharp` + `file-type`); `playwright` is an optionalDependency. `describeImage(auth, path)` does image vision (sharp-normalize + Anthropic vision; the model call is injectable, so it's testable without a key). `crawlUrl` gains a Playwright JS-render fallback for script-heavy pages (graceful when Playwright or a browser is absent) plus `file-type` mime sniffing. Text/code extract directly; PDFs/office docs still use the optional `markitdown` CLI.
-
 ### Added — GUI: workspace switcher
 
 - **Header workspace switcher** — when the GUI is opened inside a `.lattice` root, a header switcher lists the workspaces and switches the active one (`GET /api/workspaces`, `POST /api/workspaces/switch`); switching re-points the GUI at that workspace's config + `Context/`. The switcher is hidden on a plain (non-workspace) GUI, so nothing changes for non-workspace usage. `lattice gui` now opens the active workspace automatically when a root is present. The `Workspaces/` container is never browsed as a folder — switching is header-only.
@@ -88,7 +100,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [2.0.0] - 2026-05-29
 
-Builds on 1.15.0. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.
+Builds on 1.16.0 — it is the 1.16 non-AI feature set plus an AI layer. This is the GUI 2.0 release: `lattice gui` gains an AI assistant sidebar. The library API is unchanged and backwards-compatible; the assistant is GUI-only and inert until credentials are configured.
 
 ### Added — AI assistant sidebar
 
