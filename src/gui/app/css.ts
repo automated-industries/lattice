@@ -222,6 +222,12 @@ export const css = `
     @media (prefers-reduced-motion: reduce) {
       tr.lattice-flash > td { animation: none; }
     }
+    /* Pending offline-edit indicator in the top bar. */
+    .offline-pill {
+      flex: 0 0 auto; padding: 3px 9px; border-radius: 999px;
+      background: rgba(251, 146, 60, 0.16); color: var(--warn);
+      font-size: 11px; font-weight: 600; white-space: nowrap;
+    }
     /* Unseen-change count next to a sidebar entity. */
     .nav-badge {
       display: inline-block; min-width: 16px; text-align: center;
