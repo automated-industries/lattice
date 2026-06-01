@@ -26,9 +26,10 @@ test('the header search bar finds a row and opens it', async ({ page }) => {
   const hit = results.locator('.search-hit').first();
   await expect(hit).toBeVisible();
 
-  // Clicking the hit navigates to the row detail and dismisses the dropdown.
+  // Clicking the hit opens the row in the current mode (simple → #/fs/,
+  // advanced → #/objects/) and dismisses the dropdown.
   await hit.click();
-  await expect(page).toHaveURL(/#\/objects\/items\//);
+  await expect(page).toHaveURL(/#\/(fs|objects)\/items\//);
   await expect(results).toBeHidden();
 });
 

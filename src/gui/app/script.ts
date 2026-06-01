@@ -2530,7 +2530,10 @@ export const appJs = `
         '<div class="dbconfig-panel" style="margin-top:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
             '<h3 style="margin:0">Data Model</h3>' +
-            '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
+            '<div style="display:flex;gap:8px">' +
+              '<button class="btn" id="new-junction-btn" title="Link two entities (many-to-many)">+ Relationship</button>' +
+              '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
+            '</div>' +
           '</div>' +
           '<div class="dm-layout">' +
             '<div id="graph-mount"><div class="muted" style="padding:24px">Loading schema graph…</div></div>' +
@@ -2540,6 +2543,9 @@ export const appJs = `
 
       document.getElementById('new-entity-btn').addEventListener('click', function () {
         dmShowEntityEditor(null);
+      });
+      document.getElementById('new-junction-btn').addEventListener('click', function () {
+        dmShowJunctionCreator();
       });
 
       renderSchemaGraph();
@@ -2751,6 +2757,19 @@ export const appJs = `
         setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
       }, { passive: false });
 
+      // Click an edge to edit the relationship: an m2m edge opens its junction
+      // editor; a foreign-key edge opens the child entity that holds the FK.
+      edgeEls.forEach(function (ln) {
+        ln.style.cursor = 'pointer';
+        ln.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var s = ln.getAttribute('data-s'), t = ln.getAttribute('data-t');
+          var edge = model.links[Number(ln.getAttribute('data-edge'))];
+          if (edge && edge.kind === 'm2m') dmShowJunctionEditor(s, t);
+          else dmShowEntityEditor(s); // FK lives on the source (child) table
+        });
+      });
+
       // Drag: a node repositions it; the background pans.
       var drag = null;
       svg.addEventListener('pointerdown', function (ev) {
@@ -2791,6 +2810,106 @@ export const appJs = `
      * Until the user clicks a graph node or '+ New entity', the side panel
      * stays hidden.
      */
+    // Create a many-to-many relationship: pick two entities (+ optional name)
+    // and POST a junction. It then appears as an m2m edge in the graph.
+    function dmShowJunctionCreator() {
+      dmActiveTable = null;
+      highlightGraphNode(null);
+      var panel = document.getElementById('dm-panel');
+      if (!panel) return;
+      var ents = ((state.entities && state.entities.tables) || []).filter(function (t) {
+        return !isJunction(t);
+      });
+      panel.hidden = false;
+      if (ents.length < 2) {
+        panel.innerHTML = '<h3>New relationship</h3>' +
+          '<div class="muted">Create at least two entities first.</div>';
+        return;
+      }
+      function opts(selName) {
+        return ents.map(function (t) {
+          return '<option value="' + escapeHtml(t.name) + '"' + (selName === t.name ? ' selected' : '') +
+            '>' + escapeHtml(displayFor(t.name).label) + '</option>';
+        }).join('');
+      }
+      panel.innerHTML =
+        '<h3>New relationship</h3>' +
+        '<p class="muted" style="font-size:12px;margin:0 0 12px">A many-to-many link, stored as a junction table.</p>' +
+        '<div class="dm-edit-grid">' +
+          '<label>From</label><select id="jc-left">' + opts(ents[0].name) + '</select>' +
+          '<label>To</label><select id="jc-right">' + opts(ents[1].name) + '</select>' +
+          '<label>Name</label><input id="jc-name" placeholder="(optional)" />' +
+        '</div>' +
+        '<div class="dm-row-inline" style="margin-top:12px">' +
+          '<button class="btn primary" id="jc-create">Create relationship</button>' +
+          '<button class="btn" id="jc-cancel">Cancel</button>' +
+        '</div>' +
+        '<div id="jc-msg" class="muted" style="margin-top:8px;font-size:12px"></div>';
+      panel.querySelector('#jc-cancel').addEventListener('click', function () { panel.hidden = true; });
+      panel.querySelector('#jc-create').addEventListener('click', function () {
+        var btn = panel.querySelector('#jc-create');
+        var left = panel.querySelector('#jc-left').value;
+        var right = panel.querySelector('#jc-right').value;
+        var name = panel.querySelector('#jc-name').value.trim();
+        withBusy(btn, function () {
+          return fetchJson('/api/schema/junctions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ left: left, right: right, name: name || undefined }),
+          }).then(function () {
+            return refreshEntities();
+          }).then(function () {
+            panel.hidden = true;
+            renderSchemaGraph();
+            showToast('Relationship created', {});
+          }).catch(function (e) {
+            var m = panel.querySelector('#jc-msg'); if (m) m.textContent = 'Failed: ' + e.message;
+          });
+        });
+      });
+    }
+
+    // Edit an existing many-to-many: resolve the junction table linking the two
+    // endpoints, then offer to edit its columns or remove the relationship.
+    function dmShowJunctionEditor(left, right) {
+      var panel = document.getElementById('dm-panel');
+      if (!panel) return;
+      var j = junctionsFor(left).find(function (x) { return x.remoteRel.table === right; }) ||
+              junctionsFor(right).find(function (x) { return x.remoteRel.table === left; });
+      if (!j) { dmShowEntityEditor(left); return; }
+      var jn = j.junction;
+      dmActiveTable = jn;
+      panel.hidden = false;
+      panel.innerHTML =
+        '<h3>Relationship</h3>' +
+        '<div class="dm-row-inline" style="margin:0 0 8px;font-size:15px">' +
+          '<span>' + escapeHtml(displayFor(left).label) + '</span>' +
+          '<span style="color:var(--signal)">&nbsp;↔&nbsp;</span>' +
+          '<span>' + escapeHtml(displayFor(right).label) + '</span>' +
+        '</div>' +
+        '<div class="muted" style="font-size:12px;margin-bottom:14px">Junction table: <code>' +
+          escapeHtml(jn) + '</code></div>' +
+        '<div class="dm-row-inline">' +
+          '<button class="btn" id="je-edit">Edit junction table</button>' +
+          '<button class="btn danger" id="je-remove">Remove relationship</button>' +
+        '</div>' +
+        '<div id="je-msg" class="muted" style="margin-top:8px;font-size:12px"></div>';
+      panel.querySelector('#je-edit').addEventListener('click', function () { dmShowEntityEditor(jn); });
+      panel.querySelector('#je-remove').addEventListener('click', function () {
+        if (!window.confirm('Remove the ' + displayFor(left).label + ' ↔ ' + displayFor(right).label +
+          ' relationship? This drops the junction table "' + jn + '" and its links — the entities are untouched.')) return;
+        var btn = panel.querySelector('#je-remove');
+        withBusy(btn, function () {
+          return fetchJson('/api/schema/junctions/' + encodeURIComponent(jn), { method: 'DELETE' })
+            .then(function () { return refreshEntities(); })
+            .then(function () { panel.hidden = true; renderSchemaGraph(); showToast('Relationship removed', {}); })
+            .catch(function (e) {
+              var m = panel.querySelector('#je-msg'); if (m) m.textContent = 'Failed: ' + e.message;
+            });
+        });
+      });
+    }
+
     function dmShowEntityEditor(tableName) {
       dmActiveTable = tableName;
       var panel = document.getElementById('dm-panel');
