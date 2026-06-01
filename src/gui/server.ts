@@ -264,6 +264,10 @@ async function entitiesWithCounts(
       // Column → SQL type, for the Data Model schema cards (name : type).
       const colTypes = db.getRegisteredColumns(t.name);
       if (colTypes) base.columnTypes = colTypes;
+      // Canonical field types (text/uuid/datetime/…) — preferred for display
+      // over the lossy SQL spec above. Absent for code-defined tables.
+      const fieldTypes = db.getRegisteredFieldTypes(t.name);
+      if (fieldTypes) base.fieldTypes = fieldTypes;
       if (teamContext) {
         base.shared = teamContext.shared.has(t.name);
         base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
@@ -1534,23 +1538,65 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Remove a many-to-many relationship (drop its junction table) ──
-        // Only drops junctions (tables whose relations are exactly two
-        // belongsTo) — never a first-class entity. Removes the link rows, not
-        // the linked entities' data.
-        if (method === 'DELETE' && /^\/api\/schema\/junctions\/[^/]+$/.test(pathname)) {
-          const jName = decodeURIComponent(pathname.split('/')[4] ?? '');
-          if (!active.junctionTables.has(jName)) {
-            sendJson(res, { error: `Not a junction relationship: ${jName}` }, 400);
+        // ── Delete a whole table (the single, explicit table-drop path) ───
+        // This is the ONLY DROP TABLE in the GUI. It is deliberately guarded:
+        // owner-gated, never drops a native entity, and REFUSES while any other
+        // table still has a foreign key pointing at it (so a delete can never
+        // leave dangling references / a broken data model — the user removes
+        // those links first). The client gates this behind a type-the-name
+        // confirmation. The old, dangerous DELETE /api/schema/junctions/:name
+        // route (which dropped a "junction" inferred only from FK count, and so
+        // could drop a misclassified first-class entity) has been removed.
+        if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+$/.test(pathname)) {
+          const name = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(name)) {
+            sendJson(res, { error: `Unknown entity: ${name}` }, 400);
             return;
           }
-          if (!operatorOwnsTable(active.teamContext, jName)) {
-            sendJson(res, { error: 'Only the relationship owner can remove it' }, 403);
+          if (isNativeEntity(name)) {
+            sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
             return;
           }
-          await execSql(active.db, `DROP TABLE IF EXISTS "${jName}"`);
+          if (!operatorOwnsTable(active.teamContext, name)) {
+            sendJson(res, { error: 'Only the table owner can delete this table' }, 403);
+            return;
+          }
+          // Inbound-FK guard: refuse if another table links to this one.
+          const inbound: string[] = [];
+          for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
+            if (t.name === name) continue;
+            for (const rel of Object.values(t.relations)) {
+              if (rel.type === 'belongsTo' && rel.table === name) {
+                inbound.push(`${t.name}.${rel.foreignKey}`);
+              }
+            }
+          }
+          if (inbound.length > 0) {
+            sendJson(
+              res,
+              {
+                error: `Cannot delete "${name}" — these links point at it: ${inbound.join(', ')}. Delete those links first.`,
+              },
+              400,
+            );
+            return;
+          }
+          // DROP TABLE with no CASCADE (cascading is itself a data-loss vector).
+          // Surface any adapter error loudly as a 400 rather than a 500.
+          try {
+            await execSql(active.db, `DROP TABLE IF EXISTS "${name}"`);
+          } catch (err) {
+            sendJson(
+              res,
+              {
+                error: `Failed to drop "${name}": ${err instanceof Error ? err.message : String(err)}`,
+              },
+              400,
+            );
+            return;
+          }
           const doc = loadConfigDoc(active.configPath);
-          doc.deleteIn(['entities', jName]);
+          doc.deleteIn(['entities', name]);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
@@ -1851,9 +1897,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── Destroy a link (drop the FK column) ──────────────────────────
-        // Links are destroy-only, owner-gated. Junction-internal links are
-        // managed via DELETE …/junctions (delete the whole relationship), not
-        // here, so don't strand a junction with one leg.
+        // Links are destroy-only and owner-gated. Each link is managed
+        // individually — including the legs of a (pure) junction table — and
+        // dropping one only drops THAT foreign-key column (ALTER TABLE DROP
+        // COLUMN), never a table. To remove a whole table, use
+        // DELETE /api/schema/entities/:name.
         if (
           method === 'DELETE' &&
           /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)
@@ -1869,19 +1917,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Only the table owner can remove a link' }, 403);
             return;
           }
-          if (active.junctionTables.has(entityName)) {
-            sendJson(
-              res,
-              { error: 'Remove the whole relationship instead (Delete relationship)' },
-              400,
-            );
-            return;
-          }
           if (!columnRefTarget(active.configPath, entityName, colName)) {
             sendJson(res, { error: `Not a link column: ${colName}` }, 400);
             return;
           }
-          await execSql(active.db, `ALTER TABLE "${entityName}" DROP COLUMN "${colName}"`);
+          // DROP COLUMN with no CASCADE; surface any adapter error loudly as a
+          // 400 (SQLite refuses to drop an indexed/FK/CHECK column; Postgres
+          // errors on a dependent object) rather than letting it 500.
+          try {
+            await execSql(active.db, `ALTER TABLE "${entityName}" DROP COLUMN "${colName}"`);
+          } catch (err) {
+            sendJson(
+              res,
+              {
+                error: `Failed to delete link "${colName}": ${err instanceof Error ? err.message : String(err)}`,
+              },
+              400,
+            );
+            return;
+          }
           const doc = loadConfigDoc(active.configPath);
           doc.deleteIn(['entities', entityName, 'fields', colName]);
           saveConfigDoc(active.configPath, doc);

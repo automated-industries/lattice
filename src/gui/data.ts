@@ -36,6 +36,14 @@ export interface GuiTableSummary {
    * from the registered schema; absent for tables Lattice can't introspect.
    */
   columnTypes?: Record<string, string>;
+  /**
+   * Column name → canonical Lattice field type (text/integer/real/boolean/
+   * uuid/datetime/date), for the Data Model column editor. Preferred over
+   * `columnTypes` for display (the SQL spec is lossy and noisy). Present for
+   * config-declared (YAML) tables; absent for code-defined tables with no
+   * declared field types, where the editor falls back to `columnTypes`.
+   */
+  fieldTypes?: Record<string, string>;
 }
 
 export interface GuiFileSummary {
@@ -107,6 +115,7 @@ function tableToSummary(name: string, definition: TableDefinition): GuiTableSumm
     outputFile: definition.outputFile ?? `.schema-only/${name}.md`,
     relations: definition.relations ?? {},
     ...(definition.description ? { description: definition.description } : {}),
+    ...(definition.fieldTypes ? { fieldTypes: definition.fieldTypes } : {}),
   };
 }
 
@@ -462,14 +471,28 @@ export function getGuiEntities(configPath: string, outputDir: string): GuiEntiti
   return { tables: data.tables, entities: data.entities, hasManifest: data.manifest !== null };
 }
 
+/** Columns a pure junction may carry besides its two FK columns. */
+const JUNCTION_ALLOWED_NONFK = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+
 /**
- * A table is a junction iff it has exactly two `belongsTo` relations.
- * Junction tables are hidden from the Objects sidebar and dashboard cards;
- * their rows are editable via the Data Model view.
+ * A table is a junction iff it joins exactly two entities and carries NO
+ * payload of its own: exactly two `belongsTo` relations AND every column is one
+ * of those two FK columns or a system column (id/created_at/updated_at/
+ * deleted_at). A table with extra scalar/data columns (e.g. `tasks` with a
+ * `title`) is a first-class entity, not a junction — even if it happens to have
+ * two foreign keys. This columns-aware check is the guard against treating a
+ * real entity as a relationship (which previously exposed a DROP-TABLE path).
+ * Junction tables are hidden from the Objects sidebar and dashboard cards and
+ * collapse into a single many-to-many edge in the schema graph.
+ *
+ * NOTE: the client mirror `isJunction` in src/gui/app/script.ts MUST use the
+ * identical predicate — keep them in lockstep.
  */
 export function isJunctionTable(table: GuiTableSummary): boolean {
   const belongsTo = Object.values(table.relations).filter((r) => r.type === 'belongsTo');
-  return belongsTo.length === 2 && Object.keys(table.relations).length === 2;
+  if (belongsTo.length !== 2 || Object.keys(table.relations).length !== 2) return false;
+  const fkCols = new Set(belongsTo.map((r) => r.foreignKey));
+  return table.columns.every((c) => fkCols.has(c) || JUNCTION_ALLOWED_NONFK.has(c));
 }
 
 /** A junction table that connects the native `files` entity to another entity. */
