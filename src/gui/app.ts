@@ -31,17 +31,6 @@ export const guiAppHtml = `<!doctype html>
         <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
       </svg>
     </a>
-    <div class="history-controls">
-      <button class="history-btn" id="undo-btn" title="Undo" disabled>↶</button>
-      <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
-      <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">📜</a>
-    </div>
-    <div class="topsearch" id="topsearch">
-      <span class="topsearch-icon" aria-hidden="true">🔍</span>
-      <input type="search" id="search-input" placeholder="Search all tables…" autocomplete="off" spellcheck="false" aria-label="Full-text search" />
-      <div class="search-results" id="search-results" hidden></div>
-    </div>
-    <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
     <div class="db-switcher" id="db-switcher-host">
       <button class="db-button" id="db-button" title="Switch database">
         <span class="db-status" id="db-status" title="Local"></span>
@@ -60,6 +49,17 @@ export const guiAppHtml = `<!doctype html>
       </button>
       <div class="db-menu" id="ws-menu" hidden></div>
     </div>
+    <div class="topsearch" id="topsearch">
+      <span class="topsearch-icon" aria-hidden="true">🔍</span>
+      <input type="search" id="search-input" placeholder="Search all tables…" autocomplete="off" spellcheck="false" aria-label="Full-text search" />
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="history-controls">
+      <button class="history-btn" id="undo-btn" title="Undo" disabled>↶</button>
+      <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
+      <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
+    </div>
+    <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
     <button id="settings-gear" title="Settings" aria-label="Open settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3"/>
@@ -69,9 +69,11 @@ export const guiAppHtml = `<!doctype html>
   </header>
   <div class="layout">
     <nav class="sidebar">
-      <button class="sidebar-collapse" id="sidebar-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
-      </button>
+      <label class="sidebar-advanced toggle" title="Advanced mode — row/table editor instead of the file workspace">
+        <input type="checkbox" id="advanced-toggle">
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Advanced</span>
+      </label>
       <div class="section-label">Objects</div>
       <ul id="object-nav"></ul>
       <div id="system-section" hidden>
@@ -102,13 +104,6 @@ export const guiAppHtml = `<!doctype html>
       <button class="drawer-tab" data-tab="database">Database</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
-    </div>
-    <div class="drawer-view-toggle">
-      <label class="toggle">
-        <input type="checkbox" id="advanced-toggle">
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-        <span class="toggle-label">Advanced mode <small>Row/table editor instead of the file workspace</small></span>
-      </label>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
   </aside>
