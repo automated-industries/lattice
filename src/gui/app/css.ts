@@ -592,6 +592,13 @@ export const css = `
       color: var(--text); white-space: nowrap;
     }
     .dm-link-arrow { font-size: 12px; color: var(--signal); white-space: nowrap; }
+    .dm-link-row .dm-link-destroy { height: 28px; padding: 0 10px; font-size: 12px; }
+    /* Danger zone — whole-table deletion (typed confirmation). */
+    .dm-danger {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 10px; border: 1px solid var(--danger, #ef4444); border-radius: 8px;
+      background: color-mix(in srgb, var(--danger, #ef4444) 6%, transparent);
+    }
     .dm-secret-toggle {
       display: inline-flex; align-items: center; gap: 4px;
       font-size: 11px; color: var(--text-muted);
