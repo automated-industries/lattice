@@ -608,7 +608,10 @@ export const appJs = `
       hideSearchResults();
       var input = document.getElementById('search-input');
       if (input) input.value = '';
-      location.hash = '#/objects/' + encodeURIComponent(table) + '/' + encodeURIComponent(id);
+      // Open the hit in whichever mode the user is in: the file-workspace
+      // (#/fs/) view in simple mode, the row editor (#/objects/) in advanced.
+      var prefix = advancedMode() ? '#/objects/' : '#/fs/';
+      location.hash = prefix + encodeURIComponent(table) + '/' + encodeURIComponent(id);
     }
     function renderSearchResults(result) {
       var box = document.getElementById('search-results');
