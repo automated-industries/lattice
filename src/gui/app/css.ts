@@ -925,6 +925,21 @@ export const css = `
       border-radius: 10px; padding: 8px 20px; box-shadow: var(--shadow);
       max-width: 900px;
     }
+    /* Simple-mode rendered context: formatted markdown documents. */
+    .fs-context { max-width: 900px; }
+    .fs-context-doc {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 6px 20px; box-shadow: var(--shadow); margin-top: 16px;
+    }
+    .fs-context-doc .md-body { font-size: 14px; line-height: 1.6; color: var(--text); }
+    .fs-context-doc .md-body h1 { font-size: 18px; margin: 14px 0 6px; }
+    .fs-context-doc .md-body h2 { font-size: 15px; margin: 14px 0 6px; }
+    .fs-context-doc .md-body h3, .fs-context-doc .md-body h4 { font-size: 13px; margin: 12px 0 4px; color: var(--text-muted); }
+    .fs-context-doc .md-body ul { margin: 6px 0; padding-left: 20px; }
+    .fs-context-doc .md-body li { margin: 2px 0; }
+    .fs-context-doc .md-body p { margin: 6px 0; }
+    .fs-context-doc .md-body code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .fs-context-doc .md-body a { color: var(--accent); }
     .fs-field { padding: 12px 0; border-bottom: 1px solid var(--border); }
     .fs-field:last-child { border-bottom: none; }
     .fs-field-label {
