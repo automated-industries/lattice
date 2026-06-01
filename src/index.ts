@@ -225,6 +225,11 @@ export type { MigrateResult } from './framework/migrate-to-root.js';
 // v2.0 — a row can index data that lives elsewhere (local / cloud references).
 export { resolveSource } from './sources/resolver.js';
 export { assertSafeUrl, providerForUrl, isPrivateIp } from './sources/url-safety.js';
+
+// Full-text search — generic LIKE engine (Phase 1). Read-only; complements the
+// embeddings-based semantic `Lattice.search`.
+export { fullTextSearch } from './search/fts.js';
+export type { FtsResult, FtsGroup, FtsHit, FtsOptions } from './search/fts.js';
 export { ReferenceUnavailableError } from './sources/types.js';
 export type {
   RefKind,

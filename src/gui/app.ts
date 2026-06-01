@@ -31,6 +31,10 @@ export const guiAppHtml = `<!doctype html>
         <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
       </svg>
     </a>
+    <div class="global-search">
+      <input id="global-search-input" type="search" placeholder="Search…  /" autocomplete="off" spellcheck="false" />
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
     <div class="history-controls">
       <button class="history-btn" id="undo-btn" title="Undo" disabled>↶</button>
       <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
