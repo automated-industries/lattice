@@ -8,6 +8,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed — GUI: a single Workspaces switcher
+
+- **In workspace mode (a `.lattice` root) the header shows ONE "Workspaces" switcher** instead of two overlapping menus. Previously a "database" switcher and a "workspace" switcher sat side by side, both showing the active workspace's name — confusing, since inside a workspace the database switcher only listed that one workspace's own config. Now, whenever workspaces exist, the database switcher is hidden and the Workspaces menu is the single switcher: it lists every workspace, carries the live cloud/local status dot, and gains a **"+ New workspace…"** action (a new `POST /api/workspaces/create` → `addWorkspace` + open + activate). Without a `.lattice` root (a plain `lattice gui` on a single config) the database switcher remains the fallback.
+
 ### Added — full-text search (via the AI assistant)
 
 - **Generic full-text search across entities, surfaced via the AI assistant.** A new `fullTextSearch(adapter, tables, opts)` (`src/search/fts.ts`, exported from the package root) returns hits grouped per entity with snippets, excluding soft-deleted rows, with two tiers:
