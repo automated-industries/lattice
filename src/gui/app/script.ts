@@ -176,6 +176,7 @@ export const appJs = `
         initRailDrawer();
         startFeed();
         initSearch();
+        initLastEdited();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -190,6 +191,58 @@ export const appJs = `
     // ────────────────────────────────────────────────────────────
     var realtimeSource = null;
     var realtimePending = null;
+    // Team-cloud collaboration state. usersById resolves "last edited by"
+    // names; lastEditedByPk maps "<table>|<pk>" → { userId, at } from realtime
+    // change envelopes + the /last-edited seed. Both stay empty on local.
+    var usersById = {};
+    var lastEditedByPk = {};
+    function leKey(table, pk) { return String(table) + '|' + String(pk); }
+    function userLabel(uid) {
+      if (!uid) return 'someone';
+      var u = usersById[uid];
+      return (u && (u.name || u.email)) || 'someone';
+    }
+    function lastEditedHtml(table, pk) {
+      var e = lastEditedByPk[leKey(table, pk)];
+      if (!e) return '';
+      return '<div class="last-edited">Last edited by ' + escapeHtml(userLabel(e.userId)) +
+        ' · ' + escapeHtml(relTime(e.at)) + '</div>';
+    }
+    // Apply one realtime change payload to the local collaboration state.
+    // (Phase 2 extends this with row flashing + changed-count badges.)
+    function onRealtimeChange(p) {
+      if (!p || !p.table_name || !p.pk) return;
+      lastEditedByPk[leKey(p.table_name, p.pk)] = {
+        userId: p.owner_user_id || null,
+        at: p.client_ts || p.created_at || '',
+      };
+    }
+    // Pull team members once so "last edited by" can show names, not ids.
+    function initLastEdited() {
+      fetchJson('/api/team/users').then(function (d) {
+        (d && d.users || []).forEach(function (u) { usersById[u.id] = u; });
+      }).catch(function () { /* local mode / unreachable — ignore */ });
+    }
+    // Seed last-edited info for one table's rows (edits before this session),
+    // then refresh any visible "last edited" line.
+    function seedLastEdited(table) {
+      fetchJson('/api/tables/' + encodeURIComponent(table) + '/last-edited').then(function (d) {
+        var edits = (d && d.edits) || {};
+        Object.keys(edits).forEach(function (pk) {
+          lastEditedByPk[leKey(table, pk)] = { userId: edits[pk].ownerUserId, at: edits[pk].at };
+        });
+        var el = document.getElementById('last-edited');
+        if (el && el.getAttribute('data-table') === table) {
+          el.outerHTML = lastEditedLineEl(table, el.getAttribute('data-pk'));
+        }
+      }).catch(function () { /* ignore */ });
+    }
+    // A keyed wrapper so seedLastEdited can replace the element in place.
+    function lastEditedLineEl(table, pk) {
+      var inner = lastEditedHtml(table, pk);
+      return '<div id="last-edited" data-table="' + escapeHtml(table) + '" data-pk="' +
+        escapeHtml(pk) + '">' + inner + '</div>';
+    }
     function setStatusPill(mode, state) {
       // Update both the database-switcher dot and the workspace-switcher dot so
       // whichever switcher is visible reflects the live realtime status.
@@ -235,7 +288,10 @@ export const appJs = `
           setStatusPill(data.mode || 'local', data.state || 'local');
         } catch (_) { /* ignore malformed */ }
       });
-      realtimeSource.addEventListener('change', function () {
+      realtimeSource.addEventListener('change', function (ev) {
+        var p = null;
+        try { p = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
+        if (p) onRealtimeChange(p);
         scheduleRealtimeRefresh();
       });
       realtimeSource.onerror = function () {
@@ -1420,10 +1476,13 @@ export const appJs = `
               '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
               '<div class="actions">' + actions + '</div>' +
             '</div>' +
+            lastEditedLineEl(tableName, id) +
             (tableName === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
             '<div id="row-context"></div>';
 
+          // Seed "last edited by" for this table (cloud only; no-op locally).
+          if (!editing) seedLastEdited(tableName);
           // Skip the context fetch while editing — the just-PATCHed row may
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
