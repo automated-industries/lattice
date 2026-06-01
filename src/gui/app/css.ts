@@ -108,6 +108,7 @@ export const css = `
     }
     .history-op.op-delete { background: rgba(251, 146, 60, 0.12); color: var(--warn); }
     .history-op.op-link, .history-op.op-unlink { background: rgba(34, 211, 238, 0.15); color: var(--signal); }
+    .history-op.op-schema { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
     .history-summary { flex: 1; font-size: 13.5px; }
     .history-summary .history-table { font-weight: 600; }
     .history-diff {

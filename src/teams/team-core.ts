@@ -103,7 +103,7 @@ export interface ChangeEnvelopeEntry {
   team_id: string;
   table_name: string | null;
   pk?: string | null;
-  op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete';
+  op: 'schema' | 'unshare' | 'link' | 'unlink' | 'upsert' | 'delete' | 'ddl';
   payload_json: string | null;
   owner_user_id?: string | null;
   /**

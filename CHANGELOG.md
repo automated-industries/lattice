@@ -33,6 +33,14 @@ all collaboration surface are opt-in or GUI-cloud-gated.
 - **Dashboard home** no longer shows the "entities" / "rows" count tiles (the per-entity cards already show counts); only the stale-data warning remains, and only when something is stale.
 - **Analytics consent** is now a single **"Send anonymous analytics"** toggle covering the install ping and any Scarf pixel, with a one-line description ("Anonymous analytics will be shared with Lattice using Scarf"). Default on (opt-out), unchanged.
 
+### Added — schema/data-model changes are tracked + reversible (soft-delete model)
+
+- **Every schema change is now in Version History + the Activity rail, alongside row edits.** Creating/renaming/deleting a table, adding/renaming/deleting a column, and adding/deleting a link/relationship each append an entry to the same `_lattice_gui_audit` history (new `schema.*` operations; no audit-table migration needed) with a one-line description ("Created table tasks", "Deleted table tasks", "Added column status to tasks", …) and a **Revert** button. Schema ops also participate in the header ↶/↷ undo/redo stack.
+- **Deletes are soft — data is never destroyed and reverts are exact.** A delete removes the entity/field from the config (hiding it from the GUI) but **never physically `DROP`s** the SQL table/column; the data stays in the database. Revert just re-adds the config entry, and re-opening reconciles idempotently (`CREATE TABLE IF NOT EXISTS` + skip-existing-column), so the table/column comes back with **all its rows/values intact** — no snapshot, no size limit, on both SQLite and Postgres. The only `DROP` the GUI ever performs is the explicit purge below.
+- **Guards.** Reverts re-open the live DB so the in-memory schema never drifts, and surface any failure loudly (the fail-loudly rule) rather than half-applying. Creating a table/column whose name matches a soft-deleted (orphaned) object is refused ("a deleted `<name>` exists — revert it instead"). Reverting a delete whose object was since purged is refused ("permanently purged"). Renames revert via real `ALTER … RENAME`.
+- **Purge — API only.** `POST /api/schema/purge` (`{ type: 'table' | 'column', name, column? }`, owner-gated) physically drops an orphaned (soft-deleted) object to reclaim space and is **not surfaced in the GUI**. It's audit-logged as `schema.purge` and is irreversible.
+- **Multiplayer.** Schema ops, reverts, and purges append a `ddl` change envelope in team/cloud mode so other clients re-fetch and converge (the broker treats `ddl` as a refresh signal, not a sharing toggle). Local SQLite is a single-writer no-op.
+
 ### Added — multiplayer cloud editing
 
 When several people open the GUI against the same shared cloud (Postgres) DB:
