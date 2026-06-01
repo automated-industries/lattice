@@ -29,6 +29,20 @@ function feedSummary(op: AuditOp, table: string): string {
 }
 
 /**
+ * Filters selecting THIS session's audit entries. Undo/redo (and the
+ * redo-stack purge on a new mutation) are session-scoped so you only step
+ * through your OWN recent actions, not another cloud user's edits. A missing
+ * sessionId (non-GUI callers) falls back to the whole log.
+ */
+function sessionUndoneFilters(undone: 0 | 1, sessionId?: string) {
+  const filters: { col: string; op: 'eq'; val: string | number }[] = [
+    { col: 'undone', op: 'eq', val: undone },
+  ];
+  if (sessionId) filters.push({ col: 'session_id', op: 'eq', val: sessionId });
+  return filters;
+}
+
+/**
  * Append an audit-log entry for a mutation and publish it to the activity
  * feed. `source` tags who triggered it (defaults to the GUI). AuditOp is a
  * subset of FeedOp, so the cast is safe.
@@ -42,9 +56,11 @@ export async function appendAudit(
   before: unknown,
   after: unknown,
   source: FeedSource = 'gui',
+  sessionId?: string,
 ): Promise<void> {
+  // Purge THIS session's redo stack (a new edit invalidates pending redos).
   const undone = (await db.query('_lattice_gui_audit', {
-    filters: [{ col: 'undone', op: 'eq', val: 1 }],
+    filters: sessionUndoneFilters(1, sessionId),
   })) as { id: string }[];
   for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
   await db.insert('_lattice_gui_audit', {
@@ -55,6 +71,7 @@ export async function appendAudit(
     before_json: before ? JSON.stringify(before) : null,
     after_json: after ? JSON.stringify(after) : null,
     undone: 0,
+    session_id: sessionId ?? null,
   });
   feed.publish({ table, op: op as FeedOp, rowId, source, summary: feedSummary(op, table) });
 }
@@ -85,9 +102,10 @@ export async function recordSchemaAudit(
   after: unknown,
   summary: string,
   source: FeedSource = 'gui',
+  sessionId?: string,
 ): Promise<void> {
   const undone = (await db.query('_lattice_gui_audit', {
-    filters: [{ col: 'undone', op: 'eq', val: 1 }],
+    filters: sessionUndoneFilters(1, sessionId),
   })) as { id: string }[];
   for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
   await db.insert('_lattice_gui_audit', {
@@ -98,6 +116,7 @@ export async function recordSchemaAudit(
     before_json: before === null || before === undefined ? null : JSON.stringify(before),
     after_json: after === null || after === undefined ? null : JSON.stringify(after),
     undone: 0,
+    session_id: sessionId ?? null,
   });
   feed.publish({ table, op: 'schema', rowId: null, source, summary });
 }
@@ -110,6 +129,12 @@ export interface MutationCtx {
   softDeletable: Set<string>;
   /** Who triggered the mutation — drives the feed source pill. */
   source: FeedSource;
+  /**
+   * The GUI session (one per server process) recorded on each audit entry so
+   * undo/redo can be scoped to this session's own actions. Undefined for
+   * non-GUI callers (undo/redo then falls back to the whole log).
+   */
+  sessionId?: string | undefined;
   /**
    * Team-cloud context. When set, every row mutation also appends a
    * `__lattice_change_log` envelope so the Postgres NOTIFY trigger fires and
@@ -173,7 +198,7 @@ export async function createRow(
 ): Promise<{ id: string; row: Row | null }> {
   const id = await ctx.db.insert(table, values);
   const row = await ctx.db.get(table, id);
-  await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source);
+  await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source, ctx.sessionId);
   await emitTeamEnvelope(ctx, table, id, 'upsert', row);
   return { id, row };
 }
@@ -187,7 +212,17 @@ export async function updateRow(
   const before = await ctx.db.get(table, id);
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
-  await appendAudit(ctx.db, ctx.feed, table, id, 'update', before, after, ctx.source);
+  await appendAudit(
+    ctx.db,
+    ctx.feed,
+    table,
+    id,
+    'update',
+    before,
+    after,
+    ctx.source,
+    ctx.sessionId,
+  );
   await emitTeamEnvelope(ctx, table, id, 'upsert', after);
   return { row: after };
 }
@@ -202,25 +237,45 @@ export async function deleteRow(
   if (!hard && ctx.softDeletable.has(table)) {
     await ctx.db.update(table, id, { deleted_at: new Date().toISOString() });
     const after = await ctx.db.get(table, id);
-    await appendAudit(ctx.db, ctx.feed, table, id, 'update', before, after, ctx.source);
+    await appendAudit(
+      ctx.db,
+      ctx.feed,
+      table,
+      id,
+      'update',
+      before,
+      after,
+      ctx.source,
+      ctx.sessionId,
+    );
     // A soft-delete is a row UPDATE (deleted_at set) — the post-image carries
     // the tombstone, so emit an upsert envelope, not a delete.
     await emitTeamEnvelope(ctx, table, id, 'upsert', after);
   } else {
     await ctx.db.delete(table, id);
-    await appendAudit(ctx.db, ctx.feed, table, id, 'delete', before, null, ctx.source);
+    await appendAudit(
+      ctx.db,
+      ctx.feed,
+      table,
+      id,
+      'delete',
+      before,
+      null,
+      ctx.source,
+      ctx.sessionId,
+    );
     await emitTeamEnvelope(ctx, table, id, 'delete', null);
   }
 }
 
 export async function linkRows(ctx: MutationCtx, table: string, body: Row): Promise<void> {
   await ctx.db.link(table, body);
-  await appendAudit(ctx.db, ctx.feed, table, null, 'link', null, body, ctx.source);
+  await appendAudit(ctx.db, ctx.feed, table, null, 'link', null, body, ctx.source, ctx.sessionId);
 }
 
 export async function unlinkRows(ctx: MutationCtx, table: string, body: Row): Promise<void> {
   await ctx.db.unlink(table, body);
-  await appendAudit(ctx.db, ctx.feed, table, null, 'unlink', body, null, ctx.source);
+  await appendAudit(ctx.db, ctx.feed, table, null, 'unlink', body, null, ctx.source, ctx.sessionId);
 }
 
 // ── Undo / redo / revert ────────────────────────────────────────────────────
@@ -314,10 +369,10 @@ async function applyForward(ctx: MutationCtx, entry: AuditEntry): Promise<void> 
   }
 }
 
-async function liveAudit(db: Lattice, undone: 0 | 1): Promise<AuditEntry[]> {
+async function liveAudit(db: Lattice, undone: 0 | 1, sessionId?: string): Promise<AuditEntry[]> {
   return (
     (await db.query('_lattice_gui_audit', {
-      filters: [{ col: 'undone', op: 'eq', val: undone }],
+      filters: sessionUndoneFilters(undone, sessionId),
     })) as Record<string, unknown>[]
   ).map(parseAudit);
 }
@@ -331,9 +386,11 @@ function reverseSummary(verb: 'Undid' | 'Redid' | 'Reverted', entry: AuditEntry)
   return `${verb} ${entry.operation} on ${entry.table_name}`;
 }
 
-/** Undo the most recent live mutation. Returns the reverted entry, or null. */
+/** Undo this session's most recent live mutation. Returns the reverted entry, or null. */
 export async function undoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
-  const target = (await liveAudit(ctx.db, 0)).sort((a, b) => b.ts.localeCompare(a.ts))[0];
+  const target = (await liveAudit(ctx.db, 0, ctx.sessionId)).sort((a, b) =>
+    b.ts.localeCompare(a.ts),
+  )[0];
   if (!target) return null;
   await applyInverse(ctx, target);
   await ctx.db.update('_lattice_gui_audit', target.id, { undone: 1 });
@@ -347,9 +404,11 @@ export async function undoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
   return target;
 }
 
-/** Redo the oldest undone mutation. Returns the re-applied entry, or null. */
+/** Redo this session's oldest undone mutation. Returns the re-applied entry, or null. */
 export async function redoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
-  const target = (await liveAudit(ctx.db, 1)).sort((a, b) => a.ts.localeCompare(b.ts))[0];
+  const target = (await liveAudit(ctx.db, 1, ctx.sessionId)).sort((a, b) =>
+    a.ts.localeCompare(b.ts),
+  )[0];
   if (!target) return null;
   await applyForward(ctx, target);
   await ctx.db.update('_lattice_gui_audit', target.id, { undone: 0 });
