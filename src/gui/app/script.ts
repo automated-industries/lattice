@@ -163,7 +163,8 @@ export const appJs = `
         state.systemTables = (results[4] && results[4].tables) || [];
         state.preferences = results[5] || { show_system_tables: false, analytics: true };
         document.body.classList.toggle('advanced-mode', advancedMode());
-        document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed());
+        var advToggle = document.getElementById('advanced-toggle');
+        if (advToggle) advToggle.checked = advancedMode();
         wireSettingsDrawer();
         renderDbSwitcher(results[2]);
         renderWsSwitcher(results[6]);
@@ -1827,7 +1828,7 @@ export const appJs = `
     // row/table editor (renderTable / renderDetail) is preserved behind
     // an "Advanced mode" toggle in the settings drawer.
     // ════════════════════════════════════════════════════════════
-    var FS_KEYS = { advanced: 'lattice-advanced-mode', sidebar: 'lattice-sidebar-collapsed' };
+    var FS_KEYS = { advanced: 'lattice-advanced-mode' };
 
     function advancedMode() {
       return window.localStorage.getItem(FS_KEYS.advanced) === '1';
@@ -1842,13 +1843,6 @@ export const appJs = `
       renderSidebar();
       if (mapped && mapped !== cur) location.hash = mapped; // triggers hashchange → renderRoute
       else renderRoute();
-    }
-    function sidebarCollapsed() {
-      return window.localStorage.getItem(FS_KEYS.sidebar) === '1';
-    }
-    function setSidebarCollapsed(on) {
-      window.localStorage.setItem(FS_KEYS.sidebar, on ? '1' : '0');
-      document.body.classList.toggle('sidebar-collapsed', on);
     }
 
     // Parse "#/fs/a/b/c…" into its decoded segment list (or null).
@@ -2234,8 +2228,6 @@ export const appJs = `
         var drawer = document.getElementById('settings-drawer');
         if (drawer && !drawer.hidden) closeSettingsDrawer();
       });
-      var collapse = document.getElementById('sidebar-collapse');
-      if (collapse) collapse.addEventListener('click', function () { setSidebarCollapsed(!sidebarCollapsed()); });
     }
 
     // ────────────────────────────────────────────────────────────
