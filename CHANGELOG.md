@@ -8,6 +8,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — GUI: workspace dashboard
+
+- **The GUI home is now a workspace overview, not a bare entity card-grid.** A new read-only `GET /api/dashboard` composes per-entity counts (reusing the pool-safe `entitiesWithCounts`), a freshness timestamp per entity (`MAX(updated_at|created_at|ts)` — one `UNION ALL` query on Postgres, in-process on SQLite), and a recent-activity list (the GUI audit log). The dashboard renders stat tiles (entities / rows / stale), per-card "last updated" with a stale flag (>14 days), and a recent-activity feed. Fully GUI-only + read-only — no core write-path behavior, so a library consumer of `latticesql` is unaffected.
+
 ### Security — DDL identifier & schema-spec validation
 
 - **Team object sharing now validates every externally-supplied name, type, default, and constraint before it reaches DDL.** A shared object's `table`, column names, column types, defaults, and table constraints were previously rendered verbatim into `CREATE TABLE` / `ALTER TABLE`; on Postgres (simple-query protocol, empty params) a `;` could stack a second statement. New `assertSafeIdentifier` / `assertExternalIdentifier` (`src/schema/identifier.ts`) enforce a strict identifier grammar as a universal last-line defense inside the schema manager's `_ensureTable`/`addColumn` and `Lattice.addColumn`; `validateExternalSchemaSpec` validates the full spec (identifiers, the five primitive types, default grammar, constraint character-set, reserved `_lattice_` prefixes) at the `applySchemaSpec` trust boundary. Legitimate specs are unaffected. Regression tests in `tests/unit/identifier-safety.test.ts`.
