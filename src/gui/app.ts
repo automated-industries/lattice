@@ -41,6 +41,7 @@ export const guiAppHtml = `<!doctype html>
       <input type="search" id="search-input" placeholder="Search all tables…" autocomplete="off" spellcheck="false" aria-label="Full-text search" />
       <div class="search-results" id="search-results" hidden></div>
     </div>
+    <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
     <div class="db-switcher" id="db-switcher-host">
       <button class="db-button" id="db-button" title="Switch database">
         <span class="db-status" id="db-status" title="Local"></span>
