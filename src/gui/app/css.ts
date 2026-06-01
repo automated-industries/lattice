@@ -182,8 +182,8 @@ export const css = `
     }
     .rail-handle { display: none; }
     @media (max-width: 720px) {
-      /* The assistant rail becomes a bottom drawer: composer always reachable,
-         tap the handle to expand the feed/chat to ~62svh. */
+      /* The activity rail becomes a bottom drawer: tap the handle to expand
+         the feed to ~62svh. */
       .layout { grid-template-columns: var(--nav-width) minmax(0, 1fr); }
       .assistant-rail {
         position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
@@ -246,15 +246,6 @@ export const css = `
       font-size: 11px; font-weight: 600; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto;
     }
-    .rail-threads {
-      flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px;
-    }
-    .rail-newchat {
-      flex: 0 0 auto; width: 26px; height: 26px; border: 1px solid var(--border);
-      border-radius: 6px; background: var(--surface-2); color: var(--text-muted);
-      cursor: pointer; font-size: 14px; line-height: 1;
-    }
     .rail-feed {
       flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
       display: flex; flex-direction: column; gap: 8px;
@@ -277,68 +268,6 @@ export const css = `
       background: var(--accent-soft); color: var(--accent);
     }
     .feed-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-
-    /* ── Chat bubbles + tool pills ─────────────────────── */
-    .chat-msg { display: flex; animation: feedIn 0.18s ease-out; }
-    .chat-msg.user { justify-content: flex-end; }
-    .chat-msg.assistant { justify-content: flex-start; }
-    .chat-bubble {
-      max-width: 85%; padding: 8px 12px; font-size: 13.5px; line-height: 1.45;
-      white-space: pre-wrap; word-break: break-word;
-    }
-    .chat-bubble.user {
-      background: var(--accent); color: #0b0d10;
-      border-radius: 14px 14px 4px 14px;
-    }
-    .chat-bubble.assistant {
-      background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
-      border-radius: 14px 14px 14px 4px;
-    }
-    .chat-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-    .tool-pill {
-      display: inline-flex; align-items: center; gap: 5px;
-      border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 500;
-      background: var(--accent-soft); color: var(--accent);
-    }
-    .tool-pill.done { background: var(--surface-2); color: var(--text-muted); }
-    .tool-pill.error { background: rgba(251,146,60,0.14); color: var(--warn); }
-    .tool-pill .spin { display: inline-block; width: 9px; height: 9px;
-      border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%;
-      animation: pillspin 0.7s linear infinite; }
-    @keyframes pillspin { to { transform: rotate(360deg); } }
-    .rail-composer { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 10px 12px; }
-    .rail-composer textarea {
-      width: 100%; resize: none; min-height: 38px; max-height: 120px;
-      background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: 8px;
-      padding: 8px 10px; font: inherit; font-size: 13.5px;
-    }
-    .rail-composer .composer-row { display: flex; gap: 8px; align-items: flex-end; }
-    .rail-composer .composer-send {
-      flex: 0 0 auto; height: 38px; padding: 0 14px; border: none; border-radius: 8px;
-      background: var(--accent); color: #0b0d10; font-weight: 600; cursor: pointer;
-    }
-    .rail-composer .composer-send:disabled { opacity: 0.4; cursor: default; }
-    .rail-composer .composer-setup { font-size: 12.5px; color: var(--text-muted); text-align: center; }
-    .rail-composer .composer-setup a { color: var(--accent); }
-    .rail-composer .composer-mic {
-      flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;
-      border: 1px solid var(--border-strong); border-radius: 8px;
-      background: var(--surface-2); color: var(--text-muted); cursor: pointer;
-    }
-    .rail-composer .composer-mic.recording { background: var(--warn); color: #0b0d10; border-color: var(--warn); }
-    .rail-composer .composer-mic.transcribing { color: var(--accent); }
-    .rail-composer .composer-clip {
-      flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;
-      border: 1px solid var(--border-strong); border-radius: 8px;
-      background: var(--surface-2); color: var(--text-muted); cursor: pointer;
-    }
-    .assistant-rail.dragging-file::after {
-      content: 'Drop to ingest'; position: absolute; inset: 0; z-index: 10;
-      display: flex; align-items: center; justify-content: center;
-      background: var(--accent-soft); border: 2px dashed var(--accent);
-      color: var(--accent); font-weight: 600; pointer-events: none;
-    }
 
     /* ── File preview (files detail page) ──────────────── */
     .file-preview { margin: 4px 0 16px; }
