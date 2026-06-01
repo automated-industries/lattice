@@ -179,6 +179,56 @@ describe('Schema history — tracking + soft-delete revert', () => {
     expect(await entityNames(s)).toContain('gizmos');
   });
 
+  it("undo/redo is session-scoped: one session does not undo another session's action", async () => {
+    // Two GUI servers against the SAME database = two sessions (e.g. two cloud
+    // users). Undo steps through YOUR OWN actions only, not the other session's.
+    const root = mkdtempSync(join(tmpdir(), 'lattice-schist-multi-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  articles:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '    outputFile: articles.md',
+        '',
+      ].join('\n'),
+    );
+    const a = await startGuiServer({
+      configPath,
+      outputDir: join(root, 'ctxA'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(a);
+    // Session A creates an entity.
+    expect((await post(a, '/api/schema/entities', { name: 'alpha' })).status).toBe(200);
+
+    // A second server (session B) opens the same DB.
+    const b = await startGuiServer({
+      configPath,
+      outputDir: join(root, 'ctxB'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(b);
+    expect(await entityNames(b)).toContain('alpha'); // B sees the table
+
+    // B's undo has nothing of its own to undo — it must NOT undo A's create.
+    expect((await post(b, '/api/history/undo')).status).toBe(400); // "Nothing to undo"
+    expect(await entityNames(b)).toContain('alpha'); // still there
+
+    // A's own undo removes its create.
+    expect((await post(a, '/api/history/undo')).status).toBe(200);
+    expect(await entityNames(a)).not.toContain('alpha');
+  });
+
   it('refuses to create over a soft-deleted name (revert it instead)', async () => {
     const { s } = await boot();
     await seedRow(s, 'tasks', { title: 'X', status: 'todo' });
