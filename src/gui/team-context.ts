@@ -48,6 +48,13 @@ export interface TeamContext {
   owners: Map<string, string>;
   /** Tables explicitly shared to the whole team. */
   shared: Set<string>;
+  /**
+   * table_name → its `__lattice_shared_objects.schema_version`, a snapshot at
+   * resolve time. Used as the optimistic-concurrency token for data-model
+   * edits to shared tables (the client sends its base version; the server
+   * rejects a stale write). Re-shares bump the version.
+   */
+  sharedVersions: Map<string, number>;
 }
 
 /**
@@ -106,7 +113,10 @@ export function applySharingToContext(
   wantShare: boolean,
 ): void {
   if (wantShare) ctx.shared.add(table);
-  else ctx.shared.delete(table);
+  else {
+    ctx.shared.delete(table);
+    ctx.sharedVersions.delete(table);
+  }
   if (isVisibleInTeam(table, ctx)) validTables.add(table);
   else validTables.delete(table);
 }
@@ -180,14 +190,16 @@ export async function resolveTeamContext(
   }
   const owners = await listObjectOwners(db, teamId);
   let shared = new Set<string>();
+  const sharedVersions = new Map<string, number>();
   try {
     const summaries = await listSharedObjectsDirect(cloudUrl, teamId);
     shared = new Set(summaries.map((s) => s.table));
+    for (const s of summaries) sharedVersions.set(s.table, s.schema_version);
   } catch {
     // Shared-object table unreachable — treat as nothing shared.
   }
   const isCreator = !!creatorUserId && myUserId === creatorUserId;
-  return { teamId, myUserId, creatorUserId, isCreator, isMember, owners, shared };
+  return { teamId, myUserId, creatorUserId, isCreator, isMember, owners, shared, sharedVersions };
 }
 
 /**
