@@ -59,6 +59,49 @@ export async function appendAudit(
   feed.publish({ table, op: op as FeedOp, rowId, source, summary: feedSummary(op, table) });
 }
 
+/** All schema-op operation strings carry this prefix (see recordSchemaAudit). */
+export const SCHEMA_OP_PREFIX = 'schema.';
+
+/** True if an audit-entry operation is a schema/data-model op (vs a row op). */
+export function isSchemaOp(operation: string): boolean {
+  return operation.startsWith(SCHEMA_OP_PREFIX);
+}
+
+/**
+ * Append a SCHEMA/data-model change to the same `_lattice_gui_audit` history as
+ * row edits, and publish it to the activity feed. `operation` is a `schema.*`
+ * string (e.g. `schema.delete_entity`); `before`/`after` carry only small
+ * config metadata (never row data — deletes are soft, so data is never
+ * removed). The actual inverse/forward of a schema op is performed by the
+ * server's MutationCtx.applySchemaInverse/Forward callbacks (which have config
+ * + openConfig access). `row_id` is null for schema ops.
+ */
+export async function recordSchemaAudit(
+  db: Lattice,
+  feed: FeedBus,
+  table: string,
+  operation: string,
+  before: unknown,
+  after: unknown,
+  summary: string,
+  source: FeedSource = 'gui',
+): Promise<void> {
+  const undone = (await db.query('_lattice_gui_audit', {
+    filters: [{ col: 'undone', op: 'eq', val: 1 }],
+  })) as { id: string }[];
+  for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
+  await db.insert('_lattice_gui_audit', {
+    id: crypto.randomUUID(),
+    table_name: table,
+    row_id: null,
+    operation,
+    before_json: before === null || before === undefined ? null : JSON.stringify(before),
+    after_json: after === null || after === undefined ? null : JSON.stringify(after),
+    undone: 0,
+  });
+  feed.publish({ table, op: 'schema', rowId: null, source, summary });
+}
+
 /** Context shared by every mutation primitive. */
 export interface MutationCtx {
   db: Lattice;
@@ -85,6 +128,16 @@ export interface MutationCtx {
    * Recorded on the change envelope so a re-sent edit is a no-op.
    */
   editId?: string | undefined;
+  /**
+   * Schema-op revert hooks. Row inverse/forward is pure-DB (applyInverse/
+   * applyForward below), but reverting a SCHEMA op needs config-doc + openConfig
+   * access that lives in the server. The server supplies these closures (over
+   * its reassignable `active`) when handling undo/redo/revert; applyInverse/
+   * applyForward delegate to them for `schema.*` entries. Absent for plain row
+   * mutations — a schema entry encountered without them throws (Rule 16).
+   */
+  applySchemaInverse?: (entry: AuditEntry) => Promise<void>;
+  applySchemaForward?: (entry: AuditEntry) => Promise<void>;
 }
 
 /**
@@ -180,7 +233,8 @@ export interface AuditEntry {
   ts: string;
   table_name: string;
   row_id: string | null;
-  operation: AuditOp;
+  /** A row AuditOp (insert|update|delete|link|unlink) OR a `schema.*` op. */
+  operation: string;
   before_json: string | null;
   after_json: string | null;
   undone: number;
@@ -193,14 +247,22 @@ export function parseAudit(row: Record<string, unknown>): AuditEntry {
     ts: String(row.ts),
     table_name: String(row.table_name),
     row_id: str(row.row_id),
-    operation: row.operation as AuditOp,
+    operation: String(row.operation),
     before_json: str(row.before_json),
     after_json: str(row.after_json),
     undone: Number(row.undone),
   };
 }
 
-async function applyInverse(db: Lattice, entry: AuditEntry): Promise<void> {
+async function applyInverse(ctx: MutationCtx, entry: AuditEntry): Promise<void> {
+  if (isSchemaOp(entry.operation)) {
+    if (!ctx.applySchemaInverse) {
+      throw new Error(`Cannot revert schema op "${entry.operation}": no schema handler in context`);
+    }
+    await ctx.applySchemaInverse(entry);
+    return;
+  }
+  const db = ctx.db;
   const before = entry.before_json ? (JSON.parse(entry.before_json) as Row) : null;
   const after = entry.after_json ? (JSON.parse(entry.after_json) as Row) : null;
   switch (entry.operation) {
@@ -222,7 +284,15 @@ async function applyInverse(db: Lattice, entry: AuditEntry): Promise<void> {
   }
 }
 
-async function applyForward(db: Lattice, entry: AuditEntry): Promise<void> {
+async function applyForward(ctx: MutationCtx, entry: AuditEntry): Promise<void> {
+  if (isSchemaOp(entry.operation)) {
+    if (!ctx.applySchemaForward) {
+      throw new Error(`Cannot redo schema op "${entry.operation}": no schema handler in context`);
+    }
+    await ctx.applySchemaForward(entry);
+    return;
+  }
+  const db = ctx.db;
   const before = entry.before_json ? (JSON.parse(entry.before_json) as Row) : null;
   const after = entry.after_json ? (JSON.parse(entry.after_json) as Row) : null;
   switch (entry.operation) {
@@ -252,18 +322,27 @@ async function liveAudit(db: Lattice, undone: 0 | 1): Promise<AuditEntry[]> {
   ).map(parseAudit);
 }
 
+/** A readable feed line for an undo/redo/revert of a row or schema op. */
+function reverseSummary(verb: 'Undid' | 'Redid' | 'Reverted', entry: AuditEntry): string {
+  if (isSchemaOp(entry.operation)) {
+    const what = entry.operation.slice(SCHEMA_OP_PREFIX.length).replace(/_/g, ' ');
+    return `${verb} schema change (${what}) on ${entry.table_name}`;
+  }
+  return `${verb} ${entry.operation} on ${entry.table_name}`;
+}
+
 /** Undo the most recent live mutation. Returns the reverted entry, or null. */
 export async function undoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
   const target = (await liveAudit(ctx.db, 0)).sort((a, b) => b.ts.localeCompare(a.ts))[0];
   if (!target) return null;
-  await applyInverse(ctx.db, target);
+  await applyInverse(ctx, target);
   await ctx.db.update('_lattice_gui_audit', target.id, { undone: 1 });
   ctx.feed.publish({
     table: target.table_name,
     op: 'undo',
     rowId: target.row_id,
     source: ctx.source,
-    summary: `Undid ${target.operation} on ${target.table_name}`,
+    summary: reverseSummary('Undid', target),
   });
   return target;
 }
@@ -272,14 +351,14 @@ export async function undoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
 export async function redoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
   const target = (await liveAudit(ctx.db, 1)).sort((a, b) => a.ts.localeCompare(b.ts))[0];
   if (!target) return null;
-  await applyForward(ctx.db, target);
+  await applyForward(ctx, target);
   await ctx.db.update('_lattice_gui_audit', target.id, { undone: 0 });
   ctx.feed.publish({
     table: target.table_name,
     op: 'redo',
     rowId: target.row_id,
     source: ctx.source,
-    summary: `Redid ${target.operation} on ${target.table_name}`,
+    summary: reverseSummary('Redid', target),
   });
   return target;
 }
@@ -294,14 +373,17 @@ export async function revertEntry(ctx: MutationCtx, id: string): Promise<RevertR
   if (!row) return { ok: false, reason: 'not_found' };
   const entry = parseAudit(row);
   if (entry.undone === 1) return { ok: false, reason: 'already_undone' };
-  await applyInverse(ctx.db, entry);
+  // applyInverse runs first; only if it succeeds do we flip `undone`. A schema
+  // revert that throws (e.g. purged, or a name collision) leaves the entry
+  // Revertable and surfaces the error to the caller (Rule 16).
+  await applyInverse(ctx, entry);
   await ctx.db.update('_lattice_gui_audit', id, { undone: 1 });
   ctx.feed.publish({
     table: entry.table_name,
     op: 'undo',
     rowId: entry.row_id,
     source: ctx.source,
-    summary: `Reverted ${entry.operation} on ${entry.table_name}`,
+    summary: reverseSummary('Reverted', entry),
   });
   return { ok: true, entry };
 }
