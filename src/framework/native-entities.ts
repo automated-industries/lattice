@@ -82,10 +82,9 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
     outputFile: '.lattice-native/files.md',
   },
   notes: {
-    // The designated knowledge object the AI organizer creates when an
-    // ingested source doesn't fit any of the user's existing entities.
-    // Ordinary, user-editable rows; `source_file_id` points back at the
-    // originating `files` row.
+    // A generic knowledge object: a free-form note with a title and body.
+    // Ordinary, user-editable rows; `source_file_id` optionally points back at
+    // an originating `files` row.
     columns: {
       id: 'TEXT PRIMARY KEY',
       title: 'TEXT',
@@ -97,38 +96,6 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
     },
     render: () => '',
     outputFile: '.lattice-native/notes.md',
-  },
-  chat_threads: {
-    columns: {
-      id: 'TEXT PRIMARY KEY',
-      title: 'TEXT',
-      created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
-      updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
-      deleted_at: 'TEXT',
-    },
-    render: () => '',
-    outputFile: '.lattice-native/chat-threads.md',
-  },
-  chat_messages: {
-    columns: {
-      id: 'TEXT PRIMARY KEY',
-      // Soft reference to chat_threads.id. Kept as a plain column (no FK)
-      // to match the generic, dialect-agnostic native-entity style.
-      thread_id: 'TEXT',
-      // user | assistant | tool | feed | system. NOT NULL needs a DEFAULT so
-      // ALTER TABLE ADD COLUMN succeeds when merged onto a pre-existing table
-      // (every insert sets role explicitly, so the default is never observed).
-      role: "TEXT NOT NULL DEFAULT 'user'",
-      // JSON payload: text, tool_use / tool_result blocks, attachments, or
-      // (for role='feed') the feed-event details.
-      content_json: 'TEXT',
-      // ai | gui | cli | ingest — meaningful for role='feed'.
-      source: 'TEXT',
-      created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
-      deleted_at: 'TEXT',
-    },
-    render: () => '',
-    outputFile: '.lattice-native/chat-messages.md',
   },
 };
 

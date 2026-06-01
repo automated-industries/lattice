@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { FeedBus } from '../../src/gui/ai/feed.js';
+import { FeedBus } from '../../src/gui/feed.js';
 
 describe('FeedBus', () => {
   it('assigns monotonically increasing sequence numbers', () => {
     const bus = new FeedBus();
     const a = bus.publish({ table: 'people', op: 'insert', rowId: '1', source: 'gui' });
-    const b = bus.publish({ table: 'people', op: 'update', rowId: '1', source: 'ai' });
+    const b = bus.publish({ table: 'people', op: 'update', rowId: '1', source: 'command' });
     expect(a.seq).toBe(1);
     expect(b.seq).toBe(2);
   });

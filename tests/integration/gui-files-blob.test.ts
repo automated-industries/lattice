@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
 /**
@@ -64,12 +65,23 @@ async function boot(): Promise<GuiServerHandle> {
   return server;
 }
 
-async function ingestText(url: string): Promise<string> {
-  const res = await fetch(`${url}/api/ingest/text`, {
+/**
+ * Seed a native `files` row via the GUI row-CRUD route. With no `path`, the
+ * row is metadata-only (no underlying blob); with a `path` it records a v2.0
+ * `local_ref` the blob route streams via the `ref_uri` fallback.
+ */
+async function seedFileRow(url: string, opts: { path?: string } = {}): Promise<string> {
+  const row: Record<string, unknown> = { id: randomUUID(), original_name: 'note.txt' };
+  if (opts.path) {
+    row.ref_kind = 'local_ref';
+    row.ref_uri = opts.path;
+  }
+  const res = await fetch(`${url}/api/tables/files/rows`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ title: 'note.txt', text: 'just some text' }),
+    body: JSON.stringify(row),
   });
+  if (res.status !== 201) throw new Error(`seed failed: ${res.status}`);
   return ((await res.json()) as { id: string }).id;
 }
 
@@ -81,9 +93,9 @@ describe('files blob + open-in-finder', () => {
     expect(String((await r.json()).error)).toMatch(/not found/i);
   });
 
-  it('404s the blob for a text-only file (no underlying bytes)', async () => {
+  it('404s the blob for a metadata-only file (no underlying bytes)', async () => {
     const s = await boot();
-    const id = await ingestText(s.url);
+    const id = await seedFileRow(s.url);
     const r = await fetch(`${s.url}/api/files/${id}/blob`);
     expect(r.status).toBe(404);
     expect(String((await r.json()).error)).toMatch(/no underlying blob/i);
@@ -91,16 +103,16 @@ describe('files blob + open-in-finder', () => {
 
   it('reports open-in-finder disabled unless LATTICE_LOCAL_OPEN=1', async () => {
     const s = await boot();
-    const id = await ingestText(s.url);
+    const id = await seedFileRow(s.url);
     const r = await fetch(`${s.url}/api/files/${id}/open-in-finder`, { method: 'POST' });
     expect(r.status).toBe(200);
     expect((await r.json()).enabled).toBe(false);
   });
 
-  it('404s open-in-finder for a text-only file when local-open is enabled', async () => {
+  it('404s open-in-finder for a metadata-only file when local-open is enabled', async () => {
     process.env.LATTICE_LOCAL_OPEN = '1';
     const s = await boot();
-    const id = await ingestText(s.url);
+    const id = await seedFileRow(s.url);
     const r = await fetch(`${s.url}/api/files/${id}/open-in-finder`, { method: 'POST' });
     expect(r.status).toBe(404);
     expect(String((await r.json()).error)).toMatch(/no local path/i);
@@ -108,19 +120,13 @@ describe('files blob + open-in-finder', () => {
 
   it('serves the blob for a local_ref file (ref_uri fallback, no path column)', async () => {
     const s = await boot();
-    // A file ingested by path records a v2.0 local_ref (ref_uri set, path null).
+    // A local_ref row points at a path on disk (ref_uri set, path null).
     const srcDir = mkdtempSync(join(tmpdir(), 'lattice-blob-src-'));
     dirs.push(srcDir);
     const filePath = join(srcDir, 'hello.txt');
     writeFileSync(filePath, 'hello from a local ref');
-    const ingest = await fetch(`${s.url}/api/ingest/file`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path: filePath }),
-    });
-    expect(ingest.status).toBe(201);
-    const id = ((await ingest.json()) as { id: string }).id;
-    // The blob route must still stream it via the ref_uri fallback.
+    const id = await seedFileRow(s.url, { path: filePath });
+    // The blob route must stream it via the ref_uri fallback.
     const r = await fetch(`${s.url}/api/files/${id}/blob`);
     expect(r.status).toBe(200);
     expect(await r.text()).toBe('hello from a local ref');
