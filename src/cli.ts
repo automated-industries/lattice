@@ -579,6 +579,10 @@ async function runGui(args: ParsedArgs): Promise<void> {
   try {
     let configPath = resolve(args.config);
     let outputDir: string;
+    // Workspace opens keep the rendered Context/ tree synced (canonical
+    // contexts + auto-render); a plain --config GUI serves only what was
+    // rendered externally.
+    let autoRender = false;
     // Prefer the active workspace under a `.lattice` root, unless the user
     // pointed --config at a specific config explicitly.
     const root = findLatticeRoot(args.root ?? process.cwd());
@@ -587,6 +591,7 @@ async function runGui(args: ParsedArgs): Promise<void> {
       const paths = resolveWorkspacePaths(root, ws);
       configPath = paths.configPath;
       outputDir = paths.contextDir;
+      autoRender = true;
       console.log(`Lattice GUI: opening workspace "${ws.displayName}".`);
     } else {
       const resolvedOutput = discoverOutputDir(args.output, args.outputExplicit);
@@ -603,6 +608,7 @@ async function runGui(args: ParsedArgs): Promise<void> {
       outputDir,
       port: args.port,
       openBrowser: !args.noOpen,
+      autoRender,
     });
     console.log(`Lattice GUI listening at ${handle.url}`);
     console.log('Press Ctrl+C to stop.');

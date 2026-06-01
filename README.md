@@ -2706,7 +2706,7 @@ DO_NOT_TRACK=1 npm install latticesql
 npm install latticesql --ignore-scripts
 ```
 
-**In-app opt-out (consent preference)** — in the GUI, open **Settings → User → Preferences** and uncheck **"Anonymous install analytics"** (or set `"analytics": false` in `~/.lattice/preferences.json`). This records your consent so that in-app updates (`lattice update` / `autoUpdate()`) suppress the Scarf ping, and it gates any future runtime telemetry. Analytics is **on by default** (opt-out). The original `npm install` ping is governed at install time by the env-var options above — the preference governs reinstalls, not the install you already ran.
+**In-app opt-out (consent preference)** — in the GUI, open **Settings → User → Preferences** and uncheck **"Send anonymous analytics"** (or set `"analytics": false` in `~/.lattice/preferences.json`). This is the single consent for all anonymous analytics Lattice shares via Scarf — the install ping and any Scarf pixel — so in-app updates (`lattice update` / `autoUpdate()`) suppress the Scarf ping and any future runtime telemetry is gated. Analytics is **on by default** (opt-out). The original `npm install` ping is governed at install time by the env-var options above — the preference governs reinstalls, not the install you already ran.
 
 Opting out has no effect on functionality — the package works identically. The Scarf postinstall is a fire-and-forget HTTPS ping with a short timeout; even when enabled it cannot fail your install.
 
