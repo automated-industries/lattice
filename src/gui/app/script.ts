@@ -1300,6 +1300,42 @@ export const appJs = `
       return out;
     }
 
+    /**
+     * Every relationship for an entity, as a uniform bidirectional link. A link
+     * between A and B is one thing — it appears in both editors and deleting it
+     * from either side removes it from both. Each entry:
+     *   { other, kind: 'junction' | 'fk', delTable, delCol? }
+     *   • junction — a many-to-many junction table; delete drops that table.
+     *   • fk — a legacy 1:N foreign-key column (this entity's own, or one on
+     *     another table pointing here); delete drops that column.
+     * New links are always junctions (M2M); fk entries exist only for tables
+     * created before the M2M-only model.
+     */
+    function collectEntityLinks(name) {
+      var links = [];
+      var t = tableByName(name);
+      // Many-to-many via junction tables (found on either side).
+      junctionsFor(name).forEach(function (j) {
+        links.push({ other: j.remoteRel.table, kind: 'junction', delTable: j.junction });
+      });
+      // This entity's own outgoing FK columns (legacy 1:N).
+      if (t) {
+        belongsToColumns(t).forEach(function (b) {
+          links.push({ other: b.rel.table, kind: 'fk', delTable: name, delCol: b.rel.foreignKey });
+        });
+      }
+      // Incoming FK columns on other (non-junction) tables pointing here (legacy).
+      ((state.entities && state.entities.tables) || []).forEach(function (ot) {
+        if (ot.name === name || isJunction(ot)) return;
+        belongsToColumns(ot).forEach(function (b) {
+          if (b.rel.table === name) {
+            links.push({ other: ot.name, kind: 'fk', delTable: ot.name, delCol: b.rel.foreignKey });
+          }
+        });
+      });
+      return links;
+    }
+
     function displayNameFor(row) {
       if (!row) return '';
       return row.name || row.title || row.url || row.path || row.id || '';
@@ -2974,32 +3010,35 @@ export const appJs = `
       }).join('');
       var columnsHtml = sysRows + scalarRows;
 
-      // ── Links section — each link individually deletable (drops only its
-      // FK column, never a table). ──
-      var linkRows = linkCols.map(function (c) {
-        var tgt = fkByCol[c];
+      // ── Links section — every relationship is bidirectional and many-to-many.
+      // A link between A and B is one thing: it shows in BOTH editors and
+      // deleting it from either side removes it from both. "Add link" creates a
+      // junction table (the M2M representation). For backward compatibility we
+      // also surface legacy 1:N foreign-key columns (this entity's own, and any
+      // pointing AT it) as links so they're visible and deletable from either
+      // side — but new links are always M2M.
+      var dmLinks = collectEntityLinks(tableName);
+      var linkRows = dmLinks.map(function (lk, i) {
         return '<div class="dm-link-row">' +
-          '<span class="dm-link-name">' + escapeHtml(c) + '</span>' +
-          '<span class="dm-link-arrow">→ ' + escapeHtml(displayFor(tgt).label) + '</span>' +
-          '<button class="btn danger dm-link-destroy" data-col="' + escapeHtml(c) +
-            '" title="Delete this link — drops only this column">Delete link</button>' +
+          '<span class="dm-link-name">' + escapeHtml(displayFor(lk.other).label) + '</span>' +
+          '<span class="dm-link-arrow">↔ many-to-many</span>' +
+          '<button class="btn danger dm-link-destroy" data-link="' + i +
+            '" title="Delete this link — removes it from both tables">Delete link</button>' +
           '</div>';
       }).join('');
-      // Add-link target picker. Excludes self, junction tables (linking TO a
-      // junction is rejected server-side), and any entity this table ALREADY
-      // links to — one link per target via this control (the server rejects
-      // duplicates too). Recomputed on every in-place re-render, so a target
-      // disappears from the dropdown the moment you link it, no refresh.
+      // Add-link target picker. Excludes self, junction tables, and any entity
+      // already linked (either direction) — one link per pair. Recomputed on
+      // every in-place re-render so a target disappears the moment you link it.
       var linkedTargets = {};
-      linkCols.forEach(function (c) { linkedTargets[fkByCol[c]] = 1; });
+      dmLinks.forEach(function (lk) { linkedTargets[lk.other] = 1; });
       var linkTargets = ((state.entities && state.entities.tables) || []).filter(function (rt) {
         return !isJunction(rt) && rt.name !== tableName && !linkedTargets[rt.name];
       });
       var addLinkHtml = linkTargets.length
         ? '<div class="dm-row-inline" style="margin-top:8px">' +
-            '<select id="dm-newlink-target" title="Link to entity">' +
+            '<select id="dm-newlink-target" title="Link to entity (many-to-many)">' +
               linkTargets.map(function (rt) {
-                return '<option value="' + escapeHtml(rt.name) + '">→ ' + escapeHtml(displayFor(rt.name).label) + '</option>';
+                return '<option value="' + escapeHtml(rt.name) + '">↔ ' + escapeHtml(displayFor(rt.name).label) + '</option>';
               }).join('') +
             '</select>' +
             '<button class="btn primary" id="dm-newlink-btn">Add link</button>' +
@@ -3286,35 +3325,44 @@ export const appJs = `
             }).catch(function (err) { showToast('Save failed: ' + err.message, {}); });
         });
       });
-      // Add link — creates a foreign-key column to the chosen entity. Links
-      // can't be edited once created (only deleted individually below).
+      // Add link — creates a many-to-many junction between this entity and the
+      // chosen one. The relationship is bidirectional: it appears in both
+      // editors and is deletable from either side.
       var newlinkBtn = panel.querySelector('#dm-newlink-btn');
       if (newlinkBtn) newlinkBtn.addEventListener('click', function () {
         var target = panel.querySelector('#dm-newlink-target').value;
         if (!target) return;
         withBusy(newlinkBtn, function () {
-          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/links', {
+          return fetchJson('/api/schema/junctions', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ target: target }),
+            body: JSON.stringify({ left: tableName, right: target }),
           }).then(function () { return dmRefreshPanel(tableName, true); })
             .then(function () {
-              showToast('Linked to ' + displayFor(target).label, {});
+              showToast('Linked ' + displayFor(tableName).label + ' ↔ ' + displayFor(target).label, {});
             }).catch(function (err) { showToast('Add link failed: ' + err.message, {}); });
         });
       });
-      // Delete a link — drops only its FK column (never a table). Owner-only
-      // (server-enforced). Each link is managed individually.
+      // Delete a link — bidirectional. A many-to-many link drops its junction
+      // table (removing it from both sides at once); a legacy 1:N link drops
+      // its foreign-key column. Never drops a first-class entity's data. The
+      // link list is recomputed here so the index matches the rendered rows.
+      var dmLinksNow = collectEntityLinks(tableName);
       panel.querySelectorAll('.dm-link-destroy').forEach(function (btn) {
         btn.addEventListener('click', function () {
-          var col = btn.getAttribute('data-col');
-          if (!confirm('Delete the link "' + col + '"? This drops only this column (not any table) and is irreversible from the GUI.')) return;
+          var lk = dmLinksNow[Number(btn.getAttribute('data-link'))];
+          if (!lk) return;
+          if (!confirm('Delete the link between "' + tableName + '" and "' + lk.other +
+            '"? It is removed from both tables. This is irreversible from the GUI.')) return;
+          var url = lk.kind === 'junction'
+            ? '/api/schema/entities/' + encodeURIComponent(lk.delTable)
+            : '/api/schema/entities/' + encodeURIComponent(lk.delTable) +
+                '/links/' + encodeURIComponent(lk.delCol);
           withBusy(btn, function () {
-            return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) +
-              '/links/' + encodeURIComponent(col), { method: 'DELETE' })
+            return fetchJson(url, { method: 'DELETE' })
               .then(function () { return dmRefreshPanel(tableName, true); })
               .then(function () {
-                showToast('Link "' + col + '" deleted', {});
+                showToast('Link to "' + lk.other + '" deleted', {});
               }).catch(function (err) { showToast('Delete link failed: ' + err.message, {}); });
           });
         });
@@ -3324,11 +3372,22 @@ export const appJs = `
       // while another table links to this one (no broken data models).
       var delTable = panel.querySelector('#dm-delete-table');
       if (delTable) delTable.addEventListener('click', function () {
+        // The name is shown with text-transform:none so the user types the
+        // real case; the match is case-insensitive anyway so the label's
+        // uppercase styling can't trip them up.
+        var nameTag = '<code style="text-transform:none;font-weight:600">' +
+          escapeHtml(tableName) + '</code>';
+        var matches = function (v) {
+          return (v || '').trim().toLowerCase() === tableName.toLowerCase();
+        };
         showModal('Delete table "' + tableName + '"',
-          '<p style="margin:0 0 10px">This permanently drops the table <strong>' +
-            escapeHtml(tableName) + '</strong> and all its rows. This cannot be undone.</p>' +
-          '<div class="field"><label>Type <strong>' + escapeHtml(tableName) +
-            '</strong> to confirm</label><input id="dm-del-confirm" autocomplete="off" ' +
+          '<p style="margin:0 0 8px">This permanently drops the table ' + nameTag +
+            ' and all its rows. This cannot be undone.</p>' +
+          '<p style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+            'You can\\'t delete a table while another table links to it — delete those links first ' +
+            '(they show in this table\\'s Links section).</p>' +
+          '<div class="field"><label>Type ' + nameTag +
+            ' to confirm</label><input id="dm-del-confirm" autocomplete="off" ' +
             'autocapitalize="off" autocorrect="off" spellcheck="false" /></div>',
         {
           primaryLabel: 'Delete table',
@@ -3339,14 +3398,15 @@ export const appJs = `
             if (ok) ok.disabled = true;
             if (inp) {
               inp.addEventListener('input', function () {
-                if (ok) ok.disabled = inp.value.trim() !== tableName;
+                if (ok) ok.disabled = !matches(inp.value);
               });
               inp.focus();
             }
           },
           onSubmit: function (bd) {
-            var typed = (bd.querySelector('#dm-del-confirm').value || '').trim();
-            if (typed !== tableName) throw new Error('Name does not match');
+            if (!matches(bd.querySelector('#dm-del-confirm').value)) {
+              throw new Error('Name does not match');
+            }
             return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName), {
               method: 'DELETE',
             }).then(function () {
