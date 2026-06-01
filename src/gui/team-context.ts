@@ -65,6 +65,30 @@ export function isVisibleInTeam(tableName: string, ctx: TeamContext): boolean {
 }
 
 /**
+ * Apply a share / unshare to an already-resolved {@link TeamContext} in
+ * place, without re-opening the active DB. Mutates `ctx.shared` and the
+ * GUI's `validTables` visibility set so subsequent `/api/entities` reads
+ * reflect the change immediately.
+ *
+ * Used on two paths: the owner's own share route (deterministic update
+ * for the initiating client) and the realtime broker subscription (when
+ * another client's share/unshare envelope arrives over NOTIFY). Both are
+ * idempotent — a repeated `schema` envelope for an already-shared table
+ * is a no-op. A table stays visible to its owner regardless of sharing.
+ */
+export function applySharingToContext(
+  ctx: TeamContext,
+  validTables: Set<string>,
+  table: string,
+  wantShare: boolean,
+): void {
+  if (wantShare) ctx.shared.add(table);
+  else ctx.shared.delete(table);
+  if (isVisibleInTeam(table, ctx)) validTables.add(table);
+  else validTables.delete(table);
+}
+
+/**
  * Resolve the team-cloud ownership context for a direct-Postgres team
  * DB. Identity comes from the singleton `__lattice_team_identity` row;
  * the operator's cloud user id is resolved from the local

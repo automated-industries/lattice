@@ -2390,7 +2390,9 @@ export const appJs = `
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ share: !isShared }),
           }).then(function () {
-            return reloadEverything();
+            // The server updated team visibility in place (no DB re-open),
+            // so a light entities refetch reflects it without a full reload.
+            return afterMutation();
           }).then(function () {
             location.hash = '#/settings/database';
             dmActiveTable = tableName;
