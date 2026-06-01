@@ -158,6 +158,10 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
       // without ever letting client clock skew reorder the canonical `seq`.
       // Nullable + additive (back-compat with pre-1.16 change-log rows).
       client_ts: 'TEXT',
+      // Client-generated idempotency key for offline replay: a queued edit
+      // carries a stable edit_id, so re-sending it after a reconnect is a
+      // no-op rather than a duplicate write. Nullable + additive.
+      edit_id: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-teams/change-log.md',

@@ -112,6 +112,8 @@ export interface ChangeEnvelopeEntry {
    * server-receipt time when omitted. Never used for ordering — that's `seq`.
    */
   client_ts?: string | null;
+  /** Client idempotency key for offline replay (no-op on re-send). */
+  edit_id?: string | null;
 }
 
 /**
@@ -146,8 +148,30 @@ export async function appendChangeEnvelope(
     owner_user_id: entry.owner_user_id ?? null,
     created_at: now,
     client_ts: entry.client_ts ?? now,
+    edit_id: entry.edit_id ?? null,
   });
   return seq;
+}
+
+/**
+ * Look up a prior change envelope by its client idempotency key. Returns the
+ * recorded `{ pk }` (the row the edit targeted) when a matching edit_id exists
+ * for the team, else null. Used to make an offline-replayed edit a no-op
+ * instead of a duplicate write.
+ */
+export async function findEnvelopeByEditId(
+  db: Lattice,
+  teamId: string,
+  editId: string,
+): Promise<{ pk: string | null } | null> {
+  const rows = (await db.query('__lattice_change_log', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'edit_id', op: 'eq', val: editId },
+    ],
+    limit: 1,
+  })) as unknown as { pk: string | null }[];
+  return rows[0] ? { pk: rows[0].pk } : null;
 }
 
 /**
