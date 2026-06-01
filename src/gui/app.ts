@@ -36,6 +36,11 @@ export const guiAppHtml = `<!doctype html>
       <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
       <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">📜</a>
     </div>
+    <div class="topsearch" id="topsearch">
+      <span class="topsearch-icon" aria-hidden="true">🔍</span>
+      <input type="search" id="search-input" placeholder="Search all tables…" autocomplete="off" spellcheck="false" aria-label="Full-text search" />
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
     <div class="db-switcher" id="db-switcher-host">
       <button class="db-button" id="db-button" title="Switch database">
         <span class="db-status" id="db-status" title="Local"></span>
