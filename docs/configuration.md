@@ -390,3 +390,27 @@ entities:
 ```
 
 Run `lattice generate` to produce TypeScript interfaces and a SQL migration file from this config. Then use `new Lattice({ config: './lattice.config.yml' })` at runtime to connect, define tables, and start syncing.
+
+## Full-text search (`fts`)
+
+Opt a table into an indexed full-text search by adding an `fts` block to its
+entity definition. Omit `fields` to auto-detect text columns (excluding
+identifiers and bookkeeping columns):
+
+```yaml
+entities:
+  articles:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      title: { type: text }
+      body: { type: text }
+    fts: { fields: [title, body] } # or just `fts: {}` to auto-detect
+    outputFile: articles.md
+```
+
+On `init`, Lattice builds and maintains an inverted index
+(`__lattice_fts_<table>`) — SQLite FTS5 / Postgres `tsvector` + GIN. Tables
+without `fts` are still searchable via the LIKE fallback. Indexes are created
+**only** for opt-in tables, so a library consumer with no `fts` config incurs
+no index and no write-path overhead. See `docs/api-reference.md` →
+_Full-text search_ for the `fullTextSearch` API.

@@ -268,15 +268,28 @@ Press Ctrl+C to stop.
 **Views:**
 
 - **Dashboard** (`#/`) — one card per first-class entity with live row counts.
-- **Table view** (`#/objects/<entity>`) — a SQL-like table with intrinsic
-  columns, belongsTo chips, and a column per junction this entity participates
-  in. `+ New` opens a modal; each row has a delete control and a click-through
-  to its detail page.
-- **Detail view** (`#/objects/<entity>/<id>`) — read mode by default;
-  `Edit` flips intrinsic + belongsTo cells into inputs (`Save` PATCHes, `Cancel`
-  reverts). `Delete` confirms and removes the row.
-- **Data Model** (`#/settings/data-model`) — an entity-level graph plus a
-  side panel for adding / removing junction-table links between rows.
+- **Workspace / folder grid** (`#/fs/<entity>`, default in v2.0+) — the entity's
+  rows as folder/file tiles instead of a table.
+- **Item view** (`#/fs/<entity>/<id>[/<relation>/<id>…]`, default in v2.0+) — the
+  row rendered as a document built from its columns (long-form fields as
+  markdown); **click any value to edit it in place** (saves via `PATCH`,
+  undoable). The row's relationships — reverse `belongsTo` children + junctions —
+  appear as **sub-folders** you can drill into arbitrarily deep, with a clickable
+  breadcrumb. Native `files` rows show the inline file/markdown preview.
+- **Table view** (`#/objects/<entity>`, Advanced mode) — a SQL-like table with
+  intrinsic columns, belongsTo chips, and a column per junction this entity
+  participates in. `+ New` adds a row inline; each row has a delete control and a
+  click-through to its detail page.
+- **Detail view** (`#/objects/<entity>/<id>`, Advanced mode) — read mode by
+  default; `Edit` flips intrinsic + belongsTo cells into inputs (`Save` PATCHes,
+  `Cancel` reverts). `Delete` confirms and removes the row.
+- **Settings** (v2.0+) — opened from the header **gear** (top-right): a slide-over
+  drawer with **Database / Lattice / User** tabs plus an **Advanced mode** toggle
+  (switches the object views between the file-system workspace and the classic
+  table/row editor). The legacy `#/settings/*` hashes still resolve and open the
+  drawer.
+- **Data Model** (inside Database Settings) — an entity-level graph plus a side
+  panel for adding / removing junction-table links between rows.
 
 **HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
 

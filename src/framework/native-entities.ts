@@ -41,8 +41,15 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
   files: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      // Legacy columns — older fixtures and seeds populate these. Either
-      // legacy or content-addressed columns may be used per row.
+      // Legacy columns (DEPRECATED v2.0 — retained for back-compat, NOT dropped).
+      //   path — superseded by the reference model below (`ref_kind`/`ref_uri`).
+      //          New local-file ingestion records a `local_ref` via
+      //          `referenceLocalFile()` rather than writing `path`; readers fall
+      //          back to `ref_uri`. Do not write `path` in new code.
+      //   kind — orphaned: superseded by `mime` (content type) and `ref_kind`
+      //          (the blob/local_ref/cloud_ref discriminator). Not read or
+      //          written by production code; kept only so existing rows retain
+      //          their value.
       path: 'TEXT',
       kind: 'TEXT',
       // Content-addressed storage. `sha256` is the canonical content
@@ -53,6 +60,17 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       size_bytes: 'INTEGER',
       sha256: 'TEXT',
       blob_path: 'TEXT',
+      // Reference mode (v2.0): a row can INDEX data that lives elsewhere
+      // instead of owning a copy. All nullable + additive (back-compat).
+      //   ref_kind     discriminator: 'blob' | 'local_ref' | 'cloud_ref'
+      //                (NULL ⇒ legacy/owned blob)
+      //   ref_uri      durable pointer: absolute local path or remote URL
+      //   ref_provider resolver selector: 'fs' | 'web' | 'gdrive'
+      //   source_json  provider-specific metadata (etag, availability, …)
+      ref_kind: 'TEXT',
+      ref_uri: 'TEXT',
+      ref_provider: 'TEXT',
+      source_json: 'TEXT',
       extraction_status: 'TEXT',
       extracted_text: 'TEXT',
       description: 'TEXT',
@@ -62,6 +80,22 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
     },
     render: () => '',
     outputFile: '.lattice-native/files.md',
+  },
+  notes: {
+    // A generic knowledge object: a free-form note with a title and body.
+    // Ordinary, user-editable rows; `source_file_id` optionally points back at
+    // an originating `files` row.
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      title: 'TEXT',
+      body: 'TEXT',
+      source_file_id: 'TEXT',
+      created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: '.lattice-native/notes.md',
   },
 };
 

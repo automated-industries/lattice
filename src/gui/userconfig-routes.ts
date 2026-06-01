@@ -12,6 +12,7 @@ import {
   type UserPreferences,
 } from '../framework/user-config.js';
 import { parseConfigFile } from '../config/parser.js';
+import { sendJson, readJson, tryHandler } from './http.js';
 
 /**
  * GUI-side endpoints that read and write `~/.lattice/*` plus the active
@@ -29,41 +30,6 @@ interface UserConfigContext {
   configPath: string;
   pathname: string;
   method: string;
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => {
-      raw += chunk;
-      if (raw.length > 1_000_000) req.destroy(new Error('Request body too large'));
-    });
-    req.on('end', () => {
-      try {
-        resolve(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
-      } catch (e) {
-        reject(new Error(`Invalid JSON body: ${(e as Error).message}`));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-async function tryHandler(res: ServerResponse, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-  } catch (e) {
-    sendJson(res, { error: (e as Error).message }, 500);
-  }
 }
 
 async function upsertIdentityRow(db: Lattice, identity: UserIdentity): Promise<void> {
@@ -156,9 +122,14 @@ export async function dispatchUserConfigRoute(
   if (pathname === '/api/userconfig/preferences' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
+      // Partial update: keep current values for any key the body omits.
+      const current = readPreferences();
       const next: UserPreferences = {
         show_system_tables:
-          typeof body.show_system_tables === 'boolean' ? body.show_system_tables : false,
+          typeof body.show_system_tables === 'boolean'
+            ? body.show_system_tables
+            : current.show_system_tables,
+        analytics: typeof body.analytics === 'boolean' ? body.analytics : current.analytics,
       };
       writePreferences(next);
       sendJson(res, next);

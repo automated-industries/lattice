@@ -151,7 +151,17 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
       op: 'TEXT NOT NULL',
       payload_json: 'TEXT',
       owner_user_id: 'TEXT',
+      // Server-receipt time. `seq` is the authoritative monotonic ordering key.
       created_at: 'TEXT NOT NULL',
+      // True edit time as recorded by the originating client. Distinct from
+      // created_at so an offline replay preserves WHEN the edit was made
+      // without ever letting client clock skew reorder the canonical `seq`.
+      // Nullable + additive (back-compat with pre-1.16 change-log rows).
+      client_ts: 'TEXT',
+      // Client-generated idempotency key for offline replay: a queued edit
+      // carries a stable edit_id, so re-sending it after a reconnect is a
+      // no-op rather than a duplicate write. Nullable + additive.
+      edit_id: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-teams/change-log.md',
@@ -269,7 +279,8 @@ BEGIN
     'pk', NEW.pk,
     'op', NEW.op,
     'owner_user_id', NEW.owner_user_id,
-    'created_at', NEW.created_at
+    'created_at', NEW.created_at,
+    'client_ts', NEW.client_ts
   )::text);
   RETURN NEW;
 END;
@@ -293,7 +304,9 @@ EXECUTE FUNCTION lattice_notify_change_log();
 export async function installCloudInternalTriggers(db: Lattice): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
   const migration: Migration = {
-    version: 'internal:cloud-notify-change-log:v1',
+    // v2 adds client_ts to the NOTIFY payload (1.16 realtime emit gap fix).
+    // Bumping the version key re-runs CREATE OR REPLACE on existing clouds.
+    version: 'internal:cloud-notify-change-log:v2',
     sql: CLOUD_NOTIFY_CHANGE_LOG_SQL,
   };
   await db.migrate([migration]);

@@ -187,18 +187,18 @@ describe('framework native entities', () => {
     it('records "created" bindings on a fresh DB and is idempotent', async () => {
       // beforeEach already registered + init'd native entities on `db`.
       const first = await adoptNativeEntities(db);
-      expect(first.map((r) => r.entity).sort()).toEqual(['files', 'secrets']);
+      expect(first.map((r) => r.entity).sort()).toEqual(['files', 'notes', 'secrets']);
       expect(first.every((r) => r.origin === 'created')).toBe(true);
 
       // Registry table is internal and populated.
       expect(db.getRegisteredTableNames()).toContain(NATIVE_REGISTRY_TABLE);
       const bindings = await listNativeBindings(db);
-      expect(bindings.map((b) => b.entity).sort()).toEqual(['files', 'secrets']);
+      expect(bindings.map((b) => b.entity).sort()).toEqual(['files', 'notes', 'secrets']);
 
       // Second call is a no-op upsert — no duplicate bindings.
       await adoptNativeEntities(db);
       const again = await listNativeBindings(db);
-      expect(again).toHaveLength(2);
+      expect(again).toHaveLength(NATIVE_ENTITY_NAMES.size);
     });
 
     it('adopts a pre-existing legacy `files` table, merging native columns without data loss', async () => {

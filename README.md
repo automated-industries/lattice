@@ -19,9 +19,12 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 3. **Ingests** agent-written output back into the DB via the writeback pipeline
 4. **Manages** state with full CRUD, natural-key operations, seeding, and soft-delete
 5. **Optimizes** context with token budgets, relevance filtering, enrichment pipelines, and reward-scored memory
-6. **Searches** semantically via bring-your-own embeddings and cosine similarity
+6. **Searches** full-text (FTS5 / `tsvector`, with a LIKE fallback) and semantically (bring-your-own embeddings + cosine similarity)
+7. **Organizes** everything into `.lattice` workspaces with a local browser GUI, a workspace dashboard, changelog/version history, and a SQL↔markdown context bridge that auto-renders on every write
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
+
+**New in 1.16:** the `.lattice` workspace model + auto-render, full-text search, sources/references, a workspace dashboard, a **multiplayer cloud-editing** experience (live share/de-share, "last edited by", change-flash + counts, and an offline edit queue that replays on reconnect), and a much richer **Data Model editor** in the GUI — a force-directed schema graph, bidirectional many-to-many links, and a soft-delete model where every schema change (create/rename/delete a table, column, or link) is tracked in version history and **reversible** (deletes never destroy data; revert restores it), with session-scoped undo/redo. All with no AI dependency. See [docs/workspaces.md](docs/workspaces.md) and [docs/collaboration.md](docs/collaboration.md). The AI assistant, chat, and ingest summarization are exclusive to the 2.0 line (2.0 = the 1.16 feature set plus that AI layer).
 
 ---
 
@@ -2075,6 +2078,52 @@ npx lattice gui
 npx lattice gui --config ./lattice.config.yml --output ./context --port 4317
 ```
 
+### File-system workspace (v2.0+)
+
+By default the GUI is a **file-system-style workspace**. The home dashboard shows
+one card per object; clicking in opens that object's rows as a grid of **folder
+tiles** rather than a spreadsheet. Click a tile to open an **item view** that
+renders the row as a document built from its columns — long-form fields render as
+formatted markdown — alongside that row's relationships as **sub-folders** you can
+keep opening (e.g. _Authors → a person → Books → a book → Reviews_). A breadcrumb
+trail tracks the drill path. **Click any value to edit it in place** — the change
+saves immediately via `PATCH` and is undoable. Native `files` rows show the inline
+file/markdown preview; their binary metadata stays read-only.
+
+Relationships come from the schema: a `belongsTo` (a field with `ref:`) renders as
+a parent link, while the reverse side (other entities that point here) plus
+many-to-many junctions become the drill-in sub-folders. Declare `ref:` on your
+foreign-key fields to get the nested file tree.
+
+The header carries the logo, undo/redo, the workspace (database) switcher, and a
+**settings gear** (top-right). The gear opens a slide-over drawer with **Database**,
+**Lattice**, and **User** settings plus an **Advanced mode** toggle. Turn Advanced
+mode on to switch the object/row views back to the classic editable **table + row**
+interface (below); turn it off for the file-system workspace. The left sidebar is
+slim and collapsible. The assistant rail is unchanged in either mode.
+
+### Assistant sidebar (v2.0+)
+
+The GUI has a fixed right sidebar with a live **activity feed** — every change
+(yours, the assistant's, or an ingest) streams in as it happens.
+
+Add a Claude API token in **User Settings → Assistant** (or set
+`ANTHROPIC_API_KEY`) to enable the **AI assistant**: ask questions about your
+data or instruct edits in natural language. The assistant calls the same
+operations the UI does, so its changes are audited, shown in the feed, and
+undoable. A Claude subscription can be connected instead via OAuth when the
+`ANTHROPIC_OAUTH_*` environment variables are configured.
+
+Optional extras, each enabled by its own key/binary:
+
+- **Voice** — set an OpenAI (Whisper) or ElevenLabs key to dictate into the composer.
+- **File ingest** — reference a local file or paste text; it becomes a row in the
+  native `files` entity with extracted text + (with a Claude key) an
+  LLM-written description and links to related records. PDFs/office docs use the
+  optional [`markitdown`](https://github.com/microsoft/markitdown) CLI when installed.
+
+Chat threads, files, and secrets are all stored as native Lattice entities.
+
 **Options**
 
 | Flag                  | Default                | Description                                              |
@@ -2106,8 +2155,11 @@ The convergence means you don't need to duplicate entity-context definitions in 
 **Views**
 
 - **Dashboard** (`#/`) — one card per first-class entity with live row counts.
-- **Table view** (`#/objects/<entity>`) — intrinsic columns, `belongsTo` chips, and a column per junction this entity participates in.
-- **Detail view** (`#/objects/<entity>/<id>`) — read mode by default; `Edit` flips cells into inputs (`Save` PATCHes, `Cancel` reverts).
+- **Workspace / folder grid** (`#/fs/<entity>`, default mode, v2.0+) — the entity's rows as folder/file tiles.
+- **Item view** (`#/fs/<entity>/<id>[/<relation>/<id>…]`, default mode, v2.0+) — the row as a click-to-edit document plus its relationships as sub-folders; drill arbitrarily deep, with a clickable breadcrumb.
+- **Table view** (`#/objects/<entity>`, Advanced mode) — intrinsic columns, `belongsTo` chips, and a column per junction this entity participates in.
+- **Detail view** (`#/objects/<entity>/<id>`, Advanced mode) — read mode by default; `Edit` flips cells into inputs (`Save` PATCHes, `Cancel` reverts).
+- **Settings** (v2.0+) — opened from the header gear (Database / Lattice / User tabs + the Advanced-mode toggle); the legacy `#/settings/*` hashes still resolve and open the drawer.
 - **Data Model** (inside **Database Settings**, v1.14+) — entity-level graph including the native `files`/`secrets` objects, with a per-entity editor. On a team cloud each table you own carries a **Share with team / Unshare** toggle. (Pre-1.14 this was a separate `#/settings/data-model` nav item; that hash still resolves for back-compat.)
 
 **Internal tables added on first open**
@@ -2661,6 +2713,8 @@ DO_NOT_TRACK=1 npm install latticesql
 # Or, disable all postinstall scripts entirely:
 npm install latticesql --ignore-scripts
 ```
+
+**In-app opt-out (consent preference)** — in the GUI, open **Settings → User → Preferences** and uncheck **"Send anonymous analytics"** (or set `"analytics": false` in `~/.lattice/preferences.json`). This is the single consent for all anonymous analytics Lattice shares via Scarf — the install ping and any Scarf pixel — so in-app updates (`lattice update` / `autoUpdate()`) suppress the Scarf ping and any future runtime telemetry is gated. Analytics is **on by default** (opt-out). The original `npm install` ping is governed at install time by the env-var options above — the preference governs reinstalls, not the install you already ran.
 
 Opting out has no effect on functionality — the package works identically. The Scarf postinstall is a fire-and-forget HTTPS ping with a short timeout; even when enabled it cannot fail your install.
 

@@ -25,7 +25,6 @@ import type {
   UnresolvedLink,
   ReportConfig,
   ReportResult,
-  ReportSectionResult,
   EntityContextDefinition,
   ReconcileOptions,
   ReconcileResult,
@@ -35,7 +34,8 @@ import type {
   ChangelogOptions,
   ChangeEntry,
 } from './types.js';
-import { readManifest } from './lifecycle/manifest.js';
+import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
+import { existsSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { StorageAdapter } from './db/adapter.js';
 import {
@@ -49,6 +49,9 @@ import { SQLiteAdapter } from './db/sqlite.js';
 import { PostgresAdapter } from './db/postgres.js';
 import { SchemaManager } from './schema/manager.js';
 import type { CompiledTableDef } from './schema/manager.js';
+import { assertSafeIdentifier } from './schema/identifier.js';
+import { ChangelogService } from './changelog/service.js';
+import { ReportBuilder } from './report/builder.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine } from './render/engine.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
@@ -57,6 +60,14 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
 import { parseConfigFile } from './config/parser.js';
+import { resolveLatticeRoot } from './framework/lattice-root.js';
+import {
+  getActiveWorkspace,
+  getWorkspace,
+  resolveWorkspacePaths,
+  type WorkspaceRecord,
+} from './framework/workspace.js';
+import { deriveCanonicalContexts } from './framework/canonical-context.js';
 import {
   deriveKey,
   encrypt as encryptValue,
@@ -69,6 +80,7 @@ import {
   removeEmbedding,
   searchByEmbedding,
 } from './search/embeddings.js';
+import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
 
 /**
  * Initialise Lattice from a YAML config file instead of an explicit path.
@@ -118,8 +130,17 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
   return new SQLiteAdapter(sqlitePath, adapterOpts);
 }
 
+/**
+ * Soft-delete filter fragment. A row is "live" when `deleted_at` is NULL or the
+ * empty string (legacy rows used `''`). Interpolated into the WHERE clause of
+ * natural-key lookups so a soft-deleted row never satisfies a uniqueness probe.
+ */
+const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
+
 export class Lattice {
   private readonly _adapter: StorageAdapter;
+  private _changelogService?: ChangelogService;
+  private _reportBuilder?: ReportBuilder;
   private readonly _schema: SchemaManager;
   private readonly _sanitizer: Sanitizer;
   private readonly _render: RenderEngine;
@@ -128,6 +149,19 @@ export class Lattice {
   private readonly _loop: SyncLoop;
   private readonly _writeback: WritebackPipeline;
   private _initialized = false;
+
+  // --- Auto-render: keep the SQL→markdown bridge current automatically. ---
+  /**
+   * When set, insert/update/delete debounce-trigger a re-render into this dir.
+   * Configured by {@link enableAutoRender} / {@link Lattice.openWorkspace}.
+   * Undefined = inert: a bare `new Lattice(dbPath)` pays zero overhead and its
+   * behavior is unchanged.
+   */
+  private _autoRenderDir: string | undefined;
+  private _autoRenderTimer: ReturnType<typeof setTimeout> | undefined;
+  private _autoRenderPending = false;
+  private _autoRenderInFlight = false;
+  private _autoRenderDebounceMs = 250;
 
   /** Cache of actual table columns (from PRAGMA), populated after init(). */
   private readonly _columnCache = new Map<string, Set<string>>();
@@ -214,6 +248,57 @@ export class Lattice {
   // -------------------------------------------------------------------------
   // Setup
   // -------------------------------------------------------------------------
+
+  /**
+   * Open a workspace under a `.lattice` root. Resolves the root (the
+   * `LATTICE_ROOT` env override or a `.lattice/.config` found by walking up
+   * from the cwd), looks up the active or named workspace, applies the
+   * canonical DB-aligned `Context/` layout for any table lacking an explicit
+   * entity context, runs `init()`, and — by default — enables auto-render and
+   * renders once so the `Context/` tree exists immediately (no "run lattice
+   * render" step). The returned Lattice is initialized and ready to use.
+   */
+  static async openWorkspace(
+    opts: {
+      root?: string;
+      workspaceId?: string;
+      options?: LatticeOptions;
+      autoRender?: boolean;
+    } = {},
+  ): Promise<Lattice> {
+    const root = opts.root ?? resolveLatticeRoot();
+    const ws: WorkspaceRecord | null = opts.workspaceId
+      ? getWorkspace(root, opts.workspaceId)
+      : getActiveWorkspace(root);
+    if (!ws) {
+      throw new Error(
+        `Lattice: no workspace found under ${root} — run \`lattice init\` to create one`,
+      );
+    }
+    const paths = resolveWorkspacePaths(root, ws);
+    const db = new Lattice({ config: paths.configPath }, opts.options ?? {});
+    // Apply the canonical, DB-aligned Context/ layout for tables without one.
+    const parsed = parseConfigFile(paths.configPath);
+    const existing = db.entityContexts();
+    for (const { table, definition } of deriveCanonicalContexts(parsed.tables)) {
+      if (!existing.has(table)) db.defineEntityContext(table, definition);
+    }
+    await db.init();
+    if (opts.autoRender !== false) {
+      db.enableAutoRender(paths.contextDir);
+      await db.render(paths.contextDir);
+      // Guarantee a manifest exists even for an empty workspace, so there is
+      // never a "no rendered context available" state.
+      if (!existsSync(manifestPath(paths.contextDir))) {
+        writeManifest(paths.contextDir, {
+          version: 2,
+          generated_at: new Date().toISOString(),
+          entityContexts: {},
+        });
+      }
+    }
+    return db;
+  }
 
   define(table: string, def: TableDefinition): this {
     this._assertNotInit('define');
@@ -372,6 +457,17 @@ export class Lattice {
       await ensureEmbeddingsTable(this._adapter);
     }
 
+    // Build full-text-search indexes (FTS5 / tsvector) for opt-in tables only.
+    // Tables without `fts` are untouched — no index, no triggers, no overhead.
+    for (const [name, def] of this._schema.getTables()) {
+      if (!def.fts) continue;
+      const actualCols = await introspectColumnsAsyncOrSync(this._adapter, name);
+      const cols = (def.fts.fields ?? autoFtsColumns(actualCols)).filter((c) =>
+        actualCols.includes(c),
+      );
+      await ensureFtsIndex(this._adapter, name, cols);
+    }
+
     // Create changelog table if any table uses changelog tracking
     if (this._changelogTables.size > 0) {
       await this._ensureChangelogTable();
@@ -400,6 +496,13 @@ export class Lattice {
   }
 
   close(): void {
+    this._autoRenderDir = undefined;
+    if (this._autoRenderTimer) {
+      clearTimeout(this._autoRenderTimer);
+      this._autoRenderTimer = undefined;
+    }
+    this._autoRenderPending = false;
+    this._autoRenderInFlight = false;
     this._adapter.close();
     this._columnCache.clear();
     this._encryptedTableColumns.clear();
@@ -456,6 +559,18 @@ export class Lattice {
   }
 
   /**
+   * Return the canonical Lattice field types (`text`/`integer`/`real`/
+   * `boolean`/`uuid`/`datetime`/`date`) for a table's config-declared columns,
+   * or `null` if the table is unknown or was defined in code without declared
+   * field types. The GUI prefers this over `getRegisteredColumns` for display
+   * because the SQL spec returned by the latter is lossy and noisy.
+   */
+  getRegisteredFieldTypes(table: string): Record<string, string> | null {
+    const def = this._schema.getTables().get(table);
+    return def?.fieldTypes ? { ...def.fieldTypes } : null;
+  }
+
+  /**
    * Return every table currently registered via `define()` or
    * `defineLate()`. Includes tables added at runtime by the Lattice
    * Teams schema-propagation flow, so GUI consumers can refresh their
@@ -485,6 +600,10 @@ export class Lattice {
     if (!this._initialized) {
       throw new Error('Lattice: not initialized — call init() first');
     }
+    // Both names reach an ALTER TABLE string; reject anything that could break
+    // out of the identifier quoting (see src/schema/identifier.ts).
+    assertSafeIdentifier(table, 'table');
+    assertSafeIdentifier(column, 'column');
     const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
     if (!existing.includes(column)) {
       await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
@@ -623,9 +742,23 @@ export class Lattice {
   // CRUD
   // -------------------------------------------------------------------------
 
+  /**
+   * Defense-in-depth: validate a table (and any dynamic column) identifier
+   * before it is interpolated into a SQL string. The library's threat model is
+   * trusted callers, but this guard means a stray/hostile table or column name
+   * can never break out of the `"…"` quoting on any CRUD path. Accepts every
+   * legitimate identifier (including unregistered/dynamic tables); rejects only
+   * names containing quotes, semicolons, whitespace, etc.
+   */
+  private _assertIdent(table: string, ...cols: string[]): void {
+    assertSafeIdentifier(table, 'table');
+    for (const c of cols) assertSafeIdentifier(c, 'column');
+  }
+
   async insert(table: string, row: Row): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
@@ -682,6 +815,7 @@ export class Lattice {
   async upsert(table: string, row: Row): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
@@ -723,12 +857,14 @@ export class Lattice {
     const rawPk = rowWithPk[pkCol];
     const pkValue = rawPk != null ? String(rawPk as string | number) : '';
     this._sanitizer.emitAudit(table, 'update', pkValue);
+    this._scheduleAutoRender();
     return pkValue;
   }
 
   async upsertBy(table: string, col: string, val: unknown, row: Row): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table, col);
 
     const existing = await getAsyncOrSync(
       this._adapter,
@@ -751,6 +887,7 @@ export class Lattice {
   async update(table: string, id: PkLookup, row: Partial<Row>): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
     const encrypted = this._encryptRow(table, sanitized);
@@ -811,6 +948,7 @@ export class Lattice {
   async delete(table: string, id: PkLookup): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const { clause, params } = this._pkWhere(table, id);
 
@@ -866,6 +1004,7 @@ export class Lattice {
   ): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     const cols = this._ensureColumnCache(table);
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
@@ -879,7 +1018,7 @@ export class Lattice {
     // Check if record exists
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
       [naturalKeyVal],
     );
 
@@ -940,10 +1079,11 @@ export class Lattice {
   ): Promise<boolean> {
     const notInit = this._notInitError<boolean>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
       [naturalKeyVal],
     );
     if (!existing) return false;
@@ -985,6 +1125,7 @@ export class Lattice {
   ): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     if (currentKeys.length === 0) return 0;
 
@@ -994,7 +1135,7 @@ export class Lattice {
       this._adapter,
       `SELECT COUNT(*) as cnt FROM "${table}"
        WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-       AND (deleted_at IS NULL OR deleted_at = '')`,
+       AND ${NOT_DELETED}`,
       [sourceFile, ...currentKeys],
     );
     // Postgres returns COUNT(*) as a string; SQLite returns a number. Coerce
@@ -1006,7 +1147,7 @@ export class Lattice {
         this._adapter,
         `UPDATE "${table}" SET deleted_at = datetime('now'), updated_at = datetime('now')
          WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-         AND (deleted_at IS NULL OR deleted_at = '')`,
+         AND ${NOT_DELETED}`,
         [sourceFile, ...currentKeys],
       );
     }
@@ -1057,11 +1198,12 @@ export class Lattice {
   ): Promise<Row | null> {
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
+    this._assertIdent(table, naturalKeyCol);
 
     return (
       (await getAsyncOrSync(
         this._adapter,
-        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
         [naturalKeyVal],
       )) ?? null
     );
@@ -1092,6 +1234,8 @@ export class Lattice {
       `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
       Object.values(filtered),
     );
+    // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh.
+    this._scheduleAutoRender();
   }
 
   /**
@@ -1109,6 +1253,7 @@ export class Lattice {
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
+    this._scheduleAutoRender();
   }
 
   // -------------------------------------------------------------------------
@@ -1227,137 +1372,16 @@ export class Lattice {
     const notInit = this._notInitError<ReportResult>();
     if (notInit) return notInit;
 
-    const since = this._resolveSince(config.since);
-    const sections: ReportSectionResult[] = [];
-    let allEmpty = true;
-
-    for (const section of config.sections) {
-      const cols = this._ensureColumnCache(section.query.table);
-      const hasTimestamp = cols.has('timestamp');
-      const conditions: string[] = [];
-      const params: unknown[] = [];
-
-      // Time window filter
-      if (hasTimestamp) {
-        conditions.push('timestamp >= ?');
-        params.push(since);
-      }
-
-      // Soft-delete exclusion
-      if (cols.has('deleted_at')) {
-        conditions.push('deleted_at IS NULL');
-      }
-
-      // User filters
-      if (section.query.filters) {
-        for (const f of section.query.filters) {
-          switch (f.op) {
-            case 'eq':
-              conditions.push(`"${f.col}" = ?`);
-              params.push(f.val);
-              break;
-            case 'ne':
-              conditions.push(`"${f.col}" != ?`);
-              params.push(f.val);
-              break;
-            case 'gt':
-              conditions.push(`"${f.col}" > ?`);
-              params.push(f.val);
-              break;
-            case 'gte':
-              conditions.push(`"${f.col}" >= ?`);
-              params.push(f.val);
-              break;
-            case 'lt':
-              conditions.push(`"${f.col}" < ?`);
-              params.push(f.val);
-              break;
-            case 'lte':
-              conditions.push(`"${f.col}" <= ?`);
-              params.push(f.val);
-              break;
-            case 'like':
-              conditions.push(`"${f.col}" LIKE ?`);
-              params.push(f.val);
-              break;
-            case 'isNull':
-              conditions.push(`"${f.col}" IS NULL`);
-              break;
-            case 'isNotNull':
-              conditions.push(`"${f.col}" IS NOT NULL`);
-              break;
-            case 'in': {
-              const arr = f.val as unknown[];
-              if (arr.length > 0) {
-                conditions.push(`"${f.col}" IN (${arr.map(() => '?').join(', ')})`);
-                params.push(...arr);
-              }
-              break;
-            }
-          }
-        }
-      }
-
-      const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
-      const orderBy = section.query.orderBy
-        ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}`
-        : '';
-      const limit = section.query.limit ? ` LIMIT ${String(section.query.limit)}` : '';
-
-      const rows = await allAsyncOrSync(
-        this._adapter,
-        `SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`,
-        params,
-      );
-
-      if (rows.length > 0) allEmpty = false;
-
-      // Format
-      let formatted = '';
-      if (section.format === 'custom' && section.customFormat) {
-        formatted = section.customFormat(rows);
-      } else if (section.format === 'counts' && section.query.groupBy) {
-        const groups = new Map<string, number>();
-        for (const row of rows) {
-          const rawGroupVal = row[section.query.groupBy];
-          const type =
-            typeof rawGroupVal === 'string'
-              ? rawGroupVal
-              : typeof rawGroupVal === 'number'
-                ? String(rawGroupVal)
-                : 'other';
-          const prefix = type.includes('.') ? (type.split('.')[0] ?? type) : type;
-          groups.set(prefix, (groups.get(prefix) ?? 0) + 1);
-        }
-        formatted = [...groups.entries()].map(([k, v]) => `${k}: ${String(v)}`).join('\n');
-      } else if (section.format === 'count_and_list') {
-        const label = (r: Row): string => {
-          const v = r.summary ?? r.name ?? r.title;
-          return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r);
-        };
-        formatted = `Count: ${String(rows.length)}\n` + rows.map((r) => `- ${label(r)}`).join('\n');
-      } else {
-        const label = (r: Row): string => {
-          const v = r.summary ?? r.name ?? r.title;
-          return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : JSON.stringify(r);
-        };
-        formatted = rows.map((r) => `- ${label(r)}`).join('\n');
-      }
-
-      sections.push({ name: section.name, rows, count: rows.length, formatted });
-    }
-
-    return { sections, isEmpty: allEmpty, since };
+    return this._report.buildReport(config);
   }
 
-  /** Parse duration shorthand ('8h', '24h', '7d') into ISO timestamp. */
-  private _resolveSince(since: string): string {
-    const match = /^(\d+)([hmd])$/.exec(since);
-    if (!match) return since; // assume ISO timestamp
-    const [, numStr, unit] = match;
-    const num = parseInt(numStr ?? '0', 10);
-    const ms = unit === 'h' ? num * 3600000 : unit === 'd' ? num * 86400000 : num * 60000;
-    return new Date(Date.now() - ms).toISOString();
+  /** Lazily-constructed report-generation collaborator (see src/report/builder.ts). */
+  private get _report(): ReportBuilder {
+    this._reportBuilder ??= new ReportBuilder({
+      adapter: this._adapter,
+      ensureColumnCache: (table) => this._ensureColumnCache(table),
+    });
+    return this._reportBuilder;
   }
 
   // -------------------------------------------------------------------------
@@ -1433,6 +1457,7 @@ export class Lattice {
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const colErr = this._invalidColumnError<Row[]>(table, [
       ...Object.keys(opts.where ?? {}),
@@ -1482,6 +1507,7 @@ export class Lattice {
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
+    this._assertIdent(table);
 
     const colErr = this._invalidColumnError<number>(table, [
       ...Object.keys(opts.where ?? {}),
@@ -1860,6 +1886,73 @@ export class Lattice {
         for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
       }
     }
+    // Every mutation schedules an auto-render when one is enabled (workspaces
+    // enable it by default). No-op + zero overhead when disabled.
+    this._scheduleAutoRender();
+  }
+
+  /**
+   * Turn on automatic rendering into `outputDir`. After this, every insert /
+   * update / delete debounce-triggers a re-render (coalesced, so a bulk seed
+   * produces a single render, and unchanged files are skipped by the manifest
+   * hash-diff). Workspaces enable this by default; a bare `new Lattice(dbPath)`
+   * is unaffected unless it opts in.
+   */
+  enableAutoRender(outputDir: string, opts: { debounceMs?: number } = {}): this {
+    this._autoRenderDir = outputDir;
+    if (opts.debounceMs != null) this._autoRenderDebounceMs = opts.debounceMs;
+    return this;
+  }
+
+  /** Turn off automatic rendering and cancel any pending render. */
+  disableAutoRender(): this {
+    this._autoRenderDir = undefined;
+    if (this._autoRenderTimer) {
+      clearTimeout(this._autoRenderTimer);
+      this._autoRenderTimer = undefined;
+    }
+    this._autoRenderPending = false;
+    return this;
+  }
+
+  private _scheduleAutoRender(): void {
+    if (!this._autoRenderDir) return;
+    this._autoRenderPending = true;
+    if (this._autoRenderTimer) return;
+    this._autoRenderTimer = setTimeout(() => {
+      this._autoRenderTimer = undefined;
+      void this._runAutoRender();
+    }, this._autoRenderDebounceMs);
+    // Don't keep the event loop alive solely for a pending auto-render.
+    this._autoRenderTimer.unref();
+  }
+
+  private async _runAutoRender(): Promise<void> {
+    const dir = this._autoRenderDir;
+    if (!dir || !this._initialized) return;
+    if (this._autoRenderInFlight) {
+      // A render is mid-flight; mark pending and re-arm when it finishes.
+      this._autoRenderPending = true;
+      return;
+    }
+    if (!this._autoRenderPending) return;
+    this._autoRenderPending = false;
+    this._autoRenderInFlight = true;
+    try {
+      const result = await this._render.render(dir);
+      for (const h of this._renderHandlers) h(result);
+    } catch (err) {
+      for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      this._autoRenderInFlight = false;
+      // Mutations may have arrived while the render was in flight (and hit the
+      // in-flight guard above without arming a timer); re-arm if so.
+      this._rearmAutoRenderIfPending();
+    }
+  }
+
+  private _rearmAutoRenderIfPending(): void {
+    if (this._autoRenderPending) this._scheduleAutoRender();
   }
 
   /**
@@ -1992,20 +2085,15 @@ export class Lattice {
   }
 
   /** Parse a raw changelog DB row into a ChangeEntry. */
-  private _parseChangeEntry(row: Row): ChangeEntry {
-    return {
-      id: row.id as string,
-      table: row.table_name as string,
-      rowId: row.row_id as string,
-      operation: row.operation as ChangeEntry['operation'],
-      changes: row.changes ? (JSON.parse(row.changes as string) as Record<string, unknown>) : null,
-      previous: row.previous
-        ? (JSON.parse(row.previous as string) as Record<string, unknown>)
-        : null,
-      source: row.source != null ? (row.source as string) : null,
-      reason: row.reason != null ? (row.reason as string) : null,
-      createdAt: row.created_at as string,
-    };
+  /** Lazily-constructed changelog read/replay collaborator (see src/changelog/service.ts). */
+  private get _changelog(): ChangelogService {
+    this._changelogService ??= new ChangelogService({
+      adapter: this._adapter,
+      pkWhere: (table, id) => this._pkWhere(table, id),
+      appendChangelog: (table, rowId, operation, changes, previous, source, reason) =>
+        this._appendChangelog(table, rowId, operation, changes, previous, source, reason),
+    });
+    return this._changelogService;
   }
 
   // -------------------------------------------------------------------------
@@ -2019,16 +2107,7 @@ export class Lattice {
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
-    const limit = opts?.limit ?? 100;
-    const rows = await allAsyncOrSync(
-      this._adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog
-       WHERE table_name = ? AND row_id = ?
-       ORDER BY rowid DESC
-       LIMIT ?`,
-      [table, id, limit],
-    );
-    return rows.map((r) => this._parseChangeEntry(r));
+    return this._changelog.history(table, id, opts);
   }
 
   /**
@@ -2042,29 +2121,7 @@ export class Lattice {
     const notInit = this._notInitError<ChangeEntry[]>();
     if (notInit) return notInit;
 
-    const clauses: string[] = [];
-    const params: unknown[] = [];
-
-    if (opts?.table) {
-      clauses.push('table_name = ?');
-      params.push(opts.table);
-    }
-    if (opts?.since) {
-      clauses.push('created_at >= ?');
-      params.push(opts.since);
-    }
-
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-    const limit = opts?.limit ?? 100;
-
-    const rows = await allAsyncOrSync(
-      this._adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog ${where}
-       ORDER BY rowid DESC
-       LIMIT ?`,
-      [...params, limit],
-    );
-    return rows.map((r) => this._parseChangeEntry(r));
+    return this._changelog.recentChanges(opts);
   }
 
   /**
@@ -2075,81 +2132,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
 
-    const entry = await getAsyncOrSync(
-      this._adapter,
-      `SELECT * FROM __lattice_changelog WHERE id = ?`,
-      [changeId],
-    );
-    if (!entry) {
-      throw new Error(`Lattice: changelog entry "${changeId}" not found`);
-    }
-
-    const parsed = this._parseChangeEntry(entry);
-    const { clause, params: pkParams } = this._pkWhere(parsed.table, parsed.rowId);
-
-    switch (parsed.operation) {
-      case 'insert':
-        // Undo insert → delete the row
-        await runAsyncOrSync(
-          this._adapter,
-          `DELETE FROM "${parsed.table}" WHERE ${clause}`,
-          pkParams,
-        );
-        break;
-
-      case 'update':
-        // Undo update → restore previous values
-        if (!parsed.previous) {
-          throw new Error(
-            `Lattice: changelog entry "${changeId}" has no previous values to restore`,
-          );
-        }
-        {
-          const setCols = Object.keys(parsed.previous)
-            .map((c) => `"${c}" = ?`)
-            .join(', ');
-          await runAsyncOrSync(
-            this._adapter,
-            `UPDATE "${parsed.table}" SET ${setCols} WHERE ${clause}`,
-            [...Object.values(parsed.previous), ...pkParams],
-          );
-        }
-        break;
-
-      case 'delete':
-        // Undo delete → re-insert the row
-        if (!parsed.previous) {
-          throw new Error(`Lattice: changelog entry "${changeId}" has no previous row to restore`);
-        }
-        {
-          const cols = Object.keys(parsed.previous)
-            .map((c) => `"${c}"`)
-            .join(', ');
-          const placeholders = Object.keys(parsed.previous)
-            .map(() => '?')
-            .join(', ');
-          await runAsyncOrSync(
-            this._adapter,
-            `INSERT INTO "${parsed.table}" (${cols}) VALUES (${placeholders})`,
-            Object.values(parsed.previous),
-          );
-        }
-        break;
-
-      default:
-        throw new Error(`Lattice: cannot rollback operation "${parsed.operation}"`);
-    }
-
-    // Record the rollback as a new changelog entry
-    await this._appendChangelog(
-      parsed.table,
-      parsed.rowId,
-      'rollback',
-      parsed.previous, // The values we restored to become the "changes"
-      parsed.changes, // The values we undid become the "previous"
-      'system',
-      `rollback of ${changeId}`,
-    );
+    return this._changelog.rollback(changeId);
   }
 
   /**
@@ -2164,21 +2147,7 @@ export class Lattice {
     const notInit = this._notInitError<Record<string, { old: unknown; new: unknown }>>();
     if (notInit) return notInit;
 
-    const fromSnap = this.snapshot(table, id, fromChangeId);
-    const toSnap = this.snapshot(table, id, toChangeId);
-
-    return Promise.all([fromSnap, toSnap]).then(([fromState, toState]) => {
-      const result: Record<string, { old: unknown; new: unknown }> = {};
-      const allKeys = new Set([...Object.keys(fromState), ...Object.keys(toState)]);
-      for (const key of allKeys) {
-        const oldVal = fromState[key];
-        const newVal = toState[key];
-        if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
-          result[key] = { old: oldVal ?? null, new: newVal ?? null };
-        }
-      }
-      return result;
-    });
+    return this._changelog.diff(table, id, fromChangeId, toChangeId);
   }
 
   /**
@@ -2189,46 +2158,7 @@ export class Lattice {
     const notInit = this._notInitError<Record<string, unknown>>();
     if (notInit) return notInit;
 
-    // Get the target entry's rowid for reliable ordering
-    const target = await getAsyncOrSync(
-      this._adapter,
-      `SELECT rowid FROM __lattice_changelog WHERE id = ?`,
-      [changeId],
-    );
-    if (!target) {
-      throw new Error(`Lattice: changelog entry "${changeId}" not found`);
-    }
-
-    // Get all entries for this row up to and including the target, in insertion order
-    const entries = await allAsyncOrSync(
-      this._adapter,
-      `SELECT * FROM __lattice_changelog
-       WHERE table_name = ? AND row_id = ? AND rowid <= ?
-       ORDER BY rowid ASC`,
-      [table, id, target.rowid],
-    );
-
-    // Replay to build state
-    let state: Record<string, unknown> = {};
-    for (const raw of entries) {
-      const entry = this._parseChangeEntry(raw);
-      switch (entry.operation) {
-        case 'insert':
-          state = { ...state, ...(entry.changes ?? {}) };
-          break;
-        case 'update':
-          state = { ...state, ...(entry.changes ?? {}) };
-          break;
-        case 'delete':
-          state = {};
-          break;
-        case 'rollback':
-          // Rollback restores the "changes" field (which holds what was restored)
-          state = { ...state, ...(entry.changes ?? {}) };
-          break;
-      }
-    }
-    return state;
+    return this._changelog.snapshot(table, id, changeId);
   }
 
   /**
