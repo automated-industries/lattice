@@ -380,6 +380,21 @@ export const css = `
     .card-icon { font-size: 22px; }
     .card-label { font-size: 15px; font-weight: 600; }
     .card-count { font-size: 28px; font-weight: 700; color: var(--text-muted); margin-top: auto; }
+    .card-fresh { font-size: 11px; color: var(--text-muted); }
+    .card-fresh.stale { color: var(--warn); }
+    .dash-stats { display: flex; gap: 16px; margin-bottom: 18px; max-width: 1100px; flex-wrap: wrap; }
+    .stat-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 20px; min-width: 110px; }
+    .stat-tile.warn { border-color: var(--warn); }
+    .stat-n { font-size: 24px; font-weight: 700; color: var(--text); }
+    .stat-tile.warn .stat-n { color: var(--warn); }
+    .stat-l { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .dash-recent { margin-top: 26px; max-width: 1100px; }
+    .dash-recent-head { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
+    .dash-recent ul { list-style: none; margin: 0; padding: 0; }
+    .dash-act { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+    .dash-act-ic { width: 18px; text-align: center; }
+    .dash-act-txt { flex: 1; color: var(--text); }
+    .dash-act-time { font-size: 12px; color: var(--text-muted); }
 
     /* ── Table view ───────────────────────────────────── */
     .view-header {
