@@ -20,6 +20,7 @@ function ctx(overrides: Partial<TeamContext> = {}): TeamContext {
     isMember: true,
     owners: new Map(),
     shared: new Set(),
+    sharedVersions: new Map(),
     ...overrides,
   };
 }
