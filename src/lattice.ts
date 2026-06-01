@@ -559,6 +559,18 @@ export class Lattice {
   }
 
   /**
+   * Return the canonical Lattice field types (`text`/`integer`/`real`/
+   * `boolean`/`uuid`/`datetime`/`date`) for a table's config-declared columns,
+   * or `null` if the table is unknown or was defined in code without declared
+   * field types. The GUI prefers this over `getRegisteredColumns` for display
+   * because the SQL spec returned by the latter is lossy and noisy.
+   */
+  getRegisteredFieldTypes(table: string): Record<string, string> | null {
+    const def = this._schema.getTables().get(table);
+    return def?.fieldTypes ? { ...def.fieldTypes } : null;
+  }
+
+  /**
    * Return every table currently registered via `define()` or
    * `defineLate()`. Includes tables added at runtime by the Lattice
    * Teams schema-propagation flow, so GUI consumers can refresh their
