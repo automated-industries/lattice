@@ -1,5 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { TableDefinition } from '../types.js';
+import { assertExternalIdentifier } from '../schema/identifier.js';
 
 /**
  * Dialect-neutral schema representation for objects shared across a
@@ -241,6 +242,75 @@ export class TeamsSchemaConflictError extends Error {
   }
 }
 
+const VALID_COLUMN_TYPES: ReadonlySet<string> = new Set([
+  'TEXT',
+  'INTEGER',
+  'REAL',
+  'BLOB',
+  'JSONB',
+]);
+
+// A column DEFAULT is interpolated verbatim into DDL (`... DEFAULT <x>`), so on
+// the external path it must match a conservative safe grammar: NULL, a number,
+// a single-quoted string literal with no embedded quote, a bare keyword/
+// function name (e.g. CURRENT_TIMESTAMP), or a parenthesised expression
+// (e.g. `(datetime('now'))`) made only of characters that cannot terminate
+// the statement or open a comment.
+//
+// The parenthesised form intentionally admits expression-shaped content (it has
+// to, to allow `(datetime('now'))`). That is safe in DEFAULT position: it cannot
+// stack a statement (no `;`/`--`) and a DEFAULT clause is a value expression, not
+// a row-returning context — so it is not an injection or exfiltration primitive.
+const SAFE_DEFAULT_RES: readonly RegExp[] = [
+  /^NULL$/i,
+  /^-?\d+(\.\d+)?$/,
+  /^'[^']*'$/,
+  /^[A-Za-z_][A-Za-z0-9_]*$/,
+  /^\([A-Za-z0-9_'(), .]*\)$/,
+];
+function isSafeDefault(value: string): boolean {
+  return SAFE_DEFAULT_RES.some((re) => re.test(value.trim()));
+}
+
+// A table constraint is interpolated verbatim into the CREATE TABLE body. Allow
+// only the character set used by UNIQUE / PRIMARY KEY / FOREIGN KEY constraints;
+// reject anything (`;`, `-`, `*`, `=`, …) that could stack a statement or open a
+// comment.
+const SAFE_CONSTRAINT_RE = /^[A-Za-z0-9_ ,()"'.]+$/;
+
+/**
+ * Validate a SchemaSpec that may have arrived from outside the trust boundary,
+ * before any of its names, types, defaults, or constraints are rendered into
+ * DDL. Throws on the first violation (the fail-loudly rule — fail loudly, never silently
+ * strip). Legitimate specs (valid identifiers, the five primitive types,
+ * simple string/number defaults) pass unchanged.
+ */
+export function validateExternalSchemaSpec(table: string, spec: SchemaSpec): void {
+  assertExternalIdentifier(table, 'table');
+  for (const [colName, colSpec] of Object.entries(spec.columns)) {
+    assertExternalIdentifier(colName, 'column');
+    if (!VALID_COLUMN_TYPES.has(colSpec.type)) {
+      throw new Error(`Invalid column type for "${colName}": ${JSON.stringify(colSpec.type)}`);
+    }
+    if (colSpec.default !== undefined && !isSafeDefault(colSpec.default)) {
+      throw new Error(`Unsafe column default for "${colName}": ${JSON.stringify(colSpec.default)}`);
+    }
+  }
+  // PK columns are also rendered into DDL (`PRIMARY KEY ("…")`); hold them to
+  // the same external standard as the column names they must reference.
+  const pkCols = Array.isArray(spec.primaryKey) ? spec.primaryKey : [spec.primaryKey];
+  for (const pk of pkCols) {
+    assertExternalIdentifier(pk, 'column');
+  }
+  if (spec.tableConstraints) {
+    for (const c of spec.tableConstraints) {
+      if (!SAFE_CONSTRAINT_RE.test(c)) {
+        throw new Error(`Unsafe table constraint: ${JSON.stringify(c)}`);
+      }
+    }
+  }
+}
+
 /**
  * Apply a SchemaSpec to a Lattice instance: register the table via
  * `defineLate` if missing, or `addColumn` any additive cloud-only
@@ -257,6 +327,11 @@ export async function applySchemaSpec(
   table: string,
   spec: SchemaSpec,
 ): Promise<boolean> {
+  // A SchemaSpec reaching this point may have arrived from outside the trust
+  // boundary (a Team object-share request, or a peer's cloud). Every name,
+  // type, default, and constraint below is interpolated verbatim into DDL, so
+  // validate the whole spec before any of it is rendered.
+  validateExternalSchemaSpec(table, spec);
   let cols: string[];
   try {
     cols = await db.introspectColumns(table);

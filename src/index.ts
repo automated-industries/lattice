@@ -19,6 +19,7 @@ export type {
   WritebackValidationResult,
   RewardScores,
   EmbeddingsConfig,
+  FtsConfig,
   SearchOptions,
   SearchResult,
   QueryOptions,
@@ -175,8 +176,80 @@ export {
   readToken,
   writeToken,
   deleteToken,
+  readPreferences,
+  writePreferences,
+  analyticsEnabled,
 } from './framework/user-config.js';
-export type { UserIdentity } from './framework/user-config.js';
+export type { UserIdentity, UserPreferences } from './framework/user-config.js';
+
+// v2.0 — the single `.lattice` root + first-class workspaces.
+export {
+  findLatticeRoot,
+  resolveLatticeRoot,
+  ensureLatticeRoot,
+  rootConfigDir,
+  workspacesDir,
+  registryPath,
+  workspaceDir,
+  workspaceDataDir,
+  workspaceContextDir,
+  workspaceBlobsDir,
+  workspaceConfigPath,
+  ROOT_DIRNAME,
+  CONFIG_SUBDIR,
+  WORKSPACES_SUBDIR,
+} from './framework/lattice-root.js';
+export {
+  addWorkspace,
+  listWorkspaces,
+  getWorkspace,
+  getActiveWorkspace,
+  setActiveWorkspace,
+  readRegistry,
+  writeRegistry,
+  resolveWorkspacePaths,
+  workspaceDbPath,
+  defaultWorkspaceYaml,
+  toSafeDirName,
+  LOCAL_DB_RELPATH,
+} from './framework/workspace.js';
+export type {
+  WorkspaceRecord,
+  WorkspaceRegistry,
+  WorkspacePaths,
+  AddWorkspaceOptions,
+} from './framework/workspace.js';
+export { deriveCanonicalContexts } from './framework/canonical-context.js';
+export { importLegacyUserConfig } from './framework/migrate-to-root.js';
+export type { MigrateResult } from './framework/migrate-to-root.js';
+
+// v2.0 — a row can index data that lives elsewhere (local / cloud references).
+export { resolveSource } from './sources/resolver.js';
+export { assertSafeUrl, providerForUrl, isPrivateIp } from './sources/url-safety.js';
+
+// Full-text search — indexed (opt-in FTS5/tsvector via `TableDefinition.fts`)
+// with a LIKE fallback for unconfigured tables. Read-only at search time;
+// complements the embeddings-based semantic `Lattice.search`.
+export {
+  fullTextSearch,
+  ensureFtsIndex,
+  hasFtsIndex,
+  ftsTableName,
+  autoFtsColumns,
+} from './search/fts.js';
+export type { FtsResult, FtsGroup, FtsHit, FtsOptions } from './search/fts.js';
+export { ReferenceUnavailableError } from './sources/types.js';
+export type {
+  RefKind,
+  RefProvider,
+  FilesRow,
+  SourceHandle,
+  SourceMetadata,
+  ResolveOptions,
+} from './sources/types.js';
+export { referenceLocalFile, referenceUrl } from './framework/reference-store.js';
+export type { ReferenceMetadata } from './framework/reference-store.js';
+
 export { TeamsClient, TeamsHttpError } from './teams/client.js';
 export type {
   TeamSummary,

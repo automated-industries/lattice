@@ -536,4 +536,13 @@ export interface EntityContextDefinition {
    * ```
    */
   attachFileColumn?: string;
+
+  /**
+   * How {@link attachFileColumn} files are placed in rendered context:
+   * - `'copy'` (default) — copy the file into the entity directory.
+   * - `'reference'` — do NOT copy; write a small `<name>.ref.md` pointing at
+   *   the file's durable location. Used for referenced local files / cloud
+   *   URLs that should be indexed in place, never duplicated.
+   */
+  attachFileMode?: 'copy' | 'reference';
 }
