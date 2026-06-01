@@ -45,6 +45,7 @@ import {
   isVisibleInTeam,
   resolveTeamContext,
   shareEntityWithTeam,
+  applySharingToContext,
 } from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
@@ -787,6 +788,20 @@ async function openConfig(configPath: string, outputDir: string): Promise<Active
     }
   }
 
+  // Keep this server's team-visibility set live when ANOTHER client shares
+  // or unshares a table: the share/unshare envelope arrives over NOTIFY, so
+  // we update `teamContext.shared` + `validTables` in place — no DB re-open,
+  // and the browser's existing `change`-driven refetch then sees the new
+  // visibility. `op:'schema'` ⇒ (re)shared, `op:'unshare'` ⇒ unshared.
+  if (realtime && teamContext) {
+    const tc = teamContext;
+    realtime.subscribePayload((p) => {
+      if (p.op !== 'schema' && p.op !== 'unshare') return;
+      if (!p.table_name) return;
+      applySharingToContext(tc, validTables, p.table_name, p.op === 'schema');
+    });
+  }
+
   return {
     configPath,
     outputDir,
@@ -1322,17 +1337,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const body = (await readJson<unknown>(req)) as { share?: unknown };
+          const wantShare = body.share === true;
           const result = await shareEntityWithTeam(
             active.db,
             active.dbPath,
             ctx,
             active.validTables,
             table,
-            body.share === true,
+            wantShare,
           );
           if (result.status === 200) {
-            await disposeActive(active);
-            active = await openConfig(active.configPath, active.outputDir);
+            // Update visibility in place instead of re-opening the DB — keeps
+            // the realtime broker connection alive (no LISTEN reconnect) and
+            // lets the client reflect the change with a light /api/entities
+            // refetch. Other clients converge via the broker subscription
+            // wired in openConfig.
+            applySharingToContext(ctx, active.validTables, table, wantShare);
           }
           sendJson(res, result.body, result.status);
           return;
