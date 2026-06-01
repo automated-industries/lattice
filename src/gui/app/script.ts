@@ -177,6 +177,7 @@ export const appJs = `
         startFeed();
         initSearch();
         initLastEdited();
+        initOffline();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -292,7 +293,185 @@ export const appJs = `
       return '<div id="last-edited" data-table="' + escapeHtml(table) + '" data-pk="' +
         escapeHtml(pk) + '">' + inner + '</div>';
     }
+    // ────────────────────────────────────────────────────────────
+    // Offline edit queue (cloud) — when the cloud is unreachable, row writes
+    // are persisted to IndexedDB and replayed (in edit-timestamp order, with a
+    // stable edit_id for server-side idempotency) the moment the realtime
+    // channel reconnects. No edits are lost across a disconnect.
+    // ────────────────────────────────────────────────────────────
+    var cloudMode = false;
+    var cloudConnected = false;
+    var IDB_NAME = 'lattice-gui';
+    var IDB_STORE = 'pending_mutations';
+    var idbPromise = null;
+    function openIdb() {
+      if (idbPromise) return idbPromise;
+      idbPromise = new Promise(function (resolve, reject) {
+        if (typeof indexedDB === 'undefined') { reject(new Error('no IndexedDB')); return; }
+        var req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = function () {
+          var db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE, { keyPath: 'editId' });
+          }
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error); };
+      });
+      return idbPromise;
+    }
+    function idbAll() {
+      return openIdb().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(IDB_STORE, 'readonly');
+          var req = tx.objectStore(IDB_STORE).getAll();
+          req.onsuccess = function () { resolve(req.result || []); };
+          req.onerror = function () { reject(req.error); };
+        });
+      });
+    }
+    function idbPut(item) {
+      return openIdb().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(IDB_STORE, 'readwrite');
+          tx.objectStore(IDB_STORE).put(item);
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+      });
+    }
+    function idbDelete(editId) {
+      return openIdb().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(IDB_STORE, 'readwrite');
+          tx.objectStore(IDB_STORE).delete(editId);
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+      });
+    }
+    // Pending edits in true edit-timestamp order (ties broken by insertion).
+    function pendingOrdered(items) {
+      return items.slice().filter(function (i) { return i.status !== 'failed'; })
+        .sort(function (a, b) { return String(a.clientTs).localeCompare(String(b.clientTs)); });
+    }
+    function newEditId() {
+      return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+        : 'e-' + Date.now() + '-' + Math.round(Math.random() * 1e9);
+    }
+    function updatePendingPill(n) {
+      var el = document.getElementById('offline-pill');
+      if (!el) return;
+      if (n > 0) { el.hidden = false; el.textContent = '⏳ ' + n + ' pending'; }
+      else { el.hidden = true; el.textContent = ''; }
+    }
+    function refreshPendingPill() {
+      idbAll().then(function (items) {
+        updatePendingPill(items.filter(function (i) { return i.status !== 'failed'; }).length);
+      }).catch(function () { /* no idb — ignore */ });
+    }
+    /**
+     * Perform a row mutation, queueing it offline when the cloud is
+     * unreachable. ONLINE behaviour is identical to a plain fetchJson (returns
+     * parsed JSON, throws on HTTP error). When the cloud is disconnected, or
+     * the request fails with a network error, the edit is persisted to
+     * IndexedDB and replayed on reconnect; returns { queued: true }.
+     */
+    function rowWrite(method, path, body) {
+      var editId = newEditId();
+      var clientTs = new Date().toISOString();
+      var item = { editId: editId, method: method, path: path, body: body || null, clientTs: clientTs, status: 'pending', attempts: 0 };
+      function send() {
+        return fetch(path, {
+          method: method,
+          headers: {
+            'content-type': 'application/json',
+            'x-lattice-edit-id': editId,
+            'x-lattice-client-ts': clientTs,
+          },
+          body: body != null ? JSON.stringify(body) : undefined,
+        }).then(function (r) {
+          return r.json().then(function (j) {
+            if (!r.ok) { var e = new Error(j.error || ('HTTP ' + r.status)); e.httpStatus = r.status; throw e; }
+            return j;
+          });
+        });
+      }
+      // Hold the edit when we know the cloud is unreachable.
+      if (cloudMode && !cloudConnected) {
+        return idbPut(item).then(function () {
+          refreshPendingPill();
+          showToast('Saved offline — will sync when the cloud reconnects', {});
+          return { queued: true };
+        });
+      }
+      return send().catch(function (err) {
+        // A network error (no HTTP status) on a cloud DB → queue for replay.
+        // A real HTTP error (4xx/5xx) is surfaced to the caller as before.
+        if (cloudMode && err.httpStatus === undefined) {
+          return idbPut(item).then(function () {
+            refreshPendingPill();
+            showToast('Saved offline — will sync when the cloud reconnects', {});
+            return { queued: true };
+          });
+        }
+        throw err;
+      });
+    }
+    var draining = false;
+    /** Replay queued edits in edit-timestamp order once the cloud is back. */
+    function drainQueue() {
+      if (draining || !cloudConnected) return;
+      draining = true;
+      idbAll().then(function (items) {
+        var queue = pendingOrdered(items);
+        function step(i) {
+          if (i >= queue.length) return Promise.resolve();
+          var it = queue[i];
+          return fetch(it.path, {
+            method: it.method,
+            headers: {
+              'content-type': 'application/json',
+              'x-lattice-edit-id': it.editId,
+              'x-lattice-client-ts': it.clientTs,
+            },
+            body: it.body != null ? JSON.stringify(it.body) : undefined,
+          }).then(function (r) {
+            if (r.ok) return idbDelete(it.editId);
+            if (r.status === 409) {
+              // Unshared / stale schema — can't replay; mark failed (kept for
+              // inspection, surfaced) rather than silently dropped.
+              it.status = 'failed';
+              return idbPut(it).then(function () {
+                showToast('An offline edit could not sync (the object changed). See pending edits.', {});
+              });
+            }
+            // Other server error — leave pending, retry on the next drain.
+            return Promise.resolve();
+          }).then(function () { return step(i + 1); },
+          function () { return Promise.resolve(); /* network error — stop draining */ });
+        }
+        return step(0);
+      }).then(function () {
+        draining = false;
+        refreshPendingPill();
+        afterMutation().catch(function () { /* ignore */ });
+      }).catch(function () { draining = false; });
+    }
+    function initOffline() {
+      refreshPendingPill();
+      if (typeof window !== 'undefined' && window.addEventListener) {
+        window.addEventListener('online', function () { if (cloudConnected) drainQueue(); });
+      }
+    }
+
     function setStatusPill(mode, state) {
+      // Track cloud reachability so the offline queue knows when to hold edits
+      // (cloud unreachable) vs. send them, and drains the moment we reconnect.
+      var wasConnected = cloudConnected;
+      cloudMode = mode === 'cloud';
+      cloudConnected = cloudMode && state === 'connected';
+      if (cloudConnected && !wasConnected) drainQueue();
       // Update both the database-switcher dot and the workspace-switcher dot so
       // whichever switcher is visible reflects the live realtime status.
       ['db-status', 'ws-status'].forEach(function (id) {
@@ -1264,16 +1443,13 @@ export const appJs = `
           Object.keys(values).forEach(function (k) {
             if (values[k] === null || values[k] === '') delete values[k];
           });
-          fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(values),
-          }).then(function () {
+          rowWrite('POST', '/api/tables/' + encodeURIComponent(tableName) + '/rows', values).then(function (r) {
+            if (r && r.queued) return; // saved offline; the queued toast already fired
             invalidate(tableName);
-            return refreshEntities();
-          }).then(function () {
-            renderTable(content, tableName);
-            showToast(d.label.replace(/s$/, '') + ' created', { undo: undoLast });
+            return refreshEntities().then(function () {
+              renderTable(content, tableName);
+              showToast(d.label.replace(/s$/, '') + ' created', { undo: undoLast });
+            });
           }).catch(function (err) {
             showToast('Create failed: ' + err.message, {});
           });
@@ -1288,15 +1464,16 @@ export const appJs = `
             var hard = !!hardId;
             var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id);
             if (hard) url += '?hard=true';
-            fetchJson(url, { method: 'DELETE' }).then(function () {
+            rowWrite('DELETE', url, null).then(function (r) {
+              if (r && r.queued) return;
               invalidate(tableName);
-              return refreshEntities();
-            }).then(function () {
-              renderTable(content, tableName);
-              var msg = hard
-                ? d.label.replace(/s$/, '') + ' permanently deleted'
-                : d.label.replace(/s$/, '') + ' deleted';
-              showToast(msg, { undo: undoLast });
+              return refreshEntities().then(function () {
+                renderTable(content, tableName);
+                var msg = hard
+                  ? d.label.replace(/s$/, '') + ' permanently deleted'
+                  : d.label.replace(/s$/, '') + ' deleted';
+                showToast(msg, { undo: undoLast });
+              });
             }).catch(function (err) {
               showToast('Delete failed: ' + err.message, {});
             });
@@ -1589,16 +1766,13 @@ export const appJs = `
             document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
             document.getElementById('save-row').addEventListener('click', function () {
               var values = collectFormValues(content.querySelector('.detail dl'));
-              fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
-                method: 'PATCH',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(values),
-              }).then(function () {
+              rowWrite('PATCH', '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), values).then(function (r) {
+                if (r && r.queued) { renderDetail(content, tableName, id); return; }
                 invalidate(tableName);
-                return refreshEntities();
-              }).then(function () {
-                renderDetail(content, tableName, id);
-                showToast(d.label.replace(/s$/, '') + ' modified', { undo: undoLast });
+                return refreshEntities().then(function () {
+                  renderDetail(content, tableName, id);
+                  showToast(d.label.replace(/s$/, '') + ' modified', { undo: undoLast });
+                });
               }).catch(function (err) {
                 showToast('Save failed: ' + err.message, {});
               });
@@ -1606,14 +1780,13 @@ export const appJs = `
           } else {
             document.getElementById('edit-row').addEventListener('click', function () { paint(true); });
             document.getElementById('del-row').addEventListener('click', function () {
-              fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), {
-                method: 'DELETE',
-              }).then(function () {
+              rowWrite('DELETE', '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), null).then(function (r) {
+                if (r && r.queued) { location.hash = '#/objects/' + tableName; return; }
                 invalidate(tableName);
-                return refreshEntities();
-              }).then(function () {
-                location.hash = '#/objects/' + tableName;
-                showToast(d.label.replace(/s$/, '') + ' deleted', { undo: undoLast });
+                return refreshEntities().then(function () {
+                  location.hash = '#/objects/' + tableName;
+                  showToast(d.label.replace(/s$/, '') + ' deleted', { undo: undoLast });
+                });
               }).catch(function (err) {
                 showToast('Delete failed: ' + err.message, {});
               });

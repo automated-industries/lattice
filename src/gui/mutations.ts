@@ -80,6 +80,11 @@ export interface MutationCtx {
    * header so replayed edits keep their true order; defaults to now.
    */
   clientTs?: string | undefined;
+  /**
+   * Client idempotency key for the originating edit (offline-replay safe).
+   * Recorded on the change envelope so a re-sent edit is a no-op.
+   */
+  editId?: string | undefined;
 }
 
 /**
@@ -104,6 +109,7 @@ async function emitTeamEnvelope(
     payload_json: after ? JSON.stringify(after) : null,
     owner_user_id: ctx.team.myUserId,
     client_ts: ctx.clientTs ?? new Date().toISOString(),
+    edit_id: ctx.editId ?? null,
   });
 }
 
