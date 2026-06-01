@@ -149,6 +149,21 @@ describe('Data Model — junction relationships', () => {
     expect(m2mBetween(graph, 'articles', 'tags')).toBe(true);
     expect(graph.nodes.some((n) => n.id === 'table:articles_tags')).toBe(false);
 
+    // One link per pair: a second junction between the same two entities (in
+    // EITHER direction) is refused — the picker excludes it client-side too.
+    const dupForward = await fetch(`${s.url}/api/schema/junctions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ left: 'articles', right: 'tags' }),
+    });
+    expect(dupForward.status).toBe(400);
+    const dupReverse = await fetch(`${s.url}/api/schema/junctions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ left: 'tags', right: 'articles' }),
+    });
+    expect(dupReverse.status).toBe(400);
+
     // Remove it via the (new, single) table-delete route — the old
     // /api/schema/junctions/:name DROP-TABLE route was removed.
     const del = await fetch(`${s.url}/api/schema/entities/articles_tags`, { method: 'DELETE' });
