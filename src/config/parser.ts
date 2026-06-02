@@ -162,6 +162,20 @@ export function resolveDbPath(raw: string, configDir: string): string {
   return resolve(configDir, raw);
 }
 
+// One-to-many `ref:` fields are deprecated in favor of many-to-many junction
+// tables (removed in 2.0). Warn once per unique entity.field per process so a
+// repeatedly-parsed config (every openConfig / re-render) doesn't spam.
+const warnedDeprecatedRefs = new Set<string>();
+function warnDeprecatedRef(entity: string, field: string, target: string): void {
+  const key = `${entity}.${field}`;
+  if (warnedDeprecatedRefs.has(key)) return;
+  warnedDeprecatedRefs.add(key);
+  console.warn(
+    `Lattice: one-to-many \`ref:\` on "${entity}.${field}" → "${target}" is deprecated ` +
+      `in favor of many-to-many junction tables and will be removed in 2.0.`,
+  );
+}
+
 function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDefinition {
   const rawFields = (entity as { fields?: unknown }).fields;
   if (!rawFields || typeof rawFields !== 'object' || Array.isArray(rawFields)) {
@@ -191,6 +205,7 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
         table: field.ref,
         foreignKey: fieldName,
       };
+      warnDeprecatedRef(entityName, fieldName, field.ref);
     }
   }
 

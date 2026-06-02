@@ -12,7 +12,7 @@ test.afterEach(async () => {
 
 test('GUI boots and renders the entity sidebar', async ({ page }) => {
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await expect(page.locator('nav.sidebar')).toBeVisible();
   // The seeded `items` entity should appear as a sidebar card.
   await expect(page.getByText('items', { exact: false }).first()).toBeVisible();
 });
