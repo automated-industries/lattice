@@ -418,6 +418,10 @@ export const css = `
     .dm-graph .gnode-label { fill: var(--text); font-size: 12px; font-weight: 500; }
     .dm-graph .gnode-icon { dominant-baseline: middle; }
     .dm-graph .gnode:hover .gnode-dot { stroke: var(--text-muted); }
+    /* Share-status stroke (cloud workspaces only): yellow = shared, red = private. */
+    .dm-graph .gnode-shared .gnode-dot { stroke: #eab308; stroke-width: 2; }
+    .dm-graph .gnode-private .gnode-dot { stroke: #ef4444; stroke-width: 2; }
+    /* Selected (green) wins over share status — higher specificity (.gnode.active). */
     .dm-graph .gnode.active .gnode-dot { stroke: var(--accent); stroke-width: 2; }
     .dm-graph .gnode.active .gnode-glow { opacity: 0.18; }
     .dm-graph .gnode.active .gnode-label { fill: var(--accent); }
@@ -431,6 +435,11 @@ export const css = `
     .dm-legend span { display: inline-flex; align-items: center; gap: 6px; }
     .dm-legend i { width: 16px; height: 0; border-top: 2px solid currentColor; display: inline-block; }
     .dm-legend i.dash { border-top-style: dashed; }
+    /* Share-status swatches: filled dots rather than the relationship line. */
+    .dm-legend i.sw { width: 10px; height: 10px; border-top: 0; border-radius: 50%; }
+    .dm-legend i.sw-shared { background: #eab308; }
+    .dm-legend i.sw-private { background: #ef4444; }
+    .dm-legend i.sw-selected { background: var(--accent); }
     #dm-panel {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; padding: 20px;
@@ -729,6 +738,17 @@ export const css = `
     }
     .shared-row:hover, .member-row:hover { background: var(--row-hover); }
     .shared-row .table-name { font-family: ui-monospace, monospace; }
+    /* Role/status pills inside the settings-drawer member list, which is not
+       under .team-card — so the .team-card-scoped .role-tag rules don't reach
+       it. Covers creator / member / and the pending-invitee invited/expired. */
+    .members-list .role-tag {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .members-list .role-tag.role-member { background: #eef0f3; color: var(--text-muted); }
+    .members-list .role-tag.role-expired { background: #fde2e1; color: #b91c1c; }
+    .member-row-pending { opacity: 0.85; }
     .teams-empty {
       padding: 32px; text-align: center; color: var(--text-muted);
       border: 1px dashed var(--border-strong); border-radius: 8px;
@@ -864,6 +884,8 @@ export const css = `
     .fs-context-doc .md-body a { color: var(--accent); }
     .fs-field { padding: 12px 0; border-bottom: 1px solid var(--border); }
     .fs-field:last-child { border-bottom: none; }
+    /* Inline create-view action row (Save / Cancel). */
+    .fs-create-actions { display: flex; gap: 8px; justify-content: flex-end; max-width: 900px; margin-top: 16px; }
     .fs-field-label {
       font-size: 11px; color: var(--text-muted); text-transform: uppercase;
       letter-spacing: 0.04em; margin-bottom: 4px;
