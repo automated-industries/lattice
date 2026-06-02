@@ -2146,7 +2146,7 @@ The convergence means you don't need to duplicate entity-context definitions in 
 
 **Switch vs. migrate (v1.13.2+ wording).** "Connect to existing cloud" _switches_ the project's `db:` line to point at the cloud; the local SQLite file stays on disk and you can switch back by editing the YAML or via the Databases catalog under User Config. Use "Migrate to cloud" only when you want to _push_ the local data into a fresh empty target.
 
-**Upgrade to team cloud — works against direct Postgres URLs (v1.13.3+).** The "Upgrade to team cloud" action previously HTTP-POSTed to `/api/auth/register` on the cloud URL, which fails with `Request cannot be constructed from a URL that includes credentials` when the cloud URL is a Postgres connection string. v1.13.3 dispatches on URL scheme: `http(s)://` keeps the HTTP path; `postgres(ql)://` calls the new `registerDirectViaPostgres()` helper that drives the same INSERT sequence directly against the cloud Postgres. Same invariants enforced both ways.
+**Cloud workspaces initialize automatically (v1.16.3+).** A cloud database _is_ a cloud workspace with members — there is no separate "upgrade to team" step. The moment a database is migrated or connected to Postgres, its member/share machinery is created automatically (the workspace name is used as the identity; an existing un-initialized cloud initializes on open, with the opener as owner). The underlying mechanism is the `registerDirectViaPostgres()` helper, which drives the identity/member INSERT sequence directly against the cloud Postgres (the older HTTP `/api/auth/register` path is still used when the cloud URL is `http(s)://`). The standalone "Upgrade to team cloud" action and its `/api/dbconfig/upgrade-to-team` route were removed in 1.16.3.
 
 **Dashboard renders every entity (v1.13.3+).** Previously the dashboard cards filtered through a hardcoded entity list (`meetings`, `people`, `messages`, `projects`, `repositories`, `files`). Installs whose YAML declared different names saw a blank dashboard. Now every first-class entity gets a card; the hardcoded list survives as an ordering preference only.
 
@@ -2160,7 +2160,7 @@ The convergence means you don't need to duplicate entity-context definitions in 
 - **Table view** (`#/objects/<entity>`, Advanced mode) — intrinsic columns, `belongsTo` chips, and a column per junction this entity participates in.
 - **Detail view** (`#/objects/<entity>/<id>`, Advanced mode) — read mode by default; `Edit` flips cells into inputs (`Save` PATCHes, `Cancel` reverts).
 - **Settings** (v2.0+) — opened from the header gear (Database / Lattice / User tabs + the Advanced-mode toggle); the legacy `#/settings/*` hashes still resolve and open the drawer.
-- **Data Model** (inside **Database Settings**, v1.14+) — entity-level graph including the native `files`/`secrets` objects, with a per-entity editor. On a team cloud each table you own carries a **Share with team / Unshare** toggle. (Pre-1.14 this was a separate `#/settings/data-model` nav item; that hash still resolves for back-compat.)
+- **Data Model** (inside **Workspace Settings**, v1.14+) — entity-level graph including the native `files`/`secrets` objects, with a per-entity editor. On a cloud workspace each table you own carries a **Share with workspace / Make private** toggle, and graph nodes are colored by share status (yellow = shared, red = private, green = selected) with a legend. (Pre-1.14 this was a separate `#/settings/data-model` nav item; that hash still resolves for back-compat.)
 
 **Internal tables added on first open**
 
@@ -2176,22 +2176,22 @@ These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entitie
 
 **HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
 
-| Route                          | Method | Lattice call                                                    |
-| ------------------------------ | ------ | --------------------------------------------------------------- |
-| `/project`                     | GET    | (config + manifest summary)                                     |
-| `/entities`                    | GET    | tables + `db.count` per table                                   |
-| `/graph`                       | GET    | (schema graph for Data Model)                                   |
-| `/tables/:table/rows`          | GET    | `db.query(table, …)`                                            |
-| `/tables/:table/rows`          | POST   | `db.insert(table, body)`                                        |
-| `/tables/:table/rows/:id`      | GET    | `db.get(table, id)`                                             |
-| `/tables/:table/rows/:id`      | PATCH  | `db.update(table, id, body)`                                    |
-| `/tables/:table/rows/:id`      | DELETE | `db.delete(table, id)`                                          |
-| `/tables/:junction/link`       | POST   | `db.link(junction, body)`                                       |
-| `/tables/:junction/unlink`     | POST   | `db.unlink(junction, body)`                                     |
-| `/schema/entities`             | POST   | create a new entity/table                                       |
-| `/schema/entities/:name/share` | POST   | share/unshare a table you own with the team (cloud, owner-only) |
+| Route                          | Method | Lattice call                                                        |
+| ------------------------------ | ------ | ------------------------------------------------------------------- |
+| `/project`                     | GET    | (config + manifest summary)                                         |
+| `/entities`                    | GET    | tables + `db.count` per table                                       |
+| `/graph`                       | GET    | (schema graph for Data Model)                                       |
+| `/tables/:table/rows`          | GET    | `db.query(table, …)`                                                |
+| `/tables/:table/rows`          | POST   | `db.insert(table, body)`                                            |
+| `/tables/:table/rows/:id`      | GET    | `db.get(table, id)`                                                 |
+| `/tables/:table/rows/:id`      | PATCH  | `db.update(table, id, body)`                                        |
+| `/tables/:table/rows/:id`      | DELETE | `db.delete(table, id)`                                              |
+| `/tables/:junction/link`       | POST   | `db.link(junction, body)`                                           |
+| `/tables/:junction/unlink`     | POST   | `db.unlink(junction, body)`                                         |
+| `/schema/entities`             | POST   | create a new entity/table                                           |
+| `/schema/entities/:name/share` | POST   | share/unshare a table you own with the cloud workspace (owner-only) |
 
-On a team cloud, `/entities` and `/graph` (and the queryable `/tables/*` allowlist) are filtered to the tables you own plus tables shared to the team — so the API surface matches exactly what the GUI shows; a table you can't see is not reachable. `/entities` rows carry `shared` / `ownedByMe` flags in that mode.
+On a cloud workspace, `/entities` and `/graph` (and the queryable `/tables/*` allowlist) are filtered to the tables you own plus tables shared to the workspace — so the API surface matches exactly what the GUI shows; a table you can't see is not reachable. `/entities` rows carry `shared` / `ownedByMe` flags in that mode.
 
 The server only binds to `127.0.0.1` and has no authentication. See [SECURITY.md](./SECURITY.md) for the threat model — do not expose this port to a non-loopback interface.
 
@@ -2312,7 +2312,7 @@ lattice teams dlq purge --team <name> [--id <id>] # discard without applying
 
 **Per-table ownership + opt-in sharing (v1.14+).** Team members share one physical Postgres, so visibility is enforced at the app layer via a `__lattice_object_owners` table: each table records its creator, and a user sees only the tables they own plus tables explicitly shared to the team. The native `files`/`secrets` objects are owned by the database creator and private by default. Sharing is an explicit, owner-only action (not a side effect of creating a table). The filter gates API access, not just the display.
 
-**Same flows from the GUI (v1.14+).** The local `lattice gui` drives the entire teams lifecycle from **Database Settings**: rename (owner-only), invite by email (owner-only), the inline Members list (the owner is always shown as `creator`; your own row offers Leave/Destroy; non-owners can't kick), share/unshare from the Data Model, and sync status. Member admin is resolved from `GET /api/dbconfig` against the active cloud DB, so it works even when the team cloud itself is the active database. Identity (display name + email) comes from `~/.lattice/identity.json` and is locked in the Join modal. Leaving a team removes the local config + credential and switches you to another database.
+**Same flows from the GUI (v1.14+).** The local `lattice gui` drives the entire cloud-workspace lifecycle from **Workspace Settings**: rename (owner-only), invite by email (owner-only), the inline Members list with pending invitees (the owner is always shown as `creator`; your own row offers Leave/Destroy; non-owners can't kick), share/unshare from the Data Model, and sync status. Member admin is resolved from `GET /api/dbconfig` against the active cloud DB, so it works even when the cloud workspace itself is the active database. Identity (display name + email) comes from `~/.lattice/identity.json` and is locked in the Join modal. Leaving a workspace removes the local config + credential and switches you to another database.
 
 **Joining via the GUI is one click (v1.13.7+).** When you click "Join via invite" and the redeem succeeds, the team's cloud URL is automatically saved as a switchable database credential and a sibling YAML config is written to your project directory. The new entry shows up in the database dropdown as `<team-name>.config`. Clicking it opens the SPA with the team's shared tables already populated — no YAML editing, no `db.define()` calls.
 
@@ -2327,11 +2327,11 @@ The full architecture, schema, and HTTP surface live in [docs/teams.md](./docs/t
 Lattice Teams + the GUI's Database panel now flow through a state machine:
 
 ```
-LOCAL  →  CLOUD CONNECTED  →  TEAM CLOUD
-       (migrate)           (upgrade)
+LOCAL  →  CLOUD WORKSPACE (owner | member | needs-invite)
+       (migrate / connect)
 ```
 
-Each transition is one-way: once on cloud, the panel does not surface a revert-to-local button. Disconnecting from the cloud temporarily is a follow-up; for v1.13 the in-place reconnection happens automatically when the GUI reopens.
+Migrating or connecting to Postgres produces a cloud workspace directly — its member/share machinery is initialized automatically, with no separate "upgrade" step (the intermediate `cloud-connected` state was removed in 1.16.3). The transition is one-way: once on cloud, the panel does not surface a revert-to-local button. Disconnecting from the cloud temporarily is a follow-up; the in-place reconnection happens automatically when the GUI reopens.
 
 Public API surface (the GUI's `/api/dbconfig/*` routes are thin wrappers):
 
@@ -2368,17 +2368,20 @@ await client.connectToExistingCloud({
   name: 'Bob',
 });
 
-// 4. Upgrade an already-connected cloud DB to a team cloud
-await client.upgradeToTeamCloud({
+// 4. Initialize the workspace member/share machinery on a cloud DB.
+//    The GUI now does this automatically on migrate/connect/open; the
+//    helper remains for programmatic use (idempotent — a no-op if the
+//    cloud is already a workspace).
+await client.ensureCloudWorkspaceIdentity({
   label: 'atlas',
   cloudUrl: 'postgres://u:p@host/db',
-  teamName: 'Atlas',
+  workspaceName: 'Atlas',
   email: 'alice@example.com',
   displayName: 'Alice',
 });
 ```
 
-GUI consumers don't need to call these directly — the Database panel surfaces them as wizards (`Migrate to cloud →`, `Connect to existing cloud →`, `Upgrade to team cloud →`).
+GUI consumers don't need to call these directly — the Database panel surfaces them as wizards (`Migrate to cloud →`, `Connect to existing cloud →`); workspace initialization is automatic.
 
 HTTP surface (all under `/api/dbconfig/*`, localhost-only, same auth model as the rest of `lattice gui`):
 
@@ -2388,10 +2391,9 @@ HTTP surface (all under `/api/dbconfig/*`, localhost-only, same auth model as th
 | POST   | `/api/dbconfig/probe`                     | `probeCloud(url)`                             |
 | POST   | `/api/dbconfig/migrate-to-cloud`          | `migrateLatticeData` + `archiveLocalSqlite`   |
 | POST   | `/api/dbconfig/connect-existing`          | `TeamsClient.connectToExistingCloud`          |
-| POST   | `/api/dbconfig/upgrade-to-team`           | `TeamsClient.upgradeToTeamCloud`              |
 | POST   | `/api/dbconfig/save` / `connect` / `test` | unchanged from v1.12                          |
 
-The `state` field on `GET /api/dbconfig` is one of: `local`, `cloud-connected`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite`. The SPA badge color-codes them; the routes use them only for response shape.
+The `state` field on `GET /api/dbconfig` is one of: `local`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite` (the `cloud-connected` state was removed in 1.16.3). The SPA badge color-codes them (labeled "CLOUD · OWNER / MEMBER / NEEDS INVITE"); the routes use them only for response shape.
 
 ---
 

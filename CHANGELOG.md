@@ -8,6 +8,69 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.16.3] - 2026-06-02
+
+GUI patch (live cloud-sharing demo + UI review). No library API changes — a bare
+`new Lattice(path)` consumer is unaffected. The headline change is conceptual: a
+**cloud database is simply a cloud workspace with members** — the separate "team"
+concept is retired from the user experience (the underlying member/share plumbing
+is unchanged and now initializes automatically).
+
+### Added
+
+- **Data Model graph shows share status.** On a cloud workspace, each entity node is
+  outlined by visibility — **yellow = shared with the workspace, red = private (owner-only),
+  green = selected** — with a legend. Local (single-user) databases are uncolored (share
+  status is N/A). The owner can toggle a table's sharing from the entity editor; non-owners
+  see read-only status.
+- **Pending invitations in the member list.** Cloud-workspace settings now list people who
+  were invited but haven't joined yet (with an "invited"/"expired" tag), below the active
+  members. Backed by a new member-only `GET /api/teams/:id/invitations` (and its GUI proxy).
+
+### Fixed
+
+- **Inline editor no longer corrupts long-form fields.** Clicking into and back out of a
+  multi-line field (e.g. `bio`, `description`, `notes`) used to silently rewrite it and
+  re-render it as oversized text. Root cause: the inline editor returned a single-line
+  `<input>` for long-form columns outside a small hardcoded set; focusing it stripped the
+  newlines, so a no-op click+blur looked like an edit and fired a spurious `PATCH`. Every
+  long-form field (and any value containing a newline) now opens a `<textarea>`, so an
+  unedited field is never written and edits round-trip losslessly.
+- **Cloud sharing now persists.** Migrating to / connecting to a cloud database left it
+  without the member/share machinery, so "share this table" had nowhere to record the share
+  and invitees saw nothing. Cloud databases now initialize that machinery automatically
+  (see _Changed_), so per-table sharing writes and propagates to every member as intended.
+- **Settings re-render after deleting the active database.** Deleting the active workspace
+  from its Danger Zone now re-renders settings to the new active workspace (or closes the
+  drawer) instead of leaving a stale view of the deleted one.
+
+### Changed
+
+- **A cloud database is a cloud workspace — the "team" step is gone.** The separate
+  "Upgrade to team cloud" action has been removed; a database becomes a shareable cloud
+  workspace the moment you migrate or connect it to Postgres, and its member/share
+  machinery is created automatically (the workspace name is used as the identity; an
+  existing un-initialized cloud initializes on open, with the opener as owner). All
+  user-facing "team" wording is now "cloud workspace" / "member". The `cloud-connected`
+  intermediate state was collapsed, and `POST /api/dbconfig/upgrade-to-team` was removed.
+- **Create new objects on a dedicated page, not a modal.** The simple-view "New" tile now
+  navigates to an inline create view (`#/fs/<table>/new`) styled like the object page,
+  rather than opening a modal.
+- **"Database" → "Workspace" in the UI.** New Workspace, Workspace Settings, Delete
+  Workspace. The inner **Database connection** box keeps its name (it is literally the DB
+  connection).
+- **Generic empty-state copy.** An empty database now reads "This workspace is empty" with
+  guidance to create an entity (or, on a cloud workspace, ask the owner to share one),
+  instead of advice to edit a config file that a joined member can't act on.
+- **New databases start empty.** A freshly created workspace no longer ships a starter
+  `items` entity; its `entities:` map is empty.
+
+### Removed
+
+- **The per-row Delete button + "Action" column** from the Lattice/Workspaces settings
+  list. Rows remain click-to-switch; deleting a workspace lives in that workspace's
+  Settings → Danger Zone.
+
 ## [1.16.2] - 2026-06-02
 
 GUI bug-fix + cloud-settings patch (1.16.1 demo follow-up). No library API changes —

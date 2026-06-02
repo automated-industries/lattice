@@ -12,6 +12,7 @@ import {
   kickMemberDirect,
   linkRowDirect,
   listMembersDirect,
+  listPendingInvitationsDirect,
   listSharedObjectsDirect,
   meDirect,
   redeemInviteDirect,
@@ -55,6 +56,18 @@ export interface MemberSummary {
   name: string | null;
   role: string;
   joined_at: string;
+}
+
+/**
+ * An invitation that has been issued but not yet redeemed — surfaced in the
+ * member list so the owner can see who's been invited but hasn't joined.
+ */
+export interface PendingInvitationSummary {
+  id: string;
+  invitee_email: string;
+  invited_at: string;
+  expires_at: string | null;
+  expired: boolean;
 }
 
 export interface InviteResponse {
@@ -374,6 +387,52 @@ export class TeamsClient {
     return reg;
   }
 
+  /**
+   * Idempotently initialize a cloud Postgres DB as a collaborative cloud
+   * workspace (members + sharing). 1.16.3 deprecated the user-facing "team"
+   * concept and the explicit "upgrade to team" step — every cloud workspace
+   * gets this machinery automatically at migrate / connect / open time, so the
+   * members + per-table sharing surface is always available on a cloud DB.
+   *
+   * No-op (returns created:false) when the cloud already carries an identity.
+   * On a fresh cloud the caller becomes the owner. Race-safe: a concurrent
+   * initializer that wins the singleton insert is treated as success.
+   */
+  async ensureCloudWorkspaceIdentity(opts: {
+    label: string;
+    cloudUrl: string;
+    workspaceName: string;
+    email: string;
+    displayName?: string;
+  }): Promise<{ created: boolean }> {
+    const probe = await probeCloud(opts.cloudUrl);
+    if (!probe.reachable) {
+      throw new Error(`Cloud DB unreachable: ${probe.error ?? 'unknown error'}`);
+    }
+    if (probe.teamEnabled) return { created: false }; // already a cloud workspace
+    if (!opts.email) {
+      throw new Error('Set your email in User settings to set up this cloud workspace.');
+    }
+    try {
+      const displayName = opts.displayName?.trim() ? opts.displayName : opts.email;
+      await this.upgradeToTeamCloud({
+        label: opts.label,
+        cloudUrl: opts.cloudUrl,
+        teamName: opts.workspaceName,
+        email: opts.email,
+        displayName,
+      });
+      return { created: true };
+    } catch (e) {
+      // A concurrent initializer won the race (another connection created the
+      // singleton identity / first user first). The cloud is now a workspace —
+      // treat as success; this operator resolves as a member / needs-invite.
+      const msg = (e as Error).message || '';
+      if (/already has (a team|users)/i.test(msg)) return { created: false };
+      throw e;
+    }
+  }
+
   // ── Cloud team operations (dispatch on URL scheme) ──────────────────────
   // For HTTP cloud URLs (`http://lattice-server:port`), every operation
   // round-trips through the team server's authenticated REST API. For
@@ -408,6 +467,23 @@ export class TeamsClient {
       `/api/teams/${teamId}/members`,
     );
     return r.members;
+  }
+
+  async listPendingInvitations(
+    cloudUrl: string,
+    token: string,
+    teamId: string,
+  ): Promise<PendingInvitationSummary[]> {
+    if (isPostgresUrl(cloudUrl)) {
+      return listPendingInvitationsDirect(this.local, teamId);
+    }
+    const r = await this.fetchAuthed<{ invitations: PendingInvitationSummary[] }>(
+      cloudUrl,
+      token,
+      'GET',
+      `/api/teams/${teamId}/invitations`,
+    );
+    return r.invitations;
   }
 
   async invite(
