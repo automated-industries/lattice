@@ -20,3 +20,7 @@ CLAUDE.md
 AGENTS.md
 .claude/
 tests/fixtures/context/
+# Local scratch test artifacts (generated during manual runs; not committed)
+tests/fixtures/data/
+tests/fixtures/*.config.yml
+!tests/fixtures/lattice.config.yml
