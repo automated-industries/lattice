@@ -99,8 +99,9 @@ describe('1.16.2 — C/D/E: served bundle ships the new UI', () => {
     // (1.16.3 reworded "Leave team" → "Leave workspace" per the team deprecation.)
     expect(html).toContain('Disconnect from cloud');
     expect(html).toContain('Leave workspace');
-    // E — clickable rows, no per-row Switch button.
-    expect(html).toContain('data-switch-path');
+    // E — clickable rows, no per-row Switch button. (1.16.4: rows switch by
+    // workspace id via /api/workspaces/switch.)
+    expect(html).toContain('data-switch-id');
     expect(html).not.toContain('>Switch</button>');
   });
 });

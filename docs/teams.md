@@ -166,9 +166,9 @@ Driven by `POST /api/dbconfig/migrate-to-cloud`. The handler:
 
 On any error before step 4 the YAML is untouched and the SQLite file stays in place. Blobs under `data/blobs/` are not moved — the migrated `files` rows reference relative paths that remain valid against the same project root.
 
-### Transition: Local → Cloud (connect to existing)
+### Transition: Join a team via invite
 
-Driven by `POST /api/dbconfig/connect-existing`. Used when a teammate has already created a team — the local project's data is discarded.
+Driven by `POST /api/dbconfig/connect-existing`. (The standalone "Connect to existing cloud" wizard was removed in 1.16.4 — the two cloud operations are Migrate to cloud and Join a team via invite; this endpoint now backs the invite‑redeem case for an active cloud.) Used when a teammate has already created a team — you redeem an invite to join; the local project's data is discarded.
 
 1. Probes the target.
 2. If `teamEnabled: true`, requires `invite_token` in the body. The handler resolves email + display name from `~/.lattice/identity.json`, calls `TeamsClient.connectToExistingCloud()` which internally runs `POST /api/auth/redeem-invite` against the cloud.
