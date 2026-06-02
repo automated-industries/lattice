@@ -141,6 +141,42 @@ test('click-to-edit a value persists via PATCH', async ({ page }) => {
   expect(row.name).toBe('Jane Q. Author');
 });
 
+test('a long-form field edits as a textarea and round-trips newlines losslessly (1.16.3 B)', async ({
+  page,
+}) => {
+  // `bio` is a long-form field that was NOT in the old hardcoded
+  // {body,summary,transcript} textarea set, so it used to open a single-line
+  // <input>. Focusing that input stripped the newlines, so a click+blur with
+  // no real edit fired a spurious PATCH that mangled the value (rendered as
+  // "huge text"). The fix: every FS_LONGFORM field opens a <textarea>.
+  const MULTILINE_BIO = 'Line one.\n\n## A heading\n\nLine two with **bold**.';
+  const author = await createRow(gui.url, 'authors', { name: 'Multi Line', bio: MULTILINE_BIO });
+  const authorId = String(author.id);
+  await page.goto(`${gui.url}#/fs/authors/${authorId}`);
+
+  const bioCell = page.locator('.fs-field-val.ce[data-col="bio"]');
+  await expect(bioCell).toBeVisible();
+
+  // Opens a <textarea>, never a single-line <input>.
+  await bioCell.click();
+  await expect(bioCell.locator('textarea')).toBeVisible();
+  await expect(bioCell.locator('input')).toHaveCount(0);
+
+  // No-op blur (no edit) must NOT change the stored value — the heart of the bug.
+  await bioCell.locator('textarea').blur();
+  let res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
+  expect(((await res.json()) as { bio: string }).bio).toBe(MULTILINE_BIO);
+
+  // A real edit round-trips with all newlines preserved (committed via blur —
+  // plain Enter inserts a newline in a textarea rather than committing).
+  const EDITED = MULTILINE_BIO + '\n\nAppended paragraph.';
+  await bioCell.click();
+  await bioCell.locator('textarea').fill(EDITED);
+  await bioCell.locator('textarea').blur();
+  res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
+  expect(((await res.json()) as { bio: string }).bio).toBe(EDITED);
+});
+
 test('Advanced mode toggle restores the classic row/table editor', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author' });
   await page.goto(gui.url);
@@ -172,7 +208,7 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
   await expect(drawer).toContainText('User Settings');
 
   await page.locator('.drawer-tab[data-tab="database"]').click();
-  await expect(drawer).toContainText('Database Settings');
+  await expect(drawer).toContainText('Workspace Settings');
 
   await page.locator('.drawer-tab[data-tab="lattice"]').click();
   await expect(drawer).toContainText('Lattice Settings');
@@ -182,7 +218,7 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
   await expect(drawer).not.toHaveClass(/open/);
 });
 
-test('the simple-view create tile makes a new object with a many-to-many link', async ({
+test('the simple-view create tile opens an inline form that makes a new object with a many-to-many link', async ({
   page,
 }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
@@ -193,19 +229,21 @@ test('the simple-view create tile makes a new object with a many-to-many link', 
     window.location.hash = '#/fs/books';
   });
 
-  // The "New" create tile opens a form modal styled like the item page.
-  await page.locator('[data-fs-create]').click();
-  const modal = page.locator('.modal');
-  await expect(modal).toBeVisible();
-  await modal.locator('input[name="title"]').fill('Tidewater');
+  // The "New" create tile navigates to an INLINE create form (no modal),
+  // styled like the item page (#/fs/books/new).
+  await page.locator('.fs-tile-create').click();
+  const form = page.locator('.fs-create-form');
+  await expect(form).toBeVisible();
+  await expect(page.locator('.modal')).toHaveCount(0);
+  await form.locator('input[name="title"]').fill('Tidewater');
   // belongsTo author + a many-to-many tag link (select by index — `tags` have
   // no name/title so the option text is the id; index 1 is the first real row).
-  await modal.locator('select[name="author_id"]').selectOption({ index: 1 });
-  await modal.locator('.fs-link-select').first().selectOption({ index: 1 });
-  await modal.locator('[data-act="ok"]').click();
+  await form.locator('select[name="author_id"]').selectOption({ index: 1 });
+  await form.locator('.fs-link-select').first().selectOption({ index: 1 });
+  await page.locator('#fs-create-save').click();
 
-  // The new book appears in the collection…
-  await expect(page.locator('.fs-tile-label').filter({ hasText: 'Tidewater' })).toBeVisible();
+  // Lands on the new object's page…
+  await expect(page.locator('.view-header h1').filter({ hasText: 'Tidewater' })).toBeVisible();
   // …and the M:N junction row was created from the staged link.
   const res = await page.request.get(gui.url + '/api/tables/book_tags/rows');
   const body = (await res.json()) as { rows: unknown[] };
