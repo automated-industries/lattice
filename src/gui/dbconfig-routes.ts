@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
 import { sendJson, readJson, tryHandler } from './http.js';
@@ -20,6 +20,30 @@ import {
 } from '../framework/cloud-migration.js';
 import { TeamsClient } from '../teams/client.js';
 import { parseConfigFile } from '../config/parser.js';
+import { findLatticeRoot } from '../framework/lattice-root.js';
+import {
+  registerOrUpdateCloudWorkspace,
+  renameWorkspaceByConfigPath,
+} from '../framework/workspace.js';
+import { resolveContextDirForConfig } from '../framework/gui-bootstrap.js';
+
+/**
+ * After the active config's `db:` line is rewritten to point at a cloud
+ * credential, flip its workspace registry record to cloud in place (same id) so
+ * the header switcher + Settings reflect that this workspace is now cloud. No-op
+ * when not running inside a `.lattice` root.
+ */
+function updateActiveWorkspaceToCloud(configPath: string, label: string): void {
+  const root = findLatticeRoot(dirname(configPath));
+  if (!root) return;
+  registerOrUpdateCloudWorkspace(root, {
+    configPath,
+    contextDir: resolveContextDirForConfig(configPath),
+    displayName: label,
+    db: '${LATTICE_DB:' + label + '}',
+    makeActive: true,
+  });
+}
 
 /**
  * Endpoints for the Project Config "Database" panel. They wrap three
@@ -542,6 +566,7 @@ export async function dispatchDbConfigRoute(
           // leave as a plain cloud DB; lazy-init on next open will retry
         }
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
+        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
         await ctx.swap();
         sendJson(res, {
           ok: true,
@@ -610,6 +635,7 @@ export async function dispatchDbConfigRoute(
           }
         }
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
+        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
         await ctx.swap();
         sendJson(res, {
           ok: true,
@@ -664,6 +690,11 @@ export async function dispatchDbConfigRoute(
           team_name: name,
           updated_at: updatedAt,
         });
+        // Mirror the rename into the workspace registry (the header switcher's source).
+        {
+          const root = findLatticeRoot(dirname(ctx.configPath));
+          if (root) renameWorkspaceByConfigPath(root, ctx.configPath, name);
+        }
         // Also update __lattice_team for the multi-team table — same
         // friendly name, mirrored so the cloud's per-team row is current.
         try {
@@ -686,6 +717,11 @@ export async function dispatchDbConfigRoute(
       const doc = parseDocument(readFileSync(ctx.configPath, 'utf8'));
       doc.set('name', name);
       writeFileSync(ctx.configPath, doc.toString(), 'utf8');
+      // Mirror the rename into the workspace registry (the header switcher's source).
+      {
+        const root = findLatticeRoot(dirname(ctx.configPath));
+        if (root) renameWorkspaceByConfigPath(root, ctx.configPath, name);
+      }
       sendJson(res, { ok: true, kind: 'local', name });
     });
     return true;

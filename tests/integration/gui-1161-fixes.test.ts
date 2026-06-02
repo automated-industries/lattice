@@ -181,10 +181,15 @@ describe('1.16.1 — C/D/G: served bundle no longer ships removed UI; create han
     expect(html).not.toContain('rail-feed'); // D
   });
 
-  it('stops propagation in the "+ New workspace…" handler so the menu stays open', async () => {
+  it('the "+ New workspace…" button opens the create/join wizard (1.16.4 single switcher)', async () => {
     const { s } = await boot();
     const html = await (await fetch(`${s.url}/`)).text();
-    // Regression guard for the detach-then-outside-click-close bug.
-    expect(html).toContain('e.stopPropagation(); showCreateWorkspaceInput');
+    // 1.16.4: one workspace switcher; its create button opens the 3-step
+    // wizard (local / cloud / join), replacing the old inline local-only form.
+    expect(html).toContain('showCreateDatabaseWizard();');
+    expect(html).not.toContain('function showCreateWorkspaceInput');
+    // The legacy second (database) switcher host is gone.
+    expect(html).not.toContain('id="db-switcher-host"');
+    expect(html).not.toContain('function renderDbSwitcher');
   });
 });

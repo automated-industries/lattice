@@ -338,10 +338,22 @@ export async function applySchemaSpec(
   } catch {
     cols = [];
   }
+  const def = deserializeSchema(spec, db.getDialect());
   if (cols.length === 0) {
-    const def = deserializeSchema(spec, db.getDialect());
     await db.defineLate(table, def);
     return true;
+  }
+  // The table already physically exists. On a direct-Postgres team every member
+  // shares the SAME physical Postgres, so a shared table always exists for the
+  // member — but it is not yet registered in THIS Lattice's in-memory schema, so
+  // it would be invisible/unqueryable (it never reaches getRegisteredTableNames
+  // → validTables → /api/entities). Register it now. defineLate is idempotent
+  // (no-ops when already registered) and its CREATE TABLE IF NOT EXISTS is a
+  // no-op on the existing table, so no data is touched. Without this, a member
+  // never sees the tables the owner shared.
+  const alreadyRegistered = db.getRegisteredColumns(table) !== null;
+  if (!alreadyRegistered) {
+    await db.defineLate(table, def);
   }
   const pk = db.getPrimaryKey(table);
   const { addColumns } = diffSchemaForAdditive(table, spec, cols, pk);
@@ -351,5 +363,7 @@ export async function applySchemaSpec(
     const sqlType = renderAddColumnType(colSpec, db.getDialect());
     await db.addColumn(table, colName, sqlType);
   }
-  return addColumns.length > 0;
+  // Report a "change" when we newly registered the table (so callers like
+  // openConfig add it to their valid-tables set) or when columns were added.
+  return !alreadyRegistered || addColumns.length > 0;
 }
