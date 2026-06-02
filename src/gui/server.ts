@@ -2897,11 +2897,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           const wsPaths = resolveWorkspacePaths(latticeRoot, ws);
           const isActive = resolve(active.configPath) === resolve(wsPaths.configPath);
-          // No owner gate: deleting a workspace only forgets it LOCALLY. For a
-          // cloud workspace it removes just the local pointer + saved credential
-          // (the shared remote DB is never touched — that's "Disconnect from
-          // cloud" / destroy-team, a separate owner-only action). So any member
-          // may forget their own local pointer, the same as leaving.
+          // Deleting a CLOUD workspace is owner-only — only the team owner may
+          // delete a cloud Lattice DB workspace. A member who wants to drop their
+          // copy uses "Leave workspace" (danger zone) instead. (Ownership is
+          // resolved from the active team context, so this gate applies when the
+          // workspace being deleted is the active one — the case the UI hits.)
+          if (isActive && active.teamContext && !active.teamContext.isCreator) {
+            sendJson(res, { error: 'Only the team owner can delete this cloud workspace' }, 403);
+            return;
+          }
           // Switch away from the active workspace first so file handles release
           // and the server keeps a live DB.
           let switchedTo: string | null = null;
