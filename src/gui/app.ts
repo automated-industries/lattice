@@ -82,16 +82,6 @@ export const guiAppHtml = `<!doctype html>
       </div>
     </nav>
     <main id="content"></main>
-    <aside class="assistant-rail" id="assistant-rail">
-      <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-      <div class="rail-handle" id="rail-handle" title="Expand / collapse"></div>
-      <div class="rail-header">
-        <span class="rail-title">Activity</span>
-      </div>
-      <div class="rail-feed" id="rail-feed">
-        <div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>
-      </div>
-    </aside>
   </div>
 
   <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>

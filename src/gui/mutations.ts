@@ -203,6 +203,29 @@ export async function createRow(
   return { id, row };
 }
 
+/**
+ * True when a stored cell value already equals a requested (JSON) value,
+ * tolerating the type coercion the DB applies (boolean ↔ 0/1, number ↔ numeric
+ * string, null ↔ ''). Used to decide whether an update actually requested a
+ * change, so the write-landed guard never false-positives on a no-op edit.
+ */
+function storedValueMatches(stored: unknown, requested: unknown): boolean {
+  if (stored === requested) return true;
+  const storedEmpty = stored === null || stored === undefined || stored === '';
+  const reqEmpty = requested === null || requested === undefined || requested === '';
+  if (storedEmpty && reqEmpty) return true;
+  if (typeof requested === 'boolean') return Number(stored) === Number(requested);
+  if (typeof requested === 'number') return Number(stored) === requested;
+  return String(stored) === String(requested);
+}
+
+/** Shallow byte-identical comparison of two rows (same column set from db.get). */
+function rowsEqual(a: Row, b: Row): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) if (a[k] !== b[k]) return false;
+  return true;
+}
+
 export async function updateRow(
   ctx: MutationCtx,
   table: string,
@@ -212,6 +235,18 @@ export async function updateRow(
   const before = await ctx.db.get(table, id);
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
+  // Rule 16: a requested change that left the row byte-identical means the
+  // write did not land (a read-only data source silently no-ops the UPDATE).
+  // Surface it loudly instead of reporting a phantom success. A genuine no-op
+  // (the new value already equals the stored value) is NOT an error.
+  if (before != null && after != null) {
+    const wantedChange = Object.keys(values).some(
+      (k) => !storedValueMatches(before[k], (values as Row)[k]),
+    );
+    if (wantedChange && rowsEqual(before, after)) {
+      throw new Error('Row update did not persist — the data source may be read-only');
+    }
+  }
   await appendAudit(
     ctx.db,
     ctx.feed,
