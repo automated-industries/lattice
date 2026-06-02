@@ -162,7 +162,6 @@ export const appJs = `
       Promise.all([
         fetchJson('/api/entities'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
-        fetchJson('/api/databases').catch(function () { return null; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
         fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false, analytics: true }; }),
@@ -170,15 +169,14 @@ export const appJs = `
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
-        state.columnMeta = results[3] || {};
-        state.systemTables = (results[4] && results[4].tables) || [];
-        state.preferences = results[5] || { show_system_tables: false, analytics: true };
+        state.columnMeta = results[2] || {};
+        state.systemTables = (results[3] && results[3].tables) || [];
+        state.preferences = results[4] || { show_system_tables: false, analytics: true };
         document.body.classList.toggle('advanced-mode', advancedMode());
         var advToggle = document.getElementById('advanced-toggle');
         if (advToggle) advToggle.checked = advancedMode();
         wireSettingsDrawer();
-        renderDbSwitcher(results[2]);
-        renderWsSwitcher(results[6]);
+        renderWsSwitcher(results[5]);
         renderSidebar();
         wireHistoryControls();
         refreshHistoryState();
@@ -481,9 +479,8 @@ export const appJs = `
       cloudMode = mode === 'cloud';
       cloudConnected = cloudMode && state === 'connected';
       if (cloudConnected && !wasConnected) drainQueue();
-      // Update both the database-switcher dot and the workspace-switcher dot so
-      // whichever switcher is visible reflects the live realtime status.
-      ['db-status', 'ws-status'].forEach(function (id) {
+      // Update the single workspace-switcher status dot to reflect live realtime.
+      ['ws-status'].forEach(function (id) {
         var el = document.getElementById(id);
         if (!el) return;
         el.classList.remove('is-cloud-connected', 'is-cloud-disconnected', 'is-cloud-connecting');
@@ -775,17 +772,15 @@ export const appJs = `
       return Promise.all([
         fetchJson('/api/entities'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
-        fetchJson('/api/databases').catch(function () { return null; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
         fetchJson('/api/workspaces').catch(function () { return null; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
-        state.columnMeta = results[3] || {};
-        state.systemTables = (results[4] && results[4].tables) || [];
-        renderDbSwitcher(results[2]);
-        renderWsSwitcher(results[5]);
+        state.columnMeta = results[2] || {};
+        state.systemTables = (results[3] && results[3].tables) || [];
+        renderWsSwitcher(results[4]);
         renderSidebar();
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
@@ -800,44 +795,44 @@ export const appJs = `
       var btn = document.getElementById('ws-button');
       var menu = document.getElementById('ws-menu');
       var nameEl = document.getElementById('ws-name');
-      var dbHost = document.getElementById('db-switcher-host');
       if (!wrap || !btn || !menu || !nameEl) return;
-      var list = (data && data.workspaces) || [];
-      // In workspace mode (a .lattice root with ≥1 workspace) the Workspaces
-      // switcher is the SINGLE switcher — the per-config database switcher is
-      // redundant there, so hide it. Without a root there are no workspaces, so
-      // the database switcher remains the fallback.
-      if (list.length < 1) {
-        wrap.hidden = true;
-        if (dbHost) dbHost.hidden = false;
-        return;
-      }
+      // The workspace switcher is the SINGLE switcher: every database — local or
+      // cloud, created or joined — is a workspace under the .lattice root, and
+      // the GUI always has a root (see ensureRootForGui). No database mode.
       wrap.hidden = false;
-      if (dbHost) dbHost.hidden = true;
+      var list = (data && data.workspaces) || [];
       var current = list.filter(function (w) { return w.id === (data && data.current); })[0];
       nameEl.textContent = (current && current.label) || 'workspace';
       var curKind = (current && current.kind) || 'local';
       setStatusPill(curKind, curKind === 'cloud' ? 'connecting' : 'local');
 
       function buildMenu() {
+        var currentId = data && data.current;
         var items = list.map(function (w) {
-          var isCurrent = w.id === (data && data.current);
+          var isCurrent = w.id === currentId;
+          var isCloud = w.kind === 'cloud';
+          var dotClass = isCloud ? 'is-cloud-connected' : '';
+          var chipText = isCloud ? 'Cloud' : 'Local';
+          var chipBg = isCloud ? 'var(--accent-soft)' : 'rgba(255,255,255,0.06)';
+          var chipColor = isCloud ? 'var(--accent)' : 'var(--text-muted)';
           return '<button class="db-item' + (isCurrent ? ' active' : '') +
             '" data-id="' + escapeHtml(w.id) + '">' +
+            '<span class="db-item-status db-status ' + dotClass + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
+              (isCloud ? 'var(--accent)' : 'var(--warn)') +
+            ';flex-shrink:0"></span>' +
             '<span style="flex:1;text-align:left">' + escapeHtml(w.label) + '</span>' +
-            '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,0.06);color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em">' + escapeHtml(w.kind) + '</span>' +
+            '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' + chipBg + ';color:' + chipColor + ';text-transform:uppercase;letter-spacing:0.04em">' + chipText + '</span>' +
             '</button>';
         }).join('');
         menu.innerHTML =
           '<div class="db-section">Workspaces</div>' + items +
-          '<div class="db-section">New workspace</div>' +
           '<div class="db-create">' +
             '<button class="btn primary" id="ws-create-btn" style="width:100%;">+ New workspace…</button>' +
           '</div>';
         menu.querySelectorAll('button.db-item').forEach(function (b) {
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-id');
-            if (id === (data && data.current)) { menu.hidden = true; return; }
+            if (id === currentId) { menu.hidden = true; return; }
             withBusy(b, function () {
               return fetchJson('/api/workspaces/switch', {
                 method: 'POST',
@@ -852,13 +847,11 @@ export const appJs = `
             });
           });
         });
-        document.getElementById('ws-create-btn').addEventListener('click', function (e) {
-          // Stop propagation: showCreateWorkspaceInput replaces .db-create's
-          // innerHTML, detaching THIS button. Without this, the click then
-          // bubbles to the document outside-click closer, whose
-          // menu.contains(e.target) is now false (target detached) → it would
-          // close the menu, so the create input never appears.
-          e.stopPropagation(); showCreateWorkspaceInput(menu);
+        // Create + Join both live in the 3-step wizard (local / cloud / join) —
+        // the single entry point for adding any workspace.
+        document.getElementById('ws-create-btn').addEventListener('click', function () {
+          menu.hidden = true;
+          showCreateDatabaseWizard();
         });
       }
 
@@ -881,125 +874,6 @@ export const appJs = `
           }
         });
       }
-    }
-
-    // Inline "new workspace" name entry, shown inside the Workspaces menu.
-    function showCreateWorkspaceInput(menu) {
-      var host = menu.querySelector('.db-create');
-      if (!host) return;
-      host.innerHTML =
-        '<input id="ws-new-name" type="text" placeholder="Workspace name" autocomplete="off" ' +
-          'style="width:100%;box-sizing:border-box;padding:7px 10px;margin-bottom:6px;' +
-          'background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px" />' +
-        '<button class="btn primary" id="ws-new-create" style="width:100%;">Create</button>';
-      var input = document.getElementById('ws-new-name');
-      var create = document.getElementById('ws-new-create');
-      input.focus();
-      function submit() {
-        var name = (input.value || '').trim();
-        if (!name) { input.focus(); return; }
-        withBusy(create, function () {
-          return fetchJson('/api/workspaces/create', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name: name }),
-          }).then(function () {
-            menu.hidden = true;
-            return reloadEverything();
-          }).then(function () {
-            showToast('Created workspace', {});
-          }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
-        });
-      }
-      create.addEventListener('click', submit);
-      input.addEventListener('click', function (e) { e.stopPropagation(); });
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); submit(); }
-        else if (e.key === 'Escape') { menu.hidden = true; }
-      });
-    }
-
-    function renderDbSwitcher(data) {
-      var btn = document.getElementById('db-button');
-      var menu = document.getElementById('db-menu');
-      var nameEl = document.getElementById('db-name');
-      if (!data) {
-        nameEl.textContent = '(no databases endpoint)';
-        return;
-      }
-      // Friendly DB name: prefer current.label (cloud team_name or YAML name:),
-      // fall back to the db file basename.
-      nameEl.textContent = (data.current && data.current.label) || data.current.dbFile || '';
-      // Initial status pill — overridden when the realtime SSE 'state'
-      // event arrives, but avoids a yellow flash before SSE connects.
-      var initialKind = (data.current && data.current.kind) || 'local';
-      setStatusPill(initialKind, initialKind === 'cloud' ? 'connecting' : 'local');
-
-      function buildMenu() {
-        var currentPath = data.current && data.current.path;
-        var currentKind = (data.current && data.current.kind) || 'local';
-        var items = data.configs.map(function (c) {
-          // Per-row kind comes from the server now (each config resolves
-          // its db: line to postgres → cloud, else local), so inactive
-          // cloud rows tag Cloud/green just like the selected one — no
-          // more defaulting every non-active row to Local/yellow.
-          var kind = c.kind || (c.path === currentPath ? currentKind : 'local');
-          var isCloud = kind === 'cloud';
-          var dotClass = isCloud ? 'is-cloud-connected' : '';
-          var chipText = isCloud ? 'Cloud' : 'Local';
-          var chipBg = isCloud ? 'var(--accent-soft)' : 'rgba(255,255,255,0.06)';
-          var chipColor = isCloud ? 'var(--accent)' : 'var(--text-muted)';
-          return '<button class="db-item' + (c.active ? ' active' : '') +
-            '" data-path="' + escapeHtml(c.path) + '">' +
-            '<span class="db-item-status db-status ' + dotClass + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
-              (isCloud ? 'var(--accent)' : 'var(--warn)') +
-            ';flex-shrink:0"></span>' +
-            '<span style="flex:1;text-align:left">' + escapeHtml(c.label || c.name) + '</span>' +
-            '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' + chipBg + ';color:' + chipColor + ';text-transform:uppercase;letter-spacing:0.04em">' + chipText + '</span>' +
-            '</button>';
-        }).join('');
-        menu.innerHTML =
-          '<div class="db-section">Workspaces</div>' +
-          items +
-          '<div class="db-section">New workspace</div>' +
-          '<div class="db-create">' +
-            '<button class="btn primary" id="db-create-btn" style="width:100%;">+ New workspace…</button>' +
-          '</div>';
-        menu.querySelectorAll('button.db-item').forEach(function (b) {
-          b.addEventListener('click', function () {
-            var path = b.getAttribute('data-path');
-            if (path === currentPath) { menu.hidden = true; return; }
-            withBusy(b, function () {
-              return fetchJson('/api/databases/switch', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ path: path }),
-              }).then(function () {
-                menu.hidden = true;
-                return reloadEverything();
-              }).then(function () {
-                showToast('Switched database', {});
-              }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
-            });
-          });
-        });
-        document.getElementById('db-create-btn').addEventListener('click', function () {
-          menu.hidden = true;
-          showCreateDatabaseWizard();
-        });
-      }
-
-      btn.onclick = function (e) {
-        e.stopPropagation();
-        if (menu.hidden) buildMenu();
-        menu.hidden = !menu.hidden;
-      };
-      document.addEventListener('click', function (e) {
-        if (menu.hidden) return;
-        if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
-          menu.hidden = true;
-        }
-      });
     }
 
     /** Reload icon overrides after a save, then re-render the current view. */
@@ -3648,7 +3522,7 @@ export const appJs = `
           // Join uses the existing invite-redeem modal (opened on Next), so no
           // name/entities steps — the DB name comes from the team you join.
           var nameField = kind === 'join' ? '' :
-            '<div class="field"><label>Database name</label>' +
+            '<div class="field"><label>Workspace name</label>' +
               '<input id="wiz-name" type="text" value="' + escapeHtml(wizState.name) +
               '" placeholder="e.g. my-research, design-system" maxlength="200" />' +
             '</div>';
@@ -3684,7 +3558,7 @@ export const appJs = `
                 '</label>' +
               '</div>' +
               '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
-                'Local databases are single-user SQLite files on your machine. Cloud databases are Postgres, can be shared with invited members, and stream realtime updates. Joining connects to a cloud DB you were invited to.' +
+                'Local workspaces are single-user SQLite files on your machine. Cloud workspaces are Postgres, can be shared with invited members, and stream realtime updates. Joining connects to a cloud workspace you were invited to.' +
               '</p>' +
             '</div>' +
             cloudBlock;
@@ -3792,14 +3666,14 @@ export const appJs = `
             // Join existing cloud: hand off to the invite-redeem modal, which
             // collects the cloud URL + invite token and connects.
             if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
-            if (!wizState.name.trim()) { alert('Database name is required'); return; }
+            if (!wizState.name.trim()) { alert('Workspace name is required'); return; }
             if (!/^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,199}$/.test(wizState.name.trim())) {
-              alert('Database name must start with a letter or digit and contain only letters, digits, spaces, dots, underscores, or hyphens'); return;
+              alert('Workspace name must start with a letter or digit and contain only letters, digits, spaces, dots, underscores, or hyphens'); return;
             }
             if (wizState.kind === 'cloud') {
               if (!/^postgres(ql)?:\\/\\//i.test(wizState.cloudUrl.trim())) { alert('Cloud URL must start with postgres://'); return; }
-              if (!wizState.email.trim()) { alert('Email is required for cloud databases'); return; }
-              if (!wizState.displayName.trim()) { alert('Display name is required for cloud databases'); return; }
+              if (!wizState.email.trim()) { alert('Email is required for cloud workspaces'); return; }
+              if (!wizState.displayName.trim()) { alert('Display name is required for cloud workspaces'); return; }
             }
             wizState.step = 2;
             render();
@@ -3828,7 +3702,7 @@ export const appJs = `
             close();
             return reloadEverything();
           }).then(function () {
-            showToast('Database "' + wizState.name + '" created', {});
+            showToast('Workspace "' + wizState.name + '" created', {});
           }).catch(function (err) {
             nextBtn.removeAttribute('disabled');
             nextBtn.textContent = 'Create';
@@ -3837,22 +3711,13 @@ export const appJs = `
         }
 
         function submitLocal() {
-          // Slug the name for the YAML filename; the friendly name goes
-          // into the new config's name: key via /api/dbconfig/rename
-          // after the create succeeds.
-          var slug = wizState.name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-          return fetchJson('/api/databases/create', {
+          // Create + activate a new local workspace in the registry (the single
+          // source of truth). The friendly name is the workspace display name —
+          // no separate slug/config-file/rename dance.
+          return fetchJson('/api/workspaces/create', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name: slug }),
-          }).then(function () {
-            // After the create, the active DB is the new one. Set the
-            // friendly name + add starter entities.
-            return fetchJson('/api/dbconfig/rename', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ name: wizState.name.trim() }),
-            });
+            body: JSON.stringify({ name: wizState.name.trim() }),
           }).then(function () {
             return createStarterEntities(wizState.entities);
           });
@@ -3956,15 +3821,17 @@ export const appJs = `
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(data),
             }).then(function (res) {
-              // Auto-switch to the joined cloud DB so it shows in the
-              // header dropdown and becomes active immediately — no
-              // manual page refresh needed.
-              var path = res && res.config_path;
-              if (!path) { refreshSettingsRoute(kind); return; }
-              return fetchJson('/api/databases/switch', {
+              // Auto-switch to the joined cloud workspace so it shows in the
+              // header switcher and becomes active immediately — no manual
+              // refresh. The join response carries the new workspace id.
+              var wsId = res && res.workspace_id;
+              if (!wsId) {
+                return reloadEverything().then(function () { refreshSettingsRoute(kind); });
+              }
+              return fetchJson('/api/workspaces/switch', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ path: path }),
+                body: JSON.stringify({ id: wsId }),
               })
                 .then(function () { return reloadEverything(); })
                 .then(function () { showToast('Joined "' + (res.team && res.team.name || 'workspace') + '" — switched to it', {}); });
@@ -4147,12 +4014,12 @@ export const appJs = `
     // Confirmation modal for the irreversible delete. Gated on typing the exact
     // database name; the OK button is solid red (destructive) and disabled until
     // the name matches. onDone(result) runs after a successful delete.
-    function confirmDeleteDatabase(path, label, onDone) {
-      var safeLabel = (label || '').trim() || 'this database';
+    function confirmDeleteDatabase(id, label, onDone) {
+      var safeLabel = (label || '').trim() || 'this workspace';
       var body =
         '<p style="margin:0 0 10px">Permanently delete <strong>' + escapeHtml(safeLabel) + '</strong>? ' +
-        'This removes its configuration and, for a local database, deletes the underlying SQLite file. ' +
-        'For a cloud database only the local connection is forgotten — the remote data is left untouched. ' +
+        'This removes it from this lattice and, for a local workspace, deletes the underlying SQLite file. ' +
+        'For a cloud workspace only the local connection is forgotten — the remote data is left untouched. ' +
         '<strong style="color:var(--danger)">This cannot be undone.</strong></p>' +
         '<p style="margin:0 0 6px;font-size:12px;color:var(--text-muted)">Type <strong>' + escapeHtml(safeLabel) + '</strong> to confirm:</p>' +
         '<input id="confirm-db-name" type="text" autocomplete="off" style="width:100%" />';
@@ -4170,11 +4037,11 @@ export const appJs = `
         },
         onSubmit: function (backdrop) {
           var v = (backdrop.querySelector('#confirm-db-name').value || '').trim();
-          if (v !== safeLabel) return Promise.reject(new Error('Type the database name exactly to confirm.'));
-          return fetch('/api/databases/delete', {
+          if (v !== safeLabel) return Promise.reject(new Error('Type the workspace name exactly to confirm.'));
+          return fetch('/api/workspaces/delete', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ path: path }),
+            body: JSON.stringify({ id: id }),
           })
             .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
             .then(function (res) {
@@ -4188,25 +4055,26 @@ export const appJs = `
     function renderDatabaseDangerZone(host) {
       if (!host) return;
       Promise.all([
-        fetchJson('/api/databases'),
+        fetchJson('/api/workspaces'),
         fetchJson('/api/dbconfig').catch(function () { return {}; }),
       ]).then(function (results) {
         var data = results[0];
         var cfg = results[1] || {};
-        var current = (data && data.current) || {};
-        var label = current.label || current.dbFile || '';
-        var path = current.path || '';
-        if (!path) { host.innerHTML = ''; return; }
+        var currentId = (data && data.current) || null;
+        var workspaces = (data && data.workspaces) || [];
+        var current = workspaces.filter(function (w) { return w.id === currentId; })[0] || {};
+        var label = current.label || '';
+        var id = current.id || '';
+        if (!id) { host.innerHTML = ''; return; }
 
-        // After tearing down / leaving the active DB, switch to another the
-        // operator still has and navigate off the (now-gone) page.
+        // After tearing down / leaving the active workspace, switch to another
+        // the operator still has and navigate off the (now-gone) page.
         var switchAway = function () {
-          var cur = (data && data.current && data.current.path) || null;
-          var target = ((data && data.configs) || []).filter(function (c) { return c.path !== cur; })[0];
+          var target = workspaces.filter(function (w) { return w.id !== currentId; })[0];
           var p = target
-            ? fetchJson('/api/databases/switch', {
+            ? fetchJson('/api/workspaces/switch', {
                 method: 'POST', headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ path: target.path }),
+                body: JSON.stringify({ id: target.id }),
               }).then(function () { return reloadEverything(); })
             : reloadEverything();
           return p.then(function () { location.hash = '#/'; renderRoute(); });
@@ -4254,17 +4122,17 @@ export const appJs = `
           });
           return;
         }
-        // Local / non-team cloud database: delete it.
+        // Local / non-team cloud workspace: delete it.
         host.innerHTML =
           '<div class="danger-zone">' +
             '<h3>Danger zone</h3>' +
             '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-              'Permanently delete this workspace. The configuration is removed and, for a local database, the underlying SQLite file is deleted. This cannot be undone.' +
+              'Permanently delete this workspace. It is removed from this lattice and, for a local workspace, the underlying SQLite file is deleted. This cannot be undone.' +
             '</p>' +
             '<button class="btn destructive" id="db-delete-btn">Delete workspace</button>' +
           '</div>';
         host.querySelector('#db-delete-btn').addEventListener('click', function () {
-          confirmDeleteDatabase(path, label, function () {
+          confirmDeleteDatabase(id, label, function () {
             // We just deleted the active workspace; the server switched to a
             // fallback. Re-render the drawer's Workspace-settings tab so it
             // reflects the NEW active workspace — previously this rendered into
@@ -4281,16 +4149,17 @@ export const appJs = `
     }
 
     function renderDatabaseNamePanel(host) {
-      // Pull the friendly name from /api/databases and the team role from
+      // Pull the friendly name from /api/workspaces and the team role from
       // /api/dbconfig (isCreator) so a non-owner member sees the name
       // read-only — renaming a team cloud broadcasts to every member, so
       // only the owner may do it.
-      Promise.all([fetchJson('/api/databases'), fetchJson('/api/dbconfig').catch(function () { return {}; })])
+      Promise.all([fetchJson('/api/workspaces'), fetchJson('/api/dbconfig').catch(function () { return {}; })])
         .then(function (results) {
         var data = results[0];
         var cfg = results[1] || {};
-        var current = (data && data.current) || {};
-        var name = current.label || current.dbFile || '';
+        var currentId = (data && data.current) || null;
+        var current = ((data && data.workspaces) || []).filter(function (w) { return w.id === currentId; })[0] || {};
+        var name = current.label || '';
         var isCloud = current.kind === 'cloud';
         var kind = isCloud ? 'Cloud' : 'Local';
         // Members (cloud, non-creator) can't rename. Locals + creators can.
@@ -4308,11 +4177,11 @@ export const appJs = `
             '</div>' +
             '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
               (canRename
-                ? ('Friendly database name shown in the topbar and the dropdown. ' +
+                ? ('Friendly workspace name shown in the topbar and the dropdown. ' +
                   (isCloud
-                    ? 'For cloud databases, the rename is broadcast to every member in realtime.'
-                    : 'Saved to the YAML config\\'s name: key.'))
-                : 'Only the workspace owner can rename this cloud database.') +
+                    ? 'For cloud workspaces, the rename is broadcast to every member in realtime.'
+                    : 'Saved to the workspace registry (and the config name: key).'))
+                : 'Only the workspace owner can rename this cloud workspace.') +
             '</p>' +
             '<div id="db-name-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
@@ -4332,14 +4201,14 @@ export const appJs = `
               .then(function (d) {
                 if (d.error) { msg.textContent = 'Failed: ' + d.error; return; }
                 msg.textContent = 'Saved.';
-                // Refresh the topbar dropdown so the new name shows.
-                return fetchJson('/api/databases').then(renderDbSwitcher);
+                // Refresh the topbar switcher so the new name shows.
+                return fetchJson('/api/workspaces').then(renderWsSwitcher);
               })
               .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
           });
         });
       }).catch(function (err) {
-        host.innerHTML = '<div class="placeholder">Failed to load database name: ' + escapeHtml(err.message) + '</div>';
+        host.innerHTML = '<div class="placeholder">Failed to load workspace name: ' + escapeHtml(err.message) + '</div>';
       });
     }
 
@@ -4347,25 +4216,22 @@ export const appJs = `
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Lattice Settings</h2>' +
-          '<p class="lead">Every database this lattice can switch to. This is the same list as the header dropdown.</p>' +
-          '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading databases…</div></div>' +
+          '<p class="lead">Every workspace this lattice can switch to. This is the same list as the header dropdown.</p>' +
+          '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading workspaces…</div></div>' +
         '</div>';
       var host = document.getElementById('lattice-dbs-host');
-      // Source the SAME list the header dropdown uses (/api/databases) so the
-      // two are always 1:1, listed by readable label rather than the raw file.
-      fetchJson('/api/databases').then(function (data) {
-        var current = data.current || {};
-        var rows = (data.configs || []).map(function (c) {
-          var kind = c.active
-            ? (current.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)')
-            : '—';
-          var rowLabel = c.label || c.name;
-          // No per-row Delete / Action column (1.16.3) — rows are click-to-switch;
-          // deletion lives in Workspace Settings → Danger Zone.
-          return '<tr' + (c.active ? '' : ' class="ws-row" data-switch-path="' + escapeHtml(c.path) + '"') + '>' +
-            '<td>' + escapeHtml(rowLabel) + (c.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
+      // Single source of truth: the workspace registry (same as the header switcher).
+      fetchJson('/api/workspaces').then(function (data) {
+        var currentId = (data && data.current) || null;
+        var workspaces = (data && data.workspaces) || [];
+        var rows = workspaces.map(function (w) {
+          var isActive = w.id === currentId;
+          var kind = w.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)';
+          // Rows are click-to-switch; deletion lives in Workspace Settings → Danger Zone.
+          return '<tr' + (isActive ? '' : ' class="ws-row" data-switch-id="' + escapeHtml(w.id) + '"') + '>' +
+            '<td>' + escapeHtml(w.label) + (isActive ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>' + kind + '</td>' +
-            '<td><code>' + escapeHtml(c.dbFile || '') + '</code></td>' +
+            '<td><code>' + escapeHtml(w.dir || '') + '</code></td>' +
           '</tr>';
         }).join('');
         host.innerHTML =
@@ -4375,14 +4241,14 @@ export const appJs = `
               '<button class="btn primary" id="action-add-db">+ Add new workspace</button>' +
             '</div>' +
             '<table style="width:100%;border-collapse:collapse">' +
-              '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>File / source</th></tr></thead>' +
+              '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>Location</th></tr></thead>' +
               '<tbody>' + (rows || '<tr><td colspan="3" style="padding:8px;color:var(--text-muted)">No workspaces configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
-        host.querySelectorAll('tr.ws-row[data-switch-path]').forEach(function (row) {
+        host.querySelectorAll('tr.ws-row[data-switch-id]').forEach(function (row) {
           row.addEventListener('click', function () {
-            var configPath = row.getAttribute('data-switch-path');
-            fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
+            var id = row.getAttribute('data-switch-id');
+            fetch('/api/workspaces/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: id }) })
               .then(function (r) { return r.json(); })
               .then(function () { return reloadEverything(); })
               .then(function () { renderLatticeSettings(document.getElementById('content')); });
@@ -4390,7 +4256,7 @@ export const appJs = `
         });
         host.querySelector('#action-add-db').addEventListener('click', showCreateDatabaseWizard);
       }).catch(function (err) {
-        host.innerHTML = '<div class="placeholder">Failed to load databases: ' + escapeHtml(err.message) + '</div>';
+        host.innerHTML = '<div class="placeholder">Failed to load workspaces: ' + escapeHtml(err.message) + '</div>';
       });
     }
 
@@ -4406,7 +4272,7 @@ export const appJs = `
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">' +
-              '<h3 style="margin:0">Database</h3>' +
+              '<h3 style="margin:0">Database connection</h3>' +
               badge +
             '</div>' +
             body +

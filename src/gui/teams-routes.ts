@@ -4,6 +4,12 @@ import { dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { deleteDbCredential, saveDbCredentialForTeam } from '../framework/user-config.js';
 import { parseConfigFile } from '../config/parser.js';
+import { findLatticeRoot } from '../framework/lattice-root.js';
+import {
+  registerOrUpdateCloudWorkspace,
+  removeWorkspaceByConfigPath,
+} from '../framework/workspace.js';
+import { resolveContextDirForConfig } from '../framework/gui-bootstrap.js';
 import { sendJson, readJson } from './http.js';
 import { TeamsClient, TeamsHttpError, type TeamConnection } from '../teams/client.js';
 import { serializeSchema } from '../teams/schema-spec.js';
@@ -19,6 +25,7 @@ import { serializeSchema } from '../teams/schema-spec.js';
 function removeTeamConfigForCloud(ctx: TeamsGuiContext, cloudUrl: string): void {
   try {
     const dir = dirname(ctx.configPath);
+    const root = findLatticeRoot(dir);
     for (const fname of readdirSync(dir)) {
       if (!fname.endsWith('.yml') && !fname.endsWith('.yaml')) continue;
       const full = join(dir, fname);
@@ -40,6 +47,8 @@ function removeTeamConfigForCloud(ctx: TeamsGuiContext, cloudUrl: string): void 
           // credential already gone — fine
         }
       }
+      // Drop the registry record so the workspace leaves the header switcher.
+      if (root) removeWorkspaceByConfigPath(root, full);
       rmSync(full, { force: true });
     }
   } catch {
@@ -435,13 +444,47 @@ async function handleJoin(
     cloudUrl,
   });
   const configYamlPath = writeTeamConfigYaml(ctx.configPath, credentialLabel, result.team.name);
+  // Register the joined cloud DB as a workspace so it appears in the header
+  // switcher and is switchable. The registry is the single source of truth —
+  // without this the joined workspace would only show in the legacy config
+  // scan, never the workspace list (the bug this fixes).
+  const workspaceId = registerJoinedCloudWorkspace(
+    ctx.configPath,
+    configYamlPath,
+    credentialLabel,
+    result.team.name,
+  );
   sendJson(res, {
     ok: true,
     team: result.team,
     user: result.user,
     credential_label: credentialLabel,
     config_path: configYamlPath,
+    ...(workspaceId ? { workspace_id: workspaceId } : {}),
   });
+}
+
+/**
+ * Register a joined/created cloud DB (behind a saved credential label) as a
+ * workspace in the `.lattice` registry. Returns the workspace id, or null when
+ * the GUI is not running inside a root (should not happen for `lattice gui`).
+ */
+function registerJoinedCloudWorkspace(
+  activeConfigPath: string,
+  configYamlPath: string,
+  credentialLabel: string,
+  teamName: string,
+): string | null {
+  const root = findLatticeRoot(dirname(activeConfigPath));
+  if (!root) return null;
+  const ws = registerOrUpdateCloudWorkspace(root, {
+    configPath: configYamlPath,
+    contextDir: resolveContextDirForConfig(configYamlPath),
+    displayName: teamName,
+    db: '${LATTICE_DB:' + credentialLabel + '}',
+    makeActive: false,
+  });
+  return ws.id;
 }
 
 async function handleRegisterAndCreate(
@@ -466,7 +509,28 @@ async function handleRegisterAndCreate(
     my_user_id: reg.user.id,
     api_token: reg.raw_token,
   });
-  sendJson(res, { ok: true, team: reg.team, user: reg.user });
+  // Persist the created cloud DB as a switchable workspace (parallel to join):
+  // encrypted credential + managed sibling config + registry record.
+  const credentialLabel = saveDbCredentialForTeam({
+    teamName: reg.team.name,
+    teamId: reg.team.id,
+    cloudUrl,
+  });
+  const configYamlPath = writeTeamConfigYaml(ctx.configPath, credentialLabel, reg.team.name);
+  const workspaceId = registerJoinedCloudWorkspace(
+    ctx.configPath,
+    configYamlPath,
+    credentialLabel,
+    reg.team.name,
+  );
+  sendJson(res, {
+    ok: true,
+    team: reg.team,
+    user: reg.user,
+    credential_label: credentialLabel,
+    config_path: configYamlPath,
+    ...(workspaceId ? { workspace_id: workspaceId } : {}),
+  });
 }
 
 async function handleLeave(

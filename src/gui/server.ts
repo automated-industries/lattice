@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -13,13 +14,14 @@ import { parseDocument } from 'yaml';
 import { sendJson, readJson } from './http.js';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
-import { findLatticeRoot } from '../framework/lattice-root.js';
+import { findLatticeRoot, workspaceDir } from '../framework/lattice-root.js';
 import {
   listWorkspaces,
   getActiveWorkspace,
   setActiveWorkspace,
   getWorkspace,
   addWorkspace,
+  removeWorkspace,
   resolveWorkspacePaths,
 } from '../framework/workspace.js';
 import type { LatticeFieldDef } from '../config/types.js';
@@ -88,7 +90,7 @@ import {
   listNativeBindings,
   isNativeEntity,
 } from '../framework/native-entities.js';
-import { getOrCreateMasterKey, readIdentity } from '../framework/user-config.js';
+import { getOrCreateMasterKey, readIdentity, deleteDbCredential } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres } from './count-many.js';
 
@@ -2872,6 +2874,109 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           await disposeActive(active);
           active = newActive;
           sendJson(res, { ok: true, id: created.id });
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/workspaces/delete') {
+          if (teamCloud) {
+            sendJson(res, { error: 'Workspace deletion is disabled in team-cloud mode' }, 403);
+            return;
+          }
+          if (!latticeRoot) {
+            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { id?: unknown };
+          if (typeof body.id !== 'string') {
+            sendJson(res, { error: 'id must be a string' }, 400);
+            return;
+          }
+          const ws = getWorkspace(latticeRoot, body.id);
+          if (!ws) {
+            sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
+            return;
+          }
+          const wsPaths = resolveWorkspacePaths(latticeRoot, ws);
+          const isActive = resolve(active.configPath) === resolve(wsPaths.configPath);
+          // Owner-only when deleting the active cloud workspace (team creator).
+          if (isActive && active.teamContext && !active.teamContext.isCreator) {
+            sendJson(res, { error: 'Only the workspace owner can delete this workspace' }, 403);
+            return;
+          }
+          // Switch away from the active workspace first so file handles release
+          // and the server keeps a live DB.
+          let switchedTo: string | null = null;
+          if (isActive) {
+            const fallback = listWorkspaces(latticeRoot).find((w) => w.id !== ws.id);
+            if (!fallback) {
+              sendJson(
+                res,
+                {
+                  error:
+                    'Cannot delete the only workspace. Create or add another workspace first, then delete this one.',
+                },
+                400,
+              );
+              return;
+            }
+            const fbPaths = resolveWorkspacePaths(latticeRoot, fallback);
+            let next: ActiveDb;
+            try {
+              next = await openConfig(fbPaths.configPath, fbPaths.contextDir, autoRender);
+            } catch (e) {
+              const err = e as Error & { code?: string };
+              const codePrefix = err.code ? `[${err.code}] ` : '';
+              sendJson(
+                res,
+                {
+                  error: `Cannot delete: failed to switch to ${fallback.displayName} first: ${codePrefix}${err.message}`,
+                },
+                500,
+              );
+              return;
+            }
+            setActiveWorkspace(latticeRoot, fallback.id);
+            await disposeActive(active);
+            active = next;
+            switchedTo = fallback.id;
+          }
+          // Drop the registry record, then clean up files (Rule 16: loud on failure).
+          removeWorkspace(latticeRoot, ws.id);
+          try {
+            if (!ws.configPath && ws.kind === 'local') {
+              // Scaffolded local workspace: remove its whole folder (config+db+context).
+              rmSync(workspaceDir(latticeRoot, ws.dir), { recursive: true, force: true });
+            } else if (ws.kind === 'cloud') {
+              // Cloud workspace: forget the LOCAL pointer only — never touch the
+              // shared remote Postgres. Remove the managed sibling config (if any)
+              // and drop the saved credential when no other workspace uses it.
+              if (ws.configPath && existsSync(ws.configPath)) {
+                rmSync(ws.configPath, { force: true });
+              }
+              const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
+              const label = labelMatch?.[1];
+              if (label) {
+                const stillUsed = listWorkspaces(latticeRoot).some((w) =>
+                  w.db.includes('${LATTICE_DB:' + label + '}'),
+                );
+                if (!stillUsed) {
+                  try {
+                    deleteDbCredential(label);
+                  } catch {
+                    // credential already gone — fine
+                  }
+                }
+              }
+            }
+            // Adopted local workspaces: leave the user's files in place (non-destructive).
+          } catch (e) {
+            sendJson(
+              res,
+              { error: `Workspace unregistered but file cleanup failed: ${(e as Error).message}` },
+              500,
+            );
+            return;
+          }
+          sendJson(res, { ok: true, switchedTo });
           return;
         }
 

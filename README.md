@@ -2095,12 +2095,23 @@ a parent link, while the reverse side (other entities that point here) plus
 many-to-many junctions become the drill-in sub-folders. Declare `ref:` on your
 foreign-key fields to get the nested file tree.
 
-The header carries the logo, undo/redo, the workspace (database) switcher, and a
-**settings gear** (top-right). The gear opens a slide-over drawer with **Database**,
+The header carries the logo, undo/redo, the **workspace switcher**, and a
+**settings gear** (top-right). The gear opens a slide-over drawer with **Workspace**,
 **Lattice**, and **User** settings plus an **Advanced mode** toggle. Turn Advanced
 mode on to switch the object/row views back to the classic editable **table + row**
 interface (below); turn it off for the file-system workspace. The left sidebar is
 slim and collapsible. The assistant rail is unchanged in either mode.
+
+**One workspace model (v1.16.4+).** A workspace _is_ a Lattice DB. The header has a
+single workspace switcher listing every database — local or cloud, created or joined —
+and its "+ New workspace…" button opens the create/join wizard (New local / New cloud /
+Join existing cloud). The GUI always operates inside a `.lattice` root: opening a bare
+config adopts it (and its database, referenced in place — nothing is moved) as the
+active workspace. There is no separate "database mode". The word "database" is reserved
+for a specific workspace's connection details (the connection panel in Workspace
+Settings). This applies to the GUI/CLI app only — the `latticesql` library API and the
+headless `render`/`generate`/`watch` commands still run against a bare config or
+Postgres URL with no root.
 
 ### Assistant sidebar (v2.0+)
 
