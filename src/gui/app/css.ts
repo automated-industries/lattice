@@ -23,7 +23,6 @@ export const css = `
       --danger: #ef4444;
       --danger-deep: #dc2626;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-      --sidebar-width: 380px;
       --nav-width: 220px;
     }
     * { box-sizing: border-box; }
@@ -244,30 +243,11 @@ export const css = `
        minimum keeps the track at content-width and the whole page scrolls
        horizontally. */
     .layout {
-      display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--sidebar-width);
+      display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr);
       height: calc(100vh - 56px);
     }
-    .rail-handle { display: none; }
     @media (max-width: 720px) {
-      /* The activity rail becomes a bottom drawer: tap the handle to expand
-         the feed to ~62svh. */
-      .layout { grid-template-columns: var(--nav-width) minmax(0, 1fr); }
-      .assistant-rail {
-        position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-        border-left: none; border-top: 1px solid var(--border);
-        max-height: 62svh; box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
-      }
-      .rail-resize { display: none; }
-      .rail-handle {
-        display: block; flex: 0 0 auto; height: 22px; cursor: pointer; position: relative;
-      }
-      .rail-handle::after {
-        content: ''; position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
-        width: 40px; height: 4px; border-radius: 2px; background: var(--border-strong);
-      }
-      .assistant-rail:not(.expanded) { max-height: none; }
-      .assistant-rail:not(.expanded) .rail-feed { display: none; }
-      main#content { padding-bottom: 96px; }
+      main#content { padding-bottom: 24px; }
     }
     nav.sidebar {
       background: var(--surface); border-right: 1px solid var(--border);
@@ -290,51 +270,6 @@ export const css = `
     nav li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
 
     main#content { padding: 24px; overflow: auto; }
-
-    /* ── Assistant rail (activity feed) ────────────────── */
-    .assistant-rail {
-      position: relative;
-      background: var(--surface);
-      border-left: 1px solid var(--border);
-      display: flex; flex-direction: column;
-      min-width: 0; overflow: hidden;
-    }
-    .rail-resize {
-      position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
-      cursor: col-resize; background: transparent; z-index: 5;
-      transition: background-color 120ms;
-    }
-    .rail-resize:hover, .rail-resize.dragging { background: var(--accent-soft); }
-    .rail-header {
-      flex: 0 0 auto; padding: 12px 14px; border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; gap: 8px;
-    }
-    .rail-title {
-      font-size: 11px; font-weight: 600; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto;
-    }
-    .rail-feed {
-      flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
-      display: flex; flex-direction: column; gap: 8px;
-    }
-    .rail-empty { color: var(--text-muted); font-size: 12.5px; text-align: center; padding: 18px 8px; }
-    .feed-item {
-      display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px;
-      align-items: baseline; padding: 7px 9px; border-radius: 8px;
-      background: var(--surface-2); border: 1px solid var(--border);
-      animation: feedIn 0.18s ease-out;
-    }
-    @keyframes feedIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-    .feed-icon { text-align: center; font-size: 13px; }
-    .feed-body { min-width: 0; }
-    .feed-summary { font-size: 13px; color: var(--text); word-break: break-word; }
-    .feed-meta { margin-top: 2px; display: flex; align-items: center; gap: 6px; }
-    .feed-source {
-      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-      padding: 1px 6px; border-radius: 999px;
-      background: var(--accent-soft); color: var(--accent);
-    }
-    .feed-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 
     /* ── File preview (files detail page) ──────────────── */
     .file-preview { margin: 4px 0 16px; }

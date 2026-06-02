@@ -72,7 +72,7 @@ async function seedChain(base: string): Promise<{ authorId: string; bookId: stri
 test('clicking an object shows its rows as a folder grid', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Default mode: the sidebar object link points at the file-system route.
   const navLink = page.locator('#object-nav a').first();
