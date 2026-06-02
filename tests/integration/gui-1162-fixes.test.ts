@@ -87,16 +87,18 @@ describe('1.16.2 — C/D/E: served bundle ships the new UI', () => {
   it('includes the simple-view create form, cloud member/invite/danger UI, and clickable db rows', async () => {
     const s = await boot();
     const html = await (await fetch(`${s.url}/`)).text();
-    // C — create tile + modal + dashed tile style.
-    expect(html).toContain('data-fs-create');
-    expect(html).toContain('openFsCreateModal');
+    // C — create tile + (1.16.3) inline create view (modal retired).
     expect(html).toContain('fs-tile-create');
+    expect(html).toContain('renderFsCreate');
+    expect(html).toContain('fs-create-form');
+    expect(html).not.toContain('openFsCreateModal');
     // D2 — invite-member flow + redacted connection string block.
     expect(html).toContain('Invite member');
     expect(html).toContain('copy-conn');
     // D3 — Danger Zone disconnect (owner) / leave (member).
+    // (1.16.3 reworded "Leave team" → "Leave workspace" per the team deprecation.)
     expect(html).toContain('Disconnect from cloud');
-    expect(html).toContain('Leave team');
+    expect(html).toContain('Leave workspace');
     // E — clickable rows, no per-row Switch button.
     expect(html).toContain('data-switch-path');
     expect(html).not.toContain('>Switch</button>');

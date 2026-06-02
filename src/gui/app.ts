@@ -91,7 +91,7 @@ export const guiAppHtml = `<!doctype html>
       <button class="drawer-close" id="drawer-close" title="Close" aria-label="Close settings">✕</button>
     </div>
     <div class="drawer-tabs" id="drawer-tabs">
-      <button class="drawer-tab" data-tab="database">Database</button>
+      <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>
