@@ -131,13 +131,13 @@ All routes live on the cloud Postgres-backed Lattice booted via `lattice gui --t
 
 ---
 
-## Local → Cloud → Team-Cloud progression (v1.13+)
+## Local → Cloud-Workspace progression (v1.13+, reframed in v1.16.3)
 
-The GUI's Database panel models the project lifecycle as a one-way state machine: a project starts on local SQLite, can be promoted to a BYO Postgres (data migration), and a non-team cloud can be upgraded to a team cloud. There is no revert path in the UI.
+The GUI's Database panel models the project lifecycle as a one-way state machine: a project starts on local SQLite and can be promoted to a BYO Postgres. As of v1.16.3 a cloud database **is** a cloud workspace with members — there is no separate "upgrade to team" step and no intermediate `cloud-connected` state. Migrating or connecting to Postgres initializes the workspace's member/share machinery automatically (the opener becomes owner). There is no revert path in the UI.
 
 ```
-LOCAL  →  CLOUD CONNECTED  →  TEAM CLOUD (creator | member | needs-invite)
-       migrate              upgrade / connect-existing+invite
+LOCAL  →  CLOUD WORKSPACE (creator | member | needs-invite)
+       migrate / connect-existing (+invite)
 ```
 
 State detection (returned by `GET /api/dbconfig` as the `state` field; `isCreator`, `teamId`, and `myUserId` are returned alongside it for the SPA's member-admin UI):
@@ -145,12 +145,13 @@ State detection (returned by `GET /api/dbconfig` as the `state` field; `isCreato
 | State                     | Detection                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `local`                   | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                     |
-| `cloud-connected`         | YAML resolves to a Postgres URL, `__lattice_team_identity` row absent.                                                             |
-| `team-cloud-creator`      | YAML is cloud, identity row present, and the operator's resolved identity is a team member whose user id matches the team creator. |
+| `team-cloud-creator`      | YAML is cloud, identity row present, and the operator's resolved identity is a member whose user id matches the workspace creator. |
 | `team-cloud-member`       | YAML is cloud, identity row present, operator is a member but not the creator.                                                     |
 | `team-cloud-needs-invite` | YAML is cloud, identity row present, but the operator is **not** a member (no `__lattice_team_members` row resolves for them).     |
 
-> **v1.14 change:** membership is now the authoritative signal — the state is derived from whether the operator's identity resolves to a live `__lattice_team_members` row, not from whether a `~/.lattice/keys/<label>.token` file happens to be on disk. This stopped an already-joined member from being shown the "paste invite token to join" panel.
+> **v1.16.3 change:** the `cloud-connected` state was removed. A Postgres-backed database whose `__lattice_team_identity` row is absent now initializes that row automatically (on migrate, connect, or open), so it resolves directly to one of the three `team-cloud-*` states rather than sitting in an intermediate "connected but not a workspace" state. The SPA badge labels these "CLOUD · OWNER / MEMBER / NEEDS INVITE".
+>
+> **v1.14 change:** membership is the authoritative signal — the state is derived from whether the operator's identity resolves to a live `__lattice_team_members` row, not from whether a `~/.lattice/keys/<label>.token` file happens to be on disk. This stopped an already-joined member from being shown the "paste invite token to join" panel.
 
 ### Transition: Local → Cloud (migrate)
 
@@ -173,14 +174,15 @@ Driven by `POST /api/dbconfig/connect-existing`. Used when a teammate has alread
 2. If `teamEnabled: true`, requires `invite_token` in the body. The handler resolves email + display name from `~/.lattice/identity.json`, calls `TeamsClient.connectToExistingCloud()` which internally runs `POST /api/auth/redeem-invite` against the cloud.
 3. On success the bearer lands in `~/.lattice/keys/<label>.token` and the credential in `db-credentials.enc`. The YAML is rewritten, active Lattice swapped.
 
-### Transition: Cloud → Team Cloud (upgrade)
+### Automatic workspace initialization (v1.16.3)
 
-Driven by `POST /api/dbconfig/upgrade-to-team`. Available only when the panel is in `cloud-connected` state.
+There is no longer an explicit "upgrade to team" transition. The member/share machinery (`__lattice_users` / `__lattice_api_tokens` / `__lattice_team` / `__lattice_team_members` / `__lattice_team_identity` + bearer + saved connection) is created automatically at three points:
 
-1. Reads cloud URL from the saved credential (looked up by the active label).
-2. Reads identity from `~/.lattice/identity.json` (refuses if email or display name is empty).
-3. Calls `TeamsClient.upgradeToTeamCloud()` which runs the atomic `POST /api/auth/register` flow against the cloud — creates the user, the team, the creator membership, and the bearer in one call.
-4. Writes the bearer to `~/.lattice/keys/<label>.token`. Swaps the active Lattice so the panel re-renders into `team-cloud-creator`.
+1. **Migrate-to-cloud** — after the data copy succeeds, the migrating operator becomes the workspace owner.
+2. **Connect-to-existing** — if the target cloud has no `__lattice_team_identity` yet, the connecting operator initializes it as owner.
+3. **On open** — opening a Postgres-backed database that lacks `__lattice_team_identity` initializes it lazily (opener = owner).
+
+All three call `TeamsClient.ensureCloudWorkspaceIdentity({ label, cloudUrl, workspaceName, email, displayName })` (idempotent — a no-op if the cloud is already a workspace; the workspace name defaults to the database label). It refuses only when the operator has no identity email (clear error → set it in User Settings), and a duplicate-identity race is treated as "already a workspace". The `POST /api/dbconfig/upgrade-to-team` route was removed.
 
 ### v1.13 HTTP routes (thin wrappers over the public API)
 
@@ -190,9 +192,8 @@ Driven by `POST /api/dbconfig/upgrade-to-team`. Available only when the panel is
 | POST   | `/api/dbconfig/probe`            | `probeCloud(url)` from `latticesql/framework/cloud-connect`                             |
 | POST   | `/api/dbconfig/migrate-to-cloud` | `migrateLatticeData` + `archiveLocalSqlite` from `latticesql/framework/cloud-migration` |
 | POST   | `/api/dbconfig/connect-existing` | `TeamsClient.connectToExistingCloud`                                                    |
-| POST   | `/api/dbconfig/upgrade-to-team`  | `TeamsClient.upgradeToTeamCloud`                                                        |
 
-All five are reachable as public functions from the `latticesql` package — the frontend is just a wrapper.
+All are reachable as public functions from the `latticesql` package — the frontend is just a wrapper.
 
 ---
 
@@ -228,22 +229,22 @@ Subcommands:
 
 ## GUI (v1.14+)
 
-`lattice gui` (no `--team-cloud`) drives the same flows from a browser. As of v1.14 the settings sidebar has three entries and **Database Settings is the hub for everything about the active database** — there is no separate "Teams" or "Project Config" page:
+`lattice gui` (no `--team-cloud`) drives the same flows from a browser. As of v1.14 the settings sidebar has three entries and **Workspace Settings is the hub for everything about the active database** — there is no separate "Teams" or "Project Config" page:
 
-- **Lattice Settings** — the catalog of every database this lattice can switch to (the same list as the header dropdown), plus an Add-new-database entry. Each row shows a Local | Cloud tag.
-- **Database Settings** — everything about the _active_ database:
+- **Lattice Settings** — the catalog of every database this lattice can switch to (the same list as the header dropdown), plus an Add-new-database entry. Each row shows a Local | Cloud tag, and is click-to-switch (no per-row Delete — deletion lives in each workspace's Danger Zone).
+- **Workspace Settings** — everything about the _active_ database:
   - **Name** — editable for the owner; read-only for members. Cloud renames write `__lattice_team_identity.team_name` and broadcast to every member in realtime; local renames write a `name:` key into the YAML.
-  - **Database** — connection summary + state badge. For a team cloud it shows the **Members** list inline (the owner is always listed as `creator`, and your own row is marked "(you)").
-  - **Data Model** — the entity graph (moved here from a separate nav item), including the native `files`/`secrets` objects, with a **Share with team / Unshare** toggle on each table you own.
+  - **Database** — connection summary + state badge. For a cloud workspace it shows the **Members** list inline, including **pending invitees** who haven't joined yet (the owner is always listed as `creator`, and your own row is marked "(you)").
+  - **Data Model** — the entity graph (moved here from a separate nav item), including the native `files`/`secrets` objects, with a **Share with workspace / Make private** toggle on each table you own and nodes colored by share status (yellow = shared, red = private, green = selected).
 - **User Settings** — identity (`~/.lattice/identity.json`) + machine-local preferences. The Join-via-invite modal pulls your email + display name from here read-only, so you always join as yourself.
 
-Member administration is resolved against the active cloud database (team id + your user id + role come from `GET /api/dbconfig`), so it works whether the team cloud itself is the active DB or you're on a local DB with a saved connection:
+Member administration is resolved against the active cloud database (workspace id + your user id + role come from `GET /api/dbconfig`), so it works whether the cloud workspace itself is the active DB or you're on a local DB with a saved connection:
 
-- **Invite** (owner only) generates an email-bound `latinv_` token.
+- **Invite** (owner only) generates an email-bound `latinv_` token. Pending invitees appear in the Members list until redeemed (`GET /api/teams/:id/invitations`).
 - **Kick** (owner only) removes another member; the button is hidden for non-owners and the route 403s them.
-- **Leave** (your own row, member) / **Destroy team** (your own row, owner) removes you from the team. Leaving tears down the local config + saved credential so the database disappears from the dropdown and is no longer reachable, then switches you to another database.
+- **Leave** (your own row, member) / **Disconnect** (owner, Danger Zone) removes you from the workspace. Leaving tears down the local config + saved credential so the database disappears from the dropdown and is no longer reachable, then switches you to another database.
 
-The GUI is localhost-only and unauthenticated by default. `--team-cloud` mode swaps the dev-tool surface for the bearer-gated team routes.
+The GUI is localhost-only and unauthenticated by default. `--team-cloud` mode swaps the dev-tool surface for the bearer-gated cloud routes.
 
 ---
 

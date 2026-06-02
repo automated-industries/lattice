@@ -96,9 +96,13 @@ function parsePostgresUrl(url: string): {
   }
 }
 
+// 1.16.3: the 'cloud-connected' state was removed when the "team" concept was
+// deprecated — every cloud Postgres DB is a cloud workspace with members
+// (auto-initialized), so there is no plain "connected but not a team" state.
+// The 'team-cloud-*' keys are retained as internal plumbing names; the GUI
+// renders them with neutral "cloud workspace" wording (no "team").
 export type DbConfigState =
   | 'local'
-  | 'cloud-connected'
   | 'team-cloud-creator'
   | 'team-cloud-member'
   | 'team-cloud-needs-invite';
@@ -144,8 +148,11 @@ function computeState(
   creatorEmail: string | null,
 ): DbConfigState {
   if (type === 'sqlite') return 'local';
-  if (!teamEnabled) return 'cloud-connected';
-  // teamEnabled + postgres: need to disambiguate creator/member/needs-invite.
+  // A cloud DB that isn't initialized yet (auto-init couldn't run — no
+  // identity email, or a raw db: URL with no label). The GUI renders this as
+  // "this cloud workspace needs setup / paste an invite", not "upgrade to team".
+  if (!teamEnabled) return 'team-cloud-needs-invite';
+  // teamEnabled + postgres: disambiguate owner/member/needs-invite.
   if (!label) {
     // Postgres with team identity but no label in db-credentials.enc.
     // Operator pasted a raw URL; we can't look up a token by label,
@@ -515,6 +522,25 @@ export async function dispatchDbConfigRoute(
         const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;
         const backupPath = archiveLocalSqlite(sourceDbPath);
         saveDbCredential(parsed.label, url);
+        // 1.16.3: a cloud workspace IS a cloud DB with members — there is no
+        // separate "team" to upgrade to. Auto-initialize the member/share
+        // machinery now so sharing works immediately; the migrator becomes the
+        // owner. Best-effort: a failure leaves a usable plain cloud DB (the
+        // operator can set their email and reopen to initialize it).
+        try {
+          const identity = readIdentity();
+          if (identity.email) {
+            await new TeamsClient(ctx.db).ensureCloudWorkspaceIdentity({
+              label: parsed.label,
+              cloudUrl: url,
+              workspaceName: parsed.label,
+              email: identity.email,
+              displayName: identity.display_name,
+            });
+          }
+        } catch {
+          // leave as a plain cloud DB; lazy-init on next open will retry
+        }
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         await ctx.swap();
         sendJson(res, {
@@ -566,6 +592,23 @@ export async function dispatchDbConfigRoute(
           ...(identity.email ? { email: identity.email } : {}),
           ...(identity.display_name ? { name: identity.display_name } : {}),
         });
+        // 1.16.3: connecting to a raw cloud DB that isn't a workspace yet
+        // initializes it (the connector becomes owner) — no "upgrade" step.
+        // Joining an existing workspace via invite is handled inside
+        // connectToExistingCloud (teamEnabled branch) and is left untouched.
+        if (!result.probe.teamEnabled && identity.email) {
+          try {
+            await client.ensureCloudWorkspaceIdentity({
+              label: parsed.label,
+              cloudUrl: url,
+              workspaceName: parsed.label,
+              email: identity.email,
+              displayName: identity.display_name,
+            });
+          } catch {
+            // leave as a plain cloud DB; lazy-init on next open will retry
+          }
+        }
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         await ctx.swap();
         sendJson(res, {
@@ -648,65 +691,10 @@ export async function dispatchDbConfigRoute(
     return true;
   }
 
-  if (pathname === '/api/dbconfig/upgrade-to-team' && method === 'POST') {
-    await tryHandler(res, async () => {
-      const body = await readJson(req);
-      const teamName =
-        typeof body.team_name === 'string' && body.team_name.trim() ? body.team_name.trim() : '';
-      if (!teamName) {
-        sendJson(res, { error: 'team_name is required' }, 400);
-        return;
-      }
-      const info = await describeCurrent(ctx.configPath, ctx.db);
-      if (info.type !== 'postgres' || !info.label) {
-        sendJson(
-          res,
-          {
-            error:
-              'upgrade-to-team requires the active project to be on a labeled cloud DB. Migrate to cloud first.',
-          },
-          400,
-        );
-        return;
-      }
-      if (info.teamEnabled) {
-        sendJson(res, { error: 'Cloud DB is already a team DB' }, 409);
-        return;
-      }
-      const cloudUrl = getDbCredential(info.label);
-      if (!cloudUrl) {
-        sendJson(res, { error: 'No saved credential for ' + info.label }, 500);
-        return;
-      }
-      const identity = readIdentity();
-      if (!identity.email || !identity.display_name) {
-        sendJson(
-          res,
-          {
-            error: 'Set your display name + email in User Config → Identity before creating a team',
-          },
-          400,
-        );
-        return;
-      }
-      const client = new TeamsClient(ctx.db);
-      try {
-        const reg = await client.upgradeToTeamCloud({
-          label: info.label,
-          cloudUrl,
-          teamName,
-          email: identity.email,
-          displayName: identity.display_name,
-        });
-        await ctx.swap();
-        sendJson(res, { ok: true, team: reg.team, user: reg.user });
-      } catch (e) {
-        const status = (e as { status?: number }).status ?? 500;
-        sendJson(res, { ok: false, error: (e as Error).message }, status);
-      }
-    });
-    return true;
-  }
+  // (Removed in 1.16.3) /api/dbconfig/upgrade-to-team — the "team" concept was
+  // deprecated; a cloud workspace's member/share machinery is now initialized
+  // automatically at migrate-to-cloud / connect-existing / open time via
+  // TeamsClient.ensureCloudWorkspaceIdentity. There is no explicit upgrade step.
 
   return false;
 }

@@ -4,6 +4,7 @@ import { generateToken, generateInviteToken, hashToken, type AuthContext } from 
 import { type SchemaSpec } from '../schema-spec.js';
 import {
   listTeamMembers,
+  listPendingInvitations,
   appendChangeEnvelope,
   shareObject,
   listSharedObjects,
@@ -220,6 +221,10 @@ export async function dispatchTeamRoute(
   const invitationsMatch = /^\/api\/teams\/([^/]+)\/invitations$/.exec(pathname);
   if (invitationsMatch && method === 'POST') {
     await handleCreateInvitation(req, res, ctx, invitationsMatch[1] ?? '');
+    return true;
+  }
+  if (invitationsMatch && method === 'GET') {
+    await handleListInvitations(res, ctx, invitationsMatch[1] ?? '');
     return true;
   }
 
@@ -567,6 +572,24 @@ async function handleListMembers(
   // notably, the creator is surfaced with role='creator' (previously the HTTP
   // handler omitted this, a confirmed drift bug).
   sendJson(res, { members: await listTeamMembers(ctx.db, teamId) });
+}
+
+/** GET /api/teams/:id/invitations — list pending (unredeemed) invites. Member-only. */
+async function handleListInvitations(
+  res: ServerResponse,
+  ctx: TeamRouteContext,
+  teamId: string,
+): Promise<void> {
+  if (!ctx.authContext) {
+    sendJson(res, { error: 'Unauthorized' }, 401);
+    return;
+  }
+  const role = await getMembershipRole(ctx.db, teamId, ctx.authContext.user.id);
+  if (!role) {
+    sendJson(res, { error: 'Not a member of this team' }, 403);
+    return;
+  }
+  sendJson(res, { invitations: await listPendingInvitations(ctx.db, teamId) });
 }
 
 async function handleKickMember(
