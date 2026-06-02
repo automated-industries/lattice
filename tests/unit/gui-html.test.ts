@@ -146,8 +146,11 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('renderTeamCard');
     expect(guiAppHtml).not.toContain('renderTeamsForProjectConfig');
     expect(guiAppHtml).not.toContain('wireTeamCardActions');
-    // The live members-list path marks the current operator + per-row actions.
+    // The live members-list path marks the current operator + per-row Kick.
     expect(guiAppHtml).toContain('renderMembersList');
-    expect(guiAppHtml).toContain('leave-self');
+    // Exit actions moved to a dedicated Danger Zone in 1.16.2: Disconnect
+    // (owner, kicks all) / Leave (member, self only) — not a member-row button.
+    expect(guiAppHtml).toContain('db-disconnect-btn');
+    expect(guiAppHtml).toContain('db-leave-btn');
   });
 });
