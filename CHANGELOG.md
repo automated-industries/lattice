@@ -74,6 +74,12 @@ working with no root).
   path. It now initializes the cloud directly via Postgres
   (`registerDirectViaPostgres`), and the wizard switches into the new cloud
   workspace so starter entities land there.
+- **Deleting a cloud workspace no longer requires being the team owner.**
+  `/api/workspaces/delete` only forgets the LOCAL pointer (+ unused credential)
+  and never touches the shared remote DB, so the inherited owner gate was wrong
+  — any member can forget their own local pointer (equivalent to leaving).
+  Destroying the remote team stays a separate owner-only "Disconnect from cloud"
+  action.
 
 ### Notes
 
