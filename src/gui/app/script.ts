@@ -184,9 +184,6 @@ export const appJs = `
         refreshHistoryState();
         renderRoute();
         startRealtime();
-        initRailResize();
-        initRailDrawer();
-        startFeed();
         initSearch();
         initLastEdited();
         initOffline();
@@ -542,11 +539,12 @@ export const appJs = `
     }
 
     // ────────────────────────────────────────────────────────────
-    // Activity feed — SSE from /api/feed/stream. Renders every audited
-    // mutation as a bubble in the assistant rail. Unlike the realtime
-    // channel (Postgres-only), this works for SQLite databases too.
+    // Shared activity helpers — the operation-icon map and relative-time
+    // formatter, used by Version History and the dashboard activity list. The
+    // standalone Activity rail was removed in 1.16.1 (redundant with Version
+    // History); multiplayer realtime convergence runs on the separate realtime
+    // channel (startRealtime), not on this.
     // ────────────────────────────────────────────────────────────
-    var feedSource = null;
     var FEED_ICONS = {
       insert: '➕', update: '✏️', delete: '🗑',
       link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
@@ -561,51 +559,6 @@ export const appJs = `
         if (h < 24) return h + 'h ago';
         return new Date(iso).toLocaleDateString();
       } catch (_) { return ''; }
-    }
-    function renderFeedItem(ev) {
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return;
-      var empty = document.getElementById('rail-empty');
-      if (empty) empty.remove();
-      var item = document.createElement('div');
-      item.className = 'feed-item';
-      var icon = document.createElement('div');
-      icon.className = 'feed-icon';
-      icon.textContent = FEED_ICONS[ev.op] || '•';
-      var body = document.createElement('div');
-      body.className = 'feed-body';
-      var summary = document.createElement('div');
-      summary.className = 'feed-summary';
-      summary.textContent = ev.summary || (String(ev.op || '') + ' ' + String(ev.table || ''));
-      var meta = document.createElement('div');
-      meta.className = 'feed-meta';
-      var src = document.createElement('span');
-      src.className = 'feed-source';
-      src.textContent = ev.source === 'gui' ? 'you' : String(ev.source || '');
-      meta.appendChild(src);
-      body.appendChild(summary);
-      body.appendChild(meta);
-      var time = document.createElement('div');
-      time.className = 'feed-time';
-      time.textContent = relTime(ev.ts);
-      item.appendChild(icon);
-      item.appendChild(body);
-      item.appendChild(time);
-      // Most-recent on top: prepend new items and keep the view scrolled up.
-      feedEl.insertBefore(item, feedEl.firstChild);
-      feedEl.scrollTop = 0;
-    }
-    function startFeed() {
-      if (feedSource) {
-        try { feedSource.close(); } catch (_) { /* ignore */ }
-        feedSource = null;
-      }
-      if (typeof EventSource === 'undefined') return;
-      feedSource = new EventSource('/api/feed/stream');
-      feedSource.addEventListener('feed', function (ev) {
-        try { renderFeedItem(JSON.parse(ev.data)); } catch (_) { /* ignore malformed */ }
-      });
-      // EventSource auto-reconnects on error; no extra handling needed.
     }
 
     // ────────────────────────────────────────────────────────────
@@ -686,52 +639,6 @@ export const appJs = `
         var host = document.getElementById('topsearch');
         if (host && !host.contains(e.target)) hideSearchResults();
       });
-    }
-
-    // ────────────────────────────────────────────────────────────
-    // Activity rail resize — drag the left edge, clamp, persist.
-    // ────────────────────────────────────────────────────────────
-    var RAIL_MIN = 320, RAIL_MAX = 640, RAIL_KEY = 'lattice-rail-width';
-    function applyRailWidth(px) {
-      var w = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(px)));
-      document.documentElement.style.setProperty('--sidebar-width', w + 'px');
-      return w;
-    }
-    function initRailResize() {
-      var saved = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
-      if (!isNaN(saved)) applyRailWidth(saved);
-      var handle = document.getElementById('rail-resize');
-      if (!handle) return;
-      handle.addEventListener('pointerdown', function (e) {
-        e.preventDefault();
-        var startX = e.clientX;
-        var rail = document.getElementById('assistant-rail');
-        var startW = rail ? rail.getBoundingClientRect().width : 380;
-        handle.classList.add('dragging');
-        function move(ev) {
-          // Rail sits on the right; dragging left (smaller clientX) widens it.
-          applyRailWidth(startW - (ev.clientX - startX));
-        }
-        function up() {
-          handle.classList.remove('dragging');
-          window.removeEventListener('pointermove', move);
-          window.removeEventListener('pointerup', up);
-          var cur = parseInt(
-            getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'),
-            10,
-          );
-          if (!isNaN(cur)) window.localStorage.setItem(RAIL_KEY, String(cur));
-        }
-        window.addEventListener('pointermove', move);
-        window.addEventListener('pointerup', up);
-      });
-    }
-
-    // Mobile: tapping the handle expands/collapses the bottom drawer.
-    function initRailDrawer() {
-      var handle = document.getElementById('rail-handle');
-      var rail = document.getElementById('assistant-rail');
-      if (handle && rail) handle.addEventListener('click', function () { rail.classList.toggle('expanded'); });
     }
 
     /** Reload column meta after a secret-flag change. */
@@ -884,10 +791,10 @@ export const appJs = `
         else renderRoute();
         loadedTables = {};
         startRealtime();
-        startFeed();
       });
     }
 
+    var wsOutsideClickBound = false;
     function renderWsSwitcher(data) {
       var wrap = document.getElementById('ws-switcher');
       var btn = document.getElementById('ws-button');
@@ -945,8 +852,13 @@ export const appJs = `
             });
           });
         });
-        document.getElementById('ws-create-btn').addEventListener('click', function () {
-          showCreateWorkspaceInput(menu);
+        document.getElementById('ws-create-btn').addEventListener('click', function (e) {
+          // Stop propagation: showCreateWorkspaceInput replaces .db-create's
+          // innerHTML, detaching THIS button. Without this, the click then
+          // bubbles to the document outside-click closer, whose
+          // menu.contains(e.target) is now false (target detached) → it would
+          // close the menu, so the create input never appears.
+          e.stopPropagation(); showCreateWorkspaceInput(menu);
         });
       }
 
@@ -955,12 +867,20 @@ export const appJs = `
         if (menu.hidden) buildMenu();
         menu.hidden = !menu.hidden;
       };
-      document.addEventListener('click', function (e) {
-        if (menu.hidden) return;
-        if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
-          menu.hidden = true;
-        }
-      });
+      // Attach the outside-click closer ONCE — renderWsSwitcher runs on every
+      // reload, so adding it each time leaked a listener per render. Re-fetch
+      // the elements by id inside the handler so it never holds a stale closure.
+      if (!wsOutsideClickBound) {
+        wsOutsideClickBound = true;
+        document.addEventListener('click', function (e) {
+          var m = document.getElementById('ws-menu');
+          var b = document.getElementById('ws-button');
+          if (!m || m.hidden) return;
+          if (!m.contains(e.target) && e.target !== b && (!b || !b.contains(e.target))) {
+            m.hidden = true;
+          }
+        });
+      }
     }
 
     // Inline "new workspace" name entry, shown inside the Workspaces menu.
@@ -3060,7 +2980,9 @@ export const appJs = `
       var linkRows = dmLinks.map(function (lk, i) {
         return '<div class="dm-link-row">' +
           '<span class="dm-link-name">' + escapeHtml(displayFor(lk.other).label) + '</span>' +
-          '<span class="dm-link-arrow">↔ many-to-many</span>' +
+          '<span class="dm-link-arrow' + (lk.kind === 'fk' ? ' legacy' : '') + '" ' +
+            (lk.kind === 'fk' ? 'title="Legacy one-to-many link. New links are many-to-many; this is kept for back-compat and will be migrated in 2.0."' : '') +
+            '>' + (lk.kind === 'fk' ? '→ one-to-many (legacy)' : '↔ many-to-many') + '</span>' +
           '<button class="btn danger dm-link-destroy" data-link="' + i +
             '" title="Delete this link — removes it from both tables">Delete link</button>' +
           '</div>';
@@ -4341,11 +4263,11 @@ export const appJs = `
         return (
           '<p style="margin:0 0 12px;color:var(--text-muted);font-size:13px">' +
             'SQLite DB: <code>' + escapeHtml(info.dbFile || '(unknown)') + '</code>. ' +
-            'Move forward by either pushing this data to a new cloud Postgres or connecting to an existing one.' +
+            'Push this workspace to a cloud Postgres to collaborate. ' +
+            '(To join an existing cloud, create a new workspace and choose “join via cloud invite”.)' +
           '</p>' +
           '<div class="team-actions">' +
             '<button class="btn primary" data-act="open-migrate">Migrate to cloud →</button>' +
-            '<button class="btn" data-act="open-connect-existing">Connect to existing cloud →</button>' +
           '</div>'
         );
       }
@@ -4412,11 +4334,6 @@ export const appJs = `
       var migrateBtn = host.querySelector('[data-act="open-migrate"]');
       if (migrateBtn) migrateBtn.addEventListener('click', function () {
         showMigrateToCloudModal(rerender);
-      });
-
-      var connectExBtn = host.querySelector('[data-act="open-connect-existing"]');
-      if (connectExBtn) connectExBtn.addEventListener('click', function () {
-        showConnectExistingModal(rerender);
       });
 
       var upgradeBtn = host.querySelector('[data-act="open-upgrade"]');
