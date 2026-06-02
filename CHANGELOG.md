@@ -56,8 +56,22 @@ working with no root).
   active; removes the scaffolded folder for a local workspace; for a cloud
   workspace forgets only the local pointer + unused credential, never the shared
   remote DB).
+- **Share tables when inviting a member.** The "Invite member" modal again lists
+  the workspace's tables with checkboxes, **all checked by default** — generating
+  the invite shares the checked tables with the new member in one step. Uncheck
+  any to keep them private.
 
 ### Fixed
+
+- **Shared tables were invisible to members.** On a direct-Postgres team every
+  member shares the same physical Postgres, so a shared table always physically
+  exists for the member — but `applySchemaSpec` only registered (`defineLate`) a
+  table when it did NOT physically exist, so the member's Lattice never learned
+  about the shared table and `/api/entities` returned empty ("ask the owner to
+  share a table with you") even after the owner shared it. Now an existing shared
+  table is registered too (idempotent, non-destructive), and `openConfig`
+  re-captures the live registered set after the team schema auto-sync so the
+  table reaches `validTables`/the dashboard. Regression test added.
 
 - **Joined cloud workspaces were invisible in the header switcher** and could
   not be switched to: `handleJoin` saved a credential + sibling config but never

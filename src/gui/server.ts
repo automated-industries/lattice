@@ -841,6 +841,20 @@ async function openConfig(
     console.warn('[openConfig] could not enumerate team connections:', (e as Error).message);
   }
 
+  // The team schema auto-sync above defineLate's shared tables onto the live
+  // Lattice. `validTables` + `softDeletable` were built BEFORE that ran (and a
+  // shared table that already physically exists is registered without a schema
+  // "change"), so re-capture the live registered set now. Without this, a member
+  // who opens a cloud workspace never sees the tables the owner shared.
+  for (const name of db.getRegisteredTableNames()) {
+    if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
+    validTables.add(name);
+    if (!softDeletable.has(name)) {
+      const sharedCols = db.getRegisteredColumns(name);
+      if (sharedCols && 'deleted_at' in sharedCols) softDeletable.add(name);
+    }
+  }
+
   // ── Team-cloud ownership context ──────────────────────────────────
   // When the active DB is a team-enabled Postgres cloud, every member
   // shares the same physical Postgres — so every table physically

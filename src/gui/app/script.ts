@@ -4665,24 +4665,68 @@ export const appJs = `
     }
 
     function showInviteByEmailModal(teamId, info) {
+      // Owner-facing: list the workspace's shareable tables, ALL CHECKED by
+      // default, so inviting a member shares those tables with them in one step.
+      // Uncheck any you want to keep private. Re-sharing an already-shared table
+      // is idempotent, so it's safe to leave them checked.
+      var shareable = ((state.entities && state.entities.tables) || [])
+        .filter(function (t) { return t.name.charAt(0) !== '_' && !isJunction(t); })
+        .map(function (t) { return t.name; });
+      var shareRows = shareable.length === 0
+        ? '<p style="margin:0;color:var(--text-muted);font-size:12px">No tables to share yet.</p>'
+        : shareable.map(function (t) {
+            return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-weight:400;text-transform:none;letter-spacing:0">' +
+              '<input type="checkbox" class="invite-share" data-table="' + escapeHtml(t) + '" checked />' +
+              '<span style="font-family:ui-monospace,monospace;font-size:12.5px">' + escapeHtml(t) + '</span>' +
+            '</label>';
+          }).join('');
       var bodyHtml =
         '<div class="field"><label>Invitee email</label>' +
         '<input name="invitee_email" type="email" placeholder="bob@example.com" /></div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+        '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
         'Invitations are bound to this email — only the recipient can redeem.' +
-        '</p>';
+        '</p>' +
+        (shareable.length > 0
+          ? '<div style="margin-top:4px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02)">' +
+              '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">Share tables with this member</div>' +
+              '<p style="margin:0 0 8px;font-size:12px;color:var(--text-muted)">All tables are shared by default — uncheck any you want to keep private.</p>' +
+              shareRows +
+            '</div>'
+          : '');
       showModal('Invite member', bodyHtml, {
         primaryLabel: 'Generate invite',
         onSubmit: function (scope) {
           var data = collectFormValues(scope);
           if (!data.invitee_email) throw new Error('invitee_email is required');
+          var tablesToShare = [];
+          scope.querySelectorAll('input.invite-share:checked').forEach(function (cb) {
+            tablesToShare.push(cb.getAttribute('data-table'));
+          });
           return fetchJson('/api/teams-gui/teams/' + teamId + '/invitations', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ invitee_email: data.invitee_email }),
-          }).then(function (inv) { showInviteTokenModal(inv, info); });
+          }).then(function (inv) {
+            // Share the checked tables, then show the invite token.
+            return shareTablesForTeam(teamId, tablesToShare).then(function () {
+              showInviteTokenModal(inv, info);
+            });
+          });
         },
       });
+    }
+
+    /** Share each table with the team sequentially (idempotent; per-table errors toast, don't abort). */
+    function shareTablesForTeam(teamId, tables) {
+      return (tables || []).reduce(function (chain, table) {
+        return chain.then(function () {
+          return fetchJson('/api/teams-gui/teams/' + encodeURIComponent(teamId) + '/shared', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ table: table }),
+          }).catch(function (err) { showToast('Share "' + table + '" failed: ' + err.message, {}); });
+        });
+      }, Promise.resolve());
     }
 
     function showInviteTokenModal(inv, info) {
