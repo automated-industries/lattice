@@ -492,11 +492,12 @@ describe('GUI server', () => {
     const created = (await create.json()) as { path: string };
     expect(created.path).toMatch(/scratch\.config\.yml$/);
 
-    // The new DB has the default `items` schema, not `agents` — verify.
+    // A new workspace starts with NO user entities (the example `items` seed
+    // was removed in 1.16.3); only framework natives (files/secrets/notes) exist.
     const ents = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
       tables: { name: string }[];
     };
-    expect(ents.tables.some((t) => t.name === 'items')).toBe(true);
+    expect(ents.tables.some((t) => t.name === 'items')).toBe(false);
     expect(ents.tables.some((t) => t.name === 'agents')).toBe(false);
 
     // Switch back to the original config.
