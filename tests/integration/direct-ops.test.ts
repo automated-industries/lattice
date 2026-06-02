@@ -23,6 +23,7 @@ import {
   inviteDirect,
   kickMemberDirect,
   listMembersDirect,
+  listPendingInvitationsDirect,
   redeemInviteDirect,
   recordObjectOwner,
   listObjectOwners,
@@ -216,6 +217,75 @@ describe('direct-ops — inviteDirect', () => {
     await expect(
       inviteDirect(db, 'no-such-team', 'no-such-user', 'invitee@example.com'),
     ).rejects.toThrow(/Team not found/);
+    cleanup();
+  });
+});
+
+describe('direct-ops — listPendingInvitationsDirect (1.16.3 — I)', () => {
+  it('returns unredeemed invites, omits redeemed ones, and flags expired', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    const now = new Date().toISOString();
+    const userId = await db.insert('__lattice_users', {
+      email: 'creator@example.com',
+      name: 'Creator',
+      created_at: now,
+      updated_at: now,
+    });
+    const teamId = await db.insert('__lattice_team', {
+      name: 'Atlas',
+      created_by_user_id: userId,
+      created_at: now,
+      updated_at: now,
+    });
+
+    // Pending (default 7-day expiry).
+    await inviteDirect(db, teamId, userId, 'pending@example.com', 24);
+    // Already redeemed → excluded.
+    const redeemed = await inviteDirect(db, teamId, userId, 'joined@example.com', 24);
+    await db.update('__lattice_invitations', redeemed.id, {
+      redeemed_at: now,
+      redeemed_by_user_id: userId,
+    });
+    // Expired (negative hours → expires_at in the past), still unredeemed.
+    await inviteDirect(db, teamId, userId, 'stale@example.com', -1);
+
+    const pending = await listPendingInvitationsDirect(db, teamId);
+    const byEmail = new Map(pending.map((p) => [p.invitee_email, p]));
+    expect(byEmail.has('pending@example.com')).toBe(true);
+    expect(byEmail.has('joined@example.com')).toBe(false); // redeemed
+    expect(byEmail.has('stale@example.com')).toBe(true);
+    expect(byEmail.get('pending@example.com')?.expired).toBe(false);
+    expect(byEmail.get('stale@example.com')?.expired).toBe(true);
+    cleanup();
+  });
+
+  it('scopes invitations to the requested team', async () => {
+    const { db, cleanup } = await makeCloudLattice();
+    const now = new Date().toISOString();
+    const userId = await db.insert('__lattice_users', {
+      email: 'c@example.com',
+      name: 'C',
+      created_at: now,
+      updated_at: now,
+    });
+    const teamA = await db.insert('__lattice_team', {
+      name: 'A',
+      created_by_user_id: userId,
+      created_at: now,
+      updated_at: now,
+    });
+    const teamB = await db.insert('__lattice_team', {
+      name: 'B',
+      created_by_user_id: userId,
+      created_at: now,
+      updated_at: now,
+    });
+    await inviteDirect(db, teamA, userId, 'a-invitee@example.com', 24);
+    await inviteDirect(db, teamB, userId, 'b-invitee@example.com', 24);
+
+    const a = await listPendingInvitationsDirect(db, teamA);
+    expect(a).toHaveLength(1);
+    expect(a[0]?.invitee_email).toBe('a-invitee@example.com');
     cleanup();
   });
 });

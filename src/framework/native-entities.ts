@@ -84,7 +84,8 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
   notes: {
     // A generic knowledge object: a free-form note with a title and body.
     // Ordinary, user-editable rows; `source_file_id` optionally points back at
-    // an originating `files` row.
+    // an originating `files` row. Retained as native (1.16.3) because the
+    // reference/source-organizer store uses it as the fallback organizer target.
     columns: {
       id: 'TEXT PRIMARY KEY',
       title: 'TEXT',

@@ -29,6 +29,7 @@ import { generateInviteToken, generateToken, hashToken } from './server/auth.js'
 import { isPostgresUrl } from './register-direct.js';
 import {
   listTeamMembers,
+  listPendingInvitations,
   appendChangeEnvelope,
   shareObject,
   listSharedObjects,
@@ -36,6 +37,7 @@ import {
 } from './team-core.js';
 import type {
   MemberSummary,
+  PendingInvitationSummary,
   InviteResponse,
   RedeemResponse,
   ShareObjectResponse,
@@ -77,6 +79,18 @@ interface TeamRow {
  */
 export async function listMembersDirect(db: Lattice, teamId: string): Promise<MemberSummary[]> {
   return listTeamMembers(db, teamId);
+}
+
+/**
+ * Pending (unredeemed) invitations for `teamId`. Same shape the HTTP path
+ * returns from `GET /api/teams/:id/invitations`; the operator's local
+ * Lattice IS the cloud in direct mode, so this is a plain delegation.
+ */
+export async function listPendingInvitationsDirect(
+  db: Lattice,
+  teamId: string,
+): Promise<PendingInvitationSummary[]> {
+  return listPendingInvitations(db, teamId);
 }
 
 /**

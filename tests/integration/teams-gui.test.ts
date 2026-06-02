@@ -303,6 +303,17 @@ describe('teams GUI — endpoints', () => {
     });
     expect(inviteRes.body.raw_token).toMatch(/^latinv_/);
     expect(new Date(inviteRes.body.expires_at).getTime()).toBeGreaterThan(Date.now());
+
+    // 1.16.3 (I): the GET invitations route surfaces the pending invitee.
+    const pendingRes = await api(`${sharer.url}/api/teams-gui/teams/${teamId}/invitations`);
+    expect(pendingRes.status).toBe(200);
+    const invitations = pendingRes.body.invitations as {
+      invitee_email: string;
+      expired: boolean;
+    }[];
+    expect(invitations).toHaveLength(1);
+    expect(invitations[0]?.invitee_email).toBe('bob@example.com');
+    expect(invitations[0]?.expired).toBe(false);
   });
 
   it('creator kicks a member via the members route', async () => {

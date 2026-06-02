@@ -1,5 +1,10 @@
 import type { Lattice } from '../lattice.js';
-import type { MemberSummary, SharedObjectSummary, ShareObjectResponse } from './client.js';
+import type {
+  MemberSummary,
+  PendingInvitationSummary,
+  SharedObjectSummary,
+  ShareObjectResponse,
+} from './client.js';
 import { applySchemaSpec, type SchemaSpec } from './schema-spec.js';
 
 /**
@@ -86,6 +91,43 @@ export async function listTeamMembers(db: Lattice, teamId: string): Promise<Memb
     }
   }
   return out;
+}
+
+interface InvitationRow {
+  id: string;
+  team_id: string;
+  invitee_email: string;
+  created_at: string;
+  expires_at: string | null;
+  redeemed_at: string | null;
+}
+
+/**
+ * List a team's pending (unredeemed) invitations. Redeemed invites are
+ * omitted — those people are members now and surface via listTeamMembers.
+ * `expired` is computed against the current time so the UI can flag stale
+ * invites without a second round-trip. Newest-first.
+ */
+export async function listPendingInvitations(
+  db: Lattice,
+  teamId: string,
+): Promise<PendingInvitationSummary[]> {
+  const rows = (await db.query('__lattice_invitations', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'redeemed_at', op: 'isNull' },
+    ],
+  })) as unknown as InvitationRow[];
+  const nowMs = Date.now();
+  return rows
+    .map((r) => ({
+      id: r.id,
+      invitee_email: r.invitee_email,
+      invited_at: r.created_at,
+      expires_at: r.expires_at ?? null,
+      expired: r.expires_at != null && new Date(r.expires_at).getTime() < nowMs,
+    }))
+    .sort((a, b) => (a.invited_at < b.invited_at ? 1 : a.invited_at > b.invited_at ? -1 : 0));
 }
 
 interface SharedObjectRow {

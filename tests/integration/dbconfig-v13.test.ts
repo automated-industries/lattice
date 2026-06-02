@@ -165,14 +165,17 @@ describe('applyTeamMembershipState', () => {
     );
   });
 
-  it('leaves non-team / local DBs untouched', () => {
+  it('leaves local + not-yet-initialized cloud DBs untouched', () => {
     expect(applyTeamMembershipState({ type: 'sqlite', state: 'local' }, null)).toBe('local');
+    // A cloud DB not yet initialized as a workspace (teamEnabled false) keeps
+    // its computed state — membership can't apply without an identity. (The
+    // 'cloud-connected' state was removed in 1.16.3.)
     expect(
       applyTeamMembershipState(
-        { type: 'postgres', teamEnabled: false, state: 'cloud-connected' },
+        { type: 'postgres', teamEnabled: false, state: 'team-cloud-needs-invite' },
         { joined: true, isCreator: false },
       ),
-    ).toBe('cloud-connected');
+    ).toBe('team-cloud-needs-invite');
   });
 });
 
@@ -252,26 +255,10 @@ describe('POST /api/dbconfig/connect-existing — non-team target', () => {
   });
 });
 
-describe('POST /api/dbconfig/upgrade-to-team', () => {
-  it('rejects when active project is on local SQLite (state=local)', async () => {
-    const { handle } = await startGui();
-    const r = await api(handle.url, '/api/dbconfig/upgrade-to-team', {
-      method: 'POST',
-      body: { team_name: 'Atlas' },
-    });
-    expect(r.status).toBe(400);
-    expect(typeof r.body.error).toBe('string');
-  });
-
-  it('rejects with 400 when team_name is empty', async () => {
-    const { handle } = await startGui();
-    const r = await api(handle.url, '/api/dbconfig/upgrade-to-team', {
-      method: 'POST',
-      body: {},
-    });
-    expect(r.status).toBe(400);
-  });
-});
+// (Removed in 1.16.3) POST /api/dbconfig/upgrade-to-team — the "team" concept
+// was deprecated; cloud workspaces auto-initialize their member/share
+// machinery at migrate-to-cloud / connect-existing / open. The route no
+// longer exists (the GUI never calls it), so its rejection tests were removed.
 
 describe('credential helper round-trip (used by the routes)', () => {
   it('saveDbCredential + getDbCredential survives across route calls', async () => {

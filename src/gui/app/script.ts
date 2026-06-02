@@ -959,11 +959,11 @@ export const appJs = `
             '</button>';
         }).join('');
         menu.innerHTML =
-          '<div class="db-section">Available databases</div>' +
+          '<div class="db-section">Workspaces</div>' +
           items +
-          '<div class="db-section">New database</div>' +
+          '<div class="db-section">New workspace</div>' +
           '<div class="db-create">' +
-            '<button class="btn primary" id="db-create-btn" style="width:100%;">+ New database…</button>' +
+            '<button class="btn primary" id="db-create-btn" style="width:100%;">+ New workspace…</button>' +
           '</div>';
         menu.querySelectorAll('button.db-item').forEach(function (b) {
           b.addEventListener('click', function () {
@@ -1071,7 +1071,10 @@ export const appJs = `
       // Even segment count → item view; odd → folder/collection view.
       var fsegs = fsParse(hash);
       if (fsegs) {
-        if (fsegs.length % 2 === 1) renderFsCollection(content, fsegs);
+        // #/fs/<table>/new → inline create view (must precede the even/odd
+        // item-vs-collection heuristic, since [table,'new'] is even-length).
+        if (fsegs[fsegs.length - 1] === 'new') renderFsCreate(content, fsegs);
+        else if (fsegs.length % 2 === 1) renderFsCollection(content, fsegs);
         else renderFsItem(content, fsegs);
         return;
       }
@@ -1132,10 +1135,14 @@ export const appJs = `
         return dashboardPreferenceRank(a.name) - dashboardPreferenceRank(b.name);
       });
       if (ents.length === 0) {
+        // Generic, role-agnostic empty state — the old copy told everyone to
+        // "edit lattice.config.yml / db.define()", which a joined cloud member
+        // cannot act on (they just have nothing shared with them yet).
         content.innerHTML =
           '<div class="placeholder">' +
-            '<h2>No entities yet</h2>' +
-            '<p>Define entities in your <code>lattice.config.yml</code> or register them via <code>db.define()</code>, then reload.</p>' +
+            '<h2>This workspace is empty</h2>' +
+            '<p>There are no tables to show yet. Create one in the Data Model editor, ' +
+            'or — on a cloud workspace — ask the owner to share a table with you.</p>' +
           '</div>';
         return;
       }
@@ -1311,8 +1318,13 @@ export const appJs = `
         return '<input type="password" name="' + escapeHtml(col) + '" value="' +
           escapeHtml(value || '') + '" autocomplete="off" />';
       }
-      // Multiline for known long-form fields.
-      if (col === 'transcript' || col === 'summary' || col === 'body') {
+      // Multiline for ALL long-form fields (matches FS_LONGFORM, the same set
+      // fsValInner renders as markdown) AND any value that already contains a
+      // newline. A single-line <input> normalizes/strips newlines, so a
+      // multi-line markdown value put in one would be silently corrupted on the
+      // next blur (a spurious PATCH) and then re-rendered as mangled markdown
+      // ("huge text"). A <textarea> round-trips the exact text.
+      if (FS_LONGFORM.indexOf(col) >= 0 || (value != null && String(value).indexOf('\\n') >= 0)) {
         return '<textarea name="' + escapeHtml(col) + '">' + escapeHtml(value || '') + '</textarea>';
       }
       return '<input type="text" name="' + escapeHtml(col) + '" value="' + escapeHtml(value || '') + '" />';
@@ -2046,7 +2058,7 @@ export const appJs = `
           // opens a create form. Related-row folders aren't a place to mint a
           // brand-new object, so the tile is top-level only.
           var createTile = topLevel
-            ? '<a class="fs-tile fs-tile-create" href="#" data-fs-create="1" title="Create a new ' + escapeHtml(d.label) + '">' +
+            ? '<a class="fs-tile fs-tile-create" href="' + fsHref([table, 'new']) + '" title="Create a new ' + escapeHtml(d.label) + '">' +
                 '<div class="fs-tile-icon">➕</div>' +
                 '<div class="fs-tile-label">New ' + escapeHtml(d.label) + '</div>' +
               '</a>'
@@ -2068,11 +2080,6 @@ export const appJs = `
               '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
             '</div>' +
             '<div class="fs-grid">' + createTile + rowTiles + '</div>';
-          var ctile = content.querySelector('[data-fs-create]');
-          if (ctile) ctile.addEventListener('click', function (e) {
-            e.preventDefault();
-            openFsCreateModal(content, table, segs);
-          });
         });
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
@@ -2083,11 +2090,17 @@ export const appJs = `
     // page with blank fields + a Save button, plus a select-menu + "+" for each
     // many-to-many link. Reuses fieldFor() (intrinsic + belongsTo) and the
     // existing row-create + junction-row endpoints (no new backend).
-    function openFsCreateModal(content, table, segs) {
+    // Inline create view (#/fs/<table>/new) — mirrors renderFsItem's formatted
+    // layout (.fs-doc/.fs-field) with blank fields + Save/Cancel, instead of a
+    // modal. Reuses fieldFor() + the row-create + junction /link endpoints.
+    function renderFsCreate(content, segs) {
+      var table = segs[0];
       var t = tableByName(table);
-      if (!t) return;
+      if (!t) { content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'; return; }
+      var d = displayFor(table);
       var bt = belongsToColumns(t);
       var juncs = junctionsFor(table);
+      var collectionHref = fsHref([table]);
       // Preload FK + junction-remote target rows so the <select> menus populate.
       var needed = bt.map(function (b) { return b.rel.table; })
         .concat(juncs.map(function (j) { return j.remoteRel.table; }));
@@ -2114,62 +2127,73 @@ export const appJs = `
               '<button type="button" class="btn fs-link-add">+ Add another</button>' +
             '</div></div>';
         });
-        showModal('New ' + displayFor(table).label, '<div class="fs-doc fs-create-form">' + fieldsHtml + '</div>', {
-          primaryLabel: 'Save',
-          onBody: function (backdrop) {
-            backdrop.querySelectorAll('.fs-link-add').forEach(function (addBtn) {
-              addBtn.addEventListener('click', function () {
-                var stage = addBtn.previousElementSibling; // the .fs-link-stage
-                var firstSel = stage && stage.querySelector('.fs-link-select');
-                if (!firstSel) return;
-                var clone = firstSel.cloneNode(true);
-                clone.value = '';
-                stage.appendChild(clone);
-              });
+        content.innerHTML =
+          '<nav class="fs-crumbs"><a href="#/">Home</a><span class="fs-sep">▸</span>' +
+            '<a href="' + collectionHref + '">' + escapeHtml(d.label) + '</a><span class="fs-sep">▸</span>' +
+            '<span>New</span></nav>' +
+          '<div class="view-header">' +
+            '<span class="entity-icon">' + d.icon + '</span>' +
+            '<h1>New ' + escapeHtml(d.label) + '</h1>' +
+          '</div>' +
+          '<div class="fs-doc fs-create-form">' + fieldsHtml + '</div>' +
+          '<div class="fs-create-actions">' +
+            '<button class="btn" id="fs-create-cancel">Cancel</button>' +
+            '<button class="btn primary" id="fs-create-save">Save</button>' +
+          '</div>';
+        content.querySelectorAll('.fs-link-add').forEach(function (addBtn) {
+          addBtn.addEventListener('click', function () {
+            var stage = addBtn.previousElementSibling; // the .fs-link-stage
+            var firstSel = stage && stage.querySelector('.fs-link-select');
+            if (!firstSel) return;
+            var clone = firstSel.cloneNode(true);
+            clone.value = '';
+            stage.appendChild(clone);
+          });
+        });
+        content.querySelector('#fs-create-cancel').addEventListener('click', function () {
+          location.hash = collectionHref;
+        });
+        var saveBtn = content.querySelector('#fs-create-save');
+        saveBtn.addEventListener('click', function () {
+          var values = {};
+          content.querySelectorAll('.fs-create-form [name]').forEach(function (el) {
+            var v = el.value;
+            if (v !== '' && v != null) values[el.getAttribute('name')] = v;
+          });
+          var links = [];
+          content.querySelectorAll('.fs-link-stage').forEach(function (stage) {
+            var junction = stage.getAttribute('data-junction');
+            var localFk = stage.getAttribute('data-local-fk');
+            var remoteFk = stage.getAttribute('data-remote-fk');
+            stage.querySelectorAll('.fs-link-select').forEach(function (sel) {
+              if (sel.value) links.push({ junction: junction, localFk: localFk, remoteFk: remoteFk, remoteId: sel.value });
             });
-          },
-          onSubmit: function (scope) {
-            // Intrinsic + belongsTo values (the [name] inputs/selects).
-            var values = {};
-            scope.querySelectorAll('.fs-create-form [name]').forEach(function (el) {
-              var v = el.value;
-              if (v !== '' && v != null) values[el.getAttribute('name')] = v;
-            });
-            // Staged many-to-many links — one junction row per chosen target.
-            var links = [];
-            scope.querySelectorAll('.fs-link-stage').forEach(function (stage) {
-              var junction = stage.getAttribute('data-junction');
-              var localFk = stage.getAttribute('data-local-fk');
-              var remoteFk = stage.getAttribute('data-remote-fk');
-              stage.querySelectorAll('.fs-link-select').forEach(function (sel) {
-                if (sel.value) links.push({ junction: junction, localFk: localFk, remoteFk: remoteFk, remoteId: sel.value });
-              });
-            });
+          });
+          withBusy(saveBtn, function () {
             return rowWrite('POST', '/api/tables/' + encodeURIComponent(table) + '/rows', values).then(function (res) {
               var newId = res && (res.id || (res.row && res.row.id));
               var chain = Promise.resolve();
               links.forEach(function (lk) {
                 chain = chain.then(function () {
-                  // Use the junction's /link endpoint (INSERT OR IGNORE on the
-                  // two FK columns) — works for junctions with no own pk and is
-                  // idempotent, unlike a raw row insert.
+                  // Junction /link endpoint (INSERT OR IGNORE on the two FKs) —
+                  // works for pk-less junctions + is idempotent.
                   var jrow = {};
                   jrow[lk.localFk] = newId;
                   jrow[lk.remoteFk] = lk.remoteId;
                   return rowWrite('POST', '/api/tables/' + encodeURIComponent(lk.junction) + '/link', jrow);
                 });
               });
-              return chain;
-            }).then(function () {
+              return chain.then(function () { return newId; });
+            }).then(function (newId) {
               invalidate(table);
-              return refreshEntities();
-            }).then(function () {
-              showToast('Created', {});
-              renderFsCollection(content, segs);
-            });
-          },
+              return refreshEntities().then(function () {
+                showToast('Created', {});
+                location.hash = newId ? fsHref([table, String(newId)]) : collectionHref;
+              });
+            }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
+          });
         });
-      }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
+      }).catch(function (err) { content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>'; });
     }
 
     // Item view — one row as a document (click-to-edit) + its relationship folders.
@@ -2703,6 +2727,11 @@ export const appJs = `
           rowCount: rc,
           cols: (meta.columns || []).length,
           r: Math.max(11, Math.min(26, 11 + Math.sqrt(rc))),
+          // Share status (cloud workspaces only). ownedByMe is set by the
+          // server solely on cloud workspaces, so its presence flags a cloud
+          // DB; on local DBs share status is N/A (no coloring).
+          shared: meta.shared === true,
+          cloudWorkspace: meta.ownedByMe !== undefined,
           x: 0, y: 0, vx: 0, vy: 0,
         });
       });
@@ -2793,7 +2822,11 @@ export const appJs = `
           dash + markStart + markEnd + ' opacity="0.7"><title>' + escapeHtml(title) + '</title></line>';
       }).join('');
       var nodeSvg = nodes.map(function (nd) {
-        return '<g class="gnode" data-table="' + escapeHtml(nd.name) + '" transform="translate(' +
+        // Share-status coloring applies only on cloud workspaces (G). On a
+        // local DB share status is N/A, so no extra class → neutral stroke.
+        var shareCls = nd.cloudWorkspace ? (nd.shared ? ' gnode-shared' : ' gnode-private') : '';
+        var shareTitle = nd.cloudWorkspace ? ' · ' + (nd.shared ? 'shared' : 'private') : '';
+        return '<g class="gnode' + shareCls + '" data-table="' + escapeHtml(nd.name) + '" transform="translate(' +
           nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')">' +
           '<circle class="gnode-glow" r="' + (nd.r + 8).toFixed(1) + '"/>' +
           '<circle class="gnode-dot" r="' + nd.r.toFixed(1) + '"/>' +
@@ -2801,13 +2834,22 @@ export const appJs = `
             (nd.r * 0.95).toFixed(1) + '">' + nd.icon + '</text>' +
           '<text class="gnode-label" y="' + (nd.r + 15).toFixed(1) + '" text-anchor="middle">' +
             escapeHtml(nd.label) + '</text>' +
-          '<title>' + escapeHtml(nd.label + ' · ' + nd.rowCount + ' rows · ' + nd.cols + ' columns') + '</title>' +
+          '<title>' + escapeHtml(nd.label + ' · ' + nd.rowCount + ' rows · ' + nd.cols + ' columns' + shareTitle) + '</title>' +
           '</g>';
       }).join('');
+      // Share legend entries only make sense on a cloud workspace (where nodes
+      // carry share status). Local DBs show just the relationship key.
+      var anyCloud = nodes.some(function (nd) { return nd.cloudWorkspace; });
+      var shareLegend = anyCloud
+        ? '<span><i class="sw sw-shared"></i><span style="color:var(--text-muted)">shared</span></span>' +
+          '<span><i class="sw sw-private"></i><span style="color:var(--text-muted)">private</span></span>' +
+          '<span><i class="sw sw-selected"></i><span style="color:var(--text-muted)">selected</span></span>'
+        : '';
       var legend =
         '<div class="dm-legend">' +
           '<span style="color:' + DM_FK_COLOR + '"><i></i><span style="color:var(--text-muted)">foreign key</span></span>' +
           '<span style="color:' + DM_M2M_COLOR + '"><i class="dash"></i><span style="color:var(--text-muted)">many-to-many</span></span>' +
+          shareLegend +
         '</div>';
       return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
         defs + '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>' + legend;
@@ -2956,7 +2998,7 @@ export const appJs = `
           '</div>' +
           '<div class="muted" style="margin-top:14px;font-size:12px;">' +
             'New entities get id (uuid PK), name, and deleted_at columns. ' +
-            'Add more columns once the entity exists. On a team cloud the ' +
+            'Add more columns once the entity exists. On a cloud workspace the ' +
             'entity is private to you until you share it.' +
           '</div>';
         wireEmojiPicker(panel, 'dm-create-icon');
@@ -3101,20 +3143,20 @@ export const appJs = `
           '</div>'
         : '<span class="muted" style="font-size:12px">No other entities to link to.</span>';
 
-      // Team-cloud sharing row — only the owner of a table may toggle
-      // its team visibility (t.ownedByMe is set by the server only for
-      // team clouds). Tables shared to me by others, and all non-team
+      // Cloud sharing row — only the owner of a table may toggle its
+      // visibility (t.ownedByMe is set by the server only for cloud
+      // workspaces). Tables shared to me by others, and all local-DB
       // tables, show no sharing control.
       var canShare = !!(t && t.ownedByMe === true);
       var isShared = !!(t && t.shared);
       var shareRow = canShare
-        ? '<label>Team sharing</label>' +
+        ? '<label>Cloud sharing</label>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
             '<button class="btn' + (isShared ? '' : ' primary') + '" id="dm-share-btn">' +
-              (isShared ? 'Unshare from team' : 'Share with team') +
+              (isShared ? 'Make private' : 'Share with workspace') +
             '</button>' +
             '<span style="font-size:12px;color:var(--text-muted)">' +
-              (isShared ? 'Visible to every team member.' : 'Private to you. Share to make it visible to the team.') +
+              (isShared ? 'Visible to everyone on this cloud workspace.' : 'Private to you. Share to make it visible to everyone on this cloud workspace.') +
             '</span>' +
           '</div>'
         : '';
@@ -3179,7 +3221,7 @@ export const appJs = `
             // so a light in-place refresh reflects it without a full reload.
             return dmRefreshPanel(tableName, false);
           }).then(function () {
-            showToast(isShared ? 'Unshared "' + tableName + '" from team' : 'Shared "' + tableName + '" with team', {});
+            showToast(isShared ? 'Unshared "' + tableName + '" from workspace' : 'Shared "' + tableName + '" with workspace', {});
           }).catch(function (e) { showToast('Share update failed: ' + e.message, {}); });
         });
       });
@@ -3571,7 +3613,7 @@ export const appJs = `
         backdrop.className = 'modal-backdrop';
         backdrop.innerHTML =
           '<div class="modal" style="min-width:560px;max-width:640px">' +
-            '<div class="modal-head" id="wiz-head">New database — step 1 of 3</div>' +
+            '<div class="modal-head" id="wiz-head">New workspace — step 1 of 3</div>' +
             '<div class="modal-body" id="wiz-body"></div>' +
             '<div class="modal-foot">' +
               '<button class="btn" data-act="cancel">Cancel</button>' +
@@ -3592,7 +3634,7 @@ export const appJs = `
           var body = backdrop.querySelector('#wiz-body');
           var nextBtn = backdrop.querySelector('[data-act="next"]');
           var backBtn = backdrop.querySelector('[data-act="back"]');
-          head.textContent = 'New database — step ' + wizState.step + ' of 3';
+          head.textContent = 'New workspace — step ' + wizState.step + ' of 3';
           backBtn.style.display = wizState.step === 1 ? 'none' : '';
           nextBtn.textContent = wizState.step === 3 ? 'Create' : 'Next';
           if (wizState.step === 1) body.innerHTML = renderStep1();
@@ -3642,7 +3684,7 @@ export const appJs = `
                 '</label>' +
               '</div>' +
               '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
-                'Local databases are single-user SQLite files on your machine. Cloud databases are Postgres, can be shared with invited team members, and stream realtime updates. Joining connects to a cloud DB you were invited to.' +
+                'Local databases are single-user SQLite files on your machine. Cloud databases are Postgres, can be shared with invited members, and stream realtime updates. Joining connects to a cloud DB you were invited to.' +
               '</p>' +
             '</div>' +
             cloudBlock;
@@ -3670,7 +3712,7 @@ export const appJs = `
             '<button class="btn" id="wiz-add-entity" style="margin-top:10px">+ Add entity</button>' +
             (wizState.kind === 'cloud'
               ? '<p style="font-size:11px;color:var(--text-muted);margin:10px 0 0">' +
-                'Entities with “Share with cloud” checked are visible to every team member. Unchecked entities live on the cloud DB but stay scoped to your own row links.' +
+                'Entities with “Share with cloud” checked are visible to everyone on the cloud workspace. Unchecked entities live on the cloud DB but stay scoped to your own row links.' +
                 '</p>'
               : '');
         }
@@ -3905,7 +3947,7 @@ export const appJs = `
           '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
           'Use the same Postgres URL the inviter used (postgres://…). Your email + display name come from User Settings — change them there. The email must match the address the invitation was addressed to.' +
           '</p>';
-        showModal('Join team', bodyHtml, {
+        showModal('Join workspace', bodyHtml, {
           primaryLabel: 'Join',
           onSubmit: function (scope) {
             var data = collectFormValues(scope);
@@ -3925,7 +3967,7 @@ export const appJs = `
                 body: JSON.stringify({ path: path }),
               })
                 .then(function () { return reloadEverything(); })
-                .then(function () { showToast('Joined "' + (res.team && res.team.name || 'team') + '" — switched to it', {}); });
+                .then(function () { showToast('Joined "' + (res.team && res.team.name || 'workspace') + '" — switched to it', {}); });
             });
           },
         });
@@ -3988,7 +4030,7 @@ export const appJs = `
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Identity</h3>' +
-            '<p class="lead" style="margin:0 0 10px">Display name + email used when creating or joining teams. Saved to ~/.lattice/identity.json and mirrored into the active Lattice.</p>' +
+            '<p class="lead" style="margin:0 0 10px">Display name + email used when creating or joining cloud workspaces. Saved to ~/.lattice/identity.json and mirrored into the active Lattice.</p>' +
             '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
               '<div><label class="field-label">Display name</label><input id="id-display-name" type="text" value="' + escapeHtml(id.display_name || '') + '" style="width:100%"></div>' +
               '<div><label class="field-label">Email</label><input id="id-email" type="email" value="' + escapeHtml(id.email || '') + '" style="width:100%"></div>' +
@@ -4090,8 +4132,8 @@ export const appJs = `
       // Database panel below.
       content.innerHTML =
         '<div class="teams-page">' +
-          '<h2>Database Settings</h2>' +
-          '<div id="db-name-host"><div class="placeholder" style="padding:14px">Loading database name…</div></div>' +
+          '<h2>Workspace Settings</h2>' +
+          '<div id="db-name-host"><div class="placeholder" style="padding:14px">Loading workspace name…</div></div>' +
           '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
           '<div id="data-model-host"><div class="placeholder" style="padding:18px">Loading data model…</div></div>' +
           '<div id="db-danger-host"></div>' +
@@ -4114,8 +4156,8 @@ export const appJs = `
         '<strong style="color:var(--danger)">This cannot be undone.</strong></p>' +
         '<p style="margin:0 0 6px;font-size:12px;color:var(--text-muted)">Type <strong>' + escapeHtml(safeLabel) + '</strong> to confirm:</p>' +
         '<input id="confirm-db-name" type="text" autocomplete="off" style="width:100%" />';
-      showModal('Delete database', body, {
-        primaryLabel: 'Delete database',
+      showModal('Delete workspace', body, {
+        primaryLabel: 'Delete workspace',
         primaryClass: 'destructive',
         onBody: function (backdrop) {
           var input = backdrop.querySelector('#confirm-db-name');
@@ -4176,7 +4218,7 @@ export const appJs = `
             '<div class="danger-zone">' +
               '<h3>Danger zone</h3>' +
               '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-                'Disconnect this database from the cloud. This removes the team and <strong>kicks all members</strong>. This cannot be undone.' +
+                'Disconnect this database from the cloud. This dissolves the cloud workspace and <strong>kicks all members</strong>. This cannot be undone.' +
               '</p>' +
               '<button class="btn destructive" id="db-disconnect-btn">Disconnect from cloud</button>' +
             '</div>';
@@ -4197,16 +4239,16 @@ export const appJs = `
             '<div class="danger-zone">' +
               '<h3>Danger zone</h3>' +
               '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-                'Leave this team. The cloud database keeps running for everyone else; you simply stop being a member.' +
+                'Leave this cloud workspace. It keeps running for everyone else; you simply stop being a member.' +
               '</p>' +
-              '<button class="btn destructive" id="db-leave-btn">Leave team</button>' +
+              '<button class="btn destructive" id="db-leave-btn">Leave workspace</button>' +
             '</div>';
           host.querySelector('#db-leave-btn').addEventListener('click', function () {
             if (!confirm('Leave "' + (cfg.teamName || label || 'this team') + '"?')) return;
             var lbtn = host.querySelector('#db-leave-btn');
             withBusy(lbtn, function () {
               return fetchJson('/api/teams-gui/teams/' + cfg.teamId + '/members/' + encodeURIComponent(cfg.myUserId), { method: 'DELETE' })
-                .then(function () { showToast('Left the team', {}); return switchAway(); })
+                .then(function () { showToast('Left the workspace', {}); return switchAway(); })
                 .catch(function (e) { alert('Leave failed: ' + e.message); });
             });
           });
@@ -4217,15 +4259,21 @@ export const appJs = `
           '<div class="danger-zone">' +
             '<h3>Danger zone</h3>' +
             '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-              'Permanently delete this database. The configuration is removed and, for a local database, the underlying SQLite file is deleted. This cannot be undone.' +
+              'Permanently delete this workspace. The configuration is removed and, for a local database, the underlying SQLite file is deleted. This cannot be undone.' +
             '</p>' +
-            '<button class="btn destructive" id="db-delete-btn">Delete database</button>' +
+            '<button class="btn destructive" id="db-delete-btn">Delete workspace</button>' +
           '</div>';
         host.querySelector('#db-delete-btn').addEventListener('click', function () {
           confirmDeleteDatabase(path, label, function () {
-            // We just deleted the active DB; the server switched to a fallback.
+            // We just deleted the active workspace; the server switched to a
+            // fallback. Re-render the drawer's Workspace-settings tab so it
+            // reflects the NEW active workspace — previously this rendered into
+            // #content behind the open drawer, leaving the user stuck on the
+            // deleted workspace's settings.
             return reloadEverything().then(function () {
-              renderDatabaseSettings(document.getElementById('content'));
+              var drawer = document.getElementById('settings-drawer');
+              if (drawer && !drawer.hidden) selectDrawerTab('database');
+              else closeSettingsDrawer();
             });
           });
         });
@@ -4262,9 +4310,9 @@ export const appJs = `
               (canRename
                 ? ('Friendly database name shown in the topbar and the dropdown. ' +
                   (isCloud
-                    ? 'For cloud databases, the rename is broadcast to every team member in realtime.'
+                    ? 'For cloud databases, the rename is broadcast to every member in realtime.'
                     : 'Saved to the YAML config\\'s name: key.'))
-                : 'Only the team owner can rename this cloud database.') +
+                : 'Only the workspace owner can rename this cloud database.') +
             '</p>' +
             '<div id="db-name-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
@@ -4312,12 +4360,12 @@ export const appJs = `
             ? (current.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)')
             : '—';
           var rowLabel = c.label || c.name;
-          var del = '<button class="btn danger" data-delete-path="' + escapeHtml(c.path) + '" data-delete-label="' + escapeHtml(rowLabel) + '">Delete</button>';
+          // No per-row Delete / Action column (1.16.3) — rows are click-to-switch;
+          // deletion lives in Workspace Settings → Danger Zone.
           return '<tr' + (c.active ? '' : ' class="ws-row" data-switch-path="' + escapeHtml(c.path) + '"') + '>' +
             '<td>' + escapeHtml(rowLabel) + (c.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>' + kind + '</td>' +
             '<td><code>' + escapeHtml(c.dbFile || '') + '</code></td>' +
-            '<td>' + del + '</td>' +
           '</tr>';
         }).join('');
         host.innerHTML =
@@ -4327,8 +4375,8 @@ export const appJs = `
               '<button class="btn primary" id="action-add-db">+ Add new workspace</button>' +
             '</div>' +
             '<table style="width:100%;border-collapse:collapse">' +
-              '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>File / source</th><th>Action</th></tr></thead>' +
-              '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No workspaces configured.</td></tr>') + '</tbody>' +
+              '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>File / source</th></tr></thead>' +
+              '<tbody>' + (rows || '<tr><td colspan="3" style="padding:8px;color:var(--text-muted)">No workspaces configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
         host.querySelectorAll('tr.ws-row[data-switch-path]').forEach(function (row) {
@@ -4338,22 +4386,6 @@ export const appJs = `
               .then(function (r) { return r.json(); })
               .then(function () { return reloadEverything(); })
               .then(function () { renderLatticeSettings(document.getElementById('content')); });
-          });
-        });
-        host.querySelectorAll('[data-delete-path]').forEach(function (btn) {
-          btn.addEventListener('click', function (e) {
-            e.stopPropagation(); // don't trigger the row's switch handler
-            confirmDeleteDatabase(
-              btn.getAttribute('data-delete-path'),
-              btn.getAttribute('data-delete-label'),
-              function () {
-                // Deleting any row may have switched the active DB (if it was
-                // the active one); refetch everything, then re-render the list.
-                return reloadEverything().then(function () {
-                  renderLatticeSettings(document.getElementById('content'));
-                });
-              },
-            );
           });
         });
         host.querySelector('#action-add-db').addEventListener('click', showCreateDatabaseWizard);
@@ -4394,20 +4426,16 @@ export const appJs = `
           label = 'LOCAL';
           color = 'var(--text-muted)';
           break;
-        case 'cloud-connected':
-          label = 'CLOUD · CONNECTED';
-          color = 'var(--accent)';
-          break;
         case 'team-cloud-creator':
-          label = '👑 TEAM CLOUD · CREATOR';
+          label = '👑 CLOUD · OWNER';
           color = 'var(--accent)';
           break;
         case 'team-cloud-member':
-          label = 'TEAM CLOUD · MEMBER';
+          label = 'CLOUD · MEMBER';
           color = 'var(--accent)';
           break;
         case 'team-cloud-needs-invite':
-          label = 'TEAM CLOUD · NEEDS INVITE';
+          label = 'CLOUD · NEEDS INVITE';
           color = 'var(--warn)';
           break;
         default:
@@ -4429,24 +4457,16 @@ export const appJs = `
           '</div>'
         );
       }
-      if (info.state === 'cloud-connected') {
-        return (
-          renderConnectionSummary(info) +
-          '<div class="team-actions" style="margin-top:10px">' +
-            '<button class="btn primary" data-act="open-upgrade">Upgrade to team cloud →</button>' +
-          '</div>'
-        );
-      }
       if (info.state === 'team-cloud-creator' || info.state === 'team-cloud-member') {
-        var isCreator = info.state === 'team-cloud-creator';
+        var isOwner = info.state === 'team-cloud-creator';
         return (
           renderConnectionSummary(info) +
           '<div style="margin-top:10px;font-size:13px">' +
-            '<strong>Team:</strong> ' + escapeHtml(info.teamName || '(unnamed)') +
-            (isCreator ? ' · <span style="color:var(--accent)">you are the creator</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
+            '<strong>Cloud workspace:</strong> ' + escapeHtml(info.teamName || '(unnamed)') +
+            (isOwner ? ' · <span style="color:var(--accent)">you are the owner</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
-            (isCreator ? '<button class="btn primary" data-act="open-invite">Invite member</button>' : '') +
+            (isOwner ? '<button class="btn primary" data-act="open-invite">Invite member</button>' : '') +
           '</div>' +
           // Exit actions (Disconnect for the owner / Leave for a member) live
           // in the Danger Zone below — not on a member row.
@@ -4457,14 +4477,14 @@ export const appJs = `
         return (
           renderConnectionSummary(info) +
           '<p style="margin-top:10px;color:var(--warn);font-size:13px">' +
-            'This cloud DB is a team — paste your invite token to join.' +
+            'Not a member of this cloud workspace yet — paste your invite token to join.' +
           '</p>' +
           '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:6px">' +
             '<div><label class="field-label">Invite token</label>' +
             '<textarea id="db-rejoin-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea></div>' +
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
-            '<button class="btn primary" data-act="rejoin-with-token">Join team →</button>' +
+            '<button class="btn primary" data-act="rejoin-with-token">Join workspace →</button>' +
           '</div>'
         );
       }
@@ -4494,11 +4514,6 @@ export const appJs = `
         showMigrateToCloudModal(rerender);
       });
 
-      var upgradeBtn = host.querySelector('[data-act="open-upgrade"]');
-      if (upgradeBtn) upgradeBtn.addEventListener('click', function () {
-        showUpgradeToTeamModal(rerender);
-      });
-
       // team_id / my_user_id / isCreator come from /api/dbconfig (info),
       // resolved against the ACTIVE cloud DB — not a local connection row
       // (which doesn't exist when the team cloud itself is active). This
@@ -4519,15 +4534,21 @@ export const appJs = `
       // rows carry Kick, shown only to the creator.
       var membersHost = host.querySelector('#db-members-host');
       if (membersHost && teamId && (info.state === 'team-cloud-creator' || info.state === 'team-cloud-member')) {
-        fetchJson('/api/teams-gui/teams/' + teamId + '/members').then(function (res) {
-          var members = res.members || [];
-          membersHost.innerHTML = renderMembersList(members, myUserId, isCreator);
+        Promise.all([
+          fetchJson('/api/teams-gui/teams/' + teamId + '/members'),
+          // Pending invitees (I). Resilient: an older cloud without the GET
+          // invitations route shouldn't blank the whole member list.
+          fetchJson('/api/teams-gui/teams/' + teamId + '/invitations').catch(function () { return { invitations: [] }; }),
+        ]).then(function (results) {
+          var members = (results[0] && results[0].members) || [];
+          var invitations = (results[1] && results[1].invitations) || [];
+          membersHost.innerHTML = renderMembersList(members, myUserId, isCreator, invitations);
           // Kick another member (creator only).
           membersHost.querySelectorAll('[data-act="kick"]').forEach(function (btn) {
             var row = btn.closest('[data-user-id]');
             var userId = row && row.getAttribute('data-user-id');
             btn.addEventListener('click', function () {
-              if (!confirm('Remove this member from the team?')) return;
+              if (!confirm('Remove this member from the workspace?')) return;
               withBusy(btn, function () {
                 return fetchJson('/api/teams-gui/teams/' + teamId + '/members/' + encodeURIComponent(userId), { method: 'DELETE' })
                   .then(function () { rerender(); })
@@ -4546,7 +4567,7 @@ export const appJs = `
         // call the connect-existing endpoint with just the invite
         // token. The handler reads credentials from db-credentials.enc
         // via the active configPath's label.
-        setMsg('Joining team…');
+        setMsg('Joining workspace…');
         fetch('/api/dbconfig/connect-existing', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -4709,7 +4730,7 @@ export const appJs = `
         '<div style="margin-top:14px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02)">' +
           '<div style="font-size:12px;color:var(--text);text-transform:uppercase;letter-spacing:0.04em;font-weight:500;margin-bottom:6px">Share with cloud</div>' +
           '<p style="margin:0 0 8px;font-size:12px;color:var(--text-muted)">' +
-            'Checked tables become visible to every team member you invite. Uncheck any you want to keep ' +
+            'Checked tables become visible to every member you invite. Uncheck any you want to keep ' +
             'cloud-stored but unshared. You can change this later from Data Model.' +
           '</p>' +
           shareRows +
@@ -4732,7 +4753,7 @@ export const appJs = `
           return probeBeforeCredentialSave(body, msg).then(function (probe) {
             if (probe.teamEnabled) {
               throw new Error(
-                'Target is already a cloud DB with a team' +
+                'Target is already a cloud workspace' +
                 (probe.teamName ? ' (' + probe.teamName + ')' : '') +
                 '. Migrate-to-cloud only works against fresh empty targets.'
               );
@@ -4792,7 +4813,7 @@ export const appJs = `
           '<code>lattice.config.yml</code>\\'s <code>db:</code> line or via the ' +
           'Databases catalog under User Config. If you want to <em>push</em> ' +
           'your local rows into the target instead, use Migrate to cloud. If ' +
-          'the target is a teams DB you\\'ll be asked for an invite token ' +
+          'the target is a shared cloud workspace you\\'ll be asked for an invite token ' +
           'after the probe.' +
         '</p>' +
         postgresFormHtml({}) +
@@ -4814,7 +4835,7 @@ export const appJs = `
                 var zone = document.getElementById('w-team-zone');
                 zone.innerHTML =
                   '<div style="padding:10px;background:rgba(251,146,60,0.08);border:1px solid var(--warn);border-radius:6px">' +
-                    '<p style="margin:0 0 8px;font-size:13px;color:var(--warn)">Target is a teams DB' +
+                    '<p style="margin:0 0 8px;font-size:13px;color:var(--warn)">Target is a shared cloud workspace' +
                     (probe.teamName ? ' (<strong>' + escapeHtml(probe.teamName) + '</strong>)' : '') +
                     '. Paste your invite token to join:</p>' +
                     '<textarea id="w-invite-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea>' +
@@ -4848,35 +4869,11 @@ export const appJs = `
       });
     }
 
-    function showUpgradeToTeamModal(onClose) {
-      var bodyHtml =
-        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
-          'Upgrade this cloud DB to a team DB by registering as the founding member. ' +
-          'Your display name + email from <strong>User Config → Identity</strong> are used.' +
-        '</p>' +
-        '<div><label class="field-label">Team name</label>' +
-          '<input type="text" id="w-team-name" placeholder="Atlas" style="width:100%"></div>' +
-        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
-      showModal('Upgrade to team cloud', bodyHtml, {
-        primaryLabel: 'Upgrade →',
-        onSubmit: function () {
-          var teamName = (document.getElementById('w-team-name').value || '').trim();
-          if (!teamName) throw new Error('Team name is required.');
-          var msg = document.getElementById('w-msg');
-          msg.textContent = 'Upgrading…';
-          return fetch('/api/dbconfig/upgrade-to-team', {
-            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ team_name: teamName }),
-          })
-            .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
-            .then(function (r) {
-              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
-              if (onClose) onClose();
-            });
-        },
-      });
-    }
+    // (Removed in 1.16.3) The standalone upgrade-to-cloud-sharing modal is
+    // gone; cloud workspaces initialize their member/share machinery
+    // automatically (see TeamsClient.ensureCloudWorkspaceIdentity).
 
-    function renderMembersList(members, myUserId, isCreator) {
+    function renderMembersList(members, myUserId, isCreator, invitations) {
       var rows = members.map(function (m) {
         var label = m.name || m.email || '(unknown)';
         var isSelf = m.user_id === myUserId;
@@ -4896,7 +4893,22 @@ export const appJs = `
           btn +
         '</div>';
       }).join('');
-      return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
+      // Pending (unredeemed) invitations — shown below active members so the
+      // owner can see who's been invited but hasn't joined yet (I).
+      var pending = (invitations || []).filter(function (iv) { return iv && iv.invitee_email; });
+      var pendingHtml = pending.length
+        ? '<h4 style="margin-top:14px">Pending invitations</h4>' +
+            pending.map(function (iv) {
+              return '<div class="member-row member-row-pending">' +
+                '<span style="color:var(--text-muted)">' + escapeHtml(iv.invitee_email) +
+                  ' <span class="role-tag' + (iv.expired ? ' role-expired' : ' role-member') + '">' +
+                    (iv.expired ? 'expired' : 'invited') +
+                  '</span>' +
+                '</span>' +
+              '</div>';
+            }).join('')
+        : '';
+      return '<div class="members-list"><h4>Members</h4>' + rows + pendingHtml + '</div>';
     }
 
     function showInviteByEmailModal(teamId, info) {
