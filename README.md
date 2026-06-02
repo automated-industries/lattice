@@ -2153,9 +2153,9 @@ Chat threads, files, and secrets are all stored as native Lattice entities.
 
 The convergence means you don't need to duplicate entity-context definitions in YAML for the GUI to find rendered files.
 
-**Database wizard form (v1.13.2+).** The Postgres connection form (used by Migrate to cloud + Connect to existing cloud) disables browser autocapitalize, autocorrect, and spellcheck on every text input, and trims whitespace on every read. This avoids silent failure modes where macOS Safari / iOS turned a Supabase tenant user `postgres.<ref>` into `Postgres.<ref>` on submit, and where pasted credentials carrying a trailing newline produced opaque "zero-length delimiter identifier" or SCRAM-mismatch errors. `probeCloud` also folds SQLSTATE + `routine` into `result.error` so the GUI's "Unreachable: …" surface is actionable.
+**Database wizard form (v1.13.2+).** The Postgres connection form (used by Migrate to cloud + the Join-a-team invite flow) disables browser autocapitalize, autocorrect, and spellcheck on every text input, and trims whitespace on every read. This avoids silent failure modes where macOS Safari / iOS turned a Supabase tenant user `postgres.<ref>` into `Postgres.<ref>` on submit, and where pasted credentials carrying a trailing newline produced opaque "zero-length delimiter identifier" or SCRAM-mismatch errors. `probeCloud` also folds SQLSTATE + `routine` into `result.error` so the GUI's "Unreachable: …" surface is actionable.
 
-**Switch vs. migrate (v1.13.2+ wording).** "Connect to existing cloud" _switches_ the project's `db:` line to point at the cloud; the local SQLite file stays on disk and you can switch back by editing the YAML or via the Databases catalog under User Config. Use "Migrate to cloud" only when you want to _push_ the local data into a fresh empty target.
+**Migrate vs. join (1.16.4).** The standalone "Connect to existing cloud" wizard (which switched a project's `db:` line to a raw cloud on its own) was removed — the two cloud operations are now **Migrate to cloud** (push your local workspace's data into a fresh cloud Postgres; you become the owner) and **Join a team (invite)** (redeem an invite token to join a workspace someone shared with you). The `connect-existing` endpoint still backs the invite‑redeem path for an active cloud that needs an invite.
 
 **Cloud workspaces initialize automatically (v1.16.3+).** A cloud database _is_ a cloud workspace with members — there is no separate "upgrade to team" step. The moment a database is migrated or connected to Postgres, its member/share machinery is created automatically (the workspace name is used as the identity; an existing un-initialized cloud initializes on open, with the opener as owner). The underlying mechanism is the `registerDirectViaPostgres()` helper, which drives the identity/member INSERT sequence directly against the cloud Postgres (the older HTTP `/api/auth/register` path is still used when the cloud URL is `http(s)://`). The standalone "Upgrade to team cloud" action and its `/api/dbconfig/upgrade-to-team` route were removed in 1.16.3.
 
@@ -2392,7 +2392,7 @@ await client.ensureCloudWorkspaceIdentity({
 });
 ```
 
-GUI consumers don't need to call these directly — the Database panel surfaces them as wizards (`Migrate to cloud →`, `Connect to existing cloud →`); workspace initialization is automatic.
+GUI consumers don't need to call these directly — the Database panel surfaces `Migrate to cloud →`, and joining a shared workspace goes through `Join a team (invite)`; workspace initialization is automatic. (The standalone "Connect to existing cloud" wizard was removed in 1.16.4.)
 
 HTTP surface (all under `/api/dbconfig/*`, localhost-only, same auth model as the rest of `lattice gui`):
 
