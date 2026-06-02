@@ -3554,11 +3554,11 @@ export const appJs = `
                   '<input type="radio" name="wiz-kind" value="cloud"' + (kind === 'cloud' ? ' checked' : '') + ' /> New cloud (Postgres)' +
                 '</label>' +
                 '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
-                  '<input type="radio" name="wiz-kind" value="join"' + (kind === 'join' ? ' checked' : '') + ' /> Join existing cloud (invite)' +
+                  '<input type="radio" name="wiz-kind" value="join"' + (kind === 'join' ? ' checked' : '') + ' /> Join a team (invite)' +
                 '</label>' +
               '</div>' +
               '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
-                'Local workspaces are single-user SQLite files on your machine. Cloud workspaces are Postgres, can be shared with invited members, and stream realtime updates. Joining connects to a cloud workspace you were invited to.' +
+                'Local workspaces are single-user SQLite files on your machine. Cloud workspaces are Postgres, can be shared with invited members, and stream realtime updates. Join a team you were invited to with an invite token.' +
               '</p>' +
             '</div>' +
             cloudBlock;
@@ -3663,8 +3663,8 @@ export const appJs = `
 
         function goNext() {
           if (wizState.step === 1) {
-            // Join existing cloud: hand off to the invite-redeem modal, which
-            // collects the cloud URL + invite token and connects.
+            // Join a team: hand off to the invite-redeem modal, which collects
+            // the cloud URL + invite token and joins as a member.
             if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
             if (!wizState.name.trim()) { alert('Workspace name is required'); return; }
             if (!/^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,199}$/.test(wizState.name.trim())) {
@@ -3724,7 +3724,6 @@ export const appJs = `
         }
 
         function submitCloud() {
-          var createdTeamId = null;
           return fetchJson('/api/teams-gui/connections/register-and-create', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -3735,8 +3734,20 @@ export const appJs = `
               team_name: wizState.name.trim(),
             }),
           }).then(function (result) {
-            createdTeamId = result && result.team && result.team.id;
-            return createStarterEntities(wizState.entities, createdTeamId);
+            var createdTeamId = result && result.team && result.team.id;
+            var wsId = result && result.workspace_id;
+            // Switch INTO the new cloud workspace so starter entities are
+            // created there (not in the previously-active local workspace).
+            var switched = wsId
+              ? fetchJson('/api/workspaces/switch', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ id: wsId }),
+                })
+              : Promise.resolve();
+            return switched.then(function () {
+              return createStarterEntities(wizState.entities, createdTeamId);
+            });
           });
         }
 
@@ -3921,65 +3932,6 @@ export const appJs = `
         });
       }).catch(function (err) {
         host.innerHTML = '<div class="placeholder">Failed to load identity: ' + escapeHtml(err.message) + '</div>';
-      });
-    }
-
-    function renderDatabasesPanel(host) {
-      fetchJson('/api/userconfig/databases').then(function (cat) {
-        var localRows = (cat.local || []).map(function (d) {
-          var stateBadge = '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:var(--text-muted)">' + escapeHtml((d.state || 'local').toUpperCase()) + '</span>';
-          return '<tr' + (d.active ? '' : ' class="db-row" data-switch-path="' + escapeHtml(d.configPath) + '"') + '>' +
-            '<td>' + escapeHtml(d.label) + (d.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
-            '<td>SQLite</td>' +
-            '<td>' + stateBadge + '</td>' +
-            '<td><code>' + escapeHtml(d.dbFile) + '</code></td>' +
-            '<td>—</td>' +
-          '</tr>';
-        }).join('');
-        var cloudRows = (cat.cloud || []).map(function (d) {
-          var stateBadge = '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:var(--text-muted)">' + escapeHtml((d.state || 'unknown').toUpperCase()) + '</span>';
-          return '<tr><td>' + escapeHtml(d.label) + '</td><td>Postgres</td><td>' + stateBadge + '</td><td>(encrypted)</td><td>—</td></tr>';
-        }).join('');
-        host.innerHTML =
-          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
-              '<h3 style="margin:0">Databases</h3>' +
-              '<button class="btn primary" id="action-add-cloud-db">Add a cloud DB →</button>' +
-            '</div>' +
-            '<table style="width:100%;border-collapse:collapse">' +
-              '<thead><tr style="text-align:left"><th>Label</th><th>Type</th><th>State</th><th>File / source</th><th>Action</th></tr></thead>' +
-              '<tbody>' + (localRows + cloudRows || '<tr><td colspan="5" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
-            '</table>' +
-          '</div>';
-        host.querySelectorAll('tr.db-row[data-switch-path]').forEach(function (row) {
-          row.addEventListener('click', function () {
-            var configPath = row.getAttribute('data-switch-path');
-            fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
-              .then(function (r) { return r.json(); })
-              .then(function () { renderUserConfig(document.getElementById('content')); });
-          });
-        });
-        var addCloudBtn = document.getElementById('action-add-cloud-db');
-        if (addCloudBtn) addCloudBtn.addEventListener('click', function () {
-          // Create a fresh project then immediately open the Connect-
-          // existing wizard against it. The backend's /api/databases/create
-          // makes a starter YAML + swaps the active Lattice to it; the
-          // wizard then rewrites that project's db: line.
-          var name = prompt('Project name for the new cloud-connected project:');
-          if (!name) return;
-          fetch('/api/databases/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name }) })
-            .then(function (r) { return r.json(); })
-            .then(function (d) {
-              if (d.error) { alert('Failed: ' + d.error); return; }
-              // Active swapped to the new project — open Connect-existing.
-              showConnectExistingModal(function () {
-                renderUserConfig(document.getElementById('content'));
-              });
-            })
-            .catch(function (e) { alert('Failed: ' + e.message); });
-        });
-      }).catch(function (err) {
-        host.innerHTML = '<div class="placeholder">Failed to load databases: ' + escapeHtml(err.message) + '</div>';
       });
     }
 
@@ -4316,7 +4268,7 @@ export const appJs = `
           '<p style="margin:0 0 12px;color:var(--text-muted);font-size:13px">' +
             'SQLite DB: <code>' + escapeHtml(info.dbFile || '(unknown)') + '</code>. ' +
             'Push this workspace to a cloud Postgres to collaborate. ' +
-            '(To join an existing cloud, create a new workspace and choose “join via cloud invite”.)' +
+            '(To join a team, create a new workspace and choose “Join a team (invite)”.)' +
           '</p>' +
           '<div class="team-actions">' +
             '<button class="btn primary" data-act="open-migrate">Migrate to cloud →</button>' +
@@ -4667,71 +4619,6 @@ export const appJs = `
             });
           });
         }, Promise.resolve());
-      });
-    }
-
-    function showConnectExistingModal(onClose) {
-      var bodyHtml =
-        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
-          'Switch this project to an <strong>existing</strong> cloud Postgres. ' +
-          'Your local SQLite file is preserved — only this project\\'s active ' +
-          'connection changes. Switch back any time by editing ' +
-          '<code>lattice.config.yml</code>\\'s <code>db:</code> line or via the ' +
-          'Databases catalog under User Config. If you want to <em>push</em> ' +
-          'your local rows into the target instead, use Migrate to cloud. If ' +
-          'the target is a shared cloud workspace you\\'ll be asked for an invite token ' +
-          'after the probe.' +
-        '</p>' +
-        postgresFormHtml({}) +
-        '<div id="w-team-zone" style="margin-top:10px"></div>' +
-        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
-      var teamZoneShown = false;
-      showModal('Connect to existing cloud', bodyHtml, {
-        primaryLabel: 'Connect →',
-        onSubmit: function () {
-          var body = readPostgresWizardForm();
-          var msg = document.getElementById('w-msg');
-          // probeBeforeCredentialSave validates Supabase form patterns
-          // before sending the probe; surfaces inline warnings (with
-          // hints) when the user clearly has e.g. the wrong port or
-          // missing tenant prefix in the pooler user.
-          return probeBeforeCredentialSave(body, msg)
-            .then(function (probe) {
-              if (probe.teamEnabled && !teamZoneShown) {
-                var zone = document.getElementById('w-team-zone');
-                zone.innerHTML =
-                  '<div style="padding:10px;background:rgba(251,146,60,0.08);border:1px solid var(--warn);border-radius:6px">' +
-                    '<p style="margin:0 0 8px;font-size:13px;color:var(--warn)">Target is a shared cloud workspace' +
-                    (probe.teamName ? ' (<strong>' + escapeHtml(probe.teamName) + '</strong>)' : '') +
-                    '. Paste your invite token to join:</p>' +
-                    '<textarea id="w-invite-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea>' +
-                  '</div>';
-                teamZoneShown = true;
-                msg.textContent = 'Enter invite token, then click Connect again.';
-                throw new Error('__PROBE_REQUIRES_TOKEN__');
-              }
-              // Either non-team, or we already showed the token zone.
-              var tokenEl = document.getElementById('w-invite-token');
-              var payload = Object.assign({}, body);
-              if (tokenEl && tokenEl.value.trim()) payload.invite_token = tokenEl.value.trim();
-              msg.textContent = 'Connecting…';
-              return fetch('/api/dbconfig/connect-existing', {
-                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
-              })
-                .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
-                .then(function (r) {
-                  if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
-                  if (onClose) onClose();
-                });
-            })
-            .catch(function (e) {
-              if (e.message === '__PROBE_REQUIRES_TOKEN__') {
-                // Suppress error — token zone is now visible.
-                throw new Error(' '); // forces modal to stay open with a no-op message
-              }
-              throw e;
-            });
-        },
       });
     }
 

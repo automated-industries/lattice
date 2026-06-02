@@ -36,6 +36,12 @@ working with no root).
 - **Terminology:** "workspace" is the user-facing term everywhere; "database" is
   reserved for a specific DB's connection details (the connection panel in
   Workspace Settings).
+- **Two cloud operations only: migrate to a cloud, or join a team via invite.**
+  The standalone "Connect to existing cloud" (join-a-cloud-on-its-own) path is
+  removed — its modal/UI is deleted. The create wizard's third option is renamed
+  from "Join existing cloud (invite)" to **"Join a team (invite)"** and the
+  "join an existing cloud / join via cloud invite" wording is gone. Joining via
+  invite is unchanged.
 
 ### Added
 
@@ -62,13 +68,21 @@ working with no root).
 - **Renaming a workspace now updates the header switcher** — the rename is
   mirrored into the registry's display name (previously only the YAML/team name
   changed, which the registry-backed switcher didn't read).
+- **"New cloud (Postgres)" works for Postgres URLs.** Creating a cloud workspace
+  in the wizard previously errored (`Request cannot be constructed from a URL
+  that includes credentials`) because it used the HTTP `/api/auth/register`
+  path. It now initializes the cloud directly via Postgres
+  (`registerDirectViaPostgres`), and the wizard switches into the new cloud
+  workspace so starter entities land there.
 
 ### Notes
 
-- Two now-unused GUI helpers (`renderDatabasesPanel`, `showCreateTeamModal`) and
-  the now-unused `POST /api/databases/{switch,create,delete}` server endpoints
-  remain in place (dead, not reachable from the UI) and are slated for removal
-  in a follow-up cleanup.
+- The dead `renderDatabasesPanel` + `showConnectExistingModal` (the removed
+  connect-to-raw-cloud UI) were deleted. One now-unused GUI helper
+  (`showCreateTeamModal`) and the now-unused
+  `POST /api/databases/{switch,create,delete}` server endpoints remain in place
+  (dead, not reachable from the UI) and are slated for removal in a follow-up
+  cleanup.
 
 ## [1.16.3] - 2026-06-02
 
