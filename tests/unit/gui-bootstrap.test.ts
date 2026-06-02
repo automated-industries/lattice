@@ -38,7 +38,8 @@ function rootAt(base: string): string {
 
 function writeConfig(dir: string, name: string, db: string, friendly?: string): string {
   const p = join(dir, name);
-  const yaml = (friendly ? `name: ${JSON.stringify(friendly)}\n` : '') + `db: ${db}\nentities: {}\n`;
+  const yaml =
+    (friendly ? `name: ${JSON.stringify(friendly)}\n` : '') + `db: ${db}\nentities: {}\n`;
   writeFileSync(p, yaml, 'utf8');
   return p;
 }

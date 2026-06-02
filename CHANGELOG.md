@@ -84,7 +84,7 @@ working with no root).
   changed, which the registry-backed switcher didn't read).
 - **"New cloud (Postgres)" works for Postgres URLs.** Creating a cloud workspace
   in the wizard previously errored (`Request cannot be constructed from a URL
-  that includes credentials`) because it used the HTTP `/api/auth/register`
+that includes credentials`) because it used the HTTP `/api/auth/register`
   path. It now initializes the cloud directly via Postgres
   (`registerDirectViaPostgres`), and the wizard switches into the new cloud
   workspace so starter entities land there.

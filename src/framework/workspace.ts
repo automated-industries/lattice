@@ -231,9 +231,7 @@ export function findWorkspaceByConfigPath(
   configPath: string,
 ): WorkspaceRecord | null {
   const target = resolve(configPath);
-  return (
-    listWorkspaces(root).find((w) => resolve(effectiveConfigPath(root, w)) === target) ?? null
-  );
+  return listWorkspaces(root).find((w) => resolve(effectiveConfigPath(root, w)) === target) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +430,10 @@ export function removeWorkspace(root: string, id: string): WorkspaceRecord | nul
 }
 
 /** Remove the registry record (if any) whose effective config path matches `configPath`. */
-export function removeWorkspaceByConfigPath(root: string, configPath: string): WorkspaceRecord | null {
+export function removeWorkspaceByConfigPath(
+  root: string,
+  configPath: string,
+): WorkspaceRecord | null {
   const match = findWorkspaceByConfigPath(root, configPath);
   return match ? removeWorkspace(root, match.id) : null;
 }

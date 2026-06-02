@@ -90,7 +90,11 @@ import {
   listNativeBindings,
   isNativeEntity,
 } from '../framework/native-entities.js';
-import { getOrCreateMasterKey, readIdentity, deleteDbCredential } from '../framework/user-config.js';
+import {
+  getOrCreateMasterKey,
+  readIdentity,
+  deleteDbCredential,
+} from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres } from './count-many.js';
 
