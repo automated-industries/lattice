@@ -81,11 +81,10 @@ interface DashboardResponse {
     lastUpdatedAt: string | null;
     stale: boolean;
   }[];
-  recent: { table: string; op: string; rowId: string | null; ts: string }[];
 }
 
 describe('GET /api/dashboard', () => {
-  it('returns counts + freshness + recent activity', async () => {
+  it('returns counts + freshness (no recent-activity section as of 1.16.2)', async () => {
     const s = await boot();
     const recent = new Date().toISOString();
     await postRow(s.url, 'widgets', { body: 'first', created_at: recent });
@@ -105,10 +104,9 @@ describe('GET /api/dashboard', () => {
     expect(d.totals.entities).toBeGreaterThanOrEqual(1);
     expect(d.totals.rows).toBeGreaterThanOrEqual(2);
 
-    // Both inserts were logged to the GUI audit → recent activity, newest first.
-    expect(d.recent.length).toBeGreaterThanOrEqual(2);
-    expect(d.recent[0]?.op).toBe('insert');
-    expect(d.recent[0]?.table).toBe('widgets');
+    // The Recent Activity section was removed in 1.16.2 — the payload no longer
+    // carries `recent` (Version History covers the audit log).
+    expect((d as { recent?: unknown }).recent).toBeUndefined();
   });
 
   it('flags a stale entity when its newest row is older than the window', async () => {

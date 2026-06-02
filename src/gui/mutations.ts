@@ -65,6 +65,11 @@ export async function appendAudit(
   for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
   await db.insert('_lattice_gui_audit', {
     id: crypto.randomUUID(),
+    // Set ts explicitly (don't rely on the column DEFAULT — it uses the
+    // SQLite-only `strftime(...)`, which doesn't yield a parseable ISO string
+    // on Postgres, so cloud history rendered "Invalid Date"). Mirrors the
+    // explicit `client_ts` below; adapter-agnostic.
+    ts: new Date().toISOString(),
     table_name: table,
     row_id: rowId,
     operation: op,
@@ -110,6 +115,9 @@ export async function recordSchemaAudit(
   for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
   await db.insert('_lattice_gui_audit', {
     id: crypto.randomUUID(),
+    // Explicit ISO ts — see appendAudit (the SQLite-only strftime DEFAULT
+    // rendered "Invalid Date" on the Postgres/cloud path).
+    ts: new Date().toISOString(),
     table_name: table,
     row_id: null,
     operation,

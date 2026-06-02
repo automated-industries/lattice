@@ -391,14 +391,12 @@ interface DashboardPayload {
   staleDays: number;
   totals: { entities: number; rows: number; stale: number };
   entities: DashboardEntity[];
-  recent: { table: string; op: string; rowId: string | null; ts: string }[];
 }
 
 /**
  * Workspace overview: per-entity counts (reusing {@link entitiesWithCounts}) +
- * a freshness timestamp + the recent-activity list (the GUI audit log). This is
- * a read-only, GUI-only composition — it adds no core write-path behavior and
- * does not affect a library consumer of Lattice.
+ * a freshness timestamp. This is a read-only, GUI-only composition — it adds no
+ * core write-path behavior and does not affect a library consumer of Lattice.
  */
 async function dashboardPayload(
   db: Lattice,
@@ -425,23 +423,11 @@ async function dashboardPayload(
     if (stale) staleCount += 1;
     return { ...t, lastUpdatedAt, stale };
   });
-  let recent: DashboardPayload['recent'] = [];
-  try {
-    const raw = (await db.query('_lattice_gui_audit', { limit: 15 })) as Record<string, unknown>[];
-    recent = raw
-      .map(parseAudit)
-      .sort((a, b) => b.ts.localeCompare(a.ts))
-      .slice(0, 15)
-      .map((e) => ({ table: e.table_name, op: e.operation, rowId: e.row_id, ts: e.ts }));
-  } catch {
-    // Audit table absent (a non-GUI-initialized DB) — recent stays empty.
-  }
   return {
     generatedAt: new Date().toISOString(),
     staleDays: DASHBOARD_STALE_DAYS,
     totals: { entities: entities.length, rows: totalRows, stale: staleCount },
     entities,
-    recent,
   };
 }
 
