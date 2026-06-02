@@ -2019,6 +2019,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
             return;
           }
+          if (isNativeEntity(oldName)) {
+            sendJson(
+              res,
+              { error: `"${oldName}" is a built-in entity and cannot be modified` },
+              400,
+            );
+            return;
+          }
           if (!operatorOwnsTable(active.teamContext, oldName)) {
             sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
             return;
@@ -2065,6 +2073,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
+          if (isNativeEntity(entityName)) {
+            sendJson(
+              res,
+              { error: `"${entityName}" is a built-in entity and cannot be modified` },
+              400,
+            );
+            return;
+          }
           if (!operatorOwnsTable(active.teamContext, entityName)) {
             sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
             return;
@@ -2099,12 +2115,31 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: 'Use “Add link” to create a relationship column' }, 400);
             return;
           }
+          // Validate the config edit BEFORE touching SQL so a failed config
+          // mutation can never leave the physical schema ahead of the YAML
+          // (Rule 15/16 — no drift). The fields map must exist (it won't for a
+          // table that isn't a declared config entity) and must not already
+          // carry this column.
+          const doc = loadConfigDoc(active.configPath);
+          const fieldsNode: unknown = doc.getIn(['entities', entityName, 'fields']);
+          if (
+            !fieldsNode ||
+            typeof fieldsNode !== 'object' ||
+            typeof (fieldsNode as { toJSON?: unknown }).toJSON !== 'function'
+          ) {
+            sendJson(res, { error: `Cannot add columns to "${entityName}"` }, 400);
+            return;
+          }
+          const existingFields = (fieldsNode as { toJSON: () => Record<string, unknown> }).toJSON();
+          if (colName in existingFields) {
+            sendJson(res, { error: `Column "${colName}" already exists on ${entityName}` }, 400);
+            return;
+          }
           const sqliteType = fieldToSqliteBaseType(colType as LatticeFieldDef['type']);
           await execSql(
             active.db,
             `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${sqliteType}`,
           );
-          const doc = loadConfigDoc(active.configPath);
           const fieldDef: Record<string, unknown> = { type: colType };
           if (body.required === true) fieldDef.required = true;
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
@@ -2134,6 +2169,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
+          if (isNativeEntity(entityName)) {
+            sendJson(
+              res,
+              { error: `"${entityName}" is a built-in entity and cannot be modified` },
+              400,
+            );
+            return;
+          }
           if (!operatorOwnsTable(active.teamContext, entityName)) {
             sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
             return;
@@ -2156,14 +2199,38 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `"${newCol}" is a reserved system column` }, 400);
             return;
           }
+          // Validate the config edit BEFORE touching SQL (Rule 15/16 — a failed
+          // YAML mutation must never leave the physical column renamed ahead of
+          // the config). Rebuild the fields map by key (object-safe) rather than
+          // deleteIn+setIn on the deep path.
+          const doc = loadConfigDoc(active.configPath);
+          const fieldsNode: unknown = doc.getIn(['entities', entityName, 'fields']);
+          if (
+            !fieldsNode ||
+            typeof fieldsNode !== 'object' ||
+            typeof (fieldsNode as { toJSON?: unknown }).toJSON !== 'function'
+          ) {
+            sendJson(res, { error: `Cannot rename columns on "${entityName}"` }, 400);
+            return;
+          }
+          const fieldsObj = (fieldsNode as { toJSON: () => Record<string, unknown> }).toJSON();
+          if (!(colName in fieldsObj)) {
+            sendJson(res, { error: `Unknown column "${colName}" on ${entityName}` }, 400);
+            return;
+          }
+          if (newCol in fieldsObj) {
+            sendJson(res, { error: `Column "${newCol}" already exists on ${entityName}` }, 400);
+            return;
+          }
           await execSql(
             active.db,
             `ALTER TABLE "${entityName}" RENAME COLUMN "${colName}" TO "${newCol}"`,
           );
-          const doc = loadConfigDoc(active.configPath);
-          const fieldDef: unknown = doc.getIn(['entities', entityName, 'fields', colName]);
-          doc.deleteIn(['entities', entityName, 'fields', colName]);
-          doc.setIn(['entities', entityName, 'fields', newCol], fieldDef);
+          const renamedFields: Record<string, unknown> = {};
+          for (const k of Object.keys(fieldsObj)) {
+            renamedFields[k === colName ? newCol : k] = fieldsObj[k];
+          }
+          doc.setIn(['entities', entityName, 'fields'], renamedFields);
           saveConfigDoc(active.configPath, doc);
           await disposeActive(active);
           active = await openConfig(active.configPath, active.outputDir, autoRender);
@@ -2455,12 +2522,20 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               (e) => e.table_name === filterTable || junctionMatchesFilter.has(e.table_name),
             );
           }
-          // Counts for the toolbar's enable/disable state (always over the
-          // full set so undo/redo aren't disabled by an active filter).
-          const allEntries = raw.map(parseAudit);
-          const liveCount = allEntries.filter((e) => e.undone === 0).length;
-          const undoneCount = allEntries.length - liveCount;
-          sendJson(res, { entries, canUndo: liveCount > 0, canRedo: undoneCount > 0 });
+          // Stack gates (↶/↷) are SESSION-SCOPED to match the session-scoped
+          // undo/redo *actions* (POST /api/history/undo|redo filter on
+          // session_id). The history LIST above stays global (everyone's
+          // activity is visible) and per-entry Revert stays global — but the
+          // toolbar buttons must reflect only THIS session's own live/undone
+          // entries. Otherwise undone rows left by a PRIOR server process
+          // (sessionId is regenerated per process) light up ↷ for a session
+          // that has nothing of its own to redo → "Nothing to redo".
+          const sessionRows = (await active.db.query('_lattice_gui_audit', {
+            filters: [{ col: 'session_id', op: 'eq', val: sessionId }],
+          })) as Record<string, unknown>[];
+          const sessionLive = sessionRows.filter((r) => Number(r.undone) === 0).length;
+          const sessionUndone = sessionRows.length - sessionLive;
+          sendJson(res, { entries, canUndo: sessionLive > 0, canRedo: sessionUndone > 0 });
           return;
         }
         if (method === 'POST' && pathname === '/api/history/undo') {
