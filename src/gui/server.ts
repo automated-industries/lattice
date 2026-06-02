@@ -856,6 +856,38 @@ async function openConfig(
     } catch {
       teamEnabled = false;
     }
+    // 1.16.3: a cloud workspace IS a cloud DB with members — there is no
+    // separate "team" to upgrade to. The first time we open a cloud DB that
+    // isn't initialized yet, set up the member/share machinery (the opener
+    // becomes owner) so the members + per-table sharing surface is always
+    // available. Best-effort + race-safe (ensureCloudWorkspaceIdentity is a
+    // no-op when the cloud is already a workspace); a failure leaves a plain
+    // cloud DB. Gated on a labeled db: line (need a label to store the token)
+    // + the operator having an identity email.
+    if (!teamEnabled) {
+      try {
+        const rawDb = parseDocument(readFileSync(configPath, 'utf8')).get('db');
+        const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
+        const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(dbLine);
+        const label = labelMatch?.[1];
+        const identity = readIdentity();
+        if (label && identity.email) {
+          await teamsClient.ensureCloudWorkspaceIdentity({
+            label,
+            cloudUrl: parsed.dbPath,
+            workspaceName: label,
+            email: identity.email,
+            displayName: identity.display_name,
+          });
+          teamEnabled = (await db.get('__lattice_team_identity', 'singleton')) != null;
+        }
+      } catch (e) {
+        console.warn(
+          '[openConfig] could not auto-initialize cloud workspace:',
+          (e as Error).message,
+        );
+      }
+    }
     if (teamEnabled) {
       await registerTeamCloudTables(db);
       try {
@@ -1027,9 +1059,9 @@ function saveConfigDoc(configPath: string, doc: ReturnType<typeof parseDocument>
 }
 
 /**
- * Write a starter YAML config + an empty SQLite DB. The schema is minimal —
- * one example `items` entity — so the user has something to play with
- * immediately. They can edit the YAML directly to add more entities.
+ * Write a starter YAML config + an empty SQLite DB. The workspace starts with
+ * NO entities (no example `items` table as of 1.16.3) — the user defines their
+ * own schema via the Data Model editor or by editing the YAML.
  */
 function createBlankConfig(activeConfigPath: string, dbName: string): string {
   const dir = dirname(activeConfigPath);
@@ -1038,10 +1070,10 @@ function createBlankConfig(activeConfigPath: string, dbName: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  if (!slug) throw new Error('Database name must contain at least one alphanumeric character');
+  if (!slug) throw new Error('Workspace name must contain at least one alphanumeric character');
   const configPath = join(dir, `${slug}.config.yml`);
   if (existsSync(configPath)) throw new Error(`Config already exists: ${slug}.config.yml`);
-  const yaml = `db: ./data/${slug}.db\n\nentities:\n  items:\n    fields:\n      id: { type: uuid, primaryKey: true }\n      name: { type: text, required: true }\n      notes: { type: text }\n      deleted_at: { type: text }\n    outputFile: ITEMS.md\n`;
+  const yaml = `db: ./data/${slug}.db\n\nentities: {}\n`;
   writeFileSync(configPath, yaml, 'utf8');
   // Ensure the data dir exists so opening the new config doesn't fail.
   mkdirSync(join(dir, 'data'), { recursive: true });

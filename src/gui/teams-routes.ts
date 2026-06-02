@@ -280,6 +280,16 @@ async function dispatchTeamSubroute(
     sendJson(res, { members });
     return;
   }
+  // /api/teams-gui/teams/:id/invitations (GET = list pending invitees)
+  if (subpath === 'invitations' && method === 'GET') {
+    const invitations = await ctx.client.listPendingInvitations(
+      conn.cloud_url,
+      conn.api_token,
+      teamId,
+    );
+    sendJson(res, { invitations });
+    return;
+  }
   // /api/teams-gui/teams/:id/invitations (POST)
   if (subpath === 'invitations' && method === 'POST') {
     const body = await readJson(req);
