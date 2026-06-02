@@ -8,6 +8,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.16.2] - 2026-06-02
+
+GUI bug-fix + cloud-settings patch (1.16.1 demo follow-up). No library API changes —
+a bare `new Lattice(path)` consumer is unaffected.
+
+### Fixed
+
+- **Version History no longer shows "Invalid Date".** The `_lattice_gui_audit.ts` column relied on a SQLite-only `strftime(...)` DEFAULT, so on the Postgres/cloud path it wasn't a parseable ISO string. `appendAudit` + `recordSchemaAudit` now set `ts` explicitly to `new Date().toISOString()` at insert (mirroring `client_ts`), and the client `formatTs` guards against an invalid value. Works on both adapters.
+- **An already-joined member of a team cloud is no longer shown the "paste invite token" panel.** `resolveTeamContext` left `myUserId` empty when neither the mirrored identity email nor a saved connection resolved the cloud user-id, so membership read as false (→ `team-cloud-needs-invite`). It now falls back to resolving membership directly — matching a live `__lattice_team_members` row to the local identity email, or treating a saved redeemed connection as proof of membership — so a member correctly renders as `team-cloud-member`.
+
+### Changed
+
+- **Cloud Database settings — members + Danger Zone.** The owner's invite flow now also shows the cloud **connection string with the password redacted** (`postgres://user:****@host:port/db`) alongside the one-time token, so an invitee gets everything they need. Membership-exit actions moved out of the member-row list into a dedicated **Danger Zone**: **Disconnect** (owner — disconnects the database from the cloud, kicking all members) and **Leave** (member — removes only you; the cloud DB keeps running). The members list keeps per-row **Kick** for the owner.
+- **Simple (file-system) view: create new objects in place.** A "**New**" tile (folder box with a +) opens a create form styled like the object page — blank fields for intrinsic + foreign-key columns, plus a select-menu + "+ Add another" for each many-to-many link. Reuses the existing field renderer and the row-create + `/link` endpoints (no new backend).
+- **Lattice/Databases settings: click a row to switch.** The whole (inactive) database row is now clickable to switch; the per-row "Switch" button was removed. Delete stays (and no longer triggers a switch).
+
+### Removed
+
+- **The "Recent Activity" section on the dashboard homepage** — redundant with Version History. The `/api/dashboard` payload no longer computes or returns `recent`.
+
 ## [1.16.1] - 2026-06-02
 
 GUI bug-fix + polish patch from the 1.16.0 demo. No library API changes — a bare
