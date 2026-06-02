@@ -149,20 +149,27 @@ export async function resolveTeamContext(
   // Resolve "me": prefer the operator's mirrored identity email, fall
   // back to the saved team connection's my_user_id.
   let myUserId = '';
+  let myEmail = '';
   try {
     const me = (await db.get('__lattice_user_identity', 'singleton')) as {
       email?: string;
     } | null;
-    if (me?.email) myUserId = (await resolveUserIdByEmail(db, me.email)) ?? '';
+    if (me?.email) {
+      myEmail = me.email;
+      myUserId = (await resolveUserIdByEmail(db, me.email)) ?? '';
+    }
   } catch {
     myUserId = '';
   }
+  let savedConn: { my_user_id?: string } | null = null;
   if (!myUserId) {
     try {
       const conns = await teamsClient.listConnections();
-      const conn =
-        conns.find((c) => c.cloud_url === cloudUrl) ?? conns.find((c) => c.team_id === teamId);
-      myUserId = conn?.my_user_id ?? '';
+      savedConn =
+        conns.find((c) => c.cloud_url === cloudUrl) ??
+        conns.find((c) => c.team_id === teamId) ??
+        null;
+      myUserId = savedConn?.my_user_id ?? '';
     } catch {
       // leave empty
     }
@@ -182,6 +189,33 @@ export async function resolveTeamContext(
       isMember = rows.length > 0;
     } catch {
       isMember = false;
+    }
+  }
+  // Fallback for an already-joined member whose cloud user-id didn't resolve
+  // (identity email not mirrored locally, or a saved connection missing
+  // my_user_id) — they were wrongly shown the "paste invite token" panel.
+  // Resolve membership directly: match a live team_members row to the local
+  // identity email via the cloud users table; failing that, a saved
+  // connection for THIS cloud/team is itself proof of a redeemed membership.
+  if (!isMember && (myEmail || savedConn)) {
+    try {
+      const memberRows = (await db.query('__lattice_team_members', {
+        filters: [
+          { col: 'team_id', op: 'eq', val: teamId },
+          { col: 'deleted_at', op: 'isNull' },
+        ],
+      })) as unknown as { user_id: string }[];
+      if (memberRows.length > 0) {
+        const matchId = myEmail ? await resolveUserIdByEmail(db, myEmail) : null;
+        if (matchId && memberRows.some((m) => m.user_id === matchId)) {
+          myUserId = matchId;
+          isMember = true;
+        } else if (savedConn) {
+          isMember = true;
+        }
+      }
+    } catch {
+      // leave isMember as-is
     }
   }
 
