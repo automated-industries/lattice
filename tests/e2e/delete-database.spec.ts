@@ -1,51 +1,80 @@
 import { test, expect } from '@playwright/test';
-import { writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bootGui, type BootedGui } from './helpers.js';
+import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import {
+  Lattice,
+  ensureLatticeRoot,
+  addWorkspace,
+  resolveWorkspacePaths,
+} from '../../src/index.js';
 
-let gui: BootedGui;
-test.beforeEach(async () => {
-  gui = await bootGui();
-});
-test.afterEach(async () => {
-  await gui.close();
+let server: GuiServerHandle;
+let base: string;
+
+// 1.16.4: deletion is workspace-based. The danger zone's "Delete workspace"
+// deletes the active workspace (owner-only for cloud) and switches to a sibling.
+test.beforeAll(async () => {
+  base = mkdtempSync(join(tmpdir(), 'lattice-e2e-del-'));
+  process.env.LATTICE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'lattice-e2e-del-home-'));
+  process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  const root = ensureLatticeRoot(base);
+  const alpha = addWorkspace(root, { displayName: 'Alpha' });
+  // A second workspace so deleting the active one can switch away to it.
+  const beta = addWorkspace(root, { displayName: 'Beta' });
+  for (const ws of [alpha, beta]) {
+    const db = await Lattice.openWorkspace({ root, workspaceId: ws.id });
+    db.close();
+  }
+  const pa = resolveWorkspacePaths(root, alpha);
+  // The server discovers the root by walking up from the workspace config.
+  server = await startGuiServer({
+    configPath: pa.configPath,
+    outputDir: pa.contextDir,
+    port: 0,
+    host: '127.0.0.1',
+    teamCloud: false,
+    openBrowser: false,
+  });
 });
 
-test('Database Settings danger zone deletes the active database after typed confirmation', async ({
+test.afterAll(async () => {
+  await server.close();
+  rmSync(base, { recursive: true, force: true });
+});
+
+test('Workspace Settings danger zone deletes the active workspace after typed confirmation', async ({
   page,
 }) => {
-  // A sibling config so deleting the active DB can switch away to it.
-  writeFileSync(
-    join(gui.dir, 'beta.config.yml'),
-    [
-      'db: ./data/beta.db',
-      'name: beta',
-      '',
-      'entities:',
-      '  items:',
-      '    fields:',
-      '      id: { type: uuid, primaryKey: true }',
-      '    outputFile: items.md',
-      '',
-    ].join('\n'),
-  );
-
-  await page.goto(`${gui.url}#/settings/database`);
+  await page.goto(`${server.url}#/settings/database`);
 
   const deleteBtn = page.locator('#db-delete-btn');
   await expect(deleteBtn).toBeVisible();
   await deleteBtn.click();
 
-  // The confirm modal's red button is disabled until the name matches.
+  // The confirm modal's red button is disabled until the workspace name matches.
   const ok = page.locator('.modal-backdrop [data-act="ok"]');
   await expect(ok).toBeDisabled();
-  await page.locator('#confirm-db-name').fill('e2e');
+  await page.locator('#confirm-db-name').fill('Alpha');
   await expect(ok).toBeEnabled();
   await ok.click();
 
-  // The active config file is gone and the server switched to the sibling.
-  await expect.poll(() => existsSync(gui.configPath)).toBe(false);
-  const res = await page.request.get(`${gui.url}/api/databases`);
-  const body = (await res.json()) as { current: { label: string } };
-  expect(body.current.label).toBe('beta');
+  // The active workspace was deleted and the server switched to the sibling (Beta),
+  // which is now the only remaining workspace.
+  await expect
+    .poll(async () => {
+      const res = await page.request.get(`${server.url}/api/workspaces`);
+      const body = (await res.json()) as {
+        current: string | null;
+        workspaces: { id: string; label: string }[];
+      };
+      const cur = body.workspaces.find((w) => w.id === body.current);
+      const labels = body.workspaces
+        .map((w) => w.label)
+        .sort()
+        .join(',');
+      return `${cur ? cur.label : 'none'}|${labels}`;
+    })
+    .toBe('Beta|Beta');
 });
