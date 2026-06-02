@@ -31,16 +31,7 @@ export const guiAppHtml = `<!doctype html>
         <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
       </svg>
     </a>
-    <div class="db-switcher" id="db-switcher-host">
-      <button class="db-button" id="db-button" title="Switch database">
-        <span class="db-status" id="db-status" title="Local"></span>
-        <span class="db-icon">💾</span>
-        <span class="db-name" id="db-name">loading…</span>
-        <span class="db-caret">▾</span>
-      </button>
-      <div class="db-menu" id="db-menu" hidden></div>
-    </div>
-    <div class="db-switcher" id="ws-switcher" hidden>
+    <div class="db-switcher" id="ws-switcher">
       <button class="db-button" id="ws-button" title="Switch workspace">
         <span class="db-status" id="ws-status" title="Workspace"></span>
         <span class="db-icon">📂</span>

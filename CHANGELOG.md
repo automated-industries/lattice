@@ -8,6 +8,99 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.16.4] - 2026-06-02
+
+GUI patch. **One model: a workspace _is_ a Lattice DB.** Removes the
+"database mode" duality — there is no longer a separate config-file switcher
+that appears only when the GUI is opened outside a `.lattice` root. Every
+install the GUI opens now has a `.lattice` root, and every database (local or
+cloud, created or joined) is a single switchable **workspace**. No library API
+changes — a bare `new Lattice(path)` / Postgres-URL consumer and the headless
+`render`/`generate`/`reconcile`/`watch` commands are unaffected (they keep
+working with no root).
+
+### Changed
+
+- **Single workspace switcher.** The header now shows exactly one switcher,
+  backed by the workspace registry (`/api/workspaces`). The legacy second
+  "database" switcher and the no-root "database mode" fallback are gone.
+- **The "+ New workspace…" button always opens the create/join wizard**
+  (New local / New cloud / Join existing cloud), replacing the old inline
+  local-only name form.
+- **The GUI ensures a `.lattice` root on launch** (`ensureRootForGui`): when
+  opened against a bare config with no root, it creates a root in place and
+  **adopts the existing config + database non-destructively** (referenced where
+  they already live — no files moved), then opens it as the active workspace.
+- **Settings → Lattice lists the workspace registry** — the exact same list as
+  the header switcher (previously a divergent filesystem scan).
+- **Terminology:** "workspace" is the user-facing term everywhere; "database" is
+  reserved for a specific DB's connection details (the connection panel in
+  Workspace Settings).
+- **Two cloud operations only: migrate to a cloud, or join a team via invite.**
+  The standalone "Connect to existing cloud" (join-a-cloud-on-its-own) path is
+  removed — its modal/UI is deleted. The create wizard's third option is renamed
+  from "Join existing cloud (invite)" to **"Join a team (invite)"** and the
+  "join an existing cloud / join via cloud invite" wording is gone. Joining via
+  invite is unchanged.
+
+### Added
+
+- **Cloud workspaces are registered in the workspace registry**, so they appear
+  in the header switcher and are switchable: on **join** (invite), on **create
+  cloud** (wizard), and on **migrate-to-cloud / connect-existing** (the active
+  local workspace flips to cloud in place, same id).
+- **Boot-time reconciliation** imports stray sibling configs — including
+  previously-joined team configs written by an older binary — into the registry
+  so already-joined cloud workspaces become visible/switchable.
+- **`POST /api/workspaces/delete`** — registry-aware deletion (switches away if
+  active; removes the scaffolded folder for a local workspace; for a cloud
+  workspace forgets only the local pointer + unused credential, never the shared
+  remote DB).
+- **Share tables when inviting a member.** The "Invite member" modal again lists
+  the workspace's tables with checkboxes, **all checked by default** — generating
+  the invite shares the checked tables with the new member in one step. Uncheck
+  any to keep them private.
+
+### Fixed
+
+- **Shared tables were invisible to members.** On a direct-Postgres team every
+  member shares the same physical Postgres, so a shared table always physically
+  exists for the member — but `applySchemaSpec` only registered (`defineLate`) a
+  table when it did NOT physically exist, so the member's Lattice never learned
+  about the shared table and `/api/entities` returned empty ("ask the owner to
+  share a table with you") even after the owner shared it. Now an existing shared
+  table is registered too (idempotent, non-destructive), and `openConfig`
+  re-captures the live registered set after the team schema auto-sync so the
+  table reaches `validTables`/the dashboard. Regression test added.
+
+- **Joined cloud workspaces were invisible in the header switcher** and could
+  not be switched to: `handleJoin` saved a credential + sibling config but never
+  registered a workspace, so the header (registry-backed) and Settings
+  (scan-backed) showed different lists. Both now read the one registry; joining
+  registers a workspace and auto-switches to it. Leaving/kicking removes the
+  registry record.
+- **Renaming a workspace now updates the header switcher** — the rename is
+  mirrored into the registry's display name (previously only the YAML/team name
+  changed, which the registry-backed switcher didn't read).
+- **"New cloud (Postgres)" works for Postgres URLs.** Creating a cloud workspace
+  in the wizard previously errored (`Request cannot be constructed from a URL
+that includes credentials`) because it used the HTTP `/api/auth/register`
+  path. It now initializes the cloud directly via Postgres
+  (`registerDirectViaPostgres`), and the wizard switches into the new cloud
+  workspace so starter entities land there.
+- **Deleting a cloud workspace is owner-only** (via `/api/workspaces/delete`) —
+  only the team owner may delete a cloud Lattice DB workspace; a member who
+  wants to drop their local copy uses "Leave workspace" instead.
+
+### Notes
+
+- The dead `renderDatabasesPanel` + `showConnectExistingModal` (the removed
+  connect-to-raw-cloud UI) were deleted. One now-unused GUI helper
+  (`showCreateTeamModal`) and the now-unused
+  `POST /api/databases/{switch,create,delete}` server endpoints remain in place
+  (dead, not reachable from the UI) and are slated for removal in a follow-up
+  cleanup.
+
 ## [1.16.3] - 2026-06-02
 
 GUI patch (live cloud-sharing demo + UI review). No library API changes — a bare
