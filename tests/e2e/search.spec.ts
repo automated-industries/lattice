@@ -15,7 +15,7 @@ test('the header search bar finds a row and opens it', async ({ page }) => {
   await createRow(gui.url, 'items', { name: 'Ordinary Thing' });
 
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await expect(page.locator('nav.sidebar')).toBeVisible();
 
   const input = page.locator('#search-input');
   await input.fill('kangaroo');
@@ -35,7 +35,7 @@ test('the header search bar finds a row and opens it', async ({ page }) => {
 
 test('a blank query shows no dropdown', async ({ page }) => {
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await expect(page.locator('nav.sidebar')).toBeVisible();
   await page.locator('#search-input').fill('k'); // below the 2-char threshold
   await expect(page.locator('#search-results')).toBeHidden();
 });

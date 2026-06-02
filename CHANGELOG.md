@@ -8,6 +8,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-06-02
+
+GUI bug-fix + polish patch from the 1.16.0 demo. No library API changes — a bare
+`new Lattice(path)` consumer is unaffected.
+
+### Fixed
+
+- **Redo no longer reports "Nothing to redo" after an undo.** Undo/redo _actions_ are session-scoped (they replay only your own edits, not other clients'/processes'), but `GET /api/history` computed the toolbar's `canUndo`/`canRedo` over _all_ sessions — so undone entries left by a previous server process lit up ↷ for a fresh session that had nothing of its own to redo. The gate counts are now session-scoped to match the actions; the history _list_ and per-entry **Revert** stay global.
+- **Editing a column on a built-in entity (`notes` / `files` / `secrets`) no longer corrupts the schema.** These framework entities aren't in the YAML `entities:` map, so rename/add-column ran `ALTER TABLE` and then threw on the config write ("expected YAML collection …"), leaving the physical schema ahead of the config. Rename-column, add-column, and rename-table now **refuse built-in entities** (clear 400), **validate the config edit before touching SQL** (no physical/config drift, per Rules 15/16), and **reject duplicate target column names** with a friendly error instead of a raw adapter failure. The rename rebuilds the fields map by key rather than a deep `deleteIn`/`setIn`.
+- **Inline cell edits that don't persist now fail loudly.** `updateRow` throws when a requested change leaves the row byte-identical (the signature of a read-only/blocked write), surfacing "Save failed" instead of a phantom "Updated". No false positives: genuine no-op edits and type-coerced values are recognized as unchanged.
+- **"+ New workspace…" in the header switcher now opens the name input** instead of silently closing the menu. Clicking it replaced the menu's inner HTML, detaching the button, so the document click-outside closer (whose `contains(target)` test then failed) closed the menu. The handler now stops propagation, and the outside-click listener is attached once (it was re-added on every render).
+
+### Changed
+
+- **One-to-many links are labeled "→ one-to-many (legacy)"** in the Data Model editor (many-to-many junctions remain "↔ many-to-many"). New links are still created as M2M junctions; existing foreign-key (`belongsTo`) links keep working and rendering. Parsing a `ref:` field now emits a one-time deprecation warning — one-to-many `ref:` is slated for removal in 2.0 in favor of junctions.
+
+### Removed
+
+- **The standalone Activity rail** (right-hand live feed) — redundant with the Version History panel, which shows the same audited mutations with diffs and Revert. Multiplayer realtime convergence is unaffected (it runs on a separate realtime channel, not the activity feed); the server-side `/api/feed/stream` endpoint is retained.
+
 ## [1.16.0] - 2026-06-01
 
 The stable 1.x line gains the domain-agnostic 2.0 features — the `.lattice`
