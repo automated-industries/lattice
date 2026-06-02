@@ -8,7 +8,7 @@ import { parseConfigFile } from './config/parser.js';
 import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { startGuiServer } from './gui/server.js';
-import { discoverOutputDir } from './gui/discover-output-dir.js';
+import { ensureRootForGui } from './framework/gui-bootstrap.js';
 import { runTeamsCommand } from './teams/cli-commands.js';
 import { ensureLatticeRoot, findLatticeRoot, rootConfigDir } from './framework/lattice-root.js';
 import {
@@ -577,38 +577,24 @@ async function runWatch(args: ParsedArgs): Promise<void> {
 
 async function runGui(args: ParsedArgs): Promise<void> {
   try {
-    let configPath = resolve(args.config);
-    let outputDir: string;
-    // Workspace opens keep the rendered Context/ tree synced (canonical
-    // contexts + auto-render); a plain --config GUI serves only what was
-    // rendered externally.
-    let autoRender = false;
-    // Prefer the active workspace under a `.lattice` root, unless the user
-    // pointed --config at a specific config explicitly.
-    const root = findLatticeRoot(args.root ?? process.cwd());
-    const ws = root && args.config === './lattice.config.yml' ? getActiveWorkspace(root) : null;
-    if (root && ws) {
-      const paths = resolveWorkspacePaths(root, ws);
-      configPath = paths.configPath;
-      outputDir = paths.contextDir;
-      autoRender = true;
-      console.log(`Lattice GUI: opening workspace "${ws.displayName}".`);
-    } else {
-      const resolvedOutput = discoverOutputDir(args.output, args.outputExplicit);
-      if (!args.outputExplicit && resolvedOutput !== args.output) {
-        console.log(
-          `Lattice GUI: auto-detected rendered context at "${resolvedOutput}" ` +
-            `(use --output to override).`,
-        );
-      }
-      outputDir = resolve(resolvedOutput);
-    }
+    // The `.lattice`/workspace model is universal for the GUI: ensure a root
+    // exists, adopt the opened config as a workspace, and reconcile any stray
+    // (e.g. previously-joined) sibling configs so every database shows up as a
+    // single switchable workspace. There is no "database mode" fallback — that
+    // duality was the source of the inconsistent header/settings lists.
+    if (args.root) process.env.LATTICE_ROOT = args.root;
+    const boot = ensureRootForGui({
+      startDir: args.root ?? process.cwd(),
+      configPath: resolve(args.config),
+      explicitConfig: args.config !== './lattice.config.yml',
+    });
+    console.log(`Lattice GUI: opening workspace "${boot.displayName}".`);
     const handle = await startGuiServer({
-      configPath,
-      outputDir,
+      configPath: boot.configPath,
+      outputDir: boot.contextDir,
       port: args.port,
       openBrowser: !args.noOpen,
-      autoRender,
+      autoRender: true,
     });
     console.log(`Lattice GUI listening at ${handle.url}`);
     console.log('Press Ctrl+C to stop.');

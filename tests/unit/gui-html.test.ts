@@ -59,14 +59,13 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain(".value || '').trim()");
   });
 
-  it('uses switch-not-discard wording in the Connect-Existing modal', () => {
-    // The v1.13.1 wording said "Your local SQLite data will be ignored",
-    // which mis-described the actual behavior (the file is preserved on
-    // disk; only the YAML's db: line is rewritten). v1.13.2 reframes
-    // this as a switch — the assertion guards against regression to the
-    // old copy.
-    expect(guiAppHtml).not.toContain('local SQLite data will be ignored');
-    expect(guiAppHtml).toContain('Your local SQLite file is preserved');
+  it('removes the standalone "Connect to existing cloud" (join-a-cloud-on-its-own) modal', () => {
+    // 1.16.4: the standalone "connect to a raw cloud" path was removed — you
+    // either migrate to a cloud or join a team via invite. The modal + its copy
+    // are gone from the bundle (joining via invite stays).
+    expect(guiAppHtml).not.toContain('Your local SQLite file is preserved');
+    expect(guiAppHtml).not.toContain('Connect to existing cloud');
+    expect(guiAppHtml).not.toContain('function showConnectExistingModal');
   });
 
   it('detectSupabasePoolerMistakes is wired into the SPA bundle', () => {
