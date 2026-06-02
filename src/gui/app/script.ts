@@ -1125,7 +1125,6 @@ export const appJs = `
         entities: tables.map(function (t) {
           return { name: t.name, rowCount: t.rowCount, lastUpdatedAt: null, stale: false };
         }),
-        recent: [],
       };
     }
     function drawDashboard(content, d) {
@@ -1163,21 +1162,7 @@ export const appJs = `
           fresh +
           '</a>';
       }).join('');
-      var recent = '';
-      if (d.recent && d.recent.length) {
-        var items = d.recent.map(function (r) {
-          var ic = FEED_ICONS[r.op] || '•';
-          var label = displayFor(r.table).label;
-          return '<li class="dash-act">' +
-            '<span class="dash-act-ic">' + ic + '</span>' +
-            '<span class="dash-act-txt">' + escapeHtml(String(r.op)) + ' · ' + escapeHtml(label) + '</span>' +
-            '<span class="dash-act-time">' + relTime(r.ts) + '</span>' +
-            '</li>';
-        }).join('');
-        recent = '<div class="dash-recent"><div class="dash-recent-head">Recent activity</div>' +
-          '<ul>' + items + '</ul></div>';
-      }
-      content.innerHTML = stats + '<div class="dashboard">' + cards + '</div>' + recent;
+      content.innerHTML = stats + '<div class="dashboard">' + cards + '</div>';
     }
     function renderDashboard(content) {
       // Workspace overview: counts + freshness + recent activity from
@@ -2057,7 +2042,16 @@ export const appJs = `
         return rowsP.then(function (rows) {
           var d = displayFor(table);
           var base = fsHref(segs);
-          var tiles = rows.length
+          // "New" tile (top-level collections only) — a folder box with a + that
+          // opens a create form. Related-row folders aren't a place to mint a
+          // brand-new object, so the tile is top-level only.
+          var createTile = topLevel
+            ? '<a class="fs-tile fs-tile-create" href="#" data-fs-create="1" title="Create a new ' + escapeHtml(d.label) + '">' +
+                '<div class="fs-tile-icon">➕</div>' +
+                '<div class="fs-tile-label">New ' + escapeHtml(d.label) + '</div>' +
+              '</a>'
+            : '';
+          var rowTiles = rows.length
             ? rows.map(function (r) {
                 var icon = (table === 'files') ? fileEmoji(r) : '📁';
                 return '<a class="fs-tile" href="' + base + '/' + encodeURIComponent(r.id) + '">' +
@@ -2065,7 +2059,7 @@ export const appJs = `
                   '<div class="fs-tile-label">' + escapeHtml(fsDisplayName(r)) + '</div>' +
                 '</a>';
               }).join('')
-            : '<div class="fs-empty">Nothing here yet.</div>';
+            : (topLevel ? '' : '<div class="fs-empty">Nothing here yet.</div>');
           content.innerHTML =
             fsBreadcrumb(segs, crumbs) +
             '<div class="view-header">' +
@@ -2073,11 +2067,109 @@ export const appJs = `
               '<h1>' + escapeHtml(d.label) + '</h1>' +
               '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
             '</div>' +
-            '<div class="fs-grid">' + tiles + '</div>';
+            '<div class="fs-grid">' + createTile + rowTiles + '</div>';
+          var ctile = content.querySelector('[data-fs-create]');
+          if (ctile) ctile.addEventListener('click', function (e) {
+            e.preventDefault();
+            openFsCreateModal(content, table, segs);
+          });
         });
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // Create a new object from the simple view — a form styled like the item
+    // page with blank fields + a Save button, plus a select-menu + "+" for each
+    // many-to-many link. Reuses fieldFor() (intrinsic + belongsTo) and the
+    // existing row-create + junction-row endpoints (no new backend).
+    function openFsCreateModal(content, table, segs) {
+      var t = tableByName(table);
+      if (!t) return;
+      var bt = belongsToColumns(t);
+      var juncs = junctionsFor(table);
+      // Preload FK + junction-remote target rows so the <select> menus populate.
+      var needed = bt.map(function (b) { return b.rel.table; })
+        .concat(juncs.map(function (j) { return j.remoteRel.table; }));
+      Promise.all(needed.map(loadAllRows)).then(function () {
+        var fieldsHtml = '';
+        intrinsicColumns(t).forEach(function (c) {
+          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(c)) + '</div>' +
+            '<div class="fs-field-val">' + fieldFor(c, '', t) + '</div></div>';
+        });
+        bt.forEach(function (b) {
+          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) + '</div>' +
+            '<div class="fs-field-val">' + fieldFor(b.rel.foreignKey, '', t) + '</div></div>';
+        });
+        juncs.forEach(function (j) {
+          var remoteRows = loadedTables[j.remoteRel.table] || [];
+          var opts = '<option value="">(none)</option>' + remoteRows.map(function (r) {
+            return '<option value="' + escapeHtml(r.id) + '">' + escapeHtml(displayNameFor(r)) + '</option>';
+          }).join('');
+          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(j.remoteRel.table)) + ' (links)</div>' +
+            '<div class="fs-field-val">' +
+              '<div class="fs-link-stage" data-junction="' + escapeHtml(j.junction) + '" data-local-fk="' + escapeHtml(j.localFk) + '" data-remote-fk="' + escapeHtml(j.remoteRel.foreignKey) + '">' +
+                '<select class="fs-link-select">' + opts + '</select>' +
+              '</div>' +
+              '<button type="button" class="btn fs-link-add">+ Add another</button>' +
+            '</div></div>';
+        });
+        showModal('New ' + displayFor(table).label, '<div class="fs-doc fs-create-form">' + fieldsHtml + '</div>', {
+          primaryLabel: 'Save',
+          onBody: function (backdrop) {
+            backdrop.querySelectorAll('.fs-link-add').forEach(function (addBtn) {
+              addBtn.addEventListener('click', function () {
+                var stage = addBtn.previousElementSibling; // the .fs-link-stage
+                var firstSel = stage && stage.querySelector('.fs-link-select');
+                if (!firstSel) return;
+                var clone = firstSel.cloneNode(true);
+                clone.value = '';
+                stage.appendChild(clone);
+              });
+            });
+          },
+          onSubmit: function (scope) {
+            // Intrinsic + belongsTo values (the [name] inputs/selects).
+            var values = {};
+            scope.querySelectorAll('.fs-create-form [name]').forEach(function (el) {
+              var v = el.value;
+              if (v !== '' && v != null) values[el.getAttribute('name')] = v;
+            });
+            // Staged many-to-many links — one junction row per chosen target.
+            var links = [];
+            scope.querySelectorAll('.fs-link-stage').forEach(function (stage) {
+              var junction = stage.getAttribute('data-junction');
+              var localFk = stage.getAttribute('data-local-fk');
+              var remoteFk = stage.getAttribute('data-remote-fk');
+              stage.querySelectorAll('.fs-link-select').forEach(function (sel) {
+                if (sel.value) links.push({ junction: junction, localFk: localFk, remoteFk: remoteFk, remoteId: sel.value });
+              });
+            });
+            return rowWrite('POST', '/api/tables/' + encodeURIComponent(table) + '/rows', values).then(function (res) {
+              var newId = res && (res.id || (res.row && res.row.id));
+              var chain = Promise.resolve();
+              links.forEach(function (lk) {
+                chain = chain.then(function () {
+                  // Use the junction's /link endpoint (INSERT OR IGNORE on the
+                  // two FK columns) — works for junctions with no own pk and is
+                  // idempotent, unlike a raw row insert.
+                  var jrow = {};
+                  jrow[lk.localFk] = newId;
+                  jrow[lk.remoteFk] = lk.remoteId;
+                  return rowWrite('POST', '/api/tables/' + encodeURIComponent(lk.junction) + '/link', jrow);
+                });
+              });
+              return chain;
+            }).then(function () {
+              invalidate(table);
+              return refreshEntities();
+            }).then(function () {
+              showToast('Created', {});
+              renderFsCollection(content, segs);
+            });
+          },
+        });
+      }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
     }
 
     // Item view — one row as a document (click-to-edit) + its relationship folders.
@@ -2424,8 +2516,11 @@ export const appJs = `
       if (!s) return '';
       try {
         var d = new Date(s);
+        // Never render the literal "Invalid Date" — new Date() returns an
+        // Invalid Date (not a throw) for an unparseable value.
+        if (isNaN(d.getTime())) return '(no timestamp)';
         return d.toLocaleString();
-      } catch (_e) { return s; }
+      } catch (_e) { return '(no timestamp)'; }
     }
 
     /** Side-by-side-ish text diff. Shows changed columns only for updates. */
@@ -3924,12 +4019,12 @@ export const appJs = `
       fetchJson('/api/userconfig/databases').then(function (cat) {
         var localRows = (cat.local || []).map(function (d) {
           var stateBadge = '<span style="font-family:JetBrains Mono,monospace;font-size:10px;color:var(--text-muted)">' + escapeHtml((d.state || 'local').toUpperCase()) + '</span>';
-          return '<tr>' +
+          return '<tr' + (d.active ? '' : ' class="db-row" data-switch-path="' + escapeHtml(d.configPath) + '"') + '>' +
             '<td>' + escapeHtml(d.label) + (d.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>SQLite</td>' +
             '<td>' + stateBadge + '</td>' +
             '<td><code>' + escapeHtml(d.dbFile) + '</code></td>' +
-            '<td>' + (d.active ? '—' : '<button class="btn" data-switch="' + escapeHtml(d.configPath) + '">Switch</button>') + '</td>' +
+            '<td>—</td>' +
           '</tr>';
         }).join('');
         var cloudRows = (cat.cloud || []).map(function (d) {
@@ -3947,9 +4042,9 @@ export const appJs = `
               '<tbody>' + (localRows + cloudRows || '<tr><td colspan="5" style="padding:8px;color:var(--text-muted)">No databases configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
-        host.querySelectorAll('[data-switch]').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var configPath = btn.getAttribute('data-switch');
+        host.querySelectorAll('tr.db-row[data-switch-path]').forEach(function (row) {
+          row.addEventListener('click', function () {
+            var configPath = row.getAttribute('data-switch-path');
             fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
               .then(function (r) { return r.json(); })
               .then(function () { renderUserConfig(document.getElementById('content')); });
@@ -4050,11 +4145,74 @@ export const appJs = `
 
     function renderDatabaseDangerZone(host) {
       if (!host) return;
-      fetchJson('/api/databases').then(function (data) {
+      Promise.all([
+        fetchJson('/api/databases'),
+        fetchJson('/api/dbconfig').catch(function () { return {}; }),
+      ]).then(function (results) {
+        var data = results[0];
+        var cfg = results[1] || {};
         var current = (data && data.current) || {};
         var label = current.label || current.dbFile || '';
         var path = current.path || '';
         if (!path) { host.innerHTML = ''; return; }
+
+        // After tearing down / leaving the active DB, switch to another the
+        // operator still has and navigate off the (now-gone) page.
+        var switchAway = function () {
+          var cur = (data && data.current && data.current.path) || null;
+          var target = ((data && data.configs) || []).filter(function (c) { return c.path !== cur; })[0];
+          var p = target
+            ? fetchJson('/api/databases/switch', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ path: target.path }),
+              }).then(function () { return reloadEverything(); })
+            : reloadEverything();
+          return p.then(function () { location.hash = '#/'; renderRoute(); });
+        };
+
+        if (cfg.state === 'team-cloud-creator') {
+          // Owner: disconnect the database from the cloud — kicks all members.
+          host.innerHTML =
+            '<div class="danger-zone">' +
+              '<h3>Danger zone</h3>' +
+              '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+                'Disconnect this database from the cloud. This removes the team and <strong>kicks all members</strong>. This cannot be undone.' +
+              '</p>' +
+              '<button class="btn destructive" id="db-disconnect-btn">Disconnect from cloud</button>' +
+            '</div>';
+          host.querySelector('#db-disconnect-btn').addEventListener('click', function () {
+            if (!confirm('Disconnect "' + (cfg.teamName || label || 'this database') + '" from the cloud? This kicks all members and cannot be undone.')) return;
+            var dbtn = host.querySelector('#db-disconnect-btn');
+            withBusy(dbtn, function () {
+              return fetchJson('/api/teams-gui/teams/' + cfg.teamId, { method: 'DELETE' })
+                .then(function () { showToast('Disconnected from cloud', {}); return switchAway(); })
+                .catch(function (e) { alert('Disconnect failed: ' + e.message); });
+            });
+          });
+          return;
+        }
+        if (cfg.state === 'team-cloud-member') {
+          // Member: leave the team. The cloud DB keeps running for others.
+          host.innerHTML =
+            '<div class="danger-zone">' +
+              '<h3>Danger zone</h3>' +
+              '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+                'Leave this team. The cloud database keeps running for everyone else; you simply stop being a member.' +
+              '</p>' +
+              '<button class="btn destructive" id="db-leave-btn">Leave team</button>' +
+            '</div>';
+          host.querySelector('#db-leave-btn').addEventListener('click', function () {
+            if (!confirm('Leave "' + (cfg.teamName || label || 'this team') + '"?')) return;
+            var lbtn = host.querySelector('#db-leave-btn');
+            withBusy(lbtn, function () {
+              return fetchJson('/api/teams-gui/teams/' + cfg.teamId + '/members/' + encodeURIComponent(cfg.myUserId), { method: 'DELETE' })
+                .then(function () { showToast('Left the team', {}); return switchAway(); })
+                .catch(function (e) { alert('Leave failed: ' + e.message); });
+            });
+          });
+          return;
+        }
+        // Local / non-team cloud database: delete it.
         host.innerHTML =
           '<div class="danger-zone">' +
             '<h3>Danger zone</h3>' +
@@ -4155,12 +4313,11 @@ export const appJs = `
             : '—';
           var rowLabel = c.label || c.name;
           var del = '<button class="btn danger" data-delete-path="' + escapeHtml(c.path) + '" data-delete-label="' + escapeHtml(rowLabel) + '">Delete</button>';
-          var actions = (c.active ? '' : '<button class="btn" data-switch="' + escapeHtml(c.path) + '">Switch</button> ') + del;
-          return '<tr>' +
+          return '<tr' + (c.active ? '' : ' class="ws-row" data-switch-path="' + escapeHtml(c.path) + '"') + '>' +
             '<td>' + escapeHtml(rowLabel) + (c.active ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>' + kind + '</td>' +
             '<td><code>' + escapeHtml(c.dbFile || '') + '</code></td>' +
-            '<td>' + actions + '</td>' +
+            '<td>' + del + '</td>' +
           '</tr>';
         }).join('');
         host.innerHTML =
@@ -4174,9 +4331,9 @@ export const appJs = `
               '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No workspaces configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
-        host.querySelectorAll('[data-switch]').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var configPath = btn.getAttribute('data-switch');
+        host.querySelectorAll('tr.ws-row[data-switch-path]').forEach(function (row) {
+          row.addEventListener('click', function () {
+            var configPath = row.getAttribute('data-switch-path');
             fetch('/api/databases/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: configPath }) })
               .then(function (r) { return r.json(); })
               .then(function () { return reloadEverything(); })
@@ -4184,7 +4341,8 @@ export const appJs = `
           });
         });
         host.querySelectorAll('[data-delete-path]').forEach(function (btn) {
-          btn.addEventListener('click', function () {
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation(); // don't trigger the row's switch handler
             confirmDeleteDatabase(
               btn.getAttribute('data-delete-path'),
               btn.getAttribute('data-delete-label'),
@@ -4288,10 +4446,10 @@ export const appJs = `
             (isCreator ? ' · <span style="color:var(--accent)">you are the creator</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
-            (isCreator ? '<button class="btn primary" data-act="open-invite">Generate invite token</button>' : '') +
+            (isCreator ? '<button class="btn primary" data-act="open-invite">Invite member</button>' : '') +
           '</div>' +
-          // Leave (member) / Destroy (creator) now live on your own row in
-          // the members list below — no separate top-level button.
+          // Exit actions (Disconnect for the owner / Leave for a member) live
+          // in the Danger Zone below — not on a member row.
           '<div id="db-members-host" style="margin-top:12px"><div style="font-size:12px;color:var(--text-muted)">Loading members…</div></div>'
         );
       }
@@ -4350,27 +4508,10 @@ export const appJs = `
       var myUserId = info.myUserId;
       var isCreator = !!info.isCreator;
 
-      // After leaving/destroying, the left DB is torn down on the backend
-      // (config + credential removed). Switch to another database the
-      // operator still has and navigate off the (now-gone) DB page.
-      var switchAway = function () {
-        return fetchJson('/api/databases').then(function (data) {
-          var current = (data && data.current && data.current.path) || null;
-          var configs = (data && data.configs) || [];
-          var target = configs.filter(function (c) { return c.path !== current; })[0];
-          if (!target) return reloadEverything();
-          return fetchJson('/api/databases/switch', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ path: target.path }),
-          }).then(function () { return reloadEverything(); });
-        }).then(function () { location.hash = '#/'; renderRoute(); });
-      };
-
       var inviteBtn = host.querySelector('[data-act="open-invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
         if (!teamId) { alert('No team is active.'); return; }
-        showInviteByEmailModal(teamId);
+        showInviteByEmailModal(teamId, info);
       });
 
       // Inline member list for the active team cloud. Marks "you"; your
@@ -4393,26 +4534,6 @@ export const appJs = `
                   .catch(function (e) { setMsg('Kick failed: ' + e.message, false); });
               });
             });
-          });
-          // Leave (member) / Destroy team (creator) — your own row.
-          var selfBtn = membersHost.querySelector('[data-act="leave-self"]');
-          if (selfBtn) selfBtn.addEventListener('click', function () {
-            
-            if (isCreator) {
-              if (!confirm('Destroy team "' + (info.teamName || 'this team') + '"? This soft-deletes it on the cloud for everyone.')) return;
-              withBusy(selfBtn, function () {
-                return fetchJson('/api/teams-gui/teams/' + teamId, { method: 'DELETE' })
-                  .then(function () { showToast('Team destroyed', {}); return switchAway(); })
-                  .catch(function (e) { setMsg('Destroy failed: ' + e.message, false); });
-              });
-            } else {
-              if (!confirm('Leave team "' + (info.teamName || 'this team') + '"?')) return;
-              withBusy(selfBtn, function () {
-                return fetchJson('/api/teams-gui/teams/' + teamId + '/members/' + encodeURIComponent(myUserId), { method: 'DELETE' })
-                  .then(function () { showToast('Left the team', {}); return switchAway(); })
-                  .catch(function (e) { setMsg('Leave failed: ' + e.message, false); });
-              });
-            }
           });
         }).catch(function () { membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Members unavailable.</div>'; });
       }
@@ -4759,13 +4880,11 @@ export const appJs = `
       var rows = members.map(function (m) {
         var label = m.name || m.email || '(unknown)';
         var isSelf = m.user_id === myUserId;
-        // Your own row: Leave (member) or Destroy team (creator). Other
-        // rows: Kick, but only the creator may remove other members.
+        // Other rows: Kick, but only the creator may remove other members.
+        // Your own exit (Disconnect for the owner / Leave for a member) lives
+        // in the Danger Zone, not on a member row.
         var btn = '';
-        if (isSelf) {
-          btn = '<button class="btn danger-btn" data-act="leave-self">' +
-            (isCreator ? 'Destroy team' : 'Leave') + '</button>';
-        } else if (isCreator) {
+        if (!isSelf && isCreator) {
           btn = '<button class="btn danger-btn" data-act="kick">Kick</button>';
         }
         return '<div class="member-row" data-user-id="' + escapeHtml(m.user_id) + '">' +
@@ -4780,7 +4899,7 @@ export const appJs = `
       return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
     }
 
-    function showInviteByEmailModal(teamId) {
+    function showInviteByEmailModal(teamId, info) {
       var bodyHtml =
         '<div class="field"><label>Invitee email</label>' +
         '<input name="invitee_email" type="email" placeholder="bob@example.com" /></div>' +
@@ -4796,17 +4915,30 @@ export const appJs = `
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ invitee_email: data.invitee_email }),
-          }).then(function (inv) { showInviteTokenModal(inv); });
+          }).then(function (inv) { showInviteTokenModal(inv, info); });
         },
       });
     }
 
-    function showInviteTokenModal(inv) {
+    function showInviteTokenModal(inv, info) {
+      info = info || {};
+      // The invitee needs the cloud connection string AND the token. Show the
+      // URL with the password MASKED — redeem never needs the owner's password
+      // (the invitee authenticates with their own credentials).
+      var connStr = info.host
+        ? 'postgres://' + (info.user || 'user') + ':****@' + info.host + ':' + (info.port || 5432) + '/' + (info.dbname || '')
+        : '';
+      var connBlock = connStr
+        ? '<h4 style="margin:14px 0 4px">Cloud connection</h4>' +
+          '<div class="copy-token" id="copy-conn">' + escapeHtml(connStr) + '</div>' +
+          '<p style="font-size:12px;color:var(--text-muted);margin:4px 0 0">Share this URL with the invitee (password masked). Click to copy.</p>'
+        : '';
       var bodyHtml =
         '<p style="margin-top:0">Share this token with the invitee (one-time use). It expires at <code>' +
         escapeHtml(inv.expires_at || '(no expiry)') + '</code>.</p>' +
         '<div class="copy-token" id="copy-token">' + escapeHtml(inv.raw_token) + '</div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>';
+        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>' +
+        connBlock;
       var handle = showModal('Invitation token', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
       var tokenEl = document.getElementById('copy-token');
       if (tokenEl) {
@@ -4814,6 +4946,15 @@ export const appJs = `
           navigator.clipboard.writeText(inv.raw_token).then(function () {
             tokenEl.textContent = 'Copied!';
             setTimeout(function () { tokenEl.textContent = inv.raw_token; }, 1200);
+          });
+        });
+      }
+      var connEl = document.getElementById('copy-conn');
+      if (connEl) {
+        connEl.addEventListener('click', function () {
+          navigator.clipboard.writeText(connStr).then(function () {
+            connEl.textContent = 'Copied!';
+            setTimeout(function () { connEl.textContent = connStr; }, 1200);
           });
         });
       }
