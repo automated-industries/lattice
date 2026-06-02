@@ -79,7 +79,8 @@ test('clicking an object shows its rows as a folder grid', async ({ page }) => {
   await expect(navLink).toHaveAttribute('href', /#\/fs\//);
 
   await page.goto(`${gui.url}#/fs/authors`);
-  const tile = page.locator('.fs-tile');
+  // Data tiles only — exclude the 1.16.2 "New" create tile (also a .fs-tile).
+  const tile = page.locator('.fs-tile:not(.fs-tile-create)');
   await expect(tile).toHaveCount(1);
   await expect(tile.first()).toContainText('Jane Author');
 });
@@ -179,4 +180,34 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
   // Escape closes it.
   await page.keyboard.press('Escape');
   await expect(drawer).not.toHaveClass(/open/);
+});
+
+test('the simple-view create tile makes a new object with a many-to-many link', async ({
+  page,
+}) => {
+  await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
+  await createRow(gui.url, 'tags', { label: 'fiction' });
+
+  await page.goto(gui.url);
+  await page.evaluate(() => {
+    window.location.hash = '#/fs/books';
+  });
+
+  // The "New" create tile opens a form modal styled like the item page.
+  await page.locator('[data-fs-create]').click();
+  const modal = page.locator('.modal');
+  await expect(modal).toBeVisible();
+  await modal.locator('input[name="title"]').fill('Tidewater');
+  // belongsTo author + a many-to-many tag link (select by index — `tags` have
+  // no name/title so the option text is the id; index 1 is the first real row).
+  await modal.locator('select[name="author_id"]').selectOption({ index: 1 });
+  await modal.locator('.fs-link-select').first().selectOption({ index: 1 });
+  await modal.locator('[data-act="ok"]').click();
+
+  // The new book appears in the collection…
+  await expect(page.locator('.fs-tile-label').filter({ hasText: 'Tidewater' })).toBeVisible();
+  // …and the M:N junction row was created from the staged link.
+  const res = await page.request.get(gui.url + '/api/tables/book_tags/rows');
+  const body = (await res.json()) as { rows: unknown[] };
+  expect(body.rows.length).toBe(1);
 });

@@ -319,13 +319,6 @@ export const css = `
     .stat-n { font-size: 24px; font-weight: 700; color: var(--text); }
     .stat-tile.warn .stat-n { color: var(--warn); }
     .stat-l { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-    .dash-recent { margin-top: 26px; max-width: 1100px; }
-    .dash-recent-head { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
-    .dash-recent ul { list-style: none; margin: 0; padding: 0; }
-    .dash-act { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
-    .dash-act-ic { width: 18px; text-align: center; }
-    .dash-act-txt { flex: 1; color: var(--text); }
-    .dash-act-time { font-size: 12px; color: var(--text-muted); }
 
     /* ── Table view ───────────────────────────────────── */
     .view-header {
@@ -837,6 +830,8 @@ export const css = `
       transition: transform 0.05s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     }
     .fs-tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .fs-tile-create { border-style: dashed; background: transparent; }
+    .fs-tile-create .fs-tile-icon { color: var(--accent); }
     .fs-tile-icon { font-size: 40px; line-height: 1; }
     .fs-tile-label {
       font-size: 13px; font-weight: 500; color: var(--text);
