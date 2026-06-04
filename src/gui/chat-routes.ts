@@ -1,7 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { FeedBus } from './feed.js';
-import { resolveClaudeAuth } from './assistant-routes.js';
+import {
+  resolveClaudeAuth,
+  getAggressiveness,
+  aggressivenessToTemperature,
+} from './assistant-routes.js';
 import { createAnthropicClient, runChat, type LlmMessage } from './ai/chat.js';
 import { formatSseFrame } from './ai/sse.js';
 import type { DispatchCtx } from './ai/dispatch.js';
@@ -209,7 +213,14 @@ export async function dispatchChatRoute(
   let assistantText = '';
   try {
     const client = createAnthropicClient(auth);
-    for await (const ev of runChat({ client, dispatch, history, userMessage: message })) {
+    const temperature = aggressivenessToTemperature(await getAggressiveness(ctx.db));
+    for await (const ev of runChat({
+      client,
+      dispatch,
+      history,
+      userMessage: message,
+      temperature,
+    })) {
       if (ev.type === 'text_delta') assistantText += ev.delta;
       try {
         res.write(formatSseFrame(ev));

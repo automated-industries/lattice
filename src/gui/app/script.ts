@@ -3908,6 +3908,22 @@ export const appJs = `
                 ? 'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.'
                 : 'Subscription login: set the <code>ANTHROPIC_OAUTH_*</code> env vars to enable.') +
             '</div>' +
+            '<div style="margin:6px 0 12px">' +
+              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
+                '<strong style="font-size:13px">Inference aggressiveness</strong>' +
+                '<span id="asst-aggr-val" style="font-size:12px;color:var(--text-muted)"></span>' +
+              '</div>' +
+              '<input id="asst-aggr" type="range" min="0" max="1" step="0.05" ' +
+                'value="' + (typeof cfg.aggressiveness === 'number' ? cfg.aggressiveness : 0.5) + '" ' +
+                'style="width:100%">' +
+              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted)">' +
+                '<span>Conservative</span><span>Aggressive</span>' +
+              '</div>' +
+              '<p class="lead" style="margin:4px 0 0;font-size:12px;color:var(--text-muted)">' +
+                'How eagerly the assistant adds, enriches, and links objects (and ' +
+                'auto-creates link tables) when you drop in files. Higher extrapolates more.' +
+              '</p>' +
+            '</div>' +
             '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text (set either)</div>' +
             rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…') +
             rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…') +
@@ -3959,6 +3975,30 @@ export const appJs = `
               method: 'PUT',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ provider: sttSel.value }),
+            })
+              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+              .then(function () { msg.textContent = 'Saved.'; })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+        }
+        var aggr = host.querySelector('#asst-aggr');
+        var aggrVal = host.querySelector('#asst-aggr-val');
+        function aggrLabel(v) {
+          if (v <= 0.25) return 'Conservative (' + v.toFixed(2) + ')';
+          if (v >= 0.75) return 'Aggressive (' + v.toFixed(2) + ')';
+          return 'Balanced (' + v.toFixed(2) + ')';
+        }
+        if (aggr) {
+          if (aggrVal) aggrVal.textContent = aggrLabel(parseFloat(aggr.value));
+          aggr.addEventListener('input', function () {
+            if (aggrVal) aggrVal.textContent = aggrLabel(parseFloat(aggr.value));
+          });
+          aggr.addEventListener('change', function () {
+            msg.textContent = 'Saving…';
+            fetch('/api/assistant/aggressiveness', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ value: parseFloat(aggr.value) }),
             })
               .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
               .then(function () { msg.textContent = 'Saved.'; })

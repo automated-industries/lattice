@@ -55,6 +55,8 @@ export interface TurnParams {
   system: string;
   messages: LlmMessage[];
   tools: AnthropicTool[];
+  /** Sampling temperature [0,1]. Omitted → the model default. */
+  temperature?: number;
   /** Called with each streamed text delta. */
   onText: (delta: string) => void;
 }
@@ -71,6 +73,8 @@ export interface RunChatOptions {
   history?: LlmMessage[];
   userMessage: string;
   model?: string;
+  /** Sampling temperature [0,1] (from inference aggressiveness). */
+  temperature?: number;
 }
 
 /** Tools the model is allowed to call (only those the dispatcher can run). */
@@ -100,6 +104,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         system: SYSTEM_PROMPT,
         messages,
         tools,
+        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
         onText: (d) => deltas.push(d),
       });
       for (const d of deltas) yield { type: 'text_delta', delta: d };
@@ -212,6 +217,7 @@ export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
         system: params.system,
         messages: params.messages,
         tools: params.tools,
+        ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
       });
       stream.on('text', (delta) => {
         params.onText(delta);

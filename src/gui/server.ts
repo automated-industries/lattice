@@ -87,7 +87,7 @@ import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
-import { dispatchAssistantRoute } from './assistant-routes.js';
+import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
 import {
@@ -3627,6 +3627,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             fileJunctions: fileJunctions(active.configPath, active.outputDir),
             entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
             createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
+            aggressiveness: await getAggressiveness(active.db),
             pathname,
             method,
           });

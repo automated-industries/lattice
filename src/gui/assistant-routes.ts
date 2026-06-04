@@ -159,6 +159,28 @@ export interface VoiceCredential {
  * Returns null when no voice key is available.
  */
 const STT_PROVIDER_KIND = 'stt_provider';
+const AGGRESSIVENESS_KIND = 'assistant_aggressiveness';
+
+/** Default inference aggressiveness (0 = conservative … 1 = aggressive). */
+export const DEFAULT_AGGRESSIVENESS = 0.5;
+
+/**
+ * The user's "inference aggressiveness" — a single behaviour knob (0 = only
+ * high-confidence, conservative changes; 1 = eagerly add/enrich/link/extrapolate).
+ * Drives the model sampling temperature AND how liberally ingest materializes
+ * new junctions. Stored in `secrets`; falls back to {@link DEFAULT_AGGRESSIVENESS}.
+ */
+export async function getAggressiveness(db: Lattice): Promise<number> {
+  const raw = await secretValue(db, AGGRESSIVENESS_KIND);
+  const n = raw === null ? NaN : Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_AGGRESSIVENESS;
+  return Math.min(1, Math.max(0, n));
+}
+
+/** Map aggressiveness → an Anthropic sampling temperature in [0, 1]. */
+export function aggressivenessToTemperature(aggressiveness: number): number {
+  return Math.min(1, Math.max(0, aggressiveness));
+}
 
 export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential | null> {
   const openai =
@@ -254,8 +276,28 @@ export async function dispatchAssistantRoute(
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       sttPreference: (await secretValue(db, STT_PROVIDER_KIND)) ?? 'auto',
+      aggressiveness: await getAggressiveness(db),
       oauthEnabled: oauthConfigured(),
     });
+    return true;
+  }
+
+  // PUT /api/assistant/aggressiveness { value } — inference aggressiveness 0..1.
+  if (method === 'PUT' && pathname === '/api/assistant/aggressiveness') {
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const value = Number(body.value);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      sendJson(res, { error: 'value must be a number in [0, 1]' }, 400);
+      return true;
+    }
+    await storeSecret(db, AGGRESSIVENESS_KIND, 'Inference aggressiveness', String(value));
+    sendJson(res, { ok: true, value });
     return true;
   }
 

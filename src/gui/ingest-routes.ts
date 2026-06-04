@@ -9,7 +9,11 @@ import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js
 import { parseFile, describe } from './ai/extract.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
-import { resolveClaudeAuth } from './assistant-routes.js';
+import {
+  resolveClaudeAuth,
+  aggressivenessToTemperature,
+  DEFAULT_AGGRESSIVENESS,
+} from './assistant-routes.js';
 import { createAnthropicClient } from './ai/chat.js';
 import {
   summarizeText,
@@ -45,6 +49,8 @@ interface IngestContext {
    * Injected by the server so ingest stays decoupled from config/reopen plumbing.
    */
   createJunction?: (otherTable: string) => Promise<FileJunction | null>;
+  /** Inference aggressiveness 0..1 (drives temperature + auto-junction gating). */
+  aggressiveness?: number;
   pathname: string;
   method: string;
 }
@@ -169,6 +175,7 @@ async function enrichWithLlm(
   junctions: FileJunction[],
   descriptions: Record<string, string>,
   createJunction?: (otherTable: string) => Promise<FileJunction | null>,
+  aggressiveness: number = DEFAULT_AGGRESSIVENESS,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
@@ -179,18 +186,28 @@ async function enrichWithLlm(
   } catch {
     return [];
   }
+  const temperature = aggressivenessToTemperature(aggressiveness);
   try {
-    const desc = await summarizeText(client, text, name);
+    const desc = await summarizeText(client, text, name, temperature);
     if (desc) await updateRow(mctx, 'files', fileId, { description: desc });
   } catch (e) {
     console.warn('[ingest] LLM description failed:', (e as Error).message);
   }
   try {
-    const matches = await classifyLinks(client, text, name, await buildCatalog(db, descriptions));
+    const matches = await classifyLinks(
+      client,
+      text,
+      name,
+      await buildCatalog(db, descriptions),
+      temperature,
+    );
     for (const m of matches) {
       let jx = junctions.find((j) => j.otherTable === m.table);
       let created = false;
-      if (!jx && createJunction) {
+      // Materializing a brand-new junction is the most speculative action, so
+      // gate it on at least middling aggressiveness; below that, only link into
+      // junctions that already exist (and otherwise surface a suggestion).
+      if (!jx && createJunction && aggressiveness >= 0.25) {
         // No junction connects files to this entity yet — create one so the
         // relationship can be materialized (audited + revertible schema op).
         try {
@@ -320,6 +337,7 @@ export async function dispatchIngestRoute(
           ctx.fileJunctions,
           ctx.entityDescriptions,
           ctx.createJunction,
+          ctx.aggressiveness,
         );
     sendJson(
       res,
@@ -363,6 +381,7 @@ export async function dispatchIngestRoute(
       ctx.fileJunctions,
       ctx.entityDescriptions,
       ctx.createJunction,
+      ctx.aggressiveness,
     );
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
@@ -419,6 +438,7 @@ export async function dispatchIngestRoute(
           ctx.fileJunctions,
           ctx.entityDescriptions,
           ctx.createJunction,
+          ctx.aggressiveness,
         );
     sendJson(
       res,

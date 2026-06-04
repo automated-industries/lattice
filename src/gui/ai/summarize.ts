@@ -18,6 +18,7 @@ export async function summarizeText(
   client: LlmClient,
   text: string,
   name: string,
+  temperature?: number,
 ): Promise<string> {
   const turn = await client.runTurn({
     model: DEFAULT_MODEL,
@@ -29,6 +30,7 @@ export async function summarizeText(
       },
     ],
     tools: [],
+    ...(temperature !== undefined ? { temperature } : {}),
     onText: () => undefined,
   });
   return turn.text.trim();
@@ -99,9 +101,19 @@ export async function classifyLinks(
   text: string,
   name: string,
   catalog: CatalogEntity[],
+  temperature?: number,
 ): Promise<ClassifyMatch[]> {
   if (catalog.length === 0 || text.trim().length === 0) return [];
   let captured = '';
+  // Inference aggressiveness (derived from temperature) tunes how liberally the
+  // classifier proposes links: low = only an explicit, unambiguous mention;
+  // high = also infer strongly-implied relationships.
+  const liberal =
+    temperature !== undefined && temperature >= 0.66
+      ? ' Include records that are strongly implied even without an exact name match.'
+      : temperature !== undefined && temperature <= 0.33
+        ? ' Only include records that are explicitly and unambiguously named.'
+        : '';
   const turn = await client.runTurn({
     model: DEFAULT_MODEL,
     system: CLASSIFY_SYSTEM,
@@ -110,10 +122,11 @@ export async function classifyLinks(
         role: 'user',
         content:
           `# Catalog\n${buildCatalogBlock(catalog)}\n\n# Document: ${name}\n\n` +
-          `${text.slice(0, 12000)}\n\n# Task\nReturn the JSON array of matching {table,id}.`,
+          `${text.slice(0, 12000)}\n\n# Task\nReturn the JSON array of matching {table,id}.${liberal}`,
       },
     ],
     tools: [],
+    ...(temperature !== undefined ? { temperature } : {}),
     onText: (d) => {
       captured += d;
     },
