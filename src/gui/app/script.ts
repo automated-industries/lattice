@@ -185,6 +185,13 @@ export const appJs = `
         initSearch();
         initLastEdited();
         initOffline();
+        initRailResize();
+        initRailDrawer();
+        initRailDragDrop();
+        startFeed();
+        renderComposer();
+        initThreadControls();
+        checkNativeSetup();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -4770,6 +4777,402 @@ export const appJs = `
       // Suppress unused-var on handle
       void handle;
     }
+
+
+    // ============ AI assistant rail (2.0) ============
+    var feedSource = null;
+    var FEED_ICONS = {
+      insert: '➕', update: '✏️', delete: '🗑',
+      link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
+    };
+    function renderFeedItem(ev) {
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return;
+      var empty = document.getElementById('rail-empty');
+      if (empty) empty.remove();
+      var item = document.createElement('div');
+      item.className = 'feed-item';
+      var icon = document.createElement('div');
+      icon.className = 'feed-icon';
+      icon.textContent = FEED_ICONS[ev.op] || '•';
+      var body = document.createElement('div');
+      body.className = 'feed-body';
+      var summary = document.createElement('div');
+      summary.className = 'feed-summary';
+      summary.textContent = ev.summary || (String(ev.op || '') + ' ' + String(ev.table || ''));
+      var meta = document.createElement('div');
+      meta.className = 'feed-meta';
+      var src = document.createElement('span');
+      src.className = 'feed-source';
+      src.textContent = ev.source === 'gui' ? 'you' : String(ev.source || '');
+      meta.appendChild(src);
+      body.appendChild(summary);
+      body.appendChild(meta);
+      var time = document.createElement('div');
+      time.className = 'feed-time';
+      time.textContent = relTime(ev.ts);
+      item.appendChild(icon);
+      item.appendChild(body);
+      item.appendChild(time);
+      feedEl.appendChild(item);
+      feedEl.scrollTop = feedEl.scrollHeight;
+    }
+    function startFeed() {
+      if (feedSource) {
+        try { feedSource.close(); } catch (_) { /* ignore */ }
+        feedSource = null;
+      }
+      if (typeof EventSource === 'undefined') return;
+      feedSource = new EventSource('/api/feed/stream');
+      feedSource.addEventListener('feed', function (ev) {
+        try { renderFeedItem(JSON.parse(ev.data)); } catch (_) { /* ignore malformed */ }
+      });
+      // EventSource auto-reconnects on error; no extra handling needed.
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Assistant rail resize — drag the left edge, clamp, persist.
+    // ────────────────────────────────────────────────────────────
+    var RAIL_MIN = 320, RAIL_MAX = 640, RAIL_KEY = 'lattice-rail-width';
+    function applyRailWidth(px) {
+      var w = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(px)));
+      document.documentElement.style.setProperty('--sidebar-width', w + 'px');
+      return w;
+    }
+    function initRailResize() {
+      var saved = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
+      if (!isNaN(saved)) applyRailWidth(saved);
+      var handle = document.getElementById('rail-resize');
+      if (!handle) return;
+      handle.addEventListener('pointerdown', function (e) {
+        e.preventDefault();
+        var startX = e.clientX;
+        var rail = document.getElementById('assistant-rail');
+        var startW = rail ? rail.getBoundingClientRect().width : 380;
+        handle.classList.add('dragging');
+        function move(ev) {
+          // Rail sits on the right; dragging left (smaller clientX) widens it.
+          applyRailWidth(startW - (ev.clientX - startX));
+        }
+        function up() {
+          handle.classList.remove('dragging');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          var cur = parseInt(
+            getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'),
+            10,
+          );
+          if (!isNaN(cur)) window.localStorage.setItem(RAIL_KEY, String(cur));
+        }
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Assistant chat composer — POST /api/chat, parse SSE, render
+    // bubbles + tool pills into the same rail feed (interleaved with
+    // activity events). Gated on a configured Claude token.
+    // ────────────────────────────────────────────────────────────
+    var chatHistory = [];
+    var chatBusy = false;
+    function railFeedEl() { return document.getElementById('rail-feed'); }
+    function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
+    var currentThreadId = null;
+    function clearChat() {
+      chatHistory = [];
+      var feedEl = railFeedEl();
+      if (feedEl) feedEl.innerHTML = '<div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>';
+    }
+    function newChat() {
+      currentThreadId = null;
+      clearChat();
+      var sel = document.getElementById('rail-threads');
+      if (sel) sel.value = '';
+    }
+    function refreshThreadList() {
+      var sel = document.getElementById('rail-threads'); if (!sel) return;
+      fetchJson('/api/chat/threads').then(function (d) {
+        var threads = (d && d.threads) || [];
+        var opts = '<option value="">＋ New conversation</option>';
+        threads.forEach(function (t) {
+          opts += '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.title || 'Chat') + '</option>';
+        });
+        sel.innerHTML = opts;
+        sel.value = currentThreadId || '';
+      }).catch(function () { /* ignore */ });
+    }
+    function loadThread(id) {
+      fetchJson('/api/chat/threads/' + encodeURIComponent(id) + '/messages').then(function (d) {
+        var msgs = (d && d.messages) || [];
+        clearChat();
+        currentThreadId = id;
+        msgs.forEach(function (m) {
+          if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
+          else if (m.role === 'assistant') { var c = newAssistantBubble(); c.bubble.textContent = m.text; chatHistory.push({ role: 'assistant', text: m.text }); }
+        });
+      }).catch(function (e) { showToast('Could not load conversation: ' + e.message, {}); });
+    }
+    function initThreadControls() {
+      var sel = document.getElementById('rail-threads');
+      var btn = document.getElementById('rail-newchat');
+      if (btn) btn.addEventListener('click', newChat);
+      if (sel) sel.addEventListener('change', function () { if (sel.value) loadThread(sel.value); else newChat(); });
+      refreshThreadList();
+    }
+    function appendUserBubble(text) {
+      railEmptyGone();
+      var feedEl = railFeedEl(); if (!feedEl) return;
+      var msg = document.createElement('div'); msg.className = 'chat-msg user';
+      var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = text;
+      msg.appendChild(b); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+    }
+    function newAssistantBubble() {
+      railEmptyGone();
+      var feedEl = railFeedEl();
+      var msg = document.createElement('div'); msg.className = 'chat-msg assistant';
+      var wrap = document.createElement('div');
+      var tools = document.createElement('div'); tools.className = 'chat-tools';
+      var b = document.createElement('div'); b.className = 'chat-bubble assistant'; b.textContent = '';
+      wrap.appendChild(tools); wrap.appendChild(b);
+      msg.appendChild(wrap); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      return { bubble: b, tools: tools, pills: {} };
+    }
+    var TOOL_VERBS = {
+      create_row: ['Creating row', 'Row created', 'Could not create row'],
+      update_row: ['Updating row', 'Row updated', 'Could not update row'],
+      delete_row: ['Deleting row', 'Row deleted', 'Could not delete row'],
+      list_rows: ['Listing rows', 'Listed rows', 'Could not list rows'],
+      get_row: ['Fetching row', 'Fetched row', 'Could not fetch row'],
+      list_entities: ['Listing tables', 'Listed tables', 'Could not list tables']
+    };
+    function toolLabel(name, state) {
+      var v = TOOL_VERBS[name] || [name, name, name];
+      return state === 'pending' ? v[0] + '…' : (state === 'error' ? v[2] : v[1]);
+    }
+    function addToolPill(ctx, id, name) {
+      var pill = document.createElement('span'); pill.className = 'tool-pill';
+      pill.innerHTML = '<span class="spin"></span>' + escapeHtml(toolLabel(name, 'pending'));
+      pill.setAttribute('data-name', name);
+      ctx.tools.appendChild(pill); ctx.pills[id] = pill;
+    }
+    function resolveToolPill(ctx, id, isError) {
+      var pill = ctx.pills[id]; if (!pill) return;
+      var name = pill.getAttribute('data-name');
+      pill.className = 'tool-pill ' + (isError ? 'error' : 'done');
+      pill.textContent = (isError ? '⚠ ' : '✓ ') + toolLabel(name, isError ? 'error' : 'done');
+    }
+    function parseSse(buffer, onEvent) {
+      var sep;
+      while ((sep = buffer.indexOf('\\n\\n')) >= 0) {
+        var frame = buffer.slice(0, sep); buffer = buffer.slice(sep + 2);
+        var line = frame.split('\\n').find(function (l) { return l.indexOf('data:') === 0; });
+        if (!line) continue;
+        var json = line.slice(5).trim(); if (!json) continue;
+        try { onEvent(JSON.parse(json)); } catch (_) { /* drop malformed */ }
+      }
+      return buffer;
+    }
+    function sendChat(text) {
+      if (chatBusy || !text) return;
+      chatBusy = true;
+      appendUserBubble(text);
+      var historyToSend = chatHistory.slice();
+      chatHistory.push({ role: 'user', text: text });
+      var input = document.getElementById('chat-input');
+      var sendBtn = document.getElementById('chat-send');
+      if (input) { input.value = ''; input.style.height = 'auto'; }
+      if (sendBtn) sendBtn.disabled = true;
+      var actx = null; var assembled = '';
+      fetch('/api/chat', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId })
+      }).then(function (r) {
+        if (!r.ok || !r.body) {
+          return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+        }
+        var tid = r.headers.get('x-thread-id'); if (tid) currentThreadId = tid;
+        var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
+        function pump() {
+          return reader.read().then(function (res) {
+            if (res.done) return;
+            buf += dec.decode(res.value, { stream: true });
+            buf = parseSse(buf, function (ev) {
+              if (ev.type === 'assistant_message_start') { actx = newAssistantBubble(); assembled = ''; }
+              else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; actx.bubble.textContent = assembled; railFeedEl().scrollTop = railFeedEl().scrollHeight; }
+              else if (ev.type === 'tool_use' && actx) { addToolPill(actx, ev.id, ev.name); }
+              else if (ev.type === 'tool_result' && actx) { resolveToolPill(actx, ev.toolUseId, ev.isError); }
+              else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); actx.bubble.textContent = (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message; }
+            });
+            return pump();
+          });
+        }
+        return pump();
+      }).then(function () {
+        if (assembled) chatHistory.push({ role: 'assistant', text: assembled });
+        refreshThreadList();
+      }).catch(function (e) {
+        var c = newAssistantBubble(); c.bubble.textContent = '⚠ ' + e.message;
+      }).finally(function () {
+        chatBusy = false;
+        var sb = document.getElementById('chat-send'); if (sb) sb.disabled = false;
+        var inp = document.getElementById('chat-input'); if (inp) inp.focus();
+      });
+    }
+    var recState = 'idle';
+    var mediaRecorder = null;
+    var audioChunks = [];
+    function setMicState(btn, state) {
+      recState = state;
+      if (!btn) return;
+      btn.classList.remove('recording', 'transcribing');
+      if (state === 'recording') { btn.classList.add('recording'); btn.textContent = '⏹'; btn.title = 'Stop recording'; btn.disabled = false; }
+      else if (state === 'transcribing') { btn.classList.add('transcribing'); btn.textContent = '…'; btn.title = 'Transcribing…'; btn.disabled = true; }
+      else { btn.textContent = '🎙'; btn.title = 'Record voice'; btn.disabled = false; }
+    }
+    function startRecording(btn, input) {
+      if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
+        alert('Voice recording is not supported in this browser.'); return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        var rec = new MediaRecorder(stream);
+        audioChunks = [];
+        rec.ondataavailable = function (e) { if (e.data && e.data.size) audioChunks.push(e.data); };
+        rec.onstop = function () {
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          var blob = new Blob(audioChunks, { type: rec.mimeType || 'audio/webm' });
+          setMicState(btn, 'transcribing');
+          fetch('/api/assistant/transcribe', { method: 'POST', headers: { 'content-type': blob.type }, body: blob })
+            .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+            .then(function (j) {
+              if (input && j.text) {
+                input.value = (input.value ? input.value + ' ' : '') + j.text;
+                input.dispatchEvent(new Event('input'));
+                input.focus();
+              }
+            })
+            .catch(function (e) { alert('Transcription failed: ' + e.message); })
+            .finally(function () { setMicState(btn, 'idle'); });
+        };
+        rec.start();
+        mediaRecorder = rec;
+        setMicState(btn, 'recording');
+      }).catch(function (e) { alert('Microphone unavailable: ' + e.message); });
+    }
+    function toggleRecording(btn, input) {
+      if (recState === 'recording' && mediaRecorder) { mediaRecorder.stop(); mediaRecorder = null; }
+      else if (recState === 'idle') { startRecording(btn, input); }
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // File ingest — drag a file onto the rail or use the paperclip.
+    // Browsers can't expose the local path, so we POST the bytes; the
+    // server extracts + summarizes, then discards them (path stays null).
+    // ────────────────────────────────────────────────────────────
+    function uploadFile(file) {
+      railEmptyGone();
+      return fetch('/api/ingest/upload', {
+        method: 'POST',
+        headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': file.name },
+        body: file,
+      })
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); });
+    }
+    function uploadFiles(files) {
+      if (!files) return;
+      for (var i = 0; i < files.length; i++) uploadFile(files[i]);
+    }
+    // Mobile: tapping the handle expands/collapses the bottom drawer.
+    function initRailDrawer() {
+      var handle = document.getElementById('rail-handle');
+      var rail = document.getElementById('assistant-rail');
+      if (handle && rail) handle.addEventListener('click', function () { rail.classList.toggle('expanded'); });
+    }
+    function initRailDragDrop() {
+      var rail = document.getElementById('assistant-rail'); if (!rail) return;
+      rail.addEventListener('dragover', function (e) { e.preventDefault(); rail.classList.add('dragging-file'); });
+      rail.addEventListener('dragleave', function (e) { if (e.target === rail) rail.classList.remove('dragging-file'); });
+      rail.addEventListener('drop', function (e) {
+        e.preventDefault();
+        rail.classList.remove('dragging-file');
+        if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+      });
+    }
+
+    // Surface a notice when files/secrets aren't bound as native objects — the
+    // assistant key storage + ingest need them. Normally they auto-create on
+    // open; this only shows in the edge case where a pre-existing plaintext
+    // secrets table was skipped (the adopt flow won't silently encrypt it).
+    function checkNativeSetup() {
+      fetchJson('/api/native-entities').then(function (d) {
+        var bound = {};
+        ((d && d.bindings) || []).forEach(function (b) { if (b.origin !== 'skipped') bound[b.entity] = true; });
+        var missing = ['files', 'secrets'].filter(function (e) { return !bound[e]; });
+        if (missing.length === 0) return;
+        var feedEl = railFeedEl(); if (!feedEl) return;
+        railEmptyGone();
+        var card = document.createElement('div');
+        card.className = 'feed-item';
+        var note = 'Set up native ' + missing.join(' + ') + ' to enable the assistant’s key storage and file ingest.';
+        if (missing.indexOf('secrets') >= 0) {
+          note += ' A pre-existing plaintext “secrets” table is left untouched — move its rows to an encrypted native secrets store to use it here.';
+        }
+        card.innerHTML = '<div class="feed-icon">⚠️</div><div class="feed-body"><div class="feed-summary">' +
+          escapeHtml(note) + '</div></div>';
+        feedEl.insertBefore(card, feedEl.firstChild);
+      }).catch(function () { /* ignore */ });
+    }
+
+    function renderComposer() {
+      var host = document.getElementById('rail-composer'); if (!host) return;
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        if (cfg && cfg.hasClaudeAuth) {
+          var micHtml = cfg.hasVoiceKey
+            ? '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>'
+            : '';
+          host.innerHTML =
+            '<div class="composer-row">' +
+              '<button class="composer-clip" id="chat-clip" title="Attach a file">📎</button>' +
+              micHtml +
+              '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
+              '<button class="composer-send" id="chat-send">Send</button>' +
+            '</div>' +
+            '<input type="file" id="chat-file" multiple style="display:none">';
+          var input = document.getElementById('chat-input');
+          var sendBtn = document.getElementById('chat-send');
+          var clipBtn = document.getElementById('chat-clip');
+          var fileInput = document.getElementById('chat-file');
+          if (clipBtn && fileInput) {
+            clipBtn.addEventListener('click', function () { fileInput.click(); });
+            fileInput.addEventListener('change', function () { uploadFiles(fileInput.files); fileInput.value = ''; });
+          }
+          input.addEventListener('input', function () {
+            input.style.height = 'auto';
+            input.style.height = Math.min(120, input.scrollHeight) + 'px';
+          });
+          input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(input.value.trim()); }
+          });
+          sendBtn.addEventListener('click', function () { sendChat(input.value.trim()); });
+          var micBtn = document.getElementById('chat-mic');
+          if (micBtn) micBtn.addEventListener('click', function () { toggleRecording(micBtn, input); });
+        } else {
+          host.innerHTML = '<div class="composer-setup">Set a Claude API token in ' +
+            '<a href="#/settings/user-config">User Settings → Assistant</a> to chat.</div>';
+        }
+      }).catch(function () {
+        host.innerHTML = '<div class="composer-setup">Assistant unavailable.</div>';
+      });
+    }
+
+    /** Reload column meta after a secret-flag change. */
+    function refreshColumnMeta() {
+      return fetchJson('/api/gui-meta/columns').then(function (d) {
+        state.columnMeta = d || {};
+      });
+    }
+
 
     init();
   })();
