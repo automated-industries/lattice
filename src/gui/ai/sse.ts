@@ -1,0 +1,67 @@
+import type { FeedEvent } from '../feed.js';
+
+/**
+ * Server-Sent Events protocol shared by the assistant chat stream and the
+ * activity feed. The server writes `data: <json>\n\n` frames; the browser
+ * reads them with a `fetch` ReadableStream reader. Both ends agree on the
+ * event shapes defined here so neither side has to guess.
+ */
+
+/** Events emitted while streaming one assistant turn (with tool calls). */
+export type ChatStreamEvent =
+  | { type: 'assistant_message_start'; id: string }
+  | { type: 'text_delta'; delta: string }
+  | { type: 'tool_use'; id: string; name: string }
+  | { type: 'tool_result'; toolUseId: string; isError: boolean }
+  | { type: 'assistant_message_end' }
+  | { type: 'done' }
+  | { type: 'error'; message: string };
+
+/** A feed event delivered over the same SSE channel as chat events. */
+export interface FeedStreamEvent {
+  type: 'feed';
+  event: FeedEvent;
+}
+
+/** Anything that can travel down the GUI SSE stream. */
+export type StreamEvent = ChatStreamEvent | FeedStreamEvent;
+
+/** Serialize one event as an SSE frame (`data: <json>\n\n`). */
+export function formatSseFrame(event: StreamEvent): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
+
+export interface ParseResult {
+  /** Fully-parsed events from complete frames in this chunk. */
+  events: StreamEvent[];
+  /** Leftover bytes that did not yet form a complete frame; feed back next call. */
+  rest: string;
+}
+
+/**
+ * Incrementally parse SSE frames out of a (possibly partial) text buffer.
+ *
+ * Splits on the `\n\n` frame boundary, extracts the `data:` line from each
+ * complete frame, and `JSON.parse`s it. Malformed frames are dropped rather
+ * than aborting the stream. Any trailing partial frame is returned in `rest`
+ * so the caller can prepend it to the next chunk.
+ */
+export function parseSseFrames(buffer: string): ParseResult {
+  const events: StreamEvent[] = [];
+  let rest = buffer;
+  let sep: number;
+  while ((sep = rest.indexOf('\n\n')) >= 0) {
+    const frame = rest.slice(0, sep);
+    rest = rest.slice(sep + 2);
+    const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+    if (!dataLine) continue;
+    const json = dataLine.slice('data:'.length).trim();
+    if (!json) continue;
+    try {
+      events.push(JSON.parse(json) as StreamEvent);
+    } catch {
+      // Drop malformed frame; keep the stream alive.
+    }
+  }
+  return { events, rest };
+}

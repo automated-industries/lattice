@@ -31,6 +31,8 @@ import {
   getGuiEntities,
   getGuiProject,
   isJunctionTable,
+  fileJunctions,
+  entityDescriptions,
   type GuiEntitiesPayload,
   type GuiTableSummary,
 } from './data.js';
@@ -84,6 +86,9 @@ import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
+import { dispatchAssistantRoute } from './assistant-routes.js';
+import { dispatchChatRoute } from './chat-routes.js';
+import { dispatchIngestRoute } from './ingest-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
@@ -3514,6 +3519,50 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const handled = await dispatchUserConfigRoute(req, res, {
             db: active.db,
             configPath: active.configPath,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── AI assistant: credentials, OAuth, voice transcription ─────────
+        // Local-only (gated !teamCloud): the assistant rail is a single-user
+        // dev tool. Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
+        if (!teamCloud && pathname.startsWith('/api/assistant/')) {
+          const handled = await dispatchAssistantRoute(req, res, {
+            db: active.db,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Chat route ────────────────────────────────────────────────────
+        // POST /api/chat — assistant tool loop, streamed as SSE. Executes
+        // tool calls against the active DB via the shared mutation chokepoint.
+        if (!teamCloud && pathname.startsWith('/api/chat')) {
+          const handled = await dispatchChatRoute(req, res, {
+            db: active.db,
+            feed: active.feed,
+            validTables: active.validTables,
+            junctionTables: active.junctionTables,
+            softDeletable: active.softDeletable,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Ingest routes ─────────────────────────────────────────────────
+        // Reference a local file / pasted text as a native `files` row and
+        // summarize it. Writes via the shared mutation chokepoint (source=ingest).
+        if (!teamCloud && pathname.startsWith('/api/ingest/')) {
+          const handled = await dispatchIngestRoute(req, res, {
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            fileJunctions: fileJunctions(active.configPath, active.outputDir),
+            entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
             pathname,
             method,
           });

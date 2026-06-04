@@ -187,13 +187,25 @@ describe('framework native entities', () => {
     it('records "created" bindings on a fresh DB and is idempotent', async () => {
       // beforeEach already registered + init'd native entities on `db`.
       const first = await adoptNativeEntities(db);
-      expect(first.map((r) => r.entity).sort()).toEqual(['files', 'notes', 'secrets']);
+      expect(first.map((r) => r.entity).sort()).toEqual([
+        'chat_messages',
+        'chat_threads',
+        'files',
+        'notes',
+        'secrets',
+      ]);
       expect(first.every((r) => r.origin === 'created')).toBe(true);
 
       // Registry table is internal and populated.
       expect(db.getRegisteredTableNames()).toContain(NATIVE_REGISTRY_TABLE);
       const bindings = await listNativeBindings(db);
-      expect(bindings.map((b) => b.entity).sort()).toEqual(['files', 'notes', 'secrets']);
+      expect(bindings.map((b) => b.entity).sort()).toEqual([
+        'chat_messages',
+        'chat_threads',
+        'files',
+        'notes',
+        'secrets',
+      ]);
 
       // Second call is a no-op upsert — no duplicate bindings.
       await adoptNativeEntities(db);

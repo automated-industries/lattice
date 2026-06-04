@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "1.16.4",
+  "version": "2.0.0",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -54,10 +54,12 @@
     "better-sqlite3": ">=11 <13"
   },
   "optionalDependencies": {
-    "playwright": "^1.48.0",
-    "pg": "^8.11.0"
+    "@anthropic-ai/sdk": "^0.71.2",
+    "pg": "^8.11.0",
+    "playwright": "^1.48.0"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
     "@eslint/js": "^9.0.0",
     "@playwright/test": "^1.48.0",
     "@types/better-sqlite3": "^7.6.12",
