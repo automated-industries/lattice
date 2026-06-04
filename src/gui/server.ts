@@ -35,6 +35,7 @@ import {
   entityDescriptions,
   type GuiEntitiesPayload,
   type GuiTableSummary,
+  type FileJunction,
 } from './data.js';
 import {
   readManifest,
@@ -1282,6 +1283,68 @@ async function recordSchemaOp(
     sessionId,
   );
   await emitDdlEnvelope(active, table);
+}
+
+/**
+ * Create (or return) the `files ↔ <otherTable>` junction so ingest can link a
+ * file to an existing record even when no relationship has been modeled yet.
+ * Registered on the live DB via `defineLate` (no reopen — keeps in-flight
+ * mutation contexts valid), persisted to config, and recorded as a revertible
+ * `schema.create_junction` op. Returns null when `otherTable` can't be linked
+ * (native, junction, unknown, or invalid identifier) so the caller falls back
+ * to a suggestion. Mirrors the manual data-model "create relationship" path.
+ */
+async function createFileJunction(
+  active: ActiveDb,
+  otherTable: string,
+  sessionId: string,
+): Promise<FileJunction | null> {
+  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(otherTable)) return null;
+  if (otherTable === 'files' || isNativeEntity(otherTable)) return null;
+  if (!active.validTables.has(otherTable) || active.junctionTables.has(otherTable)) return null;
+  const jName = `files_${otherTable}`;
+  const fileFk = 'file_id';
+  const otherFk = `${otherTable}_id`;
+  // Already present (live this session) — just hand back the mapping.
+  if (active.validTables.has(jName) || active.db.getRegisteredTableNames().includes(jName)) {
+    return { junction: jName, fileFk, otherTable, otherFk };
+  }
+  // A soft-deleted twin exists physically — don't clobber it; let the user
+  // revert that one instead.
+  if (await physicalTableExists(active, jName)) return null;
+
+  await execSql(
+    active.db,
+    `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${fileFk}" TEXT, "${otherFk}" TEXT)`,
+  );
+  // Register on the live DB so linkRows() works without a full reopen.
+  await active.db.defineLate(jName, {
+    columns: { id: 'TEXT PRIMARY KEY', [fileFk]: 'TEXT', [otherFk]: 'TEXT' },
+  });
+  // Persist to config so the relationship survives the next boot.
+  const entityDef = {
+    fields: {
+      id: { type: 'uuid', primaryKey: true },
+      [fileFk]: { type: 'uuid', ref: 'files' },
+      [otherFk]: { type: 'uuid', ref: otherTable },
+    },
+    outputFile: jName.toUpperCase() + '.md',
+  };
+  const doc = loadConfigDoc(active.configPath);
+  doc.setIn(['entities', jName], entityDef);
+  saveConfigDoc(active.configPath, doc);
+  active.validTables.add(jName);
+  active.junctionTables.add(jName);
+  await recordSchemaOp(
+    active,
+    'schema.create_junction',
+    jName,
+    null,
+    { entity: jName, entityDef },
+    `Linked files ↔ ${otherTable}`,
+    sessionId,
+  );
+  return { junction: jName, fileFk, otherTable, otherFk };
 }
 
 type EntityPayload = { entity: string; entityDef: unknown };
@@ -3563,6 +3626,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             softDeletable: active.softDeletable,
             fileJunctions: fileJunctions(active.configPath, active.outputDir),
             entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
+            createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
             pathname,
             method,
           });

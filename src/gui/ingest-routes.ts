@@ -38,6 +38,13 @@ interface IngestContext {
   fileJunctions: FileJunction[];
   /** Entity name → human description, fed to the classifier catalog. */
   entityDescriptions: Record<string, string>;
+  /**
+   * Create (or fetch) the `files ↔ <otherTable>` junction so the classifier can
+   * link even when no relationship exists yet. Audited + revertible (schema
+   * op). Returns null when the entity can't be linked (native/junction/unknown).
+   * Injected by the server so ingest stays decoupled from config/reopen plumbing.
+   */
+  createJunction?: (otherTable: string) => Promise<FileJunction | null>;
   pathname: string;
   method: string;
 }
@@ -161,6 +168,7 @@ async function enrichWithLlm(
   name: string,
   junctions: FileJunction[],
   descriptions: Record<string, string>,
+  createJunction?: (otherTable: string) => Promise<FileJunction | null>,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
@@ -180,17 +188,44 @@ async function enrichWithLlm(
   try {
     const matches = await classifyLinks(client, text, name, await buildCatalog(db, descriptions));
     for (const m of matches) {
-      const jx = junctions.find((j) => j.otherTable === m.table);
+      let jx = junctions.find((j) => j.otherTable === m.table);
+      let created = false;
+      if (!jx && createJunction) {
+        // No junction connects files to this entity yet — create one so the
+        // relationship can be materialized (audited + revertible schema op).
+        try {
+          const made = await createJunction(m.table);
+          if (made) {
+            jx = made;
+            created = true;
+          }
+        } catch (e) {
+          console.warn(
+            `[ingest] auto-create junction files↔${m.table} failed:`,
+            (e as Error).message,
+          );
+        }
+      }
       if (jx) {
-        // A junction to this entity exists — create the link (default action;
-        // it's audited + undoable via the feed). No confirmation prompt.
+        // Junction exists (or was just created) — materialize the link. Audited
+        // + undoable via the feed. No confirmation prompt.
         try {
           await linkRows(mctx, jx.junction, { [jx.fileFk]: fileId, [jx.otherFk]: m.id });
+          if (created) {
+            mctx.feed.publish({
+              table: jx.junction,
+              op: 'schema',
+              rowId: null,
+              source: 'ingest',
+              summary: `Created link table files ↔ ${m.table} and linked this file`,
+            });
+          }
         } catch (e) {
           console.warn(`[ingest] auto-link to ${m.table} failed:`, (e as Error).message);
         }
       } else {
-        // No junction connects files to this entity — surface as a suggestion.
+        // Could not link (no junction + creation unavailable/declined) —
+        // surface as a suggestion instead.
         mctx.feed.publish({
           table: 'files',
           op: 'update',
@@ -284,6 +319,7 @@ export async function dispatchIngestRoute(
           name,
           ctx.fileJunctions,
           ctx.entityDescriptions,
+          ctx.createJunction,
         );
     sendJson(
       res,
@@ -326,6 +362,7 @@ export async function dispatchIngestRoute(
       title,
       ctx.fileJunctions,
       ctx.entityDescriptions,
+      ctx.createJunction,
     );
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
@@ -381,6 +418,7 @@ export async function dispatchIngestRoute(
           name,
           ctx.fileJunctions,
           ctx.entityDescriptions,
+          ctx.createJunction,
         );
     sendJson(
       res,
