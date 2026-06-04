@@ -5208,15 +5208,33 @@ export const appJs = `
     // Browsers can't expose the local path, so we POST the bytes; the
     // server extracts + summarizes, then discards them (path stays null).
     // ────────────────────────────────────────────────────────────
-    function uploadFile(file) {
+    // Append a transient "Analyzing <file>…" row to the feed so the user sees
+    // the ingest is processing in the background; returns a disposer. The real
+    // create/link feed events stream in over SSE as the server materializes them.
+    function pendingIngestItem(label) {
       railEmptyGone();
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return function () {};
+      var item = document.createElement('div');
+      item.className = 'feed-item feed-pending';
+      item.innerHTML =
+        '<div class="feed-icon"><span class="feed-spinner"></span></div>' +
+        '<div class="feed-body"><div class="feed-summary">Analyzing ' + escapeHtml(label) + '…</div></div>' +
+        '<div class="feed-time"></div>';
+      feedEl.appendChild(item);
+      feedEl.scrollTop = feedEl.scrollHeight;
+      return function () { if (item.parentNode) item.parentNode.removeChild(item); };
+    }
+    function uploadFile(file) {
+      var done = pendingIngestItem(file.name || 'file');
       return fetch('/api/ingest/upload', {
         method: 'POST',
         headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': file.name },
         body: file,
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); });
+        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); })
+        .finally(function () { done(); });
     }
     function uploadFiles(files) {
       if (!files) return;

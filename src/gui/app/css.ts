@@ -965,6 +965,13 @@ export const css = `
 
 
     /* ============ AI assistant rail (2.0) ============ */
+    .feed-item.feed-pending { opacity: 0.85; }
+    .feed-spinner {
+      display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+      border: 2px solid var(--border-strong); border-top-color: var(--accent);
+      animation: feedSpin 0.7s linear infinite; vertical-align: middle;
+    }
+    @keyframes feedSpin { to { transform: rotate(360deg); } }
     .assistant-rail {
       position: relative;
       background: var(--surface);
