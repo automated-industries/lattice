@@ -2276,6 +2276,31 @@ The browser's `EventSource` invalidates the entity cache on every `change` event
 
 ---
 
+## AI assistant & Context Constructor (v2.0+)
+
+`lattice gui` includes an optional **assistant rail**: a Claude-powered chat plus
+a **Context Constructor** that turns dropped files and pasted text into linked
+Lattice objects. It is **GUI-only and inert until you configure a credential** —
+the library API is unchanged and fully backwards-compatible.
+
+- **Connect Claude.** Paste an Anthropic API key in **Settings → User → Assistant**
+  (or set `ANTHROPIC_API_KEY`); it's stored encrypted in the native `secrets`
+  entity. A subscription **Connect** link (PKCE) appears when the `ANTHROPIC_OAUTH_*`
+  values are set (see [`.env.example`](.env.example)).
+- **Drop files / paste text.** Sources become native `files` rows (referenced, not
+  copied), are text-extracted (PDF/Office via the optional `markitdown` CLI),
+  summarized with **Claude Haiku**, and classified against your records — then
+  **added, enriched, and linked** automatically, **auto-creating the junction table
+  when none exists**. Everything is audited and revertible via the version history.
+- **Inference Aggressiveness** slider tunes how much the assistant extrapolates
+  (temperature + link liberality + auto-junction gating).
+- Runs on local SQLite and a direct `postgres://` connection; not yet in hosted
+  multiplayer team-cloud mode.
+
+See [docs/assistant.md](docs/assistant.md) for the full guide.
+
+---
+
 ## CLI — `lattice teams` (v1.12+)
 
 Multi-user cloud-shared Lattice databases on your own Postgres. Bring your own Postgres connection; lattice handles identity (bearer tokens, email-bound invitations), the team membership table, and the sync engine (shared objects + row links + change feed + outbox + replay-guard puller).

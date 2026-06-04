@@ -8,6 +8,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-04
+
+**The AI assistant arrives.** `lattice gui` gains a built-in assistant rail — a
+**Context Constructor** that turns dropped files and pasted text into linked
+Lattice objects. The library API is unchanged and fully backwards-compatible:
+the assistant is GUI-only and completely inert until credentials are configured,
+so a bare `new Lattice(path)` / Postgres-URL consumer and the headless
+`render`/`generate`/`reconcile`/`watch` commands are unaffected. The major
+version marks the new product surface (and the workspace-architecture line that
+shipped across 1.16.x), not a breaking change.
+
+### Added
+
+- **Assistant rail (chat + activity feed).** A resizable sidebar (mobile
+  bottom-drawer) with a Claude tool-calling chat loop streamed over SSE
+  (`POST /api/chat`) and a live activity feed (`GET /api/feed/stream`). Every
+  assistant edit flows through the same audited, undoable mutation chokepoint as
+  a manual edit — so it lands in the version history and can be reverted.
+- **Context Constructor — drag-drop / click-upload / paste ingest.** Drop files
+  on the rail (or use the paperclip) and they're referenced as native `files`
+  rows (not copied), text-extracted (with optional `markitdown` for PDFs/Office),
+  summarized with **Claude Haiku**, and classified against your existing records.
+  Three operations happen automatically, all reversible: **add** the source
+  object, **enrich** its description, and **link** it to related records —
+  **auto-creating the junction table when none exists yet**.
+- **"Connect Claude" + subscription OAuth.** Encrypted API-key storage in the
+  native `secrets` entity (env-var fallback: `ANTHROPIC_API_KEY`). A standard
+  Authorization-Code + PKCE flow for connecting a Claude subscription is built
+  and unit-tested; it stays hidden until the `ANTHROPIC_OAUTH_*` env vars are
+  configured.
+- **Inference Aggressiveness control.** A single behaviour slider
+  (Conservative ↔ Aggressive, `PUT /api/assistant/aggressiveness`) that drives
+  the model sampling temperature, how liberally the classifier proposes links,
+  and whether ingest auto-creates a missing junction (gated ≥ 0.25) vs. suggests it.
+- **Native chat entities.** `chat_threads` + `chat_messages` persist conversations
+  across sessions; the rail has a thread switcher.
+- **Voice input.** Optional speech-to-text via OpenAI Whisper or ElevenLabs
+  (`OPENAI_API_KEY` / `ELEVENLABS_API_KEY`), with an explicit provider choice.
+- **Processing feedback.** A transient "Analyzing…" spinner row appears while a
+  dropped file ingests; the real add/enrich/link events stream in over SSE.
+
+### Notes
+
+- **Cloud:** the assistant runs against local SQLite and a direct
+  `postgres://` connection (single-user). The full parity loop — ingest →
+  auto-junction → link — is covered by a Postgres-gated integration test. The
+  assistant rail is **not** mounted in hosted multiplayer team-cloud mode yet
+  (gated behind `!teamCloud`); that lands in a follow-up.
+- `markitdown` is an **optional external CLI** (`MARKITDOWN_BIN`); without it,
+  PDFs/Office files are referenced and marked `extraction_status='skipped'`.
+
 ## [1.16.4] - 2026-06-02
 
 GUI patch. **One model: a workspace _is_ a Lattice DB.** Removes the
