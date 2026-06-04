@@ -227,7 +227,14 @@ async function enrichWithLlm(
         // Junction exists (or was just created) — materialize the link. Audited
         // + undoable via the feed. No confirmation prompt.
         try {
-          await linkRows(mctx, jx.junction, { [jx.fileFk]: fileId, [jx.otherFk]: m.id });
+          // Always supply the junction PK explicitly: an auto-created junction
+          // (defineLate, raw `id TEXT PRIMARY KEY`) has no DB-level uuid default,
+          // and Postgres — unlike SQLite — rejects a NULL primary key.
+          await linkRows(mctx, jx.junction, {
+            id: crypto.randomUUID(),
+            [jx.fileFk]: fileId,
+            [jx.otherFk]: m.id,
+          });
           if (created) {
             mctx.feed.publish({
               table: jx.junction,
