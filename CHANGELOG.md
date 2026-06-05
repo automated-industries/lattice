@@ -82,6 +82,16 @@ shipped across 1.16.x), not a breaking change.
   prompt-injection path to erasing or rewriting chat history. (`files`/`notes`
   stay editable — they're audited + reversible.)
 
+### Internal
+
+- **Consolidated duplicated GUI internals** (no behaviour change): one
+  `feedSummary` now serves both the live feed and the audit-log backfill (was
+  two copies); `createFileJunction` / `createUserJunction` share a single
+  `materializeJunction` core; the GUI `summarize` module re-exports the
+  library's `parseObjects`/`parseMatches` + shared types instead of duplicating
+  them; and a parity test pins the `rowLabel` ↔ `fsDisplayName` contract so the
+  server and client label logic can't silently drift.
+
 ### Performance
 
 - **The workspace config is no longer re-parsed on every `/api/entities`

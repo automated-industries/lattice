@@ -77,7 +77,7 @@ import {
   revertEntry,
   recordSchemaAudit,
   isSchemaOp,
-  rowLabel,
+  feedSummary,
   type AuditEntry,
   type MutationCtx,
 } from './mutations.js';
@@ -322,42 +322,6 @@ const ALLOWED_COLUMN_TYPES = new Set(['text', 'integer', 'real', 'boolean']);
 function columnRefTarget(configPath: string, entity: string, col: string): string | null {
   const ref: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'fields', col, 'ref']);
   return typeof ref === 'string' && ref ? ref : null;
-}
-
-/** One-line activity summary for an audit entry (for the activity-rail backfill). */
-function feedActivitySummary(op: string, table: string, row?: unknown): string {
-  const label = rowLabel(row);
-  switch (op) {
-    case 'insert':
-      return label ? `Added ${label} to ${table}` : `Added a row to ${table}`;
-    case 'update':
-      return label ? `Updated ${label} in ${table}` : `Updated a row in ${table}`;
-    case 'delete':
-      return label ? `Removed ${label} from ${table}` : `Removed a row from ${table}`;
-    case 'link':
-      return `Linked rows in ${table}`;
-    case 'unlink':
-      return `Unlinked rows in ${table}`;
-    case 'schema.create_entity':
-      return `Created table ${table}`;
-    case 'schema.delete_entity':
-      return `Deleted table ${table}`;
-    case 'schema.rename_entity':
-      return `Renamed table ${table}`;
-    case 'schema.add_column':
-      return `Added a column to ${table}`;
-    case 'schema.rename_column':
-      return `Renamed a column on ${table}`;
-    case 'schema.add_link':
-    case 'schema.create_junction':
-      return `Added a link to ${table}`;
-    case 'schema.delete_link':
-      return `Deleted a link on ${table}`;
-    case 'schema.purge':
-      return `Purged ${table}`;
-    default:
-      return `${op} on ${table}`;
-  }
 }
 
 /**
@@ -1362,6 +1326,57 @@ function syncCanonicalContexts(active: ActiveDb): void {
 }
 
 /**
+ * Materialize a junction table `jName` with two foreign-key columns — the
+ * shared core of {@link createFileJunction} and {@link createUserJunction}.
+ * Creates the table + registers it live (`defineLate`, no reopen), persists it
+ * to config, registers it as a junction, refreshes canonical contexts so the
+ * linked tables' rollups render, and records the revertible
+ * `schema.create_junction` op. Callers own the (different) validation, naming,
+ * and reuse logic; this owns the identical write path.
+ */
+async function materializeJunction(
+  active: ActiveDb,
+  jName: string,
+  colA: string,
+  refA: string,
+  colB: string,
+  refB: string,
+  summary: string,
+  sessionId: string,
+): Promise<void> {
+  await execSql(
+    active.db,
+    `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${colA}" TEXT, "${colB}" TEXT)`,
+  );
+  await active.db.defineLate(jName, {
+    columns: { id: 'TEXT PRIMARY KEY', [colA]: 'TEXT', [colB]: 'TEXT' },
+  });
+  const entityDef = {
+    fields: {
+      id: { type: 'uuid', primaryKey: true },
+      [colA]: { type: 'uuid', ref: refA },
+      [colB]: { type: 'uuid', ref: refB },
+    },
+    outputFile: jName.toUpperCase() + '.md',
+  };
+  const doc = loadConfigDoc(active.configPath);
+  doc.setIn(['entities', jName], entityDef);
+  saveConfigDoc(active.configPath, doc);
+  active.validTables.add(jName);
+  active.junctionTables.add(jName);
+  syncCanonicalContexts(active);
+  await recordSchemaOp(
+    active,
+    'schema.create_junction',
+    jName,
+    null,
+    { entity: jName, entityDef },
+    summary,
+    sessionId,
+  );
+}
+
+/**
  * Create (or return) the `files ↔ <otherTable>` junction so ingest can link a
  * file to an existing record even when no relationship has been modeled yet.
  * Registered on the live DB via `defineLate` (no reopen — keeps in-flight
@@ -1389,37 +1404,13 @@ async function createFileJunction(
   // revert that one instead.
   if (await physicalTableExists(active, jName)) return null;
 
-  await execSql(
-    active.db,
-    `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${fileFk}" TEXT, "${otherFk}" TEXT)`,
-  );
-  // Register on the live DB so linkRows() works without a full reopen.
-  await active.db.defineLate(jName, {
-    columns: { id: 'TEXT PRIMARY KEY', [fileFk]: 'TEXT', [otherFk]: 'TEXT' },
-  });
-  // Persist to config so the relationship survives the next boot.
-  const entityDef = {
-    fields: {
-      id: { type: 'uuid', primaryKey: true },
-      [fileFk]: { type: 'uuid', ref: 'files' },
-      [otherFk]: { type: 'uuid', ref: otherTable },
-    },
-    outputFile: jName.toUpperCase() + '.md',
-  };
-  const doc = loadConfigDoc(active.configPath);
-  doc.setIn(['entities', jName], entityDef);
-  saveConfigDoc(active.configPath, doc);
-  active.validTables.add(jName);
-  active.junctionTables.add(jName);
-  // Refresh canonical contexts so the linked table gains the files rollup
-  // (and renders it) without a reopen.
-  syncCanonicalContexts(active);
-  await recordSchemaOp(
+  await materializeJunction(
     active,
-    'schema.create_junction',
     jName,
-    null,
-    { entity: jName, entityDef },
+    fileFk,
+    'files',
+    otherFk,
+    otherTable,
     `Linked files ↔ ${otherTable}`,
     sessionId,
   );
@@ -1469,35 +1460,13 @@ async function createUserJunction(
     return { junction: reverse, tableA: tableB, aFk: bFk, tableB: tableA, bFk: aFk };
   if (await physicalTableExists(active, forward)) return null;
 
-  await execSql(
-    active.db,
-    `CREATE TABLE "${forward}" (id TEXT PRIMARY KEY, "${aFk}" TEXT, "${bFk}" TEXT)`,
-  );
-  await active.db.defineLate(forward, {
-    columns: { id: 'TEXT PRIMARY KEY', [aFk]: 'TEXT', [bFk]: 'TEXT' },
-  });
-  const entityDef = {
-    fields: {
-      id: { type: 'uuid', primaryKey: true },
-      [aFk]: { type: 'uuid', ref: tableA },
-      [bFk]: { type: 'uuid', ref: tableB },
-    },
-    outputFile: forward.toUpperCase() + '.md',
-  };
-  const doc = loadConfigDoc(active.configPath);
-  doc.setIn(['entities', forward], entityDef);
-  saveConfigDoc(active.configPath, doc);
-  active.validTables.add(forward);
-  active.junctionTables.add(forward);
-  // Refresh canonical contexts so the two linked tables gain the new relation
-  // rollup (and render it) without a reopen.
-  syncCanonicalContexts(active);
-  await recordSchemaOp(
+  await materializeJunction(
     active,
-    'schema.create_junction',
     forward,
-    null,
-    { entity: forward, entityDef },
+    aFk,
+    tableA,
+    bFk,
+    tableB,
     `Linked ${tableA} ↔ ${tableB}`,
     sessionId,
   );
@@ -1881,7 +1850,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 rowId: a.row_id,
                 source: 'gui',
                 ts: a.ts,
-                summary: feedActivitySummary(a.operation, a.table_name, labelRow),
+                summary: feedSummary(a.operation, a.table_name, labelRow),
               });
             }
           } catch {

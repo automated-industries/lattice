@@ -52,7 +52,13 @@ export function rowLabel(row: unknown): string | null {
   return null;
 }
 
-export function feedSummary(op: AuditOp, table: string, row?: unknown): string {
+/**
+ * One-line activity-feed summary for an op on a table. Handles the row `AuditOp`
+ * set (live feed) AND the persisted `schema.*` audit operations (rail backfill)
+ * — the single source of truth for both, so the live bubble and the
+ * reloaded-from-audit bubble always read the same.
+ */
+export function feedSummary(op: string, table: string, row?: unknown): string {
   const label = rowLabel(row);
   switch (op) {
     case 'insert':
@@ -65,6 +71,25 @@ export function feedSummary(op: AuditOp, table: string, row?: unknown): string {
       return `Linked rows in ${table}`;
     case 'unlink':
       return `Unlinked rows in ${table}`;
+    case 'schema.create_entity':
+      return `Created table ${table}`;
+    case 'schema.delete_entity':
+      return `Deleted table ${table}`;
+    case 'schema.rename_entity':
+      return `Renamed table ${table}`;
+    case 'schema.add_column':
+      return `Added a column to ${table}`;
+    case 'schema.rename_column':
+      return `Renamed a column on ${table}`;
+    case 'schema.add_link':
+    case 'schema.create_junction':
+      return `Added a link to ${table}`;
+    case 'schema.delete_link':
+      return `Deleted a link on ${table}`;
+    case 'schema.purge':
+      return `Purged ${table}`;
+    default:
+      return `${op} on ${table}`;
   }
 }
 
