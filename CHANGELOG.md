@@ -84,6 +84,19 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **A bulk chat task that hits the tool-step limit now says so.** When the
+  assistant reaches its per-message tool-call cap with work outstanding (e.g.
+  "create one row per line of a 150-row CSV"), it emits a warning ("…the task
+  may be incomplete. Send 'continue' and I'll finish the rest.") instead of
+  ending with a clean "done" that looked complete (Rule 16: no silent
+  truncation).
+- **Adding a relationship now updates the linked tables' context immediately.**
+  A new junction's rollup now appears on the EXISTING tables it links without a
+  reopen — `syncCanonicalContexts` re-derives every canonical context (via a new
+  overwrite-capable `redefineEntityContext`), not only the brand-new table.
+- **Chat-rail robustness:** a `loadThread` response is discarded if a newer load
+  superseded it (no more clobbered conversation on a fast refresh + switch), and
+  the bubble-text setter guards against a finalized/detached bubble.
 - **Activity cards no longer vanish when a conversation loads.** The chat and
   the activity feed share the rail, and loading a conversation reset the whole
   rail — so auto-loading the most recent thread on refresh wiped the backfilled

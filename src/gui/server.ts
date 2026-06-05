@@ -1346,10 +1346,14 @@ function syncCanonicalContexts(active: ActiveDb): void {
   if (!active.autoRender) return;
   try {
     const parsed = parseConfigFile(active.configPath);
-    const existing = active.db.entityContexts();
+    // Never clobber a context the user declared in config; re-derive + replace
+    // every other (canonical) table's context. Re-registering ALL of them — not
+    // just the brand-new one — is what lets a junction's new hasMany rollup
+    // appear on the EXISTING tables it links, without a reopen.
+    const explicit = new Set(parsed.entityContexts.map((e) => e.table));
     for (const { table, definition } of deriveCanonicalContexts(parsed.tables)) {
-      if (existing.has(table)) continue;
-      active.db.defineEntityContext(table, definition);
+      if (explicit.has(table)) continue;
+      active.db.redefineEntityContext(table, definition);
       active.entityContextByTable.set(table, definition);
     }
   } catch (e) {

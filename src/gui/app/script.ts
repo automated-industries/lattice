@@ -5106,6 +5106,7 @@ export const appJs = `
     function railFeedEl() { return document.getElementById('rail-feed'); }
     function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
     var currentThreadId = null;
+    var loadThreadSeq = 0; // discards a stale loadThread response when a newer load supersedes it
     function clearChat() {
       chatHistory = [];
       var feedEl = railFeedEl();
@@ -5158,7 +5159,9 @@ export const appJs = `
       }).catch(function () { /* ignore */ });
     }
     function loadThread(id) {
+      var seq = ++loadThreadSeq;
       fetchJson('/api/chat/threads/' + encodeURIComponent(id) + '/messages').then(function (d) {
+        if (seq !== loadThreadSeq) return; // a newer loadThread() superseded this one
         var msgs = (d && d.messages) || [];
         clearChat();
         currentThreadId = id;
@@ -5206,6 +5209,7 @@ export const appJs = `
     }
     /** Set an assistant bubble's text, clearing the typing indicator. */
     function setBubbleText(ctx, text) {
+      if (!ctx || !ctx.bubble) return; // bubble may have been finalized/removed
       ctx.bubble.removeAttribute('data-typing');
       ctx.bubble.textContent = text;
     }
@@ -5298,6 +5302,7 @@ export const appJs = `
               else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
               else if (ev.type === 'tool_use' && actx) { addToolPill(actx, ev.id, ev.name); }
               else if (ev.type === 'tool_result' && actx) { resolveToolPill(actx, ev.toolUseId, ev.isError); }
+              else if (ev.type === 'warn') { finalizeBubble(actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); actx = null; }
               else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
             });
             return pump();

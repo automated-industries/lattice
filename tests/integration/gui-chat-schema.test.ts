@@ -268,4 +268,51 @@ describe('assistant schema creation via POST /api/chat', () => {
     expect(ctx.files.length).toBeGreaterThan(0);
     expect(ctx.files.some((f) => /PERSON\.md|PEOPLE\.md|CONTEXT\.md/i.test(f.name))).toBe(true);
   });
+
+  it('refreshes an EXISTING table’s context when a relationship is added (no reopen)', async () => {
+    const server = await boot(true); // workspace mode
+    await fetch(`${server.url}/api/tables/tickets/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'tk1', key: 'AIR-1', summary: 'x' }),
+    });
+    turnState.turns = [
+      {
+        text: 'Creating projects and linking to tickets.',
+        toolUses: [
+          { id: 'u1', name: 'create_entity', input: { name: 'projects', columns: ['title'] } },
+          {
+            id: 'u2',
+            name: 'create_row',
+            input: { table: 'projects', values: { id: 'pr1', title: 'P1' } },
+          },
+          {
+            id: 'u3',
+            name: 'create_relationship',
+            input: { table_a: 'projects', table_b: 'tickets' },
+          },
+          {
+            id: 'u4',
+            name: 'link',
+            input: { table: 'projects_tickets', values: { projects_id: 'pr1', tickets_id: 'tk1' } },
+          },
+        ],
+      },
+      { text: 'Done.' },
+    ];
+    await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'link projects to tickets' }),
+    }).then((r) => r.text());
+    await new Promise((r) => setTimeout(r, 600));
+
+    // `tickets` already existed (and had a canonical context) before the
+    // relationship. Without the redefine-on-junction fix its rollup would only
+    // appear after a reopen; now the linked-junction rollup renders inline.
+    const ctx = (await fetch(`${server.url}/api/tables/tickets/rows/tk1/context`).then((r) =>
+      r.json(),
+    )) as { files: { name: string }[] };
+    expect(ctx.files.some((f) => /PROJECTS/i.test(f.name))).toBe(true);
+  });
 });

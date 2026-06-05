@@ -15,6 +15,8 @@ export type ChatStreamEvent =
   | { type: 'tool_result'; toolUseId: string; isError: boolean }
   | { type: 'assistant_message_end' }
   | { type: 'done' }
+  // Non-fatal notice (e.g. the tool-step cap was reached with work outstanding).
+  | { type: 'warn'; message: string }
   | { type: 'error'; message: string };
 
 /** A feed event delivered over the same SSE channel as chat events. */

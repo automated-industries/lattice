@@ -159,6 +159,25 @@ describe('chat tool loop', () => {
     expect(capturedSystem).not.toContain('secrets');
   });
 
+  it('warns (instead of stopping silently) when the tool-step limit is reached', async () => {
+    // A model that never stops asking for a tool drives the loop to its cap.
+    const client: LlmClient = {
+      runTurn() {
+        return Promise.resolve({
+          stopReason: 'tool_use',
+          text: 'still working',
+          toolUses: [{ id: 'u', name: 'get_history', input: {} }],
+        });
+      },
+    };
+    const events = await collect(runChat({ client, dispatch, userMessage: 'do a huge bulk job' }));
+    const types = events.map((e) => e.type);
+    expect(types).toContain('warn'); // Rule 16: no silent truncation
+    const warn = events.find((e) => e.type === 'warn');
+    expect((warn as { message: string }).message).toMatch(/limit|incomplete/i);
+    expect(types[types.length - 1]).toBe('done'); // still ends cleanly
+  });
+
   it('surfaces a tool error as a tool_result(isError) without aborting the stream', async () => {
     const client = scriptedClient([
       {

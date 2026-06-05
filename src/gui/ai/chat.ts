@@ -154,8 +154,9 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   // since the persisted history is text-only).
   const system = buildSystemPrompt(await buildSchemaContext(opts.dispatch));
 
+  let loop = 0;
   try {
-    for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
+    for (; loop < MAX_TOOL_LOOPS; loop++) {
       const deltas: string[] = [];
       yield { type: 'assistant_message_start', id: `m${String(loop)}` };
       const turn = await opts.client.runTurn({
@@ -193,6 +194,16 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         });
       }
       messages.push({ role: 'user', content: resultBlocks });
+    }
+    // Loop exited via the `for` condition (not the `break`) ⇒ the last turn
+    // still wanted to call tools but hit the step cap ⇒ the task is likely
+    // unfinished. Surface it loudly (Rule 16: no silent truncation) instead of
+    // ending with a clean `done` that looks complete.
+    if (loop >= MAX_TOOL_LOOPS) {
+      yield {
+        type: 'warn',
+        message: `Reached the ${String(MAX_TOOL_LOOPS)}-step limit for one message — the task may be incomplete. Send "continue" and I'll finish the rest.`,
+      };
     }
   } catch (e) {
     yield { type: 'error', message: (e as Error).message };
