@@ -30,7 +30,12 @@ export function rowLabel(row: unknown): string | null {
     str(r.name) || str(r.title) || str(r.label) || str(r.original_name) || str(r.subject);
   if (primary.trim()) return primary.trim().slice(0, 80);
   const secondary =
-    str(r.summary) || str(r.description) || str(r.body) || str(r.content) || str(r.url) || str(r.path);
+    str(r.summary) ||
+    str(r.description) ||
+    str(r.body) ||
+    str(r.content) ||
+    str(r.url) ||
+    str(r.path);
   if (secondary.trim()) {
     const s = secondary.trim().replace(/\s+/g, ' ');
     return s.length > 60 ? `${s.slice(0, 60)}…` : s;
@@ -117,7 +122,13 @@ export async function appendAudit(
   // pre-image (the row is gone). link/unlink carry the junction body, which has
   // no human label — feedSummary falls back to the generic phrasing.
   const labelRow = op === 'delete' ? before : after;
-  feed.publish({ table, op: op as FeedOp, rowId, source, summary: feedSummary(op, table, labelRow) });
+  feed.publish({
+    table,
+    op: op as FeedOp,
+    rowId,
+    source,
+    summary: feedSummary(op, table, labelRow),
+  });
 }
 
 /** All schema-op operation strings carry this prefix (see recordSchemaAudit). */
