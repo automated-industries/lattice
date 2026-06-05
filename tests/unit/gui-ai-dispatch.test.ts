@@ -145,6 +145,54 @@ describe('AI function dispatch', () => {
     expect(names).not.toContain('secrets');
   });
 
+  it('list_entities hides the conversation-storage tables', async () => {
+    for (const t of ['chat_threads', 'chat_messages']) {
+      await db.defineLate(t, {
+        columns: { id: 'TEXT PRIMARY KEY', deleted_at: 'TEXT' },
+        render: () => '',
+        outputFile: `${t}.md`,
+      });
+    }
+    const names = (
+      (await executeFunction(ctx, 'list_entities', {})).result as { name: string }[]
+    ).map((t) => t.name);
+    expect(names).toContain('people');
+    expect(names).not.toContain('chat_threads');
+    expect(names).not.toContain('chat_messages');
+  });
+
+  it('redacts columns marked secret from get_row and list_rows', async () => {
+    // The GUI column-meta table records which columns are marked secret.
+    await db.defineLate('_lattice_gui_column_meta', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        table_name: 'TEXT',
+        column_name: 'TEXT',
+        secret: 'INTEGER',
+      },
+      render: () => '',
+      outputFile: 'cm.md',
+    });
+    await db.insert('_lattice_gui_column_meta', {
+      id: 'm1',
+      table_name: 'people',
+      column_name: 'name',
+      secret: 1,
+    });
+    await executeFunction(ctx, 'create_row', {
+      table: 'people',
+      values: { id: 'p1', name: 'sk-secret-value' },
+    });
+
+    const got = await executeFunction(ctx, 'get_row', { table: 'people', id: 'p1' });
+    expect((got.result as { name: string }).name).not.toContain('sk-secret-value');
+    expect((got.result as { name: string }).name).toMatch(/•/);
+
+    const list = await executeFunction(ctx, 'list_rows', { table: 'people' });
+    const rows = list.result as { name: string }[];
+    expect(rows[0]?.name).not.toContain('sk-secret-value');
+  });
+
   it('rejects unknown tables, unknown functions, and non-dispatchable functions', async () => {
     const badTable = await executeFunction(ctx, 'list_rows', { table: 'ghosts' });
     expect(badTable.ok).toBe(false);

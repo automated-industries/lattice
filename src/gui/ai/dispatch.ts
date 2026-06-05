@@ -54,16 +54,57 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Native tables the assistant must NEVER read, write, or be told about — they
- * hold decrypted secrets (API keys / OAuth tokens). The chat dispatcher reads
- * rows already-decrypted, so without this a request (or instructions injected
- * via an attached file's `extracted_text`) could induce `list_rows`/`get_row`
- * on `secrets` and spill credentials into chat output. The chat route strips
- * these from the callable `validTables`, and the schema context omits them, so
- * the model neither sees them nor can target them. (Credentials are now
- * machine-level anyway — see assistant-routes — but defence in depth.)
+ * Native tables the assistant must NEVER read, write, or be told about. The
+ * chat route strips these from the callable `validTables`, the schema context
+ * omits them, and `list_entities` skips them — so the model neither sees them
+ * nor can target them (read OR write).
+ *
+ * - `secrets`: holds decrypted API keys / OAuth tokens; the dispatcher reads
+ *   rows already-decrypted, so a request (or instructions injected via an
+ *   attached file's `extracted_text`) could otherwise spill credentials.
+ * - `chat_threads` / `chat_messages`: the assistant's OWN conversation storage.
+ *   Letting the model `delete_row`/`update_row` here would let a prompt
+ *   injection erase or rewrite chat history. Persistence writes go through
+ *   `db.insert` directly (not the dispatcher), so hiding them here is safe.
  */
-export const ASSISTANT_HIDDEN_TABLES: ReadonlySet<string> = new Set(['secrets']);
+export const ASSISTANT_HIDDEN_TABLES: ReadonlySet<string> = new Set([
+  'secrets',
+  'chat_threads',
+  'chat_messages',
+]);
+
+const SECRET_MASK = '••••••••';
+
+/** Column names marked secret for a table (via the data-model `set_column_secret`). */
+async function secretColumnsFor(db: Lattice, table: string): Promise<Set<string>> {
+  try {
+    const rows = (await db.query('_lattice_gui_column_meta', {
+      filters: [
+        { col: 'table_name', op: 'eq', val: table },
+        { col: 'secret', op: 'eq', val: 1 },
+      ],
+    })) as { column_name: string }[];
+    return new Set(rows.map((r) => r.column_name));
+  } catch {
+    // Meta table absent (fresh DB) — nothing is marked secret.
+    return new Set();
+  }
+}
+
+/**
+ * Replace secret-column values with a mask so a column a user flagged secret
+ * (e.g. an `api_key` on an `integrations` table) never reaches the model — the
+ * reads decrypt, so without this they'd leak into chat output. Mirrors the
+ * row-context endpoint's redaction (server.ts).
+ */
+function redactRow(row: Row, secretCols: Set<string>): Row {
+  if (secretCols.size === 0) return row;
+  const out: Row = { ...row };
+  for (const c of secretCols) {
+    if (c in out && out[c] != null && out[c] !== '') out[c] = SECRET_MASK;
+  }
+  return out;
+}
 
 /** A junction the assistant created (or that already existed) for `link`. */
 export interface AssistantJunction {
@@ -158,13 +199,16 @@ export async function executeFunction(
         if (ctx.softDeletable.has(table) && args.includeDeleted !== true) {
           opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
         }
-        return { ok: true, result: await ctx.db.query(table, opts) };
+        const rows = await ctx.db.query(table, opts);
+        const secretCols = await secretColumnsFor(ctx.db, table);
+        return { ok: true, result: rows.map((r) => redactRow(r, secretCols)) };
       }
       case 'get_row': {
         const table = requireTable(args.table, ctx.validTables);
         const id = requireString(args.id, 'id');
         const row = await ctx.db.get(table, id);
-        return row === null ? { ok: false, error: 'Row not found' } : { ok: true, result: row };
+        if (row === null) return { ok: false, error: 'Row not found' };
+        return { ok: true, result: redactRow(row, await secretColumnsFor(ctx.db, table)) };
       }
       case 'create_row': {
         const table = requireTable(args.table, ctx.validTables);

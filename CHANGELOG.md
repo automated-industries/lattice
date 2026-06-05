@@ -68,6 +68,20 @@ shipped across 1.16.x), not a breaking change.
 - `markitdown` is an **optional external CLI** (`MARKITDOWN_BIN`); without it,
   PDFs/Office files are referenced and marked `extraction_status='skipped'`.
 
+### Security
+
+- **The chat assistant can no longer read decrypted column secrets.** Its
+  `list_rows` / `get_row` tools now redact any column marked secret (via
+  `set_column_secret`, recorded in `_lattice_gui_column_meta`) before the row
+  reaches the model — mirroring the redaction the HTTP row-context endpoint
+  already did. Previously a `password`/`api_key` column on a user table would be
+  returned in cleartext (the `secrets` table itself was already hidden).
+- **The assistant can no longer touch its own conversation storage.**
+  `chat_threads` / `chat_messages` join `secrets` in the assistant's hidden-table
+  set, so the model can't `list`/`read`/`update`/`delete` them — closing a
+  prompt-injection path to erasing or rewriting chat history. (`files`/`notes`
+  stay editable — they're audited + reversible.)
+
 ### Fixed
 
 - **Activity cards no longer vanish when a conversation loads.** The chat and
