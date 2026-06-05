@@ -46,6 +46,8 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'delete_row',
   'link',
   'unlink',
+  'create_entity',
+  'create_relationship',
   'undo',
   'redo',
   'revert',
@@ -63,6 +65,15 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
  */
 export const ASSISTANT_HIDDEN_TABLES: ReadonlySet<string> = new Set(['secrets']);
 
+/** A junction the assistant created (or that already existed) for `link`. */
+export interface AssistantJunction {
+  junction: string;
+  tableA: string;
+  aFk: string;
+  tableB: string;
+  bFk: string;
+}
+
 export interface DispatchCtx {
   db: Lattice;
   feed: FeedBus;
@@ -72,6 +83,19 @@ export interface DispatchCtx {
   junctionTables: Set<string>;
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
+  /**
+   * Create a new entity (table) with inferred columns — audited + reversible,
+   * no DB reopen (defineLate). Supplied by the server when schema creation is
+   * allowed; absent → `create_entity` reports it's unavailable. Returns the
+   * created table name, or null when it can't be created.
+   */
+  createEntity?: (name: string, columns: string[]) => Promise<string | null>;
+  /**
+   * Create (or return) a many-to-many junction between two existing tables —
+   * audited + reversible, no reopen. Absent → `create_relationship` reports it's
+   * unavailable. Returns the junction + its two foreign-key columns, or null.
+   */
+  createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
 }
 
 export interface DispatchResult {
@@ -118,7 +142,12 @@ export async function executeFunction(
       case 'list_entities': {
         const tables = ctx.db
           .getRegisteredTableNames()
-          .filter((n) => !n.startsWith('_lattice_') && !n.startsWith('__lattice_'));
+          .filter(
+            (n) =>
+              !n.startsWith('_lattice_') &&
+              !n.startsWith('__lattice_') &&
+              !ASSISTANT_HIDDEN_TABLES.has(n),
+          );
         const out: { name: string; rowCount: number }[] = [];
         for (const t of tables) out.push({ name: t, rowCount: await ctx.db.count(t) });
         return { ok: true, result: out };
@@ -170,6 +199,49 @@ export async function executeFunction(
         if (name === 'link') await linkRows(mctx, table, values);
         else await unlinkRows(mctx, table, values);
         return { ok: true, result: { ok: true } };
+      }
+      case 'create_entity': {
+        if (!ctx.createEntity) {
+          return { ok: false, error: 'Creating tables is not available in this context' };
+        }
+        const name = requireString(args.name, 'name');
+        const columns = Array.isArray(args.columns)
+          ? args.columns.filter((c): c is string => typeof c === 'string')
+          : [];
+        const created = await ctx.createEntity(name, columns);
+        if (!created) {
+          return {
+            ok: false,
+            error: `Could not create table "${name}" — the name is invalid, reserved, or a table by that name already exists.`,
+          };
+        }
+        // Make the new table usable by later tool calls in this same turn.
+        ctx.validTables.add(created);
+        return { ok: true, result: { entity: created } };
+      }
+      case 'create_relationship': {
+        if (!ctx.createJunction) {
+          return { ok: false, error: 'Creating relationships is not available in this context' };
+        }
+        const a = requireTable(args.table_a, ctx.validTables);
+        const b = requireTable(args.table_b, ctx.validTables);
+        const j = await ctx.createJunction(a, b);
+        if (!j) {
+          return {
+            ok: false,
+            error: `Could not create a relationship between "${a}" and "${b}" (one may be native, a junction, or invalid).`,
+          };
+        }
+        ctx.validTables.add(j.junction);
+        ctx.junctionTables.add(j.junction);
+        // Tell the model the junction name + the two FK columns to use with `link`.
+        return {
+          ok: true,
+          result: {
+            junction: j.junction,
+            link_columns: { [j.aFk]: j.tableA, [j.bFk]: j.tableB },
+          },
+        };
       }
       case 'get_history': {
         const limit = typeof args.limit === 'number' ? args.limit : 50;

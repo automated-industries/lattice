@@ -211,6 +211,22 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'create_relationship',
+    description:
+      'Create a many-to-many relationship (junction table) between two existing ' +
+      'tables so their rows can be linked. Returns the junction name and the two ' +
+      'foreign-key columns to use with `link`.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        table_a: str('First table name.'),
+        table_b: str('Second table name.'),
+      },
+      ['table_a', 'table_b'],
+    ),
+  },
+  {
     name: 'rename_entity',
     description: 'Rename an existing entity (table).',
     mutates: true,

@@ -5,6 +5,11 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // Many integration tests boot a full GUI server (sometimes two); under v8
+    // coverage instrumentation + parallel worker contention a single boot can
+    // approach the 5s default and flake. 15s gives real headroom while still
+    // surfacing a genuine hang reasonably fast.
+    testTimeout: 15_000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

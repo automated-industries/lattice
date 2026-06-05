@@ -83,6 +83,13 @@ shipped across 1.16.x), not a breaking change.
   member's credential row), so it can't harvest someone else's key. The OAuth
   callback that first connects a Claude subscription also writes machine-level,
   matching the refresh + API-key paths.
+- **The assistant chat can now create tables and relationships on request.** It
+  previously refused ("there is no projects table… I cannot create it") because
+  schema mutations were excluded from its toolset. It now has `create_entity`
+  and `create_relationship` (a many-to-many junction between two tables), wired
+  to the same audited, **no-reopen, reversible** primitives the Context
+  Constructor uses — so "create projects from tickets and link them" works end
+  to end. `list_entities` also no longer reveals the `secrets` table.
 - **The assistant chat now knows your schema, so it stops guessing.** Each turn
   the system prompt is built with the live table list (names, columns, row
   counts) plus guidance that an attached file's content lives in its `files`

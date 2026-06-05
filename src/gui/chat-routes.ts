@@ -8,7 +8,11 @@ import {
 } from './assistant-routes.js';
 import { createAnthropicClient, runChat, type LlmMessage } from './ai/chat.js';
 import { formatSseFrame } from './ai/sse.js';
-import { ASSISTANT_HIDDEN_TABLES, type DispatchCtx } from './ai/dispatch.js';
+import {
+  ASSISTANT_HIDDEN_TABLES,
+  type AssistantJunction,
+  type DispatchCtx,
+} from './ai/dispatch.js';
 
 /**
  * POST /api/chat — the assistant chat stream. Resolves the Claude token,
@@ -26,6 +30,8 @@ interface ChatContext {
   validTables: Set<string>;
   junctionTables: Set<string>;
   softDeletable: Set<string>;
+  createEntity?: (name: string, columns: string[]) => Promise<string | null>;
+  createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   pathname: string;
   method: string;
 }
@@ -210,6 +216,8 @@ export async function dispatchChatRoute(
     validTables: new Set([...ctx.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     junctionTables: new Set([...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     softDeletable: ctx.softDeletable,
+    ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+    ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
   };
 
   let assistantText = '';

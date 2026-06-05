@@ -132,6 +132,19 @@ describe('AI function dispatch', () => {
     expect(people?.rowCount).toBe(1);
   });
 
+  it('list_entities never includes the secrets table', async () => {
+    await db.defineLate('secrets', {
+      columns: { id: 'TEXT PRIMARY KEY', kind: 'TEXT', value: 'TEXT', deleted_at: 'TEXT' },
+      render: () => '',
+      outputFile: 'secrets.md',
+    });
+    const res = await executeFunction(ctx, 'list_entities', {});
+    expect(res.ok).toBe(true);
+    const names = (res.result as { name: string }[]).map((t) => t.name);
+    expect(names).toContain('people');
+    expect(names).not.toContain('secrets');
+  });
+
   it('rejects unknown tables, unknown functions, and non-dispatchable functions', async () => {
     const badTable = await executeFunction(ctx, 'list_rows', { table: 'ghosts' });
     expect(badTable.ok).toBe(false);
@@ -141,10 +154,11 @@ describe('AI function dispatch', () => {
     expect(badFn.ok).toBe(false);
     expect(badFn.error).toMatch(/unknown function/i);
 
-    // Declared in the registry but not yet wired into the dispatcher.
-    const notWired = await executeFunction(ctx, 'create_entity', { name: 'x' });
-    expect(notWired.ok).toBe(false);
-    expect(notWired.error).toMatch(/not available/i);
+    // create_entity is wired, but reports unavailable when the server didn't
+    // supply a createEntity callback (the capability is opt-in per context).
+    const noCallback = await executeFunction(ctx, 'create_entity', { name: 'x' });
+    expect(noCallback.ok).toBe(false);
+    expect(noCallback.error).toMatch(/not available/i);
   });
 
   it('requires id and values where applicable', async () => {
@@ -191,5 +205,78 @@ describe('AI function dispatch', () => {
     });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/unknown table/i);
+  });
+
+  describe('schema creation (create_entity / create_relationship)', () => {
+    /** A ctx whose createEntity/createJunction actually build live tables. */
+    function withSchemaCreation(): DispatchCtx {
+      const createEntity = async (name: string, columns: string[]): Promise<string | null> => {
+        if (!/^[a-z][a-z0-9_]*$/.test(name) || ctx.validTables.has(name)) return null;
+        const cols: Record<string, string> = { id: 'TEXT PRIMARY KEY' };
+        for (const c of columns) if (/^[a-z][a-z0-9_]*$/.test(c)) cols[c] = 'TEXT';
+        cols.deleted_at = 'TEXT';
+        await db.defineLate(name, { columns: cols, render: () => '', outputFile: `${name}.md` });
+        return name;
+      };
+      const createJunction = async (a: string, b: string) => {
+        const junction = `${a}_${b}`;
+        const aFk = `${a}_id`;
+        const bFk = `${b}_id`;
+        await db.defineLate(junction, {
+          columns: { id: 'TEXT PRIMARY KEY', [aFk]: 'TEXT', [bFk]: 'TEXT' },
+          render: () => '',
+          outputFile: `${junction}.md`,
+        });
+        return { junction, tableA: a, aFk, tableB: b, bFk };
+      };
+      return { ...ctx, createEntity, createJunction };
+    }
+
+    it('creates a new table, then rows can be inserted into it', async () => {
+      const c = withSchemaCreation();
+      const made = await executeFunction(c, 'create_entity', {
+        name: 'projects',
+        columns: ['title', 'status'],
+      });
+      expect(made.ok).toBe(true);
+      expect((made.result as { entity: string }).entity).toBe('projects');
+      // The new table is immediately usable by a later tool call (same turn).
+      const row = await executeFunction(c, 'create_row', {
+        table: 'projects',
+        values: { id: 'pr1', title: 'Legal AI Training', status: 'open' },
+      });
+      expect(row.ok).toBe(true);
+      const got = await executeFunction(c, 'get_row', { table: 'projects', id: 'pr1' });
+      expect((got.result as { title: string }).title).toBe('Legal AI Training');
+    });
+
+    it('creates a relationship junction, then link uses the returned FK columns', async () => {
+      const c = withSchemaCreation();
+      await executeFunction(c, 'create_entity', { name: 'projects', columns: ['title'] });
+      const rel = await executeFunction(c, 'create_relationship', {
+        table_a: 'projects',
+        table_b: 'people',
+      });
+      expect(rel.ok).toBe(true);
+      const { junction, link_columns } = rel.result as {
+        junction: string;
+        link_columns: Record<string, string>;
+      };
+      expect(junction).toBe('projects_people');
+      expect(Object.keys(link_columns).sort()).toEqual(['people_id', 'projects_id']);
+
+      await executeFunction(c, 'create_row', { table: 'projects', values: { id: 'pr1' } });
+      await executeFunction(c, 'create_row', {
+        table: 'people',
+        values: { id: 'p1', name: 'Ada' },
+      });
+      const link = await executeFunction(c, 'link', {
+        table: junction,
+        values: { projects_id: 'pr1', people_id: 'p1' },
+      });
+      expect(link.ok).toBe(true);
+      const links = await executeFunction(c, 'list_rows', { table: junction });
+      expect((links.result as unknown[]).length).toBe(1);
+    });
   });
 });

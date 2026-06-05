@@ -1372,6 +1372,81 @@ async function createFileJunction(
   return { junction: jName, fileFk, otherTable, otherFk };
 }
 
+/** A many-to-many junction between two user tables (for the chat assistant). */
+interface UserJunction {
+  junction: string;
+  tableA: string;
+  aFk: string;
+  tableB: string;
+  bFk: string;
+}
+
+/**
+ * Create (or return) a many-to-many junction between two existing first-class
+ * tables — the general form of {@link createFileJunction}, used by the chat
+ * assistant's `create_relationship` tool. Registered live via `defineLate` (no
+ * reopen), persisted to config, recorded as a revertible `schema.create_junction`
+ * op. Returns null when either side is native/`files`/secret/a junction/invalid,
+ * or when a soft-deleted twin exists. If the junction (in either column order)
+ * already exists this session, it's handed back instead of recreated.
+ */
+async function createUserJunction(
+  active: ActiveDb,
+  tableA: string,
+  tableB: string,
+  sessionId: string,
+): Promise<UserJunction | null> {
+  const ok = (t: string): boolean =>
+    /^[a-z][a-z0-9_]*$/.test(t) &&
+    t !== 'files' &&
+    !isNativeEntity(t) &&
+    active.validTables.has(t) &&
+    !active.junctionTables.has(t);
+  if (tableA === tableB || !ok(tableA) || !ok(tableB)) return null;
+  const aFk = `${tableA}_id`;
+  const bFk = `${tableB}_id`;
+  const has = (n: string): boolean =>
+    active.validTables.has(n) || active.db.getRegisteredTableNames().includes(n);
+  // Reuse an existing junction in either column order.
+  const forward = `${tableA}_${tableB}`;
+  if (has(forward)) return { junction: forward, tableA, aFk, tableB, bFk };
+  const reverse = `${tableB}_${tableA}`;
+  if (has(reverse))
+    return { junction: reverse, tableA: tableB, aFk: bFk, tableB: tableA, bFk: aFk };
+  if (await physicalTableExists(active, forward)) return null;
+
+  await execSql(
+    active.db,
+    `CREATE TABLE "${forward}" (id TEXT PRIMARY KEY, "${aFk}" TEXT, "${bFk}" TEXT)`,
+  );
+  await active.db.defineLate(forward, {
+    columns: { id: 'TEXT PRIMARY KEY', [aFk]: 'TEXT', [bFk]: 'TEXT' },
+  });
+  const entityDef = {
+    fields: {
+      id: { type: 'uuid', primaryKey: true },
+      [aFk]: { type: 'uuid', ref: tableA },
+      [bFk]: { type: 'uuid', ref: tableB },
+    },
+    outputFile: forward.toUpperCase() + '.md',
+  };
+  const doc = loadConfigDoc(active.configPath);
+  doc.setIn(['entities', forward], entityDef);
+  saveConfigDoc(active.configPath, doc);
+  active.validTables.add(forward);
+  active.junctionTables.add(forward);
+  await recordSchemaOp(
+    active,
+    'schema.create_junction',
+    forward,
+    null,
+    { entity: forward, entityDef },
+    `Linked ${tableA} ↔ ${tableB}`,
+    sessionId,
+  );
+  return { junction: forward, tableA, aFk, tableB, bFk };
+}
+
 /**
  * Create (or return) a user entity the Context Constructor inferred from an
  * ingested document. Registered on the live DB via `defineLate` (no reopen),
@@ -3711,6 +3786,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             validTables: active.validTables,
             junctionTables: active.junctionTables,
             softDeletable: active.softDeletable,
+            // The assistant can create tables + relationships on request — same
+            // audited, no-reopen primitives the Context Constructor uses.
+            createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
+            createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
             pathname,
             method,
           });
