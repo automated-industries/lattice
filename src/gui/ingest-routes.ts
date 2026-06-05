@@ -7,6 +7,8 @@ import type { Lattice } from '../lattice.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js';
 import { parseFile, describe } from './ai/extract.js';
+import { describeImage } from '../ai/vision.js';
+import { crawlUrl } from '../ai/crawl.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import {
@@ -187,9 +189,10 @@ async function enrichWithLlm(
     return [];
   }
   const temperature = aggressivenessToTemperature(aggressiveness);
+  let description = '';
   try {
-    const desc = await summarizeText(client, text, name, temperature);
-    if (desc) await updateRow(mctx, 'files', fileId, { description: desc });
+    description = (await summarizeText(client, text, name, temperature)).trim();
+    if (description) await updateRow(mctx, 'files', fileId, { description });
   } catch (e) {
     console.warn('[ingest] LLM description failed:', (e as Error).message);
   }
@@ -201,6 +204,7 @@ async function enrichWithLlm(
       await buildCatalog(db, descriptions),
       temperature,
     );
+    let linkedCount = 0;
     for (const m of matches) {
       let jx = junctions.find((j) => j.otherTable === m.table);
       let created = false;
@@ -235,6 +239,7 @@ async function enrichWithLlm(
             [jx.fileFk]: fileId,
             [jx.otherFk]: m.id,
           });
+          linkedCount++;
           if (created) {
             mctx.feed.publish({
               table: jx.junction,
@@ -259,11 +264,67 @@ async function enrichWithLlm(
         });
       }
     }
+
+    // Auto-create a new object when the source fit NOTHING in the user's schema
+    // and aggressiveness is high. Mirrors organizeSource's fallback: a native
+    // `notes` object capturing the source, linked back via `source_file_id`.
+    // Audited + reversible like any other ingest write.
+    if (linkedCount === 0 && aggressiveness >= 0.66 && text.trim().length > 0) {
+      try {
+        const title = name.replace(/\.[^./\\]+$/, '').trim() || 'Note';
+        const body = description.length > 0 ? description : text.slice(0, 2000);
+        const { id: noteId } = await createRow(mctx, 'notes', {
+          id: crypto.randomUUID(),
+          title,
+          body,
+          source_file_id: fileId,
+        });
+        mctx.feed.publish({
+          table: 'notes',
+          op: 'insert',
+          rowId: noteId,
+          source: 'ingest',
+          summary: `Created a new note "${title}" — it didn't fit any existing record`,
+        });
+      } catch (e) {
+        console.warn('[ingest] auto-create object failed:', (e as Error).message);
+      }
+    }
     return matches;
   } catch (e) {
     console.warn('[ingest] classify failed:', (e as Error).message);
     return [];
   }
+}
+
+/**
+ * For an image, describe it with Claude vision instead of text extraction.
+ * Best-effort: returns null when there's no Claude auth, the file isn't an
+ * image, or the call fails — the caller then falls back to {@link parseFile}
+ * (which marks images `skipped`). `sharp` is loaded lazily inside the vision
+ * module, so non-image ingests never touch it.
+ */
+async function extractImage(
+  db: Lattice,
+  path: string,
+  mime: string,
+): Promise<{ text: string; skip: boolean } | null> {
+  if (!mime.startsWith('image/')) return null;
+  const auth = await resolveClaudeAuth(db);
+  if (!auth) return null;
+  try {
+    const text = await describeImage(auth, path);
+    return text.trim() ? { text, skip: false } : null;
+  } catch (e) {
+    console.warn('[ingest] image vision failed:', (e as Error).message);
+    return null;
+  }
+}
+
+/** A pasted body that is exactly one http(s) URL — a candidate to crawl. */
+function looksLikeUrl(s: string): boolean {
+  const t = s.trim();
+  return /^https?:\/\/\S+$/i.test(t) && !/\s/.test(t);
 }
 
 function readBuffer(req: IncomingMessage, maxBytes = 50_000_000): Promise<Buffer> {
@@ -320,7 +381,7 @@ export async function dispatchIngestRoute(
     let result;
     try {
       await writeFile(tmp, buf);
-      result = await parseFile(tmp, mime, name);
+      result = (await extractImage(ctx.db, tmp, mime)) ?? (await parseFile(tmp, mime, name));
     } finally {
       await rm(tmp, { force: true }).catch(() => undefined);
     }
@@ -363,27 +424,45 @@ export async function dispatchIngestRoute(
   }
 
   if (ctx.pathname === '/api/ingest/text') {
-    const text = typeof body.text === 'string' ? body.text : '';
-    if (!text.trim()) {
+    const rawText = typeof body.text === 'string' ? body.text : '';
+    if (!rawText.trim()) {
       sendJson(res, { error: 'text is required' }, 400);
       return true;
     }
-    const title =
+    let title =
       typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Pasted text';
+    let content = rawText;
+    let mime = 'text/plain';
+    // A bare URL is crawled for its readable text; the URL itself is preserved
+    // on the row as a `cloud_ref` so the source is never lost.
+    const sourceUrl = looksLikeUrl(rawText) ? rawText.trim() : null;
+    if (sourceUrl) {
+      try {
+        const crawled = await crawlUrl(sourceUrl);
+        if (crawled.text.trim()) {
+          content = crawled.text;
+          if (crawled.title) title = crawled.title;
+          mime = crawled.mime || 'text/html';
+        }
+      } catch (e) {
+        console.warn('[ingest] url crawl failed:', (e as Error).message);
+      }
+    }
     const { id } = await createRow(mctx, 'files', {
       id: crypto.randomUUID(),
       original_name: title,
-      mime: 'text/plain',
-      size_bytes: Buffer.byteLength(text, 'utf8'),
-      extracted_text: text.slice(0, 200_000),
-      description: describe(text, 'text/plain', title),
+      mime,
+      size_bytes: Buffer.byteLength(content, 'utf8'),
+      extracted_text: content.slice(0, 200_000),
+      description: describe(content, mime, title),
       extraction_status: 'extracted',
+      ...(sourceUrl ? { ref_kind: 'cloud_ref', ref_uri: sourceUrl, ref_provider: 'web' } : {}),
     });
     const suggestedLinks = await enrichWithLlm(
       mctx,
       ctx.db,
       id,
-      text,
+      content,
       title,
       ctx.fileJunctions,
       ctx.entityDescriptions,
@@ -428,7 +507,7 @@ export async function dispatchIngestRoute(
   // Extract inline (the GUI is local; files are typically small). Failures are
   // recorded on the row, not swallowed.
   try {
-    const result = await parseFile(abs, mime, name);
+    const result = (await extractImage(ctx.db, abs, mime)) ?? (await parseFile(abs, mime, name));
     await updateRow(mctx, 'files', id, {
       extracted_text: result.text,
       description: describe(result.text, mime, name),

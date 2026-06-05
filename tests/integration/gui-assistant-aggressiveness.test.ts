@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// Deterministic LLM: fixed summary + one classifier match to the seeded project.
+// Deterministic LLM: fixed summary + a classifier result the test controls via
+// `mockState.matches` (default: one match to the seeded project).
+const mockState = vi.hoisted(() => ({
+  matches: [{ table: 'projects', id: 'proj-1' }] as { table: string; id: string }[],
+}));
 vi.mock('../../src/gui/ai/chat.js', async (orig) => {
   const actual = await orig();
   return { ...actual, createAnthropicClient: () => ({}) };
@@ -13,7 +17,7 @@ vi.mock('../../src/gui/ai/summarize.js', async (orig) => {
   return {
     ...actual,
     summarizeText: () => Promise.resolve('a deterministic summary'),
-    classifyLinks: () => Promise.resolve([{ table: 'projects', id: 'proj-1' }]),
+    classifyLinks: () => Promise.resolve(mockState.matches),
   };
 });
 
@@ -26,6 +30,7 @@ let savedKey: string | undefined;
 beforeEach(() => {
   savedKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
+  mockState.matches = [{ table: 'projects', id: 'proj-1' }];
 });
 afterEach(async () => {
   if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
@@ -151,5 +156,49 @@ describe('inference aggressiveness', () => {
         (e) => e.operation === 'schema.create_junction' && e.table_name === 'files_projects',
       ),
     ).toBe(true);
+  });
+
+  it('high aggressiveness auto-creates a new note when the source fits nothing', async () => {
+    const server = await boot();
+    await seedProject(server.url);
+    mockState.matches = []; // classifier finds no existing record to link
+    await fetch(`${server.url}/api/assistant/aggressiveness`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 0.9 }),
+    });
+
+    const ing = await fetch(`${server.url}/api/ingest/text`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'A standalone idea that maps to nothing yet', title: 'spark' }),
+    });
+    const { id: fileId } = (await ing.json()) as { id: string };
+
+    // A new native `notes` object was created, linked back to the source file.
+    const notes = (await fetch(`${server.url}/api/tables/notes/rows`).then((r) => r.json())) as {
+      rows: Record<string, unknown>[];
+    };
+    expect(notes.rows).toHaveLength(1);
+    expect(notes.rows[0]).toMatchObject({ title: 'spark', source_file_id: fileId });
+  });
+
+  it('low aggressiveness does NOT auto-create a note (just stores the source)', async () => {
+    const server = await boot();
+    mockState.matches = [];
+    await fetch(`${server.url}/api/assistant/aggressiveness`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 0.1 }),
+    });
+    await fetch(`${server.url}/api/ingest/text`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Another standalone idea', title: 'spark2' }),
+    });
+    const notes = (await fetch(`${server.url}/api/tables/notes/rows`).then((r) => r.json())) as {
+      rows: Record<string, unknown>[];
+    };
+    expect(notes.rows).toHaveLength(0);
   });
 });
