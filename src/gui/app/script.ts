@@ -1784,6 +1784,17 @@ export const appJs = `
       if (primary) return String(primary);
       var secondary = row.summary || row.description || row.body || row.content || row.url || row.path;
       if (secondary) return truncate(String(secondary).replace(/\\s+/g, ' '), 60);
+      // No conventional label column — fall back to the first meaningful cell
+      // value (skip id / timestamp / foreign-key columns) so an inferred entity
+      // still reads as something human, not a bare #id. Mirrors the server's
+      // rowLabel() so a card and its activity-feed bubble agree.
+      for (var k in row) {
+        if (!Object.prototype.hasOwnProperty.call(row, k)) continue;
+        if (k === 'id' || /_id$|_at$/.test(k)) continue;
+        var v = row[k];
+        if (typeof v === 'number') return String(v);
+        if (typeof v === 'string' && v.trim()) return truncate(v.trim().replace(/\\s+/g, ' '), 60);
+      }
       return row.id ? '#' + String(row.id).slice(0, 8) : '(untitled)';
     }
     // File-type glyph for native files-entity rows.

@@ -223,16 +223,22 @@ describe('inference aggressiveness', () => {
     };
     const invoices = ents.tables.find((t) => t.name === 'invoices');
     expect(invoices).toBeTruthy();
+    // Inferred columns PLUS an always-present `name` column for a human label.
     expect(invoices?.columns).toEqual(
-      expect.arrayContaining(['invoice_number', 'vendor', 'total_due']),
+      expect.arrayContaining(['name', 'invoice_number', 'vendor', 'total_due']),
     );
 
-    // …populated with the extracted row…
+    // …populated with the extracted row, whose `name` is the object's label so
+    // the card shows "INV-2026-114" rather than a bare "#<id>"…
     const rows = (await fetch(`${server.url}/api/tables/invoices/rows`).then((r) => r.json())) as {
       rows: Record<string, unknown>[];
     };
     expect(rows.rows).toHaveLength(1);
-    expect(rows.rows[0]).toMatchObject({ invoice_number: 'INV-2026-114', vendor: 'Globex' });
+    expect(rows.rows[0]).toMatchObject({
+      name: 'INV-2026-114',
+      invoice_number: 'INV-2026-114',
+      vendor: 'Globex',
+    });
 
     // …and the source file linked to it via an auto-created junction.
     const links = (await fetch(`${server.url}/api/tables/files_invoices/rows`).then((r) =>

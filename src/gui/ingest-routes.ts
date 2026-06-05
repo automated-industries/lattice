@@ -318,9 +318,16 @@ async function enrichWithLlm(
           if (!cols) continue;
           const row: Record<string, unknown> = { id: crypto.randomUUID() };
           for (const [k, v] of Object.entries(obj.values)) if (k in cols) row[k] = v;
+          // Give the row a human-readable name from the extractor's label so its
+          // card shows "Acme Consulting Agreement", not "#fea4b07f" — and so the
+          // activity-feed bubble names it. New entities always have a `name`
+          // column (see createUserEntity); `title` is set too when present.
           if ('name' in cols && row.name == null) row.name = obj.label;
           if ('title' in cols && row.title == null) row.title = obj.label;
           try {
+            // createRow audits + publishes a name-aware bubble ("Added <label>
+            // to <entity>") that persists to the activity log and backfills on
+            // reload — so no extra, non-persisted feed event is published here.
             const { id: rowId } = await createRow(mctx, entity, row);
             createdCount++;
             // Link the source file to the new object (auto-create the junction).
@@ -335,13 +342,6 @@ async function enrichWithLlm(
                 [jx.otherFk]: rowId,
               });
             }
-            mctx.feed.publish({
-              table: entity,
-              op: 'insert',
-              rowId,
-              source: 'ingest',
-              summary: `Created ${entity} "${obj.label}" from ${name}`,
-            });
           } catch (e) {
             console.warn(`[ingest] create ${entity} from document failed:`, (e as Error).message);
           }

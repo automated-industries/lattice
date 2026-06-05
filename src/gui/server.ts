@@ -77,6 +77,7 @@ import {
   revertEntry,
   recordSchemaAudit,
   isSchemaOp,
+  rowLabel,
   type AuditEntry,
   type MutationCtx,
 } from './mutations.js';
@@ -324,14 +325,15 @@ function columnRefTarget(configPath: string, entity: string, col: string): strin
 }
 
 /** One-line activity summary for an audit entry (for the activity-rail backfill). */
-function feedActivitySummary(op: string, table: string): string {
+function feedActivitySummary(op: string, table: string, row?: unknown): string {
+  const label = rowLabel(row);
   switch (op) {
     case 'insert':
-      return `Added a row to ${table}`;
+      return label ? `Added ${label} to ${table}` : `Added a row to ${table}`;
     case 'update':
-      return `Updated a row in ${table}`;
+      return label ? `Updated ${label} in ${table}` : `Updated a row in ${table}`;
     case 'delete':
-      return `Removed a row from ${table}`;
+      return label ? `Removed ${label} from ${table}` : `Removed a row from ${table}`;
     case 'link':
       return `Linked rows in ${table}`;
     case 'unlink':
@@ -1394,13 +1396,15 @@ async function createUserEntity(
   if (await physicalTableExists(active, entity)) return null;
 
   const reserved = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
-  const cols = Array.from(
-    new Set(
-      columns
-        .map((c) => c.trim().toLowerCase())
-        .filter((c) => /^[a-z][a-z0-9_]*$/.test(c) && !reserved.has(c)),
-    ),
-  ).slice(0, 12);
+  const inferred = columns
+    .map((c) => c.trim().toLowerCase())
+    .filter((c) => /^[a-z][a-z0-9_]*$/.test(c) && !reserved.has(c));
+  // Always lead with a `name` column so every inferred entity has a
+  // human-readable label slot — it drives the object's card title and the
+  // activity-feed bubble (otherwise rows show a bare `#id`). The Context
+  // Constructor fills it with the object's label; dedupe in case the model
+  // also proposed a `name`.
+  const cols = Array.from(new Set(['name', ...inferred])).slice(0, 12);
   const colDdl = cols.map((c) => `, "${c}" TEXT`).join('');
   await execSql(
     active.db,
@@ -1706,8 +1710,27 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               orderBy: 'ts',
               orderDir: 'desc',
               limit: 20,
-            })) as { ts: string; table_name: string; row_id: string | null; operation: string }[];
+            })) as {
+              ts: string;
+              table_name: string;
+              row_id: string | null;
+              operation: string;
+              after_json: string | null;
+              before_json: string | null;
+            }[];
             for (const a of auditBackfill.reverse()) {
+              // Reconstruct the row's human label from the stored image so the
+              // reloaded rail reads "Added Acme … to …", matching the live feed.
+              // insert/update name the post-image; delete the pre-image.
+              const json = a.operation === 'delete' ? a.before_json : a.after_json;
+              let labelRow: unknown;
+              if (json) {
+                try {
+                  labelRow = JSON.parse(json);
+                } catch {
+                  labelRow = undefined;
+                }
+              }
               writeFeed({
                 seq: 0,
                 table: a.table_name,
@@ -1715,7 +1738,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 rowId: a.row_id,
                 source: 'gui',
                 ts: a.ts,
-                summary: feedActivitySummary(a.operation, a.table_name),
+                summary: feedActivitySummary(a.operation, a.table_name, labelRow),
               });
             }
           } catch {

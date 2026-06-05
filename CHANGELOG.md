@@ -70,6 +70,14 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **Auto-created objects now have human-readable names.** The Context
+  Constructor gives every inferred entity a leading `name` column and fills it
+  with the object's extracted label, so a card reads "Acme Consulting Agreement"
+  instead of a bare `#fea4b07f`. Activity-feed bubbles are named to match —
+  "Added Acme Consulting Agreement to consulting_agreements" rather than "Added
+  a row to …" — both live and when the rail backfills from the audit log on
+  reload. Rows with no conventional label column fall back to their first
+  meaningful cell value (the same logic drives the card title and the bubble).
 - **New objects from the Context Constructor now appear in the sidebar live.**
   When ingest inferred a brand-new entity, the nav list stayed stale until a
   manual page reload — and routing to the new object showed "Unknown entity".

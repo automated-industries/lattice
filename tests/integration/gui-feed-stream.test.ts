@@ -103,7 +103,8 @@ describe('GUI activity feed stream', () => {
     expect(event.source).toBe('gui');
     expect(event.rowId).toBe(id);
     expect(typeof event.seq).toBe('number');
-    expect(typeof event.summary).toBe('string');
+    // The bubble names the row by its title-ish column, not a faceless "a row".
+    expect(event.summary).toBe('Added Feed Team to teams');
   });
 
   it('keeps an open stream alive across a schema reopen (feed bus survives)', async () => {
@@ -154,6 +155,8 @@ describe('GUI activity feed stream', () => {
       server.url,
       (e) => e.op === 'insert' && e.table === 'teams' && e.rowId === id,
     );
-    expect(event.summary).toBe('Added a row to teams');
+    // The reconstructed-from-audit summary names the row (after_json → label),
+    // matching the live feed rather than the old generic "Added a row".
+    expect(event.summary).toBe('Added Pre-existing Team to teams');
   });
 });

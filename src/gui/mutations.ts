@@ -13,14 +13,49 @@ import { appendChangeEnvelope } from '../teams/team-core.js';
 
 export type AuditOp = 'insert' | 'update' | 'delete' | 'link' | 'unlink';
 
-function feedSummary(op: AuditOp, table: string): string {
+/**
+ * A short human label for a row, used in activity-feed summaries so a bubble
+ * reads "Added Acme Consulting Agreement to consulting_agreements" instead of a
+ * faceless "Added a row to …". Prefers the same title-ish columns the GUI's
+ * card view (`fsDisplayName`) uses — so the feed and the object's card show the
+ * same name — then falls back to a snippet of a body/description field. Returns
+ * null when the row has no usable label (caller keeps the generic phrasing).
+ */
+export function rowLabel(row: unknown): string | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const str = (v: unknown): string =>
+    typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+  const primary =
+    str(r.name) || str(r.title) || str(r.label) || str(r.original_name) || str(r.subject);
+  if (primary.trim()) return primary.trim().slice(0, 80);
+  const secondary =
+    str(r.summary) || str(r.description) || str(r.body) || str(r.content) || str(r.url) || str(r.path);
+  if (secondary.trim()) {
+    const s = secondary.trim().replace(/\s+/g, ' ');
+    return s.length > 60 ? `${s.slice(0, 60)}…` : s;
+  }
+  // No conventional label column (e.g. an inferred entity keyed by
+  // `invoice_number`): use the first meaningful cell value — skipping id /
+  // timestamp / foreign-key columns — so the row still reads as something
+  // human, not a bare `#id`. Object key order tracks column order.
+  for (const [k, v] of Object.entries(r)) {
+    if (k === 'id' || /_id$|_at$/.test(k)) continue;
+    const s = str(v).trim();
+    if (s) return s.replace(/\s+/g, ' ').slice(0, 80);
+  }
+  return null;
+}
+
+export function feedSummary(op: AuditOp, table: string, row?: unknown): string {
+  const label = rowLabel(row);
   switch (op) {
     case 'insert':
-      return `Added a row to ${table}`;
+      return label ? `Added ${label} to ${table}` : `Added a row to ${table}`;
     case 'update':
-      return `Updated a row in ${table}`;
+      return label ? `Updated ${label} in ${table}` : `Updated a row in ${table}`;
     case 'delete':
-      return `Removed a row from ${table}`;
+      return label ? `Removed ${label} from ${table}` : `Removed a row from ${table}`;
     case 'link':
       return `Linked rows in ${table}`;
     case 'unlink':
@@ -78,7 +113,11 @@ export async function appendAudit(
     undone: 0,
     session_id: sessionId ?? null,
   });
-  feed.publish({ table, op: op as FeedOp, rowId, source, summary: feedSummary(op, table) });
+  // Name the row in the bubble: insert/update read the post-image, delete the
+  // pre-image (the row is gone). link/unlink carry the junction body, which has
+  // no human label — feedSummary falls back to the generic phrasing.
+  const labelRow = op === 'delete' ? before : after;
+  feed.publish({ table, op: op as FeedOp, rowId, source, summary: feedSummary(op, table, labelRow) });
 }
 
 /** All schema-op operation strings carry this prefix (see recordSchemaAudit). */
