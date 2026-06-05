@@ -1486,17 +1486,26 @@ async function createUserEntity(
   name: string,
   columns: string[],
   sessionId: string,
+  opts?: { normalize?: boolean },
 ): Promise<string | null> {
   // Normalize to snake_case so a natural name from the model ("People", "Sales
   // Leads") becomes a valid identifier ("people", "sales_leads") instead of a
   // silent rejection. The dispatcher returns this canonical name to the model,
-  // which then uses it for create_row/link.
-  const entity = name
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, '_')
-    .replace(/[^a-z0-9_]/g, '');
-  if (!/^[a-z][a-z0-9_]*$/.test(entity)) return null;
+  // which then uses it for create_row/link. The data-model editor opts OUT
+  // (`normalize:false`) — it already validated and the user may want a
+  // capitalized table name, so the typed name is preserved.
+  const normalize = opts?.normalize !== false;
+  const entity = normalize
+    ? name
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, '_')
+        .replace(/[^a-z0-9_]/g, '')
+    : name.trim();
+  const valid = normalize
+    ? /^[a-z][a-z0-9_]*$/.test(entity)
+    : /^[a-zA-Z][a-zA-Z0-9_]*$/.test(entity);
+  if (!valid) return null;
   if (entity === 'files' || isNativeEntity(entity)) return null;
   // Already present this session — reuse it (the row insert handles the rest).
   if (active.validTables.has(entity) || active.db.getRegisteredTableNames().includes(entity)) {
@@ -2005,53 +2014,35 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
-          await execSql(
-            active.db,
-            `CREATE TABLE "${entityName}" (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT)`,
-          );
-          const newEntityDef = {
-            fields: {
-              id: { type: 'uuid', primaryKey: true },
-              name: { type: 'text', required: true },
-              deleted_at: { type: 'text' },
-            },
-            outputFile: entityName.toUpperCase() + '.md',
-          };
-          const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', entityName], newEntityDef);
-          saveConfigDoc(active.configPath, doc);
-          // Save icon override if provided
+          // Delegate to the same no-reopen primitive the chat/ingest paths use
+          // (one source of truth for table DDL + canonical-context + audit).
+          // `normalize:false` preserves the user's typed name. Because it does
+          // NOT reopen, the icon + team-owner writes are simple post-create
+          // steps — the old pre-reopen owner-recording ordering (to beat the
+          // reopen's reconcile) is no longer needed.
+          const created = await createUserEntity(active, entityName, [], sessionId, {
+            normalize: false,
+          });
+          if (!created) {
+            sendJson(res, { error: `Could not create entity "${entityName}"` }, 400);
+            return;
+          }
           if (typeof body.icon === 'string' && body.icon.trim()) {
             await active.db.insert('_lattice_gui_meta', {
-              entity_name: entityName,
+              entity_name: created,
               icon: body.icon.trim(),
               updated_at: new Date().toISOString(),
             });
           }
-          // Team cloud: record the creator as owner BEFORE re-opening, so
-          // the reopen's reconcile (which assigns unowned tables to the
-          // team creator) doesn't steal a member's new table. New tables
-          // are private to their creator — sharing is an explicit,
-          // separate action from the Data Model dialog.
           if (active.teamContext?.myUserId) {
             await recordObjectOwner(
               active.db,
               active.teamContext.teamId,
-              entityName,
+              created,
               active.teamContext.myUserId,
             );
           }
-          active = await reopenSameConfig(active, autoRender);
-          await recordSchemaOp(
-            active,
-            'schema.create_entity',
-            entityName,
-            null,
-            { entity: entityName, entityDef: newEntityDef },
-            `Created table ${entityName}`,
-            sessionId,
-          );
-          sendJson(res, { ok: true, name: entityName });
+          sendJson(res, { ok: true, name: created });
           return;
         }
 
@@ -2126,21 +2117,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // Self-referential m2m needs two distinct column names.
           const leftCol = `${left}_id`;
           const rightCol = left === right ? `${right}_id_2` : `${right}_id`;
-          await execSql(
-            active.db,
-            `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${leftCol}" TEXT, "${rightCol}" TEXT)`,
+          // Same no-reopen materialization the chat path uses; owner-record is a
+          // post-create step (no reopen ⇒ no reconcile race).
+          await materializeJunction(
+            active,
+            jName,
+            leftCol,
+            left,
+            rightCol,
+            right,
+            `Linked ${left} ↔ ${right}`,
+            sessionId,
           );
-          const newJunctionDef = {
-            fields: {
-              id: { type: 'uuid', primaryKey: true },
-              [leftCol]: { type: 'uuid', ref: left },
-              [rightCol]: { type: 'uuid', ref: right },
-            },
-            outputFile: jName.toUpperCase() + '.md',
-          };
-          const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', jName], newJunctionDef);
-          saveConfigDoc(active.configPath, doc);
           if (active.teamContext?.myUserId) {
             await recordObjectOwner(
               active.db,
@@ -2149,16 +2137,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active.teamContext.myUserId,
             );
           }
-          active = await reopenSameConfig(active, autoRender);
-          await recordSchemaOp(
-            active,
-            'schema.create_junction',
-            jName,
-            null,
-            { entity: jName, entityDef: newJunctionDef },
-            `Linked ${left} ↔ ${right}`,
-            sessionId,
-          );
           sendJson(res, { ok: true, name: jName });
           return;
         }

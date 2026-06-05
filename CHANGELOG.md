@@ -84,6 +84,13 @@ shipped across 1.16.x), not a breaking change.
 
 ### Internal
 
+- **The data-model editor's create-table / create-relationship endpoints now
+  use the same no-reopen primitives as the chat and ingest paths**
+  (`createUserEntity` / `materializeJunction`). One creation path instead of
+  two: the REST handlers no longer reopen the whole database, and table DDL +
+  canonical-context registration + audit live in one place. The editor's typed
+  name is preserved (a `normalize:false` opt-out), and team-owner recording
+  moves to a post-create step (no reopen ⇒ no reconcile race to beat).
 - **Consolidated duplicated GUI internals** (no behaviour change): one
   `feedSummary` now serves both the live feed and the audit-log backfill (was
   two copies); `createFileJunction` / `createUserJunction` share a single
