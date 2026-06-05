@@ -88,7 +88,7 @@ shipped across 1.16.x), not a breaking change.
   not to claim success after a failed tool call. The tool-loop + output budget
   (`MAX_TOOL_LOOPS` 8→16, `MAX_TOKENS` 2048→4096) were raised so multi-step bulk
   work (e.g. "create one row per line of an attached CSV") isn't truncated.
-  *(Capacity tuning, not a workaround — flagged for review per Rule 12.)*
+  _(Capacity tuning, not a workaround — flagged for review per Rule 12.)_
 - **Auto-created objects now have human-readable names.** The Context
   Constructor gives every inferred entity a leading `name` column and fills it
   with the object's extracted label, so a card reads "Acme Consulting Agreement"
