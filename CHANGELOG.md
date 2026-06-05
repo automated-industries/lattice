@@ -100,6 +100,16 @@ shipped across 1.16.x), not a breaking change.
   `saveConfigDoc`) moved out of the request dispatcher into `gui/config-io.ts`;
   and a parity test pins the `rowLabel` ↔ `fsDisplayName` contract so the server
   and client label logic can't silently drift.
+- **Schema-op primitives extracted into `gui/schema-ops.ts`** (pure mechanical
+  move, no behaviour change): physical-table introspection
+  (`physicalTableExists` / `physicalColumnExists`), the audited + revertible
+  `recordSchemaOp` (+ cloud `emitDdlEnvelope`), canonical-context (re)derivation,
+  and the entity/junction creators (`createUserEntity` / `createUserJunction` /
+  `createFileJunction` / `materializeJunction`) now live in one module that
+  `server.ts` re-imports. The creation path is no longer interleaved with HTTP
+  routing and is independently testable; `server.ts` shrank ~350 lines. `ActiveDb`
+  is a type-only import in the new module (the runtime edge is server → schema-ops
+  only, so there is no import cycle).
 
 ### Performance
 
