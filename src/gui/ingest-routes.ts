@@ -11,6 +11,7 @@ import { describeImage, describePdf } from '../ai/vision.js';
 import { crawlUrl } from '../ai/crawl.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
+import { attachBlob } from '../framework/blob-store.js';
 import {
   resolveClaudeAuth,
   aggressivenessToTemperature,
@@ -61,6 +62,12 @@ interface IngestContext {
   createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
   /** Inference aggressiveness 0..1 (drives temperature + auto-junction gating). */
   aggressiveness?: number;
+  /**
+   * Workspace root (the dir holding `data/`). When set, previewable uploads
+   * (images/PDFs, which arrive as bytes with no local path) are retained as a
+   * content-addressed blob under `data/blobs/` so the GUI can preview them.
+   */
+  latticeRoot?: string;
   pathname: string;
   method: string;
 }
@@ -492,9 +499,21 @@ export async function dispatchIngestRoute(
     }
     const tmp = join(tmpdir(), `lattice-ingest-${crypto.randomUUID()}${extname(name)}`);
     let result;
+    let blob: { blob_path: string; sha256: string } | null = null;
     try {
       await writeFile(tmp, buf);
       result = await extractSource(ctx.db, tmp, mime, name);
+      // Retain a content-addressed blob for previewable uploads (images / PDFs).
+      // Browser drag-drops arrive as bytes with no local path, so this is the
+      // only way the GUI can render an inline preview later.
+      if (ctx.latticeRoot && (mime.startsWith('image/') || mime === 'application/pdf')) {
+        try {
+          const meta = await attachBlob(tmp, ctx.latticeRoot);
+          blob = { blob_path: meta.blob_path, sha256: meta.sha256 };
+        } catch (e) {
+          console.warn('[ingest] blob retain failed:', (e as Error).message);
+        }
+      }
     } finally {
       await rm(tmp, { force: true }).catch(() => undefined);
     }
@@ -506,6 +525,7 @@ export async function dispatchIngestRoute(
       extracted_text: result.text,
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
+      ...(blob ? { ref_kind: 'blob', blob_path: blob.blob_path, sha256: blob.sha256 } : {}),
     });
     const suggestedLinks = result.skip
       ? []

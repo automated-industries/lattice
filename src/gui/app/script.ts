@@ -1464,7 +1464,11 @@ export const appJs = `
     // A row is backed by a streamable local file when it has the legacy path
     // column (deprecated) or a v2.0 local_ref (ref_uri). Cloud refs aren't served.
     function hasLocalFile(row) {
-      return !!(row.path || (row.ref_kind === 'local_ref' && row.ref_uri));
+      return !!(
+        row.path ||
+        (row.ref_kind === 'local_ref' && row.ref_uri) ||
+        (row.ref_kind === 'blob' && row.blob_path)
+      );
     }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;

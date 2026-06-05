@@ -144,6 +144,33 @@ describe('ingest routes', () => {
     expect(String(row.extracted_text)).toContain('lazy dog');
   });
 
+  it('retains an uploaded image as a blob and serves it for inline preview', async () => {
+    const { server: sp } = boot();
+    const server = await sp;
+    servers.push(server);
+    // A 1×1 transparent PNG (bytes are retained as a content-addressed blob).
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const res = await fetch(`${server.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: { 'content-type': 'image/png', 'x-filename': 'pic.png' },
+      body: png,
+    });
+    expect(res.status).toBe(201);
+    const { id } = (await res.json()) as { id: string };
+    const row = await getFile(server.url, id);
+    expect(row.ref_kind).toBe('blob');
+    expect(typeof row.blob_path).toBe('string');
+
+    // The retained blob is served back (so the GUI can render <img src=…/blob>).
+    const blob = await fetch(`${server.url}/api/files/${id}/blob`);
+    expect(blob.status).toBe(200);
+    expect(blob.headers.get('content-type')).toContain('image/png');
+    expect(Buffer.from(await blob.arrayBuffer()).equals(png)).toBe(true);
+  });
+
   it('400s on a missing path', async () => {
     const { server: sp } = boot();
     const server = await sp;

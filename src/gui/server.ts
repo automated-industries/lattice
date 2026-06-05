@@ -3692,6 +3692,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
             createEntity: (entity, columns) => createUserEntity(active, entity, columns, sessionId),
             aggressiveness: await getAggressiveness(active.db),
+
+            latticeRoot: dirname(active.configPath),
             pathname,
             method,
           });
@@ -3702,6 +3704,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (!teamCloud && pathname.startsWith('/api/files/')) {
           const handled = await dispatchFilesRoute(req, res, {
             db: active.db,
+            latticeRoot: dirname(active.configPath),
             pathname,
             method,
           });
