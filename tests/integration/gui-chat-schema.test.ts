@@ -195,6 +195,42 @@ describe('assistant schema creation via POST /api/chat', () => {
     ).toBe(true);
   });
 
+  it('persists rich per-turn structure (text + tool pills) for reload', async () => {
+    const server = await boot();
+    turnState.turns = [
+      {
+        text: 'Let me list the tables.',
+        toolUses: [{ id: 'u1', name: 'list_entities', input: {} }],
+      },
+      { text: 'There is a tickets table.' },
+    ];
+    const res = await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'what tables exist?' }),
+    });
+    const threadId = res.headers.get('x-thread-id');
+    await res.text();
+    expect(threadId).toBeTruthy();
+
+    // The reloaded conversation carries the structure, not just flattened text:
+    // the assistant message has per-turn entries with the tool pills it fired.
+    const replay = (await fetch(`${server.url}/api/chat/threads/${threadId}/messages`).then((r) =>
+      r.json(),
+    )) as {
+      messages: {
+        role: string;
+        text: string;
+        turns?: { text: string; tools: { name: string; isError: boolean }[] }[];
+      }[];
+    };
+    const assistant = replay.messages.find((m) => m.role === 'assistant');
+    expect(assistant?.turns?.length).toBeGreaterThan(0);
+    const toolNames = (assistant?.turns ?? []).flatMap((t) => t.tools.map((x) => x.name));
+    expect(toolNames).toContain('list_entities');
+    expect(assistant?.text).toContain('There is a tickets table.');
+  });
+
   it('renders a chat-created entity automatically in workspace mode (no reopen)', async () => {
     const server = await boot(true); // workspace mode: autoRender on
     turnState.turns = [

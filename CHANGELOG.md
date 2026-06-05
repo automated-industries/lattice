@@ -70,6 +70,16 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **Assistant chat rail polish.** Four fixes to the conversation experience:
+  (1) an animated **typing indicator** now shows in the assistant bubble while a
+  turn is generating (and a turn that ends with only tool calls no longer leaves
+  a dangling empty bubble); (2) **conversations reload with their rich
+  structure** — the per-turn text bubbles + tool pills are persisted and
+  replayed, instead of collapsing to one wall of concatenated text; (3) the
+  **most recent conversation auto-loads** on page refresh, so history isn't lost;
+  (4) the **conversation dropdown is tied to the active workspace** — switching
+  workspaces now resets and reloads the thread list (conversations live in the
+  workspace DB).
 - **Runtime-created tables now render their context automatically — creation and
   "make it renderable" are one step.** When the chat assistant or the Context
   Constructor creates a table at runtime (no DB reopen), it now registers the

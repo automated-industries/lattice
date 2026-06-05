@@ -849,6 +849,11 @@ export const appJs = `
                 menu.hidden = true;
                 return reloadEverything();
               }).then(function () {
+                // Conversations live in the workspace DB — drop the old
+                // workspace's thread + reload this workspace's list (and its
+                // most recent conversation).
+                newChat();
+                refreshThreadList(true);
                 showToast('Switched workspace', {});
               }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
             });
@@ -5070,16 +5075,25 @@ export const appJs = `
       var sel = document.getElementById('rail-threads');
       if (sel) sel.value = '';
     }
-    function refreshThreadList() {
-      var sel = document.getElementById('rail-threads'); if (!sel) return;
-      fetchJson('/api/chat/threads').then(function (d) {
+    // Populate the conversation dropdown from the ACTIVE workspace's threads
+    // (chat_threads lives in the workspace DB, so switching workspaces changes
+    // the list). When autoSelect is set and nothing is open yet, load the most
+    // recent thread so a page refresh / workspace switch restores the
+    // conversation instead of starting blank.
+    function refreshThreadList(autoSelect) {
+      var sel = document.getElementById('rail-threads'); if (!sel) return Promise.resolve();
+      return fetchJson('/api/chat/threads').then(function (d) {
         var threads = (d && d.threads) || [];
         var opts = '<option value="">＋ New conversation</option>';
         threads.forEach(function (t) {
           opts += '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.title || 'Chat') + '</option>';
         });
         sel.innerHTML = opts;
-        sel.value = currentThreadId || '';
+        if (autoSelect && !currentThreadId && threads.length > 0) {
+          loadThread(threads[0].id); // threads are newest-first
+        } else {
+          sel.value = currentThreadId || '';
+        }
       }).catch(function () { /* ignore */ });
     }
     function loadThread(id) {
@@ -5087,9 +5101,17 @@ export const appJs = `
         var msgs = (d && d.messages) || [];
         clearChat();
         currentThreadId = id;
+        var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
         msgs.forEach(function (m) {
           if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
-          else if (m.role === 'assistant') { var c = newAssistantBubble(); c.bubble.textContent = m.text; chatHistory.push({ role: 'assistant', text: m.text }); }
+          else if (m.role === 'assistant') {
+            // Rich replay: the saved per-turn structure (text + tool pills),
+            // matching the live stream. Falls back to a plain text bubble for
+            // messages saved before turns were persisted.
+            if (Array.isArray(m.turns) && m.turns.length > 0) { m.turns.forEach(appendAssistantTurn); }
+            else { var c = newAssistantBubble(); setBubbleText(c, m.text); }
+            chatHistory.push({ role: 'assistant', text: m.text });
+          }
         });
       }).catch(function (e) { showToast('Could not load conversation: ' + e.message, {}); });
     }
@@ -5098,7 +5120,7 @@ export const appJs = `
       var btn = document.getElementById('rail-newchat');
       if (btn) btn.addEventListener('click', newChat);
       if (sel) sel.addEventListener('change', function () { if (sel.value) loadThread(sel.value); else newChat(); });
-      refreshThreadList();
+      refreshThreadList(true); // restore the most recent conversation on load
     }
     function appendUserBubble(text) {
       railEmptyGone();
@@ -5113,10 +5135,29 @@ export const appJs = `
       var msg = document.createElement('div'); msg.className = 'chat-msg assistant';
       var wrap = document.createElement('div');
       var tools = document.createElement('div'); tools.className = 'chat-tools';
-      var b = document.createElement('div'); b.className = 'chat-bubble assistant'; b.textContent = '';
+      var b = document.createElement('div'); b.className = 'chat-bubble assistant';
+      // Show an animated typing indicator until the first text delta arrives.
+      b.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
+      b.setAttribute('data-typing', '1');
       wrap.appendChild(tools); wrap.appendChild(b);
       msg.appendChild(wrap); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
-      return { bubble: b, tools: tools, pills: {} };
+      return { bubble: b, tools: tools, pills: {}, msg: msg };
+    }
+    /** Set an assistant bubble's text, clearing the typing indicator. */
+    function setBubbleText(ctx, text) {
+      ctx.bubble.removeAttribute('data-typing');
+      ctx.bubble.textContent = text;
+    }
+    /**
+     * A turn ended. If its bubble never got text (still showing the typing
+     * indicator), drop the empty bubble — keeping any tool pills it fired, or
+     * removing the whole message when there were none. Stops a dangling
+     * "typing…" bubble after the stream completes.
+     */
+    function finalizeBubble(ctx) {
+      if (!ctx || !ctx.bubble || !ctx.bubble.getAttribute('data-typing')) return;
+      if (ctx.tools && ctx.tools.children.length > 0) ctx.bubble.remove();
+      else if (ctx.msg) ctx.msg.remove();
     }
     var TOOL_VERBS = {
       create_row: ['Creating row', 'Row created', 'Could not create row'],
@@ -5141,6 +5182,20 @@ export const appJs = `
       var name = pill.getAttribute('data-name');
       pill.className = 'tool-pill ' + (isError ? 'error' : 'done');
       pill.textContent = (isError ? '⚠ ' : '✓ ') + toolLabel(name, isError ? 'error' : 'done');
+    }
+    /** Append an already-resolved tool pill (used when replaying a saved turn). */
+    function renderResolvedPill(ctx, name, isError) {
+      var pill = document.createElement('span');
+      pill.className = 'tool-pill ' + (isError ? 'error' : 'done');
+      pill.textContent = (isError ? '⚠ ' : '✓ ') + toolLabel(name, isError ? 'error' : 'done');
+      ctx.tools.appendChild(pill);
+    }
+    /** Replay one persisted assistant turn: its tool pills + text bubble. */
+    function appendAssistantTurn(turn) {
+      var ctx = newAssistantBubble();
+      (turn.tools || []).forEach(function (t) { renderResolvedPill(ctx, t.name, !!t.isError); });
+      if (turn.text) setBubbleText(ctx, turn.text);
+      else finalizeBubble(ctx); // tool-only turn: drop the empty bubble, keep pills
     }
     function parseSse(buffer, onEvent) {
       var sep;
@@ -5178,21 +5233,23 @@ export const appJs = `
             if (res.done) return;
             buf += dec.decode(res.value, { stream: true });
             buf = parseSse(buf, function (ev) {
-              if (ev.type === 'assistant_message_start') { actx = newAssistantBubble(); assembled = ''; }
-              else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; actx.bubble.textContent = assembled; railFeedEl().scrollTop = railFeedEl().scrollHeight; }
+              if (ev.type === 'assistant_message_start') { finalizeBubble(actx); actx = newAssistantBubble(); assembled = ''; }
+              else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
               else if (ev.type === 'tool_use' && actx) { addToolPill(actx, ev.id, ev.name); }
               else if (ev.type === 'tool_result' && actx) { resolveToolPill(actx, ev.toolUseId, ev.isError); }
-              else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); actx.bubble.textContent = (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message; }
+              else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
             });
             return pump();
           });
         }
         return pump();
       }).then(function () {
+        finalizeBubble(actx); // drop a trailing empty "typing…" bubble
         if (assembled) chatHistory.push({ role: 'assistant', text: assembled });
         refreshThreadList();
       }).catch(function (e) {
-        var c = newAssistantBubble(); c.bubble.textContent = '⚠ ' + e.message;
+        finalizeBubble(actx);
+        var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + e.message);
       }).finally(function () {
         chatBusy = false;
         var sb = document.getElementById('chat-send'); if (sb) sb.disabled = false;

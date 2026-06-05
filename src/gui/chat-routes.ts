@@ -100,17 +100,27 @@ async function ensureThread(db: Lattice, threadId: string | null, title: string)
   return id;
 }
 
+/** One assistant turn: its streamed text + the tool pills it fired, in order. */
+interface PersistedTurn {
+  text: string;
+  tools: { name: string; isError: boolean }[];
+}
+
 async function persistMessage(
   db: Lattice,
   threadId: string,
   role: 'user' | 'assistant',
   text: string,
+  turns?: PersistedTurn[],
 ): Promise<void> {
   await db.insert('chat_messages', {
     id: crypto.randomUUID(),
     thread_id: threadId,
     role,
-    content_json: JSON.stringify({ text }),
+    // `text` stays for backward-compat (old clients + the model-history replay);
+    // `turns` carries the rich structure so a reloaded conversation shows the
+    // same text bubbles + tool pills as the live stream, not one text wall.
+    content_json: JSON.stringify(turns && turns.length > 0 ? { text, turns } : { text }),
     source: role === 'user' ? 'gui' : 'ai',
   });
 }
@@ -147,12 +157,23 @@ export async function dispatchChatRoute(
       .filter((r) => r.thread_id === threadId && !r.deleted_at)
       .map((r) => {
         let text = '';
+        let turns: PersistedTurn[] | undefined;
         try {
-          text = (JSON.parse(asStr(r.content_json, '{}')) as { text?: string }).text ?? '';
+          const parsed = JSON.parse(asStr(r.content_json, '{}')) as {
+            text?: string;
+            turns?: PersistedTurn[];
+          };
+          text = parsed.text ?? '';
+          if (Array.isArray(parsed.turns)) turns = parsed.turns;
         } catch {
           /* ignore malformed */
         }
-        return { role: asStr(r.role), text, created_at: asStr(r.created_at) };
+        return {
+          role: asStr(r.role),
+          text,
+          ...(turns ? { turns } : {}),
+          created_at: asStr(r.created_at),
+        };
       })
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
     sendJson(res, { messages });
@@ -221,6 +242,10 @@ export async function dispatchChatRoute(
   };
 
   let assistantText = '';
+  // Rebuild the rich structure as it streams: one entry per assistant turn,
+  // each with its text + the tool pills it fired (resolved ok/error). Persisted
+  // so a reloaded conversation renders the same way the live stream did.
+  const turns: { text: string; tools: { id: string; name: string; isError: boolean }[] }[] = [];
   try {
     const client = createAnthropicClient(auth);
     const temperature = aggressivenessToTemperature(await getAggressiveness(ctx.db));
@@ -231,7 +256,18 @@ export async function dispatchChatRoute(
       userMessage: message,
       temperature,
     })) {
-      if (ev.type === 'text_delta') assistantText += ev.delta;
+      if (ev.type === 'assistant_message_start') {
+        turns.push({ text: '', tools: [] });
+      } else if (ev.type === 'text_delta') {
+        assistantText += ev.delta;
+        const cur = turns[turns.length - 1];
+        if (cur) cur.text += ev.delta;
+      } else if (ev.type === 'tool_use') {
+        turns[turns.length - 1]?.tools.push({ id: ev.id, name: ev.name, isError: false });
+      } else if (ev.type === 'tool_result') {
+        const tool = turns[turns.length - 1]?.tools.find((t) => t.id === ev.toolUseId);
+        if (tool) tool.isError = ev.isError;
+      }
       try {
         res.write(formatSseFrame(ev));
       } catch {
@@ -248,8 +284,14 @@ export async function dispatchChatRoute(
   }
   res.end();
   if (threadId) {
+    const cleanTurns: PersistedTurn[] = turns
+      .map((t) => ({
+        text: t.text,
+        tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
+      }))
+      .filter((t) => t.text.length > 0 || t.tools.length > 0);
     try {
-      await persistMessage(ctx.db, threadId, 'assistant', assistantText);
+      await persistMessage(ctx.db, threadId, 'assistant', assistantText, cleanTurns);
     } catch (e) {
       console.warn('[chat] persist assistant message failed:', (e as Error).message);
     }

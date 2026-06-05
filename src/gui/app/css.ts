@@ -1056,6 +1056,19 @@ export const css = `
       border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%;
       animation: pillspin 0.7s linear infinite; }
     @keyframes pillspin { to { transform: rotate(360deg); } }
+    /* Typing indicator: three pulsing dots shown in an assistant bubble while
+       the model is generating (before the first text delta of a turn). */
+    .chat-typing { display: inline-flex; align-items: center; gap: 4px; padding: 1px 0; }
+    .chat-typing i {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);
+      display: inline-block; animation: chat-typing-kf 1.2s ease-in-out infinite;
+    }
+    .chat-typing i:nth-child(2) { animation-delay: 0.18s; }
+    .chat-typing i:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes chat-typing-kf {
+      0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+      30% { opacity: 0.9; transform: translateY(-2px); }
+    }
     .rail-composer { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 10px 12px; }
     .rail-composer textarea {
       width: 100%; resize: none; min-height: 38px; max-height: 120px;
