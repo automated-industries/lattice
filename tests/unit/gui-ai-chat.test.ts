@@ -143,6 +143,22 @@ describe('chat tool loop', () => {
     expect(capturedSystem.toLowerCase()).toContain('error');
   });
 
+  it('never exposes the secrets table in the schema context', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    // Even if `secrets` is present in validTables, the model must never be told
+    // it exists (it holds decrypted credentials).
+    const withSecrets: DispatchCtx = { ...dispatch, validTables: new Set(['people', 'secrets']) };
+    await collect(runChat({ client, dispatch: withSecrets, userMessage: 'list everything' }));
+    expect(capturedSystem).toContain('people');
+    expect(capturedSystem).not.toContain('secrets');
+  });
+
   it('surfaces a tool error as a tool_result(isError) without aborting the stream', async () => {
     const client = scriptedClient([
       {

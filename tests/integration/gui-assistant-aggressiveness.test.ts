@@ -33,17 +33,30 @@ import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
-let savedKey: string | undefined;
+const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  savedKey = process.env.ANTHROPIC_API_KEY;
+  savedEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
+  // Isolate the machine config dir (master key + assistant credentials) to a
+  // temp dir so booting the GUI server here never touches the real ~/.lattice
+  // (Rule 26) or reads a developer's real stored key.
+  savedEnv.LATTICE_CONFIG_DIR = process.env.LATTICE_CONFIG_DIR;
+  savedEnv.LATTICE_ENCRYPTION_KEY = process.env.LATTICE_ENCRYPTION_KEY;
+  const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-aggr-cfg-'));
+  dirs.push(cfgDir);
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'aggr-test-key';
   mockState.matches = [{ table: 'projects', id: 'proj-1' }];
   mockState.objects = [];
 });
 afterEach(async () => {
-  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedKey;
+  if (savedEnv.ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = savedEnv.ANTHROPIC_API_KEY;
+  if (savedEnv.LATTICE_CONFIG_DIR === undefined) delete process.env.LATTICE_CONFIG_DIR;
+  else process.env.LATTICE_CONFIG_DIR = savedEnv.LATTICE_CONFIG_DIR;
+  if (savedEnv.LATTICE_ENCRYPTION_KEY === undefined) delete process.env.LATTICE_ENCRYPTION_KEY;
+  else process.env.LATTICE_ENCRYPTION_KEY = savedEnv.LATTICE_ENCRYPTION_KEY;
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });

@@ -51,6 +51,18 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'revert',
 ]);
 
+/**
+ * Native tables the assistant must NEVER read, write, or be told about — they
+ * hold decrypted secrets (API keys / OAuth tokens). The chat dispatcher reads
+ * rows already-decrypted, so without this a request (or instructions injected
+ * via an attached file's `extracted_text`) could induce `list_rows`/`get_row`
+ * on `secrets` and spill credentials into chat output. The chat route strips
+ * these from the callable `validTables`, and the schema context omits them, so
+ * the model neither sees them nor can target them. (Credentials are now
+ * machine-level anyway — see assistant-routes — but defence in depth.)
+ */
+export const ASSISTANT_HIDDEN_TABLES: ReadonlySet<string> = new Set(['secrets']);
+
 export interface DispatchCtx {
   db: Lattice;
   feed: FeedBus;

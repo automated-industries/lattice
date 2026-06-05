@@ -1,5 +1,10 @@
 import { createRequire } from 'node:module';
-import { executeFunction, DISPATCHABLE, type DispatchCtx } from './dispatch.js';
+import {
+  executeFunction,
+  DISPATCHABLE,
+  ASSISTANT_HIDDEN_TABLES,
+  type DispatchCtx,
+} from './dispatch.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
 import type { ChatStreamEvent } from './sse.js';
 
@@ -47,7 +52,9 @@ const BASE_SYSTEM_PROMPT = [
  * never aborts the turn.
  */
 async function buildSchemaContext(d: DispatchCtx): Promise<string> {
-  const names = [...d.validTables].filter((n) => !n.startsWith('_')).sort();
+  const names = [...d.validTables]
+    .filter((n) => !n.startsWith('_') && !ASSISTANT_HIDDEN_TABLES.has(n))
+    .sort();
   if (names.length === 0) {
     return '(no tables yet — the user must create one before you can add rows)';
   }

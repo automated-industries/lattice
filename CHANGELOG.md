@@ -77,7 +77,12 @@ shipped across 1.16.x), not a breaking change.
   scheme as `db-credentials.enc`). Creating or switching a workspace no longer
   "de-attaches" the key — a key is a property of the user + machine, not of one
   database. A key saved in a workspace before this change is read back (and
-  promoted to the machine store) for backward compatibility.
+  promoted to the machine store) for backward compatibility — but that
+  back-compat read + promotion runs ONLY for a local SQLite workspace, never for
+  a shared team-cloud / direct-Postgres `secrets` table (which may hold another
+  member's credential row), so it can't harvest someone else's key. The OAuth
+  callback that first connects a Claude subscription also writes machine-level,
+  matching the refresh + API-key paths.
 - **The assistant chat now knows your schema, so it stops guessing.** Each turn
   the system prompt is built with the live table list (names, columns, row
   counts) plus guidance that an attached file's content lives in its `files`
@@ -88,7 +93,11 @@ shipped across 1.16.x), not a breaking change.
   not to claim success after a failed tool call. The tool-loop + output budget
   (`MAX_TOOL_LOOPS` 8→16, `MAX_TOKENS` 2048→4096) were raised so multi-step bulk
   work (e.g. "create one row per line of an attached CSV") isn't truncated.
-  _(Capacity tuning, not a workaround — flagged for review per Rule 12.)_
+  _(Capacity tuning, not a workaround — flagged for review per Rule 12.)_ The
+  credential-bearing `secrets` table is now hidden from the assistant entirely —
+  excluded from its callable tables and from the schema context — so a request
+  (or instructions injected via an attached file) can't induce it to read and
+  spill decrypted API keys / OAuth tokens.
 - **Auto-created objects now have human-readable names.** The Context
   Constructor gives every inferred entity a leading `name` column and fills it
   with the object's extracted label, so a card reads "Acme Consulting Agreement"

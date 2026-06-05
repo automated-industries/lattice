@@ -8,7 +8,7 @@ import {
 } from './assistant-routes.js';
 import { createAnthropicClient, runChat, type LlmMessage } from './ai/chat.js';
 import { formatSseFrame } from './ai/sse.js';
-import type { DispatchCtx } from './ai/dispatch.js';
+import { ASSISTANT_HIDDEN_TABLES, type DispatchCtx } from './ai/dispatch.js';
 
 /**
  * POST /api/chat — the assistant chat stream. Resolves the Claude token,
@@ -202,11 +202,13 @@ export async function dispatchChatRoute(
     'x-thread-id': threadId,
   });
 
+  // Strip credential-bearing native tables (secrets) so the assistant can
+  // neither query them nor be told they exist — it reads rows already decrypted.
   const dispatch: DispatchCtx = {
     db: ctx.db,
     feed: ctx.feed,
-    validTables: ctx.validTables,
-    junctionTables: ctx.junctionTables,
+    validTables: new Set([...ctx.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
+    junctionTables: new Set([...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     softDeletable: ctx.softDeletable,
   };
 

@@ -159,10 +159,20 @@ async function secretValue(db: Lattice, kind: string): Promise<string | null> {
  *      before this moved machine-level; when found there it is PROMOTED to the
  *      machine store (best-effort) so it works from every workspace thereafter.
  * The env-var fallback is layered on by the individual callers.
+ *
+ * The step-2 back-compat read + promotion runs ONLY for a local SQLite
+ * workspace. A team-cloud / direct-Postgres `secrets` table is shared storage
+ * that may hold ANOTHER principal's credential row (native `secrets` are
+ * creator-owned and invisible to members, but still physically present and
+ * raw-queryable) — reading it here would be a confused-deputy credential
+ * crossing, and promoting it would copy someone else's key into this machine's
+ * store. So on Postgres we use only the machine store + the caller's env-var
+ * fallback.
  */
 async function readMachineCredential(db: Lattice, kind: string): Promise<string | null> {
   const fromMachine = getAssistantCredential(kind);
   if (fromMachine) return fromMachine;
+  if (db.getDialect() !== 'sqlite') return null;
   const fromDb = await secretValue(db, kind);
   if (fromDb) {
     try {
@@ -510,7 +520,11 @@ export async function dispatchAssistantRoute(
     }
     try {
       const tokens = await exchangeCodeForTokens(cfg, code, verifier);
-      await storeSecret(db, 'claude_oauth', 'Claude subscription', JSON.stringify(tokens));
+      // Machine-level, like the API-key PUT + the refresh path — so a connected
+      // subscription persists across every workspace, not just the one that was
+      // active when the user linked it (otherwise the OAuth-connect path would
+      // re-introduce the per-workspace de-attach bug).
+      setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
       redirect('connected');
     } catch {
       redirect('error');
