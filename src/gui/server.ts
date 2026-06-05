@@ -1168,6 +1168,29 @@ async function disposeActive(active: ActiveDb): Promise<void> {
   }
 }
 
+/**
+ * Re-open the *same* workspace after a schema edit (create entity, add column,
+ * rename, share…) so the new table definitions take effect — while preserving
+ * the in-process {@link FeedBus}.
+ *
+ * `/api/feed/stream` clients subscribe to `active.feed` at connect time. A
+ * brand-new bus from {@link openConfig} would orphan those subscriptions,
+ * silently killing the activity feed AND the live sidebar refresh after the
+ * first data-model edit of a session (the Context Constructor's no-reopen
+ * `defineLate` path is unaffected, but the manual schema endpoints reopen).
+ * `disposeActive` leaves the bus untouched, so carrying the instance across the
+ * reopen retains every subscriber and its replay buffer. This is a same-config
+ * reopen only — a workspace *switch* intentionally gets a fresh bus (clients
+ * reconnect), so those call sites keep calling `openConfig` directly.
+ */
+async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<ActiveDb> {
+  const feed = active.feed;
+  await disposeActive(active);
+  const next = await openConfig(active.configPath, active.outputDir, autoRender);
+  next.feed = feed;
+  return next;
+}
+
 async function registerTeamCloudTables(db: Lattice): Promise<void> {
   for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
     await db.defineLate(name, def);
@@ -1883,8 +1906,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active.teamContext.myUserId,
             );
           }
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.create_entity',
@@ -1992,8 +2014,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active.teamContext.myUserId,
             );
           }
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.create_junction',
@@ -2060,8 +2081,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             .entities?.[name];
           doc.deleteIn(['entities', name]);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.delete_entity',
@@ -2222,8 +2242,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             doc.setIn(['entityContexts', newName], ctx);
           }
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.rename_entity',
@@ -2313,8 +2332,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           if (body.required === true) fieldDef.required = true;
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.add_column',
@@ -2401,8 +2419,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           doc.setIn(['entities', entityName, 'fields'], renamedFields);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.rename_column',
@@ -2472,8 +2489,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const doc = loadConfigDoc(active.configPath);
           doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.add_link',
@@ -2522,8 +2538,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           ).entities?.[entityName]?.fields?.[colName];
           doc.deleteIn(['entities', entityName, 'fields', colName]);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.delete_link',

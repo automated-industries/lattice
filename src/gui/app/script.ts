@@ -4982,7 +4982,19 @@ export const appJs = `
       if (typeof EventSource === 'undefined') return;
       feedSource = new EventSource('/api/feed/stream');
       feedSource.addEventListener('feed', function (ev) {
-        try { renderFeedItem(JSON.parse(ev.data)); } catch (_) { /* ignore malformed */ }
+        var data;
+        try { data = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
+        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
+        // A server-side mutation (e.g. the Context Constructor ingesting a file)
+        // can create a brand-new entity or junction the client hasn't loaded.
+        // The local feed bus delivers these even when there's no realtime
+        // broker (SQLite), so refresh the entity list + sidebar live — otherwise
+        // the new object is missing from the nav and routing to it shows
+        // "Unknown entity" until a manual page reload. Debounced so a burst of
+        // schema events from one ingest coalesces into a single refetch.
+        if (data && (data.op === 'schema' || (data.table && !tableByName(data.table)))) {
+          scheduleRealtimeRefresh();
+        }
       });
       // EventSource auto-reconnects on error; no extra handling needed.
     }

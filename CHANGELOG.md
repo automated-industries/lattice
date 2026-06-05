@@ -68,6 +68,20 @@ shipped across 1.16.x), not a breaking change.
 - `markitdown` is an **optional external CLI** (`MARKITDOWN_BIN`); without it,
   PDFs/Office files are referenced and marked `extraction_status='skipped'`.
 
+### Fixed
+
+- **New objects from the Context Constructor now appear in the sidebar live.**
+  When ingest inferred a brand-new entity, the nav list stayed stale until a
+  manual page reload — and routing to the new object showed "Unknown entity".
+  The activity-feed stream now triggers a live entity-list refresh on a `schema`
+  event, so an inferred table shows up in the sidebar the moment it's created.
+- **The activity feed no longer goes silent after a data-model edit.** Creating
+  an entity, adding/renaming a column, or sharing a table re-opens the workspace
+  to pick up the new definitions; that reopen used to swap out the in-process
+  feed bus and orphan every connected `/api/feed/stream` subscriber, killing the
+  rail (and the live sidebar refresh) for the rest of the session. The feed bus
+  is now preserved across a same-config reopen.
+
 ## [1.16.4] - 2026-06-02
 
 GUI patch. **One model: a workspace _is_ a Lattice DB.** Removes the
