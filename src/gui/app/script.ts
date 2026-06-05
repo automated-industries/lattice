@@ -4944,11 +4944,46 @@ export const appJs = `
       insert: '➕', update: '✏️', delete: '🗑',
       link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
     };
+    // Ops whose consecutive runs collapse into one counted bubble (bulk row work
+    // spams N near-identical rows otherwise). Schema/undo/redo stay distinct.
+    var GROUPABLE_OPS = { insert: 1, update: 1, delete: 1, link: 1, unlink: 1 };
+    var lastFeedGroup = null; // { key, count, item, summaryEl, timeEl }
+    function groupedSummary(op, table, count) {
+      var t = String(table || '');
+      switch (op) {
+        case 'insert': return 'Added ' + count + ' rows to ' + t;
+        case 'update': return 'Updated ' + count + ' rows in ' + t;
+        case 'delete': return 'Removed ' + count + ' rows from ' + t;
+        case 'link': return 'Linked ' + count + ' rows in ' + t;
+        case 'unlink': return 'Unlinked ' + count + ' rows in ' + t;
+        default: return String(op || '') + ' ' + t;
+      }
+    }
     function renderFeedItem(ev) {
       var feedEl = document.getElementById('rail-feed');
       if (!feedEl) return;
       var empty = document.getElementById('rail-empty');
       if (empty) empty.remove();
+      // Coalesce a run of identical events (same op + table + source) into the
+      // previous bubble with a count — but only while that bubble is still the
+      // last thing in the feed (a chat bubble or a different event breaks the run).
+      var groupKey = GROUPABLE_OPS[ev.op] && ev.table
+        ? String(ev.op) + '|' + String(ev.table) + '|' + String(ev.source || '')
+        : null;
+      if (groupKey && lastFeedGroup && lastFeedGroup.key === groupKey &&
+          feedEl.lastElementChild === lastFeedGroup.item) {
+        lastFeedGroup.count += 1;
+        lastFeedGroup.summaryEl.textContent = groupedSummary(ev.op, ev.table, lastFeedGroup.count);
+        lastFeedGroup.timeEl.textContent = relTime(ev.ts);
+        // A grouped bubble stands for many rows — disable the single-row click.
+        lastFeedGroup.item._rowClickOff = true;
+        lastFeedGroup.item.classList.remove('feed-clickable');
+        lastFeedGroup.item.removeAttribute('role');
+        lastFeedGroup.item.removeAttribute('tabindex');
+        lastFeedGroup.item.removeAttribute('title');
+        feedEl.scrollTop = feedEl.scrollHeight;
+        return;
+      }
       var item = document.createElement('div');
       item.className = 'feed-item';
       var icon = document.createElement('div');
@@ -4981,7 +5016,8 @@ export const appJs = `
         item.setAttribute('role', 'button');
         item.setAttribute('tabindex', '0');
         item.title = 'Open this ' + String(ev.table);
-        var openRow = function () { openSearchHit(String(ev.table), String(ev.rowId)); };
+        // _rowClickOff is set when the bubble becomes a group — clicks no-op then.
+        var openRow = function () { if (item._rowClickOff) return; openSearchHit(String(ev.table), String(ev.rowId)); };
         item.addEventListener('click', openRow);
         item.addEventListener('keydown', function (e) {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(); }
@@ -4989,6 +5025,10 @@ export const appJs = `
       }
       feedEl.appendChild(item);
       feedEl.scrollTop = feedEl.scrollHeight;
+      // Start a new group anchored on this bubble (groupable ops only).
+      lastFeedGroup = groupKey
+        ? { key: groupKey, count: 1, item: item, summaryEl: summary, timeEl: time }
+        : null;
     }
     function startFeed() {
       if (feedSource) {

@@ -48,6 +48,21 @@ test('a server-side new entity appears in the sidebar without a reload', async (
   await expect(navItem).toHaveCount(1);
 });
 
+test('consecutive identical events collapse into one counted bubble', async ({ page }) => {
+  await page.goto(gui.url);
+  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await expect(page.locator('.feed-item')).toHaveCount(0);
+
+  // Three inserts into the same table — a bulk run that used to spam three
+  // near-identical bubbles now collapses into one with a count.
+  await createRow(gui.url, 'items', { name: 'a' });
+  await createRow(gui.url, 'items', { name: 'b' });
+  await createRow(gui.url, 'items', { name: 'c' });
+
+  await expect(page.locator('.feed-item')).toHaveCount(1);
+  await expect(page.locator('.feed-item .feed-summary')).toHaveText(/Added 3 rows to items/);
+});
+
 test('clicking a row feed item navigates to that object', async ({ page }) => {
   await page.goto(gui.url);
   await expect(page.locator('#assistant-rail')).toBeVisible();

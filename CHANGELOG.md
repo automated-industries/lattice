@@ -70,6 +70,11 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **The activity rail collapses repeated events.** A run of identical mutations
+  (same op + table) — e.g. linking 20 rows during a bulk operation — now folds
+  into a single bubble with a count ("Linked 20 rows in people_projects")
+  instead of 20 near-identical rows. The run breaks when a different event or a
+  chat message lands, so distinct actions stay separate.
 - **Assistant chat rail polish.** Four fixes to the conversation experience:
   (1) an animated **typing indicator** now shows in the assistant bubble while a
   turn is generating (and a turn that ends with only tool calls no longer leaves
