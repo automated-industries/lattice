@@ -37,6 +37,13 @@ export default defineConfig({
         // unit-tested in tests/integration/direct-ops.test.ts; the SQL
         // behaviour is exercised manually against a real cloud at release.
         'src/gui/team-context.ts',
+        // The library AI client is the lazy-loaded real @anthropic-ai/sdk glue:
+        // its createLlmClient()/defaultSender() only run with a real key + the
+        // SDK installed, so they can't execute in the harness (same rationale as
+        // direct-ops.ts above). The logic that BUILDS on it — organize / vision
+        // / crawl / enrich — is unit-tested with injected senders; the live SDK
+        // round-trip is exercised by the LATTICE_LIVE_LLM-gated specs.
+        'src/ai/llm-client.ts',
       ],
       thresholds: {
         lines: 80,
