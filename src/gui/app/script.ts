@@ -4953,6 +4953,20 @@ export const appJs = `
       item.appendChild(icon);
       item.appendChild(body);
       item.appendChild(time);
+      // Row events (insert/update/delete) carry a rowId — make the bubble a
+      // shortcut to that object. Link/unlink and schema events have no single
+      // row (rowId is null), so they stay non-clickable.
+      if (ev.rowId && ev.table) {
+        item.classList.add('feed-clickable');
+        item.setAttribute('role', 'button');
+        item.setAttribute('tabindex', '0');
+        item.title = 'Open this ' + String(ev.table);
+        var openRow = function () { openSearchHit(String(ev.table), String(ev.rowId)); };
+        item.addEventListener('click', openRow);
+        item.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(); }
+        });
+      }
       feedEl.appendChild(item);
       feedEl.scrollTop = feedEl.scrollHeight;
     }

@@ -1013,6 +1013,9 @@ export const css = `
       background: var(--surface-2); border: 1px solid var(--border);
       animation: feedIn 0.18s ease-out;
     }
+    .feed-item.feed-clickable { cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+    .feed-item.feed-clickable:hover { border-color: var(--accent); background: var(--row-hover); }
+    .feed-item.feed-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     @keyframes feedIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .feed-icon { text-align: center; font-size: 13px; }
     .feed-body { min-width: 0; }

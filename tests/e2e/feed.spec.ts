@@ -23,3 +23,21 @@ test('a server-side mutation streams a bubble into the rail feed', async ({ page
   // GUI-sourced mutations are tagged "you" in the source pill.
   await expect(page.locator('.feed-item .feed-source')).toHaveText('you');
 });
+
+test('clicking a row feed item navigates to that object', async ({ page }) => {
+  await page.goto(gui.url);
+  await expect(page.locator('#assistant-rail')).toBeVisible();
+
+  const created = (await createRow(gui.url, 'items', { name: 'Clickable target' })) as {
+    id: string;
+  };
+
+  const item = page.locator('.feed-item.feed-clickable').first();
+  await expect(item).toBeVisible();
+  await item.click();
+
+  // Navigates to the row detail (#/fs/items/<id> in simple mode).
+  await expect
+    .poll(() => page.evaluate(() => location.hash))
+    .toContain('items/' + String(created.id));
+});
