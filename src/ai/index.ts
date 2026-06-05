@@ -19,8 +19,8 @@ export type { CrawlResult, CrawlOptions } from './crawl.js';
 export { enrichKnowledge } from './enrich.js';
 export type { EnrichOptions, EnrichResult } from './enrich.js';
 
-export { describeImage } from './vision.js';
-export type { VisionOptions, VisionSenderInput } from './vision.js';
+export { describeImage, describePdf } from './vision.js';
+export type { VisionOptions, VisionSenderInput, PdfOptions, PdfSenderInput } from './vision.js';
 
 export { summarizeText, classifyLinks, parseMatches } from './summarize.js';
 export type { CatalogEntity, CatalogRecord, ClassifyMatch } from './summarize.js';

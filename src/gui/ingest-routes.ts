@@ -6,8 +6,8 @@ import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js';
-import { parseFile, describe } from './ai/extract.js';
-import { describeImage } from '../ai/vision.js';
+import { parseFile, describe, type ExtractResult } from './ai/extract.js';
+import { describeImage, describePdf } from '../ai/vision.js';
 import { crawlUrl } from '../ai/crawl.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
@@ -321,6 +321,37 @@ async function extractImage(
   }
 }
 
+/**
+ * Full ingest extraction. Claude vision for images; otherwise markitdown/text
+ * via {@link parseFile}; and when that yields nothing for a PDF — e.g. a
+ * scanned/image-only PDF with no text layer, which markitdown can't read —
+ * Claude's native PDF document read as a fallback. Best-effort + AI-gated:
+ * with no Claude auth it degrades to parseFile's result (a `skipped` row).
+ */
+async function extractSource(
+  db: Lattice,
+  path: string,
+  mime: string,
+  name: string,
+): Promise<ExtractResult> {
+  const vision = await extractImage(db, path, mime);
+  if (vision) return vision;
+  const parsed = await parseFile(path, mime, name);
+  if (!parsed.skip) return parsed;
+  if (mime === 'application/pdf') {
+    const auth = await resolveClaudeAuth(db);
+    if (auth) {
+      try {
+        const text = await describePdf(auth, path);
+        if (text.trim()) return { ...parsed, text, skip: false };
+      } catch (e) {
+        console.warn('[ingest] Claude PDF read failed:', (e as Error).message);
+      }
+    }
+  }
+  return parsed;
+}
+
 /** A pasted body that is exactly one http(s) URL — a candidate to crawl. */
 function looksLikeUrl(s: string): boolean {
   const t = s.trim();
@@ -381,7 +412,7 @@ export async function dispatchIngestRoute(
     let result;
     try {
       await writeFile(tmp, buf);
-      result = (await extractImage(ctx.db, tmp, mime)) ?? (await parseFile(tmp, mime, name));
+      result = await extractSource(ctx.db, tmp, mime, name);
     } finally {
       await rm(tmp, { force: true }).catch(() => undefined);
     }
@@ -507,7 +538,7 @@ export async function dispatchIngestRoute(
   // Extract inline (the GUI is local; files are typically small). Failures are
   // recorded on the row, not swallowed.
   try {
-    const result = (await extractImage(ctx.db, abs, mime)) ?? (await parseFile(abs, mime, name));
+    const result = await extractSource(ctx.db, abs, mime, name);
     await updateRow(mctx, 'files', id, {
       extracted_text: result.text,
       description: describe(result.text, mime, name),

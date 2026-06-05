@@ -289,10 +289,13 @@ export {
   crawlUrl,
   enrichKnowledge,
   describeImage,
+  describePdf,
 } from './ai/index.js';
 export type {
   VisionOptions,
   VisionSenderInput,
+  PdfOptions,
+  PdfSenderInput,
   EnrichOptions,
   EnrichResult,
   CrawlResult,
