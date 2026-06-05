@@ -82,6 +82,14 @@ shipped across 1.16.x), not a breaking change.
   prompt-injection path to erasing or rewriting chat history. (`files`/`notes`
   stay editable — they're audited + reversible.)
 
+### Performance
+
+- **The workspace config is no longer re-parsed on every `/api/entities`
+  call.** A small mtime+size-keyed cache in `loadGuiData` means a bulk operation
+  and its activity-feed refetches parse the YAML once, not dozens of times; a
+  config write (which bumps the mtime/size) or a workspace switch invalidates it
+  automatically.
+
 ### Fixed
 
 - **A bulk chat task that hits the tool-step limit now says so.** When the
