@@ -81,6 +81,7 @@ import {
   type AuditEntry,
   type MutationCtx,
 } from './mutations.js';
+import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
@@ -1038,26 +1039,6 @@ function listConfigs(activeConfigPath: string): ListedConfig[] {
  * itself doesn't expose ALTER TABLE on its CRUD surface, so we reach into the
  * adapter's async run() for schema migrations the user triggers from the GUI.
  */
-async function execSql(db: Lattice, sql: string): Promise<void> {
-  type Adapter = { runAsync?: (sql: string) => Promise<void> };
-  const adapter = (db as unknown as { _adapter: Adapter })._adapter;
-  if (!adapter.runAsync) throw new Error('Adapter does not support runAsync');
-  await adapter.runAsync(sql);
-}
-
-/**
- * Parse the config YAML as a round-trip Document so we can mutate it while
- * preserving comments and ordering. Callers should call `doc.toString()` to
- * serialize, then writeFileSync the result.
- */
-function loadConfigDoc(configPath: string): ReturnType<typeof parseDocument> {
-  return parseDocument(readFileSync(configPath, 'utf8'));
-}
-
-function saveConfigDoc(configPath: string, doc: ReturnType<typeof parseDocument>): void {
-  writeFileSync(configPath, doc.toString(), 'utf8');
-}
-
 /**
  * Write a starter YAML config + an empty SQLite DB. The workspace starts with
  * NO entities (no example `items` table as of 1.16.3) — the user defines their

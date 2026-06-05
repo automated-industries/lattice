@@ -96,8 +96,10 @@ shipped across 1.16.x), not a breaking change.
   two copies); `createFileJunction` / `createUserJunction` share a single
   `materializeJunction` core; the GUI `summarize` module re-exports the
   library's `parseObjects`/`parseMatches` + shared types instead of duplicating
-  them; and a parity test pins the `rowLabel` ↔ `fsDisplayName` contract so the
-  server and client label logic can't silently drift.
+  them; the config-document + DDL IO helpers (`execSql` / `loadConfigDoc` /
+  `saveConfigDoc`) moved out of the request dispatcher into `gui/config-io.ts`;
+  and a parity test pins the `rowLabel` ↔ `fsDisplayName` contract so the server
+  and client label logic can't silently drift.
 
 ### Performance
 
