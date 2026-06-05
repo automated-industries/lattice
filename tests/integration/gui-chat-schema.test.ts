@@ -69,7 +69,7 @@ afterEach(async () => {
   }
 });
 
-async function boot(): Promise<GuiServerHandle> {
+async function boot(autoRender = false): Promise<GuiServerHandle> {
   const root = mkdtempSync(join(tmpdir(), 'lattice-chatschema-'));
   dirs.push(root);
   mkdirSync(join(root, 'data'), { recursive: true });
@@ -95,6 +95,7 @@ async function boot(): Promise<GuiServerHandle> {
     outputDir: join(root, 'context'),
     port: 0,
     openBrowser: false,
+    autoRender,
   });
   servers.push(server);
   return server;
@@ -192,5 +193,43 @@ describe('assistant schema creation via POST /api/chat', () => {
         (e) => e.operation === 'schema.create_junction' && e.table_name === 'projects_tickets',
       ),
     ).toBe(true);
+  });
+
+  it('renders a chat-created entity automatically in workspace mode (no reopen)', async () => {
+    const server = await boot(true); // workspace mode: autoRender on
+    turnState.turns = [
+      {
+        text: 'Creating a people table.',
+        toolUses: [
+          { id: 'u1', name: 'create_entity', input: { name: 'people', columns: ['name', 'role'] } },
+          {
+            id: 'u2',
+            name: 'create_row',
+            input: { table: 'people', values: { id: 'pe1', name: 'Jarrod Wolf', role: 'Eng' } },
+          },
+        ],
+      },
+      { text: 'Done — created people and added a person.' },
+    ];
+
+    const res = await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'create a people object' }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    // Auto-render is debounced; give it a beat to flush after the insert.
+    await new Promise((r) => setTimeout(r, 500));
+
+    // The runtime-created entity has a rendered per-row context — the canonical
+    // context was registered inline at creation (no reopen), so the row view no
+    // longer shows "No rendered context for this row".
+    const ctx = (await fetch(`${server.url}/api/tables/people/rows/pe1/context`).then((r) =>
+      r.json(),
+    )) as { files: { name: string }[] };
+    expect(ctx.files.length).toBeGreaterThan(0);
+    expect(ctx.files.some((f) => /PERSON\.md|PEOPLE\.md|CONTEXT\.md/i.test(f.name))).toBe(true);
   });
 });

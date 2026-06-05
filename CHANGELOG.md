@@ -70,6 +70,17 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **Runtime-created tables now render their context automatically — creation and
+  "make it renderable" are one step.** When the chat assistant or the Context
+  Constructor creates a table at runtime (no DB reopen), it now registers the
+  table's canonical entity context inline — on both the Lattice schema (so
+  auto-render writes the markdown) and the GUI's row-context snapshot (so the
+  view can find it). Previously only the data-model editor (which fully reopens
+  the DB) re-derived contexts, so a chat/ingest-created entity showed "No
+  rendered context for this row" until a manual page reload. The context
+  registration is best-effort and never fails the creation itself. Also:
+  `create_entity` now normalizes a natural name ("People" → `people`) instead of
+  silently rejecting it.
 - **Assistant API keys are now machine-level, not per-workspace.** The Claude /
   OpenAI / ElevenLabs keys (and the Claude subscription OAuth token) moved out of
   each workspace's database into a machine-local encrypted store

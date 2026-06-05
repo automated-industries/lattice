@@ -629,6 +629,13 @@ interface ActiveDb {
   feed: FeedBus;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
+  /**
+   * Workspace mode: canonical entity contexts are auto-derived and every
+   * mutation schedules a render. Drives whether a runtime schema creation
+   * registers a canonical context inline (so the new table renders without a
+   * reopen). False for plain `lattice gui --config x.yml` (manifest-only).
+   */
+  autoRender: boolean;
 }
 
 /**
@@ -1001,6 +1008,7 @@ async function openConfig(
     realtime,
     feed: new FeedBus(),
     dbPath: parsed.dbPath,
+    autoRender,
   };
 }
 
@@ -1311,6 +1319,45 @@ async function recordSchemaOp(
 }
 
 /**
+ * Register canonical entity contexts for the workspace's CURRENT tables so a
+ * table just created at runtime (by the chat assistant or the Context
+ * Constructor) renders its `Context/` immediately — the same derivation
+ * {@link openConfig} runs at startup, applied inline after the create (no
+ * reopen). Without this, a runtime-created table has no entity context, so its
+ * row view shows "No rendered context …" until the next reopen — the gap that
+ * made the editor path (which reopens) render but the chat/ingest path not.
+ *
+ * Re-derives from the freshly-saved YAML and registers a canonical context for
+ * any table that lacks one — on BOTH the Lattice schema (so `db.render()`
+ * writes the markdown) AND the `entityContextByTable` snapshot the row-context
+ * endpoint reads (so the GUI can locate those files). The subsequent row/link
+ * mutation's debounced auto-render then writes the markdown. No-op outside
+ * workspace mode (autoRender off ⇒ manifest-only `--config`).
+ *
+ * Skips tables that already have a context (`defineEntityContext` throws on a
+ * redefine), so it only equips NEWLY created tables — matching the startup
+ * derivation. Best-effort: a context-registration failure must never fail the
+ * entity creation itself (which is already persisted + audited).
+ *
+ * Creation and "make it renderable" are therefore ONE step in every runtime
+ * path — closing the inconsistency where only the reopen-based editor rendered.
+ */
+function syncCanonicalContexts(active: ActiveDb): void {
+  if (!active.autoRender) return;
+  try {
+    const parsed = parseConfigFile(active.configPath);
+    const existing = active.db.entityContexts();
+    for (const { table, definition } of deriveCanonicalContexts(parsed.tables)) {
+      if (existing.has(table)) continue;
+      active.db.defineEntityContext(table, definition);
+      active.entityContextByTable.set(table, definition);
+    }
+  } catch (e) {
+    console.warn('[gui] canonical-context sync failed:', (e as Error).message);
+  }
+}
+
+/**
  * Create (or return) the `files ↔ <otherTable>` junction so ingest can link a
  * file to an existing record even when no relationship has been modeled yet.
  * Registered on the live DB via `defineLate` (no reopen — keeps in-flight
@@ -1360,6 +1407,9 @@ async function createFileJunction(
   saveConfigDoc(active.configPath, doc);
   active.validTables.add(jName);
   active.junctionTables.add(jName);
+  // Refresh canonical contexts so the linked table gains the files rollup
+  // (and renders it) without a reopen.
+  syncCanonicalContexts(active);
   await recordSchemaOp(
     active,
     'schema.create_junction',
@@ -1435,6 +1485,9 @@ async function createUserJunction(
   saveConfigDoc(active.configPath, doc);
   active.validTables.add(forward);
   active.junctionTables.add(forward);
+  // Refresh canonical contexts so the two linked tables gain the new relation
+  // rollup (and render it) without a reopen.
+  syncCanonicalContexts(active);
   await recordSchemaOp(
     active,
     'schema.create_junction',
@@ -1461,7 +1514,15 @@ async function createUserEntity(
   columns: string[],
   sessionId: string,
 ): Promise<string | null> {
-  const entity = name.trim();
+  // Normalize to snake_case so a natural name from the model ("People", "Sales
+  // Leads") becomes a valid identifier ("people", "sales_leads") instead of a
+  // silent rejection. The dispatcher returns this canonical name to the model,
+  // which then uses it for create_row/link.
+  const entity = name
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
   if (!/^[a-z][a-z0-9_]*$/.test(entity)) return null;
   if (entity === 'files' || isNativeEntity(entity)) return null;
   // Already present this session — reuse it (the row insert handles the rest).
@@ -1500,6 +1561,9 @@ async function createUserEntity(
   doc.setIn(['entities', entity], entityDef);
   saveConfigDoc(active.configPath, doc);
   active.validTables.add(entity);
+  // Same step as creation: register the canonical context so the new table
+  // renders without a reopen (the subsequent row inserts' auto-render writes it).
+  syncCanonicalContexts(active);
   await recordSchemaOp(
     active,
     'schema.create_entity',
