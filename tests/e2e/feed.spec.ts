@@ -63,6 +63,19 @@ test('consecutive identical events collapse into one counted bubble', async ({ p
   await expect(page.locator('.feed-item .feed-summary')).toHaveText(/Added 3 rows to items/);
 });
 
+test('starting a new conversation keeps the workspace activity cards', async ({ page }) => {
+  await page.goto(gui.url);
+  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await createRow(gui.url, 'items', { name: 'keep me' });
+  await expect(page.locator('.feed-item')).toHaveCount(1);
+
+  // Selecting "New conversation" runs newChat() → clearChat(), which must NOT
+  // wipe the workspace activity cards. (Regression: auto-loading a thread on
+  // refresh ran clearChat and erased the backfilled feed.)
+  await page.locator('#rail-threads').selectOption('');
+  await expect(page.locator('.feed-item')).toHaveCount(1);
+});
+
 test('clicking a row feed item navigates to that object', async ({ page }) => {
   await page.goto(gui.url);
   await expect(page.locator('#assistant-rail')).toBeVisible();

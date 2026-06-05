@@ -70,6 +70,12 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **Activity cards no longer vanish when a conversation loads.** The chat and
+  the activity feed share the rail, and loading a conversation reset the whole
+  rail — so auto-loading the most recent thread on refresh wiped the backfilled
+  activity cards. Clearing a conversation now removes only its chat bubbles; the
+  workspace-global activity cards persist (and a workspace switch explicitly
+  resets them + reconnects the feed to the new workspace).
 - **The activity rail collapses repeated events.** A run of identical mutations
   (same op + table) — e.g. linking 20 rows during a bulk operation — now folds
   into a single bubble with a count ("Linked 20 rows in people_projects")

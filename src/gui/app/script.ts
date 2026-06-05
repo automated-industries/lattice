@@ -849,10 +849,12 @@ export const appJs = `
                 menu.hidden = true;
                 return reloadEverything();
               }).then(function () {
-                // Conversations live in the workspace DB — drop the old
-                // workspace's thread + reload this workspace's list (and its
-                // most recent conversation).
+                // Conversations + activity both live in the workspace DB. Drop
+                // the old workspace's thread + activity cards, reconnect the feed
+                // to THIS workspace, and reload its thread list (+ latest convo).
                 newChat();
+                clearActivityFeed();
+                startFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
               }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
@@ -5107,7 +5109,26 @@ export const appJs = `
     function clearChat() {
       chatHistory = [];
       var feedEl = railFeedEl();
-      if (feedEl) feedEl.innerHTML = '<div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>';
+      if (!feedEl) return;
+      // Remove only the chat bubbles. The activity cards (.feed-item) are
+      // workspace-global, not part of any one conversation — loading, switching,
+      // or starting a conversation must NOT wipe them (they're backfilled once
+      // on connect). Otherwise auto-loading a thread on refresh erases the feed.
+      var msgs = feedEl.querySelectorAll('.chat-msg');
+      for (var i = 0; i < msgs.length; i++) msgs[i].remove();
+      // Restore the empty hint only when the rail is now completely empty.
+      if (!feedEl.firstElementChild) {
+        feedEl.innerHTML = '<div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>';
+      }
+    }
+    // Drop the activity cards (e.g. when switching to another workspace, whose
+    // events are a different set). Resets the grouping anchor too.
+    function clearActivityFeed() {
+      var feedEl = railFeedEl();
+      if (!feedEl) return;
+      var items = feedEl.querySelectorAll('.feed-item');
+      for (var i = 0; i < items.length; i++) items[i].remove();
+      lastFeedGroup = null;
     }
     function newChat() {
       currentThreadId = null;
