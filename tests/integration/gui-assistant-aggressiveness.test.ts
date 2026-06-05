@@ -3,10 +3,17 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// Deterministic LLM: fixed summary + a classifier result the test controls via
-// `mockState.matches` (default: one match to the seeded project).
+// Deterministic LLM: fixed summary + classify/extract results the test controls
+// via `mockState` (defaults: one classify match, no extracted objects).
 const mockState = vi.hoisted(() => ({
   matches: [{ table: 'projects', id: 'proj-1' }] as { table: string; id: string }[],
+  objects: [] as {
+    entity: string;
+    isNew: boolean;
+    columns: string[];
+    values: Record<string, string>;
+    label: string;
+  }[],
 }));
 vi.mock('../../src/gui/ai/chat.js', async (orig) => {
   const actual = await orig();
@@ -18,6 +25,7 @@ vi.mock('../../src/gui/ai/summarize.js', async (orig) => {
     ...actual,
     summarizeText: () => Promise.resolve('a deterministic summary'),
     classifyLinks: () => Promise.resolve(mockState.matches),
+    extractObjects: () => Promise.resolve(mockState.objects),
   };
 });
 
@@ -31,6 +39,7 @@ beforeEach(() => {
   savedKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
   mockState.matches = [{ table: 'projects', id: 'proj-1' }];
+  mockState.objects = [];
 });
 afterEach(async () => {
   if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
@@ -181,6 +190,66 @@ describe('inference aggressiveness', () => {
     };
     expect(notes.rows).toHaveLength(1);
     expect(notes.rows[0]).toMatchObject({ title: 'spark', source_file_id: fileId });
+  });
+
+  it('builds a NEW entity + row + link from a document (Context Constructor)', async () => {
+    const server = await boot();
+    mockState.matches = []; // nothing existing to link
+    mockState.objects = [
+      {
+        entity: 'invoices',
+        isNew: true,
+        columns: ['invoice_number', 'vendor', 'total_due'],
+        values: { invoice_number: 'INV-2026-114', vendor: 'Globex', total_due: '6400' },
+        label: 'INV-2026-114',
+      },
+    ];
+    await fetch(`${server.url}/api/assistant/aggressiveness`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 0.7 }),
+    });
+
+    const ing = await fetch(`${server.url}/api/ingest/text`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'INVOICE INV-2026-114 from Globex, total 6400', title: 'inv' }),
+    });
+    const { id: fileId } = (await ing.json()) as { id: string };
+
+    // The 'invoices' entity was created with the inferred columns…
+    const ents = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
+      tables: { name: string; columns: string[] }[];
+    };
+    const invoices = ents.tables.find((t) => t.name === 'invoices');
+    expect(invoices).toBeTruthy();
+    expect(invoices?.columns).toEqual(
+      expect.arrayContaining(['invoice_number', 'vendor', 'total_due']),
+    );
+
+    // …populated with the extracted row…
+    const rows = (await fetch(`${server.url}/api/tables/invoices/rows`).then((r) => r.json())) as {
+      rows: Record<string, unknown>[];
+    };
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]).toMatchObject({ invoice_number: 'INV-2026-114', vendor: 'Globex' });
+
+    // …and the source file linked to it via an auto-created junction.
+    const links = (await fetch(`${server.url}/api/tables/files_invoices/rows`).then((r) =>
+      r.json(),
+    )) as { rows: Record<string, unknown>[] };
+    expect(links.rows).toHaveLength(1);
+    expect(links.rows[0]).toMatchObject({ file_id: fileId });
+
+    // Everything is in the audit log → reversible.
+    const hist = (await fetch(`${server.url}/api/history?limit=50`).then((r) => r.json())) as {
+      entries: { operation: string; table_name: string }[];
+    };
+    expect(
+      hist.entries.some(
+        (e) => e.operation === 'schema.create_entity' && e.table_name === 'invoices',
+      ),
+    ).toBe(true);
   });
 
   it('low aggressiveness does NOT auto-create a note (just stores the source)', async () => {

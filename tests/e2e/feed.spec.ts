@@ -37,7 +37,5 @@ test('clicking a row feed item navigates to that object', async ({ page }) => {
   await item.click();
 
   // Navigates to the row detail (#/fs/items/<id> in simple mode).
-  await expect
-    .poll(() => page.evaluate(() => location.hash))
-    .toContain('items/' + String(created.id));
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain('items/' + created.id);
 });

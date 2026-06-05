@@ -1347,6 +1347,69 @@ async function createFileJunction(
   return { junction: jName, fileFk, otherTable, otherFk };
 }
 
+/**
+ * Create (or return) a user entity the Context Constructor inferred from an
+ * ingested document. Registered on the live DB via `defineLate` (no reopen),
+ * persisted to config, and recorded as a revertible `schema.create_entity` op.
+ * Columns are sanitized identifiers (capped). Returns the entity name, or null
+ * when it can't be created (native/junction/invalid/soft-deleted twin). Mirrors
+ * the manual create-entity path; reused by the ingest pipeline.
+ */
+async function createUserEntity(
+  active: ActiveDb,
+  name: string,
+  columns: string[],
+  sessionId: string,
+): Promise<string | null> {
+  const entity = name.trim();
+  if (!/^[a-z][a-z0-9_]*$/.test(entity)) return null;
+  if (entity === 'files' || isNativeEntity(entity)) return null;
+  // Already present this session — reuse it (the row insert handles the rest).
+  if (active.validTables.has(entity) || active.db.getRegisteredTableNames().includes(entity)) {
+    return active.validTables.has(entity) && !active.junctionTables.has(entity) ? entity : null;
+  }
+  if (await physicalTableExists(active, entity)) return null;
+
+  const reserved = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
+  const cols = Array.from(
+    new Set(
+      columns
+        .map((c) => c.trim().toLowerCase())
+        .filter((c) => /^[a-z][a-z0-9_]*$/.test(c) && !reserved.has(c)),
+    ),
+  ).slice(0, 12);
+  const colDdl = cols.map((c) => `, "${c}" TEXT`).join('');
+  await execSql(
+    active.db,
+    `CREATE TABLE "${entity}" (id TEXT PRIMARY KEY${colDdl}, deleted_at TEXT)`,
+  );
+  await active.db.defineLate(entity, {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      ...Object.fromEntries(cols.map((c) => [c, 'TEXT'])),
+      deleted_at: 'TEXT',
+    },
+  });
+  const fields: Record<string, unknown> = { id: { type: 'uuid', primaryKey: true } };
+  for (const c of cols) fields[c] = { type: 'text' };
+  fields.deleted_at = { type: 'text' };
+  const entityDef = { fields, outputFile: entity.toUpperCase() + '.md' };
+  const doc = loadConfigDoc(active.configPath);
+  doc.setIn(['entities', entity], entityDef);
+  saveConfigDoc(active.configPath, doc);
+  active.validTables.add(entity);
+  await recordSchemaOp(
+    active,
+    'schema.create_entity',
+    entity,
+    null,
+    { entity, entityDef },
+    `Created table ${entity}`,
+    sessionId,
+  );
+  return entity;
+}
+
 type EntityPayload = { entity: string; entityDef: unknown };
 type FieldPayload = { entity: string; column: string; fieldDef: unknown };
 type RenameEntityPayload = { entity: string };
@@ -3627,6 +3690,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             fileJunctions: fileJunctions(active.configPath, active.outputDir),
             entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
             createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
+            createEntity: (entity, columns) => createUserEntity(active, entity, columns, sessionId),
             aggressiveness: await getAggressiveness(active.db),
             pathname,
             method,

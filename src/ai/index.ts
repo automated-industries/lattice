@@ -22,6 +22,18 @@ export type { EnrichOptions, EnrichResult } from './enrich.js';
 export { describeImage, describePdf } from './vision.js';
 export type { VisionOptions, VisionSenderInput, PdfOptions, PdfSenderInput } from './vision.js';
 
-export { summarizeText, classifyLinks, parseMatches } from './summarize.js';
-export type { CatalogEntity, CatalogRecord, ClassifyMatch } from './summarize.js';
+export {
+  summarizeText,
+  classifyLinks,
+  parseMatches,
+  extractObjects,
+  parseObjects,
+} from './summarize.js';
+export type {
+  CatalogEntity,
+  CatalogRecord,
+  ClassifyMatch,
+  SchemaEntity,
+  ExtractedObject,
+} from './summarize.js';
 export type { LlmClient, TurnParams, TurnResult, LlmMessage } from './llm-client.js';

@@ -20,8 +20,10 @@ import { createAnthropicClient } from './ai/chat.js';
 import {
   summarizeText,
   classifyLinks,
+  extractObjects,
   type CatalogEntity,
   type ClassifyMatch,
+  type SchemaEntity,
 } from './ai/summarize.js';
 
 /**
@@ -51,6 +53,12 @@ interface IngestContext {
    * Injected by the server so ingest stays decoupled from config/reopen plumbing.
    */
   createJunction?: (otherTable: string) => Promise<FileJunction | null>;
+  /**
+   * Create (or fetch) a user entity the Context Constructor inferred from the
+   * document. Audited + revertible (schema op). Returns the entity name, or null
+   * when it can't be created. Injected by the server.
+   */
+  createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
   /** Inference aggressiveness 0..1 (drives temperature + auto-junction gating). */
   aggressiveness?: number;
   pathname: string;
@@ -163,6 +171,19 @@ async function buildCatalog(
   return out;
 }
 
+/** The user's current entity schema (name + columns), for the object extractor. */
+function buildSchema(db: Lattice): SchemaEntity[] {
+  const out: SchemaEntity[] = [];
+  for (const name of db.getRegisteredTableNames()) {
+    if (name.startsWith('_lattice_') || name.startsWith('__lattice_')) continue;
+    if (isNativeEntity(name)) continue;
+    const cols = db.getRegisteredColumns(name);
+    if (!cols || isLikelyJunction(cols)) continue;
+    out.push({ table: name, columns: Object.keys(cols).filter((c) => !STRUCTURAL.has(c)) });
+  }
+  return out;
+}
+
 /**
  * When a Claude token is configured, replace the heuristic description with an
  * LLM summary and surface which existing records the file relates to (as feed
@@ -178,6 +199,7 @@ async function enrichWithLlm(
   descriptions: Record<string, string>,
   createJunction?: (otherTable: string) => Promise<FileJunction | null>,
   aggressiveness: number = DEFAULT_AGGRESSIVENESS,
+  createEntity?: (entity: string, columns: string[]) => Promise<string | null>,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
@@ -265,11 +287,71 @@ async function enrichWithLlm(
       }
     }
 
-    // Auto-create a new object when the source fit NOTHING in the user's schema
-    // and aggressiveness is high. Mirrors organizeSource's fallback: a native
-    // `notes` object capturing the source, linked back via `source_file_id`.
-    // Audited + reversible like any other ingest write.
-    if (linkedCount === 0 && aggressiveness >= 0.66 && text.trim().length > 0) {
+    // Context Constructor: extract the structured objects the document is ABOUT
+    // and build them into the schema — reuse an existing entity, or CREATE a new
+    // one (inferred columns) when nothing fits — then create the row and link the
+    // file. Active at default aggressiveness; new-entity creation gated at ≥ 0.5.
+    // Every write is audited + reversible.
+    let createdCount = 0;
+    if (createEntity && aggressiveness >= 0.4) {
+      try {
+        const proposed = await extractObjects(client, text, name, buildSchema(db), temperature);
+        const allowNewEntity = aggressiveness >= 0.5;
+        const existing = new Set(db.getRegisteredTableNames().filter((t) => !isNativeEntity(t)));
+        for (const obj of proposed) {
+          // Resolve the target entity: reuse an existing one, else create it.
+          let entity: string | null = existing.has(obj.entity) ? obj.entity : null;
+          if (!entity && allowNewEntity) {
+            entity = await createEntity(obj.entity, obj.columns);
+            if (entity) existing.add(entity);
+          }
+          if (!entity) continue;
+          // Keep only values that map to real columns on the resolved entity.
+          const cols = db.getRegisteredColumns(entity);
+          if (!cols) continue;
+          const row: Record<string, unknown> = { id: crypto.randomUUID() };
+          for (const [k, v] of Object.entries(obj.values)) if (k in cols) row[k] = v;
+          if ('name' in cols && row.name == null) row.name = obj.label;
+          if ('title' in cols && row.title == null) row.title = obj.label;
+          try {
+            const { id: rowId } = await createRow(mctx, entity, row);
+            createdCount++;
+            // Link the source file to the new object (auto-create the junction).
+            const ent = entity;
+            const jx =
+              junctions.find((j) => j.otherTable === ent) ??
+              (createJunction ? await createJunction(ent) : null);
+            if (jx) {
+              await linkRows(mctx, jx.junction, {
+                id: crypto.randomUUID(),
+                [jx.fileFk]: fileId,
+                [jx.otherFk]: rowId,
+              });
+            }
+            mctx.feed.publish({
+              table: entity,
+              op: 'insert',
+              rowId,
+              source: 'ingest',
+              summary: `Created ${entity} "${obj.label}" from ${name}`,
+            });
+          } catch (e) {
+            console.warn(`[ingest] create ${entity} from document failed:`, (e as Error).message);
+          }
+        }
+      } catch (e) {
+        console.warn('[ingest] object extraction failed:', (e as Error).message);
+      }
+    }
+
+    // Last resort: nothing linked AND nothing created, at high aggressiveness —
+    // capture the source as a native `notes` object so it isn't lost.
+    if (
+      linkedCount === 0 &&
+      createdCount === 0 &&
+      aggressiveness >= 0.66 &&
+      text.trim().length > 0
+    ) {
       try {
         const title = name.replace(/\.[^./\\]+$/, '').trim() || 'Note';
         const body = description.length > 0 ? description : text.slice(0, 2000);
@@ -437,6 +519,7 @@ export async function dispatchIngestRoute(
           ctx.entityDescriptions,
           ctx.createJunction,
           ctx.aggressiveness,
+          ctx.createEntity,
         );
     sendJson(
       res,
@@ -499,6 +582,7 @@ export async function dispatchIngestRoute(
       ctx.entityDescriptions,
       ctx.createJunction,
       ctx.aggressiveness,
+      ctx.createEntity,
     );
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
@@ -556,6 +640,7 @@ export async function dispatchIngestRoute(
           ctx.entityDescriptions,
           ctx.createJunction,
           ctx.aggressiveness,
+          ctx.createEntity,
         );
     sendJson(
       res,
