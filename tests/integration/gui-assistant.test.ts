@@ -6,17 +6,31 @@ import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
-let savedKey: string | undefined;
+const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  // Isolate the env fallback so assertions reflect only the stored DB row.
-  savedKey = process.env.ANTHROPIC_API_KEY;
+  // Isolate the env fallback so assertions reflect only the stored credential.
+  savedEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
+  // Credentials are now machine-level (assistant-credentials.enc under the
+  // config dir), not in the workspace DB — so point the config dir at a fresh
+  // temp dir per test. Without this the store would land in the real ~/.lattice
+  // and leak the key between tests (and pollute the dev machine, Rule 26).
+  savedEnv.LATTICE_CONFIG_DIR = process.env.LATTICE_CONFIG_DIR;
+  savedEnv.LATTICE_ENCRYPTION_KEY = process.env.LATTICE_ENCRYPTION_KEY;
+  const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-assistant-cfg-'));
+  dirs.push(cfgDir);
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'assistant-test-key';
 });
 
 afterEach(async () => {
-  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedKey;
+  if (savedEnv.ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = savedEnv.ANTHROPIC_API_KEY;
+  if (savedEnv.LATTICE_CONFIG_DIR === undefined) delete process.env.LATTICE_CONFIG_DIR;
+  else process.env.LATTICE_CONFIG_DIR = savedEnv.LATTICE_CONFIG_DIR;
+  if (savedEnv.LATTICE_ENCRYPTION_KEY === undefined) delete process.env.LATTICE_ENCRYPTION_KEY;
+  else process.env.LATTICE_ENCRYPTION_KEY = savedEnv.LATTICE_ENCRYPTION_KEY;
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
@@ -78,6 +92,42 @@ describe('assistant key storage', () => {
       hasAnthropicKey: boolean;
     };
     expect(cfg2.hasAnthropicKey).toBe(false);
+  });
+
+  it('keeps a stored key when a different workspace opens (machine-level, not per-DB)', async () => {
+    // Workspace A: store the key.
+    const a = writeMinimalConfig();
+    const serverA = await startGuiServer({
+      configPath: a.configPath,
+      outputDir: a.outputDir,
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(serverA);
+    const put = await fetch(`${serverA.url}/api/assistant/key`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'sk-ant-cross-workspace' }),
+    });
+    expect(put.status).toBe(200);
+
+    // Workspace B: a DIFFERENT database (different config + db file), same
+    // machine config dir. The key must still be present — this is the
+    // regression: creating/switching a workspace used to de-attach it.
+    const b = writeMinimalConfig();
+    expect(b.configPath).not.toBe(a.configPath);
+    const serverB = await startGuiServer({
+      configPath: b.configPath,
+      outputDir: b.outputDir,
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(serverB);
+    const cfgB = (await fetch(`${serverB.url}/api/assistant/config`).then((r) => r.json())) as {
+      hasAnthropicKey: boolean;
+    } & Record<string, unknown>;
+    expect(cfgB.hasAnthropicKey).toBe(true);
+    expect(JSON.stringify(cfgB)).not.toContain('sk-ant-cross-workspace');
   });
 
   it('stores + clears an explicit voice-provider preference', async () => {

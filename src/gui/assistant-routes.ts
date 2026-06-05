@@ -12,6 +12,11 @@ import {
   refreshAccessToken,
 } from './ai/oauth.js';
 import type { ClaudeAuth } from './ai/chat.js';
+import {
+  getAssistantCredential,
+  setAssistantCredential,
+  deleteAssistantCredential,
+} from '../framework/user-config.js';
 
 const CLAUDE_OAUTH_KIND = 'claude_oauth';
 
@@ -139,12 +144,47 @@ async function secretValue(db: Lattice, kind: string): Promise<string | null> {
 }
 
 /**
- * Resolve the Claude API token. Prefers the encrypted `secrets` row; falls
- * back to the `ANTHROPIC_API_KEY` env var. Server-side only.
+ * Read a credential that belongs at the USER/MACHINE level — API keys and
+ * OAuth tokens — not inside a single workspace database. A Claude key is a
+ * property of the machine + user; storing it per-DB meant creating a new
+ * workspace started with an empty `secrets` table and the key appeared to
+ * "de-attach". These live in the machine-local encrypted store
+ * (`<config>/assistant-credentials.enc`) so they persist across every
+ * workspace. (The aggressiveness + voice-provider *preferences* stay
+ * per-workspace — they aren't secrets and aren't shared.)
+ *
+ * Precedence:
+ *   1. the machine-local store (survives workspace switch/create),
+ *   2. the active workspace's `secrets` table — back-compat for a key saved
+ *      before this moved machine-level; when found there it is PROMOTED to the
+ *      machine store (best-effort) so it works from every workspace thereafter.
+ * The env-var fallback is layered on by the individual callers.
+ */
+async function readMachineCredential(db: Lattice, kind: string): Promise<string | null> {
+  const fromMachine = getAssistantCredential(kind);
+  if (fromMachine) return fromMachine;
+  const fromDb = await secretValue(db, kind);
+  if (fromDb) {
+    try {
+      setAssistantCredential(kind, fromDb);
+    } catch {
+      // best-effort promotion — a read must never fail on a write error
+    }
+    return fromDb;
+  }
+  return null;
+}
+
+/**
+ * Resolve the Claude API token. Prefers the machine-local credential store
+ * (persists across workspaces), then the workspace `secrets` row (back-compat),
+ * then the `ANTHROPIC_API_KEY` env var. Server-side only.
  */
 export async function getAnthropicApiKey(db: Lattice): Promise<string | null> {
   return (
-    (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null
+    (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
+    process.env.ANTHROPIC_API_KEY ??
+    null
   );
 }
 
@@ -184,9 +224,13 @@ export function aggressivenessToTemperature(aggressiveness: number): number {
 
 export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential | null> {
   const openai =
-    (await secretValue(db, CREDENTIALS.openai.kind)) ?? process.env.OPENAI_API_KEY ?? null;
+    (await readMachineCredential(db, CREDENTIALS.openai.kind)) ??
+    process.env.OPENAI_API_KEY ??
+    null;
   const eleven =
-    (await secretValue(db, CREDENTIALS.elevenlabs.kind)) ?? process.env.ELEVENLABS_API_KEY ?? null;
+    (await readMachineCredential(db, CREDENTIALS.elevenlabs.kind)) ??
+    process.env.ELEVENLABS_API_KEY ??
+    null;
   const pref = await secretValue(db, STT_PROVIDER_KIND);
   // Honor an explicit choice when its key is available, else infer (OpenAI first).
   if (pref === 'elevenlabs' && eleven) return { provider: 'elevenlabs', apiKey: eleven };
@@ -197,7 +241,9 @@ export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential |
 }
 
 async function hasCredential(db: Lattice, name: CredentialName, envVar: string): Promise<boolean> {
-  return Boolean(await secretValue(db, CREDENTIALS[name].kind)) || Boolean(process.env[envVar]);
+  return (
+    Boolean(await readMachineCredential(db, CREDENTIALS[name].kind)) || Boolean(process.env[envVar])
+  );
 }
 
 interface StoredOAuthTokens {
@@ -216,7 +262,7 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
   // Treat an empty env var the same as unset, so `||` (not `??`) is correct here.
   // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
   const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
-  const oauthRaw = await secretValue(db, CLAUDE_OAUTH_KIND);
+  const oauthRaw = await readMachineCredential(db, CLAUDE_OAUTH_KIND);
   if (oauthRaw) {
     try {
       let tokens = JSON.parse(oauthRaw) as StoredOAuthTokens;
@@ -233,7 +279,9 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
           refresh_token: refreshed.refresh_token ?? tokens.refresh_token,
           expires_at: refreshed.expires_at,
         };
-        await storeSecret(db, CLAUDE_OAUTH_KIND, 'Claude subscription', JSON.stringify(tokens));
+        // Refreshed tokens persist machine-level so the subscription stays
+        // connected across every workspace, not just the one that linked it.
+        setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
       }
       if (tokens.access_token) return { authToken: tokens.access_token, betaHeader };
     } catch {
@@ -241,14 +289,16 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
     }
   }
   const apiKey =
-    (await secretValue(db, CREDENTIALS.anthropic.kind)) ?? process.env.ANTHROPIC_API_KEY ?? null;
+    (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
+    process.env.ANTHROPIC_API_KEY ??
+    null;
   return apiKey ? { apiKey } : null;
 }
 
 /** Whether any Claude auth (subscription OR API key) is configured. */
 export async function hasClaudeAuth(db: Lattice): Promise<boolean> {
   return (
-    Boolean(await secretValue(db, CLAUDE_OAUTH_KIND)) ||
+    Boolean(await readMachineCredential(db, CLAUDE_OAUTH_KIND)) ||
     (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY'))
   );
 }
@@ -346,20 +396,14 @@ export async function dispatchAssistantRoute(
       return true;
     }
     const cred = CREDENTIALS[name];
-    const [first, ...extras] = await liveSecretsOfKind(db, cred.kind);
-    if (first) {
-      await db.update('secrets', first.id, { value: key, name: cred.name });
-      for (const extra of extras) {
-        await db.update('secrets', extra.id, { deleted_at: new Date().toISOString() });
-      }
-    } else {
-      await db.insert('secrets', {
-        id: crypto.randomUUID(),
-        name: cred.name,
-        kind: cred.kind,
-        value: key,
-        description: `${cred.name} used by the assistant sidebar.`,
-      });
+    // Store machine-level (assistant-credentials.enc) so the key persists
+    // across every workspace — switching or creating a workspace no longer
+    // de-attaches it. Retire any copy left in the active workspace's secrets
+    // table (pre-machine installs stored it there); the machine store is now
+    // the source of truth.
+    setAssistantCredential(cred.kind, key);
+    for (const row of await liveSecretsOfKind(db, cred.kind)) {
+      await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
     }
     sendJson(res, { ok: true });
     return true;
@@ -373,6 +417,9 @@ export async function dispatchAssistantRoute(
       sendJson(res, { error: `unknown credential kind: ${name}` }, 400);
       return true;
     }
+    // Clear the machine-level store AND any leftover copy in the active
+    // workspace's secrets table.
+    deleteAssistantCredential(CREDENTIALS[name].kind);
     for (const row of await liveSecretsOfKind(db, CREDENTIALS[name].kind)) {
       await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
     }

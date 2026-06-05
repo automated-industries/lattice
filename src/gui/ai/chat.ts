@@ -18,14 +18,60 @@ import type { ChatStreamEvent } from './sse.js';
  */
 
 export const DEFAULT_MODEL = 'claude-haiku-4-5';
-const MAX_TOOL_LOOPS = 8;
-const MAX_TOKENS = 2048;
+// Tool-loop + output budget. Sized for multi-step agentic work — e.g. "create
+// one row per line of an attached CSV" needs many tool rounds, and each turn
+// may emit several tool_use blocks, so a 2048-token cap truncated bulk work.
+// (Capacity, not a workaround — see CHANGELOG; flagged for review per Rule 12.)
+const MAX_TOOL_LOOPS = 16;
+const MAX_TOKENS = 4096;
 
-const SYSTEM_PROMPT =
-  'You are the assistant inside a Lattice database GUI. Help the user inspect ' +
-  'and edit their data by calling the provided tools. Prefer reading (listing ' +
-  'rows, fetching a row) before writing. When you change data, briefly confirm ' +
-  'what you did. Be concise.';
+const BASE_SYSTEM_PROMPT = [
+  'You are the assistant inside a Lattice database GUI. Help the user inspect and edit their data by calling the provided tools.',
+  '',
+  'Rules:',
+  '- Use ONLY the exact table names listed under "Current database" below. Never invent or guess a table name. You cannot create tables — if nothing fits, say so.',
+  '- Prefer reading (list_rows, get_row) before writing.',
+  "- Attached files are rows in the `files` table; a file's full text content (CSV, document, etc.) is in its `extracted_text` column. To work from an attached file, read the relevant `files` row(s) and parse `extracted_text` — never guess a file's contents.",
+  '- A tool result that contains "error" means the call FAILED. Do NOT claim success or proceed as if it returned data — read the error, correct your arguments (e.g. use a valid table name or id), and retry.',
+  '- For bulk work, emit several tool calls in one turn instead of one at a time.',
+  '- When you change data, briefly confirm what you did. Be concise.',
+].join('\n');
+
+/**
+ * A compact description of the live database — table names, columns, and row
+ * counts — appended to the system prompt so the model calls tools with REAL
+ * table names instead of guessing (guessing was the source of the "Unknown
+ * table" → "Could not fetch/list row" errors, and across turns the model has no
+ * other way to know what exists since history is text-only). Junctions are
+ * marked so link/unlink target the right table. Best-effort: a count failure
+ * never aborts the turn.
+ */
+async function buildSchemaContext(d: DispatchCtx): Promise<string> {
+  const names = [...d.validTables].filter((n) => !n.startsWith('_')).sort();
+  if (names.length === 0) {
+    return '(no tables yet — the user must create one before you can add rows)';
+  }
+  const lines: string[] = [];
+  for (const t of names) {
+    const cols = d.db.getRegisteredColumns(t);
+    const colNames = cols ? Object.keys(cols).filter((c) => c !== 'deleted_at') : [];
+    let count = 0;
+    try {
+      count = await d.db.count(t);
+    } catch {
+      // best-effort — list the table even if the count query fails
+    }
+    const tag = d.junctionTables.has(t) ? ' [junction]' : '';
+    lines.push(
+      `- ${t}${tag} (${colNames.join(', ')}) — ${String(count)} row${count === 1 ? '' : 's'}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function buildSystemPrompt(schema: string): string {
+  return `${BASE_SYSTEM_PROMPT}\n\n# Current database\n${schema}`;
+}
 
 /** A content block in the Anthropic message format we use. */
 export type ContentBlock =
@@ -94,6 +140,10 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     ...(opts.history ?? []),
     { role: 'user', content: opts.userMessage },
   ];
+  // Build the schema-aware system prompt once per turn — gives the model the
+  // real table list so it stops guessing (and re-establishes context each turn,
+  // since the persisted history is text-only).
+  const system = buildSystemPrompt(await buildSchemaContext(opts.dispatch));
 
   try {
     for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
@@ -101,7 +151,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       yield { type: 'assistant_message_start', id: `m${String(loop)}` };
       const turn = await opts.client.runTurn({
         model,
-        system: SYSTEM_PROMPT,
+        system,
         messages,
         tools,
         ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),

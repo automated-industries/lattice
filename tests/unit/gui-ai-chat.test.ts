@@ -62,7 +62,13 @@ describe('chat tool loop', () => {
     });
     await db.init();
     feed = new FeedBus();
-    dispatch = { db, feed, validTables: new Set(['people']), softDeletable: new Set(['people']) };
+    dispatch = {
+      db,
+      feed,
+      validTables: new Set(['people']),
+      junctionTables: new Set(),
+      softDeletable: new Set(['people']),
+    };
   });
 
   afterEach(() => {
@@ -114,6 +120,27 @@ describe('chat tool loop', () => {
     const row = (await db.get('people', 'p1')) as { name: string } | null;
     expect(row?.name).toBe('Ada');
     expect(feedEvents.some((e) => e.op === 'insert' && e.source === 'ai')).toBe(true);
+  });
+
+  it('injects the live schema (table names) + file guidance into the system prompt', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        for (const ch of 'ok'.split(' ')) params.onText(ch);
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'what tables exist?' }));
+
+    // The model is told the REAL table name so it never has to guess (guessing
+    // produced the "Unknown table" → "Could not fetch/list row" errors).
+    expect(capturedSystem).toContain('# Current database');
+    expect(capturedSystem).toContain('people');
+    // And where an attached file's content lives, so it reads CSV/doc text.
+    expect(capturedSystem).toContain('extracted_text');
+    // And not to claim success after a failed tool call.
+    expect(capturedSystem.toLowerCase()).toContain('error');
   });
 
   it('surfaces a tool error as a tool_result(isError) without aborting the stream', async () => {

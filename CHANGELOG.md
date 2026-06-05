@@ -70,6 +70,25 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **Assistant API keys are now machine-level, not per-workspace.** The Claude /
+  OpenAI / ElevenLabs keys (and the Claude subscription OAuth token) moved out of
+  each workspace's database into a machine-local encrypted store
+  (`<config>/assistant-credentials.enc`, AES-GCM under the master key, the same
+  scheme as `db-credentials.enc`). Creating or switching a workspace no longer
+  "de-attaches" the key — a key is a property of the user + machine, not of one
+  database. A key saved in a workspace before this change is read back (and
+  promoted to the machine store) for backward compatibility.
+- **The assistant chat now knows your schema, so it stops guessing.** Each turn
+  the system prompt is built with the live table list (names, columns, row
+  counts) plus guidance that an attached file's content lives in its `files`
+  row's `extracted_text` column. Previously the model received no schema context
+  and blindly guessed table names — producing "Unknown table" → "Could not fetch
+  row" / "Could not list rows" errors — and, because persisted history is
+  text-only, lost that context every turn. The prompt now also tells the model
+  not to claim success after a failed tool call. The tool-loop + output budget
+  (`MAX_TOOL_LOOPS` 8→16, `MAX_TOKENS` 2048→4096) were raised so multi-step bulk
+  work (e.g. "create one row per line of an attached CSV") isn't truncated.
+  *(Capacity tuning, not a workaround — flagged for review per Rule 12.)*
 - **Auto-created objects now have human-readable names.** The Context
   Constructor gives every inferred entity a leading `name` column and fills it
   with the object's extracted label, so a card reads "Acme Consulting Agreement"
