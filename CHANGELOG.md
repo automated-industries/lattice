@@ -21,6 +21,13 @@ shipped across 1.16.x), not a breaking change.
 
 ### Added
 
+- **AI library surface (`import { … } from 'latticesql'`).** A first-class,
+  GUI-independent AI API — inert without an LLM client: `organizeSource` (sort a
+  source into your own schema: summarize + classify + link, creating a new
+  object only when nothing fits), `describeImage` (image vision), `crawlUrl`
+  (SSRF-guarded URL fetch + readable-text extraction), `enrichKnowledge`, plus
+  the `summarizeText`/`classifyLinks` primitives and `LlmClient` types. New
+  optional deps: `sharp` + `file-type` (lazy-loaded); `jsdom` + `@mozilla/readability`.
 - **Assistant rail (chat + activity feed).** A resizable sidebar (mobile
   bottom-drawer) with a Claude tool-calling chat loop streamed over SSE
   (`POST /api/chat`) and a live activity feed (`GET /api/feed/stream`). Every
@@ -28,11 +35,13 @@ shipped across 1.16.x), not a breaking change.
   a manual edit — so it lands in the version history and can be reverted.
 - **Context Constructor — drag-drop / click-upload / paste ingest.** Drop files
   on the rail (or use the paperclip) and they're referenced as native `files`
-  rows (not copied), text-extracted (with optional `markitdown` for PDFs/Office),
-  summarized with **Claude Haiku**, and classified against your existing records.
-  Three operations happen automatically, all reversible: **add** the source
-  object, **enrich** its description, and **link** it to related records —
-  **auto-creating the junction table when none exists yet**.
+  rows (not copied), **extracted** (text via optional `markitdown` for PDFs/Office;
+  **images via Claude vision**; a pasted **URL is crawled** for readable text and
+  the source URL preserved), summarized with **Claude Haiku**, and classified
+  against your existing records. Then, all reversible: **add** the source object,
+  **enrich** its description, **link** it to related records —
+  **auto-creating the junction table when none exists yet** — and, when a source
+  fits nothing and aggressiveness is high, **auto-create a new object** for it.
 - **"Connect Claude" + subscription OAuth.** Encrypted API-key storage in the
   native `secrets` entity (env-var fallback: `ANTHROPIC_API_KEY`). A standard
   Authorization-Code + PKCE flow for connecting a Claude subscription is built

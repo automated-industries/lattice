@@ -27,19 +27,32 @@ use the thread switcher to revisit them.
 
 ## The Context Constructor (file & text ingest)
 
-Drag files onto the rail, click the paperclip, or paste text. For each source:
+Drag files onto the rail, click the paperclip, or paste text (or a URL). For each
+source:
 
 1. **Referenced, not copied.** The source becomes a native `files` row that
    points at the original; bytes are not moved into Lattice.
 2. **Extracted.** Plain text/markdown/code is read directly; PDFs and Office
    docs go through the optional [`markitdown`](https://github.com/microsoft/markitdown)
-   CLI (`MARKITDOWN_BIN`, or on `PATH`). Without it, the file is still referenced
-   and marked `extraction_status='skipped'`.
+   CLI (`MARKITDOWN_BIN`, or on `PATH`); **images are described by Claude vision**;
+   a pasted **bare URL is crawled** for readable text (and the URL preserved on the
+   row as a `cloud_ref`). Without `markitdown`, unsupported binaries are still
+   referenced and marked `extraction_status='skipped'`.
 3. **Summarized** with Claude Haiku (the description fills in).
-4. **Linked.** The text is classified against your existing records, and for each
-   match the file is linked — **auto-creating the `files_<entity>` junction table
-   when none exists yet**. New objects, enrichment, and links are all reversible
-   via the version history.
+4. **Organized.** The text is classified against your existing records, and for
+   each match the file is **linked** — **auto-creating the `files_<entity>` junction
+   table when none exists yet**. When a source fits **nothing** (and aggressiveness
+   is high), a new native `notes` object is **created** for it, linked back via
+   `source_file_id`. New objects, enrichment, links, and junctions are all
+   reversible via the version history.
+
+### Library API
+
+The same intelligence is a first-class, GUI-independent API (inert without an LLM
+client): `organizeSource`, `describeImage`, `crawlUrl`, `enrichKnowledge`, and the
+`summarizeText` / `classifyLinks` primitives — all importable from `latticesql`.
+`sharp` + `file-type` are optional, lazily-loaded deps; the crawler uses `jsdom` +
+`@mozilla/readability`.
 
 A transient **"Analyzing…"** row shows while ingest runs; the add/enrich/link
 events stream into the feed as the server materializes them.
