@@ -150,6 +150,24 @@ export function isNativeEntity(name: string): boolean {
 }
 
 /**
+ * Native entities that are INTERNAL conversation storage — the assistant's own
+ * chat threads + messages. They are real native tables (queryable + persisted by
+ * the chat route), but must NOT show up in the GUI's Objects list / dashboard
+ * cards: they're an implementation detail of the chat rail, not user-facing data
+ * objects. (Contrast `secrets`/`files`/`notes`, which ARE user-facing and stay
+ * visible.) Mirrors {@link ASSISTANT_HIDDEN_TABLES} on the assistant side.
+ */
+export const NATIVE_INTERNAL_NAMES: ReadonlySet<string> = new Set([
+  'chat_threads',
+  'chat_messages',
+]);
+
+/** True when `name` is an internal native entity hidden from the GUI Objects list. */
+export function isInternalNativeEntity(name: string): boolean {
+  return NATIVE_INTERNAL_NAMES.has(name);
+}
+
+/**
  * Register every native entity on the given Lattice. Must be called
  * BEFORE `db.init()` — uses `define()` so the tables are created as part
  * of schema application alongside any user-declared tables. Subsequent

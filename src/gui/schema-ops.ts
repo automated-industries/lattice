@@ -358,6 +358,11 @@ export async function createUserEntity(
   doc.setIn(['entities', entity], entityDef);
   saveConfigDoc(active.configPath, doc);
   active.validTables.add(entity);
+  // The table is created WITH a `deleted_at` column (above), so register it as
+  // soft-deletable too — otherwise the assistant's list_rows would surface
+  // soft-deleted rows and its delete_row would hard-delete. (Junctions, made
+  // without `deleted_at` in materializeJunction, intentionally stay hard.)
+  active.softDeletable.add(entity);
   // Same step as creation: register the canonical context so the new table
   // renders without a reopen (the subsequent row inserts' auto-render writes it).
   syncCanonicalContexts(active);

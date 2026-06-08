@@ -483,8 +483,18 @@ export async function dispatchIngestRoute(
   // expose a local path). Extract then discard the bytes — we keep the text +
   // description, not the file (path stays null, like a text paste).
   if (ctx.pathname === '/api/ingest/upload') {
-    const name =
-      (typeof req.headers['x-filename'] === 'string' && req.headers['x-filename']) || 'upload';
+    const rawName =
+      (typeof req.headers['x-filename'] === 'string' && req.headers['x-filename']) || '';
+    // The client percent-encodes the filename so a Unicode name survives the
+    // ISO-8859-1-only HTTP header. Decode it back; tolerate a legacy/raw value.
+    let name = 'upload';
+    if (rawName) {
+      try {
+        name = decodeURIComponent(rawName);
+      } catch {
+        name = rawName;
+      }
+    }
     const mime = req.headers['content-type'] ?? 'application/octet-stream';
     let buf: Buffer;
     try {

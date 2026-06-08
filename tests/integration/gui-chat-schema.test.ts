@@ -17,7 +17,12 @@ interface ScriptedTurn {
   toolUses?: { id: string; name: string; input: Record<string, unknown> }[];
 }
 
-const turnState = vi.hoisted(() => ({ turns: [] as ScriptedTurn[] }));
+const turnState = vi.hoisted(() => ({
+  turns: [] as ScriptedTurn[],
+  // Each runTurn's `messages` array, in call order — lets a test assert what
+  // prior-turn context the server fed the model (cross-turn rehydration).
+  captured: [] as unknown[][],
+}));
 
 vi.mock('../../src/gui/ai/chat.js', async (orig) => {
   const actual = await orig();
@@ -27,7 +32,8 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
     createAnthropicClient: () => {
       let i = 0;
       return {
-        runTurn(params: { onText: (s: string) => void }) {
+        runTurn(params: { onText: (s: string) => void; messages?: unknown[] }) {
+          turnState.captured.push(params.messages ?? []);
           const turn = turnState.turns[Math.min(i, turnState.turns.length - 1)] ?? { text: '' };
           i++;
           params.onText(turn.text);
@@ -58,6 +64,7 @@ beforeEach(() => {
   process.env.LATTICE_ENCRYPTION_KEY = 'chatschema-test-key';
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake'; // resolves auth; client is mocked
   turnState.turns = [];
+  turnState.captured = [];
 });
 
 afterEach(async () => {
@@ -229,6 +236,57 @@ describe('assistant schema creation via POST /api/chat', () => {
     const toolNames = (assistant?.turns ?? []).flatMap((t) => t.tools.map((x) => x.name));
     expect(toolNames).toContain('list_entities');
     expect(assistant?.text).toContain('There is a tickets table.');
+  });
+
+  it('rehydrates a prior turn’s tool result (row id) into the next turn’s model context', async () => {
+    const server = await boot();
+    // Seed a generic record to read. (tickets is the config's stock table — no
+    // personal data anywhere in this test.)
+    await fetch(`${server.url}/api/tables/tickets/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'tk1', key: 'AIR-1', summary: 'Stock record' }),
+    });
+
+    // Turn 1 (new thread): the model lists the table, then answers.
+    turnState.turns = [
+      { text: 'Listing.', toolUses: [{ id: 'u1', name: 'list_rows', input: { table: 'tickets' } }] },
+      { text: 'Here is record tk1.' },
+    ];
+    const r1 = await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'list the tickets' }),
+    });
+    const threadId = r1.headers.get('x-thread-id');
+    await r1.text();
+    expect(threadId).toBeTruthy();
+
+    // Turn 2 (same thread): a single text turn. The server must rebuild the
+    // prior tool_use/tool_result blocks from the thread so the model sees tk1.
+    turnState.captured = []; // ignore turn-1's calls; capture only turn-2's
+    turnState.turns = [{ text: 'The id is tk1.' }];
+    await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'what is the id?', threadId }),
+    }).then((r) => r.text());
+
+    // The messages the model received on turn 2 carry turn 1's row id, as a real
+    // tool_result block — rehydrated server-side, NOT from the text-only client
+    // history (this request sent no history at all).
+    const turn2Messages = JSON.stringify(turnState.captured[turnState.captured.length - 1] ?? []);
+    expect(turn2Messages).toContain('tk1');
+    expect(turn2Messages).toContain('tool_result');
+
+    // The GUI reload, by contrast, must NOT receive the raw tool result content —
+    // toolCalls is stripped; only text + pill names survive.
+    const replay = await fetch(`${server.url}/api/chat/threads/${threadId}/messages`).then((r) =>
+      r.json(),
+    );
+    const replayStr = JSON.stringify(replay);
+    expect(replayStr).not.toContain('toolCalls');
+    expect(replayStr).not.toContain('tool_result');
   });
 
   it('renders a chat-created entity automatically in workspace mode (no reopen)', async () => {

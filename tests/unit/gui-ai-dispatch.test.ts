@@ -255,6 +255,74 @@ describe('AI function dispatch', () => {
     expect(res.error).toMatch(/unknown table/i);
   });
 
+  describe('deterministic list_rows ordering', () => {
+    it('returns a stable, sorted-by-id order across repeated reads (no created_at)', async () => {
+      // Insert out of id order; without an ORDER BY the engine could return these
+      // in any order, and a different order each read is what made the assistant
+      // report conflicting values for the same record.
+      for (const [id, name] of [
+        ['s3', 'Charlie'],
+        ['s1', 'Alpha'],
+        ['s2', 'Bravo'],
+        ['s5', 'Echo'],
+        ['s4', 'Delta'],
+      ] as const) {
+        await executeFunction(ctx, 'create_row', { table: 'people', values: { id, name } });
+      }
+      const first = (await executeFunction(ctx, 'list_rows', { table: 'people' })).result as {
+        id: string;
+      }[];
+      const second = (await executeFunction(ctx, 'list_rows', { table: 'people' })).result as {
+        id: string;
+      }[];
+      const ids1 = first.map((r) => r.id);
+      expect(ids1).toEqual(['s1', 's2', 's3', 's4', 's5']); // sorted by id (no created_at column)
+      expect(second.map((r) => r.id)).toEqual(ids1); // reproducible across reads
+    });
+
+    it('orders by created_at when that column exists', async () => {
+      await db.defineLate('events', {
+        columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', created_at: 'TEXT', deleted_at: 'TEXT' },
+        render: () => '',
+        outputFile: 'events.md',
+      });
+      const c: DispatchCtx = {
+        ...ctx,
+        validTables: new Set([...ctx.validTables, 'events']),
+        softDeletable: new Set([...ctx.softDeletable, 'events']),
+      };
+      // id order (a < z) is deliberately the OPPOSITE of created_at order.
+      await executeFunction(c, 'create_row', {
+        table: 'events',
+        values: { id: 'z', name: 'early', created_at: '2026-01-01T00:00:00Z' },
+      });
+      await executeFunction(c, 'create_row', {
+        table: 'events',
+        values: { id: 'a', name: 'late', created_at: '2026-01-03T00:00:00Z' },
+      });
+      const r1 = (await executeFunction(c, 'list_rows', { table: 'events' })).result as {
+        id: string;
+      }[];
+      const r2 = (await executeFunction(c, 'list_rows', { table: 'events' })).result as {
+        id: string;
+      }[];
+      expect(r1.map((x) => x.id)).toEqual(['z', 'a']); // created_at asc, NOT id asc
+      expect(r2.map((x) => x.id)).toEqual(r1.map((x) => x.id));
+    });
+
+    it('handles empty and single-row tables without error', async () => {
+      const empty = await executeFunction(ctx, 'list_rows', { table: 'people' });
+      expect(empty.ok).toBe(true);
+      expect((empty.result as unknown[]).length).toBe(0);
+      await executeFunction(ctx, 'create_row', {
+        table: 'people',
+        values: { id: 's1', name: 'Alpha' },
+      });
+      const one = await executeFunction(ctx, 'list_rows', { table: 'people' });
+      expect((one.result as { id: string }[]).map((r) => r.id)).toEqual(['s1']);
+    });
+  });
+
   describe('schema creation (create_entity / create_relationship)', () => {
     /** A ctx whose createEntity/createJunction actually build live tables. */
     function withSchemaCreation(): DispatchCtx {

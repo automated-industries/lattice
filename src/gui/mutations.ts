@@ -316,13 +316,21 @@ export async function updateRow(
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
   const before = await ctx.db.get(table, id);
+  // Rule 16: never silently "succeed" against a row that doesn't exist. A
+  // missing row means the caller (e.g. the assistant) used a stale/wrong id;
+  // the no-op UPDATE would otherwise record a bogus audit/feed entry whose
+  // row link 404s on click. Fail loudly so the caller can correct.
+  if (before === null) {
+    throw new Error(`Cannot update "${table}": no row with id "${id}"`);
+  }
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
   // Rule 16: a requested change that left the row byte-identical means the
   // write did not land (a read-only data source silently no-ops the UPDATE).
   // Surface it loudly instead of reporting a phantom success. A genuine no-op
   // (the new value already equals the stored value) is NOT an error.
-  if (before != null && after != null) {
+  // (before is non-null here — the guard above throws when the row is missing.)
+  if (after != null) {
     const wantedChange = Object.keys(values).some(
       (k) => !storedValueMatches(before[k], (values as Row)[k]),
     );
@@ -352,6 +360,11 @@ export async function deleteRow(
   hard: boolean,
 ): Promise<void> {
   const before = await ctx.db.get(table, id);
+  // Rule 16: deleting a non-existent row is a no-op that would still record a
+  // bogus audit/feed entry. Surface the bad id instead of faking success.
+  if (before === null) {
+    throw new Error(`Cannot delete from "${table}": no row with id "${id}"`);
+  }
   if (!hard && ctx.softDeletable.has(table)) {
     await ctx.db.update(table, id, { deleted_at: new Date().toISOString() });
     const after = await ctx.db.get(table, id);

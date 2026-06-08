@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { FeedBus, type FeedEvent } from '../../src/gui/feed.js';
 import type { DispatchCtx } from '../../src/gui/ai/dispatch.js';
-import { runChat, type LlmClient, type TurnResult } from '../../src/gui/ai/chat.js';
+import {
+  runChat,
+  type LlmClient,
+  type TurnResult,
+  type LlmMessage,
+} from '../../src/gui/ai/chat.js';
 import type { ChatStreamEvent } from '../../src/gui/ai/sse.js';
 
 /** A scripted LlmClient that returns a queued result per call, streaming text. */
@@ -120,6 +125,44 @@ describe('chat tool loop', () => {
     const row = (await db.get('people', 'p1')) as { name: string } | null;
     expect(row?.name).toBe('Ada');
     expect(feedEvents.some((e) => e.op === 'insert' && e.source === 'ai')).toBe(true);
+  });
+
+  it('replays prior tool_use + tool_result history into the model messages', async () => {
+    // A follow-up turn: history already carries the structured tool blocks the
+    // chat route rehydrates (assistant tool_use → user tool_result). The row id
+    // read earlier (s1) must reach the model THIS turn — that is what lets
+    // "update it" target the right row instead of guessing/fabricating an id.
+    let captured: LlmMessage[] = [];
+    const client: LlmClient = {
+      runTurn(params) {
+        captured = params.messages;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'list staff' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu1', name: 'list_rows', input: { table: 'people' } }],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu1',
+            content: '[{"id":"s1","name":"Alpha"}]',
+            is_error: false,
+          },
+        ],
+      },
+      { role: 'assistant', content: 'Found Alpha.' },
+    ];
+    await collect(runChat({ client, dispatch, history, userMessage: 'what is the id of Alpha?' }));
+    const flat = JSON.stringify(captured);
+    expect(flat).toContain('tu1'); // tool_use id round-tripped into the model context
+    expect(flat).toContain('s1'); // the row id from the earlier read survives the turn
+    expect(flat).toContain('tool_result'); // delivered as a real block, not flattened text
   });
 
   it('injects the live schema (table names) + file guidance into the system prompt', async () => {

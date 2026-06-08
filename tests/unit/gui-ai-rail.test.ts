@@ -45,10 +45,63 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('checkNativeSetup();');
   });
 
+  it('collapses a run of identical tool calls into one counted pill', () => {
+    // A turn with several list_rows must read "Listed N rows", not N copies of
+    // "Listed rows". The grouping mirrors the activity feed's coalescing.
+    expect(guiAppHtml).toContain('function toolGroupLabel');
+    expect(guiAppHtml).toContain('function paintToolPill');
+    expect(guiAppHtml).toContain('function renderResolvedPills');
+    expect(guiAppHtml).toContain('TOOL_GROUP');
+    // The grouped label is verb + count + noun ("Listed" + n + "rows").
+    expect(guiAppHtml).toContain("['Listing',  'Listed',  'rows']");
+    // Live grouping coalesces into the turn's lastTool run.
+    expect(guiAppHtml).toContain('ctx.lastTool');
+  });
+
+  it('auto-grows the composer textarea and re-fits on width change', () => {
+    expect(guiAppHtml).toContain('function autoGrowInput');
+    expect(guiAppHtml).toContain('COMPOSER_MAX_H');
+    // Recompute height when the textarea is re-wrapped at a new rail width.
+    expect(guiAppHtml).toContain('new ResizeObserver(function () { autoGrowInput(); }).observe(input)');
+    // Long unbroken tokens must wrap rather than overflow the rail.
+    expect(guiAppHtml).toContain('overflow-wrap: break-word');
+  });
+
   it('renders markdown/office previews via a safe inline renderer', () => {
     expect(guiAppHtml).toContain('function mdToHtml');
     expect(guiAppHtml).toContain('MD_MIMES');
     expect(guiAppHtml).toContain('class="md-body"');
+  });
+
+  it('fades + tooltips the mic button when no microphone is available', () => {
+    // Detect mic presence and reflect it on the button instead of popping a
+    // "Microphone unavailable" dialog on click.
+    expect(guiAppHtml).toContain('function refreshMicAvailability');
+    expect(guiAppHtml).toContain('function markMicUnavailable');
+    expect(guiAppHtml).toContain('enumerateDevices');
+    expect(guiAppHtml).toContain('composer-mic-unavailable');
+    expect(guiAppHtml).toContain('No microphone available');
+    // The click is a no-op while unavailable (no alert).
+    expect(guiAppHtml).toContain("classList.contains('composer-mic-unavailable')");
+    // The old blocking alert is gone.
+    expect(guiAppHtml).not.toContain("alert('Microphone unavailable: ' + e.message)");
+  });
+
+  it('uses inline toasts instead of blocking alert() dialogs', () => {
+    // The user wants no browser alert() popups — messaging is inline (toasts).
+    expect(guiAppHtml).not.toContain('alert(');
+    expect(guiAppHtml).toContain('function showToast');
+  });
+
+  it('opts API-token + secret inputs out of password-manager popups', () => {
+    expect(guiAppHtml).toContain('data-1p-ignore');
+    expect(guiAppHtml).toContain('data-lpignore="true"');
+  });
+
+  it('lets workspace names contain special characters (server derives the slug)', () => {
+    // The restrictive character regex is removed; only a length guard remains.
+    expect(guiAppHtml).not.toContain('must start with a letter or digit and contain only');
+    expect(guiAppHtml).toContain('Workspace name must be 200 characters or fewer');
   });
 
   it('provides a mobile bottom-drawer handle + toggle', () => {

@@ -30,6 +30,30 @@ export const DEFAULT_MODEL = 'claude-haiku-4-5';
 const MAX_TOOL_LOOPS = 16;
 const MAX_TOKENS = 4096;
 
+// Caps for the cross-turn tool-memory record (see onToolRecord, persisted +
+// replayed by chat-routes rehydrateHistory). Result content is re-sent to the
+// model on later turns, so bound it: truncate past _CHARS (the head holds the
+// row ids the model needs), drop entirely past _SKIP, and cap the recorded
+// input. Without caps a 200-row list_rows would bloat context + Supabase egress.
+const MAX_TOOL_RESULT_CHARS = 2000;
+const MAX_TOOL_RESULT_SKIP = 20000;
+const MAX_TOOL_INPUT_CHARS = 1000;
+
+/** Trim a tool result for cross-turn replay (keeps the head, where row ids sit). */
+function capToolResult(s: string): string {
+  if (s.length <= MAX_TOOL_RESULT_CHARS) return s;
+  if (s.length > MAX_TOOL_RESULT_SKIP)
+    return '[result omitted — ' + String(s.length) + ' chars; re-read if needed]';
+  return (
+    s.slice(0, MAX_TOOL_RESULT_CHARS) +
+    '\n…[truncated ' + String(s.length - MAX_TOOL_RESULT_CHARS) + ' chars]'
+  );
+}
+/** Drop an oversized tool input from the replay record (ids matter more than inputs). */
+function capToolInput(input: Record<string, unknown>): Record<string, unknown> {
+  return JSON.stringify(input).length > MAX_TOOL_INPUT_CHARS ? { _truncated: true } : input;
+}
+
 const BASE_SYSTEM_PROMPT = [
   'You are the assistant inside a Lattice database GUI. Help the user inspect and edit their data by calling the provided tools.',
   '',
@@ -130,6 +154,19 @@ export interface RunChatOptions {
   model?: string;
   /** Sampling temperature [0,1] (from inference aggressiveness). */
   temperature?: number;
+  /**
+   * Optional sink for cross-turn tool memory: each executed tool call's id,
+   * name, (capped) input, and (capped) result content. The chat route persists
+   * these so a later turn is replayed with real tool_use/tool_result blocks —
+   * letting the model reference a row id it read earlier instead of guessing.
+   */
+  onToolRecord?: (rec: {
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+    content: string;
+    isError: boolean;
+  }) => void;
 }
 
 /** Tools the model is allowed to call (only those the dispatcher can run). */
@@ -186,11 +223,22 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         yield { type: 'tool_use', id: tu.id, name: tu.name };
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
         yield { type: 'tool_result', toolUseId: tu.id, isError: !res.ok };
+        const content = JSON.stringify(res.ok ? res.result : { error: res.error });
         resultBlocks.push({
           type: 'tool_result',
           tool_use_id: tu.id,
-          content: JSON.stringify(res.ok ? res.result : { error: res.error }),
+          content,
           is_error: !res.ok,
+        });
+        // Record (capped) for cross-turn replay. `content` is already secret-
+        // redacted by the dispatcher (redactRow before the result is returned),
+        // so the masked value is what gets persisted — never a raw secret.
+        opts.onToolRecord?.({
+          id: tu.id,
+          name: tu.name,
+          input: capToolInput(tu.input),
+          content: capToolResult(content),
+          isError: !res.ok,
         });
       }
       messages.push({ role: 'user', content: resultBlocks });

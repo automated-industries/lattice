@@ -199,6 +199,16 @@ export async function executeFunction(
         if (ctx.softDeletable.has(table) && args.includeDeleted !== true) {
           opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
         }
+        // Deterministic, reproducible order — the 200-row window is only stable
+        // if the sort is. Without an ORDER BY, two identical reads can return rows
+        // in different orders, so the assistant reads a different row each time and
+        // reports conflicting values. `created_at` gives a natural chronological
+        // order where it exists; the primary key (single-column `id` here) is the
+        // universal stable fallback. Explicit ORDER BY behaves identically on
+        // SQLite + Postgres, and composes after the soft-delete WHERE above.
+        const cols = ctx.db.getRegisteredColumns(table);
+        opts.orderBy = cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
+        opts.orderDir = 'asc';
         const rows = await ctx.db.query(table, opts);
         const secretCols = await secretColumnsFor(ctx.db, table);
         return { ok: true, result: rows.map((r) => redactRow(r, secretCols)) };

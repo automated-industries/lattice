@@ -106,6 +106,7 @@ import {
   adoptNativeEntities,
   listNativeBindings,
   isNativeEntity,
+  isInternalNativeEntity,
 } from '../framework/native-entities.js';
 import {
   getOrCreateMasterKey,
@@ -240,7 +241,13 @@ async function entitiesWithCounts(
   const payload = getGuiEntities(configPath, outputDir);
 
   const yamlNames = new Set(payload.tables.map((t) => t.name));
-  let allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)];
+  // Internal native entities (chat_threads/chat_messages) back the assistant's
+  // conversation storage — they're real tables but must never surface in the
+  // Objects list / dashboard cards. Drop them from the display payload here
+  // (they stay registered + queryable for the chat route).
+  let allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)].filter(
+    (t) => !isInternalNativeEntity(t.name),
+  );
 
   // Team-cloud visibility: a member sees only their own tables plus
   // tables shared to the team. This is what hides the creator's
@@ -1349,6 +1356,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
   // GUI was opened on a plain config; the switcher stays hidden.
   const latticeRoot = findLatticeRoot(dirname(configPath));
+  // Which workspace is ACTUALLY being served (the open `active` DB). The header
+  // switcher must reflect THIS, not the registry's stored activeWorkspaceId —
+  // the two can drift apart (e.g. a relaunch whose --config points at a
+  // different workspace than the last-switched one), which showed the wrong
+  // workspace label sitting over a different workspace's data. Match the
+  // launched config to its workspace and reconcile the registry to it at boot.
+  let currentWorkspaceId: string | null = null;
+  if (latticeRoot) {
+    const launched = listWorkspaces(latticeRoot).find(
+      (w) => resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(configPath),
+    );
+    if (launched) {
+      currentWorkspaceId = launched.id;
+      if (getActiveWorkspace(latticeRoot)?.id !== launched.id) {
+        setActiveWorkspace(latticeRoot, launched.id);
+      }
+    } else {
+      currentWorkspaceId = getActiveWorkspace(latticeRoot)?.id ?? null;
+    }
+  }
   if (teamCloud) {
     await registerTeamCloudTables(active.db);
   }
@@ -2705,7 +2732,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const all = listWorkspaces(latticeRoot);
           const activeWs = getActiveWorkspace(latticeRoot);
           sendJson(res, {
-            current: activeWs ? activeWs.id : null,
+            // The served workspace is the source of truth for the header label;
+            // fall back to the registry only if we couldn't match the boot config.
+            current: currentWorkspaceId ?? (activeWs ? activeWs.id : null),
             workspaces: all.map((w) => ({
               id: w.id,
               label: w.displayName,
@@ -2750,6 +2779,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           setActiveWorkspace(latticeRoot, ws.id);
           await disposeActive(active);
           active = next;
+          currentWorkspaceId = ws.id; // header now tracks the just-switched DB
           sendJson(res, { ok: true, id: ws.id });
           return;
         }
@@ -2793,6 +2823,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           setActiveWorkspace(latticeRoot, created.id);
           await disposeActive(active);
           active = newActive;
+          currentWorkspaceId = created.id; // header tracks the new, now-served DB
           sendJson(res, { ok: true, id: created.id });
           return;
         }
@@ -2862,6 +2893,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             await disposeActive(active);
             active = next;
             switchedTo = fallback.id;
+            currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
           }
           // Drop the registry record, then clean up files (Rule 16: loud on failure).
           removeWorkspace(latticeRoot, ws.id);

@@ -102,6 +102,15 @@ describe('GUI server — SQLite read routes', () => {
     const entities = await api(h.url, '/api/entities');
     expect(entities.status).toBe(200);
     expect(Array.isArray(entities.body.entities) || Array.isArray(entities.body.tables)).toBe(true);
+    // User-facing native entities (files/notes/secrets) appear in the Objects
+    // list, but the assistant's internal conversation storage must NOT — it's
+    // an implementation detail of the chat rail, not a data object.
+    const entityNames = ((entities.body.tables ?? entities.body.entities ?? []) as {
+      name: string;
+    }[]).map((t) => t.name);
+    expect(entityNames).toContain('files'); // a user-facing native entity is present…
+    expect(entityNames).not.toContain('chat_threads'); // …but conversation storage is hidden
+    expect(entityNames).not.toContain('chat_messages');
 
     for (const route of [
       '/api/graph',
