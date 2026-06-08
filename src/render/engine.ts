@@ -17,15 +17,33 @@ import { writeManifest } from '../lifecycle/manifest.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
 
+/**
+ * Sentinel render function assigned to tables registered without a `render`
+ * spec. Such tables would only emit an empty `.schema-only/<table>.md`. The
+ * value is a shared singleton (not a fresh closure per table) so the render
+ * engine can identity-detect spec-less tables via `def.render === NOOP_RENDER`
+ * and, when `skipEmpty` is enabled, avoid reading the whole table off the wire
+ * just to produce an empty file.
+ */
+export const NOOP_RENDER = (): string => '';
+
 export class RenderEngine {
   private readonly _schema: SchemaManager;
   private readonly _adapter: StorageAdapter;
   private readonly _getTaskContext: () => string;
+  /** When true, skip the read + write for spec-less (no-op render) tables. */
+  private readonly _skipEmpty: boolean;
 
-  constructor(schema: SchemaManager, adapter: StorageAdapter, getTaskContext?: () => string) {
+  constructor(
+    schema: SchemaManager,
+    adapter: StorageAdapter,
+    getTaskContext?: () => string,
+    options?: { skipEmpty?: boolean },
+  ) {
     this._schema = schema;
     this._adapter = adapter;
     this._getTaskContext = getTaskContext ?? (() => '');
+    this._skipEmpty = options?.skipEmpty ?? false;
   }
 
   async render(outputDir: string): Promise<RenderResult> {
@@ -35,6 +53,11 @@ export class RenderEngine {
 
     // Single-table renders
     for (const [name, def] of this._schema.getTables()) {
+      // Opt-in: a spec-less table renders to an empty `.schema-only` file, so
+      // when skipEmpty is on we skip both the full-table read and the write —
+      // avoiding pulling a whole (possibly large) table off the wire for an
+      // empty file. Default-off path below is unchanged.
+      if (this._skipEmpty && def.render === NOOP_RENDER) continue;
       let rows = await this._schema.queryTable(this._adapter, name);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
