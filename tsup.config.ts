@@ -17,7 +17,7 @@ export default defineConfig([
     // pull pg's native deps into our tarball and break under ESM consumers.
     // External keeps Node resolving it from the consumer's node_modules at
     // runtime, which works in both ESM and CJS contexts.
-    external: ['pg'],
+    external: ['pg', 'sharp', 'jsdom', '@mozilla/readability', 'file-type', '@anthropic-ai/sdk'],
   },
 
   // -------------------------------------------------------------------------
@@ -40,6 +40,6 @@ export default defineConfig([
     // future regression can't re-bundle it accidentally. The runtime
     // loader in `src/db/postgres.ts` + `src/gui/realtime.ts` resolves pg
     // from the consumer's node_modules via createRequire at call time.
-    external: ['pg'],
+    external: ['pg', 'sharp', 'jsdom', '@mozilla/readability', 'file-type', '@anthropic-ai/sdk'],
   },
 ]);

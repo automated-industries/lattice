@@ -904,7 +904,13 @@ describe('GUI server — native entities + table allowlist', () => {
     const res = (await fetch(`${server.url}/api/native-entities`).then((r) => r.json())) as {
       bindings: { entity: string }[];
     };
-    expect(res.bindings.map((b) => b.entity).sort()).toEqual(['files', 'notes', 'secrets']);
+    expect(res.bindings.map((b) => b.entity).sort()).toEqual([
+      'chat_messages',
+      'chat_threads',
+      'files',
+      'notes',
+      'secrets',
+    ]);
   });
 
   it('still refuses internal bookkeeping tables (security boundary)', async () => {

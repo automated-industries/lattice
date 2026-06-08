@@ -70,36 +70,46 @@ describe.skipIf(!PG_URL)('Lattice.query parallel pool (Postgres async integratio
     db.close();
   });
 
-  it('a concurrent query batch beats the serialized baseline (proves pg.Pool concurrency)', async () => {
-    const N = 20;
+  it('the pool overlaps concurrent queries (server-side sleeps, not wall-clock noise)', async () => {
+    const adapter = db.adapter;
+    if (!adapter.getAsync) throw new Error('async Postgres adapter required for this test');
+    const getAsync = adapter.getAsync.bind(adapter);
 
-    // Warm the WHOLE pool: fire N concurrent queries so every pool client
-    // establishes its TCP + auth connection now. Without this, the first
-    // measured parallel batch pays one-time connection handshakes for every
-    // client beyond the one a single-call warm-up touched — which inflated
-    // its wall time and made the old absolute-threshold assertion flaky on
-    // fast loopback connections.
+    // Each query sleeps a FIXED 50ms server-side (`pg_sleep`). This replaces the
+    // previous design, which compared two ~12ms wall-clock measurements of
+    // sub-millisecond loopback `count()` queries — where the concurrency signal
+    // was smaller than scheduler/GC noise, so the < assertion was a coin-flip
+    // (the "expected 13 to be less than 12" flake). With a deterministic 50ms
+    // floor per query the concurrency benefit is an order of magnitude larger
+    // than any timing jitter, so the comparison is robust.
+    const SLEEP_MS = 50;
+    const sleepQuery = (): Promise<unknown> =>
+      getAsync(`SELECT pg_sleep(${SLEEP_MS / 1000}) AS slept`);
+
+    // N below the default pool size (10) so all N overlap in a single wave.
+    const N = 8;
+
+    // Warm the pool first so connection handshakes aren't timed.
     await Promise.all(Array.from({ length: N }, () => db.count(tableName)));
 
-    // Serialized baseline: N sequential calls against the warm pool. This is
-    // the synckit worst case the rewrite eliminated — every query waits for
-    // the previous one.
+    // Serialized baseline: N sequential 50ms sleeps ≈ N × 50ms (= 400ms). This
+    // is the synckit worst case the async rewrite eliminated — every query
+    // waits for the previous one.
     const tSerial = Date.now();
-    for (let i = 0; i < N; i++) await db.count(tableName);
+    for (let i = 0; i < N; i++) await sleepQuery();
     const serial = Date.now() - tSerial;
 
-    // Concurrent batch against the same warm pool.
+    // Concurrent: N simultaneous 50ms sleeps. With a pool of ≥ N they overlap in
+    // one wave ≈ 50ms — so parallel should land near serial / N, not near serial.
     const tParallel = Date.now();
-    await Promise.all(Array.from({ length: N }, () => db.count(tableName)));
+    await Promise.all(Array.from({ length: N }, () => sleepQuery()));
     const parallel = Date.now() - tParallel;
 
-    // pg.Pool parallelizes across clients, so N concurrent queries complete in
-    // a few waves rather than N back-to-back round-trips — the concurrent
-    // batch must be strictly faster than the serialized baseline. A synckit-
-    // style serialization regression makes parallel ≈ serial (or worse) and
-    // fails here. Relative comparison, so it doesn't depend on absolute query
-    // latency (the source of the previous flake).
-    expect(parallel).toBeLessThan(serial);
+    // A serialization regression (the old synckit single-worker path) makes the
+    // concurrent batch ≈ serial; pg.Pool overlaps them. Half the serial time is
+    // a deliberately conservative bar — the real ratio is ~N : 1 — so this never
+    // races on jitter while still failing hard if concurrency is lost.
+    expect(parallel).toBeLessThan(serial / 2);
   });
 
   it('large concurrent reads return correct row counts', async () => {
