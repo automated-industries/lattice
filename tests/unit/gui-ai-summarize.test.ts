@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   summarizeText,
   classifyLinks,
+  generateThreadTitle,
   parseMatches,
   type CatalogEntity,
 } from '../../src/gui/ai/summarize.js';
@@ -36,6 +37,22 @@ describe('summarize + classify helpers', () => {
       'widgets',
     );
     expect(out).toBe('A short note about widgets.');
+  });
+
+  it('generateThreadTitle strips surrounding quotes + trailing punctuation', async () => {
+    const out = await generateThreadTitle(
+      fixedClient('"Adding New Notes About Cheese."'),
+      'add a note about cheese',
+      'Done — created the note.',
+    );
+    expect(out).toBe('Adding New Notes About Cheese');
+  });
+
+  it('generateThreadTitle clamps the title to 60 chars', async () => {
+    const long =
+      'A Very Long Conversation Title That Far Exceeds The Sixty Character Column Budget';
+    const out = await generateThreadTitle(fixedClient(long), 'hi', 'hello');
+    expect(out.length).toBeLessThanOrEqual(60);
   });
 
   it('parseMatches reads a json fence and validates against the catalog', () => {

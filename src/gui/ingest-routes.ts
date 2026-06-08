@@ -387,6 +387,53 @@ async function enrichWithLlm(
 }
 
 /**
+ * Run {@link enrichWithLlm} for an already-created file row, converting any
+ * thrown error into a LOUD, non-silent outcome (Rule 16): the failure is logged
+ * to stderr with its stack, recorded durably on the row (`extraction_status =
+ * 'enrichment_failed'`, so it's queryable rather than living only in a toast
+ * that vanishes), and surfaced to the client. Returns the suggested links on
+ * success, or `null` when it has already responded with the failure (caller
+ * must `return true` immediately). Shared by the upload + text ingest paths so
+ * both handle enrichment failure identically.
+ */
+async function enrichOrFail(
+  mctx: MutationCtx,
+  db: Lattice,
+  fileId: string,
+  text: string,
+  name: string,
+  ctx: IngestContext,
+  res: ServerResponse,
+): Promise<ClassifyMatch[] | null> {
+  try {
+    return await enrichWithLlm(
+      mctx,
+      db,
+      fileId,
+      text,
+      name,
+      ctx.fileJunctions,
+      ctx.entityDescriptions,
+      ctx.createJunction,
+      ctx.aggressiveness,
+      ctx.createEntity,
+    );
+  } catch (e) {
+    const err = e as Error;
+    console.error(`[ingest] enrichment failed for file ${fileId}: ${err.message}\n${err.stack ?? ''}`);
+    await updateRow(mctx, 'files', fileId, { extraction_status: 'enrichment_failed' }).catch(
+      (e2: unknown) => {
+        console.error(
+          `[ingest] could not mark enrichment_failed on ${fileId}: ${(e2 as Error).message}`,
+        );
+      },
+    );
+    sendJson(res, { id: fileId, extraction_status: 'enrichment_failed', error: err.message }, 201);
+    return null;
+  }
+}
+
+/**
  * For an image, describe it with Claude vision instead of text extraction.
  * Best-effort: returns null when there's no Claude auth, the file isn't an
  * image, or the call fails — the caller then falls back to {@link parseFile}
@@ -537,20 +584,12 @@ export async function dispatchIngestRoute(
       extraction_status: result.skip ? 'skipped' : 'extracted',
       ...(blob ? { ref_kind: 'blob', blob_path: blob.blob_path, sha256: blob.sha256 } : {}),
     });
-    const suggestedLinks = result.skip
-      ? []
-      : await enrichWithLlm(
-          mctx,
-          ctx.db,
-          id,
-          result.text,
-          name,
-          ctx.fileJunctions,
-          ctx.entityDescriptions,
-          ctx.createJunction,
-          ctx.aggressiveness,
-          ctx.createEntity,
-        );
+    let suggestedLinks: ClassifyMatch[] = [];
+    if (!result.skip) {
+      const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res);
+      if (links === null) return true; // enrichment failed — already reported
+      suggestedLinks = links;
+    }
     sendJson(
       res,
       { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks },
@@ -602,18 +641,8 @@ export async function dispatchIngestRoute(
       extraction_status: 'extracted',
       ...(sourceUrl ? { ref_kind: 'cloud_ref', ref_uri: sourceUrl, ref_provider: 'web' } : {}),
     });
-    const suggestedLinks = await enrichWithLlm(
-      mctx,
-      ctx.db,
-      id,
-      content,
-      title,
-      ctx.fileJunctions,
-      ctx.entityDescriptions,
-      ctx.createJunction,
-      ctx.aggressiveness,
-      ctx.createEntity,
-    );
+    const suggestedLinks = await enrichOrFail(mctx, ctx.db, id, content, title, ctx, res);
+    if (suggestedLinks === null) return true; // enrichment failed — already reported
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
   }
@@ -678,11 +707,15 @@ export async function dispatchIngestRoute(
       201,
     );
   } catch (e) {
+    const err = e as Error;
+    // Rule 16: log loudly server-side (with stack) in addition to the durable
+    // row status + client-surfaced error — never let the real cause vanish.
+    console.error(`[ingest] extraction/enrichment failed for file ${id}: ${err.message}\n${err.stack ?? ''}`);
     await updateRow(mctx, 'files', id, {
       extraction_status: 'failed',
-      description: `Extraction failed: ${(e as Error).message}`,
+      description: `Extraction failed: ${err.message}`,
     });
-    sendJson(res, { id, extraction_status: 'failed', error: (e as Error).message }, 201);
+    sendJson(res, { id, extraction_status: 'failed', error: err.message }, 201);
   }
   return true;
 }

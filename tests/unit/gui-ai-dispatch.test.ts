@@ -395,4 +395,71 @@ describe('AI function dispatch', () => {
       expect((links.result as unknown[]).length).toBe(1);
     });
   });
+
+  describe('search tool', () => {
+    it('finds rows by content across the allowlisted tables', async () => {
+      await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada Lovelace' } });
+      await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p2', name: 'Linus' } });
+
+      const res = await executeFunction(ctx, 'search', { query: 'Lovelace' });
+      expect(res.ok).toBe(true);
+      const groups = (res.result as { groups: { table: string; hits: { id: string }[] }[] }).groups;
+      const peopleHits = groups.find((g) => g.table === 'people')?.hits ?? [];
+      expect(peopleHits.some((h) => h.id === 'p1')).toBe(true);
+      expect(peopleHits.some((h) => h.id === 'p2')).toBe(false);
+    });
+
+    it('requires a query argument', async () => {
+      const res = await executeFunction(ctx, 'search', {});
+      expect(res.ok).toBe(false);
+    });
+  });
+
+  describe('delete_entity tool (relay)', () => {
+    it('reports unavailable when no deleteEntity handler is wired', async () => {
+      const res = await executeFunction(ctx, 'delete_entity', { name: 'people' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/not available/i);
+    });
+
+    it('relays needsResolution back to the model without deleting', async () => {
+      const c: DispatchCtx = {
+        ...ctx,
+        deleteEntity: () =>
+          Promise.resolve({ needsResolution: true, rowCount: 3, message: 'ask the user' }),
+      };
+      const res = await executeFunction(c, 'delete_entity', { name: 'people' });
+      expect(res.ok).toBe(true);
+      expect(res.result).toMatchObject({ needsResolution: true, rowCount: 3 });
+    });
+
+    it('passes a delete_data resolution through and drops the table from the allowlist', async () => {
+      let seen: unknown;
+      const c: DispatchCtx = {
+        ...ctx,
+        validTables: new Set(['people']),
+        deleteEntity: (name, resolution) => {
+          seen = { name, resolution };
+          return Promise.resolve({ ok: true, deleted: name });
+        },
+      };
+      const res = await executeFunction(c, 'delete_entity', { name: 'people', resolution: 'delete_data' });
+      expect(res.ok).toBe(true);
+      expect(seen).toEqual({ name: 'people', resolution: 'delete_data' });
+      expect(c.validTables.has('people')).toBe(false);
+    });
+
+    it('parses move_to into a resolution object', async () => {
+      let seen: unknown;
+      const c: DispatchCtx = {
+        ...ctx,
+        deleteEntity: (name, resolution) => {
+          seen = resolution;
+          return Promise.resolve({ ok: true, deleted: name });
+        },
+      };
+      await executeFunction(c, 'delete_entity', { name: 'people', move_to: 'contacts' });
+      expect(seen).toEqual({ move_to: 'contacts' });
+    });
+  });
 });

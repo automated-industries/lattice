@@ -2,6 +2,8 @@ import type { Lattice } from '../../lattice.js';
 import type { Row } from '../../types.js';
 import type { FeedBus } from '../feed.js';
 import { getFunction } from './registry.js';
+import { fullTextSearch } from '../../search/fts.js';
+import type { DeleteResolution, DeleteEntityOutcome } from '../schema-ops.js';
 import {
   createRow,
   updateRow,
@@ -40,6 +42,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_entities',
   'list_rows',
   'get_row',
+  'search',
   'get_history',
   'create_row',
   'update_row',
@@ -48,6 +51,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'unlink',
   'create_entity',
   'create_relationship',
+  'delete_entity',
   'undo',
   'redo',
   'revert',
@@ -137,6 +141,13 @@ export interface DispatchCtx {
    * unavailable. Returns the junction + its two foreign-key columns, or null.
    */
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
+  /**
+   * Soft-delete a user table — guarded + reversible (no physical drop). Supplied
+   * by the server; absent → `delete_entity` reports it's unavailable. An EMPTY
+   * table is deleted immediately; a NON-empty table returns `needsResolution` so
+   * the assistant asks the user, then re-calls with a resolution.
+   */
+  deleteEntity?: (name: string, resolution?: DeleteResolution) => Promise<DeleteEntityOutcome>;
 }
 
 export interface DispatchResult {
@@ -221,6 +232,24 @@ export async function executeFunction(
         if (row === null) return { ok: false, error: 'Row not found' };
         return { ok: true, result: redactRow(row, await secretColumnsFor(ctx.db, table)) };
       }
+      case 'search': {
+        const query = requireString(args.query, 'query');
+        // Default to every searchable table. validTables already excludes the
+        // hidden tables (secrets / chat storage), so the assistant can never
+        // search those. An explicit `tables` arg is intersected with the
+        // allowlist so it can't widen the scope.
+        let tables = [...ctx.validTables];
+        if (Array.isArray(args.tables)) {
+          const want = new Set(args.tables.filter((t): t is string => typeof t === 'string'));
+          tables = tables.filter((t) => want.has(t));
+        }
+        const limit = typeof args.limit === 'number' ? args.limit : 8;
+        const result = await fullTextSearch(ctx.db.adapter, tables, {
+          query,
+          limitPerTable: limit,
+        });
+        return { ok: true, result };
+      }
       case 'create_row': {
         const table = requireTable(args.table, ctx.validTables);
         if (!args.values || typeof args.values !== 'object') {
@@ -297,6 +326,29 @@ export async function executeFunction(
             link_columns: { [j.aFk]: j.tableA, [j.bFk]: j.tableB },
           },
         };
+      }
+      case 'delete_entity': {
+        if (!ctx.deleteEntity) {
+          return { ok: false, error: 'Deleting tables is not available in this context' };
+        }
+        const target = requireString(args.name, 'name');
+        // Optional resolution for a NON-empty table: delete its data too, or move
+        // it into another table. Omitted → the tool reports the table isn't empty
+        // and the assistant must ask the user before retrying.
+        let resolution: DeleteResolution | undefined;
+        if (args.resolution === 'delete_data') resolution = 'delete_data';
+        else if (typeof args.move_to === 'string' && args.move_to) {
+          resolution = { move_to: args.move_to };
+        }
+        const outcome = await ctx.deleteEntity(target, resolution);
+        // Not deleted (table not empty + no resolution): hand the question back to
+        // the model as a successful tool result so it asks the user what to do.
+        if ('needsResolution' in outcome) return { ok: true, result: outcome };
+        if (!outcome.ok) return { ok: false, error: outcome.error };
+        // Keep the in-turn allowlist consistent with the deletion.
+        ctx.validTables.delete(target);
+        ctx.junctionTables.delete(target);
+        return { ok: true, result: outcome };
       }
       case 'get_history': {
         const limit = typeof args.limit === 'number' ? args.limit : 50;

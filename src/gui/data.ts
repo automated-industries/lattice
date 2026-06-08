@@ -3,6 +3,7 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 import { parseConfigFile, type ParsedConfig } from '../config/parser.js';
 import { entityFileNames, readManifest, type LatticeManifest } from '../lifecycle/manifest.js';
 import type { EntityFileSource, EnrichmentLookup } from '../schema/entity-context.js';
+import { isInternalNativeEntity } from '../framework/native-entities.js';
 import type { BelongsToRelation, Relation, TableDefinition } from '../types.js';
 
 export interface GuiTableSummary {
@@ -325,6 +326,11 @@ export function buildGuiGraph(
     const filter = options.visibleFilter;
     data.tables = data.tables.filter((t) => filter(t.name));
   }
+  // Internal native entities (chat_threads/chat_messages) back the assistant's
+  // conversation storage. They're real tables but must never surface as nodes in
+  // the Data Model graph — mirrors the Objects-list filter in entitiesWithCounts
+  // (server.ts) so the visualization and the sidebar agree on what's user-facing.
+  data.tables = data.tables.filter((t) => !isInternalNativeEntity(t.name));
   const nodes = new Map<string, GuiGraphNode>();
   const edges = new Map<string, GuiGraphEdge>();
   const fileOwners = new Map<string, GuiEntitySummary>();
