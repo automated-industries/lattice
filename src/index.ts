@@ -276,3 +276,43 @@ export type { CloudProbeResult } from './framework/cloud-connect.js';
 
 export { registerDirectViaPostgres, isPostgresUrl } from './teams/register-direct.js';
 export type { DirectRegisterResult } from './teams/register-direct.js';
+
+// v2.0 — AI library surface: the context organizer (summarize + classify a
+// source into the user's own schema, creating new objects only when nothing
+// fits), plus image vision and SSRF-guarded URL crawl. Inert without an LLM
+// client; sharp / file-type are optional + lazily loaded.
+export {
+  organizeSource,
+  summarizeText,
+  classifyLinks,
+  parseMatches,
+  extractObjects,
+  parseObjects,
+  crawlUrl,
+  enrichKnowledge,
+  describeImage,
+  describePdf,
+} from './ai/index.js';
+export type {
+  VisionOptions,
+  VisionSenderInput,
+  PdfOptions,
+  PdfSenderInput,
+  SchemaEntity,
+  ExtractedObject,
+  EnrichOptions,
+  EnrichResult,
+  CrawlResult,
+  CrawlOptions,
+  OrganizeOptions,
+  OrganizeResult,
+  OrganizedLink,
+  OrganizedCreation,
+  CatalogEntity,
+  CatalogRecord,
+  ClassifyMatch,
+  LlmClient,
+  TurnParams,
+  TurnResult,
+  LlmMessage,
+} from './ai/index.js';

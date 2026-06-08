@@ -365,6 +365,78 @@ export function deleteDbCredential(label: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Assistant credentials — `<config>/assistant-credentials.enc`
+// AES-GCM-encrypted JSON object: { [kind]: value }.
+//
+// These are MACHINE-LOCAL, not stored in any single workspace database, so the
+// assistant's API keys / OAuth tokens survive switching or creating a
+// workspace. A Claude key is a property of the user + machine, not of one
+// database — storing it per-DB meant a new workspace started with no key
+// (the key appeared to "de-attach"). Same encryption as db-credentials.enc
+// (AES-GCM under the machine master key).
+// ---------------------------------------------------------------------------
+
+const ASSISTANT_CREDENTIALS_FILENAME = 'assistant-credentials.enc';
+
+function loadAssistantCredentials(): Record<string, string> {
+  const dir = ensureConfigDir();
+  const path = join(dir, ASSISTANT_CREDENTIALS_FILENAME);
+  if (!existsSync(path)) return {};
+  const key = deriveKey(getOrCreateMasterKey());
+  try {
+    const ciphertext = readFileSync(path, 'utf8').trim();
+    const plaintext = decrypt(ciphertext, key);
+    const parsed = JSON.parse(plaintext) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>).filter(([, v]) => typeof v === 'string'),
+      ) as Record<string, string>;
+    }
+    return {};
+  } catch {
+    // Corrupt or unreadable — treat as empty rather than throwing.
+    return {};
+  }
+}
+
+function saveAssistantCredentials(creds: Record<string, string>): void {
+  const dir = ensureConfigDir();
+  const path = join(dir, ASSISTANT_CREDENTIALS_FILENAME);
+  const key = deriveKey(getOrCreateMasterKey());
+  const ciphertext = encrypt(JSON.stringify(creds), key);
+  writeFileSync(path, ciphertext + '\n', 'utf8');
+  if (platform() !== 'win32') {
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+/** Decrypted machine-local assistant credential by kind, or null if unset. */
+export function getAssistantCredential(kind: string): string | null {
+  const v = loadAssistantCredentials()[kind];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** Persist (or overwrite) a machine-local assistant credential. */
+export function setAssistantCredential(kind: string, value: string): void {
+  const creds = loadAssistantCredentials();
+  creds[kind] = value;
+  saveAssistantCredentials(creds);
+}
+
+/** Remove a machine-local assistant credential. No-op if absent. */
+export function deleteAssistantCredential(kind: string): void {
+  const creds = loadAssistantCredentials();
+  if (!(kind in creds)) return;
+  const { [kind]: _removed, ...rest } = creds;
+  void _removed;
+  saveAssistantCredentials(rest);
+}
+
+// ---------------------------------------------------------------------------
 // Per-team bearer tokens — `~/.lattice/keys/<label>.token`
 // ---------------------------------------------------------------------------
 

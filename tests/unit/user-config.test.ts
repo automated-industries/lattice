@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import {
   analyticsEnabled,
   configDir,
+  getAssistantCredential,
+  setAssistantCredential,
+  deleteAssistantCredential,
   deleteDbCredential,
   deleteToken,
   getDbCredential,
@@ -177,6 +180,34 @@ describe('framework user-config', () => {
       deleteDbCredential('a');
       deleteDbCredential('a');
       expect(listDbCredentials()).toEqual([]);
+    });
+  });
+
+  describe('assistant-credentials.enc', () => {
+    it('set → get → delete round-trip by kind', () => {
+      expect(getAssistantCredential('anthropic_api_key')).toBeNull();
+      setAssistantCredential('anthropic_api_key', 'sk-ant-123');
+      setAssistantCredential('openai_api_key', 'sk-oai-456');
+      expect(getAssistantCredential('anthropic_api_key')).toBe('sk-ant-123');
+      expect(getAssistantCredential('openai_api_key')).toBe('sk-oai-456');
+      deleteAssistantCredential('anthropic_api_key');
+      expect(getAssistantCredential('anthropic_api_key')).toBeNull();
+      // Deleting one kind leaves the others intact.
+      expect(getAssistantCredential('openai_api_key')).toBe('sk-oai-456');
+    });
+
+    it('encrypts the file on disk (key never stored in plaintext)', () => {
+      setAssistantCredential('anthropic_api_key', 'sk-ant-supersecret-token');
+      const raw = readFileSync(join(tmpDir, 'assistant-credentials.enc'), 'utf8');
+      expect(raw).toMatch(/^enc:/);
+      expect(raw).not.toContain('sk-ant-supersecret-token');
+    });
+
+    it('delete is idempotent', () => {
+      setAssistantCredential('anthropic_api_key', 'x');
+      deleteAssistantCredential('anthropic_api_key');
+      deleteAssistantCredential('anthropic_api_key');
+      expect(getAssistantCredential('anthropic_api_key')).toBeNull();
     });
   });
 
