@@ -25,6 +25,13 @@ appears in the activity feed and the version history and can be reverted.
 Conversations persist in the native `chat_threads` / `chat_messages` entities;
 use the thread switcher to revisit them.
 
+The assistant **remembers what it read across turns.** Earlier tool calls and
+their results (including row ids) are replayed into the model's context, so a
+follow-up like "now update that row" reuses the id it just listed instead of
+guessing one. Replay is bounded to the recent turns within a size budget and is
+secret-redacted; set `LATTICE_CHAT_REHYDRATE=false` to disable it. Reads are also
+deterministically ordered, so listing the same table twice returns the same rows.
+
 ## The Context Constructor (file & text ingest)
 
 Drag files onto the rail, click the paperclip, or paste text (or a URL). For each
@@ -68,7 +75,8 @@ missing junction (gated at ≥ 0.25) versus only suggesting it. Default: balance
 ## Voice (optional)
 
 Set `OPENAI_API_KEY` (Whisper) or `ELEVENLABS_API_KEY` to enable the composer
-mic; choose the provider in the Assistant settings.
+mic; choose the provider in the Assistant settings. When no microphone is
+available the mic button is shown disabled with a tooltip rather than erroring.
 
 ## Cloud
 

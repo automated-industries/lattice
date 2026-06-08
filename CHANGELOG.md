@@ -21,6 +21,14 @@ shipped across 1.16.x), not a breaking change.
 
 ### Added
 
+- **The assistant remembers what it read across turns.** Prior tool calls and
+  their results (row ids included) are replayed into the model's context, so a
+  follow-up like "now update that row" reuses the id it just listed instead of
+  guessing one. Replay is bounded to the recent turns within a size budget and is
+  secret-redacted; set `LATTICE_CHAT_REHYDRATE=false` to disable it. The
+  assistant's `list_rows` is now deterministically ordered (by `created_at`, else
+  the primary key), so listing the same table twice returns the same rows instead
+  of conflicting values.
 - **AI library surface (`import { … } from 'latticesql'`).** A first-class,
   GUI-independent AI API — inert without an LLM client: `organizeSource` (sort a
   source into your own schema: summarize + classify + link, creating a new
@@ -121,6 +129,19 @@ shipped across 1.16.x), not a breaking change.
 
 ### Fixed
 
+- **GUI assistant + workspace polish.** Repeated tool pills collapse into one
+  counted pill ("Listed N rows"); the composer textarea wraps + auto-grows and
+  tracks the rail width, and assistant replies render Markdown. The activity
+  cards show relative timestamps ("3 days ago") with no "stale" flag. Internal
+  conversation tables (`chat_threads` / `chat_messages`) are hidden from the
+  Objects list (still queryable). Workspace display names accept special
+  characters (the on-disk slug is derived from them). The microphone button is
+  disabled with a tooltip when no input device is present; all blocking `alert()`
+  dialogs are now inline toasts; and token / secret inputs opt out of
+  password-manager popups. The header workspace switcher no longer desyncs from
+  the served database — it tracks the open workspace and reconciles the registry
+  at boot. A missing-row `update` / `delete` now fails loudly instead of
+  recording a phantom-success audit entry.
 - **A bulk chat task that hits the tool-step limit now says so.** When the
   assistant reaches its per-message tool-call cap with work outstanding (e.g.
   "create one row per line of a 150-row CSV"), it emits a warning ("…the task
