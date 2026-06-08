@@ -8,6 +8,7 @@ import {
   NATIVE_ENTITY_DEFS,
   NATIVE_ENTITY_NAMES,
   isNativeEntity,
+  isInternalNativeEntity,
   registerNativeEntities,
   adoptNativeEntities,
   listNativeBindings,
@@ -79,6 +80,22 @@ describe('framework native entities', () => {
         sha256: 'TEXT',
         blob_path: 'TEXT',
       });
+    });
+
+    it('flags chat storage as internal native (hidden from the Objects list)', () => {
+      // chat_threads/chat_messages are native (so isNativeEntity is true) but
+      // internal — the GUI Objects list filters them out via isInternalNativeEntity.
+      for (const t of ['chat_threads', 'chat_messages']) {
+        expect(isNativeEntity(t)).toBe(true);
+        expect(isInternalNativeEntity(t)).toBe(true);
+      }
+      // User-facing native entities are NOT internal — they stay visible.
+      for (const t of ['secrets', 'files', 'notes']) {
+        expect(isNativeEntity(t)).toBe(true);
+        expect(isInternalNativeEntity(t)).toBe(false);
+      }
+      // A plain user table is neither.
+      expect(isInternalNativeEntity('projects')).toBe(false);
     });
   });
 
@@ -187,13 +204,25 @@ describe('framework native entities', () => {
     it('records "created" bindings on a fresh DB and is idempotent', async () => {
       // beforeEach already registered + init'd native entities on `db`.
       const first = await adoptNativeEntities(db);
-      expect(first.map((r) => r.entity).sort()).toEqual(['files', 'notes', 'secrets']);
+      expect(first.map((r) => r.entity).sort()).toEqual([
+        'chat_messages',
+        'chat_threads',
+        'files',
+        'notes',
+        'secrets',
+      ]);
       expect(first.every((r) => r.origin === 'created')).toBe(true);
 
       // Registry table is internal and populated.
       expect(db.getRegisteredTableNames()).toContain(NATIVE_REGISTRY_TABLE);
       const bindings = await listNativeBindings(db);
-      expect(bindings.map((b) => b.entity).sort()).toEqual(['files', 'notes', 'secrets']);
+      expect(bindings.map((b) => b.entity).sort()).toEqual([
+        'chat_messages',
+        'chat_threads',
+        'files',
+        'notes',
+        'secrets',
+      ]);
 
       // Second call is a no-op upsert — no duplicate bindings.
       await adoptNativeEntities(db);

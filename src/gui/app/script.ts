@@ -66,6 +66,57 @@ export const appJs = `
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // Minimal, safe Markdown → HTML for assistant chat bubbles. The input is
+    // HTML-escaped FIRST (in mdToHtml), so every rule below operates on already
+    // neutralized text — no raw HTML can survive. Covers what the assistant
+    // emits: headings, bold/italic, inline + fenced code, ordered/unordered
+    // lists, links (http/https/mailto only), and paragraphs.
+    function mdInline(s) {
+      var BT = String.fromCharCode(96); // backtick (avoids escaping in this template)
+      var codes = [];
+      var reCode = new RegExp(BT + '([^' + BT + ']+)' + BT, 'g');
+      s = s.replace(reCode, function (_, c) { codes.push(c); return '\\u0001' + (codes.length - 1) + '\\u0001'; });
+      s = s.replace(/\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, function (_, t, u) {
+        if (!/^(https?:|mailto:)/i.test(u)) return t;
+        return '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>';
+      });
+      s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+      s = s.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+      s = s.replace(/\\u0001(\\d+)\\u0001/g, function (_, n) { return '<code>' + codes[n] + '</code>'; });
+      return s;
+    }
+    function mdToHtml(text) {
+      var src = escapeHtml(text == null ? '' : String(text));
+      var lines = src.split('\\n');
+      var FENCE = String.fromCharCode(96, 96, 96);
+      var html = '', i = 0, listType = null;
+      function closeList() { if (listType) { html += '</' + listType + '>'; listType = null; } }
+      function lstrip(x) { return x.replace(/^\\s+/, ''); }
+      while (i < lines.length) {
+        var line = lines[i];
+        if (lstrip(line).indexOf(FENCE) === 0) {
+          closeList(); var code = []; i++;
+          while (i < lines.length && lstrip(lines[i]).indexOf(FENCE) !== 0) { code.push(lines[i]); i++; }
+          i++;
+          html += '<pre><code>' + code.join('\\n') + '</code></pre>';
+          continue;
+        }
+        var h = line.match(/^(#{1,6})\\s+(.*)$/);
+        if (h) { closeList(); var tag = 'h' + Math.max(3, Math.min(6, h[1].length + 2)); html += '<' + tag + '>' + mdInline(h[2]) + '</' + tag + '>'; i++; continue; }
+        var ul = line.match(/^\\s*[-*+]\\s+(.*)$/);
+        if (ul) { if (listType !== 'ul') { closeList(); html += '<ul>'; listType = 'ul'; } html += '<li>' + mdInline(ul[1]) + '</li>'; i++; continue; }
+        var ol = line.match(/^\\s*\\d+\\.\\s+(.*)$/);
+        if (ol) { if (listType !== 'ol') { closeList(); html += '<ol>'; listType = 'ol'; } html += '<li>' + mdInline(ol[1]) + '</li>'; i++; continue; }
+        if (/^\\s*$/.test(line)) { closeList(); i++; continue; }
+        closeList();
+        var para = [line]; i++;
+        while (i < lines.length && !/^\\s*$/.test(lines[i]) && !/^\\s*(#{1,6}\\s|[-*+]\\s|\\d+\\.\\s)/.test(lines[i]) && lstrip(lines[i]).indexOf(FENCE) !== 0) { para.push(lines[i]); i++; }
+        html += '<p>' + mdInline(para.join('<br>')) + '</p>';
+      }
+      closeList();
+      return html;
+    }
+
     // Redact the userinfo portion of a connection URL so the password
     // never reaches the rendered DOM. Used for every place the GUI
     // displays a cloud_url field (team cards, connection list, etc).
@@ -185,6 +236,13 @@ export const appJs = `
         initSearch();
         initLastEdited();
         initOffline();
+        initRailResize();
+        initRailDrawer();
+        initRailDragDrop();
+        startFeed();
+        renderComposer();
+        initThreadControls();
+        checkNativeSetup();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
@@ -548,13 +606,17 @@ export const appJs = `
     };
     function relTime(iso) {
       try {
-        var diff = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-        if (diff < 60) return diff + 's ago';
-        var m = Math.round(diff / 60);
-        if (m < 60) return m + 'm ago';
-        var h = Math.round(m / 60);
-        if (h < 24) return h + 'h ago';
-        return new Date(iso).toLocaleDateString();
+        var s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+        if (s < 60) return s + 's ago';
+        if (s < 3600) return Math.round(s / 60) + 'm ago';
+        if (s < 86400) return Math.round(s / 3600) + 'h ago';
+        // Day+ ranges are always relative (no absolute date): days → weeks →
+        // months → years, whichever unit the elapsed time first fits.
+        var days = Math.floor(s / 86400);
+        if (days < 7) return days + (days === 1 ? ' day ago' : ' days ago');
+        if (days < 30) { var w = Math.floor(days / 7); return w + (w === 1 ? ' week ago' : ' weeks ago'); }
+        if (days < 365) { var mo = Math.floor(days / 30); return mo + (mo === 1 ? ' month ago' : ' months ago'); }
+        var y = Math.floor(days / 365); return y + (y === 1 ? ' year ago' : ' years ago');
       } catch (_) { return ''; }
     }
 
@@ -842,6 +904,13 @@ export const appJs = `
                 menu.hidden = true;
                 return reloadEverything();
               }).then(function () {
+                // Conversations + activity both live in the workspace DB. Drop
+                // the old workspace's thread + activity cards, reconnect the feed
+                // to THIS workspace, and reload its thread list (+ latest convo).
+                newChat();
+                clearActivityFeed();
+                startFeed();
+                refreshThreadList(true);
                 showToast('Switched workspace', {});
               }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
             });
@@ -984,12 +1053,6 @@ export const appJs = `
       var idx = DASHBOARD_ORDER.indexOf(name);
       return idx === -1 ? DASHBOARD_ORDER.length : idx;
     }
-    function statTile(n, label, cls) {
-      return '<div class="stat-tile' + (cls ? ' ' + cls : '') + '">' +
-        '<div class="stat-n">' + escapeHtml(String(n)) + '</div>' +
-        '<div class="stat-l">' + escapeHtml(label) + '</div>' +
-        '</div>';
-    }
     // Fallback dashboard data from the already-loaded entities list, used if
     // the /api/dashboard call fails (no freshness/recent, just counts).
     function dashboardFallback() {
@@ -1020,20 +1083,15 @@ export const appJs = `
           '</div>';
         return;
       }
-      var t = d.totals || { entities: ents.length, rows: 0, stale: 0 };
-      // Entities / rows count tiles intentionally omitted — the per-entity
-      // cards already show counts. Keep only the stale-data warning (when any).
-      var stats = t.stale > 0
-        ? '<div class="dash-stats">' +
-            statTile(t.stale, 'stale ' + (d.staleDays || 14) + 'd+', 'warn') +
-          '</div>'
-        : '';
+      // No overview stat tiles — the per-entity cards already show counts, and
+      // the "stale" indicator was removed (relative "updated" time is signal
+      // enough, without flagging anything as stale or coloring it).
       var cardPrefix = advancedMode() ? '#/objects/' : '#/fs/';
       var cards = ents.map(function (e) {
         var disp = displayFor(e.name);
         var count = (e.rowCount != null) ? e.rowCount : 0;
         var fresh = e.lastUpdatedAt
-          ? '<div class="card-fresh' + (e.stale ? ' stale' : '') + '" title="Last updated ' +
+          ? '<div class="card-fresh" title="Last updated ' +
               escapeHtml(String(e.lastUpdatedAt)) + '">' + relTime(e.lastUpdatedAt) + '</div>'
           : '';
         return '<a class="card" href="' + cardPrefix + e.name + '">' +
@@ -1043,7 +1101,7 @@ export const appJs = `
           fresh +
           '</a>';
       }).join('');
-      content.innerHTML = stats + '<div class="dashboard">' + cards + '</div>';
+      content.innerHTML = '<div class="dashboard">' + cards + '</div>';
     }
     function renderDashboard(content) {
       // Workspace overview: counts + freshness + recent activity from
@@ -1190,7 +1248,7 @@ export const appJs = `
       // Secret columns: use a password input so the value is masked while editing.
       if (isSecretColumn(table.name, col)) {
         return '<input type="password" name="' + escapeHtml(col) + '" value="' +
-          escapeHtml(value || '') + '" autocomplete="off" />';
+          escapeHtml(value || '') + '" autocomplete="off" data-1p-ignore data-lpignore="true" />';
       }
       // Multiline for ALL long-form fields (matches FS_LONGFORM, the same set
       // fsValInner renders as markdown) AND any value that already contains a
@@ -1457,7 +1515,11 @@ export const appJs = `
     // A row is backed by a streamable local file when it has the legacy path
     // column (deprecated) or a v2.0 local_ref (ref_uri). Cloud refs aren't served.
     function hasLocalFile(row) {
-      return !!(row.path || (row.ref_kind === 'local_ref' && row.ref_uri));
+      return !!(
+        row.path ||
+        (row.ref_kind === 'local_ref' && row.ref_uri) ||
+        (row.ref_kind === 'blob' && row.blob_path)
+      );
     }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
@@ -1773,6 +1835,17 @@ export const appJs = `
       if (primary) return String(primary);
       var secondary = row.summary || row.description || row.body || row.content || row.url || row.path;
       if (secondary) return truncate(String(secondary).replace(/\\s+/g, ' '), 60);
+      // No conventional label column — fall back to the first meaningful cell
+      // value (skip id / timestamp / foreign-key columns) so an inferred entity
+      // still reads as something human, not a bare #id. Mirrors the server's
+      // rowLabel() so a card and its activity-feed bubble agree.
+      for (var k in row) {
+        if (!Object.prototype.hasOwnProperty.call(row, k)) continue;
+        if (k === 'id' || /_id$|_at$/.test(k)) continue;
+        var v = row[k];
+        if (typeof v === 'number') return String(v);
+        if (typeof v === 'string' && v.trim()) return truncate(v.trim().replace(/\\s+/g, ' '), 60);
+      }
       return row.id ? '#' + String(row.id).slice(0, 8) : '(untitled)';
     }
     // File-type glyph for native files-entity rows.
@@ -3440,13 +3513,13 @@ export const appJs = `
             spin();
             result.then(function () { close(); }).catch(function (err) {
               unspin();
-              alert('Failed: ' + (err && err.message ? err.message : String(err)));
+              showToast('Failed: ' + (err && err.message ? err.message : String(err)));
             });
           } else {
             close();
           }
         } catch (err) {
-          alert('Failed: ' + (err && err.message ? err.message : String(err)));
+          showToast('Failed: ' + (err && err.message ? err.message : String(err)));
         }
       });
       return { close: close };
@@ -3666,14 +3739,15 @@ export const appJs = `
             // Join a team: hand off to the invite-redeem modal, which collects
             // the cloud URL + invite token and joins as a member.
             if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
-            if (!wizState.name.trim()) { alert('Workspace name is required'); return; }
-            if (!/^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,199}$/.test(wizState.name.trim())) {
-              alert('Workspace name must start with a letter or digit and contain only letters, digits, spaces, dots, underscores, or hyphens'); return;
-            }
+            if (!wizState.name.trim()) { showToast('Workspace name is required'); return; }
+            // The display name is free-form (special characters allowed). The
+            // server stores it verbatim and derives a safe directory slug from it
+            // (toSafeDirName) — so the only constraint here is a sane length.
+            if (wizState.name.trim().length > 200) { showToast('Workspace name must be 200 characters or fewer'); return; }
             if (wizState.kind === 'cloud') {
-              if (!/^postgres(ql)?:\\/\\//i.test(wizState.cloudUrl.trim())) { alert('Cloud URL must start with postgres://'); return; }
-              if (!wizState.email.trim()) { alert('Email is required for cloud workspaces'); return; }
-              if (!wizState.displayName.trim()) { alert('Display name is required for cloud workspaces'); return; }
+              if (!/^postgres(ql)?:\\/\\//i.test(wizState.cloudUrl.trim())) { showToast('Cloud URL must start with postgres://'); return; }
+              if (!wizState.email.trim()) { showToast('Email is required for cloud workspaces'); return; }
+              if (!wizState.displayName.trim()) { showToast('Display name is required for cloud workspaces'); return; }
             }
             wizState.step = 2;
             render();
@@ -3681,9 +3755,9 @@ export const appJs = `
             // Validate entity names (if any)
             for (var i = 0; i < wizState.entities.length; i += 1) {
               var nm = wizState.entities[i].name.trim();
-              if (!nm) { alert('Entity name on row ' + (i + 1) + ' is empty'); return; }
+              if (!nm) { showToast('Entity name on row ' + (i + 1) + ' is empty'); return; }
               if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(nm)) {
-                alert('Entity name "' + nm + '" is invalid (use a valid identifier).'); return;
+                showToast('Entity name "' + nm + '" is invalid (use a valid identifier).'); return;
               }
             }
             wizState.step = 3;
@@ -3706,7 +3780,7 @@ export const appJs = `
           }).catch(function (err) {
             nextBtn.removeAttribute('disabled');
             nextBtn.textContent = 'Create';
-            alert('Create failed: ' + (err && err.message ? err.message : String(err)));
+            showToast('Create failed: ' + (err && err.message ? err.message : String(err)));
           });
         }
 
@@ -3857,13 +3931,155 @@ export const appJs = `
         '<div class="teams-page">' +
           '<h2>User Settings</h2>' +
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
+          '<div id="assistant-host"></div>' +
           '<div id="preferences-host"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
+      renderAssistantPanel(document.getElementById('assistant-host'));
       renderPreferencesPanel(document.getElementById('preferences-host'));
       // Databases catalog lives on Lattice Settings; per-database cloud/team
       // config lives on Database Settings. User Settings is identity +
       // preferences only — every config option in exactly one place.
+    }
+
+
+    function renderAssistantPanel(host) {
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        cfg = cfg || {};
+        function rowHtml(idBase, label, has, placeholder) {
+          return '<div style="margin-bottom:12px">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+              '<strong style="font-size:13px">' + label + '</strong>' +
+              '<span class="feed-source" style="background:' + (has ? 'var(--accent-soft)' : 'var(--surface-2)') +
+                ';color:' + (has ? 'var(--accent)' : 'var(--text-muted)') + '">' + (has ? 'Set' : 'Not set') + '</span>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px;align-items:center">' +
+              // data-1p-ignore / data-lpignore: this is an API-token box, not a
+              // login password — tell 1Password/LastPass/Bitwarden to leave it
+              // alone so pasting a key doesn't trigger their warning/fill popups.
+              '<input id="' + idBase + '-key" type="password" autocomplete="off" data-1p-ignore data-lpignore="true" placeholder="' +
+                (has ? '••••••••••••' : placeholder) + '" style="flex:1;background:var(--surface-2)">' +
+              '<button id="' + idBase + '-save" class="btn">Save</button>' +
+              (has ? '<button id="' + idBase + '-clear" class="btn">Clear</button>' : '') +
+            '</div>' +
+          '</div>';
+        }
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 10px">Assistant</h3>' +
+            '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+              'Keys are stored encrypted in the <code>secrets</code> table — never shown again once ' +
+              'saved. Environment variables (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, ' +
+              '<code>ELEVENLABS_API_KEY</code>) also work.' +
+            '</p>' +
+            rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
+            '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+              (cfg.oauthEnabled
+                ? 'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.'
+                : 'Subscription login: set the <code>ANTHROPIC_OAUTH_*</code> env vars to enable.') +
+            '</div>' +
+            '<div style="margin:6px 0 12px">' +
+              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
+                '<strong style="font-size:13px">Inference aggressiveness</strong>' +
+                '<span id="asst-aggr-val" style="font-size:12px;color:var(--text-muted)"></span>' +
+              '</div>' +
+              '<input id="asst-aggr" type="range" min="0" max="1" step="0.05" ' +
+                'value="' + (typeof cfg.aggressiveness === 'number' ? cfg.aggressiveness : 0.5) + '" ' +
+                'style="width:100%">' +
+              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted)">' +
+                '<span>Conservative</span><span>Aggressive</span>' +
+              '</div>' +
+              '<p class="lead" style="margin:4px 0 0;font-size:12px;color:var(--text-muted)">' +
+                'How eagerly the assistant adds, enriches, and links objects (and ' +
+                'auto-creates link tables) when you drop in files. Higher extrapolates more.' +
+              '</p>' +
+            '</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text (set either)</div>' +
+            rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…') +
+            rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…') +
+            '<div style="margin:6px 0 2px;display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
+              '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
+                '<option value="auto">Auto</option>' +
+                '<option value="openai">OpenAI Whisper</option>' +
+                '<option value="elevenlabs">ElevenLabs</option>' +
+              '</select>' +
+            '</div>' +
+            '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
+          '</div>';
+        var msg = host.querySelector('#assistant-msg');
+        function wire(idBase, kind) {
+          var input = host.querySelector('#' + idBase + '-key');
+          var saveBtn = host.querySelector('#' + idBase + '-save');
+          if (saveBtn) saveBtn.addEventListener('click', function () {
+            var key = (input.value || '').trim();
+            if (!key) { msg.textContent = 'Enter a key first.'; return; }
+            msg.textContent = 'Saving…';
+            fetch('/api/assistant/key', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ kind: kind, key: key }),
+            })
+              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+              .then(function () { renderAssistantPanel(host); renderComposer(); })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+          var clearBtn = host.querySelector('#' + idBase + '-clear');
+          if (clearBtn) clearBtn.addEventListener('click', function () {
+            msg.textContent = 'Clearing…';
+            fetch('/api/assistant/key?kind=' + encodeURIComponent(kind), { method: 'DELETE' })
+              .then(function (r) { if (!r.ok) throw new Error('clear failed (' + r.status + ')'); return r.json(); })
+              .then(function () { renderAssistantPanel(host); renderComposer(); })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+        }
+        wire('asst-anthropic', 'anthropic');
+        wire('asst-openai', 'openai');
+        wire('asst-elevenlabs', 'elevenlabs');
+        var sttSel = host.querySelector('#asst-stt');
+        if (sttSel) {
+          sttSel.value = cfg.sttPreference || 'auto';
+          sttSel.addEventListener('change', function () {
+            msg.textContent = 'Saving…';
+            fetch('/api/assistant/stt-provider', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ provider: sttSel.value }),
+            })
+              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+              .then(function () { msg.textContent = 'Saved.'; })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+        }
+        var aggr = host.querySelector('#asst-aggr');
+        var aggrVal = host.querySelector('#asst-aggr-val');
+        function aggrLabel(v) {
+          if (v <= 0.25) return 'Conservative (' + v.toFixed(2) + ')';
+          if (v >= 0.75) return 'Aggressive (' + v.toFixed(2) + ')';
+          return 'Balanced (' + v.toFixed(2) + ')';
+        }
+        if (aggr) {
+          if (aggrVal) aggrVal.textContent = aggrLabel(parseFloat(aggr.value));
+          aggr.addEventListener('input', function () {
+            if (aggrVal) aggrVal.textContent = aggrLabel(parseFloat(aggr.value));
+          });
+          aggr.addEventListener('change', function () {
+            msg.textContent = 'Saving…';
+            fetch('/api/assistant/aggressiveness', {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ value: parseFloat(aggr.value) }),
+            })
+              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+              .then(function () { msg.textContent = 'Saved.'; })
+              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+          });
+        }
+      }).catch(function (e) {
+        host.innerHTML = '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px">' +
+          '<h3 style="margin:0 0 10px">Assistant</h3><div style="font-size:12px;color:var(--warn)">Could not load: ' +
+          escapeHtml(e.message) + '</div></div>';
+      });
     }
 
     function renderPreferencesPanel(host) {
@@ -4048,7 +4264,7 @@ export const appJs = `
             withBusy(dbtn, function () {
               return fetchJson('/api/teams-gui/teams/' + cfg.teamId, { method: 'DELETE' })
                 .then(function () { showToast('Disconnected from cloud', {}); return switchAway(); })
-                .catch(function (e) { alert('Disconnect failed: ' + e.message); });
+                .catch(function (e) { showToast('Disconnect failed: ' + e.message); });
             });
           });
           return;
@@ -4069,7 +4285,7 @@ export const appJs = `
             withBusy(lbtn, function () {
               return fetchJson('/api/teams-gui/teams/' + cfg.teamId + '/members/' + encodeURIComponent(cfg.myUserId), { method: 'DELETE' })
                 .then(function () { showToast('Left the workspace', {}); return switchAway(); })
-                .catch(function (e) { alert('Leave failed: ' + e.message); });
+                .catch(function (e) { showToast('Leave failed: ' + e.message); });
             });
           });
           return;
@@ -4343,7 +4559,7 @@ export const appJs = `
 
       var inviteBtn = host.querySelector('[data-act="open-invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
-        if (!teamId) { alert('No team is active.'); return; }
+        if (!teamId) { showToast('No team is active.'); return; }
         showInviteByEmailModal(teamId, info);
       });
 
@@ -4770,6 +4986,684 @@ export const appJs = `
       // Suppress unused-var on handle
       void handle;
     }
+
+
+    // ============ AI assistant rail (2.0) ============
+    var feedSource = null;
+    var FEED_ICONS = {
+      insert: '➕', update: '✏️', delete: '🗑',
+      link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
+    };
+    // Ops whose consecutive runs collapse into one counted bubble (bulk row work
+    // spams N near-identical rows otherwise). Schema/undo/redo stay distinct.
+    var GROUPABLE_OPS = { insert: 1, update: 1, delete: 1, link: 1, unlink: 1 };
+    var lastFeedGroup = null; // { key, count, item, summaryEl, timeEl }
+    function groupedSummary(op, table, count) {
+      var t = String(table || '');
+      switch (op) {
+        case 'insert': return 'Added ' + count + ' rows to ' + t;
+        case 'update': return 'Updated ' + count + ' rows in ' + t;
+        case 'delete': return 'Removed ' + count + ' rows from ' + t;
+        case 'link': return 'Linked ' + count + ' rows in ' + t;
+        case 'unlink': return 'Unlinked ' + count + ' rows in ' + t;
+        default: return String(op || '') + ' ' + t;
+      }
+    }
+    function renderFeedItem(ev) {
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return;
+      var empty = document.getElementById('rail-empty');
+      if (empty) empty.remove();
+      // Coalesce a run of identical events (same op + table + source) into the
+      // previous bubble with a count — but only while that bubble is still the
+      // last thing in the feed (a chat bubble or a different event breaks the run).
+      var groupKey = GROUPABLE_OPS[ev.op] && ev.table
+        ? String(ev.op) + '|' + String(ev.table) + '|' + String(ev.source || '')
+        : null;
+      if (groupKey && lastFeedGroup && lastFeedGroup.key === groupKey &&
+          feedEl.lastElementChild === lastFeedGroup.item) {
+        lastFeedGroup.count += 1;
+        lastFeedGroup.summaryEl.textContent = groupedSummary(ev.op, ev.table, lastFeedGroup.count);
+        lastFeedGroup.timeEl.textContent = relTime(ev.ts);
+        // A grouped bubble stands for many rows — disable the single-row click.
+        lastFeedGroup.item._rowClickOff = true;
+        lastFeedGroup.item.classList.remove('feed-clickable');
+        lastFeedGroup.item.removeAttribute('role');
+        lastFeedGroup.item.removeAttribute('tabindex');
+        lastFeedGroup.item.removeAttribute('title');
+        feedEl.scrollTop = feedEl.scrollHeight;
+        return;
+      }
+      var item = document.createElement('div');
+      item.className = 'feed-item';
+      var icon = document.createElement('div');
+      icon.className = 'feed-icon';
+      icon.textContent = FEED_ICONS[ev.op] || '•';
+      var body = document.createElement('div');
+      body.className = 'feed-body';
+      var summary = document.createElement('div');
+      summary.className = 'feed-summary';
+      summary.textContent = ev.summary || (String(ev.op || '') + ' ' + String(ev.table || ''));
+      var meta = document.createElement('div');
+      meta.className = 'feed-meta';
+      var src = document.createElement('span');
+      src.className = 'feed-source';
+      src.textContent = ev.source === 'gui' ? 'you' : String(ev.source || '');
+      meta.appendChild(src);
+      body.appendChild(summary);
+      body.appendChild(meta);
+      var time = document.createElement('div');
+      time.className = 'feed-time';
+      time.textContent = relTime(ev.ts);
+      item.appendChild(icon);
+      item.appendChild(body);
+      item.appendChild(time);
+      // Row events (insert/update/delete) carry a rowId — make the bubble a
+      // shortcut to that object. Link/unlink and schema events have no single
+      // row (rowId is null), so they stay non-clickable.
+      if (ev.rowId && ev.table) {
+        item.classList.add('feed-clickable');
+        item.setAttribute('role', 'button');
+        item.setAttribute('tabindex', '0');
+        item.title = 'Open this ' + String(ev.table);
+        // _rowClickOff is set when the bubble becomes a group — clicks no-op then.
+        var openRow = function () { if (item._rowClickOff) return; openSearchHit(String(ev.table), String(ev.rowId)); };
+        item.addEventListener('click', openRow);
+        item.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(); }
+        });
+      }
+      feedEl.appendChild(item);
+      feedEl.scrollTop = feedEl.scrollHeight;
+      // Start a new group anchored on this bubble (groupable ops only).
+      lastFeedGroup = groupKey
+        ? { key: groupKey, count: 1, item: item, summaryEl: summary, timeEl: time }
+        : null;
+    }
+    function startFeed() {
+      if (feedSource) {
+        try { feedSource.close(); } catch (_) { /* ignore */ }
+        feedSource = null;
+      }
+      if (typeof EventSource === 'undefined') return;
+      feedSource = new EventSource('/api/feed/stream');
+      feedSource.addEventListener('feed', function (ev) {
+        var data;
+        try { data = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
+        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
+        // A server-side mutation (e.g. the Context Constructor ingesting a file)
+        // can create a brand-new entity or junction the client hasn't loaded.
+        // The local feed bus delivers these even when there's no realtime
+        // broker (SQLite), so refresh the entity list + sidebar live — otherwise
+        // the new object is missing from the nav and routing to it shows
+        // "Unknown entity" until a manual page reload. Debounced so a burst of
+        // schema events from one ingest coalesces into a single refetch.
+        if (data && (data.op === 'schema' || (data.table && !tableByName(data.table)))) {
+          scheduleRealtimeRefresh();
+        }
+      });
+      // EventSource auto-reconnects on error; no extra handling needed.
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Assistant rail resize — drag the left edge, clamp, persist.
+    // ────────────────────────────────────────────────────────────
+    var RAIL_MIN = 320, RAIL_MAX = 640, RAIL_KEY = 'lattice-rail-width';
+    function applyRailWidth(px) {
+      var w = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(px)));
+      document.documentElement.style.setProperty('--sidebar-width', w + 'px');
+      return w;
+    }
+    function initRailResize() {
+      var saved = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
+      if (!isNaN(saved)) applyRailWidth(saved);
+      var handle = document.getElementById('rail-resize');
+      if (!handle) return;
+      handle.addEventListener('pointerdown', function (e) {
+        e.preventDefault();
+        var startX = e.clientX;
+        var rail = document.getElementById('assistant-rail');
+        var startW = rail ? rail.getBoundingClientRect().width : 380;
+        handle.classList.add('dragging');
+        function move(ev) {
+          // Rail sits on the right; dragging left (smaller clientX) widens it.
+          applyRailWidth(startW - (ev.clientX - startX));
+        }
+        function up() {
+          handle.classList.remove('dragging');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          var cur = parseInt(
+            getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'),
+            10,
+          );
+          if (!isNaN(cur)) window.localStorage.setItem(RAIL_KEY, String(cur));
+        }
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Assistant chat composer — POST /api/chat, parse SSE, render
+    // bubbles + tool pills into the same rail feed (interleaved with
+    // activity events). Gated on a configured Claude token.
+    // ────────────────────────────────────────────────────────────
+    var chatHistory = [];
+    var chatBusy = false;
+    var COMPOSER_MAX_H = 160; // px — textarea auto-grow ceiling (then it scrolls)
+    function railFeedEl() { return document.getElementById('rail-feed'); }
+    function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
+    var currentThreadId = null;
+    var loadThreadSeq = 0; // discards a stale loadThread response when a newer load supersedes it
+    function clearChat() {
+      chatHistory = [];
+      var feedEl = railFeedEl();
+      if (!feedEl) return;
+      // Remove only the chat bubbles. The activity cards (.feed-item) are
+      // workspace-global, not part of any one conversation — loading, switching,
+      // or starting a conversation must NOT wipe them (they're backfilled once
+      // on connect). Otherwise auto-loading a thread on refresh erases the feed.
+      var msgs = feedEl.querySelectorAll('.chat-msg');
+      for (var i = 0; i < msgs.length; i++) msgs[i].remove();
+      // Restore the empty hint only when the rail is now completely empty.
+      if (!feedEl.firstElementChild) {
+        feedEl.innerHTML = '<div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>';
+      }
+    }
+    // Drop the activity cards (e.g. when switching to another workspace, whose
+    // events are a different set). Resets the grouping anchor too.
+    function clearActivityFeed() {
+      var feedEl = railFeedEl();
+      if (!feedEl) return;
+      var items = feedEl.querySelectorAll('.feed-item');
+      for (var i = 0; i < items.length; i++) items[i].remove();
+      lastFeedGroup = null;
+    }
+    function newChat() {
+      currentThreadId = null;
+      clearChat();
+      var sel = document.getElementById('rail-threads');
+      if (sel) sel.value = '';
+    }
+    // Populate the conversation dropdown from the ACTIVE workspace's threads
+    // (chat_threads lives in the workspace DB, so switching workspaces changes
+    // the list). When autoSelect is set and nothing is open yet, load the most
+    // recent thread so a page refresh / workspace switch restores the
+    // conversation instead of starting blank.
+    function refreshThreadList(autoSelect) {
+      var sel = document.getElementById('rail-threads'); if (!sel) return Promise.resolve();
+      return fetchJson('/api/chat/threads').then(function (d) {
+        var threads = (d && d.threads) || [];
+        var opts = '<option value="">＋ New conversation</option>';
+        threads.forEach(function (t) {
+          opts += '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.title || 'Chat') + '</option>';
+        });
+        sel.innerHTML = opts;
+        if (autoSelect && !currentThreadId && threads.length > 0) {
+          loadThread(threads[0].id); // threads are newest-first
+        } else {
+          sel.value = currentThreadId || '';
+        }
+      }).catch(function () { /* ignore */ });
+    }
+    function loadThread(id) {
+      var seq = ++loadThreadSeq;
+      fetchJson('/api/chat/threads/' + encodeURIComponent(id) + '/messages').then(function (d) {
+        if (seq !== loadThreadSeq) return; // a newer loadThread() superseded this one
+        var msgs = (d && d.messages) || [];
+        clearChat();
+        currentThreadId = id;
+        var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
+        msgs.forEach(function (m) {
+          if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
+          else if (m.role === 'assistant') {
+            // Rich replay: the saved per-turn structure (text + tool pills),
+            // matching the live stream. Falls back to a plain text bubble for
+            // messages saved before turns were persisted.
+            if (Array.isArray(m.turns) && m.turns.length > 0) { m.turns.forEach(appendAssistantTurn); }
+            else { var c = newAssistantBubble(); setBubbleText(c, m.text); }
+            chatHistory.push({ role: 'assistant', text: m.text });
+          }
+        });
+      }).catch(function (e) { showToast('Could not load conversation: ' + e.message, {}); });
+    }
+    function initThreadControls() {
+      var sel = document.getElementById('rail-threads');
+      var btn = document.getElementById('rail-newchat');
+      if (btn) btn.addEventListener('click', newChat);
+      if (sel) sel.addEventListener('change', function () { if (sel.value) loadThread(sel.value); else newChat(); });
+      refreshThreadList(true); // restore the most recent conversation on load
+    }
+    function appendUserBubble(text) {
+      railEmptyGone();
+      var feedEl = railFeedEl(); if (!feedEl) return;
+      var msg = document.createElement('div'); msg.className = 'chat-msg user';
+      var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = text;
+      msg.appendChild(b); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+    }
+    function newAssistantBubble() {
+      railEmptyGone();
+      var feedEl = railFeedEl();
+      var msg = document.createElement('div'); msg.className = 'chat-msg assistant';
+      var wrap = document.createElement('div');
+      var tools = document.createElement('div'); tools.className = 'chat-tools';
+      var b = document.createElement('div'); b.className = 'chat-bubble assistant';
+      // Show an animated typing indicator until the first text delta arrives.
+      b.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
+      b.setAttribute('data-typing', '1');
+      wrap.appendChild(tools); wrap.appendChild(b);
+      msg.appendChild(wrap); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      // lastTool anchors the current run of identical tool calls so consecutive
+      // same-name calls coalesce into one counted pill (see addToolPill).
+      return { bubble: b, tools: tools, pills: {}, lastTool: null, msg: msg };
+    }
+    /** Set an assistant bubble's text, clearing the typing indicator. */
+    function setBubbleText(ctx, text) {
+      if (!ctx || !ctx.bubble) return; // bubble may have been finalized/removed
+      ctx.bubble.removeAttribute('data-typing');
+      // Assistant turns are Markdown; render (input is HTML-escaped inside
+      // mdToHtml first, so this is injection-safe).
+      ctx.bubble.innerHTML = mdToHtml(text);
+    }
+    /**
+     * A turn ended. If its bubble never got text (still showing the typing
+     * indicator), drop the empty bubble — keeping any tool pills it fired, or
+     * removing the whole message when there were none. Stops a dangling
+     * "typing…" bubble after the stream completes.
+     */
+    function finalizeBubble(ctx) {
+      if (!ctx || !ctx.bubble || !ctx.bubble.getAttribute('data-typing')) return;
+      if (ctx.tools && ctx.tools.children.length > 0) ctx.bubble.remove();
+      else if (ctx.msg) ctx.msg.remove();
+    }
+    var TOOL_VERBS = {
+      create_row: ['Creating row', 'Row created', 'Could not create row'],
+      update_row: ['Updating row', 'Row updated', 'Could not update row'],
+      delete_row: ['Deleting row', 'Row deleted', 'Could not delete row'],
+      list_rows: ['Listing rows', 'Listed rows', 'Could not list rows'],
+      get_row: ['Fetching row', 'Fetched row', 'Could not fetch row'],
+      list_entities: ['Listing tables', 'Listed tables', 'Could not list tables']
+    };
+    // Grouped (count > 1) [gerund, past, noun] so a run of identical tool calls
+    // collapses into ONE counted pill — "Listed 5 rows" — instead of N identical
+    // "Listed rows" pills. Mirrors the activity feed's groupedSummary() coalescing.
+    var TOOL_GROUP = {
+      create_row:    ['Creating', 'Created', 'rows'],
+      update_row:    ['Updating', 'Updated', 'rows'],
+      delete_row:    ['Deleting', 'Deleted', 'rows'],
+      list_rows:     ['Listing',  'Listed',  'rows'],
+      get_row:       ['Fetching', 'Fetched', 'rows'],
+      list_entities: ['Listing',  'Listed',  'tables']
+    };
+    function toolLabel(name, state) {
+      var v = TOOL_VERBS[name] || [name, name, name];
+      return state === 'pending' ? v[0] + '…' : (state === 'error' ? v[2] : v[1]);
+    }
+    // Label for a run of "count" identical calls. count <= 1 falls back to the
+    // single-call label so a lone pill reads exactly as before.
+    function toolGroupLabel(name, count, state) {
+      if (count <= 1) return toolLabel(name, state);
+      var g = TOOL_GROUP[name];
+      if (!g) return toolLabel(name, state) + ' ×' + count; // unknown tool: stay honest
+      var verb = state === 'pending' ? g[0] : g[1];
+      return verb + ' ' + count + ' ' + g[2] + (state === 'pending' ? '…' : '');
+    }
+    // Paint a (possibly grouped) pill from its live counts: spinner while any call
+    // is still running, then ✓ (or ⚠ if any errored) once every call resolves.
+    function paintToolPill(g) {
+      var pending = g.pending > 0;
+      var err = !pending && g.error > 0;
+      if (pending) {
+        g.el.className = 'tool-pill';
+        g.el.innerHTML = '<span class="spin"></span>' + escapeHtml(toolGroupLabel(g.name, g.total, 'pending'));
+      } else {
+        g.el.className = 'tool-pill ' + (err ? 'error' : 'done');
+        g.el.textContent = (err ? '⚠ ' : '✓ ') + toolGroupLabel(g.name, g.total, err ? 'error' : 'done');
+      }
+    }
+    function addToolPill(ctx, id, name) {
+      // Coalesce a run of the same tool within this turn's pill row into one
+      // counted pill (the model emits several list_rows in a single turn).
+      var g = ctx.lastTool;
+      if (g && g.name === name) {
+        g.total += 1; g.pending += 1;
+      } else {
+        var pill = document.createElement('span'); pill.className = 'tool-pill';
+        ctx.tools.appendChild(pill);
+        g = { name: name, el: pill, total: 1, pending: 1, error: 0 };
+        ctx.lastTool = g;
+      }
+      ctx.pills[id] = g; // resolveToolPill maps the tool-use id back to its group
+      paintToolPill(g);
+    }
+    function resolveToolPill(ctx, id, isError) {
+      var g = ctx.pills[id]; if (!g) return;
+      if (g.pending > 0) g.pending -= 1;
+      if (isError) g.error += 1;
+      paintToolPill(g);
+    }
+    /**
+     * Append already-resolved pills for a replayed turn, collapsing consecutive
+     * identical tools into one counted pill (matching the live grouping above).
+     */
+    function renderResolvedPills(ctx, tools) {
+      var i = 0;
+      while (i < tools.length) {
+        var name = tools[i].name, j = i, errors = 0;
+        while (j < tools.length && tools[j].name === name) { if (tools[j].isError) errors += 1; j++; }
+        var count = j - i, err = errors > 0;
+        var pill = document.createElement('span');
+        pill.className = 'tool-pill ' + (err ? 'error' : 'done');
+        pill.textContent = (err ? '⚠ ' : '✓ ') + toolGroupLabel(name, count, err ? 'error' : 'done');
+        ctx.tools.appendChild(pill);
+        i = j;
+      }
+    }
+    /** Replay one persisted assistant turn: its tool pills + text bubble. */
+    function appendAssistantTurn(turn) {
+      var ctx = newAssistantBubble();
+      renderResolvedPills(ctx, turn.tools || []);
+      if (turn.text) setBubbleText(ctx, turn.text);
+      else finalizeBubble(ctx); // tool-only turn: drop the empty bubble, keep pills
+    }
+    function parseSse(buffer, onEvent) {
+      var sep;
+      while ((sep = buffer.indexOf('\\n\\n')) >= 0) {
+        var frame = buffer.slice(0, sep); buffer = buffer.slice(sep + 2);
+        var line = frame.split('\\n').find(function (l) { return l.indexOf('data:') === 0; });
+        if (!line) continue;
+        var json = line.slice(5).trim(); if (!json) continue;
+        try { onEvent(JSON.parse(json)); } catch (_) { /* drop malformed */ }
+      }
+      return buffer;
+    }
+    function sendChat(text) {
+      if (chatBusy || !text) return;
+      chatBusy = true;
+      appendUserBubble(text);
+      var historyToSend = chatHistory.slice();
+      chatHistory.push({ role: 'user', text: text });
+      var input = document.getElementById('chat-input');
+      var sendBtn = document.getElementById('chat-send');
+      // Clear + collapse the textarea back to one line (reuse its auto-grow so
+      // the reset matches the grow logic instead of leaving a bare 'auto').
+      if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
+      if (sendBtn) sendBtn.disabled = true;
+      var actx = null; var assembled = '';
+      fetch('/api/chat', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId })
+      }).then(function (r) {
+        if (!r.ok || !r.body) {
+          return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+        }
+        var tid = r.headers.get('x-thread-id'); if (tid) currentThreadId = tid;
+        var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
+        function pump() {
+          return reader.read().then(function (res) {
+            if (res.done) return;
+            buf += dec.decode(res.value, { stream: true });
+            buf = parseSse(buf, function (ev) {
+              if (ev.type === 'assistant_message_start') { finalizeBubble(actx); actx = newAssistantBubble(); assembled = ''; }
+              else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
+              else if (ev.type === 'tool_use' && actx) { addToolPill(actx, ev.id, ev.name); }
+              else if (ev.type === 'tool_result' && actx) { resolveToolPill(actx, ev.toolUseId, ev.isError); }
+              else if (ev.type === 'warn') { finalizeBubble(actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); actx = null; }
+              else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
+            });
+            return pump();
+          });
+        }
+        return pump();
+      }).then(function () {
+        finalizeBubble(actx); // drop a trailing empty "typing…" bubble
+        if (assembled) chatHistory.push({ role: 'assistant', text: assembled });
+        refreshThreadList();
+      }).catch(function (e) {
+        finalizeBubble(actx);
+        var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + e.message);
+      }).finally(function () {
+        chatBusy = false;
+        var sb = document.getElementById('chat-send'); if (sb) sb.disabled = false;
+        var inp = document.getElementById('chat-input'); if (inp) inp.focus();
+      });
+    }
+    var recState = 'idle';
+    var mediaRecorder = null;
+    var audioChunks = [];
+    function setMicState(btn, state) {
+      recState = state;
+      if (!btn) return;
+      btn.classList.remove('recording', 'transcribing');
+      if (state === 'recording') { btn.classList.add('recording'); btn.textContent = '⏹'; btn.title = 'Stop recording'; btn.disabled = false; }
+      else if (state === 'transcribing') { btn.classList.add('transcribing'); btn.textContent = '…'; btn.title = 'Transcribing…'; btn.disabled = true; }
+      else { btn.textContent = '🎙'; btn.title = 'Record voice'; btn.disabled = false; }
+    }
+    // Fade + tooltip the mic button when no microphone is available, and make a
+    // click a no-op (so it never pops a "Microphone unavailable" dialog). Kept
+    // NON-disabled on purpose: browsers suppress the title tooltip on a disabled
+    // button, and the ask is a hover tooltip explaining why it's unusable.
+    function markMicUnavailable(btn) {
+      if (!btn) return;
+      btn.classList.add('composer-mic-unavailable');
+      btn.title = 'No microphone available';
+      btn.setAttribute('aria-disabled', 'true');
+    }
+    function markMicAvailable(btn) {
+      if (!btn) return;
+      btn.classList.remove('composer-mic-unavailable');
+      btn.title = 'Record voice';
+      btn.removeAttribute('aria-disabled');
+    }
+    // Reflect microphone presence on the button. enumerateDevices lists an
+    // audioinput entry whenever mic hardware exists (even before permission is
+    // granted), so zero such entries means "no mic" → fade + tooltip.
+    function refreshMicAvailability(btn) {
+      if (!btn) return;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        markMicUnavailable(btn); return;
+      }
+      navigator.mediaDevices.enumerateDevices().then(function (devices) {
+        var hasMic = devices.some(function (d) { return d.kind === 'audioinput'; });
+        if (hasMic) markMicAvailable(btn); else markMicUnavailable(btn);
+      }).catch(function () { /* enumeration blocked — leave as-is */ });
+    }
+    function startRecording(btn, input) {
+      if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
+        showToast('Voice recording is not supported in this browser.'); return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        var rec = new MediaRecorder(stream);
+        audioChunks = [];
+        rec.ondataavailable = function (e) { if (e.data && e.data.size) audioChunks.push(e.data); };
+        rec.onstop = function () {
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          var blob = new Blob(audioChunks, { type: rec.mimeType || 'audio/webm' });
+          setMicState(btn, 'transcribing');
+          fetch('/api/assistant/transcribe', { method: 'POST', headers: { 'content-type': blob.type }, body: blob })
+            .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+            .then(function (j) {
+              if (input && j.text) {
+                input.value = (input.value ? input.value + ' ' : '') + j.text;
+                input.dispatchEvent(new Event('input'));
+                input.focus();
+              }
+            })
+            .catch(function (e) { showToast('Transcription failed: ' + e.message); })
+            .finally(function () { setMicState(btn, 'idle'); });
+        };
+        rec.start();
+        mediaRecorder = rec;
+        setMicState(btn, 'recording');
+      }).catch(function (e) {
+        // Degrade gracefully instead of popping an error dialog. A genuinely
+        // missing device fades the button + tooltips it; permission/other errors
+        // surface as a toast (the device is there, so don't mark it unavailable).
+        var name = (e && e.name) || '';
+        if (/NotFound|DevicesNotFound|OverConstrained/i.test(name)) {
+          markMicUnavailable(btn);
+          showToast('No microphone available', {});
+        } else if (/NotAllowed|Permission|Security/i.test(name)) {
+          showToast('Microphone permission denied — allow it in your browser settings.', {});
+        } else {
+          showToast('Microphone unavailable: ' + ((e && e.message) || name), {});
+        }
+      });
+    }
+    function toggleRecording(btn, input) {
+      if (recState === 'recording' && mediaRecorder) { mediaRecorder.stop(); mediaRecorder = null; }
+      else if (recState === 'idle') { startRecording(btn, input); }
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // File ingest — drag a file onto the rail or use the paperclip.
+    // Browsers can't expose the local path, so we POST the bytes; the
+    // server extracts + summarizes, then discards them (path stays null).
+    // ────────────────────────────────────────────────────────────
+    // Append a transient "Analyzing <file>…" row to the feed so the user sees
+    // the ingest is processing in the background; returns a disposer. The real
+    // create/link feed events stream in over SSE as the server materializes them.
+    function pendingIngestItem(label) {
+      railEmptyGone();
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return function () {};
+      var item = document.createElement('div');
+      item.className = 'feed-item feed-pending';
+      item.innerHTML =
+        '<div class="feed-icon"><span class="feed-spinner"></span></div>' +
+        '<div class="feed-body"><div class="feed-summary">Analyzing ' + escapeHtml(label) + '…</div></div>' +
+        '<div class="feed-time"></div>';
+      feedEl.appendChild(item);
+      feedEl.scrollTop = feedEl.scrollHeight;
+      return function () { if (item.parentNode) item.parentNode.removeChild(item); };
+    }
+    function uploadFile(file) {
+      var done = pendingIngestItem(file.name || 'file');
+      return fetch('/api/ingest/upload', {
+        method: 'POST',
+        // Percent-encode the filename: HTTP header values must be ISO-8859-1,
+        // so a Unicode filename (emoji, smart quote, accent, em-dash) would
+        // otherwise make fetch() throw "String contains non ISO-8859-1 code
+        // point". The server decodeURIComponent()s it back.
+        headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'file') },
+        body: file,
+      })
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); })
+        .finally(function () { done(); });
+    }
+    function uploadFiles(files) {
+      if (!files) return;
+      for (var i = 0; i < files.length; i++) uploadFile(files[i]);
+    }
+    // Mobile: tapping the handle expands/collapses the bottom drawer.
+    function initRailDrawer() {
+      var handle = document.getElementById('rail-handle');
+      var rail = document.getElementById('assistant-rail');
+      if (handle && rail) handle.addEventListener('click', function () { rail.classList.toggle('expanded'); });
+    }
+    function initRailDragDrop() {
+      var rail = document.getElementById('assistant-rail'); if (!rail) return;
+      rail.addEventListener('dragover', function (e) { e.preventDefault(); rail.classList.add('dragging-file'); });
+      rail.addEventListener('dragleave', function (e) { if (e.target === rail) rail.classList.remove('dragging-file'); });
+      rail.addEventListener('drop', function (e) {
+        e.preventDefault();
+        rail.classList.remove('dragging-file');
+        if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+      });
+    }
+
+    // Surface a notice when files/secrets aren't bound as native objects — the
+    // assistant key storage + ingest need them. Normally they auto-create on
+    // open; this only shows in the edge case where a pre-existing plaintext
+    // secrets table was skipped (the adopt flow won't silently encrypt it).
+    function checkNativeSetup() {
+      fetchJson('/api/native-entities').then(function (d) {
+        var bound = {};
+        ((d && d.bindings) || []).forEach(function (b) { if (b.origin !== 'skipped') bound[b.entity] = true; });
+        var missing = ['files', 'secrets'].filter(function (e) { return !bound[e]; });
+        if (missing.length === 0) return;
+        var feedEl = railFeedEl(); if (!feedEl) return;
+        railEmptyGone();
+        var card = document.createElement('div');
+        card.className = 'feed-item';
+        var note = 'Set up native ' + missing.join(' + ') + ' to enable the assistant’s key storage and file ingest.';
+        if (missing.indexOf('secrets') >= 0) {
+          note += ' A pre-existing plaintext “secrets” table is left untouched — move its rows to an encrypted native secrets store to use it here.';
+        }
+        card.innerHTML = '<div class="feed-icon">⚠️</div><div class="feed-body"><div class="feed-summary">' +
+          escapeHtml(note) + '</div></div>';
+        feedEl.insertBefore(card, feedEl.firstChild);
+      }).catch(function () { /* ignore */ });
+    }
+
+    function renderComposer() {
+      var host = document.getElementById('rail-composer'); if (!host) return;
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        if (cfg && cfg.hasClaudeAuth) {
+          var micHtml = cfg.hasVoiceKey
+            ? '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>'
+            : '';
+          host.innerHTML =
+            '<div class="composer-row">' +
+              '<button class="composer-clip" id="chat-clip" title="Attach a file">📎</button>' +
+              micHtml +
+              '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
+              '<button class="composer-send" id="chat-send">Send</button>' +
+            '</div>' +
+            '<input type="file" id="chat-file" multiple style="display:none">';
+          var input = document.getElementById('chat-input');
+          var sendBtn = document.getElementById('chat-send');
+          var clipBtn = document.getElementById('chat-clip');
+          var fileInput = document.getElementById('chat-file');
+          if (clipBtn && fileInput) {
+            clipBtn.addEventListener('click', function () { fileInput.click(); });
+            fileInput.addEventListener('change', function () { uploadFiles(fileInput.files); fileInput.value = ''; });
+          }
+          // Grow the textarea to fit its content (wrapped lines included), capped
+          // so it never swallows the feed. Recompute on input AND whenever the
+          // textarea's width changes (rail resize / mobile drawer) — re-wrapping
+          // at a new width changes how many lines the same text needs.
+          function autoGrowInput() {
+            input.style.height = 'auto';
+            input.style.height = Math.min(COMPOSER_MAX_H, input.scrollHeight) + 'px';
+          }
+          input._autoGrow = autoGrowInput;
+          input.addEventListener('input', autoGrowInput);
+          if (typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(function () { autoGrowInput(); }).observe(input);
+          }
+          autoGrowInput(); // fit the initial height
+          input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(input.value.trim()); }
+          });
+          sendBtn.addEventListener('click', function () { sendChat(input.value.trim()); });
+          var micBtn = document.getElementById('chat-mic');
+          if (micBtn) {
+            micBtn.addEventListener('click', function () {
+              // Faded/unavailable mic → clicking is a no-op (no error dialog).
+              if (micBtn.classList.contains('composer-mic-unavailable')) return;
+              toggleRecording(micBtn, input);
+            });
+            refreshMicAvailability(micBtn);
+          }
+        } else {
+          host.innerHTML = '<div class="composer-setup">Set a Claude API token in ' +
+            '<a href="#/settings/user-config">User Settings → Assistant</a> to chat.</div>';
+        }
+      }).catch(function () {
+        host.innerHTML = '<div class="composer-setup">Assistant unavailable.</div>';
+      });
+    }
+
+    /** Reload column meta after a secret-flag change. */
+    function refreshColumnMeta() {
+      return fetchJson('/api/gui-meta/columns').then(function (d) {
+        state.columnMeta = d || {};
+      });
+    }
+
 
     init();
   })();

@@ -31,6 +31,8 @@ import {
   getGuiEntities,
   getGuiProject,
   isJunctionTable,
+  fileJunctions,
+  entityDescriptions,
   type GuiEntitiesPayload,
   type GuiTableSummary,
 } from './data.js';
@@ -61,7 +63,7 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
-import { findEnvelopeByEditId, appendChangeEnvelope } from '../teams/team-core.js';
+import { findEnvelopeByEditId } from '../teams/team-core.js';
 import {
   createRow,
   updateRow,
@@ -74,9 +76,21 @@ import {
   revertEntry,
   recordSchemaAudit,
   isSchemaOp,
+  feedSummary,
   type AuditEntry,
   type MutationCtx,
 } from './mutations.js';
+import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
+import {
+  physicalTableExists,
+  physicalColumnExists,
+  emitDdlEnvelope,
+  recordSchemaOp,
+  materializeJunction,
+  createFileJunction,
+  createUserJunction,
+  createUserEntity,
+} from './schema-ops.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
@@ -84,11 +98,15 @@ import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
+import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
+import { dispatchChatRoute } from './chat-routes.js';
+import { dispatchIngestRoute } from './ingest-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
   listNativeBindings,
   isNativeEntity,
+  isInternalNativeEntity,
 } from '../framework/native-entities.js';
 import {
   getOrCreateMasterKey,
@@ -223,7 +241,13 @@ async function entitiesWithCounts(
   const payload = getGuiEntities(configPath, outputDir);
 
   const yamlNames = new Set(payload.tables.map((t) => t.name));
-  let allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)];
+  // Internal native entities (chat_threads/chat_messages) back the assistant's
+  // conversation storage — they're real tables but must never surface in the
+  // Objects list / dashboard cards. Drop them from the display payload here
+  // (they stay registered + queryable for the chat route).
+  let allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)].filter(
+    (t) => !isInternalNativeEntity(t.name),
+  );
 
   // Team-cloud visibility: a member sees only their own tables plus
   // tables shared to the team. This is what hides the creator's
@@ -315,41 +339,6 @@ const ALLOWED_COLUMN_TYPES = new Set(['text', 'integer', 'real', 'boolean']);
 function columnRefTarget(configPath: string, entity: string, col: string): string | null {
   const ref: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'fields', col, 'ref']);
   return typeof ref === 'string' && ref ? ref : null;
-}
-
-/** One-line activity summary for an audit entry (for the activity-rail backfill). */
-function feedActivitySummary(op: string, table: string): string {
-  switch (op) {
-    case 'insert':
-      return `Added a row to ${table}`;
-    case 'update':
-      return `Updated a row in ${table}`;
-    case 'delete':
-      return `Removed a row from ${table}`;
-    case 'link':
-      return `Linked rows in ${table}`;
-    case 'unlink':
-      return `Unlinked rows in ${table}`;
-    case 'schema.create_entity':
-      return `Created table ${table}`;
-    case 'schema.delete_entity':
-      return `Deleted table ${table}`;
-    case 'schema.rename_entity':
-      return `Renamed table ${table}`;
-    case 'schema.add_column':
-      return `Added a column to ${table}`;
-    case 'schema.rename_column':
-      return `Renamed a column on ${table}`;
-    case 'schema.add_link':
-    case 'schema.create_junction':
-      return `Added a link to ${table}`;
-    case 'schema.delete_link':
-      return `Deleted a link on ${table}`;
-    case 'schema.purge':
-      return `Purged ${table}`;
-    default:
-      return `${op} on ${table}`;
-  }
 }
 
 /**
@@ -574,7 +563,7 @@ function readRowContext(
 }
 
 /** Everything tied to a single open lattice config / DB. Swapped wholesale when the user picks a different DB. */
-interface ActiveDb {
+export interface ActiveDb {
   configPath: string;
   outputDir: string;
   db: Lattice;
@@ -621,6 +610,13 @@ interface ActiveDb {
   feed: FeedBus;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
+  /**
+   * Workspace mode: canonical entity contexts are auto-derived and every
+   * mutation schedules a render. Drives whether a runtime schema creation
+   * registers a canonical context inline (so the new table renders without a
+   * reopen). False for plain `lattice gui --config x.yml` (manifest-only).
+   */
+  autoRender: boolean;
 }
 
 /**
@@ -993,6 +989,7 @@ async function openConfig(
     realtime,
     feed: new FeedBus(),
     dbPath: parsed.dbPath,
+    autoRender,
   };
 }
 
@@ -1058,26 +1055,6 @@ function listConfigs(activeConfigPath: string): ListedConfig[] {
  * itself doesn't expose ALTER TABLE on its CRUD surface, so we reach into the
  * adapter's async run() for schema migrations the user triggers from the GUI.
  */
-async function execSql(db: Lattice, sql: string): Promise<void> {
-  type Adapter = { runAsync?: (sql: string) => Promise<void> };
-  const adapter = (db as unknown as { _adapter: Adapter })._adapter;
-  if (!adapter.runAsync) throw new Error('Adapter does not support runAsync');
-  await adapter.runAsync(sql);
-}
-
-/**
- * Parse the config YAML as a round-trip Document so we can mutate it while
- * preserving comments and ordering. Callers should call `doc.toString()` to
- * serialize, then writeFileSync the result.
- */
-function loadConfigDoc(configPath: string): ReturnType<typeof parseDocument> {
-  return parseDocument(readFileSync(configPath, 'utf8'));
-}
-
-function saveConfigDoc(configPath: string, doc: ReturnType<typeof parseDocument>): void {
-  writeFileSync(configPath, doc.toString(), 'utf8');
-}
-
 /**
  * Write a starter YAML config + an empty SQLite DB. The workspace starts with
  * NO entities (no example `items` table as of 1.16.3) — the user defines their
@@ -1162,6 +1139,29 @@ async function disposeActive(active: ActiveDb): Promise<void> {
   }
 }
 
+/**
+ * Re-open the *same* workspace after a schema edit (create entity, add column,
+ * rename, share…) so the new table definitions take effect — while preserving
+ * the in-process {@link FeedBus}.
+ *
+ * `/api/feed/stream` clients subscribe to `active.feed` at connect time. A
+ * brand-new bus from {@link openConfig} would orphan those subscriptions,
+ * silently killing the activity feed AND the live sidebar refresh after the
+ * first data-model edit of a session (the Context Constructor's no-reopen
+ * `defineLate` path is unaffected, but the manual schema endpoints reopen).
+ * `disposeActive` leaves the bus untouched, so carrying the instance across the
+ * reopen retains every subscriber and its replay buffer. This is a same-config
+ * reopen only — a workspace *switch* intentionally gets a fresh bus (clients
+ * reconnect), so those call sites keep calling `openConfig` directly.
+ */
+async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<ActiveDb> {
+  const feed = active.feed;
+  await disposeActive(active);
+  const next = await openConfig(active.configPath, active.outputDir, autoRender);
+  next.feed = feed;
+  return next;
+}
+
 async function registerTeamCloudTables(db: Lattice): Promise<void> {
   for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
     await db.defineLate(name, def);
@@ -1207,77 +1207,6 @@ type RequestWithAuth = IncomingMessage & { authContext?: AuthContext };
 // is removed from the config (hiding it) but the SQL object + data are never
 // dropped, so a revert just re-adds the config entry and the data is intact.
 // No physical DROP ever runs from these paths — only the API-only purge does.
-
-/** Adapter shape used for raw catalog queries (physical-table introspection). */
-type RawAdapter = {
-  allAsync?: (sql: string) => Promise<unknown[]>;
-  dialect: 'sqlite' | 'postgres';
-};
-
-/** All physical user tables in the DB (excludes Lattice-internal `_%` tables). */
-async function listPhysicalUserTables(active: ActiveDb): Promise<string[]> {
-  const adapter = (active.db as unknown as { _adapter: RawAdapter })._adapter;
-  if (!adapter.allAsync) return active.db.getRegisteredTableNames();
-  const sql =
-    adapter.dialect === 'postgres'
-      ? `SELECT tablename AS name FROM pg_tables WHERE schemaname='public' AND tablename NOT LIKE '\\_%' ESCAPE '\\' ORDER BY tablename`
-      : `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\' ORDER BY name`;
-  return ((await adapter.allAsync(sql)) as { name: string }[]).map((r) => r.name);
-}
-
-async function physicalTableExists(active: ActiveDb, name: string): Promise<boolean> {
-  return (await listPhysicalUserTables(active)).includes(name);
-}
-
-async function physicalColumnExists(
-  active: ActiveDb,
-  table: string,
-  col: string,
-): Promise<boolean> {
-  try {
-    return (await active.db.introspectColumns(table)).includes(col);
-  } catch {
-    return false;
-  }
-}
-
-/** Cloud-only: append a `ddl` change envelope so peers refetch + converge. */
-async function emitDdlEnvelope(active: ActiveDb, table: string | null): Promise<void> {
-  const tc = active.teamContext;
-  if (!tc) return;
-  await appendChangeEnvelope(active.db, {
-    team_id: tc.teamId,
-    table_name: table,
-    pk: null,
-    op: 'ddl',
-    payload_json: null,
-    owner_user_id: tc.myUserId || null,
-  });
-}
-
-/** Record a schema op to the unified history + activity feed + emit a ddl envelope. */
-async function recordSchemaOp(
-  active: ActiveDb,
-  operation: string,
-  table: string,
-  before: unknown,
-  after: unknown,
-  summary: string,
-  sessionId: string,
-): Promise<void> {
-  await recordSchemaAudit(
-    active.db,
-    active.feed,
-    table,
-    operation,
-    before,
-    after,
-    summary,
-    'gui',
-    sessionId,
-  );
-  await emitDdlEnvelope(active, table);
-}
 
 type EntityPayload = { entity: string; entityDef: unknown };
 type FieldPayload = { entity: string; column: string; fieldDef: unknown };
@@ -1427,6 +1356,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
   // GUI was opened on a plain config; the switcher stays hidden.
   const latticeRoot = findLatticeRoot(dirname(configPath));
+  // Which workspace is ACTUALLY being served (the open `active` DB). The header
+  // switcher must reflect THIS, not the registry's stored activeWorkspaceId —
+  // the two can drift apart (e.g. a relaunch whose --config points at a
+  // different workspace than the last-switched one), which showed the wrong
+  // workspace label sitting over a different workspace's data. Match the
+  // launched config to its workspace and reconcile the registry to it at boot.
+  let currentWorkspaceId: string | null = null;
+  if (latticeRoot) {
+    const launched = listWorkspaces(latticeRoot).find(
+      (w) => resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(configPath),
+    );
+    if (launched) {
+      currentWorkspaceId = launched.id;
+      if (getActiveWorkspace(latticeRoot)?.id !== launched.id) {
+        setActiveWorkspace(latticeRoot, launched.id);
+      }
+    } else {
+      currentWorkspaceId = getActiveWorkspace(latticeRoot)?.id ?? null;
+    }
+  }
   if (teamCloud) {
     await registerTeamCloudTables(active.db);
   }
@@ -1552,8 +1501,27 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               orderBy: 'ts',
               orderDir: 'desc',
               limit: 20,
-            })) as { ts: string; table_name: string; row_id: string | null; operation: string }[];
+            })) as {
+              ts: string;
+              table_name: string;
+              row_id: string | null;
+              operation: string;
+              after_json: string | null;
+              before_json: string | null;
+            }[];
             for (const a of auditBackfill.reverse()) {
+              // Reconstruct the row's human label from the stored image so the
+              // reloaded rail reads "Added Acme … to …", matching the live feed.
+              // insert/update name the post-image; delete the pre-image.
+              const json = a.operation === 'delete' ? a.before_json : a.after_json;
+              let labelRow: unknown;
+              if (json) {
+                try {
+                  labelRow = JSON.parse(json);
+                } catch {
+                  labelRow = undefined;
+                }
+              }
               writeFeed({
                 seq: 0,
                 table: a.table_name,
@@ -1561,7 +1529,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 rowId: a.row_id,
                 source: 'gui',
                 ts: a.ts,
-                summary: feedActivitySummary(a.operation, a.table_name),
+                summary: feedSummary(a.operation, a.table_name, labelRow),
               });
             }
           } catch {
@@ -1716,54 +1684,35 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
-          await execSql(
-            active.db,
-            `CREATE TABLE "${entityName}" (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT)`,
-          );
-          const newEntityDef = {
-            fields: {
-              id: { type: 'uuid', primaryKey: true },
-              name: { type: 'text', required: true },
-              deleted_at: { type: 'text' },
-            },
-            outputFile: entityName.toUpperCase() + '.md',
-          };
-          const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', entityName], newEntityDef);
-          saveConfigDoc(active.configPath, doc);
-          // Save icon override if provided
+          // Delegate to the same no-reopen primitive the chat/ingest paths use
+          // (one source of truth for table DDL + canonical-context + audit).
+          // `normalize:false` preserves the user's typed name. Because it does
+          // NOT reopen, the icon + team-owner writes are simple post-create
+          // steps — the old pre-reopen owner-recording ordering (to beat the
+          // reopen's reconcile) is no longer needed.
+          const created = await createUserEntity(active, entityName, [], sessionId, {
+            normalize: false,
+          });
+          if (!created) {
+            sendJson(res, { error: `Could not create entity "${entityName}"` }, 400);
+            return;
+          }
           if (typeof body.icon === 'string' && body.icon.trim()) {
             await active.db.insert('_lattice_gui_meta', {
-              entity_name: entityName,
+              entity_name: created,
               icon: body.icon.trim(),
               updated_at: new Date().toISOString(),
             });
           }
-          // Team cloud: record the creator as owner BEFORE re-opening, so
-          // the reopen's reconcile (which assigns unowned tables to the
-          // team creator) doesn't steal a member's new table. New tables
-          // are private to their creator — sharing is an explicit,
-          // separate action from the Data Model dialog.
           if (active.teamContext?.myUserId) {
             await recordObjectOwner(
               active.db,
               active.teamContext.teamId,
-              entityName,
+              created,
               active.teamContext.myUserId,
             );
           }
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
-          await recordSchemaOp(
-            active,
-            'schema.create_entity',
-            entityName,
-            null,
-            { entity: entityName, entityDef: newEntityDef },
-            `Created table ${entityName}`,
-            sessionId,
-          );
-          sendJson(res, { ok: true, name: entityName });
+          sendJson(res, { ok: true, name: created });
           return;
         }
 
@@ -1838,21 +1787,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // Self-referential m2m needs two distinct column names.
           const leftCol = `${left}_id`;
           const rightCol = left === right ? `${right}_id_2` : `${right}_id`;
-          await execSql(
-            active.db,
-            `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${leftCol}" TEXT, "${rightCol}" TEXT)`,
+          // Same no-reopen materialization the chat path uses; owner-record is a
+          // post-create step (no reopen ⇒ no reconcile race).
+          await materializeJunction(
+            active,
+            jName,
+            leftCol,
+            left,
+            rightCol,
+            right,
+            `Linked ${left} ↔ ${right}`,
+            sessionId,
           );
-          const newJunctionDef = {
-            fields: {
-              id: { type: 'uuid', primaryKey: true },
-              [leftCol]: { type: 'uuid', ref: left },
-              [rightCol]: { type: 'uuid', ref: right },
-            },
-            outputFile: jName.toUpperCase() + '.md',
-          };
-          const doc = loadConfigDoc(active.configPath);
-          doc.setIn(['entities', jName], newJunctionDef);
-          saveConfigDoc(active.configPath, doc);
           if (active.teamContext?.myUserId) {
             await recordObjectOwner(
               active.db,
@@ -1861,17 +1807,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active.teamContext.myUserId,
             );
           }
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
-          await recordSchemaOp(
-            active,
-            'schema.create_junction',
-            jName,
-            null,
-            { entity: jName, entityDef: newJunctionDef },
-            `Linked ${left} ↔ ${right}`,
-            sessionId,
-          );
           sendJson(res, { ok: true, name: jName });
           return;
         }
@@ -1929,8 +1864,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             .entities?.[name];
           doc.deleteIn(['entities', name]);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.delete_entity',
@@ -2091,8 +2025,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             doc.setIn(['entityContexts', newName], ctx);
           }
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.rename_entity',
@@ -2182,8 +2115,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           if (body.required === true) fieldDef.required = true;
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.add_column',
@@ -2270,8 +2202,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           doc.setIn(['entities', entityName, 'fields'], renamedFields);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.rename_column',
@@ -2341,8 +2272,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const doc = loadConfigDoc(active.configPath);
           doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.add_link',
@@ -2391,8 +2321,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           ).entities?.[entityName]?.fields?.[colName];
           doc.deleteIn(['entities', entityName, 'fields', colName]);
           saveConfigDoc(active.configPath, doc);
-          await disposeActive(active);
-          active = await openConfig(active.configPath, active.outputDir, autoRender);
+          active = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.delete_link',
@@ -2803,7 +2732,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const all = listWorkspaces(latticeRoot);
           const activeWs = getActiveWorkspace(latticeRoot);
           sendJson(res, {
-            current: activeWs ? activeWs.id : null,
+            // The served workspace is the source of truth for the header label;
+            // fall back to the registry only if we couldn't match the boot config.
+            current: currentWorkspaceId ?? (activeWs ? activeWs.id : null),
             workspaces: all.map((w) => ({
               id: w.id,
               label: w.displayName,
@@ -2848,6 +2779,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           setActiveWorkspace(latticeRoot, ws.id);
           await disposeActive(active);
           active = next;
+          currentWorkspaceId = ws.id; // header now tracks the just-switched DB
           sendJson(res, { ok: true, id: ws.id });
           return;
         }
@@ -2891,6 +2823,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           setActiveWorkspace(latticeRoot, created.id);
           await disposeActive(active);
           active = newActive;
+          currentWorkspaceId = created.id; // header tracks the new, now-served DB
           sendJson(res, { ok: true, id: created.id });
           return;
         }
@@ -2960,6 +2893,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             await disposeActive(active);
             active = next;
             switchedTo = fallback.id;
+            currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
           }
           // Drop the registry record, then clean up files (the fail-loudly rule: loud on failure).
           removeWorkspace(latticeRoot, ws.id);
@@ -3520,10 +3454,64 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           if (handled) return;
         }
 
+        // ── AI assistant: credentials, OAuth, voice transcription ─────────
+        // Local-only (gated !teamCloud): the assistant rail is a single-user
+        // dev tool. Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
+        if (!teamCloud && pathname.startsWith('/api/assistant/')) {
+          const handled = await dispatchAssistantRoute(req, res, {
+            db: active.db,
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Chat route ────────────────────────────────────────────────────
+        // POST /api/chat — assistant tool loop, streamed as SSE. Executes
+        // tool calls against the active DB via the shared mutation chokepoint.
+        if (!teamCloud && pathname.startsWith('/api/chat')) {
+          const handled = await dispatchChatRoute(req, res, {
+            db: active.db,
+            feed: active.feed,
+            validTables: active.validTables,
+            junctionTables: active.junctionTables,
+            softDeletable: active.softDeletable,
+            // The assistant can create tables + relationships on request — same
+            // audited, no-reopen primitives the Context Constructor uses.
+            createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
+            createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
+        // ── Ingest routes ─────────────────────────────────────────────────
+        // Reference a local file / pasted text as a native `files` row and
+        // summarize it. Writes via the shared mutation chokepoint (source=ingest).
+        if (!teamCloud && pathname.startsWith('/api/ingest/')) {
+          const handled = await dispatchIngestRoute(req, res, {
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            fileJunctions: fileJunctions(active.configPath, active.outputDir),
+            entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
+            createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
+            createEntity: (entity, columns) => createUserEntity(active, entity, columns, sessionId),
+            aggressiveness: await getAggressiveness(active.db),
+
+            latticeRoot: dirname(active.configPath),
+            pathname,
+            method,
+          });
+          if (handled) return;
+        }
+
         // ── Files: blob serving + open-in-finder ──────────────────────────
         if (!teamCloud && pathname.startsWith('/api/files/')) {
           const handled = await dispatchFilesRoute(req, res, {
             db: active.db,
+            latticeRoot: dirname(active.configPath),
             pathname,
             method,
           });
