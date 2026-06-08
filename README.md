@@ -191,6 +191,7 @@ new Lattice(config: LatticeConfigInput, options?: LatticeOptions)
 interface LatticeOptions {
   wal?: boolean; // WAL journal mode (default: true — recommended for concurrent reads)
   busyTimeout?: number; // SQLite busy_timeout in ms (default: 5000)
+  renderSkipsEmpty?: boolean; // Skip the read + write for spec-less tables on render() (default: false)
   security?: {
     sanitize?: boolean; // Strip control characters from string inputs (default: true)
     auditTables?: string[]; // Tables that emit 'audit' events on write
