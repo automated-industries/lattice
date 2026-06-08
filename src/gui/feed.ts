@@ -30,7 +30,7 @@ export type FeedOp =
  * bubble so the user can tell apart their own clicks, command-palette runs,
  * and CLI writes.
  */
-export type FeedSource = 'gui' | 'command' | 'cli';
+export type FeedSource = 'gui' | 'command' | 'ai' | 'ingest' | 'cli';
 
 export interface FeedEvent {
   /** Monotonically increasing per-bus sequence number, assigned on publish. */

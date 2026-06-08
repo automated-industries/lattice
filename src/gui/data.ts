@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { parseConfigFile, type ParsedConfig } from '../config/parser.js';
 import { entityFileNames, readManifest, type LatticeManifest } from '../lifecycle/manifest.js';
@@ -174,8 +174,36 @@ function collectEntities(outputDir: string, manifest: LatticeManifest | null): G
   return result.sort((a, b) => `${a.table}/${a.slug}`.localeCompare(`${b.table}/${b.slug}`));
 }
 
-export function loadGuiData(configPath: string, outputDir: string): GuiData {
+/**
+ * Single-entry, mtime-keyed cache of the parsed workspace config. `GET
+ * /api/entities` (via {@link loadGuiData}) re-parses the YAML on every call, so
+ * during a bulk op + its activity-feed refetches the same file was parsed
+ * dozens of times. A config write bumps the file mtime, so writers
+ * self-invalidate; a workspace switch changes the path, also a miss. The parsed
+ * result is treated as read-only (config is never mutated by consumers).
+ */
+let _parsedCache: { path: string; key: string; parsed: ParsedConfig } | null = null;
+
+function parseConfigCached(configPath: string): ParsedConfig {
+  let key: string;
+  try {
+    const st = statSync(configPath);
+    // mtime + size: a config edit changes the size (a new entity block) or the
+    // mtime (a rewrite), so even a sub-millisecond mtime collision still misses.
+    key = `${String(st.mtimeMs)}:${String(st.size)}`;
+  } catch {
+    return parseConfigFile(configPath); // stat failed — parse directly, don't cache
+  }
+  if (_parsedCache?.path === configPath && _parsedCache.key === key) {
+    return _parsedCache.parsed;
+  }
   const parsed = parseConfigFile(configPath);
+  _parsedCache = { path: configPath, key, parsed };
+  return parsed;
+}
+
+export function loadGuiData(configPath: string, outputDir: string): GuiData {
+  const parsed = parseConfigCached(configPath);
   const manifest = readManifest(outputDir);
   const tables = parsed.tables.map(({ name, definition }) => tableToSummary(name, definition));
   const entities = collectEntities(outputDir, manifest);
