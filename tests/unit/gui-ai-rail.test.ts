@@ -62,7 +62,9 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('function autoGrowInput');
     expect(guiAppHtml).toContain('COMPOSER_MAX_H');
     // Recompute height when the textarea is re-wrapped at a new rail width.
-    expect(guiAppHtml).toContain('new ResizeObserver(function () { autoGrowInput(); }).observe(input)');
+    expect(guiAppHtml).toContain(
+      'new ResizeObserver(function () { autoGrowInput(); }).observe(input)',
+    );
     // Long unbroken tokens must wrap rather than overflow the rail.
     expect(guiAppHtml).toContain('overflow-wrap: break-word');
   });

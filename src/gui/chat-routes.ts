@@ -6,12 +6,7 @@ import {
   getAggressiveness,
   aggressivenessToTemperature,
 } from './assistant-routes.js';
-import {
-  createAnthropicClient,
-  runChat,
-  type LlmMessage,
-  type ContentBlock,
-} from './ai/chat.js';
+import { createAnthropicClient, runChat, type LlmMessage, type ContentBlock } from './ai/chat.js';
 import { formatSseFrame } from './ai/sse.js';
 import {
   ASSISTANT_HIDDEN_TABLES,

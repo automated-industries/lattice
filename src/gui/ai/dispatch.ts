@@ -207,7 +207,8 @@ export async function executeFunction(
         // universal stable fallback. Explicit ORDER BY behaves identically on
         // SQLite + Postgres, and composes after the soft-delete WHERE above.
         const cols = ctx.db.getRegisteredColumns(table);
-        opts.orderBy = cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
+        opts.orderBy =
+          cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
         opts.orderDir = 'asc';
         const rows = await ctx.db.query(table, opts);
         const secretCols = await secretColumnsFor(ctx.db, table);

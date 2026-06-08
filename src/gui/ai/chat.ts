@@ -46,7 +46,9 @@ function capToolResult(s: string): string {
     return '[result omitted — ' + String(s.length) + ' chars; re-read if needed]';
   return (
     s.slice(0, MAX_TOOL_RESULT_CHARS) +
-    '\n…[truncated ' + String(s.length - MAX_TOOL_RESULT_CHARS) + ' chars]'
+    '\n…[truncated ' +
+    String(s.length - MAX_TOOL_RESULT_CHARS) +
+    ' chars]'
   );
 }
 /** Drop an oversized tool input from the replay record (ids matter more than inputs). */

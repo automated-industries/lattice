@@ -250,7 +250,10 @@ describe('assistant schema creation via POST /api/chat', () => {
 
     // Turn 1 (new thread): the model lists the table, then answers.
     turnState.turns = [
-      { text: 'Listing.', toolUses: [{ id: 'u1', name: 'list_rows', input: { table: 'tickets' } }] },
+      {
+        text: 'Listing.',
+        toolUses: [{ id: 'u1', name: 'list_rows', input: { table: 'tickets' } }],
+      },
       { text: 'Here is record tk1.' },
     ];
     const r1 = await fetch(`${server.url}/api/chat`, {
