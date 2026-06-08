@@ -24,6 +24,16 @@ export interface LatticeOptions {
    * backends, or pre-opened connections.
    */
   adapter?: StorageAdapter;
+  /**
+   * When true, `render()` skips both the full-table read and the file write
+   * for tables registered without a `render` spec — those compile to a no-op
+   * that would only emit an empty `.schema-only/<table>.md`. Off by default,
+   * preserving the original behavior (the table is still scanned and an empty
+   * schema-only file written). Enable this to avoid reading large tables off
+   * the wire just to produce empty files. Tables with an explicit `render`
+   * (or `outputFile`) are unaffected.
+   */
+  renderSkipsEmpty?: boolean;
 }
 
 /**
