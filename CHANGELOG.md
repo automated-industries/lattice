@@ -8,6 +8,240 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-04
+
+**The AI assistant arrives.** `lattice gui` gains a built-in assistant rail — a
+**Context Constructor** that turns dropped files and pasted text into linked
+Lattice objects. The library API is unchanged and fully backwards-compatible:
+the assistant is GUI-only and completely inert until credentials are configured,
+so a bare `new Lattice(path)` / Postgres-URL consumer and the headless
+`render`/`generate`/`reconcile`/`watch` commands are unaffected. The major
+version marks the new product surface (and the workspace-architecture line that
+shipped across 1.16.x), not a breaking change.
+
+### Added
+
+- **The assistant remembers what it read across turns.** Prior tool calls and
+  their results (row ids included) are replayed into the model's context, so a
+  follow-up like "now update that row" reuses the id it just listed instead of
+  guessing one. Replay is bounded to the recent turns within a size budget and is
+  secret-redacted; set `LATTICE_CHAT_REHYDRATE=false` to disable it. The
+  assistant's `list_rows` is now deterministically ordered (by `created_at`, else
+  the primary key), so listing the same table twice returns the same rows instead
+  of conflicting values.
+- **AI library surface (`import { … } from 'latticesql'`).** A first-class,
+  GUI-independent AI API — inert without an LLM client: `organizeSource` (sort a
+  source into your own schema: summarize + classify + link, creating a new
+  object only when nothing fits), `describeImage` (image vision), `crawlUrl`
+  (SSRF-guarded URL fetch + readable-text extraction), `enrichKnowledge`, plus
+  the `summarizeText`/`classifyLinks` primitives and `LlmClient` types. New
+  optional deps: `sharp` + `file-type` (lazy-loaded); `jsdom` + `@mozilla/readability`.
+- **Assistant rail (chat + activity feed).** A resizable sidebar (mobile
+  bottom-drawer) with a Claude tool-calling chat loop streamed over SSE
+  (`POST /api/chat`) and a live activity feed (`GET /api/feed/stream`). Every
+  assistant edit flows through the same audited, undoable mutation chokepoint as
+  a manual edit — so it lands in the version history and can be reverted.
+- **Context Constructor — drag-drop / click-upload / paste ingest.** Drop files
+  on the rail (or use the paperclip) and they're referenced as native `files`
+  rows (not copied), **extracted** (text via optional `markitdown` for PDFs/Office;
+  **images via Claude vision**; a pasted **URL is crawled** for readable text and
+  the source URL preserved), summarized with **Claude Haiku**, and classified
+  against your existing records. Then, all reversible: **add** the source object,
+  **enrich** its description, **link** it to related records —
+  **auto-creating the junction table when none exists yet** — and, when a source
+  fits nothing and aggressiveness is high, **auto-create a new object** for it.
+- **"Connect Claude" + subscription OAuth.** Encrypted API-key storage in the
+  native `secrets` entity (env-var fallback: `ANTHROPIC_API_KEY`). A standard
+  Authorization-Code + PKCE flow for connecting a Claude subscription is built
+  and unit-tested; it stays hidden until the `ANTHROPIC_OAUTH_*` env vars are
+  configured.
+- **Inference Aggressiveness control.** A single behaviour slider
+  (Conservative ↔ Aggressive, `PUT /api/assistant/aggressiveness`) that drives
+  the model sampling temperature, how liberally the classifier proposes links,
+  and whether ingest auto-creates a missing junction (gated ≥ 0.25) vs. suggests it.
+- **Native chat entities.** `chat_threads` + `chat_messages` persist conversations
+  across sessions; the rail has a thread switcher.
+- **Voice input.** Optional speech-to-text via OpenAI Whisper or ElevenLabs
+  (`OPENAI_API_KEY` / `ELEVENLABS_API_KEY`), with an explicit provider choice.
+- **Processing feedback.** A transient "Analyzing…" spinner row appears while a
+  dropped file ingests; the real add/enrich/link events stream in over SSE.
+
+### Notes
+
+- **Cloud:** the assistant runs against local SQLite and a direct
+  `postgres://` connection (single-user). The full parity loop — ingest →
+  auto-junction → link — is covered by a Postgres-gated integration test. The
+  assistant rail is **not** mounted in hosted multiplayer team-cloud mode yet
+  (gated behind `!teamCloud`); that lands in a follow-up.
+- `markitdown` is an **optional external CLI** (`MARKITDOWN_BIN`); without it,
+  PDFs/Office files are referenced and marked `extraction_status='skipped'`.
+
+### Security
+
+- **The chat assistant can no longer read decrypted column secrets.** Its
+  `list_rows` / `get_row` tools now redact any column marked secret (via
+  `set_column_secret`, recorded in `_lattice_gui_column_meta`) before the row
+  reaches the model — mirroring the redaction the HTTP row-context endpoint
+  already did. Previously a `password`/`api_key` column on a user table would be
+  returned in cleartext (the `secrets` table itself was already hidden).
+- **The assistant can no longer touch its own conversation storage.**
+  `chat_threads` / `chat_messages` join `secrets` in the assistant's hidden-table
+  set, so the model can't `list`/`read`/`update`/`delete` them — closing a
+  prompt-injection path to erasing or rewriting chat history. (`files`/`notes`
+  stay editable — they're audited + reversible.)
+
+### Internal
+
+- **The data-model editor's create-table / create-relationship endpoints now
+  use the same no-reopen primitives as the chat and ingest paths**
+  (`createUserEntity` / `materializeJunction`). One creation path instead of
+  two: the REST handlers no longer reopen the whole database, and table DDL +
+  canonical-context registration + audit live in one place. The editor's typed
+  name is preserved (a `normalize:false` opt-out), and team-owner recording
+  moves to a post-create step (no reopen ⇒ no reconcile race to beat).
+- **Consolidated duplicated GUI internals** (no behaviour change): one
+  `feedSummary` now serves both the live feed and the audit-log backfill (was
+  two copies); `createFileJunction` / `createUserJunction` share a single
+  `materializeJunction` core; the GUI `summarize` module re-exports the
+  library's `parseObjects`/`parseMatches` + shared types instead of duplicating
+  them; the config-document + DDL IO helpers (`execSql` / `loadConfigDoc` /
+  `saveConfigDoc`) moved out of the request dispatcher into `gui/config-io.ts`;
+  and a parity test pins the `rowLabel` ↔ `fsDisplayName` contract so the server
+  and client label logic can't silently drift.
+- **Schema-op primitives extracted into `gui/schema-ops.ts`** (pure mechanical
+  move, no behaviour change): physical-table introspection
+  (`physicalTableExists` / `physicalColumnExists`), the audited + revertible
+  `recordSchemaOp` (+ cloud `emitDdlEnvelope`), canonical-context (re)derivation,
+  and the entity/junction creators (`createUserEntity` / `createUserJunction` /
+  `createFileJunction` / `materializeJunction`) now live in one module that
+  `server.ts` re-imports. The creation path is no longer interleaved with HTTP
+  routing and is independently testable; `server.ts` shrank ~350 lines. `ActiveDb`
+  is a type-only import in the new module (the runtime edge is server → schema-ops
+  only, so there is no import cycle).
+
+### Performance
+
+- **The workspace config is no longer re-parsed on every `/api/entities`
+  call.** A small mtime+size-keyed cache in `loadGuiData` means a bulk operation
+  and its activity-feed refetches parse the YAML once, not dozens of times; a
+  config write (which bumps the mtime/size) or a workspace switch invalidates it
+  automatically.
+
+### Fixed
+
+- **GUI assistant + workspace polish.** Repeated tool pills collapse into one
+  counted pill ("Listed N rows"); the composer textarea wraps + auto-grows and
+  tracks the rail width, and assistant replies render Markdown. The activity
+  cards show relative timestamps ("3 days ago") with no "stale" flag. Internal
+  conversation tables (`chat_threads` / `chat_messages`) are hidden from the
+  Objects list (still queryable). Workspace display names accept special
+  characters (the on-disk slug is derived from them). The microphone button is
+  disabled with a tooltip when no input device is present; all blocking `alert()`
+  dialogs are now inline toasts; and token / secret inputs opt out of
+  password-manager popups. The header workspace switcher no longer desyncs from
+  the served database — it tracks the open workspace and reconciles the registry
+  at boot. A missing-row `update` / `delete` now fails loudly instead of
+  recording a phantom-success audit entry.
+- **A bulk chat task that hits the tool-step limit now says so.** When the
+  assistant reaches its per-message tool-call cap with work outstanding (e.g.
+  "create one row per line of a 150-row CSV"), it emits a warning ("…the task
+  may be incomplete. Send 'continue' and I'll finish the rest.") instead of
+  ending with a clean "done" that looked complete (Rule 16: no silent
+  truncation).
+- **Adding a relationship now updates the linked tables' context immediately.**
+  A new junction's rollup now appears on the EXISTING tables it links without a
+  reopen — `syncCanonicalContexts` re-derives every canonical context (via a new
+  overwrite-capable `redefineEntityContext`), not only the brand-new table.
+- **Chat-rail robustness:** a `loadThread` response is discarded if a newer load
+  superseded it (no more clobbered conversation on a fast refresh + switch), and
+  the bubble-text setter guards against a finalized/detached bubble.
+- **Activity cards no longer vanish when a conversation loads.** The chat and
+  the activity feed share the rail, and loading a conversation reset the whole
+  rail — so auto-loading the most recent thread on refresh wiped the backfilled
+  activity cards. Clearing a conversation now removes only its chat bubbles; the
+  workspace-global activity cards persist (and a workspace switch explicitly
+  resets them + reconnects the feed to the new workspace).
+- **The activity rail collapses repeated events.** A run of identical mutations
+  (same op + table) — e.g. linking 20 rows during a bulk operation — now folds
+  into a single bubble with a count ("Linked 20 rows in people_projects")
+  instead of 20 near-identical rows. The run breaks when a different event or a
+  chat message lands, so distinct actions stay separate.
+- **Assistant chat rail polish.** Four fixes to the conversation experience:
+  (1) an animated **typing indicator** now shows in the assistant bubble while a
+  turn is generating (and a turn that ends with only tool calls no longer leaves
+  a dangling empty bubble); (2) **conversations reload with their rich
+  structure** — the per-turn text bubbles + tool pills are persisted and
+  replayed, instead of collapsing to one wall of concatenated text; (3) the
+  **most recent conversation auto-loads** on page refresh, so history isn't lost;
+  (4) the **conversation dropdown is tied to the active workspace** — switching
+  workspaces now resets and reloads the thread list (conversations live in the
+  workspace DB).
+- **Runtime-created tables now render their context automatically — creation and
+  "make it renderable" are one step.** When the chat assistant or the Context
+  Constructor creates a table at runtime (no DB reopen), it now registers the
+  table's canonical entity context inline — on both the Lattice schema (so
+  auto-render writes the markdown) and the GUI's row-context snapshot (so the
+  view can find it). Previously only the data-model editor (which fully reopens
+  the DB) re-derived contexts, so a chat/ingest-created entity showed "No
+  rendered context for this row" until a manual page reload. The context
+  registration is best-effort and never fails the creation itself. Also:
+  `create_entity` now normalizes a natural name ("People" → `people`) instead of
+  silently rejecting it.
+- **Assistant API keys are now machine-level, not per-workspace.** The Claude /
+  OpenAI / ElevenLabs keys (and the Claude subscription OAuth token) moved out of
+  each workspace's database into a machine-local encrypted store
+  (`<config>/assistant-credentials.enc`, AES-GCM under the master key, the same
+  scheme as `db-credentials.enc`). Creating or switching a workspace no longer
+  "de-attaches" the key — a key is a property of the user + machine, not of one
+  database. A key saved in a workspace before this change is read back (and
+  promoted to the machine store) for backward compatibility — but that
+  back-compat read + promotion runs ONLY for a local SQLite workspace, never for
+  a shared team-cloud / direct-Postgres `secrets` table (which may hold another
+  member's credential row), so it can't harvest someone else's key. The OAuth
+  callback that first connects a Claude subscription also writes machine-level,
+  matching the refresh + API-key paths.
+- **The assistant chat can now create tables and relationships on request.** It
+  previously refused ("there is no projects table… I cannot create it") because
+  schema mutations were excluded from its toolset. It now has `create_entity`
+  and `create_relationship` (a many-to-many junction between two tables), wired
+  to the same audited, **no-reopen, reversible** primitives the Context
+  Constructor uses — so "create projects from tickets and link them" works end
+  to end. `list_entities` also no longer reveals the `secrets` table.
+- **The assistant chat now knows your schema, so it stops guessing.** Each turn
+  the system prompt is built with the live table list (names, columns, row
+  counts) plus guidance that an attached file's content lives in its `files`
+  row's `extracted_text` column. Previously the model received no schema context
+  and blindly guessed table names — producing "Unknown table" → "Could not fetch
+  row" / "Could not list rows" errors — and, because persisted history is
+  text-only, lost that context every turn. The prompt now also tells the model
+  not to claim success after a failed tool call. The tool-loop + output budget
+  (`MAX_TOOL_LOOPS` 8→16, `MAX_TOKENS` 2048→4096) were raised so multi-step bulk
+  work (e.g. "create one row per line of an attached CSV") isn't truncated.
+  _(Capacity tuning, not a workaround — flagged for review per Rule 12.)_ The
+  credential-bearing `secrets` table is now hidden from the assistant entirely —
+  excluded from its callable tables and from the schema context — so a request
+  (or instructions injected via an attached file) can't induce it to read and
+  spill decrypted API keys / OAuth tokens.
+- **Auto-created objects now have human-readable names.** The Context
+  Constructor gives every inferred entity a leading `name` column and fills it
+  with the object's extracted label, so a card reads "Acme Consulting Agreement"
+  instead of a bare `#fea4b07f`. Activity-feed bubbles are named to match —
+  "Added Acme Consulting Agreement to consulting_agreements" rather than "Added
+  a row to …" — both live and when the rail backfills from the audit log on
+  reload. Rows with no conventional label column fall back to their first
+  meaningful cell value (the same logic drives the card title and the bubble).
+- **New objects from the Context Constructor now appear in the sidebar live.**
+  When ingest inferred a brand-new entity, the nav list stayed stale until a
+  manual page reload — and routing to the new object showed "Unknown entity".
+  The activity-feed stream now triggers a live entity-list refresh on a `schema`
+  event, so an inferred table shows up in the sidebar the moment it's created.
+- **The activity feed no longer goes silent after a data-model edit.** Creating
+  an entity, adding/renaming a column, or sharing a table re-opens the workspace
+  to pick up the new definitions; that reopen used to swap out the in-process
+  feed bus and orphan every connected `/api/feed/stream` subscriber, killing the
+  rail (and the live sidebar refresh) for the rest of the session. The feed bus
+  is now preserved across a same-config reopen.
+
 ## [1.16.5] - 2026-06-08
 
 ### Added

@@ -173,12 +173,14 @@ describe('1.16.1 — F: writes that should change a row but do not surface loudl
 });
 
 describe('1.16.1 — C/D/G: served bundle no longer ships removed UI; create handler is guarded', () => {
-  it('omits the "Connect to existing cloud" button and the Activity rail', async () => {
+  it('omits the "Connect to existing cloud" button; 2.0 reintroduces the rail as the AI assistant', async () => {
     const { s } = await boot();
     const html = await (await fetch(`${s.url}/`)).text();
     expect(html).not.toContain('open-connect-existing'); // C
-    expect(html).not.toContain('assistant-rail'); // D
-    expect(html).not.toContain('rail-feed'); // D
+    // D (revised for 2.0): the bare 1.15 "activity rail" was dropped in 1.16.1,
+    // but 2.0 ships a fuller AI assistant rail (chat + activity feed) in its place.
+    expect(html).toContain('assistant-rail');
+    expect(html).toContain('rail-feed');
   });
 
   it('the "+ New workspace…" button opens the create/join wizard (1.16.4 single switcher)', async () => {

@@ -73,6 +73,16 @@ export class SchemaManager {
     this._entityContexts.set(table, def);
   }
 
+  /**
+   * Register OR replace an entity context — unlike {@link defineEntityContext}
+   * (which throws on a redefine), this overwrites. Used to re-derive a
+   * runtime-created table's canonical context after a schema change (e.g. a new
+   * junction adds a hasMany rollup to the tables it links) without a reopen.
+   */
+  redefineEntityContext(table: string, def: EntityContextDefinition): void {
+    this._entityContexts.set(table, def);
+  }
+
   getTables(): Map<string, CompiledTableDef> {
     return this._tables;
   }

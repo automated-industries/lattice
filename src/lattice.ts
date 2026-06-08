@@ -393,6 +393,16 @@ export class Lattice {
   }
 
   /**
+   * Register or REPLACE an entity context (overwrites instead of throwing on a
+   * redefine — see {@link SchemaManager.redefineEntityContext}). Used to refresh
+   * a canonical context at runtime after a related schema change.
+   */
+  redefineEntityContext(table: string, def: EntityContextDefinition): this {
+    this._schema.redefineEntityContext(table, def);
+    return this;
+  }
+
+  /**
    * All entity contexts currently registered on this Lattice — both those
    * declared in `lattice.config.yml` and those added programmatically via
    * `defineEntityContext()`.

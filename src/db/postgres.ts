@@ -108,6 +108,9 @@ interface PgPool {
   query(sql: string, params?: unknown[]): Promise<PgQueryResult>;
   connect(): Promise<PgPoolClient>;
   end(): Promise<void>;
+  // Idle-client error events; without a listener pg escalates them to an
+  // unhandled 'error' that crashes the process (see the handler in open()).
+  on(event: 'error', listener: (err: Error) => void): void;
 }
 interface PgModule {
   Pool: new (config: { connectionString: string; max?: number }) => PgPool;
@@ -147,6 +150,17 @@ export class PostgresAdapter implements StorageAdapter {
     this._pool = new pgMod.Pool({
       connectionString: this._connectionString,
       max: this._poolSize,
+    });
+    // An idle pooled client can emit 'error' when its TCP connection drops out
+    // from under us — a network blip, the Supabase pooler recycling a backend,
+    // or a server restart (observed as `read EADDRNOTAVAIL`). Node escalates an
+    // unhandled EventEmitter 'error' to a process-wide crash, so without this
+    // listener a single transient idle-connection reset takes down the entire
+    // server. pg evicts the broken client from the pool itself; the next query
+    // transparently opens a fresh connection. Log and swallow so we survive the
+    // blip instead of crashing mid-session.
+    this._pool.on('error', (err: Error) => {
+      console.error('[latticesql] recovered from idle Postgres client error:', err.message);
     });
     // Fire the polyfill registration immediately. Every async method awaits
     // this Promise before its first query, so by the time any user query

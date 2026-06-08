@@ -13,18 +13,83 @@ import { appendChangeEnvelope } from '../teams/team-core.js';
 
 export type AuditOp = 'insert' | 'update' | 'delete' | 'link' | 'unlink';
 
-function feedSummary(op: AuditOp, table: string): string {
+/**
+ * A short human label for a row, used in activity-feed summaries so a bubble
+ * reads "Added Acme Consulting Agreement to consulting_agreements" instead of a
+ * faceless "Added a row to …". Prefers the same title-ish columns the GUI's
+ * card view (`fsDisplayName`) uses — so the feed and the object's card show the
+ * same name — then falls back to a snippet of a body/description field. Returns
+ * null when the row has no usable label (caller keeps the generic phrasing).
+ */
+export function rowLabel(row: unknown): string | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const str = (v: unknown): string =>
+    typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+  const primary =
+    str(r.name) || str(r.title) || str(r.label) || str(r.original_name) || str(r.subject);
+  if (primary.trim()) return primary.trim().slice(0, 80);
+  const secondary =
+    str(r.summary) ||
+    str(r.description) ||
+    str(r.body) ||
+    str(r.content) ||
+    str(r.url) ||
+    str(r.path);
+  if (secondary.trim()) {
+    const s = secondary.trim().replace(/\s+/g, ' ');
+    return s.length > 60 ? `${s.slice(0, 60)}…` : s;
+  }
+  // No conventional label column (e.g. an inferred entity keyed by
+  // `invoice_number`): use the first meaningful cell value — skipping id /
+  // timestamp / foreign-key columns — so the row still reads as something
+  // human, not a bare `#id`. Object key order tracks column order.
+  for (const [k, v] of Object.entries(r)) {
+    if (k === 'id' || /_id$|_at$/.test(k)) continue;
+    const s = str(v).trim();
+    if (s) return s.replace(/\s+/g, ' ').slice(0, 80);
+  }
+  return null;
+}
+
+/**
+ * One-line activity-feed summary for an op on a table. Handles the row `AuditOp`
+ * set (live feed) AND the persisted `schema.*` audit operations (rail backfill)
+ * — the single source of truth for both, so the live bubble and the
+ * reloaded-from-audit bubble always read the same.
+ */
+export function feedSummary(op: string, table: string, row?: unknown): string {
+  const label = rowLabel(row);
   switch (op) {
     case 'insert':
-      return `Added a row to ${table}`;
+      return label ? `Added ${label} to ${table}` : `Added a row to ${table}`;
     case 'update':
-      return `Updated a row in ${table}`;
+      return label ? `Updated ${label} in ${table}` : `Updated a row in ${table}`;
     case 'delete':
-      return `Removed a row from ${table}`;
+      return label ? `Removed ${label} from ${table}` : `Removed a row from ${table}`;
     case 'link':
       return `Linked rows in ${table}`;
     case 'unlink':
       return `Unlinked rows in ${table}`;
+    case 'schema.create_entity':
+      return `Created table ${table}`;
+    case 'schema.delete_entity':
+      return `Deleted table ${table}`;
+    case 'schema.rename_entity':
+      return `Renamed table ${table}`;
+    case 'schema.add_column':
+      return `Added a column to ${table}`;
+    case 'schema.rename_column':
+      return `Renamed a column on ${table}`;
+    case 'schema.add_link':
+    case 'schema.create_junction':
+      return `Added a link to ${table}`;
+    case 'schema.delete_link':
+      return `Deleted a link on ${table}`;
+    case 'schema.purge':
+      return `Purged ${table}`;
+    default:
+      return `${op} on ${table}`;
   }
 }
 
@@ -78,7 +143,17 @@ export async function appendAudit(
     undone: 0,
     session_id: sessionId ?? null,
   });
-  feed.publish({ table, op: op as FeedOp, rowId, source, summary: feedSummary(op, table) });
+  // Name the row in the bubble: insert/update read the post-image, delete the
+  // pre-image (the row is gone). link/unlink carry the junction body, which has
+  // no human label — feedSummary falls back to the generic phrasing.
+  const labelRow = op === 'delete' ? before : after;
+  feed.publish({
+    table,
+    op: op as FeedOp,
+    rowId,
+    source,
+    summary: feedSummary(op, table, labelRow),
+  });
 }
 
 /** All schema-op operation strings carry this prefix (see recordSchemaAudit). */
@@ -241,13 +316,21 @@ export async function updateRow(
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
   const before = await ctx.db.get(table, id);
+  // Rule 16: never silently "succeed" against a row that doesn't exist. A
+  // missing row means the caller (e.g. the assistant) used a stale/wrong id;
+  // the no-op UPDATE would otherwise record a bogus audit/feed entry whose
+  // row link 404s on click. Fail loudly so the caller can correct.
+  if (before === null) {
+    throw new Error(`Cannot update "${table}": no row with id "${id}"`);
+  }
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
   // Rule 16: a requested change that left the row byte-identical means the
   // write did not land (a read-only data source silently no-ops the UPDATE).
   // Surface it loudly instead of reporting a phantom success. A genuine no-op
   // (the new value already equals the stored value) is NOT an error.
-  if (before != null && after != null) {
+  // (before is non-null here — the guard above throws when the row is missing.)
+  if (after != null) {
     const wantedChange = Object.keys(values).some(
       (k) => !storedValueMatches(before[k], (values as Row)[k]),
     );
@@ -277,6 +360,11 @@ export async function deleteRow(
   hard: boolean,
 ): Promise<void> {
   const before = await ctx.db.get(table, id);
+  // Rule 16: deleting a non-existent row is a no-op that would still record a
+  // bogus audit/feed entry. Surface the bad id instead of faking success.
+  if (before === null) {
+    throw new Error(`Cannot delete from "${table}": no row with id "${id}"`);
+  }
   if (!hard && ctx.softDeletable.has(table)) {
     await ctx.db.update(table, id, { deleted_at: new Date().toISOString() });
     const after = await ctx.db.get(table, id);

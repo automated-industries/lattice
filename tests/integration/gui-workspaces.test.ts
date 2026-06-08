@@ -9,6 +9,7 @@ import {
   addWorkspace,
   resolveWorkspacePaths,
   getActiveWorkspace,
+  setActiveWorkspace,
 } from '../../src/index.js';
 
 interface WsListItem {
@@ -106,6 +107,33 @@ describe('GUI /api/workspaces', () => {
       body: JSON.stringify({ name: '  ' }),
     });
     expect(bad.status).toBe(400);
+  });
+
+  it('header current follows the SERVED config, not a stale registry active (desync fix)', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'lattice-gws-desync-'));
+    dirs.push(base);
+    process.env.LATTICE_ROOT = join(base, '.lattice');
+    const root = ensureLatticeRoot(base);
+    const alpha = addWorkspace(root, { displayName: 'Alpha' });
+    const beta = addWorkspace(root, { displayName: 'Beta' });
+    (await Lattice.openWorkspace({ root, workspaceId: alpha.id })).close();
+    // The registry says Beta is active, but the server boots on ALPHA's config —
+    // exactly the drift that showed the wrong workspace label over another
+    // workspace's data. The header must reflect what's actually being served.
+    setActiveWorkspace(root, beta.id);
+
+    const pa = resolveWorkspacePaths(root, alpha);
+    const server = await startGuiServer({
+      configPath: pa.configPath,
+      outputDir: pa.contextDir,
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    const list = (await (await fetch(`${server.url}/api/workspaces`)).json()) as WsList;
+    expect(list.current).toBe(alpha.id); // served workspace, NOT the stale Beta
+    expect(getActiveWorkspace(root)?.id).toBe(alpha.id); // boot reconciled the registry
   });
 
   it('returns empty when the GUI is opened on a plain config (no root)', async () => {
