@@ -398,8 +398,14 @@ describe('AI function dispatch', () => {
 
   describe('search tool', () => {
     it('finds rows by content across the allowlisted tables', async () => {
-      await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p1', name: 'Ada Lovelace' } });
-      await executeFunction(ctx, 'create_row', { table: 'people', values: { id: 'p2', name: 'Linus' } });
+      await executeFunction(ctx, 'create_row', {
+        table: 'people',
+        values: { id: 'p1', name: 'Ada Lovelace' },
+      });
+      await executeFunction(ctx, 'create_row', {
+        table: 'people',
+        values: { id: 'p2', name: 'Linus' },
+      });
 
       const res = await executeFunction(ctx, 'search', { query: 'Lovelace' });
       expect(res.ok).toBe(true);
@@ -443,7 +449,10 @@ describe('AI function dispatch', () => {
           return Promise.resolve({ ok: true, deleted: name });
         },
       };
-      const res = await executeFunction(c, 'delete_entity', { name: 'people', resolution: 'delete_data' });
+      const res = await executeFunction(c, 'delete_entity', {
+        name: 'people',
+        resolution: 'delete_data',
+      });
       expect(res.ok).toBe(true);
       expect(seen).toEqual({ name: 'people', resolution: 'delete_data' });
       expect(c.validTables.has('people')).toBe(false);

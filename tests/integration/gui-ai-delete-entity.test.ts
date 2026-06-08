@@ -71,8 +71,9 @@ describe('assistant delete_entity (aiDeleteEntity)', () => {
     const audit = (await active.db.query('_lattice_gui_audit', {})) as { operation: string }[];
     expect(audit.some((a) => a.operation === 'schema.delete_entity')).toBe(true);
     // Physical table survives the soft delete (so revert can restore it).
-    const adapter = (active.db as unknown as { _adapter: { allAsync?: (s: string) => Promise<unknown[]> } })
-      ._adapter;
+    const adapter = (
+      active.db as unknown as { _adapter: { allAsync?: (s: string) => Promise<unknown[]> } }
+    )._adapter;
     const rows = await adapter.allAsync?.(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='people'",
     );

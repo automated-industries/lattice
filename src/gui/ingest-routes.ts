@@ -420,7 +420,9 @@ async function enrichOrFail(
     );
   } catch (e) {
     const err = e as Error;
-    console.error(`[ingest] enrichment failed for file ${fileId}: ${err.message}\n${err.stack ?? ''}`);
+    console.error(
+      `[ingest] enrichment failed for file ${fileId}: ${err.message}\n${err.stack ?? ''}`,
+    );
     await updateRow(mctx, 'files', fileId, { extraction_status: 'enrichment_failed' }).catch(
       (e2: unknown) => {
         console.error(
@@ -710,7 +712,9 @@ export async function dispatchIngestRoute(
     const err = e as Error;
     // Rule 16: log loudly server-side (with stack) in addition to the durable
     // row status + client-surfaced error — never let the real cause vanish.
-    console.error(`[ingest] extraction/enrichment failed for file ${id}: ${err.message}\n${err.stack ?? ''}`);
+    console.error(
+      `[ingest] extraction/enrichment failed for file ${id}: ${err.message}\n${err.stack ?? ''}`,
+    );
     await updateRow(mctx, 'files', id, {
       extraction_status: 'failed',
       description: `Extraction failed: ${err.message}`,
