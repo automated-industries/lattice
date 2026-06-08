@@ -8,6 +8,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.16.5] - 2026-06-08
+
+### Added
+
+- **`renderSkipsEmpty` option** (`LatticeOptions`, default `false`). When enabled,
+  `render()` skips both the full-table read **and** the file write for tables
+  registered without a `render` spec — those compile to a no-op that would only
+  emit an empty `.schema-only/<table>.md`. Previously `render()` read every
+  registered table off the wire (a full `SELECT *`) before discovering the
+  render produced nothing, which is wasteful for databases with large tables.
+  Default-off preserves the original behavior exactly (the table is still
+  scanned and an empty schema-only file written); tables with an explicit
+  `render`/`outputFile` are unaffected either way. Internally, spec-less tables
+  now share a single `NOOP_RENDER` sentinel so the render engine can
+  identity-detect them.
+
+### Fixed
+
+- Corrected the legal entity name punctuation in `NOTICE`.
+
 ## [1.16.4] - 2026-06-02
 
 GUI patch. **One model: a workspace _is_ a Lattice DB.** Removes the
