@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createReadStream, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Lattice } from '../lattice.js';
 import { sendJson } from './http.js';
@@ -17,6 +18,8 @@ import { sendJson } from './http.js';
 
 interface FilesContext {
   db: Lattice;
+  /** Workspace root (holds `data/blobs/`), to resolve `blob_path` references. */
+  latticeRoot?: string;
   pathname: string;
   method: string;
 }
@@ -25,6 +28,7 @@ interface FileRow {
   path?: string | null;
   ref_kind?: string | null;
   ref_uri?: string | null;
+  blob_path?: string | null;
   mime?: string | null;
   original_name?: string | null;
   deleted_at?: string | null;
@@ -36,10 +40,18 @@ interface FileRow {
  * (`ref_uri`). Cloud references (`ref_uri` holds a URL) and owned blobs are not
  * served from here, so they resolve to null.
  */
-function localPathOf(row: FileRow): string | null {
+function localPathOf(row: FileRow, latticeRoot?: string): string | null {
   if (typeof row.path === 'string' && row.path) return row.path;
   if (row.ref_kind === 'local_ref' && typeof row.ref_uri === 'string' && row.ref_uri) {
     return row.ref_uri;
+  }
+  // Retained upload: a content-addressed blob under the workspace's data/blobs/.
+  if (row.ref_kind === 'blob' && typeof row.blob_path === 'string' && row.blob_path) {
+    return isAbsolute(row.blob_path)
+      ? row.blob_path
+      : latticeRoot
+        ? join(latticeRoot, row.blob_path)
+        : null;
   }
   return null;
 }
@@ -64,7 +76,7 @@ export async function dispatchFilesRoute(
       sendJson(res, { error: 'file not found' }, 404);
       return true;
     }
-    const loc = localPathOf(row);
+    const loc = localPathOf(row, ctx.latticeRoot);
     if (!loc) {
       sendJson(res, { error: 'this file has no underlying blob (text-only ingest)' }, 404);
       return true;
@@ -100,7 +112,7 @@ export async function dispatchFilesRoute(
     }
     const id = decodeURIComponent(openMatch[1] ?? '');
     const row = (await ctx.db.get('files', id)) as FileRow | null;
-    const loc = row ? localPathOf(row) : null;
+    const loc = row ? localPathOf(row, ctx.latticeRoot) : null;
     if (!loc) {
       sendJson(res, { error: 'file has no local path' }, 404);
       return true;
