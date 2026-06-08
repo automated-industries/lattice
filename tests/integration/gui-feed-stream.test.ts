@@ -103,7 +103,37 @@ describe('GUI activity feed stream', () => {
     expect(event.source).toBe('gui');
     expect(event.rowId).toBe(id);
     expect(typeof event.seq).toBe('number');
-    expect(typeof event.summary).toBe('string');
+    // The bubble names the row by its title-ish column, not a faceless "a row".
+    expect(event.summary).toBe('Added Feed Team to teams');
+  });
+
+  it('keeps an open stream alive across a schema reopen (feed bus survives)', async () => {
+    const { configPath, outputDir } = writeMinimalConfig();
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // One long-lived stream connection, opened BEFORE the schema change.
+    // Creating an entity disposes + re-opens the active DB; the connection's
+    // feed subscription must survive that reopen, or the activity rail (and the
+    // live sidebar refresh that keys off it) silently goes dead after the first
+    // data-model edit. The schema event is published AFTER the reopen, so
+    // receiving it on this pre-existing stream proves the bus was preserved.
+    const eventPromise = waitForFeedEvent(
+      server.url,
+      (e) => e.op === 'schema' && e.table === 'widgets',
+    );
+
+    await new Promise((r) => setTimeout(r, 100));
+    const post = await fetch(`${server.url}/api/schema/entities`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'widgets' }),
+    });
+    expect(post.status).toBe(200);
+
+    const event = await eventPromise;
+    expect(event.op).toBe('schema');
+    expect(event.table).toBe('widgets');
   });
 
   it('backfills the activity rail from the audit log (mirrors version history)', async () => {
@@ -125,6 +155,8 @@ describe('GUI activity feed stream', () => {
       server.url,
       (e) => e.op === 'insert' && e.table === 'teams' && e.rowId === id,
     );
-    expect(event.summary).toBe('Added a row to teams');
+    // The reconstructed-from-audit summary names the row (after_json → label),
+    // matching the live feed rather than the old generic "Added a row".
+    expect(event.summary).toBe('Added Pre-existing Team to teams');
   });
 });

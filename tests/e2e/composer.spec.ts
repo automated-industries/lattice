@@ -1,0 +1,90 @@
+import { test, expect } from '@playwright/test';
+import { bootGui, type BootedGui } from './helpers.js';
+
+let gui: BootedGui;
+test.beforeEach(async () => {
+  gui = await bootGui();
+});
+test.afterEach(async () => {
+  await gui.close();
+});
+
+test('composer is gated until a Claude key is set', async ({ page }) => {
+  await page.goto(gui.url);
+  // No key configured → the composer shows the setup prompt, not a textarea.
+  await expect(page.locator('.composer-setup')).toContainText('Set a Claude API token');
+  await expect(page.locator('#chat-input')).toHaveCount(0);
+
+  // Store a (test) Claude key the same way User Settings → Assistant does.
+  const res = await page.request.put(`${gui.url}/api/assistant/key`, {
+    data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
+  });
+  expect(res.ok()).toBeTruthy();
+
+  await page.reload();
+  // With auth present, the composer renders an input + send button.
+  await expect(page.locator('#chat-input')).toBeVisible();
+  await expect(page.locator('#chat-send')).toBeVisible();
+  await expect(page.locator('.composer-setup')).toHaveCount(0);
+});
+
+/** Enable the composer (store a test key + reload) and return the input locator. */
+async function enableComposer(page: import('@playwright/test').Page, url: string) {
+  await page.request.put(`${url}/api/assistant/key`, {
+    data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
+  });
+  await page.goto(url);
+  await expect(page.locator('#chat-input')).toBeVisible();
+  return page.locator('#chat-input');
+}
+
+/** Build an SSE body for the chat stream from a list of events. */
+function sse(events: Record<string, unknown>[]): string {
+  return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
+}
+
+test('a run of identical tool calls collapses into one "Listed N rows" pill', async ({ page }) => {
+  const input = await enableComposer(page, gui.url);
+
+  // Mock the assistant stream: one turn that emits three list_rows calls (what
+  // the model does for bulk reads). The rail must show ONE "Listed 3 rows" pill,
+  // not three "Listed rows" pills.
+  await page.route('**/api/chat', (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { 'content-type': 'text/event-stream', 'x-thread-id': 't-e2e' },
+      body: sse([
+        { type: 'assistant_message_start', id: 'm0' },
+        { type: 'tool_use', id: 'u1', name: 'list_rows' },
+        { type: 'tool_result', toolUseId: 'u1', isError: false },
+        { type: 'tool_use', id: 'u2', name: 'list_rows' },
+        { type: 'tool_result', toolUseId: 'u2', isError: false },
+        { type: 'tool_use', id: 'u3', name: 'list_rows' },
+        { type: 'tool_result', toolUseId: 'u3', isError: false },
+        { type: 'done' },
+      ]),
+    }),
+  );
+
+  await input.fill('list everything');
+  await input.press('Enter');
+
+  const pills = page.locator('.chat-tools .tool-pill');
+  await expect(pills).toHaveCount(1);
+  await expect(pills.first()).toHaveText('✓ Listed 3 rows');
+});
+
+test('the composer textarea grows to fit multi-line input', async ({ page }) => {
+  const input = await enableComposer(page, gui.url);
+  const heightOf = async () => (await input.boundingBox())!.height;
+
+  const oneLine = await heightOf();
+  await input.fill(['line one', 'line two', 'line three', 'line four'].join('\n'));
+  // fill() dispatches an input event, so the auto-grow handler has run.
+  const grown = await heightOf();
+  expect(grown).toBeGreaterThan(oneLine);
+
+  // Clearing collapses it back to a single line.
+  await input.fill('');
+  expect(await heightOf()).toBeLessThanOrEqual(oneLine + 1);
+});
