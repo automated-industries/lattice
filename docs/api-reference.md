@@ -76,12 +76,12 @@ When using the config form, Lattice reads the YAML file, resolves the `db` path 
 
 **`LatticeOptions`:**
 
-| Option             | Type              | Default | Description                                                                                          |
-| ------------------ | ----------------- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `wal`              | `boolean`         | `false` | Enable WAL journal mode (recommended for concurrent read/write)                                      |
-| `busyTimeout`      | `number`          | –       | SQLite busy timeout in milliseconds                                                                  |
-| `renderSkipsEmpty` | `boolean`         | `false` | On `render()`, skip the full-table read + file write for tables registered without a `render` spec   |
-| `security`         | `SecurityOptions` | –       | Input sanitization and audit options                                                                |
+| Option             | Type              | Default | Description                                                                                        |
+| ------------------ | ----------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `wal`              | `boolean`         | `false` | Enable WAL journal mode (recommended for concurrent read/write)                                    |
+| `busyTimeout`      | `number`          | –       | SQLite busy timeout in milliseconds                                                                |
+| `renderSkipsEmpty` | `boolean`         | `false` | On `render()`, skip the full-table read + file write for tables registered without a `render` spec |
+| `security`         | `SecurityOptions` | –       | Input sanitization and audit options                                                               |
 
 ---
 
@@ -779,13 +779,13 @@ interface LatticeOptions {
 }
 ```
 
-| Field              | Type              | Description                                                                                                               |
-| ------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `wal`              | `boolean`         | Enable WAL mode (default: `true`)                                                                                         |
-| `busyTimeout`      | `number`          | SQLite busy timeout in ms                                                                                                 |
+| Field              | Type              | Description                                                                                                                                                                                                                                                                  |
+| ------------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wal`              | `boolean`         | Enable WAL mode (default: `true`)                                                                                                                                                                                                                                            |
+| `busyTimeout`      | `number`          | SQLite busy timeout in ms                                                                                                                                                                                                                                                    |
 | `renderSkipsEmpty` | `boolean`         | When `true`, `render()` skips the full-table read and file write for tables registered without a `render` spec (they would only emit an empty `.schema-only/<table>.md`). Default `false` — original behavior. Tables with an explicit `render`/`outputFile` are unaffected. |
-| `security`         | `SecurityOptions` | Sanitization and audit options                                                                                            |
-| `encryptionKey`    | `string`          | Master key for at-rest encryption. Required when any entity context has `encrypted: true`. Derived via scrypt before use. |
+| `security`         | `SecurityOptions` | Sanitization and audit options                                                                                                                                                                                                                                               |
+| `encryptionKey`    | `string`          | Master key for at-rest encryption. Required when any entity context has `encrypted: true`. Derived via scrypt before use.                                                                                                                                                    |
 
 ---
 

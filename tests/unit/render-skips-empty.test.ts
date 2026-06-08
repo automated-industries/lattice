@@ -15,7 +15,9 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-async function makeDb(opts?: { renderSkipsEmpty?: boolean }): Promise<{ db: Lattice; out: string }> {
+async function makeDb(opts?: {
+  renderSkipsEmpty?: boolean;
+}): Promise<{ db: Lattice; out: string }> {
   const base = mkdtempSync(join(tmpdir(), 'lattice-rse-'));
   dirs.push(base);
   const db = new Lattice(join(base, 'test.db'), { renderSkipsEmpty: opts?.renderSkipsEmpty });
@@ -40,7 +42,10 @@ describe('renderSkipsEmpty', () => {
   it('default (off): spec-less table is still scanned and writes an empty schema-only file', async () => {
     const { db, out } = await makeDb();
     await db.insert('notes', { id: 'n1', body: 'hi' });
-    const spy = vi.spyOn((db as unknown as { _schema: { queryTable: () => unknown } })._schema, 'queryTable');
+    const spy = vi.spyOn(
+      (db as unknown as { _schema: { queryTable: () => unknown } })._schema,
+      'queryTable',
+    );
 
     await db.render(out);
 
@@ -53,7 +58,10 @@ describe('renderSkipsEmpty', () => {
   it('on: spec-less table is neither scanned nor written; tables with a render spec are unaffected', async () => {
     const { db, out } = await makeDb({ renderSkipsEmpty: true });
     await db.insert('notes', { id: 'n1', body: 'hi' });
-    const spy = vi.spyOn((db as unknown as { _schema: { queryTable: () => unknown } })._schema, 'queryTable');
+    const spy = vi.spyOn(
+      (db as unknown as { _schema: { queryTable: () => unknown } })._schema,
+      'queryTable',
+    );
 
     await db.render(out);
 
