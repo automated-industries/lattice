@@ -53,7 +53,7 @@ import { assertSafeIdentifier } from './schema/identifier.js';
 import { ChangelogService } from './changelog/service.js';
 import { ReportBuilder } from './report/builder.js';
 import { Sanitizer } from './security/sanitize.js';
-import { RenderEngine } from './render/engine.js';
+import { RenderEngine, NOOP_RENDER } from './render/engine.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
 import { ReverseSeedEngine } from './reverse-seed/engine.js';
 import { SyncLoop } from './sync/loop.js';
@@ -217,7 +217,9 @@ export class Lattice {
     this._adapter = options.adapter ?? buildAdapter(dbPath, options);
     this._schema = new SchemaManager();
     this._sanitizer = new Sanitizer(options.security);
-    this._render = new RenderEngine(this._schema, this._adapter, () => this._taskContext);
+    this._render = new RenderEngine(this._schema, this._adapter, () => this._taskContext, {
+      skipEmpty: options.renderSkipsEmpty ?? false,
+    });
     this._reverseSync = new ReverseSyncEngine(this._schema, this._adapter);
     this._reverseSeedEngine = new ReverseSeedEngine(this._schema, this._adapter);
     this._loop = new SyncLoop(this._render);
@@ -369,7 +371,7 @@ export class Lattice {
             this._schema,
             this._adapter,
           )
-        : () => '',
+        : NOOP_RENDER,
       outputFile: def.outputFile ?? `.schema-only/${table}.md`,
       ...(renderTemplateName ? { _renderTemplateName: renderTemplateName } : {}),
     };
