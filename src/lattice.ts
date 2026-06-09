@@ -352,6 +352,22 @@ export class Lattice {
     return this;
   }
 
+  /**
+   * Remove a runtime-registered table from the live schema registry — the
+   * inverse of {@link defineLate}. The table stops being listed/queryable
+   * WITHOUT a full reopen (which would dispose this instance and invalidate any
+   * captured `db`/feed references mid-operation — see the GUI's soft table
+   * delete). Does NOT drop the physical SQL table or its rows; the caller keeps
+   * them so the delete remains revertible. A no-op if the table isn't
+   * registered.
+   */
+  unregisterTable(table: string): this {
+    this._schema.undefine(table);
+    this._columnCache.delete(table);
+    this._changelogTables.delete(table);
+    return this;
+  }
+
   private _registerTable(table: string, def: TableDefinition): void {
     // Auto-inject reward tracking columns
     const columns = def.rewardTracking

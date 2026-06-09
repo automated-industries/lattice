@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { bootGui, createRow, type BootedGui } from './helpers.js';
+import { bootGui, type BootedGui } from './helpers.js';
 
 let gui: BootedGui;
 
@@ -10,32 +10,27 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('the header search bar finds a row and opens it', async ({ page }) => {
-  await createRow(gui.url, 'items', { name: 'Kangaroo Widget' });
-  await createRow(gui.url, 'items', { name: 'Ordinary Thing' });
-
+test('the header search bar routes the query to the assistant rail', async ({ page }) => {
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   const input = page.locator('#search-input');
-  await input.fill('kangaroo');
+  await input.fill('where are my kangaroos');
+  await input.press('Enter');
 
-  // The grouped results dropdown appears with the matching hit.
-  const results = page.locator('#search-results');
-  await expect(results).toBeVisible();
-  const hit = results.locator('.search-hit').first();
-  await expect(hit).toBeVisible();
-
-  // Clicking the hit opens the row in the current mode (simple → #/fs/,
-  // advanced → #/objects/) and dismisses the dropdown.
-  await hit.click();
-  await expect(page).toHaveURL(/#\/(fs|objects)\/items\//);
-  await expect(results).toBeHidden();
+  // The query is handed to the assistant as a chat turn (a user bubble appears
+  // in the rail) instead of running a plain-text results dropdown.
+  await expect(page.locator('#rail-feed .chat-bubble.user').last()).toContainText(
+    'where are my kangaroos',
+  );
+  // The legacy results dropdown is gone, and the box clears after submitting.
+  await expect(page.locator('#search-results')).toBeHidden();
+  await expect(input).toHaveValue('');
 });
 
-test('a blank query shows no dropdown', async ({ page }) => {
+test('typing no longer opens a results dropdown', async ({ page }) => {
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
-  await page.locator('#search-input').fill('k'); // below the 2-char threshold
+  await page.locator('#search-input').fill('kang');
   await expect(page.locator('#search-results')).toBeHidden();
 });
