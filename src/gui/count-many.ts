@@ -1,4 +1,5 @@
 import type { StorageAdapter } from '../db/adapter.js';
+import type { Row } from '../types.js';
 import { assertSafeIdentifier } from '../schema/identifier.js';
 
 /**
@@ -92,7 +93,21 @@ export async function exactCountMany(
     const where = softDeleteTables.has(name) ? ` WHERE "deleted_at" IS NULL` : '';
     return `(SELECT count(*) FROM "${name}"${where}) AS c${String(i)}`;
   });
-  const row = await adapter.getAsync(`SELECT ${selects.join(', ')}`);
+  let row: Row | undefined;
+  try {
+    row = await adapter.getAsync(`SELECT ${selects.join(', ')}`);
+  } catch (err) {
+    // A "suspicious" table that isn't physically present (schema drift between
+    // the registered set and the DB) would make the single aggregate throw and
+    // 500 the whole dashboard. Degrade to the approximate counts (the caller
+    // renders absent tables as "—") rather than failing the page — and log the
+    // drift so it stays visible.
+    console.warn(
+      `[count-many] exact-count fallback skipped (${(err as Error).message}); ` +
+        'using approximate counts',
+    );
+    return out;
+  }
   if (!row) return out;
   names.forEach((name, i) => {
     const v = row[`c${String(i)}`];

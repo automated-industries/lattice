@@ -1609,7 +1609,9 @@ export class Lattice {
       sql += ` LIMIT ${Math.trunc(opts.limit).toString()}`;
     }
     if (opts.offset !== undefined && Number.isFinite(opts.offset)) {
-      if (opts.limit === undefined) sql += ' LIMIT -1';
+      // SQLite needs a LIMIT before OFFSET (LIMIT -1 = "no limit"); Postgres
+      // rejects LIMIT -1 but accepts a bare OFFSET.
+      if (opts.limit === undefined && this.getDialect() === 'sqlite') sql += ' LIMIT -1';
       sql += ` OFFSET ${Math.trunc(opts.offset).toString()}`;
     }
 

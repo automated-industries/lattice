@@ -3355,6 +3355,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
+          // Row-level security: a row's history carries its full payloads, so
+          // only the owner / permitted members may read it. Denied → 404 (hide
+          // existence), mirroring the GET-single CRUD path.
+          if (!(await canAccessRow(active.db, tctx.teamId, table, rowId, tctx.myUserId))) {
+            sendJson(res, { error: 'Row not found' }, 404);
+            return;
+          }
           const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? '50')));
           const rows = (await active.db.query('__lattice_change_log', {
             filters: [
@@ -3418,9 +3425,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             created_at: string;
             client_ts: string | null;
           }[];
+          // Row-level security: only surface last-edited for rows this member can
+          // see — the map would otherwise leak the existence + last editor of
+          // private rows. Intersect with the visible set (one indexed query, not
+          // a per-pk scan) and build the map filtered from the start.
+          const visible = await listVisibleRows(active.db, tctx.teamId, table, tctx.myUserId, {
+            limit: 5000,
+            deleted: 'any',
+          });
+          const visiblePks = new Set(visible.map((r) => String(r.id)));
           const edits: Record<string, { ownerUserId: string | null; at: string }> = {};
           for (const r of scan) {
-            if (!r.pk || edits[r.pk]) continue;
+            if (!r.pk || edits[r.pk] || !visiblePks.has(r.pk)) continue;
             edits[r.pk] = { ownerUserId: r.owner_user_id, at: r.client_ts ?? r.created_at };
           }
           sendJson(res, { edits });
