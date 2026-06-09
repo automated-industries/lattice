@@ -5,7 +5,7 @@ import { applySchemaSpec, TeamsSchemaConflictError, type SchemaSpec } from './sc
 import type { Row, WriteHookContext } from '../types.js';
 import { probeCloud, type CloudProbeResult } from '../framework/cloud-connect.js';
 import { saveDbCredential, writeToken } from '../framework/user-config.js';
-import { isPostgresUrl, registerDirectViaPostgres } from './register-direct.js';
+import { isPostgresUrl } from './register-direct.js';
 import {
   destroyTeamDirect,
   inviteDirect,
@@ -15,11 +15,25 @@ import {
   listPendingInvitationsDirect,
   listSharedObjectsDirect,
   meDirect,
-  redeemInviteDirect,
   shareObjectDirect,
   unlinkRowDirect,
   unshareObjectDirect,
 } from './direct-ops.js';
+
+/**
+ * Direct postgres:// team-cloud connections are deprecated as of 2.2: they
+ * pre-date row-level security and cannot enforce it (the local Lattice talks
+ * straight to the cloud DB as a superuser, bypassing the per-recipient sync
+ * filter). NEW connections must go through a hosted Teams server (an
+ * http(s):// URL); EXISTING direct connections keep working but warn on
+ * connect. This does NOT affect using Postgres as a Lattice's own storage
+ * backend — only the team-sync direct path.
+ */
+export const DIRECT_CLOUD_DEPRECATION_MESSAGE =
+  'Direct postgres:// team-cloud connections are deprecated and do not support ' +
+  'row-level security. Create or join a workspace through a hosted Lattice Teams ' +
+  'server (an http(s):// URL) instead. Existing direct connections continue to ' +
+  'work but should be migrated.';
 
 /**
  * Local-side client for a Lattice Teams cloud. Wraps the cloud HTTP API
@@ -266,8 +280,9 @@ export class TeamsClient {
     // embedded credentials, so when the operator's cloud_url is the
     // saved Postgres URL the HTTP path 404s before it leaves the
     // browser (no server to answer /api/auth/redeem-invite).
+    // New direct postgres:// joins are deprecated (no row-level security).
     if (isPostgresUrl(cloudUrl)) {
-      return redeemInviteDirect(cloudUrl, inviteToken, email, name);
+      throw new Error(DIRECT_CLOUD_DEPRECATION_MESSAGE);
     }
     return this.fetchUnauthed<RedeemResponse>(cloudUrl, 'POST', '/api/auth/redeem-invite', {
       invite_token: inviteToken,
@@ -373,9 +388,11 @@ export class TeamsClient {
     email: string;
     displayName: string;
   }): Promise<RegisterResponse> {
-    const reg = isPostgresUrl(opts.cloudUrl)
-      ? await registerDirectViaPostgres(opts.cloudUrl, opts.email, opts.displayName, opts.teamName)
-      : await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
+    // New direct postgres:// workspaces are deprecated (no row-level security).
+    if (isPostgresUrl(opts.cloudUrl)) {
+      throw new Error(DIRECT_CLOUD_DEPRECATION_MESSAGE);
+    }
+    const reg = await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
     writeToken(opts.label, reg.raw_token);
     await this.saveConnection({
       team_id: reg.team.id,
