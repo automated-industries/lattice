@@ -278,11 +278,60 @@ async function entitiesWithCounts(
     allTables = allTables.filter((t) => isVisibleInTeam(t.name, teamContext));
   }
 
-  // Postgres: collapse the per-table COUNT(*) fan-out to one query against
-  // pg_class. The naive Promise.all path below issues N parallel COUNTs
-  // through the connection pool; on a session pooler with a small slot
-  // budget (e.g. Supabase's 15-slot session pooler), N > slots locks up
-  // the pool the moment two clients refresh at once.
+  // Per-table default row visibility (batched, one query for the whole shared-
+  // object set) for the Data Model "new rows default to" select — and, below,
+  // for resolving each table's no-ACL visibility for the visible-count pass.
+  const rowVisDefaults = new Map<string, 'private' | 'everyone'>();
+  const sharedCreatedBy = new Map<string, string>();
+  if (teamContext) {
+    const sharedObjs = await db.query('__lattice_shared_objects', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamContext.teamId },
+        { col: 'deleted_at', op: 'isNull' },
+      ],
+    });
+    for (const r of sharedObjs) {
+      rowVisDefaults.set(
+        String(r.table_name),
+        r.default_row_visibility === 'everyone' ? 'everyone' : 'private',
+      );
+      if (typeof r.created_by_user_id === 'string') {
+        sharedCreatedBy.set(String(r.table_name), r.created_by_user_id);
+      }
+    }
+  }
+
+  // Team-cloud counts: a physical row count would reveal the existence and
+  // volume of rows this member can't see (a tile reading 47 while the rows
+  // view lists 12 leaks 35 hidden rows — and a denied read is supposed to be
+  // indistinguishable from a missing one). Count through the same visibility
+  // predicate the rows view uses, aggregated into ONE round-trip — the
+  // pool-safety constraint the batched paths below exist for. Each table's
+  // no-ACL fallback mirrors listVisibleRows: visible when the table default
+  // is 'everyone' or the operator owns the table (object owner, falling back
+  // to the shared object's creator).
+  let visibleCounts = new Map<string, number>();
+  if (teamContext) {
+    const tc = teamContext;
+    const specs = allTables.map((t) => {
+      const def = rowVisDefaults.get(t.name) ?? 'private';
+      const owner = tc.owners.get(t.name) ?? sharedCreatedBy.get(t.name) ?? '';
+      return {
+        table: t.name,
+        noAclVisible: def === 'everyone' || (tc.myUserId !== '' && owner === tc.myUserId),
+      };
+    });
+    visibleCounts = await db.countVisibleMany(specs, {
+      teamId: tc.teamId,
+      userId: tc.myUserId,
+    });
+  }
+
+  // Postgres (no team context): collapse the per-table COUNT(*) fan-out to
+  // one query against pg_class. The naive Promise.all path below issues N
+  // parallel COUNTs through the connection pool; on a session pooler with a
+  // small slot budget (e.g. Supabase's 15-slot session pooler), N > slots
+  // locks up the pool the moment two clients refresh at once.
   //
   // `reltuples` is approximate (maintained by ANALYZE / autovacuum). For
   // the entity-list view that's the right tradeoff — operators are
@@ -290,7 +339,8 @@ async function entitiesWithCounts(
   // that tables with a `deleted_at` column now include soft-deleted rows
   // in this number; per-table drill-in still shows the filtered count.
   const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
-  const useBatched = adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
+  const useBatched =
+    !teamContext && adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
   const approxCounts = useBatched
     ? await countManyPostgres(
         adapter,
@@ -315,28 +365,15 @@ async function entitiesWithCounts(
     }
   }
 
-  // Per-table default row visibility (batched, one query for the whole shared-
-  // object set) for the Data Model "new rows default to" select.
-  const rowVisDefaults = new Map<string, 'private' | 'everyone'>();
-  if (teamContext) {
-    const sharedObjs = await db.query('__lattice_shared_objects', {
-      filters: [
-        { col: 'team_id', op: 'eq', val: teamContext.teamId },
-        { col: 'deleted_at', op: 'isNull' },
-      ],
-    });
-    for (const r of sharedObjs) {
-      rowVisDefaults.set(
-        String(r.table_name),
-        r.default_row_visibility === 'everyone' ? 'everyone' : 'private',
-      );
-    }
-  }
-
   const enrichedTables = await Promise.all(
     allTables.map(async (t): Promise<GuiTableSummary> => {
       let rowCount: number | null;
-      if (useBatched) {
+      if (teamContext) {
+        // Team cloud: only the rows this member may see (computed in one
+        // aggregated round-trip above). `null` past the per-pass cap so the
+        // SPA renders "—" rather than a leaked physical count.
+        rowCount = visibleCounts.get(t.name) ?? null;
+      } else if (useBatched) {
         // Postgres: prefer an exact count for the suspicious subset (computed
         // in one extra round-trip above); otherwise the fast approximate stat.
         // Still `null` when neither is available so the SPA renders "—".

@@ -1620,6 +1620,75 @@ export class Lattice {
   }
 
   /**
+   * Visible-row counts for MANY tables in a single round-trip, using the same
+   * ACL predicate as {@link queryVisible} — so dashboard tiles agree with what
+   * the rows view lists and a physical count never reveals the existence or
+   * volume of rows the user can't see. One aggregated
+   * `SELECT (SELECT COUNT(*) …) AS c0, …` statement (no per-table fan-out, so
+   * a session pooler with few slots survives concurrent refreshes), capped at
+   * 50 tables per pass; overflow is logged and skipped (no silent truncation)
+   * and those tables count as absent — the caller renders "—". Soft-deleted
+   * rows are excluded wherever the table carries `deleted_at`, matching the
+   * default rows view.
+   */
+  async countVisibleMany(
+    specs: { table: string; noAclVisible: boolean }[],
+    opts: { teamId: string; userId: string },
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    const notInit = this._notInitError<Map<string, number>>();
+    if (notInit) return notInit;
+    if (specs.length === 0) return out;
+
+    const VISIBLE_COUNT_CAP = 50;
+    let bounded = specs;
+    if (bounded.length > VISIBLE_COUNT_CAP) {
+      const dropped = bounded.length - VISIBLE_COUNT_CAP;
+      console.warn(
+        `[lattice] visible-count pass capped at ${String(VISIBLE_COUNT_CAP)} tables; ` +
+          `${String(dropped)} table(s) report no count this pass`,
+      );
+      bounded = bounded.slice(0, VISIBLE_COUNT_CAP);
+    }
+
+    const selects: string[] = [];
+    const params: unknown[] = [];
+    for (const [i, spec] of bounded.entries()) {
+      this._assertIdent(spec.table);
+      const cols = this._ensureColumnCache(spec.table);
+      const pkCol = this._schema.getPrimaryKey(spec.table)[0] ?? 'id';
+      const softDelete = cols.has('deleted_at') ? `t."deleted_at" IS NULL AND ` : '';
+      let predicate =
+        `EXISTS (SELECT 1 FROM "__lattice_row_acl" la ` +
+        `WHERE la."team_id" = ? AND la."table_name" = ? AND la."pk" = CAST(t."${pkCol}" AS TEXT) ` +
+        `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
+        `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
+        `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
+        `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?))))`;
+      params.push(opts.teamId, spec.table, opts.userId, opts.userId);
+      if (spec.noAclVisible) {
+        predicate +=
+          ` OR NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 ` +
+          `WHERE la2."team_id" = ? AND la2."table_name" = ? ` +
+          `AND la2."pk" = CAST(t."${pkCol}" AS TEXT))`;
+        params.push(opts.teamId, spec.table);
+      }
+      selects.push(
+        `(SELECT COUNT(*) FROM "${spec.table}" t WHERE ${softDelete}(${predicate})) AS c${String(i)}`,
+      );
+    }
+
+    const row = await getAsyncOrSync(this._adapter, `SELECT ${selects.join(', ')}`, params);
+    if (!row) return out;
+    for (const [i, spec] of bounded.entries()) {
+      const raw = (row as Record<string, unknown>)[`c${String(i)}`];
+      const n = typeof raw === 'bigint' ? Number(raw) : Number(raw);
+      if (Number.isFinite(n) && n >= 0) out.set(spec.table, n);
+    }
+    return out;
+  }
+
+  /**
    * Hosted-sync change-log pull, filtered per recipient for 2.2 row-level
    * security (the hosted server's sole enforcement mechanism). Returns
    * `__lattice_change_log` rows with seq > `since` for team `teamId` that
