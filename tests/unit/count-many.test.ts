@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { countManyPostgres, exactCountMany } from '../../src/gui/count-many.js';
-import type { StorageAdapter, Row } from '../../src/db/adapter.js';
+import type { StorageAdapter } from '../../src/db/adapter.js';
+import type { Row } from '../../src/types.js';
 
 /**
  * Minimal adapter spy. Counts allAsync invocations and the SQL it was
