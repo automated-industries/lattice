@@ -2,6 +2,12 @@ import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
 import { appendChangeEnvelope } from '../teams/team-core.js';
+import {
+  canAccessRow,
+  recordRowAcl,
+  tableDefaultVisibility,
+  RowAccessError,
+} from '../teams/row-access.js';
 
 /**
  * Shared GUI mutation primitives. The HTTP row-CRUD routes write through these
@@ -281,6 +287,12 @@ export async function createRow(
 ): Promise<{ id: string; row: Row | null }> {
   const id = await ctx.db.insert(table, values);
   const row = await ctx.db.get(table, id);
+  // Record the per-row ACL — owner = creator, visibility = the table default —
+  // so the new row is enforceable on the team cloud. No-op outside team mode.
+  if (ctx.team) {
+    const vis = await tableDefaultVisibility(ctx.db, ctx.team.teamId, table);
+    await recordRowAcl(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId, vis);
+  }
   await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source, ctx.sessionId);
   await emitTeamEnvelope(ctx, table, id, 'upsert', row);
   return { id, row };
@@ -323,6 +335,11 @@ export async function updateRow(
   if (before === null) {
     throw new Error(`Cannot update "${table}": no row with id "${id}"`);
   }
+  // Row-level permission gate: a member may only edit rows they can access.
+  // Thrown loudly (RowAccessError → HTTP 404) rather than a silent no-op.
+  if (ctx.team && !(await canAccessRow(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId))) {
+    throw new RowAccessError();
+  }
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
   // Rule 16: a requested change that left the row byte-identical means the
@@ -364,6 +381,10 @@ export async function deleteRow(
   // bogus audit/feed entry. Surface the bad id instead of faking success.
   if (before === null) {
     throw new Error(`Cannot delete from "${table}": no row with id "${id}"`);
+  }
+  // Row-level permission gate (RowAccessError → HTTP 404).
+  if (ctx.team && !(await canAccessRow(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId))) {
+    throw new RowAccessError();
   }
   if (!hard && ctx.softDeletable.has(table)) {
     await ctx.db.update(table, id, { deleted_at: new Date().toISOString() });

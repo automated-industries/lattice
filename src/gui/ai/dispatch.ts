@@ -16,6 +16,7 @@ import {
   parseAudit,
   type MutationCtx,
 } from '../mutations.js';
+import { canAccessRow, listVisibleRows } from '../../teams/row-access.js';
 
 /**
  * Executes a registry function on behalf of the AI tool loop. Writes flow
@@ -129,6 +130,13 @@ export interface DispatchCtx {
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
   /**
+   * Team-cloud context for row-level permission enforcement. When set, the
+   * assistant's reads are visibility-filtered and its writes carry the team so
+   * the mutation layer gates them. Null/undefined outside team mode — without
+   * this, the assistant would bypass row-level security entirely.
+   */
+  team?: { teamId: string; myUserId: string } | null;
+  /**
    * Create a new entity (table) with inferred columns — audited + reversible,
    * no DB reopen (defineLate). Supplied by the server when schema creation is
    * allowed; absent → `create_entity` reports it's unavailable. Returns the
@@ -187,6 +195,9 @@ export async function executeFunction(
     feed: ctx.feed,
     softDeletable: ctx.softDeletable,
     source: 'ai',
+    // Thread the team through so create/update/delete enforce the row ACL for
+    // the assistant exactly as they do for the HTTP API.
+    team: ctx.team ?? null,
   };
 
   try {
@@ -206,22 +217,33 @@ export async function executeFunction(
       }
       case 'list_rows': {
         const table = requireTable(args.table, ctx.validTables);
-        const opts: Parameters<typeof ctx.db.query>[1] = { limit: 200 };
-        if (ctx.softDeletable.has(table) && args.includeDeleted !== true) {
-          opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
-        }
+        const includeDeleted = args.includeDeleted === true;
         // Deterministic, reproducible order — the 200-row window is only stable
         // if the sort is. Without an ORDER BY, two identical reads can return rows
         // in different orders, so the assistant reads a different row each time and
         // reports conflicting values. `created_at` gives a natural chronological
         // order where it exists; the primary key (single-column `id` here) is the
         // universal stable fallback. Explicit ORDER BY behaves identically on
-        // SQLite + Postgres, and composes after the soft-delete WHERE above.
+        // SQLite + Postgres, and composes after the soft-delete WHERE.
         const cols = ctx.db.getRegisteredColumns(table);
-        opts.orderBy =
+        const orderBy =
           cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
-        opts.orderDir = 'asc';
-        const rows = await ctx.db.query(table, opts);
+        let rows: Row[];
+        if (ctx.team) {
+          // Row-level security: return only the rows this member may see.
+          rows = await listVisibleRows(ctx.db, ctx.team.teamId, table, ctx.team.myUserId, {
+            limit: 200,
+            orderBy,
+            orderDir: 'asc',
+            deleted: ctx.softDeletable.has(table) && includeDeleted ? 'any' : 'exclude',
+          });
+        } else {
+          const opts: Parameters<typeof ctx.db.query>[1] = { limit: 200, orderBy, orderDir: 'asc' };
+          if (ctx.softDeletable.has(table) && !includeDeleted) {
+            opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
+          }
+          rows = await ctx.db.query(table, opts);
+        }
         const secretCols = await secretColumnsFor(ctx.db, table);
         return { ok: true, result: rows.map((r) => redactRow(r, secretCols)) };
       }
@@ -230,6 +252,13 @@ export async function executeFunction(
         const id = requireString(args.id, 'id');
         const row = await ctx.db.get(table, id);
         if (row === null) return { ok: false, error: 'Row not found' };
+        // Row-level security: a denied read is indistinguishable from missing.
+        if (
+          ctx.team &&
+          !(await canAccessRow(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId))
+        ) {
+          return { ok: false, error: 'Row not found' };
+        }
         return { ok: true, result: redactRow(row, await secretColumnsFor(ctx.db, table)) };
       }
       case 'search': {
@@ -248,6 +277,23 @@ export async function executeFunction(
           query,
           limitPerTable: limit,
         });
+        // Full-text search bypasses the row ACL — post-filter every hit so the
+        // assistant never surfaces a row this member can't see (the subtlest
+        // leak: FTS joins straight to the physical table).
+        if (ctx.team) {
+          const team = ctx.team;
+          const groups: typeof result.groups = [];
+          for (const group of result.groups) {
+            const hits: typeof group.hits = [];
+            for (const hit of group.hits) {
+              if (await canAccessRow(ctx.db, team.teamId, group.table, hit.id, team.myUserId)) {
+                hits.push(hit);
+              }
+            }
+            if (hits.length > 0) groups.push({ ...group, hits, count: hits.length });
+          }
+          result.groups = groups;
+        }
         return { ok: true, result };
       }
       case 'create_row': {
