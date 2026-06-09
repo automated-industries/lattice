@@ -287,6 +287,26 @@ Must be called **once** before any CRUD or sync methods. Throws if called a seco
 
 ---
 
+#### `defineLate(table, definition): Promise<this>`
+
+Register a table **after** `init()` — creates it (`CREATE TABLE IF NOT EXISTS`) and adds it to the live schema registry. Idempotent: registering an already-registered table is a no-op. Use `define()` during setup; use `defineLate()` to add a table at runtime (e.g. a GUI/assistant-created object) without reopening.
+
+```ts
+await db.defineLate('invoices', { columns: { id: 'TEXT PRIMARY KEY', total: 'REAL' } });
+```
+
+---
+
+#### `unregisterTable(table): this` (v2.1+)
+
+The inverse of `defineLate()`. Removes a table from the live schema registry so it stops being listed/queryable, **without** a reopen and **without** dropping the physical SQL table or its rows (the data is kept, so the removal can be reverted by re-registering). A no-op if the table isn't registered. Used by the GUI's soft table-delete.
+
+```ts
+db.unregisterTable('invoices'); // forgets the registration; the SQL table + rows remain
+```
+
+---
+
 #### `close(): void`
 
 Close the underlying SQLite connection. After calling `close()`, CRUD and sync methods will reject.

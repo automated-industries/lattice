@@ -24,6 +24,8 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
 
+**New in 2.1:** the GUI search box now asks the **assistant** (it answers using a full-text `search` tool) instead of running a plain text match; the assistant gains a **guarded, reversible `delete_entity`** (empty tables go immediately, non-empty tables ask what to do with the data first); new chat threads are named from a short AI summary; ingest failures are surfaced loudly instead of swallowed; and the activity feed, voice-note composer, upload timer, and live counts get a round of fixes. See [docs/assistant.md](docs/assistant.md).
+
 **New in 1.16:** the `.lattice` workspace model + auto-render, full-text search, sources/references, a workspace dashboard, a **multiplayer cloud-editing** experience (live share/de-share, "last edited by", change-flash + counts, and an offline edit queue that replays on reconnect), and a much richer **Data Model editor** in the GUI — a force-directed schema graph, bidirectional many-to-many links, and a soft-delete model where every schema change (create/rename/delete a table, column, or link) is tracked in version history and **reversible** (deletes never destroy data; revert restores it), with session-scoped undo/redo. All with no AI dependency. See [docs/workspaces.md](docs/workspaces.md) and [docs/collaboration.md](docs/collaboration.md). The AI assistant, chat, and ingest summarization are exclusive to the 2.0 line (2.0 = the 1.16 feature set plus that AI layer).
 
 ---

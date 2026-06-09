@@ -42,7 +42,7 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <div class="topsearch" id="topsearch">
       <span class="topsearch-icon" aria-hidden="true">🔍</span>
-      <input type="search" id="search-input" placeholder="Search all tables…" autocomplete="off" spellcheck="false" aria-label="Full-text search" />
+      <input type="search" id="search-input" placeholder="Ask the assistant…" autocomplete="off" spellcheck="false" aria-label="Ask the assistant" />
       <div class="search-results" id="search-results" hidden></div>
     </div>
     <div class="history-controls">

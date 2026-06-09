@@ -52,6 +52,45 @@ export async function summarizeText(
   return turn.text.trim();
 }
 
+const TITLE_SYSTEM =
+  'You write a short, specific title (3-5 words, Title Case) for a chat ' +
+  'conversation based on its opening exchange — capture the concrete topic, ' +
+  'e.g. "Adding New Notes About Cheese" or "Q3 Invoice Cleanup". No quotes, ' +
+  'no trailing punctuation, no preamble. Plain text only.';
+
+/**
+ * Generate a short, specific Title-Case name for a chat thread from its first
+ * exchange (used to replace the truncated-first-message placeholder). Uses the
+ * cheap default model. The result is de-quoted and clamped to the thread-title
+ * column budget (60 chars).
+ */
+export async function generateThreadTitle(
+  client: LlmClient,
+  userMessage: string,
+  assistantReply: string,
+): Promise<string> {
+  const turn = await client.runTurn({
+    model: DEFAULT_MODEL,
+    system: TITLE_SYSTEM,
+    messages: [
+      {
+        role: 'user',
+        content:
+          `First user message:\n${userMessage.slice(0, 2000)}\n\n` +
+          `Assistant reply:\n${assistantReply.slice(0, 2000)}\n\n` +
+          'Title (3-5 words):',
+      },
+    ],
+    tools: [],
+    onText: () => undefined,
+  });
+  return turn.text
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/[.\s]+$/, '')
+    .slice(0, 60);
+}
+
 const CLASSIFY_SYSTEM =
   'You decide which existing records a newly added document relates to. You ' +
   'are given a catalog of record types (with descriptions) and their records. ' +

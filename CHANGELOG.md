@@ -8,6 +8,74 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-06-08
+
+**Assistant search + a guarded, reversible table delete — and a batch of GUI
+fixes.** The `lattice gui` search box now hands your query to the assistant
+(which answers using its search/read tools) instead of running a plain text
+match, the assistant gains a safe `delete_entity` tool, and the activity feed,
+voice notes, uploads, and live counts get a round of polish. The library API is
+additive and backwards-compatible.
+
+### Added
+
+- **The search box asks the assistant.** Typing a query and pressing Enter sends
+  it to the assistant rail, which answers conversationally using a re-added
+  full-text `search` tool (it never sees the conversation-storage or secret
+  tables). The old as-you-type dropdown is retired.
+- **Reversible, guarded table delete via the assistant (`delete_entity`).** The
+  assistant can delete a table on request, with safeguards so a careless prompt
+  can't destroy data: built-in tables are refused, tables another table links to
+  are refused, an **empty** table is soft-deleted immediately, and a **non-empty**
+  table is **not** deleted until you decide what to do with the data — the tool
+  reports the row count and asks, then you choose to delete the rows too
+  (soft, reversible) or move them into another table first. Every step is audited
+  and revertible from history; the physical table + rows are kept (no hard drop).
+- **AI-generated chat thread titles.** A new conversation is named from a short
+  AI summary of its first exchange (e.g. "Adding New Notes About Cheese") instead
+  of a truncated copy of your first message.
+- **`Lattice.unregisterTable(name)`** — the inverse of `defineLate()`. Removes a
+  runtime-registered table from the live schema registry without a reopen (and
+  without touching the physical table), so the GUI's soft delete no longer has to
+  dispose + rebuild the connection. Library-additive.
+
+### Fixed
+
+- **The ingest pipeline no longer swallows server-side errors (Rule: no silent
+  failures).** A failed file enrichment used to bubble to a generic 500 with
+  nothing logged — the real cause flashed in a toast and vanished. Failures are
+  now logged to stderr with their stack, recorded durably on the file row
+  (`extraction_status='enrichment_failed'`), and surfaced to the client; the
+  top-level GUI request handler logs any unhandled error before responding.
+- **The data-model graph no longer shows internal conversation tables.** The
+  `chat_threads` / `chat_messages` storage was already hidden from the Objects
+  list and sidebar but still drawn in the Data Model visualization; it's now
+  filtered there too (single source of truth: `isInternalNativeEntity`).
+- **Conversation tables are browsable under "System".** `chat_messages` /
+  `chat_threads` now appear in the Advanced → System list and open read-only,
+  instead of routing to "Unknown entity".
+- **Search no longer returns conversation messages or secrets.** The full-text
+  search endpoint excludes the assistant's own storage + the secrets table.
+- **Voice notes don't desync the composer.** While recording/transcribing, the
+  text box is read-only with a "Listening… / Transcribing…" placeholder and the
+  Send button is disabled; the transcript drops in when you stop.
+- **File-upload progress shows real elapsed time** instead of a stuck "0s".
+- **The activity feed groups identical events even when interleaved.** A burst of
+  the same op on the same table collapses into one counted bubble within a short
+  window, not just for strictly consecutive events.
+- **Home counts and the open entity view update live.** Any insert/update/delete
+  now refreshes the dashboard counts and the current table without a manual page
+  reload (previously only schema changes did, and only on the cloud path).
+- **More spacing above the sidebar "SYSTEM" heading.**
+
+### Changed
+
+- **Voice-provider preference and inference aggressiveness are user settings, not
+  workspace secrets.** They moved out of the workspace `secrets` table into
+  machine-local `preferences.json`, so they persist across workspaces, stop
+  appearing in the Secrets object, and aren't visible on a shared cloud database.
+  Legacy rows are retired automatically on the next open.
+
 ## [2.0.0] - 2026-06-04
 
 **The AI assistant arrives.** `lattice gui` gains a built-in assistant rail — a
