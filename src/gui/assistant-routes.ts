@@ -16,6 +16,8 @@ import {
   getAssistantCredential,
   setAssistantCredential,
   deleteAssistantCredential,
+  readPreferences,
+  writePreferences,
 } from '../framework/user-config.js';
 
 const CLAUDE_OAUTH_KIND = 'claude_oauth';
@@ -111,24 +113,6 @@ function parseCookies(req: IncomingMessage): Record<string, string> {
   return out;
 }
 
-/** Upsert a single live secret row of a kind (keeping one binding). */
-async function storeSecret(db: Lattice, kind: string, name: string, value: string): Promise<void> {
-  const [first, ...extras] = await liveSecretsOfKind(db, kind);
-  if (first) {
-    await db.update('secrets', first.id, { value, name });
-    for (const extra of extras)
-      await db.update('secrets', extra.id, { deleted_at: new Date().toISOString() });
-  } else {
-    await db.insert('secrets', {
-      id: crypto.randomUUID(),
-      name,
-      kind,
-      value,
-      description: `${name} (assistant).`,
-    });
-  }
-}
-
 /** Live (non-deleted) secret rows for a given kind. */
 async function liveSecretsOfKind(db: Lattice, kind: string): Promise<SecretRow[]> {
   const rows = (await db.query('secrets', {
@@ -218,13 +202,36 @@ export const DEFAULT_AGGRESSIVENESS = 0.5;
  * The user's "inference aggressiveness" — a single behaviour knob (0 = only
  * high-confidence, conservative changes; 1 = eagerly add/enrich/link/extrapolate).
  * Drives the model sampling temperature AND how liberally ingest materializes
- * new junctions. Stored in `secrets`; falls back to {@link DEFAULT_AGGRESSIVENESS}.
+ * new junctions. A USER preference (machine-local `preferences.json`), not a
+ * workspace secret — so it persists across workspaces and never shows up in a
+ * workspace's `secrets` object. Falls back to {@link DEFAULT_AGGRESSIVENESS}.
  */
-export async function getAggressiveness(db: Lattice): Promise<number> {
-  const raw = await secretValue(db, AGGRESSIVENESS_KIND);
-  const n = raw === null ? NaN : Number(raw);
+export function getAggressiveness(): number {
+  const n = readPreferences().aggressiveness;
   if (!Number.isFinite(n)) return DEFAULT_AGGRESSIVENESS;
   return Math.min(1, Math.max(0, n));
+}
+
+/**
+ * Retire legacy per-workspace preference rows. Earlier builds stored the voice
+ * provider + inference aggressiveness in the workspace `secrets` table (kinds
+ * `stt_provider` / `assistant_aggressiveness`), which made them appear in the
+ * Secrets object and reset on every workspace switch. They are USER preferences
+ * now (see {@link getAggressiveness}); this soft-deletes any leftover rows so
+ * they stop surfacing as workspace secrets. Idempotent + best-effort: it only
+ * touches these two non-credential kinds and never throws (the value is NOT
+ * promoted — the user re-picks once, then it persists machine-wide).
+ */
+export async function retireLegacyPreferenceSecrets(db: Lattice): Promise<void> {
+  for (const kind of [STT_PROVIDER_KIND, AGGRESSIVENESS_KIND]) {
+    try {
+      for (const row of await liveSecretsOfKind(db, kind)) {
+        await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+      }
+    } catch (e) {
+      console.warn(`[assistant] could not retire legacy ${kind} secret:`, (e as Error).message);
+    }
+  }
 }
 
 /** Map aggressiveness → an Anthropic sampling temperature in [0, 1]. */
@@ -241,7 +248,7 @@ export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential |
     (await readMachineCredential(db, CREDENTIALS.elevenlabs.kind)) ??
     process.env.ELEVENLABS_API_KEY ??
     null;
-  const pref = await secretValue(db, STT_PROVIDER_KIND);
+  const pref = readPreferences().voice_provider;
   // Honor an explicit choice when its key is available, else infer (OpenAI first).
   if (pref === 'elevenlabs' && eleven) return { provider: 'elevenlabs', apiKey: eleven };
   if (pref === 'openai' && openai) return { provider: 'openai', apiKey: openai };
@@ -335,8 +342,8 @@ export async function dispatchAssistantRoute(
       hasClaudeAuth: await hasClaudeAuth(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
-      sttPreference: (await secretValue(db, STT_PROVIDER_KIND)) ?? 'auto',
-      aggressiveness: await getAggressiveness(db),
+      sttPreference: readPreferences().voice_provider,
+      aggressiveness: getAggressiveness(),
       oauthEnabled: oauthConfigured(),
     });
     return true;
@@ -356,7 +363,8 @@ export async function dispatchAssistantRoute(
       sendJson(res, { error: 'value must be a number in [0, 1]' }, 400);
       return true;
     }
-    await storeSecret(db, AGGRESSIVENESS_KIND, 'Inference aggressiveness', String(value));
+    // User preference, machine-local — not a workspace secret.
+    writePreferences({ ...readPreferences(), aggressiveness: value });
     sendJson(res, { ok: true, value });
     return true;
   }
@@ -371,17 +379,12 @@ export async function dispatchAssistantRoute(
       return true;
     }
     const provider = typeof body.provider === 'string' ? body.provider : 'auto';
-    if (!['auto', 'openai', 'elevenlabs'].includes(provider)) {
+    if (provider !== 'auto' && provider !== 'openai' && provider !== 'elevenlabs') {
       sendJson(res, { error: `unknown provider: ${provider}` }, 400);
       return true;
     }
-    if (provider === 'auto') {
-      for (const row of await liveSecretsOfKind(db, STT_PROVIDER_KIND)) {
-        await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
-      }
-    } else {
-      await storeSecret(db, STT_PROVIDER_KIND, 'Voice provider preference', provider);
-    }
+    // User preference, machine-local — not a workspace secret.
+    writePreferences({ ...readPreferences(), voice_provider: provider });
     sendJson(res, { ok: true });
     return true;
   }
