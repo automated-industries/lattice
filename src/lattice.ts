@@ -1617,6 +1617,51 @@ export class Lattice {
     return this._decryptRows(table, rows);
   }
 
+  /**
+   * Hosted-sync change-log pull, filtered per recipient for 2.2 row-level
+   * security (the hosted server's sole enforcement mechanism). Returns
+   * `__lattice_change_log` rows with seq > `since` for team `teamId` that
+   * `userId` is permitted to receive:
+   *   - targeted envelopes (`recipient_user_id = userId`), plus
+   *   - broadcast envelopes (`recipient_user_id IS NULL`) that are either
+   *     table-level (`pk IS NULL` — schema / unshare, delivered to all) or
+   *     whose row is currently visible to the user via `__lattice_row_acl` /
+   *     `__lattice_row_grants` (or has no ACL entry and the table defaults to
+   *     'everyone').
+   * Ordered by seq, capped at `limit`. Raw SQL because the predicate needs
+   * OR / EXISTS that the `query()` API can't express; bounded by the seq
+   * window and indexed ACL point-lookups. Mirrors {@link queryVisible}'s
+   * visibility logic so a member never pulls the bytes of a row they can't see.
+   */
+  async listChangesForRecipient(
+    teamId: string,
+    since: number,
+    userId: string,
+    limit: number,
+  ): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+    const sql =
+      `SELECT cl.* FROM "__lattice_change_log" cl WHERE cl."team_id" = ? AND cl."seq" > ? AND (` +
+      `cl."recipient_user_id" = ? OR (cl."recipient_user_id" IS NULL AND (` +
+      `cl."pk" IS NULL ` +
+      `OR EXISTS (SELECT 1 FROM "__lattice_row_acl" la WHERE la."team_id" = cl."team_id" ` +
+      `AND la."table_name" = cl."table_name" AND la."pk" = cl."pk" ` +
+      `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
+      `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
+      `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
+      `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?)))) ` +
+      `OR (NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 WHERE la2."team_id" = cl."team_id" ` +
+      `AND la2."table_name" = cl."table_name" AND la2."pk" = cl."pk") ` +
+      `AND EXISTS (SELECT 1 FROM "__lattice_shared_objects" so WHERE so."team_id" = cl."team_id" ` +
+      `AND so."table_name" = cl."table_name" AND so."deleted_at" IS NULL ` +
+      `AND so."default_row_visibility" = 'everyone'))` +
+      `)))` +
+      ` ORDER BY cl."seq" ASC LIMIT ${Math.trunc(limit).toString()}`;
+    const params: unknown[] = [teamId, since, userId, userId, userId];
+    return allAsyncOrSync(this._adapter, sql, params);
+  }
+
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;

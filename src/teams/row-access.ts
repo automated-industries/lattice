@@ -403,6 +403,50 @@ export async function rowAccessSummaries(
   return out;
 }
 
+/**
+ * Of `candidateUserIds`, those who can currently access the row. Used by the
+ * hosted delete/kick fan-out to target an `unlink` at exactly the members who
+ * hold a local copy, before the ACL is torn down.
+ */
+export async function usersWithRowAccess(
+  db: Lattice,
+  teamId: string,
+  table: string,
+  pk: string,
+  candidateUserIds: string[],
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const uid of candidateUserIds) {
+    if (await canAccessRow(db, teamId, table, pk, uid)) out.push(uid);
+  }
+  return out;
+}
+
+/** Hard-delete a row's ACL entry and all of its grants (cleanup on row delete/unlink). */
+export async function deleteRowAcl(
+  db: Lattice,
+  teamId: string,
+  table: string,
+  pk: string,
+): Promise<void> {
+  await db.delete('__lattice_row_acl', { team_id: teamId, table_name: table, pk });
+  const grants = await db.query('__lattice_row_grants', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: table },
+      { col: 'pk', op: 'eq', val: pk },
+    ],
+  });
+  for (const g of grants) {
+    await db.delete('__lattice_row_grants', {
+      team_id: teamId,
+      table_name: table,
+      pk,
+      grantee_user_id: g.grantee_user_id,
+    });
+  }
+}
+
 /** The grantee user-ids of a row's custom grant list (owner-facing detail only). */
 export async function rowGrantees(
   db: Lattice,
