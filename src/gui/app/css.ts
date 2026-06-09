@@ -307,6 +307,9 @@ export const css = `
       padding: 0 12px; margin: 12px 0 6px;
     }
     .section-label:first-child { margin-top: 0; }
+    /* Extra breathing room above the "SYSTEM" heading so it isn't cramped
+       against the object list above it. */
+    #system-section .section-label { margin-top: 20px; }
     nav ul { list-style: none; padding: 0; margin: 0; }
     nav li a {
       display: flex; align-items: center; gap: 10px;
@@ -1177,6 +1180,9 @@ export const css = `
       overflow-wrap: break-word; word-break: break-word;
     }
     .rail-composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
+    /* While a voice note is being recorded/transcribed the textarea is read-only
+       (shows a "Listening…" / "Transcribing…" placeholder, not editable). */
+    .rail-composer textarea.recording { opacity: 0.6; cursor: not-allowed; }
     .rail-composer .composer-row { display: flex; gap: 8px; align-items: flex-end; }
     .rail-composer .composer-send {
       flex: 0 0 auto; height: 38px; padding: 0 14px; border: none; border-radius: 8px;

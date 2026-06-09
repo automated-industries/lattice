@@ -125,6 +125,9 @@ export async function dispatchUserConfigRoute(
       // Partial update: keep current values for any key the body omits.
       const current = readPreferences();
       const next: UserPreferences = {
+        // Preserve keys this endpoint doesn't manage (voice_provider,
+        // aggressiveness — set via the assistant config routes).
+        ...current,
         show_system_tables:
           typeof body.show_system_tables === 'boolean'
             ? body.show_system_tables
