@@ -142,11 +142,11 @@ LOCAL  →  CLOUD WORKSPACE (creator | member)
 
 State detection (returned by `GET /api/dbconfig` as the `state` field; `isCreator`, `teamId`, and `myUserId` are returned alongside it for the SPA's member-admin UI):
 
-| State                     | Detection                                                                                                                          |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `local`                   | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                     |
-| `team-cloud-creator`      | YAML is cloud, identity row present, and the operator's resolved identity is a member whose user id matches the workspace creator. |
-| `team-cloud-member`       | YAML is cloud, identity row present, operator is a member but not the creator (the default — a connected cloud always implies membership). |
+| State                | Detection                                                                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `local`              | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                             |
+| `team-cloud-creator` | YAML is cloud, identity row present, and the operator's resolved identity is a member whose user id matches the workspace creator.         |
+| `team-cloud-member`  | YAML is cloud, identity row present, operator is a member but not the creator (the default — a connected cloud always implies membership). |
 
 > **v1.16.3 change:** the `cloud-connected` state was removed. A Postgres-backed database whose `__lattice_team_identity` row is absent now initializes that row automatically (on migrate, connect, or open), so it resolves directly to one of the two `team-cloud-*` states rather than sitting in an intermediate "connected but not a workspace" state. The SPA badge labels these "CLOUD · OWNER / MEMBER".
 >
