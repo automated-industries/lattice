@@ -413,6 +413,8 @@ export const css = `
     }
     a.chip-link { cursor: pointer; }
     a.chip-link:hover { background: var(--accent); color: white; }
+    /* Inline object-reference pills the assistant emits — render flush in prose. */
+    a.lattice-ref { text-decoration: none; vertical-align: baseline; }
     .empty-row td {
       color: var(--text-muted); font-style: italic; text-align: center;
       padding: 24px;

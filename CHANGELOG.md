@@ -10,10 +10,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [2.1.1] - 2026-06-09
 
-**The assistant rail speaks in activity cards.** What the assistant did now shows
-as the same full-width activity cards as the live feed — one card per action
-type, collapsed, and scoped to the conversation — instead of inline tool-call
-pills. The library API is unchanged (GUI-only).
+**The assistant rail speaks in activity cards — and links to what it found.**
+What the assistant did now shows as the same full-width activity cards as the
+live feed — one card per action type, collapsed, and scoped to the conversation —
+instead of inline tool-call pills. And when it points you at a specific record it
+now renders a **clickable object pill** inline in its answer. The library API is
+unchanged (GUI-only).
+
+### Added
+
+- **Inline object-link pills.** When the assistant references a specific row —
+  e.g. you ask it to "link me to" or "open" a record — it emits an inline link
+  (`[label](lattice://<table>/<id>)`) that renders as a clickable 🔗 pill and
+  opens that object (mode-aware, the same navigator the activity feed uses). It's
+  instructed to prefer the user-facing record over an internal `files` id and to
+  only link ids it actually retrieved.
 
 ### Changed
 

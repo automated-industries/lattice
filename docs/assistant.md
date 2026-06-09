@@ -29,6 +29,13 @@ and the query is submitted as a chat turn, which the assistant answers using its
 sees the conversation-storage or `secrets` tables (search and `list_entities`
 both exclude them).
 
+When the assistant points you at a specific record — ask it to "link me to" or
+"open" one — it renders a **clickable object pill** inline in its answer
+(emitted as `[label](lattice://<table>/<id>)`). Clicking the pill opens that row
+in the GUI via the same mode-aware navigator the activity feed uses; it links the
+user-facing record (the contract/person/etc.) rather than an internal `files` id,
+and only ids it actually retrieved.
+
 **Deleting a table is guarded + reversible.** The `delete_entity` tool refuses
 built-in tables, tables another table links to, and tables you don't own. An
 **empty** table is soft-deleted immediately; a **non-empty** one is **not**

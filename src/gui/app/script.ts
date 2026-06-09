@@ -5356,12 +5356,55 @@ export const appJs = `
       return { bubble: b, msg: msg };
     }
     /** Set an assistant bubble's text, clearing the typing indicator. */
+    // Turn [label](lattice://table/id) object references the assistant emits into
+    // clickable pills that open the row (mode-aware, via openSearchHit). The
+    // links are pulled out into placeholders BEFORE markdown rendering and the
+    // pill HTML is swapped back in AFTER — so it's independent of mdToHtml's own
+    // link handling and survives HTML-escaping. Labels/ids are re-escaped.
+    function renderAssistantHtml(text) {
+      var pills = [];
+      // U+0002 sentinel survives mdToHtml's escape + inline passes untouched.
+      // Use a unicode-escape string literal for insertion and a REGEX LITERAL for
+      // the swap (one escaping level each) — a new RegExp('(\\d+)') here would be
+      // double-collapsed by the template literal into a literal "d", silently
+      // breaking the swap (the pill rendered as a bare index).
+      var pre = String(text == null ? '' : text).replace(
+        /\\[([^\\]]+)\\]\\(lattice:\\/\\/([a-zA-Z0-9_]+)\\/([^)\\s]+)\\)/g,
+        function (_, label, table, id) {
+          pills.push({ label: label, table: table, id: id });
+          return '\\u0002' + (pills.length - 1) + '\\u0002';
+        }
+      );
+      var html = mdToHtml(pre);
+      return html.replace(/\\u0002([0-9]+)\\u0002/g, function (_, n) {
+        var p = pills[Number(n)];
+        return '<a class="chip chip-link lattice-ref" data-table="' + escapeHtml(p.table) +
+          '" data-id="' + escapeHtml(p.id) + '" title="Open this ' + escapeHtml(p.table) + '">🔗 ' +
+          escapeHtml(p.label) + '</a>';
+      });
+    }
+    // One delegated click handler on the rail feed: a lattice-ref pill opens its
+    // object through the same mode-aware navigator the activity feed uses.
+    var _latticeRefWired = false;
+    function ensureLatticeRefHandler() {
+      if (_latticeRefWired) return;
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return;
+      feedEl.addEventListener('click', function (e) {
+        var a = e.target && e.target.closest ? e.target.closest('.lattice-ref') : null;
+        if (!a) return;
+        e.preventDefault();
+        openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
+      });
+      _latticeRefWired = true;
+    }
     function setBubbleText(ctx, text) {
       if (!ctx || !ctx.bubble) return; // bubble may have been finalized/removed
       ctx.bubble.removeAttribute('data-typing');
       // Assistant turns are Markdown; render (input is HTML-escaped inside
-      // mdToHtml first, so this is injection-safe).
-      ctx.bubble.innerHTML = mdToHtml(text);
+      // mdToHtml first, so this is injection-safe) + linkify object references.
+      ctx.bubble.innerHTML = renderAssistantHtml(text);
+      ensureLatticeRefHandler();
     }
     /**
      * A turn ended still showing the typing indicator (no text streamed) — drop
