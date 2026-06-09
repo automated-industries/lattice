@@ -8,6 +8,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-06-09
+
+**The assistant rail speaks in activity cards.** What the assistant did now shows
+as the same full-width activity cards as the live feed — one card per action
+type, collapsed, and scoped to the conversation — instead of inline tool-call
+pills. The library API is unchanged (GUI-only).
+
+### Changed
+
+- **One unified activity-card style across the rail.** The assistant's actions
+  render as the activity-feed card (operation icon + human summary), not the
+  separate inline pill chips. Cards **collapse by type even across different
+  objects** — a bulk run shows a single card ("Deleted 19 tables", "Removed 49
+  rows across 9 tables") instead of dozens of near-identical rows. Read-only tool
+  calls (list / get / search) change no data, so they produce no card.
+- **The activity feed is per-conversation.** Each assistant turn persists the
+  data-change events it produced; reopening a conversation replays them as the
+  same collapsed cards. The global last-20 audit backfill on stream connect is
+  removed — the feed SSE now carries new events only, and history comes from the
+  conversation it belongs to.
+
+### Fixed
+
+- **Persisted / reloaded schema events now collapse and show the 🛠 icon.** The
+  live feed publishes `op: 'schema'` while the audit-sourced replay used the
+  fine-grained `op: 'schema.delete_entity'`; the rail matched only the former, so
+  reloaded schema deletes neither grouped nor picked an icon (they showed a bare
+  "•"). Both forms are normalized now.
+- **The typing indicator stays pinned to the bottom.** Activity cards that stream
+  in mid-turn now insert above the assistant's "typing…" bubble instead of below
+  it, so the dots no longer appear in the middle of a reply.
+
 ## [2.1.0] - 2026-06-08
 
 **Assistant search + a guarded, reversible table delete — and a batch of GUI

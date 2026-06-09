@@ -39,7 +39,13 @@ drop), so the whole thing is revertible from version history.
 
 Conversations persist in the native `chat_threads` / `chat_messages` entities;
 use the thread switcher to revisit them. A new thread is **named from a short AI
-summary** of its first exchange (e.g. "Adding New Notes About Cheese").
+summary** of its first exchange (e.g. "Adding New Notes About Cheese"). The
+assistant's **data changes are saved with each turn and replayed as activity
+cards** when you reopen the conversation — collapsed by type (e.g. "Deleted 19
+tables", "Removed 49 rows across 9 tables"), with the operation's icon. Reads
+(list / get / search) change nothing, so they produce no card; only data changes
+appear. The activity feed is scoped to the open conversation rather than a global
+workspace log.
 
 The assistant **remembers what it read across turns.** Earlier tool calls and
 their results (including row ids) are replayed into the model's context, so a

@@ -2119,7 +2119,11 @@ Postgres URL with no root.
 ### Assistant sidebar (v2.0+)
 
 The GUI has a fixed right sidebar with a live **activity feed** — every change
-(yours, the assistant's, or an ingest) streams in as it happens.
+(yours, the assistant's, or an ingest) streams in as it happens, collapsed by
+type so a bulk run shows a single card ("Deleted 19 tables", "Removed 49 rows
+across 9 tables") instead of a wall of near-identical rows. The feed is scoped to
+the open conversation: the assistant's data changes are saved with each turn and
+replayed as those cards when you reopen the chat.
 
 Add a Claude API token in **User Settings → Assistant** (or set
 `ANTHROPIC_API_KEY`) to enable the **AI assistant**: ask questions about your

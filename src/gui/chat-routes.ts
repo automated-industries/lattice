@@ -234,10 +234,22 @@ async function ensureThread(db: Lattice, threadId: string | null, title: string)
   return id;
 }
 
-/** One assistant turn: its streamed text + the tool pills it fired, in order. */
+/** A data-change the assistant made during a turn, captured from the feed bus so
+ *  a reloaded conversation replays the same collapsed activity cards the live rail
+ *  showed. Reads (list/get) publish no feed event, so only mutations are stored. */
+interface PersistedTurnEvent {
+  op: string;
+  table: string | null;
+  rowId: string | null;
+  summary: string;
+}
+/** One assistant turn: its streamed text + the activity it produced, in order. */
 interface PersistedTurn {
   text: string;
   tools: { name: string; isError: boolean }[];
+  /** Data-change events this turn produced (mutations only). Replayed as the
+   *  per-thread activity cards in the rail. */
+  events?: PersistedTurnEvent[];
   /**
    * Replayable tool detail for cross-turn memory — SERVER-SIDE ONLY (stripped
    * before the GUI reload response). Lets rehydrateHistory rebuild real
@@ -324,9 +336,14 @@ export async function dispatchChatRoute(
           };
           text = parsed.text ?? '';
           if (Array.isArray(parsed.turns)) {
-            // Strip toolCalls — the GUI only needs text + pill names; raw tool
-            // result content stays server-side (cross-turn replay only).
-            turns = parsed.turns.map((t) => ({ text: t.text, tools: t.tools }));
+            // Strip toolCalls — the GUI only needs text + the data-change events
+            // (replayed as activity cards); raw tool result content stays
+            // server-side (cross-turn replay only).
+            turns = parsed.turns.map((t) => ({
+              text: t.text,
+              tools: t.tools,
+              ...(t.events ? { events: t.events } : {}),
+            }));
           }
         } catch {
           /* ignore malformed */
@@ -409,14 +426,25 @@ export async function dispatchChatRoute(
   };
 
   let assistantText = '';
-  // Rebuild the rich structure as it streams: one entry per assistant turn,
-  // each with its text + the tool pills it fired (resolved ok/error). Persisted
-  // so a reloaded conversation renders the same way the live stream did.
+  // Rebuild the rich structure as it streams: one entry per assistant turn, each
+  // with its text + the data-change events it produced. Persisted so a reloaded
+  // conversation renders the same collapsed activity cards the live stream did.
   const turns: {
     text: string;
     tools: { id: string; name: string; isError: boolean }[];
+    events: PersistedTurnEvent[];
     toolCalls: PersistedToolCall[];
   }[] = [];
+  // Capture the assistant's data-change events from the feed bus, bucketed into
+  // the turn that produced them. feed.publish is synchronous inside the tool's
+  // executeFunction, so each event lands in the current (last-pushed) turn. Only
+  // source='ai' — this assistant's own writes — is captured, never other clients.
+  const unsubscribeFeed = ctx.feed.subscribe((fe) => {
+    if (fe.source !== 'ai') return;
+    const cur = turns[turns.length - 1];
+    if (cur)
+      cur.events.push({ op: fe.op, table: fe.table, rowId: fe.rowId, summary: fe.summary ?? '' });
+  });
   try {
     const client = createAnthropicClient(auth);
     const temperature = aggressivenessToTemperature(getAggressiveness());
@@ -432,7 +460,7 @@ export async function dispatchChatRoute(
       },
     })) {
       if (ev.type === 'assistant_message_start') {
-        turns.push({ text: '', tools: [], toolCalls: [] });
+        turns.push({ text: '', tools: [], events: [], toolCalls: [] });
       } else if (ev.type === 'text_delta') {
         assistantText += ev.delta;
         const cur = turns[turns.length - 1];
@@ -456,6 +484,8 @@ export async function dispatchChatRoute(
     } catch {
       // socket gone
     }
+  } finally {
+    unsubscribeFeed();
   }
   res.end();
   if (threadId) {
@@ -463,9 +493,10 @@ export async function dispatchChatRoute(
       .map((t) => ({
         text: t.text,
         tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
+        ...(t.events.length > 0 ? { events: t.events } : {}),
         ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
       }))
-      .filter((t) => t.text.length > 0 || t.tools.length > 0);
+      .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
     try {
       await persistMessage(ctx.db, threadId, 'assistant', assistantText, cleanTurns);
     } catch (e) {
