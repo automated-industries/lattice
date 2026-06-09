@@ -44,6 +44,13 @@ export const appJs = `
       return !!(t && t[colName] && t[colName].secret);
     }
     var SECRET_MASK = '••••••••'; // ••••••••
+    // An encrypted-at-rest value (native secrets etc.) is stored with an "enc:"
+    // sentinel prefix (see framework/native-entities decrypt). It is never
+    // plaintext, so the GUI must never render the raw ciphertext — mask it the
+    // same way an operator-flagged secret column is masked.
+    function looksEncrypted(v) {
+      return typeof v === 'string' && v.slice(0, 4) === 'enc:';
+    }
 
     function displayFor(name) {
       var override = state.iconOverrides[name];
@@ -875,9 +882,16 @@ export const appJs = `
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ id: id }),
               }).then(function () {
-                menu.hidden = true;
+                // Keep the menu OPEN with the item's spinner through the reload —
+                // for a CLOUD workspace the slow part (connecting + fetching
+                // against the remote DB) happens here in reloadEverything, AFTER
+                // the switch POST. Hiding the menu now (the old behavior) hid the
+                // only progress signal, so a cloud switch looked unresponsive.
+                // renderWsSwitcher (inside reloadEverything) only re-binds the
+                // toggle + updates the label, so the spinning item survives.
                 return reloadEverything();
               }).then(function () {
+                menu.hidden = true;
                 // Conversations + activity both live in the workspace DB. Drop
                 // the old workspace's thread + activity cards, reconnect the feed
                 // to THIS workspace, and reload its thread list (+ latest convo).
@@ -886,7 +900,7 @@ export const appJs = `
                 startFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
-              }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
+              }).catch(function (err) { menu.hidden = true; showToast('Switch failed: ' + err.message, {}); });
             });
           });
         });
@@ -1291,7 +1305,7 @@ export const appJs = `
         } else {
           bodyRows = rows.map(function (r) {
             var tds = intrinsic.map(function (c) {
-              if (isSecretColumn(tableName, c) && r[c] != null && r[c] !== '') {
+              if ((isSecretColumn(tableName, c) || looksEncrypted(r[c])) && r[c] != null && r[c] !== '') {
                 return '<td class="muted">' + SECRET_MASK + '</td>';
               }
               return '<td><div class="cell-clip">' + escapeHtml(truncate(r[c], 120)) + '</div></td>';
@@ -1576,7 +1590,7 @@ export const appJs = `
         function paint(editing) {
           var rows = [];
           intrinsic.forEach(function (c) {
-            var secret = isSecretColumn(tableName, c);
+            var secret = isSecretColumn(tableName, c) || looksEncrypted(row[c]);
             var dd;
             if (editing) {
               dd = fieldFor(c, row[c], t);
@@ -1944,7 +1958,7 @@ export const appJs = `
     function fsValInner(table, row, col) {
       var raw = row[col];
       if (raw == null || raw === '') return '<span class="fs-empty-val">—</span>';
-      if (isSecretColumn(table, col)) return '<span class="muted">' + SECRET_MASK + '</span>';
+      if (isSecretColumn(table, col) || looksEncrypted(raw)) return '<span class="muted">' + SECRET_MASK + '</span>';
       var s = String(raw);
       if (FS_LONGFORM.indexOf(col) >= 0 || s.indexOf('\\n') >= 0) {
         return '<div class="md-body">' + mdToHtml(s.slice(0, 40000)) + '</div>';
@@ -3946,20 +3960,29 @@ export const appJs = `
             '</div>' +
           '</div>';
         }
+        // Only the selected provider's key input is shown (declutter). 'auto'
+        // ("Select provider…") shows no key row until a provider is chosen.
+        function voiceRowHtml(provider) {
+          if (provider === 'openai') {
+            return rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…');
+          }
+          if (provider === 'elevenlabs') {
+            return rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…');
+          }
+          return '';
+        }
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
             '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
-              'Keys are stored encrypted in the <code>secrets</code> table — never shown again once ' +
-              'saved. Environment variables (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, ' +
-              '<code>ELEVENLABS_API_KEY</code>) also work.' +
+              'Keys are stored encrypted in the <code>secrets</code> table.' +
             '</p>' +
             rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
-            '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
-              (cfg.oauthEnabled
-                ? 'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.'
-                : 'Subscription login: set the <code>ANTHROPIC_OAUTH_*</code> env vars to enable.') +
-            '</div>' +
+            (cfg.oauthEnabled
+              ? '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+                  'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.' +
+                '</div>'
+              : '') +
             '<div style="margin:6px 0 12px">' +
               '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
                 '<strong style="font-size:13px">Inference aggressiveness</strong>' +
@@ -3976,17 +3999,16 @@ export const appJs = `
                 'auto-creates link tables) when you drop in files. Higher extrapolates more.' +
               '</p>' +
             '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text (set either)</div>' +
-            rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…') +
-            rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…') +
-            '<div style="margin:6px 0 2px;display:flex;align-items:center;gap:8px">' +
+            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text</div>' +
+            '<div style="margin:6px 0 8px;display:flex;align-items:center;gap:8px">' +
               '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
               '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
-                '<option value="auto">Auto</option>' +
-                '<option value="openai">OpenAI Whisper</option>' +
+                '<option value="auto">Select provider…</option>' +
+                '<option value="openai">OpenAI</option>' +
                 '<option value="elevenlabs">ElevenLabs</option>' +
               '</select>' +
             '</div>' +
+            '<div id="asst-voice-key">' + voiceRowHtml(cfg.sttPreference || 'auto') + '</div>' +
             '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
@@ -4016,12 +4038,18 @@ export const appJs = `
           });
         }
         wire('asst-anthropic', 'anthropic');
-        wire('asst-openai', 'openai');
-        wire('asst-elevenlabs', 'elevenlabs');
         var sttSel = host.querySelector('#asst-stt');
+        var voiceKeyHost = host.querySelector('#asst-voice-key');
+        function wireVoiceKey(provider) {
+          if (provider === 'openai') wire('asst-openai', 'openai');
+          else if (provider === 'elevenlabs') wire('asst-elevenlabs', 'elevenlabs');
+        }
         if (sttSel) {
           sttSel.value = cfg.sttPreference || 'auto';
+          wireVoiceKey(sttSel.value);
           sttSel.addEventListener('change', function () {
+            if (voiceKeyHost) voiceKeyHost.innerHTML = voiceRowHtml(sttSel.value);
+            wireVoiceKey(sttSel.value);
             msg.textContent = 'Saving…';
             fetch('/api/assistant/stt-provider', {
               method: 'PUT',
@@ -4412,9 +4440,10 @@ export const appJs = `
 
     // State-machine Database panel (v1.13+). Renders a different body
     // per info.state: local -> Migrate / Connect-existing wizards;
-    // cloud-connected -> Upgrade-to-team; team-cloud-creator/member ->
-    // team management UI; team-cloud-needs-invite -> join form.
-    // Progression is one-way: local -> cloud -> team-cloud.
+    // team-cloud-creator/member -> connection details + members. A connected
+    // cloud workspace is always a member workspace (created or invited), so
+    // there is no in-settings "join via invite" — that lives in the Join
+    // Workspace flow only.
     function renderDatabasePanel(host) {
       fetchJson('/api/dbconfig').then(function (info) {
         var badge = renderStateBadge(info);
@@ -4450,10 +4479,6 @@ export const appJs = `
           label = 'CLOUD · MEMBER';
           color = 'var(--accent)';
           break;
-        case 'team-cloud-needs-invite':
-          label = 'CLOUD · NEEDS INVITE';
-          color = 'var(--warn)';
-          break;
         default:
           label = String(info.state || 'UNKNOWN').toUpperCase();
       }
@@ -4487,21 +4512,6 @@ export const appJs = `
           // Exit actions (Disconnect for the owner / Leave for a member) live
           // in the Danger Zone below — not on a member row.
           '<div id="db-members-host" style="margin-top:12px"><div style="font-size:12px;color:var(--text-muted)">Loading members…</div></div>'
-        );
-      }
-      if (info.state === 'team-cloud-needs-invite') {
-        return (
-          renderConnectionSummary(info) +
-          '<p style="margin-top:10px;color:var(--warn);font-size:13px">' +
-            'Not a member of this cloud workspace yet — paste your invite token to join.' +
-          '</p>' +
-          '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:6px">' +
-            '<div><label class="field-label">Invite token</label>' +
-            '<textarea id="db-rejoin-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea></div>' +
-          '</div>' +
-          '<div class="team-actions" style="margin-top:10px">' +
-            '<button class="btn primary" data-act="rejoin-with-token">Join workspace →</button>' +
-          '</div>'
         );
       }
       return '<p style="color:var(--text-muted)">Unknown database state.</p>';
@@ -4575,32 +4585,6 @@ export const appJs = `
         }).catch(function () { membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Members unavailable.</div>'; });
       }
 
-      var rejoinBtn = host.querySelector('[data-act="rejoin-with-token"]');
-      if (rejoinBtn) rejoinBtn.addEventListener('click', function () {
-        var token = (document.getElementById('db-rejoin-token').value || '').trim();
-        if (!token) { setMsg('Invite token required.', false); return; }
-        // Without form re-entry the credentials are already saved; we
-        // call the connect-existing endpoint with just the invite
-        // token. The handler reads credentials from db-credentials.enc
-        // via the active configPath's label.
-        setMsg('Joining workspace…');
-        fetch('/api/dbconfig/connect-existing', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            type: 'postgres',
-            label: info.label,
-            host: info.host, port: info.port, dbname: info.dbname,
-            user: info.user, password: '', // password lives in db-credentials.enc; backend will pull
-            invite_token: token,
-          }),
-        })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            if (d.error) { setMsg('Failed: ' + d.error, false); return; }
-            setMsg('Joined.', true); rerender();
-          })
-          .catch(function (e) { setMsg('Failed: ' + e.message, false); });
-      });
     }
 
     // ── v1.13 wizards ─────────────────────────────────────────────
@@ -4976,64 +4960,103 @@ export const appJs = `
       insert: '➕', update: '✏️', delete: '🗑',
       link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
     };
-    // Ops whose consecutive runs collapse into one counted bubble (bulk row work
-    // spams N near-identical rows otherwise). Schema/undo/redo stay distinct.
+    // Schema mutations reach the client in two shapes: the LIVE feed publishes the
+    // coarse op:'schema', while the persisted audit log / per-thread replay carry
+    // the fine-grained op:'schema.delete_entity' (etc.). Treat both as schema so
+    // they collapse + pick the 🛠 icon identically (regression: backfilled schema
+    // ops showed '•' and never grouped).
+    function isSchemaOp(op) { var o = String(op || ''); return o === 'schema' || o.indexOf('schema.') === 0; }
+    function feedIcon(op) { return isSchemaOp(op) ? FEED_ICONS.schema : (FEED_ICONS[op] || '•'); }
+    // Ops whose runs collapse into one counted bubble (bulk row work spams N
+    // near-identical rows otherwise). Undo/redo stay distinct.
     var GROUPABLE_OPS = { insert: 1, update: 1, delete: 1, link: 1, unlink: 1 };
-    // Active group bubbles keyed by op|table|source so a burst of identical
-    // events coalesces into ONE counted bubble even when other events interleave
-    // (a bulk ingest emits create/link/update across several tables at once —
-    // consecutive-only grouping let those interleaved runs spam the feed). A
-    // group stays "open" for FEED_GROUP_WINDOW_MS after its last hit; later
-    // activity starts a fresh bubble so unrelated edits aren't merged in.
-    var feedGroups = {}; // key -> { count, item, summaryEl, timeEl, last }
-    var FEED_GROUP_WINDOW_MS = 15000;
-    function groupedSummary(op, table, count) {
-      var t = String(table || '');
-      switch (op) {
-        case 'insert': return 'Added ' + count + ' rows to ' + t;
-        case 'update': return 'Updated ' + count + ' rows in ' + t;
-        case 'delete': return 'Removed ' + count + ' rows from ' + t;
-        case 'link': return 'Linked ' + count + ' rows in ' + t;
-        case 'unlink': return 'Unlinked ' + count + ' rows in ' + t;
-        default: return String(op || '') + ' ' + t;
-      }
+    var ROW_VERB = { insert: 'Added', update: 'Updated', delete: 'Removed', link: 'Linked', unlink: 'Unlinked' };
+    var ROW_PREP = { insert: 'to', update: 'in', delete: 'from', link: 'in', unlink: 'in' };
+    // Schema events all arrive as op:'schema'; the specific action lives only in
+    // the summary text. Map that text to a stable sub-action so a bulk run of
+    // "Deleted table X" collapses into one "Deleted 19 tables" pill. Each entry
+    // is [verb, singular, plural].
+    var SCHEMA_GROUP = {
+      'created-table':  ['Created', 'table', 'tables'],
+      'deleted-table':  ['Deleted', 'table', 'tables'],
+      'renamed-table':  ['Renamed', 'table', 'tables'],
+      'added-column':   ['Added', 'column', 'columns'],
+      'renamed-column': ['Renamed', 'column', 'columns'],
+      'added-link':     ['Added', 'link', 'links'],
+      'deleted-link':   ['Deleted', 'link', 'links'],
+      'created-link':   ['Created', 'link table', 'link tables'],
+    };
+    function schemaAction(summary) {
+      var s = String(summary || '');
+      if (/^Created link table/.test(s)) return 'created-link';
+      if (/^Created table/.test(s)) return 'created-table';
+      if (/^Deleted table/.test(s)) return 'deleted-table';
+      if (/^Renamed table/.test(s)) return 'renamed-table';
+      if (/^Added a column/.test(s)) return 'added-column';
+      if (/^Renamed a column/.test(s)) return 'renamed-column';
+      if (/^Added a link/.test(s)) return 'added-link';
+      if (/^Deleted a link/.test(s)) return 'deleted-link';
+      return null; // unknown schema op: keep it ungrouped (stay honest)
     }
-    function renderFeedItem(ev) {
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return;
-      var empty = document.getElementById('rail-empty');
-      if (empty) empty.remove();
-      // Coalesce identical events (same op + table + source) into one counted
-      // bubble. Unlike the old consecutive-only rule, the bubble is found by key
-      // within a recency window, so interleaved bursts still merge instead of
-      // spamming a pill per event.
-      var groupKey = GROUPABLE_OPS[ev.op] && ev.table
-        ? String(ev.op) + '|' + String(ev.table) + '|' + String(ev.source || '')
-        : null;
-      var nowMs = Date.now();
-      if (groupKey) {
-        var g = feedGroups[groupKey];
-        if (g && g.item.parentNode === feedEl && (nowMs - g.last) < FEED_GROUP_WINDOW_MS) {
-          g.count += 1;
-          g.last = nowMs;
-          g.summaryEl.textContent = groupedSummary(ev.op, ev.table, g.count);
-          g.timeEl.textContent = relTime(ev.ts);
-          // A grouped bubble stands for many rows — disable the single-row click,
-          // and expose it to assistive tech as a live status, not a button.
-          g.item._rowClickOff = true;
-          g.item.classList.remove('feed-clickable');
-          g.item.removeAttribute('tabindex');
-          g.item.removeAttribute('title');
-          g.item.setAttribute('role', 'status');
-          feedEl.scrollTop = feedEl.scrollHeight;
-          return;
-        }
+    // Group identical-TYPE events into one counted pill regardless of which
+    // object they touched, so a bulk run (delete N tables, remove rows across M
+    // tables) shows a single bubble instead of overflowing the rail. Keyed by
+    // op+source (+schema sub-action); the table is intentionally NOT in the key.
+    // A group stays "open" for FEED_GROUP_WINDOW_MS after its last hit; later
+    // activity starts a fresh bubble so unrelated edits aren't merged in.
+    function feedGroupKey(ev) {
+      var src = String(ev.source || '');
+      if (isSchemaOp(ev.op)) {
+        var a = schemaAction(ev.summary);
+        return a ? 'schema|' + a + '|' + src : null;
       }
+      return GROUPABLE_OPS[ev.op] ? String(ev.op) + '|' + src : null;
+    }
+    var feedGroups = {}; // key -> { op, count, tables, tableCount, schemaKey, firstSummary, item, summaryEl, timeEl, last, startMs, endMs, turnId }
+    var FEED_GROUP_WINDOW_MS = 15000;
+    // Assistant-turn scope for live activity-card grouping + duration. While a
+    // turn is active, its same-type events all collapse into one card (no window
+    // expiry); the card's timer measures from feedTurnStartMs to the last event.
+    var feedTurnId = 0;
+    var feedTurnActive = false;
+    var feedTurnStartMs = 0;
+    function onlyKey(obj) { for (var k in obj) { if (obj.hasOwnProperty(k)) return k; } return ''; }
+    function groupedRowSummary(op, count, tables, tableCount) {
+      var verb = ROW_VERB[op] || String(op || '');
+      var noun = count === 1 ? 'row' : 'rows';
+      var where = '';
+      if (tableCount > 1) { where = ' across ' + tableCount + ' tables'; }
+      else { var only = onlyKey(tables); if (only) where = ' ' + (ROW_PREP[op] || 'in') + ' ' + only; }
+      return verb + ' ' + count + ' ' + noun + where;
+    }
+    function schemaGroupSummary(schemaKey, count, firstSummary) {
+      var g = SCHEMA_GROUP[schemaKey];
+      if (count <= 1 || !g) return firstSummary || '';
+      return g[0] + ' ' + count + ' ' + g[2];
+    }
+    function groupedSummary(g) {
+      return isSchemaOp(g.op)
+        ? schemaGroupSummary(g.schemaKey, g.count, g.firstSummary)
+        : groupedRowSummary(g.op, g.count, g.tables, g.tableCount);
+    }
+    // While a chat turn is streaming, its typing bubble (the not-yet-arrived next
+    // assistant message) must stay last; tool-driven activity cards belong ABOVE
+    // it, not below — otherwise the "typing…" dots land mid-conversation. Returns
+    // the .chat-msg to insert before, or null when nothing is streaming.
+    function feedTypingAnchor(feedEl) {
+      var typing = feedEl.querySelector('.chat-bubble[data-typing="1"]');
+      var msg = typing && typing.closest ? typing.closest('.chat-msg') : null;
+      return (msg && msg.parentNode === feedEl) ? msg : null;
+    }
+    // Build one activity card (the shared full-width pill shape). Used by BOTH
+    // the live feed and the per-thread replay so they look identical. Returns the
+    // element plus the summary/time nodes a group mutates in place.
+    function makeFeedCard(ev) {
       var item = document.createElement('div');
       item.className = 'feed-item';
       var icon = document.createElement('div');
       icon.className = 'feed-icon';
-      icon.textContent = FEED_ICONS[ev.op] || '•';
+      icon.textContent = feedIcon(ev.op);
       var body = document.createElement('div');
       body.className = 'feed-body';
       var summary = document.createElement('div');
@@ -5049,11 +5072,13 @@ export const appJs = `
       body.appendChild(meta);
       var time = document.createElement('div');
       time.className = 'feed-time';
-      time.textContent = relTime(ev.ts);
+      // Duration ("4s" / "4m 2s") is filled in by the caller once the group's
+      // start/end span is known — not a relative "ago".
+      time.textContent = '';
       item.appendChild(icon);
       item.appendChild(body);
       item.appendChild(time);
-      // Row events (insert/update/delete) carry a rowId — make the bubble a
+      // Row events (insert/update/delete) carry a rowId — make the card a
       // shortcut to that object. Link/unlink and schema events have no single
       // row (rowId is null), so they stay non-clickable.
       if (ev.rowId && ev.table) {
@@ -5061,18 +5086,117 @@ export const appJs = `
         item.setAttribute('role', 'button');
         item.setAttribute('tabindex', '0');
         item.title = 'Open this ' + String(ev.table);
-        // _rowClickOff is set when the bubble becomes a group — clicks no-op then.
+        // _rowClickOff is set when the card becomes a group — clicks no-op then.
         var openRow = function () { if (item._rowClickOff) return; openSearchHit(String(ev.table), String(ev.rowId)); };
         item.addEventListener('click', openRow);
         item.addEventListener('keydown', function (e) {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(); }
         });
       }
-      feedEl.appendChild(item);
-      feedEl.scrollTop = feedEl.scrollHeight;
-      // Register/refresh the group anchored on this bubble (groupable ops only).
+      return { item: item, summaryEl: summary, timeEl: time };
+    }
+    // Fold another event into an existing group card: bump the count, track the
+    // table, refresh the summary, and drop the single-row affordances (a grouped
+    // card stands for many rows, so it's a status, not a clickable button).
+    // The card timer shows the TASK DURATION (start → finish), not a relative
+    // "ago": for a single op it's the time that op took; for a grouped run it's
+    // from the first task's start to the last task's finish. startMs is anchored
+    // to the assistant turn's start (so a one-event card still shows real time);
+    // endMs tracks the latest event in the group.
+    function setGroupTime(g) {
+      if (g.timeEl) g.timeEl.textContent = formatElapsed(Math.max(0, g.endMs - g.startMs));
+    }
+    function applyGroupHit(g, ev, endMs) {
+      g.count += 1;
+      if (ev.table && !g.tables[ev.table]) { g.tables[ev.table] = 1; g.tableCount += 1; }
+      if (typeof endMs === 'number' && endMs > g.endMs) g.endMs = endMs;
+      g.summaryEl.textContent = groupedSummary(g);
+      setGroupTime(g);
+      g.item._rowClickOff = true;
+      g.item.classList.remove('feed-clickable');
+      g.item.removeAttribute('tabindex');
+      g.item.removeAttribute('title');
+      g.item.setAttribute('role', 'status');
+    }
+    function newGroup(ev, card, startMs, endMs) {
+      var tbls = {}; var tc = 0;
+      if (ev.table) { tbls[ev.table] = 1; tc = 1; }
+      return {
+        op: ev.op, count: 1, tables: tbls, tableCount: tc,
+        schemaKey: isSchemaOp(ev.op) ? schemaAction(ev.summary) : null,
+        firstSummary: ev.summary || '',
+        item: card.item, summaryEl: card.summaryEl, timeEl: card.timeEl,
+        startMs: startMs, endMs: endMs,
+      };
+    }
+    function renderFeedItem(ev) {
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return;
+      var empty = document.getElementById('rail-empty');
+      if (empty) empty.remove();
+      // Coalesce same-TYPE events into one counted card within a recency window —
+      // even across different objects (op+source key, table excluded), so a bulk
+      // run collapses to one card ("Removed 49 rows across 9 tables") instead of
+      // spamming the rail. Distinct tables touched are tracked so a single-table
+      // run still reads "… from <table>".
+      var groupKey = feedGroupKey(ev);
+      var nowMs = Date.now();
       if (groupKey) {
-        feedGroups[groupKey] = { count: 1, item: item, summaryEl: summary, timeEl: time, last: nowMs };
+        var g = feedGroups[groupKey];
+        // A group stays open to merge while: (a) we're inside the SAME assistant
+        // turn that opened it — no time limit, so a slow bulk run (deleting many
+        // tables against a remote DB) stays one card instead of splitting when a
+        // 15s window lapses mid-run; or (b) outside a turn (manual edits / another
+        // client), within the rolling window. Cross-turn events never merge.
+        var open = g && g.item.parentNode === feedEl && (
+          feedTurnActive ? (g.turnId === feedTurnId) : ((nowMs - g.last) < FEED_GROUP_WINDOW_MS)
+        );
+        if (open) {
+          applyGroupHit(g, ev, nowMs);
+          g.last = nowMs;
+          feedEl.scrollTop = feedEl.scrollHeight;
+          return;
+        }
+      }
+      var card = makeFeedCard(ev);
+      // Keep a streaming chat turn's typing bubble pinned to the bottom: insert
+      // this card above it rather than appending below (the dots are the next
+      // message, not done yet). No active turn → append as usual.
+      var anchor = feedTypingAnchor(feedEl);
+      if (anchor) feedEl.insertBefore(card.item, anchor); else feedEl.appendChild(card.item);
+      feedEl.scrollTop = feedEl.scrollHeight;
+      // Anchor the card's duration to the turn start (so even a single-op card
+      // shows how long the task took); fall back to now for non-turn activity.
+      var startMs = (feedTurnActive && feedTurnStartMs) ? feedTurnStartMs : nowMs;
+      if (groupKey) {
+        var grp = newGroup(ev, card, startMs, nowMs);
+        grp.turnId = feedTurnId;
+        grp.last = nowMs;
+        feedGroups[groupKey] = grp;
+        setGroupTime(grp);
+      } else {
+        card.timeEl.textContent = formatElapsed(Math.max(0, nowMs - startMs));
+      }
+    }
+    // Replay a persisted assistant turn's data-change events as collapsed activity
+    // cards. Grouping is PER-TURN (self-contained, independent of the live feed's
+    // rolling window) so each turn's bulk run shows one card and stays tied to the
+    // turn that produced it. Reads aren't persisted as events, so only mutations
+    // appear. Appends in order; the caller positions them after the turn's text.
+    function renderTurnEventCards(feedEl, events, startedMs) {
+      if (!feedEl || !events || !events.length) return;
+      var groups = {};
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var evMs = ev.ts ? new Date(ev.ts).getTime() : startedMs;
+        if (typeof evMs !== 'number' || isNaN(evMs)) evMs = startedMs;
+        var startMs = (typeof startedMs === 'number' && !isNaN(startedMs)) ? startedMs : evMs;
+        var key = feedGroupKey(ev);
+        if (key && groups[key]) { applyGroupHit(groups[key], ev, evMs); continue; }
+        var card = makeFeedCard(ev);
+        feedEl.appendChild(card.item);
+        if (key) { var g = newGroup(ev, card, startMs, evMs); groups[key] = g; setGroupTime(g); }
+        else { card.timeEl.textContent = formatElapsed(Math.max(0, evMs - startMs)); }
       }
     }
     function startFeed() {
@@ -5157,12 +5281,13 @@ export const appJs = `
       chatHistory = [];
       var feedEl = railFeedEl();
       if (!feedEl) return;
-      // Remove only the chat bubbles. The activity cards (.feed-item) are
-      // workspace-global, not part of any one conversation — loading, switching,
-      // or starting a conversation must NOT wipe them (they're backfilled once
-      // on connect). Otherwise auto-loading a thread on refresh erases the feed.
-      var msgs = feedEl.querySelectorAll('.chat-msg');
-      for (var i = 0; i < msgs.length; i++) msgs[i].remove();
+      // The rail is conversation-scoped: clearing or switching a conversation
+      // drops both its chat bubbles AND its activity cards (each conversation
+      // replays its own data-change cards from the persisted per-turn events).
+      // Reset the grouping anchors so a freshly loaded thread starts clean.
+      var nodes = feedEl.querySelectorAll('.chat-msg, .feed-item');
+      for (var i = 0; i < nodes.length; i++) nodes[i].remove();
+      feedGroups = {};
       // Restore the empty hint only when the rail is now completely empty.
       if (!feedEl.firstElementChild) {
         feedEl.innerHTML = '<div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>';
@@ -5215,11 +5340,12 @@ export const appJs = `
         msgs.forEach(function (m) {
           if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
           else if (m.role === 'assistant') {
-            // Rich replay: the saved per-turn structure (text + tool pills),
-            // matching the live stream. Falls back to a plain text bubble for
-            // messages saved before turns were persisted.
-            if (Array.isArray(m.turns) && m.turns.length > 0) { m.turns.forEach(appendAssistantTurn); }
-            else { var c = newAssistantBubble(); setBubbleText(c, m.text); }
+            // Rich replay: the saved per-turn structure (text + the data-change
+            // activity cards it produced), matching the live stream. Falls back to
+            // a plain text bubble for messages saved before turns were persisted.
+            if (Array.isArray(m.turns) && m.turns.length > 0) {
+              m.turns.forEach(function (t) { appendAssistantTurn(t, m.created_at, m.startedAt); });
+            } else { var c = newAssistantBubble(); setBubbleText(c, m.text); }
             chatHistory.push({ role: 'assistant', text: m.text });
           }
         });
@@ -5243,126 +5369,88 @@ export const appJs = `
       railEmptyGone();
       var feedEl = railFeedEl();
       var msg = document.createElement('div'); msg.className = 'chat-msg assistant';
-      var wrap = document.createElement('div');
-      var tools = document.createElement('div'); tools.className = 'chat-tools';
       var b = document.createElement('div'); b.className = 'chat-bubble assistant';
       // Show an animated typing indicator until the first text delta arrives.
       b.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
       b.setAttribute('data-typing', '1');
-      wrap.appendChild(tools); wrap.appendChild(b);
-      msg.appendChild(wrap); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
-      // lastTool anchors the current run of identical tool calls so consecutive
-      // same-name calls coalesce into one counted pill (see addToolPill).
-      return { bubble: b, tools: tools, pills: {}, lastTool: null, msg: msg };
+      msg.appendChild(b); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      return { bubble: b, msg: msg };
     }
     /** Set an assistant bubble's text, clearing the typing indicator. */
+    // Turn [label](lattice://table/id) object references the assistant emits into
+    // clickable pills that open the row (mode-aware, via openSearchHit). The
+    // links are pulled out into placeholders BEFORE markdown rendering and the
+    // pill HTML is swapped back in AFTER — so it's independent of mdToHtml's own
+    // link handling and survives HTML-escaping. Labels/ids are re-escaped.
+    function renderAssistantHtml(text) {
+      var pills = [];
+      // U+0002 sentinel survives mdToHtml's escape + inline passes untouched.
+      // Use a unicode-escape string literal for insertion and a REGEX LITERAL for
+      // the swap (one escaping level each) — a new RegExp('(\\d+)') here would be
+      // double-collapsed by the template literal into a literal "d", silently
+      // breaking the swap (the pill rendered as a bare index).
+      var pre = String(text == null ? '' : text).replace(
+        /\\[([^\\]]+)\\]\\(lattice:\\/\\/([a-zA-Z0-9_]+)\\/([^)\\s]+)\\)/g,
+        function (_, label, table, id) {
+          pills.push({ label: label, table: table, id: id });
+          return '\\u0002' + (pills.length - 1) + '\\u0002';
+        }
+      );
+      var html = mdToHtml(pre);
+      return html.replace(/\\u0002([0-9]+)\\u0002/g, function (_, n) {
+        var p = pills[Number(n)];
+        return '<a class="chip chip-link lattice-ref" data-table="' + escapeHtml(p.table) +
+          '" data-id="' + escapeHtml(p.id) + '" title="Open this ' + escapeHtml(p.table) + '">🔗 ' +
+          escapeHtml(p.label) + '</a>';
+      });
+    }
+    // One delegated click handler on the rail feed: a lattice-ref pill opens its
+    // object through the same mode-aware navigator the activity feed uses.
+    var _latticeRefWired = false;
+    function ensureLatticeRefHandler() {
+      if (_latticeRefWired) return;
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return;
+      feedEl.addEventListener('click', function (e) {
+        var a = e.target && e.target.closest ? e.target.closest('.lattice-ref') : null;
+        if (!a) return;
+        e.preventDefault();
+        openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
+      });
+      _latticeRefWired = true;
+    }
     function setBubbleText(ctx, text) {
       if (!ctx || !ctx.bubble) return; // bubble may have been finalized/removed
       ctx.bubble.removeAttribute('data-typing');
       // Assistant turns are Markdown; render (input is HTML-escaped inside
-      // mdToHtml first, so this is injection-safe).
-      ctx.bubble.innerHTML = mdToHtml(text);
+      // mdToHtml first, so this is injection-safe) + linkify object references.
+      ctx.bubble.innerHTML = renderAssistantHtml(text);
+      ensureLatticeRefHandler();
     }
     /**
-     * A turn ended. If its bubble never got text (still showing the typing
-     * indicator), drop the empty bubble — keeping any tool pills it fired, or
-     * removing the whole message when there were none. Stops a dangling
-     * "typing…" bubble after the stream completes.
+     * A turn ended still showing the typing indicator (no text streamed) — drop
+     * the empty bubble. The turn's data-change activity cards live in the rail
+     * feed independently (not inside the message), so they remain.
      */
     function finalizeBubble(ctx) {
       if (!ctx || !ctx.bubble || !ctx.bubble.getAttribute('data-typing')) return;
-      if (ctx.tools && ctx.tools.children.length > 0) ctx.bubble.remove();
-      else if (ctx.msg) ctx.msg.remove();
+      if (ctx.msg) ctx.msg.remove();
     }
-    var TOOL_VERBS = {
-      create_row: ['Creating row', 'Row created', 'Could not create row'],
-      update_row: ['Updating row', 'Row updated', 'Could not update row'],
-      delete_row: ['Deleting row', 'Row deleted', 'Could not delete row'],
-      list_rows: ['Listing rows', 'Listed rows', 'Could not list rows'],
-      get_row: ['Fetching row', 'Fetched row', 'Could not fetch row'],
-      list_entities: ['Listing tables', 'Listed tables', 'Could not list tables']
-    };
-    // Grouped (count > 1) [gerund, past, noun] so a run of identical tool calls
-    // collapses into ONE counted pill — "Listed 5 rows" — instead of N identical
-    // "Listed rows" pills. Mirrors the activity feed's groupedSummary() coalescing.
-    var TOOL_GROUP = {
-      create_row:    ['Creating', 'Created', 'rows'],
-      update_row:    ['Updating', 'Updated', 'rows'],
-      delete_row:    ['Deleting', 'Deleted', 'rows'],
-      list_rows:     ['Listing',  'Listed',  'rows'],
-      get_row:       ['Fetching', 'Fetched', 'rows'],
-      list_entities: ['Listing',  'Listed',  'tables']
-    };
-    function toolLabel(name, state) {
-      var v = TOOL_VERBS[name] || [name, name, name];
-      return state === 'pending' ? v[0] + '…' : (state === 'error' ? v[2] : v[1]);
-    }
-    // Label for a run of "count" identical calls. count <= 1 falls back to the
-    // single-call label so a lone pill reads exactly as before.
-    function toolGroupLabel(name, count, state) {
-      if (count <= 1) return toolLabel(name, state);
-      var g = TOOL_GROUP[name];
-      if (!g) return toolLabel(name, state) + ' ×' + count; // unknown tool: stay honest
-      var verb = state === 'pending' ? g[0] : g[1];
-      return verb + ' ' + count + ' ' + g[2] + (state === 'pending' ? '…' : '');
-    }
-    // Paint a (possibly grouped) pill from its live counts: spinner while any call
-    // is still running, then ✓ (or ⚠ if any errored) once every call resolves.
-    function paintToolPill(g) {
-      var pending = g.pending > 0;
-      var err = !pending && g.error > 0;
-      if (pending) {
-        g.el.className = 'tool-pill';
-        g.el.innerHTML = '<span class="spin"></span>' + escapeHtml(toolGroupLabel(g.name, g.total, 'pending'));
-      } else {
-        g.el.className = 'tool-pill ' + (err ? 'error' : 'done');
-        g.el.textContent = (err ? '⚠ ' : '✓ ') + toolGroupLabel(g.name, g.total, err ? 'error' : 'done');
-      }
-    }
-    function addToolPill(ctx, id, name) {
-      // Coalesce a run of the same tool within this turn's pill row into one
-      // counted pill (the model emits several list_rows in a single turn).
-      var g = ctx.lastTool;
-      if (g && g.name === name) {
-        g.total += 1; g.pending += 1;
-      } else {
-        var pill = document.createElement('span'); pill.className = 'tool-pill';
-        ctx.tools.appendChild(pill);
-        g = { name: name, el: pill, total: 1, pending: 1, error: 0 };
-        ctx.lastTool = g;
-      }
-      ctx.pills[id] = g; // resolveToolPill maps the tool-use id back to its group
-      paintToolPill(g);
-    }
-    function resolveToolPill(ctx, id, isError) {
-      var g = ctx.pills[id]; if (!g) return;
-      if (g.pending > 0) g.pending -= 1;
-      if (isError) g.error += 1;
-      paintToolPill(g);
-    }
-    /**
-     * Append already-resolved pills for a replayed turn, collapsing consecutive
-     * identical tools into one counted pill (matching the live grouping above).
-     */
-    function renderResolvedPills(ctx, tools) {
-      var i = 0;
-      while (i < tools.length) {
-        var name = tools[i].name, j = i, errors = 0;
-        while (j < tools.length && tools[j].name === name) { if (tools[j].isError) errors += 1; j++; }
-        var count = j - i, err = errors > 0;
-        var pill = document.createElement('span');
-        pill.className = 'tool-pill ' + (err ? 'error' : 'done');
-        pill.textContent = (err ? '⚠ ' : '✓ ') + toolGroupLabel(name, count, err ? 'error' : 'done');
-        ctx.tools.appendChild(pill);
-        i = j;
-      }
-    }
-    /** Replay one persisted assistant turn: its tool pills + text bubble. */
-    function appendAssistantTurn(turn) {
+    /** Replay one persisted assistant turn: its text bubble + the data-change
+     *  activity cards it produced (collapsed, per-turn). Reads aren't persisted
+     *  as events, so a read-only turn with no text renders nothing. createdAt
+     *  stamps the cards' relative time (events carry no ts of their own). */
+    function appendAssistantTurn(turn, createdAt, startedAt) {
       var ctx = newAssistantBubble();
-      renderResolvedPills(ctx, turn.tools || []);
       if (turn.text) setBubbleText(ctx, turn.text);
-      else finalizeBubble(ctx); // tool-only turn: drop the empty bubble, keep pills
+      else finalizeBubble(ctx); // no text → drop the empty typing bubble
+      var events = (turn.events || []).map(function (e) {
+        return e.ts ? e : { op: e.op, table: e.table, rowId: e.rowId, summary: e.summary, source: e.source || 'ai', ts: createdAt };
+      });
+      // Task start for the duration timer: the persisted turn-start, else the
+      // message time. Per-event ts (above) gives the run's finish.
+      var startedMs = new Date(startedAt || createdAt || 0).getTime();
+      renderTurnEventCards(railFeedEl(), events, startedMs);
     }
     function parseSse(buffer, onEvent) {
       var sep;
@@ -5378,6 +5466,11 @@ export const appJs = `
     function sendChat(text) {
       if (chatBusy || !text) return;
       chatBusy = true;
+      // Open a fresh turn scope: this turn's activity cards group together (no
+      // window expiry) and their timers measure from now.
+      feedTurnId += 1;
+      feedTurnStartMs = Date.now();
+      feedTurnActive = true;
       appendUserBubble(text);
       var historyToSend = chatHistory.slice();
       chatHistory.push({ role: 'user', text: text });
@@ -5404,8 +5497,10 @@ export const appJs = `
             buf = parseSse(buf, function (ev) {
               if (ev.type === 'assistant_message_start') { finalizeBubble(actx); actx = newAssistantBubble(); assembled = ''; }
               else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
-              else if (ev.type === 'tool_use' && actx) { addToolPill(actx, ev.id, ev.name); }
-              else if (ev.type === 'tool_result' && actx) { resolveToolPill(actx, ev.toolUseId, ev.isError); }
+              // tool_use / tool_result are no longer painted as inline pills — the
+              // assistant's data changes stream in as activity cards over the feed
+              // SSE (renderFeedItem), which sit above the typing bubble. Reads emit
+              // no card by design (only data changes show).
               else if (ev.type === 'warn') { finalizeBubble(actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); actx = null; }
               else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
             });
@@ -5422,6 +5517,9 @@ export const appJs = `
         var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + e.message);
       }).finally(function () {
         chatBusy = false;
+        // Close the turn scope: later activity starts fresh cards (the next turn,
+        // or manual edits via the rolling window).
+        feedTurnActive = false;
         var sb = document.getElementById('chat-send'); if (sb) sb.disabled = false;
         var inp = document.getElementById('chat-input'); if (inp) inp.focus();
       });
@@ -5557,7 +5655,10 @@ export const appJs = `
         '<div class="feed-icon"><span class="feed-spinner"></span></div>' +
         '<div class="feed-body"><div class="feed-summary">Analyzing ' + escapeHtml(label) + '…</div></div>' +
         '<div class="feed-time">0s</div>';
-      feedEl.appendChild(item);
+      // Same bottom-pin rule as renderFeedItem: don't bury a streaming chat
+      // turn's typing bubble beneath this card.
+      var anchor = feedTypingAnchor(feedEl);
+      if (anchor) feedEl.insertBefore(item, anchor); else feedEl.appendChild(item);
       feedEl.scrollTop = feedEl.scrollHeight;
       // Live elapsed-time counter while the upload + server-side extraction run.
       // Previously the time element was left empty (rendered as a stuck "0s")

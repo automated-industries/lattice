@@ -76,7 +76,6 @@ import {
   revertEntry,
   recordSchemaAudit,
   isSchemaOp,
-  feedSummary,
   type AuditEntry,
   type MutationCtx,
 } from './mutations.js';
@@ -1494,8 +1493,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         // ── Activity feed SSE: every audited mutation, for the sidebar ──────
         // Works for every dialect (SQLite included), unlike /api/realtime/*
-        // which depends on Postgres LISTEN/NOTIFY. On connect we backfill the
-        // most recent events so a freshly opened sidebar isn't blank.
+        // which depends on Postgres LISTEN/NOTIFY. The stream carries NEW events
+        // only — historical activity is replayed per-conversation by the chat rail
+        // (each assistant turn persists the data-change events it produced), so the
+        // rail is scoped to the open conversation, not a global workspace backfill.
         if (method === 'GET' && pathname === '/api/feed/stream') {
           res.writeHead(200, {
             'content-type': 'text/event-stream; charset=utf-8',
@@ -1510,49 +1511,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // socket closed — handled by 'close' below
             }
           };
-          // Backfill from the persistent audit log so the activity rail
-          // mirrors the version history (same source), not just this session's
-          // in-process feed buffer. Newest-first query, emitted oldest→newest
-          // so the rail appends them in order.
-          try {
-            const auditBackfill = (await active.db.query('_lattice_gui_audit', {
-              orderBy: 'ts',
-              orderDir: 'desc',
-              limit: 20,
-            })) as {
-              ts: string;
-              table_name: string;
-              row_id: string | null;
-              operation: string;
-              after_json: string | null;
-              before_json: string | null;
-            }[];
-            for (const a of auditBackfill.reverse()) {
-              // Reconstruct the row's human label from the stored image so the
-              // reloaded rail reads "Added Acme … to …", matching the live feed.
-              // insert/update name the post-image; delete the pre-image.
-              const json = a.operation === 'delete' ? a.before_json : a.after_json;
-              let labelRow: unknown;
-              if (json) {
-                try {
-                  labelRow = JSON.parse(json);
-                } catch {
-                  labelRow = undefined;
-                }
-              }
-              writeFeed({
-                seq: 0,
-                table: a.table_name,
-                op: a.operation,
-                rowId: a.row_id,
-                source: 'gui',
-                ts: a.ts,
-                summary: feedSummary(a.operation, a.table_name, labelRow),
-              });
-            }
-          } catch {
-            // No audit table yet (fresh DB) — nothing to backfill.
-          }
           const keepalive = setInterval(() => {
             try {
               res.write(`: keepalive\n\n`);
