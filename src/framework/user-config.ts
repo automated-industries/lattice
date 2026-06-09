@@ -183,11 +183,26 @@ export interface UserPreferences {
    * any future runtime telemetry is disabled. See {@link analyticsEnabled}.
    */
   analytics: boolean;
+  /**
+   * Preferred speech-to-text provider for the assistant's voice notes. This is
+   * a USER preference, not a workspace secret — it lives here (machine-local) so
+   * it persists across workspaces and never appears in any workspace's `secrets`
+   * object. `'auto'` infers from whichever provider key is configured.
+   */
+  voice_provider: 'auto' | 'openai' | 'elevenlabs';
+  /**
+   * Inference aggressiveness (0 = conservative … 1 = aggressive). Drives the
+   * assistant's sampling temperature and how liberally ingest links/extracts.
+   * A user preference, machine-local (see `voice_provider`).
+   */
+  aggressiveness: number;
 }
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   show_system_tables: false,
   analytics: true,
+  voice_provider: 'auto',
+  aggressiveness: 0.5,
 };
 
 /**
@@ -202,6 +217,7 @@ export function readPreferences(): UserPreferences {
   if (!existsSync(path)) return { ...DEFAULT_PREFERENCES };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<UserPreferences>;
+    const agg = typeof parsed.aggressiveness === 'number' ? parsed.aggressiveness : NaN;
     return {
       show_system_tables:
         typeof parsed.show_system_tables === 'boolean'
@@ -209,6 +225,15 @@ export function readPreferences(): UserPreferences {
           : DEFAULT_PREFERENCES.show_system_tables,
       analytics:
         typeof parsed.analytics === 'boolean' ? parsed.analytics : DEFAULT_PREFERENCES.analytics,
+      voice_provider:
+        parsed.voice_provider === 'openai' ||
+        parsed.voice_provider === 'elevenlabs' ||
+        parsed.voice_provider === 'auto'
+          ? parsed.voice_provider
+          : DEFAULT_PREFERENCES.voice_provider,
+      aggressiveness: Number.isFinite(agg)
+        ? Math.min(1, Math.max(0, agg))
+        : DEFAULT_PREFERENCES.aggressiveness,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -224,7 +249,12 @@ export function writePreferences(prefs: UserPreferences): void {
   const dir = ensureConfigDir();
   const path = join(dir, PREFERENCES_FILENAME);
   const body = JSON.stringify(
-    { show_system_tables: prefs.show_system_tables, analytics: prefs.analytics },
+    {
+      show_system_tables: prefs.show_system_tables,
+      analytics: prefs.analytics,
+      voice_provider: prefs.voice_provider,
+      aggressiveness: prefs.aggressiveness,
+    },
     null,
     2,
   );

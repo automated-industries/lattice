@@ -98,6 +98,27 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     args: obj({ table: str('Table name.'), id: str('Primary key of the row.') }, ['table', 'id']),
   },
   {
+    name: 'search',
+    description:
+      'Full-text search across the user tables for a query string. Returns ' +
+      'matching rows grouped by table (id + snippet). Use this to find records ' +
+      'by their content when you do not know the table or id up front.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        query: str('Text to search for.'),
+        tables: {
+          type: 'array',
+          description: 'Restrict to these tables (optional; defaults to all searchable tables).',
+          items: { type: 'string' },
+        },
+        limit: { type: 'integer', description: 'Max hits per table (optional, default 8).' },
+      },
+      ['query'],
+    ),
+  },
+  {
     name: 'get_history',
     description: 'Fetch recent audit-log entries, optionally filtered to one table.',
     mutates: false,
@@ -224,6 +245,33 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         table_b: str('Second table name.'),
       },
       ['table_a', 'table_b'],
+    ),
+  },
+  {
+    name: 'delete_entity',
+    description:
+      'Soft-delete a user table (reversible — the rows are kept and it can be ' +
+      'restored from history). Guarded: an EMPTY table is removed immediately; ' +
+      'a NON-EMPTY table is NOT deleted until you say what to do with its data — ' +
+      'the tool returns the row count and you must ask the user, then call again ' +
+      "with resolution='delete_data' (soft-delete the rows too) or move_to=<table> " +
+      '(move the rows into another table first). Never deletes built-in tables.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        name: str('Table to delete.'),
+        resolution: {
+          type: 'string',
+          enum: ['delete_data'],
+          description:
+            'For a NON-empty table: "delete_data" soft-deletes its rows too (reversible). Omit to be told the row count and asked first.',
+        },
+        move_to: str(
+          'For a NON-empty table: move its rows into this existing table, then delete the emptied table.',
+        ),
+      },
+      ['name'],
     ),
   },
   {

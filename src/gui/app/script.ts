@@ -620,11 +620,21 @@ export const appJs = `
       } catch (_) { return ''; }
     }
 
+    // Elapsed duration since a start timestamp (ms), for in-progress work like a
+    // running upload — no "ago" suffix. Mirrors relTime's unit thresholds.
+    function formatElapsed(ms) {
+      var s = Math.max(0, Math.floor(ms / 1000));
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+      return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+    }
+
     // ────────────────────────────────────────────────────────────
-    // Full-text search — GET /api/search, grouped dropdown, click to open.
+    // Search — the top box hands the query to the AI ASSISTANT (which answers
+    // conversationally using its search/read tools), not a plain full-text
+    // match. hideSearchResults/openSearchHit are retained because the activity
+    // feed still uses openSearchHit to jump to a row.
     // ────────────────────────────────────────────────────────────
-    var searchTimer = null;
-    var searchSeq = 0;
     function hideSearchResults() {
       var box = document.getElementById('search-results');
       if (box) { box.hidden = true; box.innerHTML = ''; }
@@ -638,65 +648,29 @@ export const appJs = `
       var prefix = advancedMode() ? '#/objects/' : '#/fs/';
       location.hash = prefix + encodeURIComponent(table) + '/' + encodeURIComponent(id);
     }
-    function renderSearchResults(result) {
-      var box = document.getElementById('search-results');
-      if (!box) return;
-      var groups = (result && result.groups) || [];
-      if (!groups.length) {
-        box.innerHTML = '<div class="search-empty">No matches</div>';
-        box.hidden = false;
-        return;
-      }
-      var html = '';
-      groups.forEach(function (g) {
-        var disp = displayFor(g.table);
-        html += '<div class="search-group">' +
-          '<div class="search-group-head"><span class="search-group-icon">' + disp.icon +
-          '</span>' + escapeHtml(disp.label) +
-          (g.more ? ' <span class="search-more">' + g.count + '+</span>' : '') + '</div>';
-        g.hits.forEach(function (h) {
-          html += '<button type="button" class="search-hit" data-table="' + escapeHtml(g.table) +
-            '" data-id="' + escapeHtml(h.id) + '">' +
-            '<span class="search-snippet">' + escapeHtml(h.snippet || h.id) + '</span></button>';
-        });
-        html += '</div>';
-      });
-      box.innerHTML = html;
-      box.hidden = false;
-      box.querySelectorAll('.search-hit').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          openSearchHit(btn.getAttribute('data-table'), btn.getAttribute('data-id'));
-        });
-      });
-    }
-    function runSearch(q) {
-      var seq = ++searchSeq;
-      fetchJson('/api/search?q=' + encodeURIComponent(q) + '&limit=6').then(function (result) {
-        if (seq !== searchSeq) return; // a newer query superseded this one
-        renderSearchResults(result);
-      }).catch(function () { /* transient — ignore */ });
+    // Route the typed query into the assistant rail as a chat turn. Opens the
+    // rail (a no-op on desktop; opens the mobile drawer) and submits via the
+    // same path as the composer, so the assistant searches + answers.
+    function askAssistant(q) {
+      hideSearchResults();
+      var input = document.getElementById('search-input');
+      if (input) input.value = '';
+      var rail = document.getElementById('assistant-rail');
+      if (rail) rail.classList.add('expanded');
+      var chatInput = document.getElementById('chat-input');
+      if (chatInput) chatInput.focus();
+      sendChat(q);
     }
     function initSearch() {
       var input = document.getElementById('search-input');
-      var box = document.getElementById('search-results');
-      if (!input || !box) return;
-      input.addEventListener('input', function () {
-        var q = input.value.trim();
-        if (searchTimer) clearTimeout(searchTimer);
-        if (q.length < 2) { hideSearchResults(); return; }
-        searchTimer = setTimeout(function () { runSearch(q); }, 180);
-      });
+      if (!input) return;
       input.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') { hideSearchResults(); input.blur(); }
+        if (e.key === 'Escape') { input.value = ''; input.blur(); }
         else if (e.key === 'Enter') {
-          var first = box.querySelector('.search-hit');
-          if (first) { e.preventDefault(); first.click(); }
+          e.preventDefault();
+          var q = input.value.trim();
+          if (q) askAssistant(q);
         }
-      });
-      // Dismiss when a click lands outside the search box.
-      document.addEventListener('click', function (e) {
-        var host = document.getElementById('topsearch');
-        if (host && !host.contains(e.target)) hideSearchResults();
       });
     }
 
@@ -1278,6 +1252,14 @@ export const appJs = `
       clearUnseen(tableName);
       var t = tableByName(tableName);
       if (!t) {
+        // Conversation-storage tables (chat_messages/chat_threads) and other
+        // Lattice internals aren't in the Objects list, but are browsable
+        // read-only under "System". If something routed here for one of them,
+        // fall back to the system-table view instead of "Unknown entity".
+        if ((state.systemTables || []).some(function (s) { return s.name === tableName; })) {
+          renderSystemTable(content, tableName);
+          return;
+        }
         content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>';
         return;
       }
@@ -4997,7 +4979,14 @@ export const appJs = `
     // Ops whose consecutive runs collapse into one counted bubble (bulk row work
     // spams N near-identical rows otherwise). Schema/undo/redo stay distinct.
     var GROUPABLE_OPS = { insert: 1, update: 1, delete: 1, link: 1, unlink: 1 };
-    var lastFeedGroup = null; // { key, count, item, summaryEl, timeEl }
+    // Active group bubbles keyed by op|table|source so a burst of identical
+    // events coalesces into ONE counted bubble even when other events interleave
+    // (a bulk ingest emits create/link/update across several tables at once —
+    // consecutive-only grouping let those interleaved runs spam the feed). A
+    // group stays "open" for FEED_GROUP_WINDOW_MS after its last hit; later
+    // activity starts a fresh bubble so unrelated edits aren't merged in.
+    var feedGroups = {}; // key -> { count, item, summaryEl, timeEl, last }
+    var FEED_GROUP_WINDOW_MS = 15000;
     function groupedSummary(op, table, count) {
       var t = String(table || '');
       switch (op) {
@@ -5014,25 +5003,31 @@ export const appJs = `
       if (!feedEl) return;
       var empty = document.getElementById('rail-empty');
       if (empty) empty.remove();
-      // Coalesce a run of identical events (same op + table + source) into the
-      // previous bubble with a count — but only while that bubble is still the
-      // last thing in the feed (a chat bubble or a different event breaks the run).
+      // Coalesce identical events (same op + table + source) into one counted
+      // bubble. Unlike the old consecutive-only rule, the bubble is found by key
+      // within a recency window, so interleaved bursts still merge instead of
+      // spamming a pill per event.
       var groupKey = GROUPABLE_OPS[ev.op] && ev.table
         ? String(ev.op) + '|' + String(ev.table) + '|' + String(ev.source || '')
         : null;
-      if (groupKey && lastFeedGroup && lastFeedGroup.key === groupKey &&
-          feedEl.lastElementChild === lastFeedGroup.item) {
-        lastFeedGroup.count += 1;
-        lastFeedGroup.summaryEl.textContent = groupedSummary(ev.op, ev.table, lastFeedGroup.count);
-        lastFeedGroup.timeEl.textContent = relTime(ev.ts);
-        // A grouped bubble stands for many rows — disable the single-row click.
-        lastFeedGroup.item._rowClickOff = true;
-        lastFeedGroup.item.classList.remove('feed-clickable');
-        lastFeedGroup.item.removeAttribute('role');
-        lastFeedGroup.item.removeAttribute('tabindex');
-        lastFeedGroup.item.removeAttribute('title');
-        feedEl.scrollTop = feedEl.scrollHeight;
-        return;
+      var nowMs = Date.now();
+      if (groupKey) {
+        var g = feedGroups[groupKey];
+        if (g && g.item.parentNode === feedEl && (nowMs - g.last) < FEED_GROUP_WINDOW_MS) {
+          g.count += 1;
+          g.last = nowMs;
+          g.summaryEl.textContent = groupedSummary(ev.op, ev.table, g.count);
+          g.timeEl.textContent = relTime(ev.ts);
+          // A grouped bubble stands for many rows — disable the single-row click,
+          // and expose it to assistive tech as a live status, not a button.
+          g.item._rowClickOff = true;
+          g.item.classList.remove('feed-clickable');
+          g.item.removeAttribute('tabindex');
+          g.item.removeAttribute('title');
+          g.item.setAttribute('role', 'status');
+          feedEl.scrollTop = feedEl.scrollHeight;
+          return;
+        }
       }
       var item = document.createElement('div');
       item.className = 'feed-item';
@@ -5075,10 +5070,10 @@ export const appJs = `
       }
       feedEl.appendChild(item);
       feedEl.scrollTop = feedEl.scrollHeight;
-      // Start a new group anchored on this bubble (groupable ops only).
-      lastFeedGroup = groupKey
-        ? { key: groupKey, count: 1, item: item, summaryEl: summary, timeEl: time }
-        : null;
+      // Register/refresh the group anchored on this bubble (groupable ops only).
+      if (groupKey) {
+        feedGroups[groupKey] = { count: 1, item: item, summaryEl: summary, timeEl: time, last: nowMs };
+      }
     }
     function startFeed() {
       if (feedSource) {
@@ -5091,14 +5086,16 @@ export const appJs = `
         var data;
         try { data = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
         try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
-        // A server-side mutation (e.g. the Context Constructor ingesting a file)
-        // can create a brand-new entity or junction the client hasn't loaded.
-        // The local feed bus delivers these even when there's no realtime
-        // broker (SQLite), so refresh the entity list + sidebar live — otherwise
-        // the new object is missing from the nav and routing to it shows
-        // "Unknown entity" until a manual page reload. Debounced so a burst of
-        // schema events from one ingest coalesces into a single refetch.
-        if (data && (data.op === 'schema' || (data.table && !tableByName(data.table)))) {
+        // Refresh on ANY data mutation, not just schema/new-table events. The
+        // local feed bus delivers every insert/update/delete/link even when
+        // there's no realtime broker (SQLite/local), so this is what makes the
+        // home dashboard counts AND the open entity view live-update without a
+        // manual reload (previously only schema ops or brand-new tables did).
+        // scheduleRealtimeRefresh is debounced (200ms) so a burst from one
+        // ingest still coalesces into a single refetch — and on Postgres/cloud
+        // it shares that debounce with the realtime 'change' handler (no double
+        // fetch). See the bounded-reads rule: /api/entities uses batched counts, not N queries.
+        if (data && (data.table || data.op === 'schema')) {
           scheduleRealtimeRefresh();
         }
       });
@@ -5178,7 +5175,7 @@ export const appJs = `
       if (!feedEl) return;
       var items = feedEl.querySelectorAll('.feed-item');
       for (var i = 0; i < items.length; i++) items[i].remove();
-      lastFeedGroup = null;
+      feedGroups = {};
     }
     function newChat() {
       currentThreadId = null;
@@ -5434,6 +5431,32 @@ export const appJs = `
     var audioChunks = [];
     function setMicState(btn, state) {
       recState = state;
+      // Mirror the recording lifecycle onto the composer. While recording or
+      // transcribing, the textarea is read-only (it shows a status placeholder,
+      // not editable text) and the Send button is disabled — you can't send a
+      // half-captured voice note. Returning to idle restores both, then the
+      // transcript is dropped in (see rec.onstop).
+      var inp = document.getElementById('chat-input');
+      var snd = document.getElementById('chat-send');
+      var busy = state === 'recording' || state === 'transcribing';
+      if (inp) {
+        if (busy) {
+          if (inp._restorePlaceholder == null) {
+            inp._restorePlaceholder = inp.getAttribute('placeholder') || '';
+          }
+          inp.setAttribute('readonly', 'readonly');
+          inp.classList.add('recording');
+          inp.setAttribute('placeholder', state === 'recording' ? 'Listening…' : 'Transcribing…');
+        } else {
+          inp.removeAttribute('readonly');
+          inp.classList.remove('recording');
+          if (inp._restorePlaceholder != null) {
+            inp.setAttribute('placeholder', inp._restorePlaceholder);
+            inp._restorePlaceholder = null;
+          }
+        }
+      }
+      if (snd) snd.disabled = busy;
       if (!btn) return;
       btn.classList.remove('recording', 'transcribing');
       if (state === 'recording') { btn.classList.add('recording'); btn.textContent = '⏹'; btn.title = 'Stop recording'; btn.disabled = false; }
@@ -5533,10 +5556,23 @@ export const appJs = `
       item.innerHTML =
         '<div class="feed-icon"><span class="feed-spinner"></span></div>' +
         '<div class="feed-body"><div class="feed-summary">Analyzing ' + escapeHtml(label) + '…</div></div>' +
-        '<div class="feed-time"></div>';
+        '<div class="feed-time">0s</div>';
       feedEl.appendChild(item);
       feedEl.scrollTop = feedEl.scrollHeight;
-      return function () { if (item.parentNode) item.parentNode.removeChild(item); };
+      // Live elapsed-time counter while the upload + server-side extraction run.
+      // Previously the time element was left empty (rendered as a stuck "0s")
+      // because nothing tracked or updated it. Tick once a second; the cleanup
+      // returned below clears the interval (and self-clears if the node is gone).
+      var started = Date.now();
+      var timeEl = item.querySelector('.feed-time');
+      var tick = setInterval(function () {
+        if (!item.parentNode || !timeEl) { clearInterval(tick); return; }
+        timeEl.textContent = formatElapsed(Date.now() - started);
+      }, 1000);
+      return function () {
+        clearInterval(tick);
+        if (item.parentNode) item.parentNode.removeChild(item);
+      };
     }
     function uploadFile(file) {
       var done = pendingIngestItem(file.name || 'file');
