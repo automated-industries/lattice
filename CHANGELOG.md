@@ -8,6 +8,86 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-06-09
+
+**The assistant rail speaks in activity cards — and links to what it found.**
+What the assistant did now shows as the same full-width activity cards as the
+live feed — one card per action type, collapsed, and scoped to the conversation —
+instead of inline tool-call pills. And when it points you at a specific record it
+now renders a **clickable object pill** inline in its answer. The library API is
+unchanged (GUI-only).
+
+### Added
+
+- **Inline object-link pills.** When the assistant references a specific row —
+  e.g. you ask it to "link me to" or "open" a record — it emits an inline link
+  (`[label](lattice://<table>/<id>)`) that renders as a clickable 🔗 pill and
+  opens that object (mode-aware, the same navigator the activity feed uses). It's
+  instructed to prefer the user-facing record over an internal `files` id and to
+  only link ids it actually retrieved.
+
+### Changed
+
+- **One unified activity-card style across the rail.** The assistant's actions
+  render as the activity-feed card (operation icon + human summary), not the
+  separate inline pill chips. Cards **collapse by type even across different
+  objects** — a bulk run shows a single card ("Deleted 19 tables", "Removed 49
+  rows across 9 tables") instead of dozens of near-identical rows. Read-only tool
+  calls (list / get / search) change no data, so they produce no card.
+- **The activity feed is per-conversation.** Each assistant turn persists the
+  data-change events it produced; reopening a conversation replays them as the
+  same collapsed cards. The global last-20 audit backfill on stream connect is
+  removed — the feed SSE now carries new events only, and history comes from the
+  conversation it belongs to.
+
+### Fixed
+
+- **Persisted / reloaded schema events now collapse and show the 🛠 icon.** The
+  live feed publishes `op: 'schema'` while the audit-sourced replay used the
+  fine-grained `op: 'schema.delete_entity'`; the rail matched only the former, so
+  reloaded schema deletes neither grouped nor picked an icon (they showed a bare
+  "•"). Both forms are normalized now.
+- **The typing indicator stays pinned to the bottom.** Activity cards that stream
+  in mid-turn now insert above the assistant's "typing…" bubble instead of below
+  it, so the dots no longer appear in the middle of a reply.
+- **Activity cards show the task DURATION, not a relative "ago".** Each card now
+  reads how long its work took ("4s", "4m 2s") — start-to-finish for a single
+  action, first-start to last-finish for a grouped run — anchored to the turn's
+  start (persisted per-event timestamps + turn start, so a reloaded conversation
+  shows the same durations as the live stream).
+- **A long bulk run no longer splits into several cards.** Live grouping is now
+  scoped to the assistant turn (no fixed time window) instead of a 15s rolling
+  window, so deleting many tables against a remote DB collapses into one
+  "Deleted N tables" card even when the run takes longer than the old window —
+  the lone leftover delete that escaped the group is gone.
+- **Switching to a cloud workspace shows the spinner until it's done.** The
+  switch menu used to close right after the (fast) switch POST and run the slow
+  cloud connect/reload with no visible feedback (it looked frozen); the menu now
+  stays open with the item's spinner through the whole reload, matching the local
+  switch.
+- **The settings of a cloud workspace you're connected to no longer ask for an
+  invite token.** Workspace settings could show a "not a member yet — paste an
+  invite token" state for a cloud workspace you'd already joined (or created).
+  That state is impossible — you can't reach a team cloud without an invite, so a
+  live connection always implies membership — and it has been removed. Joining via
+  invite lives only in the Join Workspace flow; settings always shows the
+  connection details and members.
+- **Encrypted secret values render as the mask, not raw ciphertext.** A value
+  stored encrypted-at-rest (the native `secrets` table, etc., carrying the `enc:`
+  sentinel prefix) showed its raw `enc:…` ciphertext in table and detail views.
+  It now renders as •••••••• like any other masked secret, everywhere a cell value
+  is shown.
+
+### Changed (settings)
+
+- **Assistant settings are decluttered.** The voice section now shows a single
+  **Use for voice** provider dropdown ("Select provider…", "OpenAI",
+  "ElevenLabs") and reveals only the chosen provider's key field, instead of
+  listing every provider's key box at once. Removed the redundant
+  "keys are stored encrypted… also work" helper paragraph and the
+  "set the `ANTHROPIC_OAUTH_*` env vars to enable" hint (the subscription link
+  only appears when OAuth is actually configured).
+
 ## [2.1.0] - 2026-06-08
 
 **Assistant search + a guarded, reversible table delete — and a batch of GUI
