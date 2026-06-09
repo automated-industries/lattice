@@ -45,17 +45,23 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('checkNativeSetup();');
   });
 
-  it('collapses a run of identical tool calls into one counted pill', () => {
-    // A turn with several list_rows must read "Listed N rows", not N copies of
-    // "Listed rows". The grouping mirrors the activity feed's coalescing.
-    expect(guiAppHtml).toContain('function toolGroupLabel');
-    expect(guiAppHtml).toContain('function paintToolPill');
-    expect(guiAppHtml).toContain('function renderResolvedPills');
-    expect(guiAppHtml).toContain('TOOL_GROUP');
-    // The grouped label is verb + count + noun ("Listed" + n + "rows").
-    expect(guiAppHtml).toContain("['Listing',  'Listed',  'rows']");
-    // Live grouping coalesces into the turn's lastTool run.
-    expect(guiAppHtml).toContain('ctx.lastTool');
+  it("renders the assistant's data changes as collapsed activity cards (no inline tool pills)", () => {
+    // Tool actions are no longer painted as inline pills. The assistant's data
+    // changes render as the same full-width activity cards as the live feed,
+    // collapsed by type and persisted per-turn for replay. Reads emit no card.
+    expect(guiAppHtml).toContain('function makeFeedCard');
+    expect(guiAppHtml).toContain('function renderTurnEventCards');
+    expect(guiAppHtml).toContain('function feedGroupKey');
+    // Same-type events collapse even across different objects (table excluded
+    // from the key) — e.g. "Removed N rows across M tables".
+    expect(guiAppHtml).toContain('across ');
+    // Live (op:'schema') and persisted (op:'schema.delete_entity') schema events
+    // both collapse + take the 🛠 icon via the shared normalizer.
+    expect(guiAppHtml).toContain('function isSchemaOp');
+    // The old inline tool-pill system is gone entirely.
+    expect(guiAppHtml).not.toContain('renderResolvedPills');
+    expect(guiAppHtml).not.toContain('addToolPill');
+    expect(guiAppHtml).not.toContain("className = 'tool-pill'");
   });
 
   it('auto-grows the composer textarea and re-fits on width change', () => {

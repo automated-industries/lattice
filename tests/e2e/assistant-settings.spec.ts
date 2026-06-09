@@ -31,7 +31,25 @@ test('subscription OAuth link is hidden until ANTHROPIC_OAUTH_* is configured', 
   await page.goto(gui.url + '#/settings/user-config');
   const host = page.locator('#assistant-host');
   await expect(host.getByText('Claude API token (chat)')).toBeVisible();
-  // oauthEnabled is false (no env) → the dormant message, not a Connect link.
-  await expect(host.getByText('set the')).toBeVisible();
+  // oauthEnabled is false (no env) → no Connect link AND no dormant env-var hint
+  // (the hint was removed; the link renders only once OAuth is configured).
   await expect(host.locator('a[href="/api/assistant/oauth/start"]')).toHaveCount(0);
+  await expect(host.getByText('connect your Claude subscription')).toHaveCount(0);
+});
+
+test('voice section reveals only the selected provider key field', async ({ page }) => {
+  await page.goto(gui.url + '#/settings/user-config');
+  const host = page.locator('#assistant-host');
+  await expect(host.locator('#asst-stt')).toBeVisible();
+  // Default "Select provider…" → neither provider's key field is shown.
+  await expect(host.locator('#asst-openai-key')).toHaveCount(0);
+  await expect(host.locator('#asst-elevenlabs-key')).toHaveCount(0);
+  // Choosing OpenAI reveals only the OpenAI key field.
+  await host.locator('#asst-stt').selectOption('openai');
+  await expect(host.locator('#asst-openai-key')).toBeVisible();
+  await expect(host.locator('#asst-elevenlabs-key')).toHaveCount(0);
+  // Switching to ElevenLabs swaps the field — OpenAI's goes away.
+  await host.locator('#asst-stt').selectOption('elevenlabs');
+  await expect(host.locator('#asst-elevenlabs-key')).toBeVisible();
+  await expect(host.locator('#asst-openai-key')).toHaveCount(0);
 });

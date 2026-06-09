@@ -63,17 +63,20 @@ test('consecutive identical events collapse into one counted bubble', async ({ p
   await expect(page.locator('.feed-item .feed-summary')).toHaveText(/Added 3 rows to items/);
 });
 
-test('starting a new conversation keeps the workspace activity cards', async ({ page }) => {
+test("starting a new conversation clears the previous conversation's activity cards", async ({
+  page,
+}) => {
   await page.goto(gui.url);
   await expect(page.locator('#assistant-rail')).toBeVisible();
-  await createRow(gui.url, 'items', { name: 'keep me' });
+  await createRow(gui.url, 'items', { name: 'clear me' });
   await expect(page.locator('.feed-item')).toHaveCount(1);
 
-  // Selecting "New conversation" runs newChat() → clearChat(), which must NOT
-  // wipe the workspace activity cards. (Regression: auto-loading a thread on
-  // refresh ran clearChat and erased the backfilled feed.)
+  // The rail is conversation-scoped: "New conversation" runs newChat() →
+  // clearChat(), which now drops the activity cards too. Each conversation
+  // replays its own data-change cards from its persisted per-turn events, so a
+  // fresh conversation starts with an empty rail.
   await page.locator('#rail-threads').selectOption('');
-  await expect(page.locator('.feed-item')).toHaveCount(1);
+  await expect(page.locator('.feed-item')).toHaveCount(0);
 });
 
 test('clicking a row feed item navigates to that object', async ({ page }) => {

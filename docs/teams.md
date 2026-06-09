@@ -136,22 +136,23 @@ All routes live on the cloud Postgres-backed Lattice booted via `lattice gui --t
 The GUI's Database panel models the project lifecycle as a one-way state machine: a project starts on local SQLite and can be promoted to a BYO Postgres. As of v1.16.3 a cloud database **is** a cloud workspace with members — there is no separate "upgrade to team" step and no intermediate `cloud-connected` state. Migrating or connecting to Postgres initializes the workspace's member/share machinery automatically (the opener becomes owner). There is no revert path in the UI.
 
 ```
-LOCAL  →  CLOUD WORKSPACE (creator | member | needs-invite)
+LOCAL  →  CLOUD WORKSPACE (creator | member)
        migrate / connect-existing (+invite)
 ```
 
 State detection (returned by `GET /api/dbconfig` as the `state` field; `isCreator`, `teamId`, and `myUserId` are returned alongside it for the SPA's member-admin UI):
 
-| State                     | Detection                                                                                                                          |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `local`                   | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                     |
-| `team-cloud-creator`      | YAML is cloud, identity row present, and the operator's resolved identity is a member whose user id matches the workspace creator. |
-| `team-cloud-member`       | YAML is cloud, identity row present, operator is a member but not the creator.                                                     |
-| `team-cloud-needs-invite` | YAML is cloud, identity row present, but the operator is **not** a member (no `__lattice_team_members` row resolves for them).     |
+| State                | Detection                                                                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `local`              | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                             |
+| `team-cloud-creator` | YAML is cloud, identity row present, and the operator's resolved identity is a member whose user id matches the workspace creator.         |
+| `team-cloud-member`  | YAML is cloud, identity row present, operator is a member but not the creator (the default — a connected cloud always implies membership). |
 
-> **v1.16.3 change:** the `cloud-connected` state was removed. A Postgres-backed database whose `__lattice_team_identity` row is absent now initializes that row automatically (on migrate, connect, or open), so it resolves directly to one of the three `team-cloud-*` states rather than sitting in an intermediate "connected but not a workspace" state. The SPA badge labels these "CLOUD · OWNER / MEMBER / NEEDS INVITE".
+> **v1.16.3 change:** the `cloud-connected` state was removed. A Postgres-backed database whose `__lattice_team_identity` row is absent now initializes that row automatically (on migrate, connect, or open), so it resolves directly to one of the two `team-cloud-*` states rather than sitting in an intermediate "connected but not a workspace" state. The SPA badge labels these "CLOUD · OWNER / MEMBER".
 >
-> **v1.14 change:** membership is the authoritative signal — the state is derived from whether the operator's identity resolves to a live `__lattice_team_members` row, not from whether a `~/.lattice/keys/<label>.token` file happens to be on disk. This stopped an already-joined member from being shown the "paste invite token to join" panel.
+> **v2.1.1 change:** the `team-cloud-needs-invite` state was removed. Every cloud Postgres database is an auto-initialized team-cloud workspace, and the only ways to be connected to one are creating it (owner) or joining via an invite (member) — so a connected cloud DB is **always** a member workspace, never "needs invite". A failed membership probe never downgrades a connected cloud to a re-join form; joining via invite lives exclusively in the Join Workspace flow, and the settings panel of a connected cloud always shows connection details + members.
+>
+> **v1.14 change:** membership is the authoritative signal — the state is derived from whether the operator's identity resolves to a live `__lattice_team_members` row, not from whether a `~/.lattice/keys/<label>.token` file happens to be on disk. This stopped an already-joined member from being shown a re-join form. (As of v2.1.1 there is no re-join form for a connected cloud at all — see the v2.1.1 note above.)
 
 ### Transition: Local → Cloud (migrate)
 
