@@ -1532,6 +1532,91 @@ export class Lattice {
     return this._decryptRows(table, rows);
   }
 
+  /**
+   * Row-level-security list read for Lattice Teams (2.2). Returns only the
+   * rows of `table` that `userId` may see in team `teamId`, evaluated
+   * entirely in SQL (indexed, bounded — never "load every row then filter
+   * in JS"). A row is visible iff it has a `__lattice_row_acl` entry owned by
+   * the user or marked 'everyone', or a 'custom' entry with a matching
+   * `__lattice_row_grants` row, OR it has no ACL entry at all and the caller
+   * passes `noAclVisible` (the table default is 'everyone', or the user owns
+   * the table — the pre-2.2 / never-narrowed case). Soft-deleted rows are
+   * excluded by default; results reuse the same decrypt path as `query()`.
+   *
+   * The ACL predicate joins on the table's primary-key column cast to TEXT
+   * (ACL pks are stored as TEXT), so it is correct regardless of the user
+   * table's pk type and works on both SQLite and Postgres. The teams layer's
+   * `listVisibleRows` (src/teams/row-access.ts) is the intended caller.
+   */
+  async queryVisible(
+    table: string,
+    opts: {
+      teamId: string;
+      userId: string;
+      /**
+       * Whether rows with NO `__lattice_row_acl` entry are visible to this
+       * user — true when the table default is 'everyone' OR the user owns the
+       * table (the pre-2.2 / never-narrowed case). Resolved by the teams layer
+       * (`listVisibleRows`); defaults to false, i.e. only rows with an explicit
+       * ACL entry granting access are returned.
+       */
+      noAclVisible?: boolean;
+      /** Soft-delete handling: 'exclude' (default), 'only' (trash), 'any'. */
+      deleted?: 'exclude' | 'only' | 'any';
+      limit?: number;
+      offset?: number;
+      orderBy?: string;
+      orderDir?: 'asc' | 'desc';
+    },
+  ): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+    this._assertIdent(table);
+    if (opts.orderBy) this._assertIdent(table, opts.orderBy);
+
+    const cols = this._ensureColumnCache(table);
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    let softDelete = '';
+    if (cols.has('deleted_at') && opts.deleted !== 'any') {
+      softDelete =
+        opts.deleted === 'only' ? `t."deleted_at" IS NOT NULL AND ` : `t."deleted_at" IS NULL AND `;
+    }
+
+    let sql =
+      `SELECT t.* FROM "${table}" t WHERE ${softDelete}(` +
+      `EXISTS (SELECT 1 FROM "__lattice_row_acl" la ` +
+      `WHERE la."team_id" = ? AND la."table_name" = ? AND la."pk" = CAST(t."${pkCol}" AS TEXT) ` +
+      `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
+      `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
+      `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
+      `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?))))`;
+    const params: unknown[] = [opts.teamId, table, opts.userId, opts.userId];
+    if (opts.noAclVisible) {
+      // Rows with no ACL entry are visible because the table default is
+      // 'everyone' or this user owns the table (pre-2.2 / never-narrowed rows).
+      sql +=
+        ` OR NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 ` +
+        `WHERE la2."team_id" = ? AND la2."table_name" = ? AND la2."pk" = CAST(t."${pkCol}" AS TEXT))`;
+      params.push(opts.teamId, table);
+    }
+    sql += `)`;
+
+    if (opts.orderBy && cols.has(opts.orderBy)) {
+      const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
+      sql += ` ORDER BY t."${opts.orderBy}" ${dir}`;
+    }
+    if (opts.limit !== undefined && Number.isFinite(opts.limit)) {
+      sql += ` LIMIT ${Math.trunc(opts.limit).toString()}`;
+    }
+    if (opts.offset !== undefined && Number.isFinite(opts.offset)) {
+      if (opts.limit === undefined) sql += ' LIMIT -1';
+      sql += ` OFFSET ${Math.trunc(opts.offset).toString()}`;
+    }
+
+    const rows = await allAsyncOrSync(this._adapter, sql, params);
+    return this._decryptRows(table, rows);
+  }
+
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;

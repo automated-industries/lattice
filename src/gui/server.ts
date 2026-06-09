@@ -49,6 +49,7 @@ import type { Row } from '../types.js';
 import {
   CLOUD_INTERNAL_TABLE_DEFS,
   installCloudInternalTriggers,
+  installRowPermsSchema,
 } from '../teams/internal-tables.js';
 import { recordObjectOwner } from '../teams/direct-ops.js';
 import {
@@ -1184,6 +1185,7 @@ async function registerTeamCloudTables(db: Lattice): Promise<void> {
     await db.defineLate(name, def);
   }
   await installCloudInternalTriggers(db);
+  await installRowPermsSchema(db);
 }
 
 /**
