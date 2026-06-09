@@ -714,6 +714,20 @@ export const css = `
     .grants-panel .grants-title { font-weight: 600; margin-bottom: 6px; }
     .grants-panel .grants-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
     .grants-panel .grants-row input { accent-color: var(--accent); }
+    /* Deprecation banner: shown when the workspace holds a grandfathered
+       direct database cloud connection (no row-level security). Amber so
+       it reads as a warning, not an error. */
+    .deprecation-banner {
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px 16px; font-size: 13px;
+      background: rgba(234, 179, 8, 0.12); color: var(--text);
+      border-bottom: 1px solid rgba(234, 179, 8, 0.45);
+    }
+    .deprecation-banner button {
+      margin-left: auto; background: transparent; border: none; cursor: pointer;
+      color: var(--text-muted); font-size: 13px; padding: 2px 6px; border-radius: 4px;
+    }
+    .deprecation-banner button:hover { background: rgba(234, 179, 8, 0.18); }
 
     /* Inline create-row at the bottom of every table */
     tr.create-row td { background: var(--surface-2); }

@@ -944,6 +944,27 @@ export const appJs = `
 
     window.addEventListener('hashchange', renderRoute);
 
+    // Deprecation banner: a grandfathered direct database cloud connection
+    // bypasses the hosted server's row security entirely — say so up front.
+    // Dismiss hides it for this browser session only.
+    function initDeprecationBanner() {
+      if (sessionStorage.getItem('lattice-direct-banner-dismissed')) return;
+      fetchJson('/api/dbconfig').then(function (d) {
+        if (!d || !d.directCloud) return;
+        var banner = document.getElementById('deprecation-banner');
+        var text = document.getElementById('deprecation-banner-text');
+        if (!banner || !text) return;
+        text.textContent = "Direct database cloud connections are deprecated and don't support row-level security. Migrate to a hosted workspace.";
+        banner.hidden = false;
+        var dismiss = document.getElementById('deprecation-banner-dismiss');
+        if (dismiss) dismiss.addEventListener('click', function () {
+          banner.hidden = true;
+          sessionStorage.setItem('lattice-direct-banner-dismissed', '1');
+        });
+      }).catch(function () { /* dbconfig unavailable (e.g. team-cloud server mode) — no banner */ });
+    }
+    initDeprecationBanner();
+
     // ────────────────────────────────────────────────────────────
     // Sidebar
     // ────────────────────────────────────────────────────────────

@@ -664,6 +664,13 @@ export interface ActiveDb {
   validTables: Set<string>;
   /** Team-cloud ownership context, or null for local / non-team DBs. */
   teamContext: TeamContext | null;
+  /**
+   * True when this workspace holds a grandfathered direct `postgres://` team
+   * connection. Those bypass the hosted server — and with it the 2.2 row
+   * security — entirely, so the GUI surfaces a deprecation banner (driven by
+   * `/api/dbconfig`'s `directCloud` field).
+   */
+  directTeamConnection: boolean;
   junctionTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
@@ -1025,6 +1032,18 @@ export async function openConfig(
     }
   }
 
+  // Grandfathered direct postgres:// team connections bypass the hosted
+  // server's per-recipient sync — row security does not apply to them at
+  // all. The server console already warns once (direct-ops); surface it in
+  // the GUI too via /api/dbconfig's directCloud flag → deprecation banner.
+  let directTeamConnection = false;
+  try {
+    const conns = await teamsClient.listConnections();
+    directTeamConnection = conns.some((c) => isPostgresUrl(c.cloud_url));
+  } catch (e) {
+    console.warn('[openConfig] could not check for direct team connections:', (e as Error).message);
+  }
+
   // Realtime broker — only meaningful when the active DB is Postgres.
   // The broker connects on creation; status/payload events stream out
   // via the SSE endpoint. SQLite configs leave this as null and the
@@ -1085,6 +1104,7 @@ export async function openConfig(
     teamsClient,
     validTables,
     teamContext,
+    directTeamConnection,
     junctionTables,
     entityContextByTable,
     manifest,
@@ -3766,6 +3786,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                   myUserId: active.teamContext.myUserId,
                 }
               : null,
+            directCloud: active.directTeamConnection,
             swap: async () => {
               const next = await openConfig(active.configPath, active.outputDir, autoRender);
               await disposeActive(active);
