@@ -10,7 +10,6 @@ import {
   listDbCredentials,
   getOrCreateMasterKey,
   readIdentity,
-  readToken,
 } from '../framework/user-config.js';
 import { probeCloud } from '../framework/cloud-connect.js';
 import {
@@ -125,11 +124,11 @@ function parsePostgresUrl(url: string): {
 // (auto-initialized), so there is no plain "connected but not a team" state.
 // The 'team-cloud-*' keys are retained as internal plumbing names; the GUI
 // renders them with neutral "cloud workspace" wording (no "team").
-export type DbConfigState =
-  | 'local'
-  | 'team-cloud-creator'
-  | 'team-cloud-member'
-  | 'team-cloud-needs-invite';
+// A connected cloud Postgres workspace is, by definition, one you created (owner)
+// or were invited into (member) — you cannot reach a team cloud without an
+// invitation — so there is no "needs invite" settings state. Joining via an
+// invite token lives only in the Join Workspace flow.
+export type DbConfigState = 'local' | 'team-cloud-creator' | 'team-cloud-member';
 
 interface DbInfo {
   type: 'sqlite' | 'postgres';
@@ -161,37 +160,18 @@ async function getCreatorEmail(db: Lattice): Promise<string | null> {
 }
 
 /**
- * Compute the panel's state. Combines the YAML's `db:` shape + the
- * active Lattice's `__lattice_team_identity` row + the operator's
- * `~/.lattice/keys/<label>.token` presence + `creator_email` match.
+ * Compute the panel's state from the DB shape: SQLite → local; Postgres → a
+ * cloud workspace you're a member of (owner when our identity matches the team's
+ * `creator_email`, else member).
  */
-function computeState(
-  type: 'sqlite' | 'postgres',
-  teamEnabled: boolean,
-  label: string | undefined,
-  creatorEmail: string | null,
-): DbConfigState {
+function computeState(type: 'sqlite' | 'postgres', creatorEmail: string | null): DbConfigState {
   if (type === 'sqlite') return 'local';
-  // A cloud DB that isn't initialized yet (auto-init couldn't run — no
-  // identity email, or a raw db: URL with no label). The GUI renders this as
-  // "this cloud workspace needs setup / paste an invite", not "upgrade to team".
-  if (!teamEnabled) return 'team-cloud-needs-invite';
-  // teamEnabled + postgres: disambiguate owner/member/needs-invite.
-  if (!label) {
-    // Postgres with team identity but no label in db-credentials.enc.
-    // Operator pasted a raw URL; we can't look up a token by label,
-    // so we conservatively report needs-invite.
-    return 'team-cloud-needs-invite';
-  }
-  let token: string | null = null;
-  try {
-    token = readToken(label);
-  } catch {
-    token = null;
-  }
-  if (!token) return 'team-cloud-needs-invite';
-  // Have a token + team is enabled. Distinguish creator vs member by
-  // matching identity.email against __lattice_team_identity.creator_email.
+  // Every cloud Postgres DB is an auto-initialized team-cloud workspace, and the
+  // only ways to be connected to one are creating it (owner) or joining via an
+  // invite (member) — so a connected cloud DB is ALWAYS a member workspace, never
+  // "needs invite". Owner vs member is decided by whether our identity matches the
+  // team's recorded creator_email; when we can't tell (raw URL, missing identity),
+  // default to member rather than gating behind a bogus re-join prompt.
   const identity = readIdentity();
   if (
     creatorEmail !== null &&
@@ -204,26 +184,25 @@ function computeState(
 }
 
 /**
- * Override the YAML-derived state with the operator's resolved team
- * membership. Membership is the authoritative "am I in this team?"
- * signal (the operator's identity resolves to a cloud member), so an
- * already-joined member never renders the "paste invite token" panel,
- * and a non-member pointed at a team cloud correctly does. Non-team /
- * local DBs (no membership, or non-postgres) keep their original state.
+ * Override the YAML-derived state with the operator's resolved team membership
+ * (the authoritative owner-vs-member signal). A connected cloud workspace is
+ * always a member workspace, so this only refines owner vs member — it never
+ * produces a "needs invite" state. Non-postgres DBs keep their original state.
  *
- * Exported for unit testing — the live override needs a Postgres team
- * cloud, which CI can't spin up; this keeps the decision pure + covered.
+ * Exported for unit testing — the live override needs a Postgres team cloud,
+ * which CI can't spin up; this keeps the decision pure + covered.
  */
 export function applyTeamMembershipState(
   info: { type?: string; teamEnabled?: boolean; state?: DbConfigState },
   membership: { joined: boolean; isCreator: boolean } | null,
 ): DbConfigState | undefined {
-  if (!membership || info.type !== 'postgres' || !info.teamEnabled) return info.state;
-  return membership.joined
-    ? membership.isCreator
-      ? 'team-cloud-creator'
-      : 'team-cloud-member'
-    : 'team-cloud-needs-invite';
+  if (info.type !== 'postgres') return info.state;
+  // A connected cloud workspace is always a member workspace (created or invited).
+  // The resolved membership decides owner vs member; when it's unresolved, keep
+  // computeState's result (also creator-or-member — "needs invite" no longer
+  // exists, so a failed membership probe never downgrades you to a re-join form).
+  if (membership) return membership.isCreator ? 'team-cloud-creator' : 'team-cloud-member';
+  return info.state;
 }
 
 /** Inspect the YAML's `db:` line + the active Lattice for the team-status flag. */
@@ -251,7 +230,7 @@ async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo>
   if (labelMatch) {
     const label = labelMatch[1] ?? '';
     const url = getDbCredential(label);
-    const state = computeState('postgres', teamEnabled, label, creatorEmail);
+    const state = computeState('postgres', creatorEmail);
     if (url) {
       const parsed = parsePostgresUrl(url);
       if (parsed) {
@@ -278,7 +257,7 @@ async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo>
   }
   if (/^postgres(ql)?:\/\//i.test(dbLine)) {
     const parsed = parsePostgresUrl(dbLine);
-    const state = computeState('postgres', teamEnabled, undefined, creatorEmail);
+    const state = computeState('postgres', creatorEmail);
     return parsed
       ? {
           type: 'postgres',
