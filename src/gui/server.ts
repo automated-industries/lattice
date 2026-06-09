@@ -132,7 +132,7 @@ import {
   deleteDbCredential,
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import { countManyPostgres } from './count-many.js';
+import { countManyPostgres, exactCountMany } from './count-many.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -294,16 +294,32 @@ async function entitiesWithCounts(
         allTables.map((t) => t.name),
       )
     : new Map<string, number>();
+  // Correct the stale-stat blind spot: pg_class.reltuples reads 0 for a table
+  // under autovacuum's ANALYZE threshold (~50 changes), so a freshly
+  // bulk-loaded table shows 0 on the dashboard even though drill-in lists its
+  // rows. For exactly that suspicious subset (approx count null or 0) issue ONE
+  // extra aggregated round-trip of real COUNTs — healthy tables keep the fast
+  // approximate path, so the pooler-exhausting fan-out the batched path avoids
+  // is never reintroduced.
+  let exactCounts = new Map<string, number>();
+  if (useBatched) {
+    const suspicious = allTables.map((t) => t.name).filter((n) => (approxCounts.get(n) ?? 0) === 0);
+    if (suspicious.length > 0) {
+      const softDeleteTables = new Set(
+        allTables.filter((t) => t.columns.includes('deleted_at')).map((t) => t.name),
+      );
+      exactCounts = await exactCountMany(adapter, suspicious, softDeleteTables);
+    }
+  }
 
   const enrichedTables = await Promise.all(
     allTables.map(async (t): Promise<GuiTableSummary> => {
       let rowCount: number | null;
       if (useBatched) {
-        // Postgres: use the batched approximate count when we have it.
-        // Tables absent from pg_class (newly defineLate'd, never analyzed)
-        // get `null` so the SPA renders them as "—". No fallback per-table
-        // COUNT: the whole point of this branch is to avoid the fan-out.
-        rowCount = approxCounts.get(t.name) ?? null;
+        // Postgres: prefer an exact count for the suspicious subset (computed
+        // in one extra round-trip above); otherwise the fast approximate stat.
+        // Still `null` when neither is available so the SPA renders "—".
+        rowCount = exactCounts.get(t.name) ?? approxCounts.get(t.name) ?? null;
       } else {
         // SQLite: in-process, no pool. Keep the exact, soft-delete-aware
         // count we've always shipped.
