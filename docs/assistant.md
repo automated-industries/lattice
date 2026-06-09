@@ -29,6 +29,13 @@ and the query is submitted as a chat turn, which the assistant answers using its
 sees the conversation-storage or `secrets` tables (search and `list_entities`
 both exclude them).
 
+When the assistant points you at a specific record — ask it to "link me to" or
+"open" one — it renders a **clickable object pill** inline in its answer
+(emitted as `[label](lattice://<table>/<id>)`). Clicking the pill opens that row
+in the GUI via the same mode-aware navigator the activity feed uses; it links the
+user-facing record (the contract/person/etc.) rather than an internal `files` id,
+and only ids it actually retrieved.
+
 **Deleting a table is guarded + reversible.** The `delete_entity` tool refuses
 built-in tables, tables another table links to, and tables you don't own. An
 **empty** table is soft-deleted immediately; a **non-empty** one is **not**
@@ -39,7 +46,13 @@ drop), so the whole thing is revertible from version history.
 
 Conversations persist in the native `chat_threads` / `chat_messages` entities;
 use the thread switcher to revisit them. A new thread is **named from a short AI
-summary** of its first exchange (e.g. "Adding New Notes About Cheese").
+summary** of its first exchange (e.g. "Adding New Notes About Cheese"). The
+assistant's **data changes are saved with each turn and replayed as activity
+cards** when you reopen the conversation — collapsed by type (e.g. "Deleted 19
+tables", "Removed 49 rows across 9 tables"), with the operation's icon. Reads
+(list / get / search) change nothing, so they produce no card; only data changes
+appear. The activity feed is scoped to the open conversation rather than a global
+workspace log.
 
 The assistant **remembers what it read across turns.** Earlier tool calls and
 their results (including row ids) are replayed into the model's context, so a
