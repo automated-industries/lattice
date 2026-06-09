@@ -43,12 +43,15 @@ function sse(events: Record<string, unknown>[]): string {
   return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
 }
 
-test('a run of identical tool calls collapses into one "Listed N rows" pill', async ({ page }) => {
+test('read-only tool calls produce no activity cards (only data changes show)', async ({
+  page,
+}) => {
   const input = await enableComposer(page, gui.url);
 
-  // Mock the assistant stream: one turn that emits three list_rows calls (what
-  // the model does for bulk reads). The rail must show ONE "Listed 3 rows" pill,
-  // not three "Listed rows" pills.
+  // Mock a turn that only reads (two list_rows), then a text reply. Reads change
+  // no data, so they emit no feed event — the rail shows the reply text and NO
+  // activity cards (and no inline tool pills; that system was removed in favour
+  // of the unified activity-card design).
   await page.route('**/api/chat', (route) =>
     route.fulfill({
       status: 200,
@@ -59,8 +62,8 @@ test('a run of identical tool calls collapses into one "Listed N rows" pill', as
         { type: 'tool_result', toolUseId: 'u1', isError: false },
         { type: 'tool_use', id: 'u2', name: 'list_rows' },
         { type: 'tool_result', toolUseId: 'u2', isError: false },
-        { type: 'tool_use', id: 'u3', name: 'list_rows' },
-        { type: 'tool_result', toolUseId: 'u3', isError: false },
+        { type: 'assistant_message_start', id: 'm1' },
+        { type: 'text_delta', delta: 'Found 3 rows.' },
         { type: 'done' },
       ]),
     }),
@@ -69,9 +72,9 @@ test('a run of identical tool calls collapses into one "Listed N rows" pill', as
   await input.fill('list everything');
   await input.press('Enter');
 
-  const pills = page.locator('.chat-tools .tool-pill');
-  await expect(pills).toHaveCount(1);
-  await expect(pills.first()).toHaveText('✓ Listed 3 rows');
+  await expect(page.locator('.chat-bubble.assistant')).toContainText('Found 3 rows.');
+  await expect(page.locator('.tool-pill')).toHaveCount(0);
+  await expect(page.locator('.feed-item')).toHaveCount(0);
 });
 
 test('the composer textarea grows to fit multi-line input', async ({ page }) => {

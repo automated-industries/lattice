@@ -136,27 +136,38 @@ describe('GUI activity feed stream', () => {
     expect(event.table).toBe('widgets');
   });
 
-  it('backfills the activity rail from the audit log (mirrors version history)', async () => {
+  it('streams only NEW events — no audit backfill (the rail is conversation-scoped)', async () => {
     const { configPath, outputDir } = writeMinimalConfig();
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
     servers.push(server);
 
-    // Make an edit BEFORE connecting — it lands in the audit log only.
-    const post = await fetch(`${server.url}/api/tables/teams/rows`, {
+    // A pre-existing edit BEFORE connecting — it lands in the audit log only.
+    const pre = await fetch(`${server.url}/api/tables/teams/rows`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Pre-existing Team' }),
     });
-    const { id } = (await post.json()) as { id: string };
+    const { id: preId } = (await pre.json()) as { id: string };
 
-    // A fresh stream connection should backfill that prior edit (it's not in
-    // any in-process feed buffer — only the persistent audit log has it).
-    const event = await waitForFeedEvent(
+    // Connect, then make a NEW edit. The stream carries new events only — the
+    // global audit backfill was removed (history replays per-conversation from
+    // the persisted per-turn events). So the FIRST insert this stream sees must
+    // be the NEW row, never the pre-existing one.
+    const eventPromise = waitForFeedEvent(
       server.url,
-      (e) => e.op === 'insert' && e.table === 'teams' && e.rowId === id,
+      (e) => e.op === 'insert' && e.table === 'teams',
     );
-    // The reconstructed-from-audit summary names the row (after_json → label),
-    // matching the live feed rather than the old generic "Added a row".
-    expect(event.summary).toBe('Added Pre-existing Team to teams');
+    await new Promise((r) => setTimeout(r, 100));
+    const post = await fetch(`${server.url}/api/tables/teams/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'New Team' }),
+    });
+    const { id: newId } = (await post.json()) as { id: string };
+
+    const event = await eventPromise;
+    expect(event.rowId).toBe(newId);
+    expect(event.rowId).not.toBe(preId);
+    expect(event.summary).toBe('Added New Team to teams');
   });
 });
