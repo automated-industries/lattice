@@ -40,7 +40,7 @@ beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
   // Isolate the machine config dir (master key + assistant credentials) to a
   // temp dir so booting the GUI server here never touches the real ~/.lattice
-  // (Rule 26) or reads a developer's real stored key.
+  // or reads a developer's real stored key.
   savedEnv.LATTICE_CONFIG_DIR = process.env.LATTICE_CONFIG_DIR;
   savedEnv.LATTICE_ENCRYPTION_KEY = process.env.LATTICE_ENCRYPTION_KEY;
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-aggr-cfg-'));

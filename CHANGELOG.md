@@ -361,7 +361,7 @@ shipped across 1.16.x), not a breaking change.
   assistant reaches its per-message tool-call cap with work outstanding (e.g.
   "create one row per line of a 150-row CSV"), it emits a warning ("…the task
   may be incomplete. Send 'continue' and I'll finish the rest.") instead of
-  ending with a clean "done" that looked complete (Rule 16: no silent
+  ending with a clean "done" that looked complete (no silent
   truncation).
 - **Adding a relationship now updates the linked tables' context immediately.**
   A new junction's rollup now appears on the EXISTING tables it links without a
@@ -432,7 +432,7 @@ shipped across 1.16.x), not a breaking change.
   not to claim success after a failed tool call. The tool-loop + output budget
   (`MAX_TOOL_LOOPS` 8→16, `MAX_TOKENS` 2048→4096) were raised so multi-step bulk
   work (e.g. "create one row per line of an attached CSV") isn't truncated.
-  _(Capacity tuning, not a workaround — flagged for review per Rule 12.)_ The
+  _(Capacity tuning, not a workaround.)_ The
   credential-bearing `secrets` table is now hidden from the assistant entirely —
   excluded from its callable tables and from the schema context — so a request
   (or instructions injected via an attached file) can't induce it to read and
@@ -703,7 +703,7 @@ all collaboration surface are opt-in or GUI-cloud-gated.
 - **Every schema change is now in Version History + the Activity rail, alongside row edits.** Creating/renaming/deleting a table, adding/renaming/deleting a column, and adding/deleting a link/relationship each append an entry to the same `_lattice_gui_audit` history (new `schema.*` operations; one additive nullable `session_id` column, reconciled automatically) with a one-line description ("Created table tasks", "Deleted table tasks", "Added column status to tasks", …) and a **Revert** button. Schema ops also participate in the header ↶/↷ undo/redo stack.
 - **Undo/redo is session-scoped — you step through your OWN recent actions.** The header ↶/↷ stack (for both schema and row ops) is scoped to the current GUI session (one per server process), so in a shared cloud you undo what _you_ just did, not another user's edit. The per-entry **Revert** in Version History stays global — revert any entry, any session, any time.
 - **Deletes are soft — data is never destroyed and reverts are exact.** A delete removes the entity/field from the config (hiding it from the GUI) but **never physically `DROP`s** the SQL table/column; the data stays in the database. Revert just re-adds the config entry, and re-opening reconciles idempotently (`CREATE TABLE IF NOT EXISTS` + skip-existing-column), so the table/column comes back with **all its rows/values intact** — no snapshot, no size limit, on both SQLite and Postgres. The only `DROP` the GUI ever performs is the explicit purge below.
-- **Guards.** Reverts re-open the live DB so the in-memory schema never drifts, and surface any failure loudly (Rule 16) rather than half-applying. Creating a table/column whose name matches a soft-deleted (orphaned) object is refused ("a deleted `<name>` exists — revert it instead"). Reverting a delete whose object was since purged is refused ("permanently purged"). Renames revert via real `ALTER … RENAME`.
+- **Guards.** Reverts re-open the live DB so the in-memory schema never drifts, and surface any failure loudly rather than half-applying. Creating a table/column whose name matches a soft-deleted (orphaned) object is refused ("a deleted `<name>` exists — revert it instead"). Reverting a delete whose object was since purged is refused ("permanently purged"). Renames revert via real `ALTER … RENAME`.
 - **Purge — API only.** `POST /api/schema/purge` (`{ type: 'table' | 'column', name, column? }`, owner-gated) physically drops an orphaned (soft-deleted) object to reclaim space and is **not surfaced in the GUI**. It's audit-logged as `schema.purge` and is irreversible.
 - **Multiplayer.** Schema ops, reverts, and purges append a `ddl` change envelope in team/cloud mode so other clients re-fetch and converge (the broker treats `ddl` as a refresh signal, not a sharing toggle). Local SQLite is a single-writer no-op.
 

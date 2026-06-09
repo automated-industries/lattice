@@ -5336,7 +5336,7 @@ export const appJs = `
         // scheduleRealtimeRefresh is debounced (200ms) so a burst from one
         // ingest still coalesces into a single refetch — and on Postgres/cloud
         // it shares that debounce with the realtime 'change' handler (no double
-        // fetch). See Rule 28: /api/entities uses batched counts, not N queries.
+        // fetch). /api/entities batches its row counts into one query, not N.
         if (data && (data.table || data.op === 'schema')) {
           scheduleRealtimeRefresh();
         }

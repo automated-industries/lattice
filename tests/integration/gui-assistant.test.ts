@@ -15,7 +15,7 @@ beforeEach(() => {
   // Credentials are now machine-level (assistant-credentials.enc under the
   // config dir), not in the workspace DB — so point the config dir at a fresh
   // temp dir per test. Without this the store would land in the real ~/.lattice
-  // and leak the key between tests (and pollute the dev machine, Rule 26).
+  // and leak the key between tests (and pollute the dev machine).
   savedEnv.LATTICE_CONFIG_DIR = process.env.LATTICE_CONFIG_DIR;
   savedEnv.LATTICE_ENCRYPTION_KEY = process.env.LATTICE_ENCRYPTION_KEY;
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-assistant-cfg-'));

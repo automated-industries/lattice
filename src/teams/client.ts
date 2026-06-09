@@ -375,8 +375,8 @@ export class TeamsClient {
    *   - `http(s)://…` — POST to the cloud's `/api/auth/register` endpoint
    *     (a hosted `lattice serve` teams server is fronting the Postgres).
    *   - `postgres(ql)://…` — rejected: direct postgres:// owner bootstrap
-   *     is deprecated (no row-level security). See Track C / Rule re: one
-   *     hosted connection method.
+   *     is deprecated. Row-level security is enforced by the hosted server,
+   *     so it is the only supported connection method for new workspaces.
    *
    * On success writes the bearer token to `~/.lattice/keys/<label>.token`
    * **and** persists the local `__lattice_team_connections` row so the

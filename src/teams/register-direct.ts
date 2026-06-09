@@ -44,8 +44,9 @@ export function isPostgresUrl(url: string): boolean {
  *
  * On success returns the same shape the HTTP route returns so a
  * direct-postgres register can mirror the hosted register path. (New
- * direct registrations are deprecated under Track C; this primitive
- * remains for the existing-connection path.)
+ * direct registrations are deprecated as of 2.2 — a direct connection
+ * bypasses row-level security; this primitive remains only for the
+ * grandfathered existing-connection path.)
  */
 export async function registerDirectViaPostgres(
   cloudUrl: string,

@@ -2216,7 +2216,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           // Validate the config edit BEFORE touching SQL so a failed config
           // mutation can never leave the physical schema ahead of the YAML
-          // (Rule 15/16 — no drift). The fields map must exist (it won't for a
+          // (no drift). The fields map must exist (it won't for a
           // table that isn't a declared config entity) and must not already
           // carry this column.
           const doc = loadConfigDoc(active.configPath);
@@ -2297,7 +2297,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `"${newCol}" is a reserved system column` }, 400);
             return;
           }
-          // Validate the config edit BEFORE touching SQL (Rule 15/16 — a failed
+          // Validate the config edit BEFORE touching SQL (a failed
           // YAML mutation must never leave the physical column renamed ahead of
           // the config). Rebuild the fields map by key (object-safe) rather than
           // deleteIn+setIn on the deep path.
@@ -3035,7 +3035,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             switchedTo = fallback.id;
             currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
           }
-          // Drop the registry record, then clean up files (Rule 16: loud on failure).
+          // Drop the registry record, then clean up files (loud on failure).
           removeWorkspace(latticeRoot, ws.id);
           try {
             if (!ws.configPath && ws.kind === 'local') {
@@ -3228,7 +3228,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             active = next;
             switchedTo = active.configPath;
           }
-          // Surface any filesystem failure loudly (Rule 16) rather than
+          // Surface any filesystem failure loudly rather than
           // half-deleting silently.
           let deleted: { deletedConfig: string; deletedDbFile: string | null };
           try {
@@ -3727,7 +3727,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         sendJson(res, { error: 'Not found' }, 404);
       } catch (err) {
-        // Rule 16 — no silent failures. Any unhandled error in a GUI request
+        // No silent failures. Any unhandled error in a GUI request
         // handler is logged loudly server-side (method, path, stack) BEFORE the
         // 500 goes out, so the real cause survives even when the client only
         // sees a transient toast. Previously this returned the message with no

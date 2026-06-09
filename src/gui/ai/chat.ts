@@ -26,7 +26,7 @@ export const DEFAULT_MODEL = 'claude-haiku-4-5';
 // Tool-loop + output budget. Sized for multi-step agentic work — e.g. "create
 // one row per line of an attached CSV" needs many tool rounds, and each turn
 // may emit several tool_use blocks, so a 2048-token cap truncated bulk work.
-// (Capacity, not a workaround — see CHANGELOG; flagged for review per Rule 12.)
+// (Capacity, not a workaround — see CHANGELOG.)
 const MAX_TOOL_LOOPS = 16;
 const MAX_TOKENS = 4096;
 
@@ -248,7 +248,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     }
     // Loop exited via the `for` condition (not the `break`) ⇒ the last turn
     // still wanted to call tools but hit the step cap ⇒ the task is likely
-    // unfinished. Surface it loudly (Rule 16: no silent truncation) instead of
+    // unfinished. Surface it loudly (never silently truncate) instead of
     // ending with a clean `done` that looks complete.
     if (loop >= MAX_TOOL_LOOPS) {
       yield {

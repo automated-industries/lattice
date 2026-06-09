@@ -248,7 +248,7 @@ export interface MutationCtx {
    * access that lives in the server. The server supplies these closures (over
    * its reassignable `active`) when handling undo/redo/revert; applyInverse/
    * applyForward delegate to them for `schema.*` entries. Absent for plain row
-   * mutations — a schema entry encountered without them throws (Rule 16).
+   * mutations — a schema entry encountered without them throws loudly.
    */
   applySchemaInverse?: (entry: AuditEntry) => Promise<void>;
   applySchemaForward?: (entry: AuditEntry) => Promise<void>;
@@ -328,7 +328,7 @@ export async function updateRow(
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
   const before = await ctx.db.get(table, id);
-  // Rule 16: never silently "succeed" against a row that doesn't exist. A
+  // Never silently "succeed" against a row that doesn't exist. A
   // missing row means the caller (e.g. the assistant) used a stale/wrong id;
   // the no-op UPDATE would otherwise record a bogus audit/feed entry whose
   // row link 404s on click. Fail loudly so the caller can correct.
@@ -342,7 +342,7 @@ export async function updateRow(
   }
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
-  // Rule 16: a requested change that left the row byte-identical means the
+  // A requested change that left the row byte-identical means the
   // write did not land (a read-only data source silently no-ops the UPDATE).
   // Surface it loudly instead of reporting a phantom success. A genuine no-op
   // (the new value already equals the stored value) is NOT an error.
@@ -377,7 +377,7 @@ export async function deleteRow(
   hard: boolean,
 ): Promise<void> {
   const before = await ctx.db.get(table, id);
-  // Rule 16: deleting a non-existent row is a no-op that would still record a
+  // Deleting a non-existent row is a no-op that would still record a
   // bogus audit/feed entry. Surface the bad id instead of faking success.
   if (before === null) {
     throw new Error(`Cannot delete from "${table}": no row with id "${id}"`);
@@ -586,7 +586,7 @@ export async function revertEntry(ctx: MutationCtx, id: string): Promise<RevertR
   if (entry.undone === 1) return { ok: false, reason: 'already_undone' };
   // applyInverse runs first; only if it succeeds do we flip `undone`. A schema
   // revert that throws (e.g. purged, or a name collision) leaves the entry
-  // Revertable and surfaces the error to the caller (Rule 16).
+  // Revertable and surfaces the error to the caller (fail loudly).
   await applyInverse(ctx, entry);
   await ctx.db.update('_lattice_gui_audit', id, { undone: 1 });
   ctx.feed.publish({
