@@ -65,6 +65,28 @@ unchanged (GUI-only).
   cloud connect/reload with no visible feedback (it looked frozen); the menu now
   stays open with the item's spinner through the whole reload, matching the local
   switch.
+- **The settings of a cloud workspace you're connected to no longer ask for an
+  invite token.** Workspace settings could show a "not a member yet — paste an
+  invite token" state for a cloud workspace you'd already joined (or created).
+  That state is impossible — you can't reach a team cloud without an invite, so a
+  live connection always implies membership — and it has been removed. Joining via
+  invite lives only in the Join Workspace flow; settings always shows the
+  connection details and members.
+- **Encrypted secret values render as the mask, not raw ciphertext.** A value
+  stored encrypted-at-rest (the native `secrets` table, etc., carrying the `enc:`
+  sentinel prefix) showed its raw `enc:…` ciphertext in table and detail views.
+  It now renders as •••••••• like any other masked secret, everywhere a cell value
+  is shown.
+
+### Changed (settings)
+
+- **Assistant settings are decluttered.** The voice section now shows a single
+  **Use for voice** provider dropdown ("Select provider…", "OpenAI",
+  "ElevenLabs") and reveals only the chosen provider's key field, instead of
+  listing every provider's key box at once. Removed the redundant
+  "keys are stored encrypted… also work" helper paragraph and the
+  "set the `ANTHROPIC_OAUTH_*` env vars to enable" hint (the subscription link
+  only appears when OAuth is actually configured).
 
 ## [2.1.0] - 2026-06-08
 

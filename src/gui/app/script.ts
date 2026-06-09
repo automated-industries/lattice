@@ -44,6 +44,13 @@ export const appJs = `
       return !!(t && t[colName] && t[colName].secret);
     }
     var SECRET_MASK = '••••••••'; // ••••••••
+    // An encrypted-at-rest value (native secrets etc.) is stored with an "enc:"
+    // sentinel prefix (see framework/native-entities decrypt). It is never
+    // plaintext, so the GUI must never render the raw ciphertext — mask it the
+    // same way an operator-flagged secret column is masked.
+    function looksEncrypted(v) {
+      return typeof v === 'string' && v.slice(0, 4) === 'enc:';
+    }
 
     function displayFor(name) {
       var override = state.iconOverrides[name];
@@ -1298,7 +1305,7 @@ export const appJs = `
         } else {
           bodyRows = rows.map(function (r) {
             var tds = intrinsic.map(function (c) {
-              if (isSecretColumn(tableName, c) && r[c] != null && r[c] !== '') {
+              if ((isSecretColumn(tableName, c) || looksEncrypted(r[c])) && r[c] != null && r[c] !== '') {
                 return '<td class="muted">' + SECRET_MASK + '</td>';
               }
               return '<td><div class="cell-clip">' + escapeHtml(truncate(r[c], 120)) + '</div></td>';
@@ -1583,7 +1590,7 @@ export const appJs = `
         function paint(editing) {
           var rows = [];
           intrinsic.forEach(function (c) {
-            var secret = isSecretColumn(tableName, c);
+            var secret = isSecretColumn(tableName, c) || looksEncrypted(row[c]);
             var dd;
             if (editing) {
               dd = fieldFor(c, row[c], t);
@@ -1951,7 +1958,7 @@ export const appJs = `
     function fsValInner(table, row, col) {
       var raw = row[col];
       if (raw == null || raw === '') return '<span class="fs-empty-val">—</span>';
-      if (isSecretColumn(table, col)) return '<span class="muted">' + SECRET_MASK + '</span>';
+      if (isSecretColumn(table, col) || looksEncrypted(raw)) return '<span class="muted">' + SECRET_MASK + '</span>';
       var s = String(raw);
       if (FS_LONGFORM.indexOf(col) >= 0 || s.indexOf('\\n') >= 0) {
         return '<div class="md-body">' + mdToHtml(s.slice(0, 40000)) + '</div>';
@@ -3953,20 +3960,29 @@ export const appJs = `
             '</div>' +
           '</div>';
         }
+        // Only the selected provider's key input is shown (declutter). 'auto'
+        // ("Select provider…") shows no key row until a provider is chosen.
+        function voiceRowHtml(provider) {
+          if (provider === 'openai') {
+            return rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…');
+          }
+          if (provider === 'elevenlabs') {
+            return rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…');
+          }
+          return '';
+        }
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
             '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
-              'Keys are stored encrypted in the <code>secrets</code> table — never shown again once ' +
-              'saved. Environment variables (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, ' +
-              '<code>ELEVENLABS_API_KEY</code>) also work.' +
+              'Keys are stored encrypted in the <code>secrets</code> table.' +
             '</p>' +
             rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
-            '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
-              (cfg.oauthEnabled
-                ? 'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.'
-                : 'Subscription login: set the <code>ANTHROPIC_OAUTH_*</code> env vars to enable.') +
-            '</div>' +
+            (cfg.oauthEnabled
+              ? '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+                  'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.' +
+                '</div>'
+              : '') +
             '<div style="margin:6px 0 12px">' +
               '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
                 '<strong style="font-size:13px">Inference aggressiveness</strong>' +
@@ -3983,17 +3999,16 @@ export const appJs = `
                 'auto-creates link tables) when you drop in files. Higher extrapolates more.' +
               '</p>' +
             '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text (set either)</div>' +
-            rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…') +
-            rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…') +
-            '<div style="margin:6px 0 2px;display:flex;align-items:center;gap:8px">' +
+            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text</div>' +
+            '<div style="margin:6px 0 8px;display:flex;align-items:center;gap:8px">' +
               '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
               '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
-                '<option value="auto">Auto</option>' +
-                '<option value="openai">OpenAI Whisper</option>' +
+                '<option value="auto">Select provider…</option>' +
+                '<option value="openai">OpenAI</option>' +
                 '<option value="elevenlabs">ElevenLabs</option>' +
               '</select>' +
             '</div>' +
+            '<div id="asst-voice-key">' + voiceRowHtml(cfg.sttPreference || 'auto') + '</div>' +
             '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
@@ -4023,12 +4038,18 @@ export const appJs = `
           });
         }
         wire('asst-anthropic', 'anthropic');
-        wire('asst-openai', 'openai');
-        wire('asst-elevenlabs', 'elevenlabs');
         var sttSel = host.querySelector('#asst-stt');
+        var voiceKeyHost = host.querySelector('#asst-voice-key');
+        function wireVoiceKey(provider) {
+          if (provider === 'openai') wire('asst-openai', 'openai');
+          else if (provider === 'elevenlabs') wire('asst-elevenlabs', 'elevenlabs');
+        }
         if (sttSel) {
           sttSel.value = cfg.sttPreference || 'auto';
+          wireVoiceKey(sttSel.value);
           sttSel.addEventListener('change', function () {
+            if (voiceKeyHost) voiceKeyHost.innerHTML = voiceRowHtml(sttSel.value);
+            wireVoiceKey(sttSel.value);
             msg.textContent = 'Saving…';
             fetch('/api/assistant/stt-provider', {
               method: 'PUT',
@@ -4419,9 +4440,10 @@ export const appJs = `
 
     // State-machine Database panel (v1.13+). Renders a different body
     // per info.state: local -> Migrate / Connect-existing wizards;
-    // cloud-connected -> Upgrade-to-team; team-cloud-creator/member ->
-    // team management UI; team-cloud-needs-invite -> join form.
-    // Progression is one-way: local -> cloud -> team-cloud.
+    // team-cloud-creator/member -> connection details + members. A connected
+    // cloud workspace is always a member workspace (created or invited), so
+    // there is no in-settings "join via invite" — that lives in the Join
+    // Workspace flow only.
     function renderDatabasePanel(host) {
       fetchJson('/api/dbconfig').then(function (info) {
         var badge = renderStateBadge(info);
@@ -4457,10 +4479,6 @@ export const appJs = `
           label = 'CLOUD · MEMBER';
           color = 'var(--accent)';
           break;
-        case 'team-cloud-needs-invite':
-          label = 'CLOUD · NEEDS INVITE';
-          color = 'var(--warn)';
-          break;
         default:
           label = String(info.state || 'UNKNOWN').toUpperCase();
       }
@@ -4494,21 +4512,6 @@ export const appJs = `
           // Exit actions (Disconnect for the owner / Leave for a member) live
           // in the Danger Zone below — not on a member row.
           '<div id="db-members-host" style="margin-top:12px"><div style="font-size:12px;color:var(--text-muted)">Loading members…</div></div>'
-        );
-      }
-      if (info.state === 'team-cloud-needs-invite') {
-        return (
-          renderConnectionSummary(info) +
-          '<p style="margin-top:10px;color:var(--warn);font-size:13px">' +
-            'Not a member of this cloud workspace yet — paste your invite token to join.' +
-          '</p>' +
-          '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:6px">' +
-            '<div><label class="field-label">Invite token</label>' +
-            '<textarea id="db-rejoin-token" placeholder="latinv_..." style="width:100%;height:54px;font-family:JetBrains Mono,monospace"></textarea></div>' +
-          '</div>' +
-          '<div class="team-actions" style="margin-top:10px">' +
-            '<button class="btn primary" data-act="rejoin-with-token">Join workspace →</button>' +
-          '</div>'
         );
       }
       return '<p style="color:var(--text-muted)">Unknown database state.</p>';
@@ -4582,32 +4585,6 @@ export const appJs = `
         }).catch(function () { membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Members unavailable.</div>'; });
       }
 
-      var rejoinBtn = host.querySelector('[data-act="rejoin-with-token"]');
-      if (rejoinBtn) rejoinBtn.addEventListener('click', function () {
-        var token = (document.getElementById('db-rejoin-token').value || '').trim();
-        if (!token) { setMsg('Invite token required.', false); return; }
-        // Without form re-entry the credentials are already saved; we
-        // call the connect-existing endpoint with just the invite
-        // token. The handler reads credentials from db-credentials.enc
-        // via the active configPath's label.
-        setMsg('Joining workspace…');
-        fetch('/api/dbconfig/connect-existing', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            type: 'postgres',
-            label: info.label,
-            host: info.host, port: info.port, dbname: info.dbname,
-            user: info.user, password: '', // password lives in db-credentials.enc; backend will pull
-            invite_token: token,
-          }),
-        })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            if (d.error) { setMsg('Failed: ' + d.error, false); return; }
-            setMsg('Joined.', true); rerender();
-          })
-          .catch(function (e) { setMsg('Failed: ' + e.message, false); });
-      });
     }
 
     // ── v1.13 wizards ─────────────────────────────────────────────
