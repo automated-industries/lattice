@@ -410,8 +410,8 @@ describe('teams GUI — endpoints', () => {
     expect(res.status).toBe(401);
   });
 
-  it('upgradeToTeamCloud persists __lattice_team_connections row (regression for v1.13–v1.13.3)', async () => {
-    // The v1.13 orchestration introduced upgradeToTeamCloud() but
+  it('registerCloudOwner persists __lattice_team_connections row (regression for v1.13–v1.13.3)', async () => {
+    // The v1.13 orchestration introduced the owner-registration flow but
     // shipped without the saveConnection() call that the older
     // register-and-create flow always did. Result: team gets created
     // on the cloud, token is written to ~/.lattice/keys/<label>.token,
@@ -419,7 +419,7 @@ describe('teams GUI — endpoints', () => {
     // GUI's team API calls (members, invites, kick, destroy) can't
     // resolve cloud_url + my_user_id + api_token afterward.
     //
-    // This test stands up an HTTP teams-cloud server, calls upgrade
+    // This test stands up an HTTP teams-cloud server, registers the owner
     // through the same TeamsClient the GUI uses, and asserts the local
     // connection row exists with the expected fields.
     const cloud = await startCloud();
@@ -432,7 +432,7 @@ describe('teams GUI — endpoints', () => {
 
     // Drive register-and-create through the GUI route (which now also
     // exercises the saveConnection call). This matches what
-    // upgradeToTeamCloud will do once it's the unified path.
+    // registerCloudOwner does on the unified path.
     const reg = await api(`${local.url}/api/teams-gui/connections/register-and-create`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -445,8 +445,8 @@ describe('teams GUI — endpoints', () => {
     });
     expect(reg.status).toBe(200);
 
-    // The local __lattice_team_connections row is what upgradeToTeamCloud
-    // was failing to write in v1.13–v1.13.3. Verify it's present now.
+    // The local __lattice_team_connections row is what the owner-registration
+    // flow was failing to write in v1.13–v1.13.3. Verify it's present now.
     const after = await api(`${local.url}/api/teams-gui/connections`);
     expect(after.body.connections).toHaveLength(1);
     const conn = (

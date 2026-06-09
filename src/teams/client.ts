@@ -294,9 +294,11 @@ export class TeamsClient {
   // ── High-level orchestration (v1.13+) ───────────────────────────────────
   // Wraps the multi-step flows the GUI's Database panel + library
   // consumers both need: connecting to an existing cloud DB (with
-  // optional team join), and upgrading a non-team cloud into a team
-  // cloud. The HTTP routes in src/gui/dbconfig-routes.ts are thin
-  // shells over these methods.
+  // optional team join), and initializing a fresh cloud DB's owner so
+  // its members + per-table sharing surface exists. A cloud workspace IS
+  // a workspace with members — there is no separate "team" to convert to.
+  // The HTTP routes in src/gui/dbconfig-routes.ts are thin shells over
+  // these methods.
 
   /**
    * Connect a local project to an existing cloud DB by URL. Probes
@@ -363,15 +365,18 @@ export class TeamsClient {
   }
 
   /**
-   * Upgrade an already-connected cloud DB to a team DB. Two paths
-   * depending on the cloud URL's scheme:
+   * Initialize a fresh cloud DB's owner: register the first member (who
+   * becomes owner) so the cloud's members + per-table sharing surface
+   * exists. This is NOT a "convert a cloud into a team" step — a cloud
+   * workspace IS a workspace with members; this just bootstraps the owner
+   * the first time a cloud is opened. The hosted server path is the only
+   * supported one:
    *
    *   - `http(s)://…` — POST to the cloud's `/api/auth/register` endpoint
-   *     (`lattice serve --team-cloud` is fronting the Postgres).
-   *   - `postgres(ql)://…` — drive the same INSERT sequence directly
-   *     against the cloud Postgres via {@link registerDirectViaPostgres}.
-   *     The HTTP path can't be used here because the browser's Fetch
-   *     API refuses URLs with embedded credentials.
+   *     (a hosted `lattice serve` teams server is fronting the Postgres).
+   *   - `postgres(ql)://…` — rejected: direct postgres:// owner bootstrap
+   *     is deprecated (no row-level security). See Track C / Rule re: one
+   *     hosted connection method.
    *
    * On success writes the bearer token to `~/.lattice/keys/<label>.token`
    * **and** persists the local `__lattice_team_connections` row so the
@@ -381,7 +386,7 @@ export class TeamsClient {
    * the token file, leaving GUI authenticated calls with no
    * `cloud_url` + `my_user_id` + `api_token_encrypted` row to read.
    */
-  async upgradeToTeamCloud(opts: {
+  async registerCloudOwner(opts: {
     label: string;
     cloudUrl: string;
     teamName: string;
@@ -432,7 +437,7 @@ export class TeamsClient {
     }
     try {
       const displayName = opts.displayName?.trim() ? opts.displayName : opts.email;
-      await this.upgradeToTeamCloud({
+      await this.registerCloudOwner({
         label: opts.label,
         cloudUrl: opts.cloudUrl,
         teamName: opts.workspaceName,

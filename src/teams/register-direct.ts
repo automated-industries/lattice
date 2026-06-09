@@ -42,9 +42,10 @@ export function isPostgresUrl(url: string): boolean {
  *   - Refuses if any non-deleted user already exists on the cloud.
  *   - Refuses if the `__lattice_team_identity` singleton already exists.
  *
- * On success returns the same shape the HTTP route returns so the
- * caller (`TeamsClient.upgradeToTeamCloud`) can use either path
- * interchangeably.
+ * On success returns the same shape the HTTP route returns so a
+ * direct-postgres register can mirror the hosted register path. (New
+ * direct registrations are deprecated under Track C; this primitive
+ * remains for the existing-connection path.)
  */
 export async function registerDirectViaPostgres(
   cloudUrl: string,

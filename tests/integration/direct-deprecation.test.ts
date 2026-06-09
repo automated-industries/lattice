@@ -44,10 +44,10 @@ describe('direct postgres:// team-cloud deprecation (2.2)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('rejects a NEW direct workspace (upgradeToTeamCloud)', async () => {
+  it('rejects a NEW direct workspace (registerCloudOwner)', async () => {
     const client = new TeamsClient(makeStubLocal());
     await expect(
-      client.upgradeToTeamCloud({
+      client.registerCloudOwner({
         label: 'l',
         cloudUrl: POSTGRES_URL,
         teamName: 't',

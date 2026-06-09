@@ -57,6 +57,16 @@ changes until an owner opts a table (or a row) into `private`.
   round-trip — correcting the "tile shows 0 while drill-in shows rows" case
   without reintroducing a per-table fan-out. Capped at 50 tables (logged +
   skipped on overflow).
+- **A cloud IS a workspace with members — no "convert to team" concept.**
+  `TeamsClient.upgradeToTeamCloud(...)` is renamed to
+  `TeamsClient.registerCloudOwner(...)` (same signature + behaviour: bootstraps
+  the first member as owner, rejects direct `postgres://` per the deprecation
+  below). The "upgrade/convert a cloud into a team" framing is gone from the API,
+  the `--team-cloud` CLI help, and the docs — opening a cloud yourself connects
+  you directly (eye-icon row permissions active); `lattice serve --team-cloud`
+  is just the deployment role that hosts the cloud as a shared, auth-gated server
+  for *remote* members. **Breaking:** external callers of the old method name
+  must update to `registerCloudOwner`.
 
 ### Deprecated
 
