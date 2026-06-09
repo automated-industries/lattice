@@ -242,6 +242,9 @@ interface PersistedTurnEvent {
   table: string | null;
   rowId: string | null;
   summary: string;
+  /** Feed timestamp of the event, so a reloaded turn can show how long the
+   *  run took (first event → last) instead of a relative "ago". */
+  ts?: string;
 }
 /** One assistant turn: its streamed text + the activity it produced, in order. */
 interface PersistedTurn {
@@ -283,15 +286,20 @@ async function persistMessage(
   role: 'user' | 'assistant',
   text: string,
   turns?: PersistedTurn[],
+  startedAt?: string,
 ): Promise<void> {
+  // `text` stays for backward-compat (old clients + the model-history replay);
+  // `turns` carries the rich structure so a reloaded conversation shows the same
+  // bubbles + activity cards as the live stream. `startedAt` lets the replay show
+  // each card's task DURATION (start → last event) instead of a relative "ago".
+  const payload: { text: string; turns?: PersistedTurn[]; startedAt?: string } =
+    turns && turns.length > 0 ? { text, turns } : { text };
+  if (startedAt) payload.startedAt = startedAt;
   await db.insert('chat_messages', {
     id: crypto.randomUUID(),
     thread_id: threadId,
     role,
-    // `text` stays for backward-compat (old clients + the model-history replay);
-    // `turns` carries the rich structure so a reloaded conversation shows the
-    // same text bubbles + tool pills as the live stream, not one text wall.
-    content_json: JSON.stringify(turns && turns.length > 0 ? { text, turns } : { text }),
+    content_json: JSON.stringify(payload),
     source: role === 'user' ? 'gui' : 'ai',
   });
 }
@@ -329,12 +337,15 @@ export async function dispatchChatRoute(
       .map((r) => {
         let text = '';
         let turns: PersistedTurn[] | undefined;
+        let startedAt: string | undefined;
         try {
           const parsed = JSON.parse(asStr(r.content_json, '{}')) as {
             text?: string;
             turns?: PersistedTurn[];
+            startedAt?: string;
           };
           text = parsed.text ?? '';
+          if (typeof parsed.startedAt === 'string') startedAt = parsed.startedAt;
           if (Array.isArray(parsed.turns)) {
             // Strip toolCalls — the GUI only needs text + the data-change events
             // (replayed as activity cards); raw tool result content stays
@@ -352,6 +363,7 @@ export async function dispatchChatRoute(
           role: asStr(r.role),
           text,
           ...(turns ? { turns } : {}),
+          ...(startedAt ? { startedAt } : {}),
           created_at: asStr(r.created_at),
         };
       })
@@ -425,6 +437,9 @@ export async function dispatchChatRoute(
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
   };
 
+  // When the assistant started working on this request — persisted so a reloaded
+  // turn can show the task DURATION (start → last event) rather than "ago".
+  const turnStartedAt = new Date().toISOString();
   let assistantText = '';
   // Rebuild the rich structure as it streams: one entry per assistant turn, each
   // with its text + the data-change events it produced. Persisted so a reloaded
@@ -443,7 +458,13 @@ export async function dispatchChatRoute(
     if (fe.source !== 'ai') return;
     const cur = turns[turns.length - 1];
     if (cur)
-      cur.events.push({ op: fe.op, table: fe.table, rowId: fe.rowId, summary: fe.summary ?? '' });
+      cur.events.push({
+        op: fe.op,
+        table: fe.table,
+        rowId: fe.rowId,
+        summary: fe.summary ?? '',
+        ts: fe.ts,
+      });
   });
   try {
     const client = createAnthropicClient(auth);
@@ -498,7 +519,7 @@ export async function dispatchChatRoute(
       }))
       .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
     try {
-      await persistMessage(ctx.db, threadId, 'assistant', assistantText, cleanTurns);
+      await persistMessage(ctx.db, threadId, 'assistant', assistantText, cleanTurns, turnStartedAt);
     } catch (e) {
       console.warn('[chat] persist assistant message failed:', (e as Error).message);
     }

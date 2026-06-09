@@ -50,6 +50,21 @@ unchanged (GUI-only).
 - **The typing indicator stays pinned to the bottom.** Activity cards that stream
   in mid-turn now insert above the assistant's "typing…" bubble instead of below
   it, so the dots no longer appear in the middle of a reply.
+- **Activity cards show the task DURATION, not a relative "ago".** Each card now
+  reads how long its work took ("4s", "4m 2s") — start-to-finish for a single
+  action, first-start to last-finish for a grouped run — anchored to the turn's
+  start (persisted per-event timestamps + turn start, so a reloaded conversation
+  shows the same durations as the live stream).
+- **A long bulk run no longer splits into several cards.** Live grouping is now
+  scoped to the assistant turn (no fixed time window) instead of a 15s rolling
+  window, so deleting many tables against a remote DB collapses into one
+  "Deleted N tables" card even when the run takes longer than the old window —
+  the lone leftover delete that escaped the group is gone.
+- **Switching to a cloud workspace shows the spinner until it's done.** The
+  switch menu used to close right after the (fast) switch POST and run the slow
+  cloud connect/reload with no visible feedback (it looked frozen); the menu now
+  stays open with the item's spinner through the whole reload, matching the local
+  switch.
 
 ## [2.1.0] - 2026-06-08
 

@@ -875,9 +875,16 @@ export const appJs = `
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ id: id }),
               }).then(function () {
-                menu.hidden = true;
+                // Keep the menu OPEN with the item's spinner through the reload —
+                // for a CLOUD workspace the slow part (connecting + fetching
+                // against the remote DB) happens here in reloadEverything, AFTER
+                // the switch POST. Hiding the menu now (the old behavior) hid the
+                // only progress signal, so a cloud switch looked unresponsive.
+                // renderWsSwitcher (inside reloadEverything) only re-binds the
+                // toggle + updates the label, so the spinning item survives.
                 return reloadEverything();
               }).then(function () {
+                menu.hidden = true;
                 // Conversations + activity both live in the workspace DB. Drop
                 // the old workspace's thread + activity cards, reconnect the feed
                 // to THIS workspace, and reload its thread list (+ latest convo).
@@ -886,7 +893,7 @@ export const appJs = `
                 startFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
-              }).catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
+              }).catch(function (err) { menu.hidden = true; showToast('Switch failed: ' + err.message, {}); });
             });
           });
         });
@@ -5028,8 +5035,14 @@ export const appJs = `
       }
       return GROUPABLE_OPS[ev.op] ? String(ev.op) + '|' + src : null;
     }
-    var feedGroups = {}; // key -> { op, count, tables, tableCount, schemaKey, firstSummary, item, summaryEl, timeEl, last }
+    var feedGroups = {}; // key -> { op, count, tables, tableCount, schemaKey, firstSummary, item, summaryEl, timeEl, last, startMs, endMs, turnId }
     var FEED_GROUP_WINDOW_MS = 15000;
+    // Assistant-turn scope for live activity-card grouping + duration. While a
+    // turn is active, its same-type events all collapse into one card (no window
+    // expiry); the card's timer measures from feedTurnStartMs to the last event.
+    var feedTurnId = 0;
+    var feedTurnActive = false;
+    var feedTurnStartMs = 0;
     function onlyKey(obj) { for (var k in obj) { if (obj.hasOwnProperty(k)) return k; } return ''; }
     function groupedRowSummary(op, count, tables, tableCount) {
       var verb = ROW_VERB[op] || String(op || '');
@@ -5082,7 +5095,9 @@ export const appJs = `
       body.appendChild(meta);
       var time = document.createElement('div');
       time.className = 'feed-time';
-      time.textContent = ev.ts ? relTime(ev.ts) : '';
+      // Duration ("4s" / "4m 2s") is filled in by the caller once the group's
+      // start/end span is known — not a relative "ago".
+      time.textContent = '';
       item.appendChild(icon);
       item.appendChild(body);
       item.appendChild(time);
@@ -5106,17 +5121,27 @@ export const appJs = `
     // Fold another event into an existing group card: bump the count, track the
     // table, refresh the summary, and drop the single-row affordances (a grouped
     // card stands for many rows, so it's a status, not a clickable button).
-    function applyGroupHit(g, ev) {
+    // The card timer shows the TASK DURATION (start → finish), not a relative
+    // "ago": for a single op it's the time that op took; for a grouped run it's
+    // from the first task's start to the last task's finish. startMs is anchored
+    // to the assistant turn's start (so a one-event card still shows real time);
+    // endMs tracks the latest event in the group.
+    function setGroupTime(g) {
+      if (g.timeEl) g.timeEl.textContent = formatElapsed(Math.max(0, g.endMs - g.startMs));
+    }
+    function applyGroupHit(g, ev, endMs) {
       g.count += 1;
       if (ev.table && !g.tables[ev.table]) { g.tables[ev.table] = 1; g.tableCount += 1; }
+      if (typeof endMs === 'number' && endMs > g.endMs) g.endMs = endMs;
       g.summaryEl.textContent = groupedSummary(g);
+      setGroupTime(g);
       g.item._rowClickOff = true;
       g.item.classList.remove('feed-clickable');
       g.item.removeAttribute('tabindex');
       g.item.removeAttribute('title');
       g.item.setAttribute('role', 'status');
     }
-    function newGroup(ev, card) {
+    function newGroup(ev, card, startMs, endMs) {
       var tbls = {}; var tc = 0;
       if (ev.table) { tbls[ev.table] = 1; tc = 1; }
       return {
@@ -5124,6 +5149,7 @@ export const appJs = `
         schemaKey: isSchemaOp(ev.op) ? schemaAction(ev.summary) : null,
         firstSummary: ev.summary || '',
         item: card.item, summaryEl: card.summaryEl, timeEl: card.timeEl,
+        startMs: startMs, endMs: endMs,
       };
     }
     function renderFeedItem(ev) {
@@ -5140,10 +5166,17 @@ export const appJs = `
       var nowMs = Date.now();
       if (groupKey) {
         var g = feedGroups[groupKey];
-        if (g && g.item.parentNode === feedEl && (nowMs - g.last) < FEED_GROUP_WINDOW_MS) {
-          applyGroupHit(g, ev);
+        // A group stays open to merge while: (a) we're inside the SAME assistant
+        // turn that opened it — no time limit, so a slow bulk run (deleting many
+        // tables against a remote DB) stays one card instead of splitting when a
+        // 15s window lapses mid-run; or (b) outside a turn (manual edits / another
+        // client), within the rolling window. Cross-turn events never merge.
+        var open = g && g.item.parentNode === feedEl && (
+          feedTurnActive ? (g.turnId === feedTurnId) : ((nowMs - g.last) < FEED_GROUP_WINDOW_MS)
+        );
+        if (open) {
+          applyGroupHit(g, ev, nowMs);
           g.last = nowMs;
-          g.timeEl.textContent = relTime(ev.ts);
           feedEl.scrollTop = feedEl.scrollHeight;
           return;
         }
@@ -5155,10 +5188,17 @@ export const appJs = `
       var anchor = feedTypingAnchor(feedEl);
       if (anchor) feedEl.insertBefore(card.item, anchor); else feedEl.appendChild(card.item);
       feedEl.scrollTop = feedEl.scrollHeight;
+      // Anchor the card's duration to the turn start (so even a single-op card
+      // shows how long the task took); fall back to now for non-turn activity.
+      var startMs = (feedTurnActive && feedTurnStartMs) ? feedTurnStartMs : nowMs;
       if (groupKey) {
-        var grp = newGroup(ev, card);
+        var grp = newGroup(ev, card, startMs, nowMs);
+        grp.turnId = feedTurnId;
         grp.last = nowMs;
         feedGroups[groupKey] = grp;
+        setGroupTime(grp);
+      } else {
+        card.timeEl.textContent = formatElapsed(Math.max(0, nowMs - startMs));
       }
     }
     // Replay a persisted assistant turn's data-change events as collapsed activity
@@ -5166,16 +5206,20 @@ export const appJs = `
     // rolling window) so each turn's bulk run shows one card and stays tied to the
     // turn that produced it. Reads aren't persisted as events, so only mutations
     // appear. Appends in order; the caller positions them after the turn's text.
-    function renderTurnEventCards(feedEl, events) {
+    function renderTurnEventCards(feedEl, events, startedMs) {
       if (!feedEl || !events || !events.length) return;
       var groups = {};
       for (var i = 0; i < events.length; i++) {
         var ev = events[i];
+        var evMs = ev.ts ? new Date(ev.ts).getTime() : startedMs;
+        if (typeof evMs !== 'number' || isNaN(evMs)) evMs = startedMs;
+        var startMs = (typeof startedMs === 'number' && !isNaN(startedMs)) ? startedMs : evMs;
         var key = feedGroupKey(ev);
-        if (key && groups[key]) { applyGroupHit(groups[key], ev); continue; }
+        if (key && groups[key]) { applyGroupHit(groups[key], ev, evMs); continue; }
         var card = makeFeedCard(ev);
         feedEl.appendChild(card.item);
-        if (key) groups[key] = newGroup(ev, card);
+        if (key) { var g = newGroup(ev, card, startMs, evMs); groups[key] = g; setGroupTime(g); }
+        else { card.timeEl.textContent = formatElapsed(Math.max(0, evMs - startMs)); }
       }
     }
     function startFeed() {
@@ -5323,7 +5367,7 @@ export const appJs = `
             // activity cards it produced), matching the live stream. Falls back to
             // a plain text bubble for messages saved before turns were persisted.
             if (Array.isArray(m.turns) && m.turns.length > 0) {
-              m.turns.forEach(function (t) { appendAssistantTurn(t, m.created_at); });
+              m.turns.forEach(function (t) { appendAssistantTurn(t, m.created_at, m.startedAt); });
             } else { var c = newAssistantBubble(); setBubbleText(c, m.text); }
             chatHistory.push({ role: 'assistant', text: m.text });
           }
@@ -5419,14 +5463,17 @@ export const appJs = `
      *  activity cards it produced (collapsed, per-turn). Reads aren't persisted
      *  as events, so a read-only turn with no text renders nothing. createdAt
      *  stamps the cards' relative time (events carry no ts of their own). */
-    function appendAssistantTurn(turn, createdAt) {
+    function appendAssistantTurn(turn, createdAt, startedAt) {
       var ctx = newAssistantBubble();
       if (turn.text) setBubbleText(ctx, turn.text);
       else finalizeBubble(ctx); // no text → drop the empty typing bubble
       var events = (turn.events || []).map(function (e) {
         return e.ts ? e : { op: e.op, table: e.table, rowId: e.rowId, summary: e.summary, source: e.source || 'ai', ts: createdAt };
       });
-      renderTurnEventCards(railFeedEl(), events);
+      // Task start for the duration timer: the persisted turn-start, else the
+      // message time. Per-event ts (above) gives the run's finish.
+      var startedMs = new Date(startedAt || createdAt || 0).getTime();
+      renderTurnEventCards(railFeedEl(), events, startedMs);
     }
     function parseSse(buffer, onEvent) {
       var sep;
@@ -5442,6 +5489,11 @@ export const appJs = `
     function sendChat(text) {
       if (chatBusy || !text) return;
       chatBusy = true;
+      // Open a fresh turn scope: this turn's activity cards group together (no
+      // window expiry) and their timers measure from now.
+      feedTurnId += 1;
+      feedTurnStartMs = Date.now();
+      feedTurnActive = true;
       appendUserBubble(text);
       var historyToSend = chatHistory.slice();
       chatHistory.push({ role: 'user', text: text });
@@ -5488,6 +5540,9 @@ export const appJs = `
         var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + e.message);
       }).finally(function () {
         chatBusy = false;
+        // Close the turn scope: later activity starts fresh cards (the next turn,
+        // or manual edits via the rolling window).
+        feedTurnActive = false;
         var sb = document.getElementById('chat-send'); if (sb) sb.disabled = false;
         var inp = document.getElementById('chat-input'); if (inp) inp.focus();
       });
