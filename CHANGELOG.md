@@ -65,7 +65,7 @@ changes until an owner opts a table (or a row) into `private`.
   the `--team-cloud` CLI help, and the docs — opening a cloud yourself connects
   you directly (eye-icon row permissions active); `lattice serve --team-cloud`
   is just the deployment role that hosts the cloud as a shared, auth-gated server
-  for *remote* members. **Breaking:** external callers of the old method name
+  for _remote_ members. **Breaking:** external callers of the old method name
   must update to `registerCloudOwner`.
 
 ### Deprecated
