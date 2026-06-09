@@ -90,6 +90,9 @@ import {
   createFileJunction,
   createUserJunction,
   createUserEntity,
+  softDeleteUserEntity,
+  aiDeleteEntity,
+  type DeleteResolution,
 } from './schema-ops.js';
 import { authenticate, type AuthContext } from '../teams/server/auth.js';
 import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
@@ -98,7 +101,11 @@ import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
-import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
+import {
+  dispatchAssistantRoute,
+  getAggressiveness,
+  retireLegacyPreferenceSecrets,
+} from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
 import {
@@ -107,7 +114,9 @@ import {
   listNativeBindings,
   isNativeEntity,
   isInternalNativeEntity,
+  NATIVE_INTERNAL_NAMES,
 } from '../framework/native-entities.js';
+import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import {
   getOrCreateMasterKey,
   readIdentity,
@@ -637,7 +646,10 @@ function resolveOutputDirForConfig(configPath: string): string {
   return resolve(base, 'context');
 }
 
-async function openConfig(
+// Exported for tests: builds a fully-wired ActiveDb from a config on disk so
+// the no-reopen schema primitives (e.g. the assistant's table delete) can be
+// exercised directly without standing up the whole HTTP server.
+export async function openConfig(
   configPath: string,
   outputDir: string,
   autoRender = false,
@@ -761,6 +773,12 @@ async function openConfig(
   // column superset, non-destructively) rather than duplicating it, and
   // guarantees the tables exist on freshly created DBs. Safe on every open.
   await adoptNativeEntities(db);
+
+  // Retire legacy per-workspace preference rows (voice provider + inference
+  // aggressiveness) that older builds stored in `secrets`. They're user
+  // preferences now (machine-local), so this soft-deletes any leftover rows
+  // so they stop appearing in the workspace's Secrets object. Idempotent.
+  await retireLegacyPreferenceSecrets(db);
 
   // Queryable tables = YAML-declared tables PLUS every table registered on the
   // live Lattice that isn't internal bookkeeping. This includes native
@@ -1624,7 +1642,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? '8')));
           const requested = url.searchParams.get('tables');
-          let tables = [...active.validTables];
+          // Conversation storage + secrets must never appear in search results
+          // (mirrors the assistant's own table allowlist). Same source of truth
+          // as the chat dispatcher so search and assistant stay in lockstep.
+          let tables = [...active.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t));
           if (requested) {
             const want = new Set(
               requested
@@ -1854,26 +1875,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
-          // SOFT delete: remove the entity from the config (hiding it from the
-          // GUI) but DO NOT drop the SQL table — its rows stay intact so the
-          // history entry can be reverted with no snapshot. Physical removal is
-          // a separate, API-only `POST /api/schema/purge`. Capture the config
-          // block first so revert can re-add it.
-          const doc = loadConfigDoc(active.configPath);
-          const deletedEntityDef = (doc.toJS() as { entities?: Record<string, unknown> })
-            .entities?.[name];
-          doc.deleteIn(['entities', name]);
-          saveConfigDoc(active.configPath, doc);
-          active = await reopenSameConfig(active, autoRender);
-          await recordSchemaOp(
-            active,
-            'schema.delete_entity',
-            name,
-            { entity: name, entityDef: deletedEntityDef },
-            null,
-            `Deleted table ${name}`,
-            sessionId,
-          );
+          // SOFT delete: remove the entity from the config + live registry
+          // (hiding it from the GUI) but DO NOT drop the SQL table — its rows
+          // stay intact so the recorded `schema.delete_entity` op can be reverted
+          // with no snapshot. No reopen (shared with the assistant's delete tool).
+          // Physical removal is a separate, API-only `POST /api/schema/purge`.
+          await softDeleteUserEntity(active, name, sessionId);
           sendJson(res, { ok: true });
           return;
         }
@@ -2683,6 +2690,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                   `ORDER BY name`;
             rows = (await adapter.allAsync(listSql)) as { name: string }[];
           }
+          // Native conversation-storage tables (chat_threads/chat_messages) are
+          // hidden from the Objects list + Data Model graph, but ARE browsable
+          // read-only here under "System" so the user can inspect chat history.
+          // Only list ones that are actually registered on this DB.
+          for (const n of NATIVE_INTERNAL_NAMES) {
+            if (active.validTables.has(n) && !rows.some((r) => r.name === n)) {
+              rows.push({ name: n });
+            }
+          }
           const tables: { name: string; columns: string[]; rowCount: number }[] = [];
           for (const r of rows) {
             // Lattice.introspectColumns dispatches on dialect internally:
@@ -2698,7 +2714,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (method === 'GET' && /^\/api\/system-tables\/[^/]+\/rows$/.test(pathname)) {
           const parts = pathname.split('/');
           const sysTable = decodeURIComponent(parts[3] ?? '');
-          if (!/^_+[a-zA-Z0-9_]+$/.test(sysTable)) {
+          // Accept underscore-prefixed internals OR the native conversation
+          // tables surfaced under "System". Both are fixed/validated names, so
+          // the interpolation into the SELECT below stays injection-safe.
+          if (!/^_+[a-zA-Z0-9_]+$/.test(sysTable) && !isInternalNativeEntity(sysTable)) {
             sendJson(res, { error: 'Not a system table' }, 400);
             return;
           }
@@ -3480,6 +3499,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // audited, no-reopen primitives the Context Constructor uses.
             createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
             createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
+            // Guarded, reversible table delete — empty tables go immediately;
+            // non-empty ones come back as `needsResolution` so the assistant asks.
+            deleteEntity: (name: string, resolution?: DeleteResolution) =>
+              aiDeleteEntity(active, name, resolution, sessionId),
             pathname,
             method,
           });
@@ -3498,7 +3521,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
             createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
             createEntity: (entity, columns) => createUserEntity(active, entity, columns, sessionId),
-            aggressiveness: await getAggressiveness(active.db),
+            aggressiveness: getAggressiveness(),
 
             latticeRoot: dirname(active.configPath),
             pathname,
@@ -3547,7 +3570,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         sendJson(res, { error: 'Not found' }, 404);
       } catch (err) {
-        sendJson(res, { error: (err as Error).message }, 500);
+        // the fail-loudly rule — no silent failures. Any unhandled error in a GUI request
+        // handler is logged loudly server-side (method, path, stack) BEFORE the
+        // 500 goes out, so the real cause survives even when the client only
+        // sees a transient toast. Previously this returned the message with no
+        // server-side log, making ingest (and other) failures invisible.
+        const e = err as Error;
+        console.error(
+          `[gui] ${req.method ?? '?'} ${req.url ?? '?'} failed: ${e.message}\n${e.stack ?? ''}`,
+        );
+        sendJson(res, { error: e.message }, 500);
       }
     })();
   });

@@ -83,6 +83,20 @@ export class SchemaManager {
     this._entityContexts.set(table, def);
   }
 
+  /**
+   * Remove a table from the registry — the inverse of {@link define}. Clears the
+   * table def, its primary-key, any multi-render, and its entity context. A no-op
+   * if the table was never defined. Used by the GUI's soft table-delete to drop a
+   * runtime-registered table without a full reopen; the physical SQL table is left
+   * intact by the caller so the delete stays revertible.
+   */
+  undefine(table: string): void {
+    this._tables.delete(table);
+    this._tablePK.delete(table);
+    this._multis.delete(table);
+    this._entityContexts.delete(table);
+  }
+
   getTables(): Map<string, CompiledTableDef> {
     return this._tables;
   }

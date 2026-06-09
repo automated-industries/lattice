@@ -18,12 +18,28 @@ Use a fixed GUI port so the redirect URI is stable: `lattice gui --port 4317`.
 ## Chat
 
 The rail runs a Claude tool-calling loop streamed over SSE. The model can list,
-read, create, update, link, and revert rows in the active database. **Every edit
-goes through the same audited, undoable mutation path as a manual edit** — it
-appears in the activity feed and the version history and can be reverted.
+read, **full-text search**, create, update, link, delete tables, and revert in
+the active database. **Every edit goes through the same audited, undoable
+mutation path as a manual edit** — it appears in the activity feed and the
+version history and can be reverted.
+
+The **top search box hands your query to the assistant**: type and press Enter
+and the query is submitted as a chat turn, which the assistant answers using its
+`search` (and read) tools rather than a plain text match. The assistant never
+sees the conversation-storage or `secrets` tables (search and `list_entities`
+both exclude them).
+
+**Deleting a table is guarded + reversible.** The `delete_entity` tool refuses
+built-in tables, tables another table links to, and tables you don't own. An
+**empty** table is soft-deleted immediately; a **non-empty** one is **not**
+deleted until you decide what happens to the data — the tool reports the row
+count and the assistant asks, then you choose `delete_data` (soft-delete the rows
+too) or `move_to` another table. The physical table + rows are kept (no hard
+drop), so the whole thing is revertible from version history.
 
 Conversations persist in the native `chat_threads` / `chat_messages` entities;
-use the thread switcher to revisit them.
+use the thread switcher to revisit them. A new thread is **named from a short AI
+summary** of its first exchange (e.g. "Adding New Notes About Cheese").
 
 The assistant **remembers what it read across turns.** Earlier tool calls and
 their results (including row ids) are replayed into the model's context, so a
@@ -70,13 +86,20 @@ A single **Conservative ↔ Aggressive** slider (Settings → Assistant) tunes h
 much the assistant extrapolates. It maps to the model sampling temperature, how
 liberally the ingest classifier proposes links, and whether ingest auto-creates a
 missing junction (gated at ≥ 0.25) versus only suggesting it. Default: balanced
-(0.5). Settable via `PUT /api/assistant/aggressiveness { "value": 0..1 }`.
+(0.5). Settable via `PUT /api/assistant/aggressiveness { "value": 0..1 }`. This
+is a **user preference** (machine-local `~/.lattice/preferences.json`), not a
+workspace secret — it persists across workspaces and never appears in a
+workspace's Secrets object.
 
 ## Voice (optional)
 
 Set `OPENAI_API_KEY` (Whisper) or `ELEVENLABS_API_KEY` to enable the composer
-mic; choose the provider in the Assistant settings. When no microphone is
-available the mic button is shown disabled with a tooltip rather than erroring.
+mic; choose the provider in the Assistant settings (also a machine-local user
+preference, not a workspace secret). When no microphone is available the mic
+button is shown disabled with a tooltip rather than erroring. **While a note is
+recording or transcribing, the composer is read-only** — it shows a
+"Listening… / Transcribing…" placeholder and the Send button is disabled — and
+the transcript is inserted when you stop.
 
 ## Cloud
 

@@ -7,6 +7,7 @@ import {
   aggressivenessToTemperature,
 } from './assistant-routes.js';
 import { createAnthropicClient, runChat, type LlmMessage, type ContentBlock } from './ai/chat.js';
+import { generateThreadTitle } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
 import {
   ASSISTANT_HIDDEN_TABLES,
@@ -32,6 +33,7 @@ interface ChatContext {
   softDeletable: Set<string>;
   createEntity?: (name: string, columns: string[]) => Promise<string | null>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
+  deleteEntity?: DispatchCtx['deleteEntity'];
   pathname: string;
   method: string;
 }
@@ -403,6 +405,7 @@ export async function dispatchChatRoute(
     softDeletable: ctx.softDeletable,
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
+    ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
   };
 
   let assistantText = '';
@@ -416,7 +419,7 @@ export async function dispatchChatRoute(
   }[] = [];
   try {
     const client = createAnthropicClient(auth);
-    const temperature = aggressivenessToTemperature(await getAggressiveness(ctx.db));
+    const temperature = aggressivenessToTemperature(getAggressiveness());
     for await (const ev of runChat({
       client,
       dispatch,
@@ -467,6 +470,29 @@ export async function dispatchChatRoute(
       await persistMessage(ctx.db, threadId, 'assistant', assistantText, cleanTurns);
     } catch (e) {
       console.warn('[chat] persist assistant message failed:', (e as Error).message);
+    }
+    // Give a newly-created thread an AI-generated short title in place of the
+    // truncated-first-message placeholder set by ensureThread. Best-effort and
+    // idempotent: only when THIS request created the thread, we have a reply,
+    // and the title is still the exact placeholder — so a user rename is never
+    // clobbered. The stream has already ended; the new title surfaces on the
+    // next thread-list refresh.
+    const createdNew = threadId !== requestedThread;
+    if (createdNew && assistantText.trim()) {
+      try {
+        const placeholder = message.slice(0, 60) || 'Chat';
+        const cur = (await ctx.db.get('chat_threads', threadId)) as { title?: string } | null;
+        if (cur && (cur.title ?? '') === placeholder) {
+          const title = await generateThreadTitle(
+            createAnthropicClient(auth),
+            message,
+            assistantText,
+          );
+          if (title) await ctx.db.update('chat_threads', threadId, { title });
+        }
+      } catch (e) {
+        console.warn('[chat] thread title generation failed:', (e as Error).message);
+      }
     }
   }
   return true;
