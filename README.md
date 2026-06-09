@@ -2123,7 +2123,7 @@ The GUI has a fixed right sidebar with a live **activity feed** — every change
 type so a bulk run shows a single card ("Deleted 19 tables", "Removed 49 rows
 across 9 tables") instead of a wall of near-identical rows. The feed is scoped to
 the open conversation: the assistant's data changes are saved with each turn and
-replayed as those cards when you reopen the chat.
+replayed as those cards when you reopen the chat. When the assistant references a record, it emits an inline object-link pill — a clickable chip that opens that row in the mode-aware navigator.
 
 Add a Claude API token in **User Settings → Assistant** (or set
 `ANTHROPIC_API_KEY`) to enable the **AI assistant**: ask questions about your
@@ -2376,7 +2376,7 @@ The full architecture, schema, and HTTP surface live in [docs/teams.md](./docs/t
 Lattice Teams + the GUI's Database panel now flow through a state machine:
 
 ```
-LOCAL  →  CLOUD WORKSPACE (owner | member | needs-invite)
+LOCAL  →  CLOUD WORKSPACE (owner | member)
        (migrate / connect)
 ```
 
@@ -2442,7 +2442,7 @@ HTTP surface (all under `/api/dbconfig/*`, localhost-only, same auth model as th
 | POST   | `/api/dbconfig/connect-existing`          | `TeamsClient.connectToExistingCloud`          |
 | POST   | `/api/dbconfig/save` / `connect` / `test` | unchanged from v1.12                          |
 
-The `state` field on `GET /api/dbconfig` is one of: `local`, `team-cloud-creator`, `team-cloud-member`, `team-cloud-needs-invite` (the `cloud-connected` state was removed in 1.16.3). The SPA badge color-codes them (labeled "CLOUD · OWNER / MEMBER / NEEDS INVITE"); the routes use them only for response shape.
+The `state` field on `GET /api/dbconfig` is one of: `local`, `team-cloud-creator`, `team-cloud-member` (the `cloud-connected` state was removed in 1.16.3; the `team-cloud-needs-invite` state was removed in 2.1.1 — a connected cloud is always a member workspace). The SPA badge color-codes them (labeled "CLOUD · OWNER / MEMBER"); the routes use them only for response shape.
 
 ---
 
