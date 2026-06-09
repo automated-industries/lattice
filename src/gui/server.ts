@@ -60,6 +60,7 @@ import {
   rowGrantees,
   setRowVisibility,
   setTableDefaultVisibility,
+  visibleRowEdits,
 } from '../teams/row-access.js';
 import { recordObjectOwner, resolveUserIdByEmail } from '../teams/direct-ops.js';
 import {
@@ -3409,36 +3410,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
-          // Scan recent change-log rows (newest first) and keep the first
-          // (latest) entry per pk — that's the most recent edit to each row.
-          const scan = (await active.db.query('__lattice_change_log', {
-            filters: [
-              { col: 'team_id', op: 'eq', val: tctx.teamId },
-              { col: 'table_name', op: 'eq', val: table },
-            ],
-            orderBy: 'seq',
-            orderDir: 'desc',
-            limit: 2000,
-          })) as unknown as {
-            pk: string | null;
-            owner_user_id: string | null;
-            created_at: string;
-            client_ts: string | null;
-          }[];
-          // Row-level security: only surface last-edited for rows this member can
-          // see — the map would otherwise leak the existence + last editor of
-          // private rows. Intersect with the visible set (one indexed query, not
-          // a per-pk scan) and build the map filtered from the start.
-          const visible = await listVisibleRows(active.db, tctx.teamId, table, tctx.myUserId, {
-            limit: 5000,
-            deleted: 'any',
-          });
-          const visiblePks = new Set(visible.map((r) => String(r.id)));
-          const edits: Record<string, { ownerUserId: string | null; at: string }> = {};
-          for (const r of scan) {
-            if (!r.pk || edits[r.pk] || !visiblePks.has(r.pk)) continue;
-            edits[r.pk] = { ownerUserId: r.owner_user_id, at: r.client_ts ?? r.created_at };
-          }
+          // Row-level security: the map is restricted to rows this member can
+          // see (the latest change-log entry per pk, intersected with the
+          // visible set), so it never leaks the existence + last editor of a
+          // private row. The ACL filter lives in visibleRowEdits so it stays
+          // unit-testable (see tests/integration/row-perms-endpoints.test.ts).
+          const edits = await visibleRowEdits(active.db, tctx.teamId, table, tctx.myUserId);
           sendJson(res, { edits });
           return;
         }

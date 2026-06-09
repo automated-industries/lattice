@@ -464,6 +464,52 @@ export async function rowGrantees(
   return grants.map((g) => String(g.grantee_user_id));
 }
 
+/** Last-edited summary for one row, surfaced by the GUI's "last edited by" map. */
+export interface RowLastEdited {
+  ownerUserId: string | null;
+  at: string;
+}
+
+/**
+ * The "last edited by" map for a shared table, restricted to rows the member
+ * can see. Scans the change log (newest first) keeping the latest entry per pk,
+ * then intersects with the member's visible set ({@link listVisibleRows}, one
+ * indexed query) — so the map never leaks the existence or last editor of a
+ * private row. The GET /api/tables/:t/last-edited handler is a thin wrapper
+ * over this; keeping the ACL filter here makes it unit-testable on either
+ * dialect.
+ */
+export async function visibleRowEdits(
+  db: Lattice,
+  teamId: string,
+  table: string,
+  userId: string,
+  scanLimit = 2000,
+): Promise<Record<string, RowLastEdited>> {
+  const scan = (await db.query('__lattice_change_log', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: table },
+    ],
+    orderBy: 'seq',
+    orderDir: 'desc',
+    limit: scanLimit,
+  })) as unknown as {
+    pk: string | null;
+    owner_user_id: string | null;
+    created_at: string;
+    client_ts: string | null;
+  }[];
+  const visible = await listVisibleRows(db, teamId, table, userId, { limit: 5000, deleted: 'any' });
+  const visiblePks = new Set(visible.map((r) => String(r.id)));
+  const edits: Record<string, RowLastEdited> = {};
+  for (const r of scan) {
+    if (!r.pk || edits[r.pk] || !visiblePks.has(r.pk)) continue;
+    edits[r.pk] = { ownerUserId: r.owner_user_id, at: r.client_ts ?? r.created_at };
+  }
+  return edits;
+}
+
 /**
  * Owner-gated change of a shared table's default row visibility (the
  * visibility newly-created rows in that table are born with). Gated to the
