@@ -144,38 +144,36 @@ describe('applyTeamMembershipState', () => {
   const teamInfo = {
     type: 'postgres',
     teamEnabled: true,
-    state: 'team-cloud-needs-invite' as const,
+    state: 'team-cloud-member' as const,
   };
 
-  it('reports a joined member as team-cloud-member (not needs-invite)', () => {
+  it('reports a member as team-cloud-member', () => {
     expect(applyTeamMembershipState(teamInfo, { joined: true, isCreator: false })).toBe(
       'team-cloud-member',
     );
   });
 
-  it('reports a joined creator as team-cloud-creator', () => {
+  it('reports a creator as team-cloud-creator', () => {
     expect(applyTeamMembershipState(teamInfo, { joined: true, isCreator: true })).toBe(
       'team-cloud-creator',
     );
   });
 
-  it('reports a non-joined operator as needs-invite', () => {
+  it('a connected cloud workspace is a member even if the probe says not-joined (never needs-invite)', () => {
+    // Connection ⟹ membership: you can't reach a team cloud without an invite.
     expect(applyTeamMembershipState(teamInfo, { joined: false, isCreator: false })).toBe(
-      'team-cloud-needs-invite',
+      'team-cloud-member',
     );
   });
 
-  it('leaves local + not-yet-initialized cloud DBs untouched', () => {
+  it('with unresolved membership, keeps the computed creator/member state', () => {
+    expect(applyTeamMembershipState({ type: 'postgres', state: 'team-cloud-creator' }, null)).toBe(
+      'team-cloud-creator',
+    );
+  });
+
+  it('leaves non-postgres DBs untouched', () => {
     expect(applyTeamMembershipState({ type: 'sqlite', state: 'local' }, null)).toBe('local');
-    // A cloud DB not yet initialized as a workspace (teamEnabled false) keeps
-    // its computed state — membership can't apply without an identity. (The
-    // 'cloud-connected' state was removed in 1.16.3.)
-    expect(
-      applyTeamMembershipState(
-        { type: 'postgres', teamEnabled: false, state: 'team-cloud-needs-invite' },
-        { joined: true, isCreator: false },
-      ),
-    ).toBe('team-cloud-needs-invite');
   });
 });
 

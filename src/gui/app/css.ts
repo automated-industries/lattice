@@ -413,6 +413,8 @@ export const css = `
     }
     a.chip-link { cursor: pointer; }
     a.chip-link:hover { background: var(--accent); color: white; }
+    /* Inline object-reference pills the assistant emits — render flush in prose. */
+    a.lattice-ref { text-decoration: none; vertical-align: baseline; }
     .empty-row td {
       color: var(--text-muted); font-style: italic; text-align: center;
       padding: 24px;
@@ -1139,20 +1141,9 @@ export const css = `
       padding: 8px; margin: 0 0 8px; overflow-x: auto;
     }
     .chat-bubble.assistant pre code { background: none; border: none; padding: 0; white-space: pre; }
-    .chat-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-    .tool-pill {
-      display: inline-flex; align-items: center; gap: 5px;
-      border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 500;
-      background: var(--accent-soft); color: var(--accent);
-      box-shadow: var(--glow-accent-soft);
-    }
-    .tool-pill.done { background: var(--surface-2); color: var(--text-muted); box-shadow: none; }
-    .tool-pill.error { background: rgba(251,146,60,0.14); color: var(--warn); box-shadow: none; }
-    .tool-pill .spin { display: inline-block; width: 9px; height: 9px;
-      border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%;
-      animation: pillspin 0.7s linear infinite; }
-    @keyframes pillspin { to { transform: rotate(360deg); } }
-    /* Typing indicator: three pulsing dots shown in an assistant bubble while
+    /* The assistant's data changes render as activity-feed cards (.feed-item) in
+       the rail — there is no separate inline pill style. Reads emit no card.
+       Typing indicator: three pulsing dots shown in an assistant bubble while
        the model is generating (before the first text delta of a turn). */
     .chat-typing { display: inline-flex; align-items: center; gap: 4px; padding: 1px 0; }
     .chat-typing i {
