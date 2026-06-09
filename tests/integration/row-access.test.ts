@@ -18,6 +18,8 @@ import {
   addRowGrant,
   removeRowGrant,
   setTableDefaultVisibility,
+  rowAccessSummaries,
+  rowGrantees,
   RowOwnerOnlyError,
   type TableDefaultVisibility,
 } from '../../src/teams/row-access.js';
@@ -208,6 +210,40 @@ describe('row-access owner gating', () => {
     );
     await setTableDefaultVisibility(db, TEAM, 'tasks', ALICE, 'everyone');
     expect(await tableDefaultVisibility(db, TEAM, 'tasks')).toBe('everyone');
+  });
+
+  it('rowAccessSummaries: batched, correct owner/visibility/ownedByMe, never grantees', async () => {
+    const db = await makeCloud();
+    await shareTable(db, 'tasks', ALICE, 'everyone');
+    await recordRowAcl(db, TEAM, 'tasks', 'r1', ALICE, 'private');
+    await recordRowAcl(db, TEAM, 'tasks', 'r2', BOB, 'private');
+    await addRowGrant(db, TEAM, 'tasks', 'r2', CAROL, BOB); // r2 → custom + grant Carol
+
+    const sums = await rowAccessSummaries(db, TEAM, 'tasks', ALICE, ['r1', 'r2', 'ghost']);
+    expect(sums.get('r1')).toEqual({
+      owner_user_id: ALICE,
+      visibility: 'private',
+      ownedByMe: true,
+    });
+    expect(sums.get('r2')).toEqual({ owner_user_id: BOB, visibility: 'custom', ownedByMe: false });
+    // no-ACL row inherits the table default ('everyone') + the table owner (Alice)
+    expect(sums.get('ghost')).toEqual({
+      owner_user_id: ALICE,
+      visibility: 'everyone',
+      ownedByMe: true,
+    });
+    // The list payload must NEVER carry a grantee list (owner-only detail).
+    for (const s of sums.values()) expect(Object.keys(s)).not.toContain('grantees');
+  });
+
+  it('rowGrantees returns exactly the custom grant list', async () => {
+    const db = await makeCloud();
+    await shareTable(db, 'tasks', ALICE, 'private');
+    await recordRowAcl(db, TEAM, 'tasks', 'r1', ALICE, 'private');
+    await addRowGrant(db, TEAM, 'tasks', 'r1', BOB, ALICE);
+    await addRowGrant(db, TEAM, 'tasks', 'r1', CAROL, ALICE);
+    expect((await rowGrantees(db, TEAM, 'tasks', 'r1')).sort()).toEqual([BOB, CAROL].sort());
+    expect(await rowGrantees(db, TEAM, 'tasks', 'no-grants')).toEqual([]);
   });
 
   it('recordRowAcl sets owner + visibility and is idempotent on the row PK', async () => {

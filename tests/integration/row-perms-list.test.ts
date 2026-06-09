@@ -67,12 +67,7 @@ async function shareTable(
   });
 }
 
-async function addTask(
-  db: Lattice,
-  id: string,
-  owner: string,
-  vis: RowVisibility,
-): Promise<void> {
+async function addTask(db: Lattice, id: string, owner: string, vis: RowVisibility): Promise<void> {
   await db.upsert('tasks', { id, title: id });
   await recordRowAcl(db, TEAM, 'tasks', id, owner, vis);
 }

@@ -1299,6 +1299,31 @@ export const appJs = `
           .map(function (h) { return '<th>' + escapeHtml(h) + '</th>'; }).join('');
         headers += '<th class="row-actions"></th>';
 
+        // Per-row visibility indicator (2.2 row-level permissions). Reads the
+        // server-attached _access summary (team clouds only); absent yields ''.
+        // U+25C9 = everyone (yellow) / private (red, by colour); U+25CE =
+        // custom (shared with specific people). Owner = interactive toggle;
+        // non-owner = faded + inert status.
+        function rowVisMarkup(tbl, r) {
+          var a = r._access;
+          if (!a) return '';
+          var vis = a.visibility;
+          var glyph = vis === 'custom' ? '◎' : '◉';
+          if (!a.ownedByMe) {
+            var seen = vis === 'custom' ? 'Shared with you' : 'Visible to everyone';
+            return '<span class="row-vis row-vis-disabled" title="' + escapeHtml(seen) + '">' + glyph + '</span>';
+          }
+          if (vis === 'custom') {
+            return '<a class="row-vis" href="#/objects/' + encodeURIComponent(tbl) + '/' + encodeURIComponent(r.id) +
+              '" title="Shared with specific people — open to manage">' + glyph + '</a>';
+          }
+          var cls = vis === 'private' ? 'row-vis row-vis-private' : 'row-vis';
+          var title = vis === 'everyone'
+            ? 'Visible to everyone — click to make private'
+            : 'Private to you — click to share with everyone';
+          return '<button class="' + cls + '" data-vis-toggle="' + escapeHtml(r.id) +
+            '" data-vis-cur="' + vis + '" title="' + escapeHtml(title) + '">' + glyph + '</button>';
+        }
         var bodyRows;
         if (rows.length === 0) {
           bodyRows = '';
@@ -1329,7 +1354,8 @@ export const appJs = `
                 '<button class="row-delete" title="Delete permanently" data-hard-del="' + escapeHtml(r.id) + '">✕</button>' +
                 '</td>');
             } else {
-              tds.push('<td class="row-actions"><button class="row-delete" title="Delete" data-del="' + escapeHtml(r.id) + '">✕</button></td>');
+              tds.push('<td class="row-actions">' + rowVisMarkup(tableName, r) +
+                '<button class="row-delete" title="Delete" data-del="' + escapeHtml(r.id) + '">✕</button></td>');
             }
             return '<tr data-id="' + escapeHtml(r.id) + '"' + (viewMode === 'trash' ? ' class="row-deleted"' : '') + '>' + tds.join('') + '</tr>';
           }).join('');
@@ -1434,6 +1460,30 @@ export const appJs = `
               showToast(d.label.replace(/s$/, '') + ' restored', { undo: undoLast });
             }).catch(function (err) {
               showToast('Restore failed: ' + err.message, {});
+            });
+          });
+        });
+
+        content.querySelectorAll('button[data-vis-toggle]').forEach(function (btn) {
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var id = btn.getAttribute('data-vis-toggle');
+            var cur = btn.getAttribute('data-vis-cur');
+            var next = cur === 'everyone' ? 'private' : 'everyone';
+            withBusy(btn, function () {
+              return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ visibility: next }),
+              }).then(function () {
+                invalidate(tableName);
+                return refreshEntities();
+              }).then(function () {
+                renderTable(content, tableName);
+                showToast(next === 'everyone' ? 'Row shared with everyone' : 'Row made private', {});
+              }).catch(function (err) {
+                showToast('Visibility update failed: ' + err.message, {});
+              });
             });
           });
         });
@@ -1564,6 +1614,25 @@ export const appJs = `
       });
     }
 
+    // Detail-view row visibility line (2.2). Owner: status + everyone/private
+    // toggle (custom shows the grantee count). Non-owner: read-only status.
+    function detailVisLineEl(row) {
+      var a = row._access;
+      if (!a) return '';
+      var vis = a.visibility;
+      var labelMap = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
+      if (!a.ownedByMe) {
+        var seen = vis === 'custom' ? 'Shared with you' : (labelMap[vis] || '');
+        return '<div class="detail-vis muted" style="margin:6px 0;font-size:13px">' + escapeHtml(seen) + '</div>';
+      }
+      var info = labelMap[vis] || '';
+      if (vis === 'custom' && a.grantees) info += ' (' + a.grantees.length + ')';
+      var btnLabel = vis === 'everyone' ? 'Make private' : 'Share with everyone';
+      return '<div class="detail-vis" style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px">' +
+        '<span class="muted">' + escapeHtml(info) + '</span>' +
+        '<button class="btn" id="detail-vis-toggle" data-vis-cur="' + vis + '">' + btnLabel + '</button>' +
+        '</div>';
+    }
     function renderDetail(content, tableName, id) {
       var t = tableByName(tableName);
       if (!t) {
@@ -1662,6 +1731,7 @@ export const appJs = `
               '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
               '<div class="actions">' + actions + '</div>' +
             '</div>' +
+            detailVisLineEl(row) +
             lastEditedLineEl(tableName, id) +
             (tableName === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
@@ -1673,6 +1743,23 @@ export const appJs = `
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
           if (!editing && tableName === 'files') renderFilePreview(row);
+
+          var detailVisBtn = content.querySelector('#detail-vis-toggle');
+          if (detailVisBtn) detailVisBtn.addEventListener('click', function () {
+            var cur = detailVisBtn.getAttribute('data-vis-cur');
+            var next = cur === 'everyone' ? 'private' : 'everyone';
+            withBusy(detailVisBtn, function () {
+              return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ visibility: next }),
+              }).then(function () {
+                invalidate(tableName);
+                renderDetail(content, tableName, id);
+                showToast(next === 'everyone' ? 'Shared with everyone' : 'Made private', {});
+              }).catch(function (e) { showToast('Visibility update failed: ' + e.message, {}); });
+            });
+          });
 
           // Junction link/unlink handlers (active in both read and edit modes).
           content.querySelectorAll('.remove-link').forEach(function (btn) {
@@ -3103,6 +3190,18 @@ export const appJs = `
             '</span>' +
           '</div>'
         : '';
+      // Owner-only "new rows default to" control, shown for a shared table.
+      var defaultVis = (t && t.defaultRowVisibility) || 'private';
+      var defaultVisRow = canShare && isShared
+        ? '<label>New rows default to</label>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<select id="dm-rowvis-select">' +
+              '<option value="private"' + (defaultVis === 'private' ? ' selected' : '') + '>Private (owner only)</option>' +
+              '<option value="everyone"' + (defaultVis === 'everyone' ? ' selected' : '') + '>Everyone on the workspace</option>' +
+            '</select>' +
+            '<span style="font-size:12px;color:var(--text-muted)">Visibility new rows in this table are created with.</span>' +
+          '</div>'
+        : '';
       panel.innerHTML =
         '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
         '<div class="dm-edit-grid">' +
@@ -3117,6 +3216,7 @@ export const appJs = `
             '<button class="btn" id="dm-icon-btn" style="margin-top:6px;">Save</button>' +
           '</div>' +
           shareRow +
+          defaultVisRow +
           '<label>Columns</label>' +
           '<div>' +
             '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
@@ -3166,6 +3266,22 @@ export const appJs = `
           }).then(function () {
             showToast(isShared ? 'Unshared "' + tableName + '" from workspace' : 'Shared "' + tableName + '" with workspace', {});
           }).catch(function (e) { showToast('Share update failed: ' + e.message, {}); });
+        });
+      });
+
+      var rowvisSelect = panel.querySelector('#dm-rowvis-select');
+      if (rowvisSelect) rowvisSelect.addEventListener('change', function () {
+        var next = rowvisSelect.value;
+        withBusy(rowvisSelect, function () {
+          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/default-row-visibility', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ visibility: next }),
+          }).then(function () {
+            return dmRefreshPanel(tableName, false);
+          }).then(function () {
+            showToast(next === 'everyone' ? 'New rows now default to everyone' : 'New rows now default to private', {});
+          }).catch(function (e) { showToast('Default visibility update failed: ' + e.message, {}); });
         });
       });
     }

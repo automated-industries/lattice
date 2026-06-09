@@ -103,7 +103,8 @@ export async function tableOwner(db: Lattice, teamId: string, table: string): Pr
     ],
     limit: 1,
   });
-  if (owners[0]?.owner_user_id) return String(owners[0].owner_user_id);
+  const ownerId = owners[0]?.owner_user_id;
+  if (typeof ownerId === 'string' && ownerId) return ownerId;
   const shared = await db.query('__lattice_shared_objects', {
     filters: [
       { col: 'team_id', op: 'eq', val: teamId },
@@ -112,7 +113,8 @@ export async function tableOwner(db: Lattice, teamId: string, table: string): Pr
     ],
     limit: 1,
   });
-  return shared[0]?.created_by_user_id ? String(shared[0].created_by_user_id) : '';
+  const createdBy = shared[0]?.created_by_user_id;
+  return typeof createdBy === 'string' ? createdBy : '';
 }
 
 async function rawAclRow(
@@ -269,9 +271,7 @@ async function requireOwner(
   actorUserId: string,
 ): Promise<{ existing: Row | undefined; owner: string }> {
   const existing = await rawAclRow(db, teamId, table, pk);
-  const owner = existing
-    ? String(existing.owner_user_id)
-    : await tableOwner(db, teamId, table);
+  const owner = existing ? String(existing.owner_user_id) : await tableOwner(db, teamId, table);
   if (!actorUserId || owner !== actorUserId) throw new RowOwnerOnlyError();
   return { existing, owner };
 }
@@ -354,6 +354,70 @@ export async function removeRowGrant(
     pk,
     grantee_user_id: granteeUserId,
   });
+}
+
+// ---------------------------------------------------------------------------
+// GUI payload helpers
+// ---------------------------------------------------------------------------
+
+/** Minimal per-row access summary surfaced to the GUI (drives the eye icon). */
+export interface RowAccessSummary {
+  owner_user_id: string;
+  visibility: RowVisibility;
+  ownedByMe: boolean;
+}
+
+/**
+ * Resolve access summaries for many rows of one table in a BATCHED way (one
+ * ACL query + the table owner/default, no N+1). Rows without an explicit ACL
+ * entry inherit the table default + table owner — matching {@link resolveRowAcl}.
+ * Intended for the GET-list payload, so the GUI can render each row's eye icon
+ * without a per-row round-trip. Never includes the grantee list.
+ */
+export async function rowAccessSummaries(
+  db: Lattice,
+  teamId: string,
+  table: string,
+  userId: string,
+  pks: string[],
+): Promise<Map<string, RowAccessSummary>> {
+  const out = new Map<string, RowAccessSummary>();
+  if (pks.length === 0) return out;
+  const acls = await db.query('__lattice_row_acl', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: table },
+    ],
+  });
+  const aclByPk = new Map(acls.map((a) => [String(a.pk), a]));
+  const [owner, def] = await Promise.all([
+    tableOwner(db, teamId, table),
+    tableDefaultVisibility(db, teamId, table),
+  ]);
+  for (const pk of pks) {
+    const a = aclByPk.get(pk);
+    const ownerUserId = a ? String(a.owner_user_id) : owner;
+    const visibility: RowVisibility = a && isRowVisibility(a.visibility) ? a.visibility : def;
+    out.set(pk, { owner_user_id: ownerUserId, visibility, ownedByMe: ownerUserId === userId });
+  }
+  return out;
+}
+
+/** The grantee user-ids of a row's custom grant list (owner-facing detail only). */
+export async function rowGrantees(
+  db: Lattice,
+  teamId: string,
+  table: string,
+  pk: string,
+): Promise<string[]> {
+  const grants = await db.query('__lattice_row_grants', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: table },
+      { col: 'pk', op: 'eq', val: pk },
+    ],
+  });
+  return grants.map((g) => String(g.grantee_user_id));
 }
 
 /**

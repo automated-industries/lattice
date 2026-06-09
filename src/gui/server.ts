@@ -56,9 +56,10 @@ import {
   canAccessRow,
   listVisibleRows,
   removeRowGrant,
+  rowAccessSummaries,
+  rowGrantees,
   setRowVisibility,
   setTableDefaultVisibility,
-  type RowVisibility,
 } from '../teams/row-access.js';
 import { recordObjectOwner, resolveUserIdByEmail } from '../teams/direct-ops.js';
 import {
@@ -312,6 +313,24 @@ async function entitiesWithCounts(
     }
   }
 
+  // Per-table default row visibility (batched, one query for the whole shared-
+  // object set) for the Data Model "new rows default to" select.
+  const rowVisDefaults = new Map<string, 'private' | 'everyone'>();
+  if (teamContext) {
+    const sharedObjs = await db.query('__lattice_shared_objects', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamContext.teamId },
+        { col: 'deleted_at', op: 'isNull' },
+      ],
+    });
+    for (const r of sharedObjs) {
+      rowVisDefaults.set(
+        String(r.table_name),
+        r.default_row_visibility === 'everyone' ? 'everyone' : 'private',
+      );
+    }
+  }
+
   const enrichedTables = await Promise.all(
     allTables.map(async (t): Promise<GuiTableSummary> => {
       let rowCount: number | null;
@@ -340,6 +359,8 @@ async function entitiesWithCounts(
         base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
         const ver = teamContext.sharedVersions.get(t.name);
         if (ver !== undefined) base.schemaVersion = ver;
+        const dv = rowVisDefaults.get(t.name);
+        if (dv) base.defaultRowVisibility = dv;
       }
       return base;
     }),
@@ -3459,20 +3480,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const deletedMode = url.searchParams.get('deleted');
               let rows: Row[];
               if (active.teamContext) {
+                const tc = active.teamContext;
                 // Row-level security: only the rows this member may see, filtered
                 // in SQL. The table-visibility gate (validTables) already ran.
-                rows = await listVisibleRows(
+                rows = await listVisibleRows(active.db, tc.teamId, table, tc.myUserId, {
+                  limit,
+                  offset,
+                  deleted:
+                    deletedMode === 'any' ? 'any' : deletedMode === 'only' ? 'only' : 'exclude',
+                });
+                // Attach a minimal per-row access summary (batched, no N+1) so the
+                // GUI can render each row's eye icon. Never includes grantees.
+                const summaries = await rowAccessSummaries(
                   active.db,
-                  active.teamContext.teamId,
+                  tc.teamId,
                   table,
-                  active.teamContext.myUserId,
-                  {
-                    limit,
-                    offset,
-                    deleted:
-                      deletedMode === 'any' ? 'any' : deletedMode === 'only' ? 'only' : 'exclude',
-                  },
+                  tc.myUserId,
+                  rows.map((r) => String(r.id)),
                 );
+                rows = rows.map((r) => ({ ...r, _access: summaries.get(String(r.id)) ?? null }));
               } else {
                 const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
                 if (active.softDeletable.has(table) && deletedMode !== 'any') {
@@ -3498,18 +3524,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 sendJson(res, { error: 'Row not found' }, 404);
                 return;
               }
-              // Row-level security: a denied read is indistinguishable from missing.
-              if (
-                active.teamContext &&
-                !(await canAccessRow(
-                  active.db,
-                  active.teamContext.teamId,
-                  table,
-                  id,
-                  active.teamContext.myUserId,
-                ))
-              ) {
-                sendJson(res, { error: 'Row not found' }, 404);
+              if (active.teamContext) {
+                const tc = active.teamContext;
+                // Row-level security: a denied read is indistinguishable from missing.
+                if (!(await canAccessRow(active.db, tc.teamId, table, id, tc.myUserId))) {
+                  sendJson(res, { error: 'Row not found' }, 404);
+                  return;
+                }
+                const summary =
+                  (await rowAccessSummaries(active.db, tc.teamId, table, tc.myUserId, [id])).get(
+                    id,
+                  ) ?? null;
+                // The grantee list is owner-only — never leak it to a non-owner.
+                const access = summary?.ownedByMe
+                  ? { ...summary, grantees: await rowGrantees(active.db, tc.teamId, table, id) }
+                  : summary;
+                sendJson(res, { ...row, _access: access });
                 return;
               }
               sendJson(res, row);

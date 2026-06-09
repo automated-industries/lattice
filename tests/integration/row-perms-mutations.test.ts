@@ -10,11 +10,7 @@ import {
 } from '../../src/teams/internal-tables.js';
 import { createRow, updateRow, deleteRow, type MutationCtx } from '../../src/gui/mutations.js';
 import { executeFunction, type DispatchCtx } from '../../src/gui/ai/dispatch.js';
-import {
-  resolveRowAcl,
-  setRowVisibility,
-  RowAccessError,
-} from '../../src/teams/row-access.js';
+import { resolveRowAcl, setRowVisibility, RowAccessError } from '../../src/teams/row-access.js';
 
 const TEAM = 'team-1';
 const ALICE = 'user-alice';
