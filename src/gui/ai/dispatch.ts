@@ -17,6 +17,7 @@ import {
   type MutationCtx,
 } from '../mutations.js';
 import { canAccessRow, listVisibleRows } from '../../teams/row-access.js';
+import { filterSearchGroupsByAcl } from '../search-acl.js';
 
 /**
  * Executes a registry function on behalf of the AI tool loop. Writes flow
@@ -273,26 +274,21 @@ export async function executeFunction(
           tables = tables.filter((t) => want.has(t));
         }
         const limit = typeof args.limit === 'number' ? args.limit : 8;
-        const result = await fullTextSearch(ctx.db.adapter, tables, {
+        let result = await fullTextSearch(ctx.db.adapter, tables, {
           query,
           limitPerTable: limit,
         });
         // Full-text search bypasses the row ACL — post-filter every hit so the
         // assistant never surfaces a row this member can't see (the subtlest
-        // leak: FTS joins straight to the physical table).
+        // leak: FTS joins straight to the physical table). Shared with the
+        // REST /api/search route so the two paths can't drift.
         if (ctx.team) {
-          const team = ctx.team;
-          const groups: typeof result.groups = [];
-          for (const group of result.groups) {
-            const hits: typeof group.hits = [];
-            for (const hit of group.hits) {
-              if (await canAccessRow(ctx.db, team.teamId, group.table, hit.id, team.myUserId)) {
-                hits.push(hit);
-              }
-            }
-            if (hits.length > 0) groups.push({ ...group, hits, count: hits.length });
-          }
-          result.groups = groups;
+          result = await filterSearchGroupsByAcl(
+            ctx.db,
+            ctx.team.teamId,
+            ctx.team.myUserId,
+            result,
+          );
         }
         return { ok: true, result };
       }

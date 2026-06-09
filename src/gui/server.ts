@@ -75,6 +75,7 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
+import { filterSearchGroupsByAcl } from './search-acl.js';
 import { appendChangeEnvelope, findEnvelopeByEditId } from '../teams/team-core.js';
 import {
   createRow,
@@ -1686,10 +1687,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             tables = tables.filter((t) => want.has(t));
           }
-          sendJson(
-            res,
-            await fullTextSearch(active.db.adapter, tables, { query: q, limitPerTable: limit }),
-          );
+          let result = await fullTextSearch(active.db.adapter, tables, {
+            query: q,
+            limitPerTable: limit,
+          });
+          // Full-text search joins straight to the physical tables, bypassing
+          // the row ACL — post-filter every hit so a member never sees a row
+          // they can't read (same filter the assistant's search tool applies).
+          if (active.teamContext) {
+            result = await filterSearchGroupsByAcl(
+              active.db,
+              active.teamContext.teamId,
+              active.teamContext.myUserId,
+              result,
+            );
+          }
+          sendJson(res, result);
           return;
         }
         // ── Team members (for "last edited by" name resolution) ───────────

@@ -404,6 +404,63 @@ export async function rowAccessSummaries(
 }
 
 /**
+ * Of `pks` in one table, the subset `userId` may see — the batched
+ * counterpart of {@link canAccessRow} (one ACL query + at most one grants
+ * query, no N+1). Used to post-filter full-text search hits, which join
+ * straight to the physical table and so bypass the row ACL.
+ */
+export async function filterVisiblePks(
+  db: Lattice,
+  teamId: string,
+  table: string,
+  userId: string,
+  pks: string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (pks.length === 0) return out;
+  const acls = await db.query('__lattice_row_acl', {
+    filters: [
+      { col: 'team_id', op: 'eq', val: teamId },
+      { col: 'table_name', op: 'eq', val: table },
+      { col: 'pk', op: 'in', val: pks },
+    ],
+  });
+  const aclByPk = new Map(acls.map((a) => [String(a.pk), a]));
+  // Per-table constants resolved once: a no-ACL row inherits them, matching
+  // resolveRowAcl.
+  const [owner, def] = await Promise.all([
+    tableOwner(db, teamId, table),
+    tableDefaultVisibility(db, teamId, table),
+  ]);
+  const customPks: string[] = [];
+  for (const pk of pks) {
+    const a = aclByPk.get(pk);
+    const ownerUserId = a ? String(a.owner_user_id) : owner;
+    const visibility: RowVisibility = a && isRowVisibility(a.visibility) ? a.visibility : def;
+    if (userId && ownerUserId === userId) {
+      out.add(pk);
+    } else if (visibility === 'everyone') {
+      out.add(pk);
+    } else if (visibility === 'custom' && userId) {
+      customPks.push(pk); // grant-listed? resolved in one batched query below
+    }
+    // 'private' (or 'custom' with no user identity): not visible.
+  }
+  if (customPks.length > 0) {
+    const grants = await db.query('__lattice_row_grants', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamId },
+        { col: 'table_name', op: 'eq', val: table },
+        { col: 'grantee_user_id', op: 'eq', val: userId },
+        { col: 'pk', op: 'in', val: customPks },
+      ],
+    });
+    for (const g of grants) out.add(String(g.pk));
+  }
+  return out;
+}
+
+/**
  * Of `candidateUserIds`, those who can currently access the row. Used by the
  * hosted delete/kick fan-out to target an `unlink` at exactly the members who
  * hold a local copy, before the ACL is torn down.
