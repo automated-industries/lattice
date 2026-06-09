@@ -8,6 +8,63 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-06-09
+
+**Row-level permissions for Teams.** Sharing a table no longer means every
+member sees every row. Each shared row now has an **owner** (its creator) and a
+**visibility** — `private` (owner only), `everyone` (all members), or `custom`
+(an explicit grant list) — enforced for the REST API, the AI assistant, and the
+cloud sync itself, so a member never receives the bytes of a row they can't
+read. Existing shared tables default to `everyone` on upgrade, so nothing
+changes until an owner opts a table (or a row) into `private`.
+
+### Added
+
+- **Row visibility model.** New cloud-internal tables `__lattice_row_acl`
+  (per-row owner + visibility) and `__lattice_row_grants` (custom grant list),
+  plus `__lattice_shared_objects.default_row_visibility` (the visibility new
+  rows are born with, table-owner-set). Installed + backfilled idempotently on
+  both SQLite and Postgres via `installRowPermsSchema`.
+- **`Lattice.queryVisible(table, opts)`** — an indexed, in-SQL, decrypt-reusing
+  read that returns only the rows a given member may see in a team.
+- **`Lattice.listChangesForRecipient(...)`** — the hosted change-log pull,
+  filtered per recipient so the Teams server is a hard enforcement point.
+- **`src/teams/row-access.ts`** — `resolveRowAcl` / `canAccessRow` /
+  `isRowOwner` / `tableDefaultVisibility` / `listVisibleRows` and owner-gated
+  `setRowVisibility` / `addRowGrant` / `removeRowGrant` /
+  `setTableDefaultVisibility`, with typed `RowAccessError` (→ HTTP 404, hide
+  existence) / `RowOwnerOnlyError` (→ HTTP 403).
+- **GUI** — a per-row visibility eye on the table view (owner toggles
+  everyone↔private; non-owner sees a faded status), a detail-view control, and
+  a Data Model "new rows default to" select. New endpoints:
+  `POST /api/tables/:t/rows/:id/visibility`, `POST`/`DELETE`
+  `/api/tables/:t/rows/:id/grants`, and
+  `POST /api/schema/entities/:name/default-row-visibility`.
+
+### Changed
+
+- **Enforcement is wired into every path.** The REST row routes, the row
+  mutation primitives, and the AI assistant's `list_rows` / `get_row` /
+  `search` tools all honour the row ACL (the assistant previously bypassed it
+  entirely). Denied reads return 404.
+- **Hosted sync is per-recipient.** Linked rows record an ACL; the change-log
+  pull is filtered per member; delete / unlink / member-kick now fan out a
+  targeted `unlink` to each member who can see the row before tearing the ACL
+  down (a broadcast unlink would be dropped by the new filter).
+- **Dashboard counts (Postgres).** For the suspicious subset of tables whose
+  approximate `pg_class.reltuples` reads 0 or is absent (under autovacuum's
+  ANALYZE threshold), the dashboard now issues one aggregated exact-count
+  round-trip — correcting the "tile shows 0 while drill-in shows rows" case
+  without reintroducing a per-table fan-out. Capped at 50 tables (logged +
+  skipped on overflow).
+
+### Deprecated
+
+- **Direct `postgres://` team-cloud connections.** They can't enforce
+  row-level security, so new direct connections are rejected with guidance to a
+  hosted Teams server; existing direct connections keep working but warn on
+  connect. Unrelated to using Postgres as a Lattice's own storage backend.
+
 ## [2.1.1] - 2026-06-09
 
 **The assistant rail speaks in activity cards — and links to what it found.**
