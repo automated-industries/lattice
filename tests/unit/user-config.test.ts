@@ -93,36 +93,85 @@ describe('framework user-config', () => {
   });
 
   describe('preferences.json round-trip', () => {
+    const DEFAULTS = {
+      show_system_tables: false,
+      analytics: true,
+      voice_provider: 'auto',
+      aggressiveness: 0.5,
+    };
+
     it('returns defaults when the file is missing (analytics on by default)', () => {
       const prefs = readPreferences();
-      expect(prefs).toEqual({ show_system_tables: false, analytics: true });
+      expect(prefs).toEqual(DEFAULTS);
     });
 
-    it('round-trips write → read (incl. analytics consent)', () => {
-      writePreferences({ show_system_tables: true, analytics: true });
-      expect(readPreferences()).toEqual({ show_system_tables: true, analytics: true });
-      writePreferences({ show_system_tables: false, analytics: false });
-      expect(readPreferences()).toEqual({ show_system_tables: false, analytics: false });
+    it('round-trips write → read (incl. analytics consent + voice/aggressiveness prefs)', () => {
+      writePreferences({
+        show_system_tables: true,
+        analytics: true,
+        voice_provider: 'elevenlabs',
+        aggressiveness: 0.8,
+      });
+      expect(readPreferences()).toEqual({
+        show_system_tables: true,
+        analytics: true,
+        voice_provider: 'elevenlabs',
+        aggressiveness: 0.8,
+      });
+      writePreferences({
+        show_system_tables: false,
+        analytics: false,
+        voice_provider: 'openai',
+        aggressiveness: 0,
+      });
+      expect(readPreferences()).toEqual({
+        show_system_tables: false,
+        analytics: false,
+        voice_provider: 'openai',
+        aggressiveness: 0,
+      });
+    });
+
+    it('per-key falls back to defaults for invalid voice_provider / out-of-range aggressiveness', () => {
+      const path = join(tmpDir, 'preferences.json');
+      writeFileSync(
+        path,
+        JSON.stringify({ show_system_tables: true, voice_provider: 'whisper', aggressiveness: 9 }),
+        'utf8',
+      );
+      const prefs = readPreferences();
+      expect(prefs.show_system_tables).toBe(true);
+      expect(prefs.voice_provider).toBe('auto'); // unknown value → default
+      expect(prefs.aggressiveness).toBe(1); // clamped into [0, 1]
     });
 
     it('drops unknown extra fields on write (forward-compat)', () => {
       writePreferences({
         show_system_tables: true,
         analytics: true,
+        voice_provider: 'auto',
+        aggressiveness: 0.5,
         sidebar_dense: false,
       } as unknown as Parameters<typeof writePreferences>[0]);
       const raw = readFileSync(join(tmpDir, 'preferences.json'), 'utf8');
       expect(raw).toContain('show_system_tables');
       expect(raw).toContain('analytics');
+      expect(raw).toContain('voice_provider');
+      expect(raw).toContain('aggressiveness');
       expect(raw).not.toContain('sidebar_dense');
     });
 
     it('falls back to defaults when the file is malformed', () => {
       const path = join(tmpDir, 'preferences.json');
-      writePreferences({ show_system_tables: true, analytics: false });
+      writePreferences({
+        show_system_tables: true,
+        analytics: false,
+        voice_provider: 'openai',
+        aggressiveness: 0.2,
+      });
       // Corrupt the file in place.
       writeFileSync(path, '{not json', 'utf8');
-      expect(readPreferences()).toEqual({ show_system_tables: false, analytics: true });
+      expect(readPreferences()).toEqual(DEFAULTS);
     });
   });
 

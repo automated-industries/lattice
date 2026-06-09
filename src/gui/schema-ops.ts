@@ -2,9 +2,9 @@ import { parseConfigFile } from '../config/parser.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { appendChangeEnvelope } from '../teams/team-core.js';
 import { isNativeEntity } from '../framework/native-entities.js';
-import { recordSchemaAudit } from './mutations.js';
+import { recordSchemaAudit, createRow, deleteRow, type MutationCtx } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
-import type { FileJunction } from './data.js';
+import { getGuiEntities, type FileJunction } from './data.js';
 import type { ActiveDb } from './server.js';
 
 /**
@@ -376,4 +376,192 @@ export async function createUserEntity(
     sessionId,
   );
   return entity;
+}
+
+/**
+ * Soft-delete a user entity (table) — NO reopen. Removes it from the config and
+ * the live registry ({@link import('../lattice.js').Lattice.unregisterTable}) so
+ * it stops being listed/queryable, but KEEPS the physical SQL table + its rows
+ * so the recorded `schema.delete_entity` op stays fully revertible (the History
+ * page re-adds it from the captured `entityDef`). The caller owns all
+ * policy/validation (native, ownership, inbound-FK, emptiness/data handling).
+ * Mirrors the data-model editor's soft delete, minus the reopen — which is what
+ * lets the chat assistant call it mid-turn without invalidating its captured
+ * db/feed references.
+ */
+export async function softDeleteUserEntity(
+  active: ActiveDb,
+  name: string,
+  sessionId: string,
+  summary?: string,
+): Promise<void> {
+  const doc = loadConfigDoc(active.configPath);
+  const entityDef = (doc.toJS() as { entities?: Record<string, unknown> }).entities?.[name];
+  doc.deleteIn(['entities', name]);
+  saveConfigDoc(active.configPath, doc);
+  active.db.unregisterTable(name);
+  active.validTables.delete(name);
+  active.junctionTables.delete(name);
+  active.softDeletable.delete(name);
+  active.entityContextByTable.delete(name);
+  syncCanonicalContexts(active);
+  await recordSchemaOp(
+    active,
+    'schema.delete_entity',
+    name,
+    { entity: name, entityDef },
+    null,
+    summary ?? `Deleted table ${name}`,
+    sessionId,
+  );
+}
+
+/** How the assistant should handle a NON-empty table it was asked to delete. */
+export type DeleteResolution = 'delete_data' | { move_to: string };
+
+/** Outcome of {@link aiDeleteEntity}. `needsResolution` ⇒ ask the user first. */
+export type DeleteEntityOutcome =
+  | { ok: true; deleted: string; deletedRows?: number; movedRows?: number }
+  | { ok: false; error: string }
+  | { needsResolution: true; rowCount: number; message: string };
+
+/** Above this row count, the assistant refuses to auto-delete/move data. */
+const AI_DELETE_ROW_CAP = 1000;
+
+/**
+ * The assistant's guarded, reversible table delete. Safeguards (so the model
+ * can't destroy data on a careless request):
+ *   • refuses native/built-in tables, tables the operator doesn't own, and
+ *     tables another table still links to (inbound FK);
+ *   • EMPTY table → soft-deletes it immediately (reversible);
+ *   • NON-empty table with no `resolution` → does NOT delete; returns
+ *     `needsResolution` so the assistant asks the user what to do with the data;
+ *   • `resolution='delete_data'` → soft-deletes every live row, then the table;
+ *   • `resolution={move_to}` → copies each live row into the target table
+ *     (best-effort column mapping), soft-deletes the originals, then the table.
+ * Every step goes through the audited mutation primitives, so the whole thing is
+ * reversible from history. Never drops the physical table (no hard delete).
+ */
+export async function aiDeleteEntity(
+  active: ActiveDb,
+  name: string,
+  resolution: DeleteResolution | undefined,
+  sessionId: string,
+): Promise<DeleteEntityOutcome> {
+  if (!active.validTables.has(name)) return { ok: false, error: `Unknown table: ${name}` };
+  if (isNativeEntity(name)) {
+    return { ok: false, error: `"${name}" is a built-in table and cannot be deleted.` };
+  }
+  const tc = active.teamContext;
+  if (tc && tc.owners.get(name) !== tc.myUserId) {
+    return { ok: false, error: `Only the table's owner can delete "${name}".` };
+  }
+  const inbound: string[] = [];
+  for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
+    if (t.name === name) continue;
+    for (const rel of Object.values(t.relations)) {
+      if (rel.type === 'belongsTo' && rel.table === name) {
+        inbound.push(`${t.name}.${rel.foreignKey}`);
+      }
+    }
+  }
+  if (inbound.length > 0) {
+    return {
+      ok: false,
+      error: `Cannot delete "${name}" — these links point at it: ${inbound.join(', ')}. Remove those links first.`,
+    };
+  }
+
+  const mctx: MutationCtx = {
+    db: active.db,
+    feed: active.feed,
+    softDeletable: active.softDeletable,
+    source: 'ai',
+  };
+  const softDeletable = active.softDeletable.has(name);
+  const rowCount = softDeletable
+    ? await active.db.count(name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
+    : await active.db.count(name);
+
+  // Empty → safe to remove straight away.
+  if (rowCount === 0) {
+    await softDeleteUserEntity(active, name, sessionId);
+    return { ok: true, deleted: name };
+  }
+
+  // Non-empty → require an explicit decision about the data first.
+  if (resolution === undefined) {
+    return {
+      needsResolution: true,
+      rowCount,
+      message:
+        `"${name}" still has ${String(rowCount)} row${rowCount === 1 ? '' : 's'}. Deleting a table ` +
+        `with data needs a decision first — ask the user whether to delete the rows too (reversible), ` +
+        `move them into another table, or cancel. Then call delete_entity again with ` +
+        `resolution="delete_data" or resolution={"move_to":"<table>"}.`,
+    };
+  }
+
+  if (resolution === 'delete_data') {
+    if (!softDeletable) {
+      return {
+        ok: false,
+        error: `"${name}" rows can't be soft-deleted (no deleted_at column) — clear them manually first.`,
+      };
+    }
+    if (rowCount > AI_DELETE_ROW_CAP) {
+      return {
+        ok: false,
+        error: `"${name}" has ${String(rowCount)} rows — too many to auto-delete safely (cap ${String(AI_DELETE_ROW_CAP)}). Trim it first.`,
+      };
+    }
+    const rows = (await active.db.query(name, {
+      filters: [{ col: 'deleted_at', op: 'isNull' }],
+      limit: AI_DELETE_ROW_CAP,
+    })) as Record<string, unknown>[];
+    let deletedRows = 0;
+    for (const r of rows) {
+      await deleteRow(mctx, name, String(r.id), false); // soft delete — reversible
+      deletedRows++;
+    }
+    await softDeleteUserEntity(active, name, sessionId);
+    return { ok: true, deleted: name, deletedRows };
+  }
+
+  // resolution = { move_to: target }
+  const target = resolution.move_to;
+  if (!active.validTables.has(target)) {
+    return { ok: false, error: `move_to target "${target}" is not a known table.` };
+  }
+  if (target === name) return { ok: false, error: 'move_to target must be a different table.' };
+  if (active.junctionTables.has(target) || isNativeEntity(target)) {
+    return { ok: false, error: `Cannot move rows into "${target}".` };
+  }
+  if (rowCount > AI_DELETE_ROW_CAP) {
+    return {
+      ok: false,
+      error: `"${name}" has ${String(rowCount)} rows — too many to auto-move (cap ${String(AI_DELETE_ROW_CAP)}).`,
+    };
+  }
+  const targetCols = active.db.getRegisteredColumns(target);
+  if (!targetCols) return { ok: false, error: `Could not read the columns of "${target}".` };
+  const rows = (await active.db.query(
+    name,
+    softDeletable
+      ? { filters: [{ col: 'deleted_at', op: 'isNull' }], limit: AI_DELETE_ROW_CAP }
+      : { limit: AI_DELETE_ROW_CAP },
+  )) as Record<string, unknown>[];
+  const SKIP = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
+  let movedRows = 0;
+  for (const r of rows) {
+    const mapped: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (!SKIP.has(k) && k in targetCols) mapped[k] = v;
+    }
+    await createRow(mctx, target, mapped); // new id auto-assigned
+    if (softDeletable) await deleteRow(mctx, name, String(r.id), false);
+    movedRows++;
+  }
+  await softDeleteUserEntity(active, name, sessionId);
+  return { ok: true, deleted: name, movedRows };
 }
