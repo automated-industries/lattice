@@ -18,6 +18,14 @@ cloud sync itself, so a member never receives the bytes of a row they can't
 read. Existing shared tables default to `everyone` on upgrade, so nothing
 changes until an owner opts a table (or a row) into `private`.
 
+**Security note.** Enforcement is **application-layer**, performed by the
+hosted Teams server (and by each Lattice process for its own reads) — there
+are no Postgres `CREATE POLICY` rules on the cloud database. Anyone holding a
+SQL connection string to the cloud Postgres can read and write every row;
+treat the database as the hosted server's private backend and network-isolate
+it. Grandfathered direct `postgres://` team connections (see _Deprecated_)
+bypass row-level security entirely.
+
 ### Added
 
 - **Row visibility model.** New cloud-internal tables `__lattice_row_acl`
@@ -40,6 +48,31 @@ changes until an owner opts a table (or a row) into `private`.
   `POST /api/tables/:t/rows/:id/visibility`, `POST`/`DELETE`
   `/api/tables/:t/rows/:id/grants`, and
   `POST /api/schema/entities/:name/default-row-visibility`.
+- **GUI: grants checklist.** The detail view's visibility line grows a
+  "Specific people…" / "Manage access" control — an owner-only member
+  checklist wired to the grant endpoints, so `custom` visibility is fully
+  manageable from the GUI. Switching a `custom` row to everyone/private now
+  asks for confirmation first (the grant list is kept server-side and
+  reapplies if the row returns to specific people).
+- **GUI: direct-connection deprecation banner.** A workspace holding a
+  grandfathered direct `postgres://` team connection shows a dismissible
+  amber banner ("Direct database cloud connections are deprecated and don't
+  support row-level security. Migrate to a hosted workspace."), driven by a
+  new `directCloud` field on `GET /api/dbconfig`.
+
+### Security
+
+- **`GET /api/search` now applies the row ACL.** The REST search route
+  returned full-text hits without the per-row post-filter the assistant's
+  search tool already applied, so a member could read snippets of rows shared
+  privately or with other members. Both paths now share one batched filter
+  (`filterVisiblePks` — one ACL query + at most one grants query per table).
+- **Dashboard counts no longer reveal invisible rows.** Entity tiles counted
+  physical rows (`pg_class.reltuples` / exact COUNTs), telling a member that
+  hidden rows exist and how many. In team mode the tiles now run the same
+  visibility predicate as `Lattice.queryVisible`, aggregated into a single
+  round-trip (`Lattice.countVisibleMany`, capped at 50 tables per pass), so
+  counts always match what the rows view lists.
 
 ### Changed
 

@@ -43,10 +43,12 @@ export function isPostgresUrl(url: string): boolean {
  *   - Refuses if the `__lattice_team_identity` singleton already exists.
  *
  * On success returns the same shape the HTTP route returns so a
- * direct-postgres register can mirror the hosted register path. (New
- * direct registrations are deprecated as of 2.2 — a direct connection
- * bypasses row-level security; this primitive remains only for the
- * grandfathered existing-connection path.)
+ * direct-postgres register can mirror the hosted register path.
+ *
+ * @deprecated Since 2.2 — new direct registrations are rejected (a direct
+ * connection bypasses row-level security). Retained only for the
+ * grandfathered existing-connection path; will be removed in 3.0. Create or
+ * join new workspaces through a hosted Teams server (an `http(s)://` URL).
  */
 export async function registerDirectViaPostgres(
   cloudUrl: string,
