@@ -1615,7 +1615,9 @@ export const appJs = `
     }
 
     // Detail-view row visibility line (2.2). Owner: status + everyone/private
-    // toggle (custom shows the grantee count). Non-owner: read-only status.
+    // toggle + a "Specific people…" / "Manage access" control that opens the
+    // grants checklist (the table view's "open to manage" affordance lands
+    // here). Non-owner: read-only status.
     function detailVisLineEl(row) {
       var a = row._access;
       if (!a) return '';
@@ -1627,11 +1629,23 @@ export const appJs = `
       }
       var info = labelMap[vis] || '';
       if (vis === 'custom' && a.grantees) info += ' (' + a.grantees.length + ')';
-      var btnLabel = vis === 'everyone' ? 'Make private' : 'Share with everyone';
-      return '<div class="detail-vis" style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px">' +
-        '<span class="muted">' + escapeHtml(info) + '</span>' +
-        '<button class="btn" id="detail-vis-toggle" data-vis-cur="' + vis + '">' + btnLabel + '</button>' +
-        '</div>';
+      var buttons;
+      if (vis === 'custom') {
+        // Leaving custom stops the grant list from applying — the toggle
+        // handler asks for confirmation. The grants themselves are kept
+        // server-side, so reopening "Manage access" restores the list.
+        buttons = '<button class="btn" id="detail-vis-manage">Manage access</button>' +
+          '<button class="btn" id="detail-vis-toggle" data-vis-cur="custom" data-vis-next="everyone">Share with everyone</button>';
+      } else {
+        var btnLabel = vis === 'everyone' ? 'Make private' : 'Share with everyone';
+        var next = vis === 'everyone' ? 'private' : 'everyone';
+        buttons = '<button class="btn" id="detail-vis-toggle" data-vis-cur="' + vis + '" data-vis-next="' + next + '">' + btnLabel + '</button>' +
+          '<button class="btn" id="detail-vis-manage">Specific people…</button>';
+      }
+      return '<div class="detail-vis" style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;flex-wrap:wrap">' +
+        '<span class="muted" id="detail-vis-info">' + escapeHtml(info) + '</span>' + buttons +
+        '</div>' +
+        '<div class="grants-panel" id="grants-panel" hidden></div>';
     }
     function renderDetail(content, tableName, id) {
       var t = tableByName(tableName);
@@ -1744,20 +1758,90 @@ export const appJs = `
           if (!editing) loadRowContext(tableName, id);
           if (!editing && tableName === 'files') renderFilePreview(row);
 
+          function postVisibility(next) {
+            return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ visibility: next }),
+            });
+          }
           var detailVisBtn = content.querySelector('#detail-vis-toggle');
           if (detailVisBtn) detailVisBtn.addEventListener('click', function () {
             var cur = detailVisBtn.getAttribute('data-vis-cur');
-            var next = cur === 'everyone' ? 'private' : 'everyone';
+            var next = detailVisBtn.getAttribute('data-vis-next') || (cur === 'everyone' ? 'private' : 'everyone');
+            if (cur === 'custom') {
+              // Non-destructive guard: the grant rows survive server-side, but
+              // the custom list stops applying the moment visibility changes.
+              var cnt = (row._access && row._access.grantees ? row._access.grantees.length : 0);
+              var who = cnt === 1 ? '1 specific person' : cnt + ' specific people';
+              if (!confirm('This row is shared with ' + who + '. The custom list will stop applying (it is kept and reapplies if you return to specific people). Continue?')) return;
+            }
             withBusy(detailVisBtn, function () {
-              return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ visibility: next }),
-              }).then(function () {
+              return postVisibility(next).then(function () {
                 invalidate(tableName);
                 renderDetail(content, tableName, id);
                 showToast(next === 'everyone' ? 'Shared with everyone' : 'Made private', {});
               }).catch(function (e) { showToast('Visibility update failed: ' + e.message, {}); });
+            });
+          });
+
+          // Grants checklist ("Specific people…" / "Manage access"): member
+          // checkboxes wired to the row-grant endpoints. Opening it on a
+          // non-custom row first narrows visibility to custom so an empty
+          // checklist is a coherent state (owner-only until people are added).
+          var detailVisManage = content.querySelector('#detail-vis-manage');
+          if (detailVisManage) detailVisManage.addEventListener('click', function () {
+            var panel = content.querySelector('#grants-panel');
+            if (!panel) return;
+            if (!panel.hidden) { panel.hidden = true; return; }
+            var access = row._access || {};
+            var ensure = access.visibility === 'custom'
+              ? Promise.resolve()
+              : postVisibility('custom').then(function () { access.visibility = 'custom'; });
+            withBusy(detailVisManage, function () {
+              return ensure.then(function () {
+                return fetchJson('/api/team/users');
+              }).then(function (d) {
+                var users = ((d && d.users) || []).filter(function (u) { return u.id !== access.owner_user_id; });
+                var granted = {};
+                (access.grantees || []).forEach(function (g) { granted[g] = true; });
+                if (users.length === 0) {
+                  panel.innerHTML = '<div class="muted">No other members in this workspace yet.</div>';
+                } else {
+                  panel.innerHTML = '<div class="grants-title">Who can see this</div>' + users.map(function (u) {
+                    var label = u.name || u.email || u.id;
+                    return '<label class="grants-row"><input type="checkbox" data-grant-user="' + escapeHtml(u.id) + '"' +
+                      (granted[u.id] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
+                  }).join('');
+                }
+                panel.hidden = false;
+                panel.querySelectorAll('[data-grant-user]').forEach(function (cb) {
+                  cb.addEventListener('change', function () {
+                    var uid = cb.getAttribute('data-grant-user');
+                    var base = '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/grants';
+                    var req = cb.checked
+                      ? fetchJson(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user_id: uid }) })
+                      : fetchJson(base + '/' + encodeURIComponent(uid), { method: 'DELETE' });
+                    cb.disabled = true;
+                    req.then(function () {
+                      var list = access.grantees || (access.grantees = []);
+                      var at = list.indexOf(uid);
+                      if (cb.checked && at === -1) list.push(uid);
+                      if (!cb.checked && at !== -1) list.splice(at, 1);
+                      var infoEl = content.querySelector('#detail-vis-info');
+                      if (infoEl) infoEl.textContent = 'Shared with specific people (' + list.length + ')';
+                      invalidate(tableName);
+                    }).catch(function (e) {
+                      cb.checked = !cb.checked; // revert the failed change
+                      showToast('Access update failed: ' + e.message, {});
+                    }).then(function () { cb.disabled = false; });
+                  });
+                });
+                if (access.visibility === 'custom') {
+                  var infoEl = content.querySelector('#detail-vis-info');
+                  if (infoEl) infoEl.textContent = 'Shared with specific people (' + (access.grantees || []).length + ')';
+                }
+              }).catch(function (e) { showToast('Could not load members: ' + e.message, {}); });
             });
           });
 

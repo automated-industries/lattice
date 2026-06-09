@@ -703,6 +703,17 @@ export const css = `
     .row-vis:hover { filter: brightness(1.18); }
     .row-vis-private { color: #ef4444; }
     .row-vis-disabled { cursor: default; pointer-events: none; opacity: 0.45; }
+    /* Grants checklist (detail view, owner-only): who can see a
+       shared-with-specific-people row. Checkboxes post straight to the
+       row-grant endpoints. */
+    .grants-panel {
+      margin: 4px 0 10px; padding: 10px 12px; max-width: 420px;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2);
+      font-size: 13px;
+    }
+    .grants-panel .grants-title { font-weight: 600; margin-bottom: 6px; }
+    .grants-panel .grants-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
+    .grants-panel .grants-row input { accent-color: var(--accent); }
 
     /* Inline create-row at the bottom of every table */
     tr.create-row td { background: var(--surface-2); }

@@ -5,13 +5,15 @@
  * (SQLite, direct function calls). This is the first end-to-end check of the
  * GUI server's team mode, which only activates on a Postgres-backed
  * workspace: it seeds a cloud (users, members, team identity, shared table,
- * rows at each visibility), boots the GUI as the MEMBER, and asserts over
- * HTTP that
+ * rows at each visibility), boots one GUI server as the OWNER and one as the
+ * MEMBER against the same cloud, and asserts over HTTP that
  *
  *   1. `/api/entities` dashboard counts include only ACL-visible rows
  *      (a physical count would leak the existence/volume of private rows);
  *   2. `/api/search` hits are ACL-filtered (the REST search post-filter);
- *   3. `/api/tables/:t/rows` lists exactly the visible set (sanity).
+ *   3. `/api/tables/:t/rows` lists exactly the visible set (sanity);
+ *   4. the grant/revoke endpoints the detail-view grants checklist posts to
+ *      actually flip what the member receives (owner-gated end to end).
  *
  * Isolation: each run works in its own Postgres SCHEMA via the connection
  * string's `options=-c search_path=…`, so parallel test files (and stale
@@ -57,9 +59,40 @@ const schemaUrl = PG_URL
   : '';
 
 const dirs: string[] = [];
-let server: GuiServerHandle | null = null;
+let aliceServer: GuiServerHandle | null = null;
+let bobServer: GuiServerHandle | null = null;
 let admin: pg.Pool | null = null;
 let savedConfigDir: string | undefined;
+
+function writeWorkspace(who: string, email: string): string {
+  // Each operator gets their own machine config dir (identity.json drives who
+  // the GUI resolves as) and their own workspace root pointing at the SAME
+  // cloud schema.
+  const cfgDir = mkdtempSync(join(tmpdir(), `rp-gui-cfg-${who}-${runId}-`));
+  dirs.push(cfgDir);
+  writeFileSync(join(cfgDir, 'identity.json'), JSON.stringify({ display_name: who, email }));
+  const root = mkdtempSync(join(tmpdir(), `rp-gui-${who}-${runId}-`));
+  dirs.push(root);
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      `db: ${schemaUrl}`,
+      '',
+      'entities:',
+      '  tasks:',
+      '    fields:',
+      '      id: { type: text, primaryKey: true }',
+      '      title: { type: text }',
+      '      deleted_at: { type: datetime }',
+      '    render: default-list',
+      '    outputFile: tasks.md',
+    ].join('\n'),
+  );
+  mkdirSync(join(root, 'context'), { recursive: true });
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  return configPath;
+}
 
 async function seedCloud(): Promise<void> {
   const db = new Lattice(schemaUrl);
@@ -144,44 +177,30 @@ describe.skipIf(!PG_URL)('GUI team mode — row permissions over HTTP (Postgres)
     await admin.query(`CREATE SCHEMA IF NOT EXISTS "${SCHEMA}"`);
     await seedCloud();
 
-    // The GUI resolves the operator from the machine identity file — point
-    // the config dir at a temp dir carrying BOB's identity so this server
-    // boots as the member, not the table owner.
-    const cfgDir = mkdtempSync(join(tmpdir(), `rp-gui-cfg-${runId}-`));
-    dirs.push(cfgDir);
-    writeFileSync(
-      join(cfgDir, 'identity.json'),
-      JSON.stringify({ display_name: 'Bob', email: BOB_EMAIL }),
-    );
     savedConfigDir = process.env.LATTICE_CONFIG_DIR;
-    process.env.LATTICE_CONFIG_DIR = cfgDir;
-
-    const root = mkdtempSync(join(tmpdir(), `rp-gui-pg-${runId}-`));
-    dirs.push(root);
-    const configPath = join(root, 'lattice.config.yml');
-    writeFileSync(
-      configPath,
-      [
-        `db: ${schemaUrl}`,
-        '',
-        'entities:',
-        '  tasks:',
-        '    fields:',
-        '      id: { type: text, primaryKey: true }',
-        '      title: { type: text }',
-        '      deleted_at: { type: datetime }',
-        '    render: default-list',
-        '    outputFile: tasks.md',
-      ].join('\n'),
-    );
-    const outputDir = join(root, 'context');
-    mkdirSync(outputDir, { recursive: true });
-
-    server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
-  }, 30_000);
+    // The GUI resolves the operator from the machine identity file at boot.
+    // Boot the OWNER first, then the MEMBER (each boot mirrors its identity
+    // into the cloud's identity row; each server's team context is resolved
+    // at its own boot, so the two coexist).
+    const aliceConfig = writeWorkspace('alice', ALICE_EMAIL);
+    aliceServer = await startGuiServer({
+      configPath: aliceConfig,
+      outputDir: join(aliceConfig, '..', 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+    const bobConfig = writeWorkspace('bob', BOB_EMAIL);
+    bobServer = await startGuiServer({
+      configPath: bobConfig,
+      outputDir: join(bobConfig, '..', 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+  }, 60_000);
 
   afterAll(async () => {
-    if (server) await server.close();
+    if (aliceServer) await aliceServer.close();
+    if (bobServer) await bobServer.close();
     if (savedConfigDir === undefined) delete process.env.LATTICE_CONFIG_DIR;
     else process.env.LATTICE_CONFIG_DIR = savedConfigDir;
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -193,7 +212,7 @@ describe.skipIf(!PG_URL)('GUI team mode — row permissions over HTTP (Postgres)
   }, 30_000);
 
   it('dashboard counts only the rows the member can see', async () => {
-    const entities = (await fetch(`${server!.url}/api/entities`).then((r) => r.json())) as {
+    const entities = (await fetch(`${bobServer!.url}/api/entities`).then((r) => r.json())) as {
       tables: { name: string; rowCount: number | null; shared?: boolean }[];
     };
     const tasks = entities.tables.find((t) => t.name === 'tasks');
@@ -206,7 +225,7 @@ describe.skipIf(!PG_URL)('GUI team mode — row permissions over HTTP (Postgres)
 
   it('search returns only ACL-visible hits', async () => {
     const result = (await fetch(
-      `${server!.url}/api/search?q=${encodeURIComponent(`glacier-${runId}`)}`,
+      `${bobServer!.url}/api/search?q=${encodeURIComponent(`glacier-${runId}`)}`,
     ).then((r) => r.json())) as {
       groups: { table: string; hits: { id: string }[] }[];
     };
@@ -216,9 +235,61 @@ describe.skipIf(!PG_URL)('GUI team mode — row permissions over HTTP (Postgres)
   });
 
   it('row list returns exactly the visible set', async () => {
-    const payload = (await fetch(`${server!.url}/api/tables/tasks/rows`).then((r) => r.json())) as {
+    const payload = (await fetch(`${bobServer!.url}/api/tables/tasks/rows`).then((r) =>
+      r.json(),
+    )) as {
       rows: { id: string }[];
     };
     expect(payload.rows.map((r) => r.id).sort()).toEqual(['t-custom', 't-every']);
+  });
+
+  it('owner grants + revokes via the endpoints the grants checklist uses', async () => {
+    const bobRows = async (): Promise<string[]> => {
+      const payload = (await fetch(`${bobServer!.url}/api/tables/tasks/rows`).then((r) =>
+        r.json(),
+      )) as { rows: { id: string }[] };
+      return payload.rows.map((r) => r.id);
+    };
+
+    // Owner creates a row; the table default (private) applies → Bob can't see it.
+    const created = (await fetch(`${aliceServer!.url}/api/tables/tasks/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 't-flow', title: `glacier-${runId} flow` }),
+    }).then((r) => r.json())) as { id: string };
+    expect(created.id).toBe('t-flow');
+    expect(await bobRows()).not.toContain('t-flow');
+
+    // Owner's single-row GET exposes the grantee list (it never reaches non-owners).
+    const beforeGrant = (await fetch(`${aliceServer!.url}/api/tables/tasks/rows/t-flow`).then((r) =>
+      r.json(),
+    )) as { _access?: { ownedByMe: boolean; grantees?: string[] } };
+    expect(beforeGrant._access?.ownedByMe).toBe(true);
+    expect(beforeGrant._access?.grantees ?? []).toEqual([]);
+
+    // Grant Bob (what checking his box in the grants checklist posts) → visible.
+    const grant = await fetch(`${aliceServer!.url}/api/tables/tasks/rows/t-flow/grants`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user_id: BOB }),
+    });
+    expect(grant.status).toBe(200);
+    expect(await bobRows()).toContain('t-flow');
+
+    // Member must NOT be able to grant on a row they don't own (403, owner-only).
+    const bobGrant = await fetch(`${bobServer!.url}/api/tables/tasks/rows/t-flow/grants`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user_id: BOB }),
+    });
+    expect(bobGrant.status).toBe(403);
+
+    // Revoke (unchecking the box) → gone again.
+    const revoke = await fetch(
+      `${aliceServer!.url}/api/tables/tasks/rows/t-flow/grants/${encodeURIComponent(BOB)}`,
+      { method: 'DELETE' },
+    );
+    expect(revoke.status).toBe(200);
+    expect(await bobRows()).not.toContain('t-flow');
   });
 });
