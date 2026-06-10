@@ -26,6 +26,21 @@ import {
   type ClassifyMatch,
   type SchemaEntity,
 } from './ai/summarize.js';
+import { slugify } from '../render/markdown.js';
+
+/**
+ * A filename-derived slug for a new `files` row, with a short id suffix so it
+ * stays unique across re-uploads of the same filename. Passed on every ingest
+ * insert: `files` schemas that physically carry a `slug` column (e.g. a cloud
+ * whose `files` table declares `slug NOT NULL`) get it populated; the native
+ * `files` entity has no slug column, so `_filterToSchemaColumns` drops it
+ * harmlessly. Dialect-agnostic — fixes "not null constraint failed: files.slug"
+ * on Postgres-backed clouds without touching SQLite behaviour.
+ */
+function fileSlug(name: string, id: string): string {
+  const base = slugify(name.replace(/\.[^./\\]+$/, '')) || 'file';
+  return `${base}-${id.slice(0, 8)}`;
+}
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -576,8 +591,10 @@ export async function dispatchIngestRoute(
     } finally {
       await rm(tmp, { force: true }).catch(() => undefined);
     }
+    const fileId = crypto.randomUUID();
     const { id } = await createRow(mctx, 'files', {
-      id: crypto.randomUUID(),
+      id: fileId,
+      slug: fileSlug(name, fileId),
       original_name: name,
       mime,
       size_bytes: buf.length,
@@ -633,8 +650,10 @@ export async function dispatchIngestRoute(
         console.warn('[ingest] url crawl failed:', (e as Error).message);
       }
     }
+    const textFileId = crypto.randomUUID();
     const { id } = await createRow(mctx, 'files', {
-      id: crypto.randomUUID(),
+      id: textFileId,
+      slug: fileSlug(title, textFileId),
       original_name: title,
       mime,
       size_bytes: Buffer.byteLength(content, 'utf8'),
@@ -671,8 +690,10 @@ export async function dispatchIngestRoute(
 
   const name = basename(abs);
   const mime = mimeFor(name);
+  const localFileId = crypto.randomUUID();
   const { id } = await createRow(mctx, 'files', {
-    id: crypto.randomUUID(),
+    id: localFileId,
+    slug: fileSlug(name, localFileId),
     path: abs,
     original_name: name,
     mime,

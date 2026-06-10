@@ -61,3 +61,35 @@ describe('applySharingToContext', () => {
     expect(valid.has('t')).toBe(true);
   });
 });
+
+describe('isVisibleInTeam — unowned tables do not leak to members (2.2.2)', () => {
+  // An UNOWNED table (no __lattice_object_owners row — e.g. created via raw
+  // SQL, or when a reconcile was skipped) used to be visible to EVERY member
+  // while the GUI labelled it "private". A non-creator member must NOT see it.
+  it('hides an unowned, unshared table from a non-creator member', () => {
+    const member = ctx({ isCreator: false, owners: new Map(), shared: new Set() });
+    expect(isVisibleInTeam('raw_sql_table', member)).toBe(false);
+  });
+
+  it('still shows an unowned, unshared table to the cloud creator', () => {
+    const creator = ctx({ isCreator: true, owners: new Map(), shared: new Set() });
+    expect(isVisibleInTeam('raw_sql_table', creator)).toBe(true);
+  });
+
+  it('an explicitly-shared unowned table is visible to a member', () => {
+    const member = ctx({ isCreator: false, owners: new Map(), shared: new Set(['shared_raw']) });
+    expect(isVisibleInTeam('shared_raw', member)).toBe(true);
+  });
+
+  it('a member still sees their own owned table and not another member’s', () => {
+    const member = ctx({
+      isCreator: false,
+      owners: new Map([
+        ['mine', 'me'],
+        ['theirs', 'other'],
+      ]),
+    });
+    expect(isVisibleInTeam('mine', member)).toBe(true);
+    expect(isVisibleInTeam('theirs', member)).toBe(false);
+  });
+});

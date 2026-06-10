@@ -7,6 +7,7 @@ import {
   aggressivenessToTemperature,
 } from './assistant-routes.js';
 import { createAnthropicClient, runChat, type LlmMessage, type ContentBlock } from './ai/chat.js';
+import { readIdentity } from '../framework/user-config.js';
 import { generateThreadTitle } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
 import {
@@ -539,6 +540,9 @@ export async function dispatchChatRoute(
       history,
       userMessage: message,
       temperature,
+      // Give the assistant the operator's name so it addresses them and
+      // resolves "me"/"my" without asking for a name it already has.
+      operatorName: readIdentity().display_name,
       // Capture each executed tool call (capped) for cross-turn replay memory.
       onToolRecord: (rec) => {
         turns[turns.length - 1]?.toolCalls.push(rec);
