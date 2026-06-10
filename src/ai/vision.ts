@@ -72,8 +72,8 @@ export interface PdfOptions {
 
 /**
  * Read a PDF with Claude's native document support — works on text PDFs AND
- * scanned/image-only PDFs (no text layer), which `markitdown` cannot extract.
- * AI-gated; the model call is injectable for tests.
+ * scanned/image-only PDFs (no text layer), where in-process text extraction
+ * finds nothing. AI-gated; the model call is injectable for tests.
  */
 export async function describePdf(
   auth: ClaudeAuth,

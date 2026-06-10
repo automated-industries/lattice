@@ -31,6 +31,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - The GUI surfaces a `cloudReconnectRequired` state on `GET /api/dbconfig` and a
   notice in the UI when a workspace is on the refused direct path.
 
+### Changed
+
+- **Documents parse natively, with no external CLI.** Ingest no longer shells out
+  to the optional `markitdown` Python CLI (a dragged document silently extracted
+  nothing on any machine without it installed). Text is now extracted in-process
+  for **PDF** (`unpdf` — a serverless pdf.js build, no native/canvas deps),
+  **Word** (`.docx` via `mammoth`, legacy `.doc` via `word-extractor`),
+  **PowerPoint** (`.pptx`), **Excel** (`.xlsx`), **OpenDocument**
+  (`.odt`/`.ods`/`.odp`), **EPUB**, and **RTF** (the OOXML/ODF/EPUB formats via the
+  tiny `fflate` zip reader; RTF via a built-in de-RTF). Scanned/image-only PDFs
+  with no text layer still fall back to Claude's native PDF read. Every parser is
+  a lazily-loaded **optional dependency**, so a format whose parser isn't
+  installed degrades to a `skip` rather than failing, and core latticesql users
+  who never ingest documents pull none of them.
+  - Legacy **binary** `.xls` and `.ppt` (pre-2007 BIFF/PPT) have no clean,
+    non-vulnerable pure-JS parser and are referenced + marked
+    `extraction_status='skipped'`.
+  - The `MARKITDOWN_BIN` env var is no longer read.
+
+### Fixed
+
+- **Drag-and-drop ingest no longer fails on a `files` table with a `NOT NULL`
+  `name` (or `title`).** Ingest now fills `name` and `title` from the upload's
+  filename on every new `files` row — the same auto-population already done for
+  `slug`. They're written only where the table physically carries those columns
+  (e.g. a cloud whose `files` table declares `name NOT NULL`) and harmlessly
+  dropped for the native `files` entity, so an uploaded file never trips a
+  `not null constraint failed: files.name` again.
+
 ## [2.2.2] - 2026-06-10
 
 Team-cloud GUI hotfixes.

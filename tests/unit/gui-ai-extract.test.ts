@@ -50,20 +50,6 @@ describe('extract', () => {
     expect(r.text).toBe('');
   });
 
-  it('degrades gracefully to skip when markitdown is unavailable for a PDF', async () => {
-    const saved = process.env.MARKITDOWN_BIN;
-    process.env.MARKITDOWN_BIN = '/nonexistent/markitdown-binary';
-    try {
-      const p = tmpFile('doc.pdf', '%PDF-1.4 not really a pdf');
-      const r = await parseFile(p, 'application/pdf', 'doc.pdf');
-      expect(r.skip).toBe(true);
-      expect(r.text).toBe('');
-    } finally {
-      if (saved === undefined) delete process.env.MARKITDOWN_BIN;
-      else process.env.MARKITDOWN_BIN = saved;
-    }
-  });
-
   it('describe() summarizes text and falls back for binaries', () => {
     expect(describeFile('  hello   world  ', 'text/plain', 'a.txt')).toBe('hello world');
     expect(describeFile('', 'application/pdf', 'doc.pdf')).toBe(

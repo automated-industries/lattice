@@ -68,12 +68,16 @@ source:
 
 1. **Referenced, not copied.** The source becomes a native `files` row that
    points at the original; bytes are not moved into Lattice.
-2. **Extracted.** Plain text/markdown/code is read directly; PDFs and Office
-   docs go through the optional [`markitdown`](https://github.com/microsoft/markitdown)
-   CLI (`MARKITDOWN_BIN`, or on `PATH`); **images are described by Claude vision**;
-   a pasted **bare URL is crawled** for readable text (and the URL preserved on the
-   row as a `cloud_ref`). Without `markitdown`, unsupported binaries are still
-   referenced and marked `extraction_status='skipped'`.
+2. **Extracted.** Plain text/markdown/code is read directly; documents
+   (PDF, Word `.docx`/`.doc`, PowerPoint `.pptx`, Excel `.xlsx`, OpenDocument
+   `.odt`/`.ods`/`.odp`, EPUB, RTF) are parsed **natively in-process** — no
+   external CLI; **images are described by Claude vision**; **scanned/image-only
+   PDFs** with no text layer fall back to Claude's native PDF read; a pasted
+   **bare URL is crawled** for readable text (and the URL preserved on the row as
+   a `cloud_ref`). Legacy binary `.xls`/`.ppt` (pre-2007) and any other binary
+   are still referenced and marked `extraction_status='skipped'`. The parsers
+   ship as optional dependencies, so a document just skips (rather than failing)
+   if its parser isn't installed.
 3. **Summarized** with Claude Haiku (the description fills in).
 4. **Organized.** The text is classified against your existing records, and for
    each match the file is **linked** — **auto-creating the `files_<entity>` junction

@@ -43,6 +43,21 @@ function fileSlug(name: string, id: string): string {
 }
 
 /**
+ * Identity columns for a new `files` row, derived from the upload's display
+ * name. Passed on every ingest insert so that a cloud whose `files` table
+ * declares any of these NOT NULL (a common user customization — same class as
+ * the `slug` constraint fixed earlier) inserts cleanly instead of 500-ing.
+ * The native `files` entity has none of `name`/`title`, so
+ * `_filterToSchemaColumns` drops the extras harmlessly; a cloud table that
+ * physically carries them gets them populated. Keeps drag-drop from ever
+ * breaking on a NOT NULL identity column.
+ */
+function fileIdentity(displayName: string, id: string): Record<string, string> {
+  const label = displayName.trim() || 'file';
+  return { slug: fileSlug(displayName, id), name: label, title: label };
+}
+
+/**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
  * snippet) as a row in the native `files` entity and summarize its contents —
  * no bytes are copied into a blob store; `files.path` holds the local path and
@@ -475,11 +490,12 @@ async function extractImage(
 }
 
 /**
- * Full ingest extraction. Claude vision for images; otherwise markitdown/text
- * via {@link parseFile}; and when that yields nothing for a PDF — e.g. a
- * scanned/image-only PDF with no text layer, which markitdown can't read —
- * Claude's native PDF document read as a fallback. Best-effort + AI-gated:
- * with no Claude auth it degrades to parseFile's result (a `skipped` row).
+ * Full ingest extraction. Claude vision for images; otherwise native text
+ * extraction via {@link parseFile} (PDF / Office / OpenDocument / EPUB / RTF, no
+ * external CLI); and when that yields nothing for a PDF — e.g. a scanned/image-only
+ * PDF with no text layer, which has no text to extract — Claude's native PDF
+ * document read as a fallback. Best-effort + AI-gated: with no Claude auth it
+ * degrades to parseFile's result (a `skipped` row).
  */
 async function extractSource(
   db: Lattice,
@@ -594,7 +610,7 @@ export async function dispatchIngestRoute(
     const fileId = crypto.randomUUID();
     const { id } = await createRow(mctx, 'files', {
       id: fileId,
-      slug: fileSlug(name, fileId),
+      ...fileIdentity(name, fileId),
       original_name: name,
       mime,
       size_bytes: buf.length,
@@ -653,7 +669,7 @@ export async function dispatchIngestRoute(
     const textFileId = crypto.randomUUID();
     const { id } = await createRow(mctx, 'files', {
       id: textFileId,
-      slug: fileSlug(title, textFileId),
+      ...fileIdentity(title, textFileId),
       original_name: title,
       mime,
       size_bytes: Buffer.byteLength(content, 'utf8'),
@@ -693,7 +709,7 @@ export async function dispatchIngestRoute(
   const localFileId = crypto.randomUUID();
   const { id } = await createRow(mctx, 'files', {
     id: localFileId,
-    slug: fileSlug(name, localFileId),
+    ...fileIdentity(name, localFileId),
     path: abs,
     original_name: name,
     mime,
