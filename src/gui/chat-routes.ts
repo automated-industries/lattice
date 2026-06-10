@@ -124,15 +124,23 @@ async function rehydrateHistory(
   db: Lattice,
   threadId: string | null,
   clientHistory: LlmMessage[],
+  ownerUserId: string | null,
 ): Promise<LlmMessage[]> {
   if (!threadId || !rehydrateEnabled()) return clientHistory;
   let rows: Record<string, unknown>[];
   try {
+    // On a team cloud, only ever rebuild context from the operator's OWN
+    // messages — never reconstruct another member's conversation from a
+    // guessed thread id.
+    const filters = [
+      { col: 'thread_id', op: 'eq' as const, val: threadId },
+      { col: 'deleted_at', op: 'isNull' as const },
+    ];
+    if (ownerUserId != null) {
+      filters.push({ col: 'owner_user_id', op: 'eq' as const, val: ownerUserId });
+    }
     rows = (await db.query('chat_messages', {
-      filters: [
-        { col: 'thread_id', op: 'eq', val: threadId },
-        { col: 'deleted_at', op: 'isNull' },
-      ],
+      filters,
       limit: 1000,
     })) as Record<string, unknown>[];
   } catch {
@@ -223,16 +231,34 @@ async function rehydrateHistory(
   return merged;
 }
 
-/** Persist one completed exchange to the native chat entities (best-effort). */
-async function ensureThread(db: Lattice, threadId: string | null, title: string): Promise<string> {
+/**
+ * Resolve (or create) the thread for this exchange, stamping the owning member.
+ * A chat is private to its author: on a team cloud (`ownerUserId` non-null) an
+ * existing thread is reused ONLY when the operator owns it — a thread owned by
+ * someone else (or a guessed/foreign id) is never appended to; a fresh,
+ * operator-owned thread is created instead. On a local DB (`ownerUserId` null)
+ * there is one user, so ownership is not enforced.
+ */
+async function ensureThread(
+  db: Lattice,
+  threadId: string | null,
+  title: string,
+  ownerUserId: string | null,
+): Promise<string> {
   if (threadId) {
     const existing = (await db.get('chat_threads', threadId)) as {
       deleted_at?: string | null;
+      owner_user_id?: string | null;
     } | null;
-    if (existing && !existing.deleted_at) return threadId;
+    const ownsIt = ownerUserId == null || (existing?.owner_user_id ?? null) === ownerUserId;
+    if (existing && !existing.deleted_at && ownsIt) return threadId;
   }
   const id = crypto.randomUUID();
-  await db.insert('chat_threads', { id, title: title.slice(0, 60) || 'Chat' });
+  await db.insert('chat_threads', {
+    id,
+    title: title.slice(0, 60) || 'Chat',
+    owner_user_id: ownerUserId,
+  });
   return id;
 }
 
@@ -287,6 +313,7 @@ async function persistMessage(
   threadId: string,
   role: 'user' | 'assistant',
   text: string,
+  ownerUserId: string | null,
   turns?: PersistedTurn[],
   startedAt?: string,
 ): Promise<void> {
@@ -300,6 +327,9 @@ async function persistMessage(
   await db.insert('chat_messages', {
     id: crypto.randomUUID(),
     thread_id: threadId,
+    // Mirror the owning member onto each message so a message read can be
+    // filtered independently of the thread join. NULL on local DBs.
+    owner_user_id: ownerUserId,
     role,
     content_json: JSON.stringify(payload),
     source: role === 'user' ? 'gui' : 'ai',
@@ -311,9 +341,23 @@ export async function dispatchChatRoute(
   res: ServerResponse,
   ctx: ChatContext,
 ): Promise<boolean> {
+  // The cloud user id whose chats the operator may see; null on a local
+  // (non-team) DB, where there is a single user and no filtering is needed.
+  const owner = ctx.team ? ctx.team.myUserId : null;
+
   // GET /api/chat/threads — conversation list, most recent first.
   if (ctx.method === 'GET' && ctx.pathname === '/api/chat/threads') {
-    const rows = (await ctx.db.query('chat_threads', { limit: 100 })) as Record<string, unknown>[];
+    // Team cloud: a chat is private to its author — only return the operator's
+    // own threads (every member shares one physical DB, so without this filter
+    // a member sees everyone's conversations).
+    const filters: { col: string; op: 'isNull' | 'eq'; val?: unknown }[] = [
+      { col: 'deleted_at', op: 'isNull' },
+    ];
+    if (owner != null) filters.push({ col: 'owner_user_id', op: 'eq', val: owner });
+    const rows = (await ctx.db.query('chat_threads', { filters, limit: 100 })) as Record<
+      string,
+      unknown
+    >[];
     const threads = rows
       .filter((r) => !r.deleted_at)
       .map((r) => ({
@@ -330,10 +374,26 @@ export async function dispatchChatRoute(
   const msgMatch = /^\/api\/chat\/threads\/([^/]+)\/messages$/.exec(ctx.pathname);
   if (ctx.method === 'GET' && msgMatch) {
     const threadId = decodeURIComponent(msgMatch[1] ?? '');
-    const rows = (await ctx.db.query('chat_messages', { limit: 1000 })) as Record<
-      string,
-      unknown
-    >[];
+    // Team cloud: a denied thread is indistinguishable from a missing one. The
+    // thread must exist AND belong to the operator before any message is read —
+    // this is what stops a member from replaying another member's conversation
+    // by supplying its id.
+    if (owner != null) {
+      const thread = (await ctx.db.get('chat_threads', threadId)) as {
+        owner_user_id?: string | null;
+        deleted_at?: string | null;
+      } | null;
+      if (!thread || thread.deleted_at || (thread.owner_user_id ?? null) !== owner) {
+        sendJson(res, { messages: [] });
+        return true;
+      }
+    }
+    const msgFilters = [{ col: 'thread_id', op: 'eq' as const, val: threadId }];
+    if (owner != null) msgFilters.push({ col: 'owner_user_id', op: 'eq' as const, val: owner });
+    const rows = (await ctx.db.query('chat_messages', {
+      filters: msgFilters,
+      limit: 1000,
+    })) as Record<string, unknown>[];
     const messages = rows
       .filter((r) => r.thread_id === threadId && !r.deleted_at)
       .map((r) => {
@@ -405,15 +465,16 @@ export async function dispatchChatRoute(
   // Server-authoritative prior-turn context: real tool_use/tool_result blocks
   // rebuilt from the persisted thread so the model retains row ids across turns
   // (the text-only client history drops them). New thread → text-only fallback.
-  const history = await rehydrateHistory(ctx.db, requestedThread, mapHistory(body.history));
+  const history = await rehydrateHistory(ctx.db, requestedThread, mapHistory(body.history), owner);
 
   // Resolve the thread + persist the user message BEFORE streaming so the
   // thread id can ride back on a header. One thread per conversation; the
-  // client reuses it across turns.
+  // client reuses it across turns. The thread is stamped with the operator's
+  // cloud id so it stays private to them on a team cloud.
   let threadId = '';
   try {
-    threadId = await ensureThread(ctx.db, requestedThread, message);
-    await persistMessage(ctx.db, threadId, 'user', message);
+    threadId = await ensureThread(ctx.db, requestedThread, message, owner);
+    await persistMessage(ctx.db, threadId, 'user', message, owner);
   } catch (e) {
     console.warn('[chat] persist user message failed:', (e as Error).message);
   }
@@ -522,7 +583,15 @@ export async function dispatchChatRoute(
       }))
       .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
     try {
-      await persistMessage(ctx.db, threadId, 'assistant', assistantText, cleanTurns, turnStartedAt);
+      await persistMessage(
+        ctx.db,
+        threadId,
+        'assistant',
+        assistantText,
+        owner,
+        cleanTurns,
+        turnStartedAt,
+      );
     } catch (e) {
       console.warn('[chat] persist assistant message failed:', (e as Error).message);
     }
