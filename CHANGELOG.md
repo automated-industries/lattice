@@ -8,6 +8,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-06-10
+
+### Security / Breaking
+
+- **A cloud is reachable only through a user-authenticated server.** A regular
+  GUI pointed straight at a cloud's `postgres://` connection is now **refused**:
+  a raw connection string can't tell members apart, so anyone holding it would
+  read every table and row regardless of sharing. When the GUI detects a cloud
+  (a database that hosts `__lattice_team_identity`) reached over a direct
+  `postgres://` connection, it serves **no** team context and **no** tables, and
+  prompts the operator to reconnect through a server (sign in as a user). The
+  server is the single connection model and the security boundary — it holds the
+  database connection and filters every member's sync so they only ever receive
+  rows they're allowed to see; members never hold the connection string. The
+  server process itself (`lattice serve --team-cloud`) is the sole legitimate
+  direct holder of the connection. **Migration:** stand up a server in front of
+  the cloud Postgres and have members reconnect via invite; the direct
+  connection string is retired.
+- Using Postgres as your **own**, single-user storage backend — a workspace with
+  no team — is unaffected and keeps connecting directly.
+- The GUI surfaces a `cloudReconnectRequired` state on `GET /api/dbconfig` and a
+  notice in the UI when a workspace is on the refused direct path.
+
 ## [2.2.2] - 2026-06-10
 
 Team-cloud GUI hotfixes.
