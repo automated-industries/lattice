@@ -2,6 +2,12 @@ import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
 import { appendChangeEnvelope } from '../teams/team-core.js';
+import {
+  canAccessRow,
+  recordRowAcl,
+  tableDefaultVisibility,
+  RowAccessError,
+} from '../teams/row-access.js';
 
 /**
  * Shared GUI mutation primitives. The HTTP row-CRUD routes write through these
@@ -242,7 +248,7 @@ export interface MutationCtx {
    * access that lives in the server. The server supplies these closures (over
    * its reassignable `active`) when handling undo/redo/revert; applyInverse/
    * applyForward delegate to them for `schema.*` entries. Absent for plain row
-   * mutations — a schema entry encountered without them throws (the fail-loudly rule).
+   * mutations — a schema entry encountered without them throws loudly.
    */
   applySchemaInverse?: (entry: AuditEntry) => Promise<void>;
   applySchemaForward?: (entry: AuditEntry) => Promise<void>;
@@ -281,6 +287,12 @@ export async function createRow(
 ): Promise<{ id: string; row: Row | null }> {
   const id = await ctx.db.insert(table, values);
   const row = await ctx.db.get(table, id);
+  // Record the per-row ACL — owner = creator, visibility = the table default —
+  // so the new row is enforceable on the team cloud. No-op outside team mode.
+  if (ctx.team) {
+    const vis = await tableDefaultVisibility(ctx.db, ctx.team.teamId, table);
+    await recordRowAcl(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId, vis);
+  }
   await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source, ctx.sessionId);
   await emitTeamEnvelope(ctx, table, id, 'upsert', row);
   return { id, row };
@@ -316,16 +328,21 @@ export async function updateRow(
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
   const before = await ctx.db.get(table, id);
-  // the fail-loudly rule: never silently "succeed" against a row that doesn't exist. A
+  // Never silently "succeed" against a row that doesn't exist. A
   // missing row means the caller (e.g. the assistant) used a stale/wrong id;
   // the no-op UPDATE would otherwise record a bogus audit/feed entry whose
   // row link 404s on click. Fail loudly so the caller can correct.
   if (before === null) {
     throw new Error(`Cannot update "${table}": no row with id "${id}"`);
   }
+  // Row-level permission gate: a member may only edit rows they can access.
+  // Thrown loudly (RowAccessError → HTTP 404) rather than a silent no-op.
+  if (ctx.team && !(await canAccessRow(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId))) {
+    throw new RowAccessError();
+  }
   await ctx.db.update(table, id, values);
   const after = await ctx.db.get(table, id);
-  // the fail-loudly rule: a requested change that left the row byte-identical means the
+  // A requested change that left the row byte-identical means the
   // write did not land (a read-only data source silently no-ops the UPDATE).
   // Surface it loudly instead of reporting a phantom success. A genuine no-op
   // (the new value already equals the stored value) is NOT an error.
@@ -360,10 +377,14 @@ export async function deleteRow(
   hard: boolean,
 ): Promise<void> {
   const before = await ctx.db.get(table, id);
-  // the fail-loudly rule: deleting a non-existent row is a no-op that would still record a
+  // Deleting a non-existent row is a no-op that would still record a
   // bogus audit/feed entry. Surface the bad id instead of faking success.
   if (before === null) {
     throw new Error(`Cannot delete from "${table}": no row with id "${id}"`);
+  }
+  // Row-level permission gate (RowAccessError → HTTP 404).
+  if (ctx.team && !(await canAccessRow(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId))) {
+    throw new RowAccessError();
   }
   if (!hard && ctx.softDeletable.has(table)) {
     await ctx.db.update(table, id, { deleted_at: new Date().toISOString() });
@@ -565,7 +586,7 @@ export async function revertEntry(ctx: MutationCtx, id: string): Promise<RevertR
   if (entry.undone === 1) return { ok: false, reason: 'already_undone' };
   // applyInverse runs first; only if it succeeds do we flip `undone`. A schema
   // revert that throws (e.g. purged, or a name collision) leaves the entry
-  // Revertable and surfaces the error to the caller (the fail-loudly rule).
+  // Revertable and surfaces the error to the caller (fail loudly).
   await applyInverse(ctx, entry);
   await ctx.db.update('_lattice_gui_audit', id, { undone: 1 });
   ctx.feed.publish({

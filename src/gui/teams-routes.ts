@@ -11,8 +11,13 @@ import {
 } from '../framework/workspace.js';
 import { resolveContextDirForConfig } from '../framework/gui-bootstrap.js';
 import { sendJson, readJson } from './http.js';
-import { TeamsClient, TeamsHttpError, type TeamConnection } from '../teams/client.js';
-import { isPostgresUrl, registerDirectViaPostgres } from '../teams/register-direct.js';
+import {
+  TeamsClient,
+  TeamsHttpError,
+  DIRECT_CLOUD_DEPRECATION_MESSAGE,
+  type TeamConnection,
+} from '../teams/client.js';
+import { isPostgresUrl } from '../teams/register-direct.js';
 import { serializeSchema } from '../teams/schema-spec.js';
 
 /**
@@ -502,14 +507,16 @@ async function handleRegisterAndCreate(
     sendJson(res, { error: 'cloud_url, email, user_name, team_name required' }, 400);
     return;
   }
-  // "New cloud (Postgres)" supplies a postgres:// URL — drive the register
-  // sequence DIRECTLY against the cloud Postgres (init schema + identity +
-  // team, the creator becomes owner). The HTTP `/api/auth/register` path only
-  // works for `http(s)://` team-cloud servers and the Fetch API refuses URLs
-  // with embedded credentials, so a postgres URL must use the direct path.
-  const reg = isPostgresUrl(cloudUrl)
-    ? await registerDirectViaPostgres(cloudUrl, email, userName, teamName)
-    : await ctx.client.register(cloudUrl, email, userName, teamName);
+  // 2.2: creating a NEW direct postgres:// workspace is deprecated — it bypasses
+  // the per-recipient sync filter and can't enforce row-level security. Reject it
+  // here too (the TeamsClient dispatch blocks the same on join / upgrade), so the
+  // GUI's two entry points are consistent. The hosted http(s):// register path is
+  // unaffected.
+  if (isPostgresUrl(cloudUrl)) {
+    sendJson(res, { error: DIRECT_CLOUD_DEPRECATION_MESSAGE }, 400);
+    return;
+  }
+  const reg = await ctx.client.register(cloudUrl, email, userName, teamName);
   await ctx.client.saveConnection({
     team_id: reg.team.id,
     team_name: reg.team.name,

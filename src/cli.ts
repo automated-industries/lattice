@@ -282,7 +282,7 @@ function printHelp(): void {
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
       '  gui         Start a local browser GUI for exploring Lattice context',
-      '  serve       Start a server-mode lattice (use --team-cloud for Lattice Teams)',
+      '  serve       Start a server-mode lattice (add --team-cloud to host a shared cloud for remote members)',
       '  teams       Manage Lattice Teams (run `lattice teams help` for subcommands)',
       '  update      Upgrade latticesql to the latest version',
       '',
@@ -327,7 +327,11 @@ function printHelp(): void {
       '  --output <dir>         Output directory for rendered context (default: ./context)',
       '  --host <addr>          Bind address (default: 127.0.0.1; use 0.0.0.0 to expose)',
       '  --port <number>        Port (default: 4317; auto-increments if busy)',
-      '  --team-cloud           Enable Lattice Teams cloud mode (bearer auth required)',
+      '  --team-cloud           Host this cloud as a shared server for remote members (bearer auth).',
+      '                         A cloud already IS a workspace with members; this only adds the',
+      '                         auth-gated HTTP surface so other people can connect. Omit it to',
+      '                         open the cloud yourself (you connect directly; eye-icon row',
+      '                         permissions are active).',
       '',
       'Options (init / workspace):',
       '  --root <dir>           The .lattice root location (default: discovered or ./.lattice)',
@@ -621,7 +625,7 @@ async function runServe(args: ParsedArgs): Promise<void> {
       openBrowser: false,
       teamCloud: args.teamCloud,
     });
-    const label = args.teamCloud ? 'Lattice team cloud' : 'Lattice server';
+    const label = args.teamCloud ? 'Lattice shared cloud server' : 'Lattice server';
     console.log(`${label} listening on ${args.host}:${String(handle.port)} (${handle.url})`);
     console.log('Press Ctrl+C to stop.');
 

@@ -162,6 +162,12 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
       // carries a stable edit_id, so re-sending it after a reconnect is a
       // no-op rather than a duplicate write. Nullable + additive.
       edit_id: 'TEXT',
+      // Per-recipient targeting for 2.2 hard row-level sync. NULL =
+      // broadcast (delivered to every member, then filtered at pull time
+      // against __lattice_row_acl); non-null = targeted to exactly this
+      // user (the grant / revoke / delete fan-out). Nullable + additive,
+      // same precedent as client_ts / edit_id.
+      recipient_user_id: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-teams/change-log.md',
@@ -177,6 +183,44 @@ export const CLOUD_INTERNAL_TABLE_DEFS: Record<string, TableDefinition> = {
     primaryKey: ['team_id', 'table_name', 'pk'],
     render: () => '',
     outputFile: '.lattice-teams/row-links.md',
+  },
+  // Per-row access control for a team cloud (2.2 row-level permissions).
+  // Mirrors __lattice_object_owners at row granularity: each shared row
+  // has an owner (its creator) and a visibility. Enforcement is at the
+  // application layer (see src/teams/row-access.ts) — every member shares
+  // the same physical DB, so a row a user can't see must be filtered out
+  // before its bytes reach them. Kept out-of-band (never injected into
+  // user tables) so the user's own schema stays untouched.
+  __lattice_row_acl: {
+    columns: {
+      team_id: 'TEXT NOT NULL',
+      table_name: 'TEXT NOT NULL',
+      pk: 'TEXT NOT NULL',
+      owner_user_id: 'TEXT NOT NULL',
+      // 'private' = owner only · 'everyone' = all team members ·
+      // 'custom' = the explicit grant list in __lattice_row_grants.
+      visibility: "TEXT NOT NULL CHECK (visibility IN ('private', 'everyone', 'custom'))",
+      created_at: 'TEXT NOT NULL',
+      updated_at: 'TEXT NOT NULL',
+    },
+    primaryKey: ['team_id', 'table_name', 'pk'],
+    render: () => '',
+    outputFile: '.lattice-teams/row-acl.md',
+  },
+  // Explicit per-row grant list, consulted only when the owning row's
+  // __lattice_row_acl.visibility = 'custom'. One row per (row, grantee).
+  __lattice_row_grants: {
+    columns: {
+      team_id: 'TEXT NOT NULL',
+      table_name: 'TEXT NOT NULL',
+      pk: 'TEXT NOT NULL',
+      grantee_user_id: 'TEXT NOT NULL',
+      granted_by_user_id: 'TEXT NOT NULL',
+      granted_at: 'TEXT NOT NULL',
+    },
+    primaryKey: ['team_id', 'table_name', 'pk', 'grantee_user_id'],
+    render: () => '',
+    outputFile: '.lattice-teams/row-grants.md',
   },
 };
 
@@ -310,4 +354,72 @@ export async function installCloudInternalTriggers(db: Lattice): Promise<void> {
     sql: CLOUD_NOTIFY_CHANGE_LOG_SQL,
   };
   await db.migrate([migration]);
+}
+
+/**
+ * Row-level permission schema (2.2). Installs the pieces that need
+ * explicit, ordered, idempotent migrations: the per-table default-row-
+ * visibility column on __lattice_shared_objects, the supporting indexes,
+ * and the upgrade backfill. The ACL tables themselves (__lattice_row_acl,
+ * __lattice_row_grants) and the additive __lattice_change_log
+ * .recipient_user_id column are created through the normal defineLate path
+ * from CLOUD_INTERNAL_TABLE_DEFS — only the column-with-a-default, the
+ * indexes, and the data backfill need a migration.
+ *
+ * Unlike the Postgres-only NOTIFY trigger, this runs on BOTH dialects:
+ * SQLite Teams servers and Postgres clouds both enforce row visibility.
+ * Idempotent via Lattice's migration tracker. The numeric ":NN-" ordering
+ * prefixes keep the column-add ahead of the index + backfill that depend
+ * on it — the runner sorts by version with numeric-aware localeCompare, so
+ * a descriptive-only suffix would mis-order. Each migration is a SINGLE
+ * statement: the SQLite path runs through better-sqlite3 `prepare()`, which
+ * rejects multi-statement SQL (the multi-statement NOTIFY trigger above is
+ * Postgres-only, so it never hits that path).
+ *
+ * Safe to call after installCloudInternalTriggers on every cloud schema
+ * setup path; defineLate must have registered the internal tables first so
+ * __lattice_change_log.recipient_user_id and __lattice_row_grants exist
+ * before the indexes that reference them.
+ */
+export async function installRowPermsSchema(db: Lattice): Promise<void> {
+  const migrations: Migration[] = [
+    {
+      // 01 — per-table default visibility for newly-created rows. Born
+      // 'private' unless the table owner opts the table into 'everyone';
+      // the backfill (06) flips already-shared tables to preserve pre-2.2
+      // visibility. No IF NOT EXISTS: the version guard runs this exactly
+      // once, which is what SQLite's ADD COLUMN needs (it has no
+      // IF NOT EXISTS form).
+      version: 'internal:row-perms:01-default-row-visibility:v1',
+      sql: `ALTER TABLE "__lattice_shared_objects" ADD COLUMN "default_row_visibility" TEXT NOT NULL DEFAULT 'private' CHECK ("default_row_visibility" IN ('private', 'everyone'))`,
+    },
+    {
+      // 02-05 — indexes. One CREATE INDEX per migration (single-statement
+      // for the SQLite path). IF NOT EXISTS is valid in both dialects.
+      version: 'internal:row-perms:02-idx-change-log-team-seq:v1',
+      sql: `CREATE INDEX IF NOT EXISTS "idx_lattice_change_log_team_seq" ON "__lattice_change_log" ("team_id", "seq")`,
+    },
+    {
+      version: 'internal:row-perms:03-idx-change-log-team-recipient-seq:v1',
+      sql: `CREATE INDEX IF NOT EXISTS "idx_lattice_change_log_team_recipient_seq" ON "__lattice_change_log" ("team_id", "recipient_user_id", "seq")`,
+    },
+    {
+      version: 'internal:row-perms:04-idx-change-log-team-table-pk:v1',
+      sql: `CREATE INDEX IF NOT EXISTS "idx_lattice_change_log_team_table_pk" ON "__lattice_change_log" ("team_id", "table_name", "pk")`,
+    },
+    {
+      version: 'internal:row-perms:05-idx-row-grants-grantee:v1',
+      sql: `CREATE INDEX IF NOT EXISTS "idx_lattice_row_grants_grantee" ON "__lattice_row_grants" ("team_id", "grantee_user_id", "table_name", "pk")`,
+    },
+    {
+      // 06 — upgrade backfill. Every already-shared table defaults to
+      // 'everyone' so pre-2.2 rows stay visible to all members (nothing
+      // disappears on upgrade). Pre-2.2 rows have no __lattice_row_acl
+      // entry; resolveRowAcl() folds in this table default, so they read
+      // as 'everyone' until an owner narrows an individual row. Runs once.
+      version: 'internal:row-perms:06-backfill-shared-defaults:v1',
+      sql: `UPDATE "__lattice_shared_objects" SET "default_row_visibility" = 'everyone' WHERE "deleted_at" IS NULL`,
+    },
+  ];
+  await db.migrate(migrations);
 }

@@ -281,7 +281,7 @@ const SAFE_CONSTRAINT_RE = /^[A-Za-z0-9_ ,()"'.]+$/;
 /**
  * Validate a SchemaSpec that may have arrived from outside the trust boundary,
  * before any of its names, types, defaults, or constraints are rendered into
- * DDL. Throws on the first violation (the fail-loudly rule — fail loudly, never silently
+ * DDL. Throws on the first violation (fail loudly, never silently
  * strip). Legitimate specs (valid identifiers, the five primitive types,
  * simple string/number defaults) pass unchanged.
  */

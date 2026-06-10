@@ -944,6 +944,27 @@ export const appJs = `
 
     window.addEventListener('hashchange', renderRoute);
 
+    // Deprecation banner: a grandfathered direct database cloud connection
+    // bypasses the hosted server's row security entirely — say so up front.
+    // Dismiss hides it for this browser session only.
+    function initDeprecationBanner() {
+      if (sessionStorage.getItem('lattice-direct-banner-dismissed')) return;
+      fetchJson('/api/dbconfig').then(function (d) {
+        if (!d || !d.directCloud) return;
+        var banner = document.getElementById('deprecation-banner');
+        var text = document.getElementById('deprecation-banner-text');
+        if (!banner || !text) return;
+        text.textContent = "Direct database cloud connections are deprecated and don't support row-level security. Migrate to a hosted workspace.";
+        banner.hidden = false;
+        var dismiss = document.getElementById('deprecation-banner-dismiss');
+        if (dismiss) dismiss.addEventListener('click', function () {
+          banner.hidden = true;
+          sessionStorage.setItem('lattice-direct-banner-dismissed', '1');
+        });
+      }).catch(function () { /* dbconfig unavailable (e.g. team-cloud server mode) — no banner */ });
+    }
+    initDeprecationBanner();
+
     // ────────────────────────────────────────────────────────────
     // Sidebar
     // ────────────────────────────────────────────────────────────
@@ -1299,6 +1320,31 @@ export const appJs = `
           .map(function (h) { return '<th>' + escapeHtml(h) + '</th>'; }).join('');
         headers += '<th class="row-actions"></th>';
 
+        // Per-row visibility indicator (2.2 row-level permissions). Reads the
+        // server-attached _access summary (team clouds only); absent yields ''.
+        // U+25C9 = everyone (yellow) / private (red, by colour); U+25CE =
+        // custom (shared with specific people). Owner = interactive toggle;
+        // non-owner = faded + inert status.
+        function rowVisMarkup(tbl, r) {
+          var a = r._access;
+          if (!a) return '';
+          var vis = a.visibility;
+          var glyph = vis === 'custom' ? '◎' : '◉';
+          if (!a.ownedByMe) {
+            var seen = vis === 'custom' ? 'Shared with you' : 'Visible to everyone';
+            return '<span class="row-vis row-vis-disabled" title="' + escapeHtml(seen) + '">' + glyph + '</span>';
+          }
+          if (vis === 'custom') {
+            return '<a class="row-vis" href="#/objects/' + encodeURIComponent(tbl) + '/' + encodeURIComponent(r.id) +
+              '" title="Shared with specific people — open to manage">' + glyph + '</a>';
+          }
+          var cls = vis === 'private' ? 'row-vis row-vis-private' : 'row-vis';
+          var title = vis === 'everyone'
+            ? 'Visible to everyone — click to make private'
+            : 'Private to you — click to share with everyone';
+          return '<button class="' + cls + '" data-vis-toggle="' + escapeHtml(r.id) +
+            '" data-vis-cur="' + vis + '" title="' + escapeHtml(title) + '">' + glyph + '</button>';
+        }
         var bodyRows;
         if (rows.length === 0) {
           bodyRows = '';
@@ -1329,7 +1375,8 @@ export const appJs = `
                 '<button class="row-delete" title="Delete permanently" data-hard-del="' + escapeHtml(r.id) + '">✕</button>' +
                 '</td>');
             } else {
-              tds.push('<td class="row-actions"><button class="row-delete" title="Delete" data-del="' + escapeHtml(r.id) + '">✕</button></td>');
+              tds.push('<td class="row-actions">' + rowVisMarkup(tableName, r) +
+                '<button class="row-delete" title="Delete" data-del="' + escapeHtml(r.id) + '">✕</button></td>');
             }
             return '<tr data-id="' + escapeHtml(r.id) + '"' + (viewMode === 'trash' ? ' class="row-deleted"' : '') + '>' + tds.join('') + '</tr>';
           }).join('');
@@ -1434,6 +1481,30 @@ export const appJs = `
               showToast(d.label.replace(/s$/, '') + ' restored', { undo: undoLast });
             }).catch(function (err) {
               showToast('Restore failed: ' + err.message, {});
+            });
+          });
+        });
+
+        content.querySelectorAll('button[data-vis-toggle]').forEach(function (btn) {
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var id = btn.getAttribute('data-vis-toggle');
+            var cur = btn.getAttribute('data-vis-cur');
+            var next = cur === 'everyone' ? 'private' : 'everyone';
+            withBusy(btn, function () {
+              return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ visibility: next }),
+              }).then(function () {
+                invalidate(tableName);
+                return refreshEntities();
+              }).then(function () {
+                renderTable(content, tableName);
+                showToast(next === 'everyone' ? 'Row shared with everyone' : 'Row made private', {});
+              }).catch(function (err) {
+                showToast('Visibility update failed: ' + err.message, {});
+              });
             });
           });
         });
@@ -1564,6 +1635,39 @@ export const appJs = `
       });
     }
 
+    // Detail-view row visibility line (2.2). Owner: status + everyone/private
+    // toggle + a "Specific people…" / "Manage access" control that opens the
+    // grants checklist (the table view's "open to manage" affordance lands
+    // here). Non-owner: read-only status.
+    function detailVisLineEl(row) {
+      var a = row._access;
+      if (!a) return '';
+      var vis = a.visibility;
+      var labelMap = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
+      if (!a.ownedByMe) {
+        var seen = vis === 'custom' ? 'Shared with you' : (labelMap[vis] || '');
+        return '<div class="detail-vis muted" style="margin:6px 0;font-size:13px">' + escapeHtml(seen) + '</div>';
+      }
+      var info = labelMap[vis] || '';
+      if (vis === 'custom' && a.grantees) info += ' (' + a.grantees.length + ')';
+      var buttons;
+      if (vis === 'custom') {
+        // Leaving custom stops the grant list from applying — the toggle
+        // handler asks for confirmation. The grants themselves are kept
+        // server-side, so reopening "Manage access" restores the list.
+        buttons = '<button class="btn" id="detail-vis-manage">Manage access</button>' +
+          '<button class="btn" id="detail-vis-toggle" data-vis-cur="custom" data-vis-next="everyone">Share with everyone</button>';
+      } else {
+        var btnLabel = vis === 'everyone' ? 'Make private' : 'Share with everyone';
+        var next = vis === 'everyone' ? 'private' : 'everyone';
+        buttons = '<button class="btn" id="detail-vis-toggle" data-vis-cur="' + vis + '" data-vis-next="' + next + '">' + btnLabel + '</button>' +
+          '<button class="btn" id="detail-vis-manage">Specific people…</button>';
+      }
+      return '<div class="detail-vis" style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;flex-wrap:wrap">' +
+        '<span class="muted" id="detail-vis-info">' + escapeHtml(info) + '</span>' + buttons +
+        '</div>' +
+        '<div class="grants-panel" id="grants-panel" hidden></div>';
+    }
     function renderDetail(content, tableName, id) {
       var t = tableByName(tableName);
       if (!t) {
@@ -1662,6 +1766,7 @@ export const appJs = `
               '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
               '<div class="actions">' + actions + '</div>' +
             '</div>' +
+            detailVisLineEl(row) +
             lastEditedLineEl(tableName, id) +
             (tableName === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
@@ -1673,6 +1778,93 @@ export const appJs = `
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
           if (!editing && tableName === 'files') renderFilePreview(row);
+
+          function postVisibility(next) {
+            return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ visibility: next }),
+            });
+          }
+          var detailVisBtn = content.querySelector('#detail-vis-toggle');
+          if (detailVisBtn) detailVisBtn.addEventListener('click', function () {
+            var cur = detailVisBtn.getAttribute('data-vis-cur');
+            var next = detailVisBtn.getAttribute('data-vis-next') || (cur === 'everyone' ? 'private' : 'everyone');
+            if (cur === 'custom') {
+              // Non-destructive guard: the grant rows survive server-side, but
+              // the custom list stops applying the moment visibility changes.
+              var cnt = (row._access && row._access.grantees ? row._access.grantees.length : 0);
+              var who = cnt === 1 ? '1 specific person' : cnt + ' specific people';
+              if (!confirm('This row is shared with ' + who + '. The custom list will stop applying (it is kept and reapplies if you return to specific people). Continue?')) return;
+            }
+            withBusy(detailVisBtn, function () {
+              return postVisibility(next).then(function () {
+                invalidate(tableName);
+                renderDetail(content, tableName, id);
+                showToast(next === 'everyone' ? 'Shared with everyone' : 'Made private', {});
+              }).catch(function (e) { showToast('Visibility update failed: ' + e.message, {}); });
+            });
+          });
+
+          // Grants checklist ("Specific people…" / "Manage access"): member
+          // checkboxes wired to the row-grant endpoints. Opening it on a
+          // non-custom row first narrows visibility to custom so an empty
+          // checklist is a coherent state (owner-only until people are added).
+          var detailVisManage = content.querySelector('#detail-vis-manage');
+          if (detailVisManage) detailVisManage.addEventListener('click', function () {
+            var panel = content.querySelector('#grants-panel');
+            if (!panel) return;
+            if (!panel.hidden) { panel.hidden = true; return; }
+            var access = row._access || {};
+            var ensure = access.visibility === 'custom'
+              ? Promise.resolve()
+              : postVisibility('custom').then(function () { access.visibility = 'custom'; });
+            withBusy(detailVisManage, function () {
+              return ensure.then(function () {
+                return fetchJson('/api/team/users');
+              }).then(function (d) {
+                var users = ((d && d.users) || []).filter(function (u) { return u.id !== access.owner_user_id; });
+                var granted = {};
+                (access.grantees || []).forEach(function (g) { granted[g] = true; });
+                if (users.length === 0) {
+                  panel.innerHTML = '<div class="muted">No other members in this workspace yet.</div>';
+                } else {
+                  panel.innerHTML = '<div class="grants-title">Who can see this</div>' + users.map(function (u) {
+                    var label = u.name || u.email || u.id;
+                    return '<label class="grants-row"><input type="checkbox" data-grant-user="' + escapeHtml(u.id) + '"' +
+                      (granted[u.id] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
+                  }).join('');
+                }
+                panel.hidden = false;
+                panel.querySelectorAll('[data-grant-user]').forEach(function (cb) {
+                  cb.addEventListener('change', function () {
+                    var uid = cb.getAttribute('data-grant-user');
+                    var base = '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/grants';
+                    var req = cb.checked
+                      ? fetchJson(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user_id: uid }) })
+                      : fetchJson(base + '/' + encodeURIComponent(uid), { method: 'DELETE' });
+                    cb.disabled = true;
+                    req.then(function () {
+                      var list = access.grantees || (access.grantees = []);
+                      var at = list.indexOf(uid);
+                      if (cb.checked && at === -1) list.push(uid);
+                      if (!cb.checked && at !== -1) list.splice(at, 1);
+                      var infoEl = content.querySelector('#detail-vis-info');
+                      if (infoEl) infoEl.textContent = 'Shared with specific people (' + list.length + ')';
+                      invalidate(tableName);
+                    }).catch(function (e) {
+                      cb.checked = !cb.checked; // revert the failed change
+                      showToast('Access update failed: ' + e.message, {});
+                    }).then(function () { cb.disabled = false; });
+                  });
+                });
+                if (access.visibility === 'custom') {
+                  var infoEl = content.querySelector('#detail-vis-info');
+                  if (infoEl) infoEl.textContent = 'Shared with specific people (' + (access.grantees || []).length + ')';
+                }
+              }).catch(function (e) { showToast('Could not load members: ' + e.message, {}); });
+            });
+          });
 
           // Junction link/unlink handlers (active in both read and edit modes).
           content.querySelectorAll('.remove-link').forEach(function (btn) {
@@ -3103,6 +3295,18 @@ export const appJs = `
             '</span>' +
           '</div>'
         : '';
+      // Owner-only "new rows default to" control, shown for a shared table.
+      var defaultVis = (t && t.defaultRowVisibility) || 'private';
+      var defaultVisRow = canShare && isShared
+        ? '<label>New rows default to</label>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<select id="dm-rowvis-select">' +
+              '<option value="private"' + (defaultVis === 'private' ? ' selected' : '') + '>Private (owner only)</option>' +
+              '<option value="everyone"' + (defaultVis === 'everyone' ? ' selected' : '') + '>Everyone on the workspace</option>' +
+            '</select>' +
+            '<span style="font-size:12px;color:var(--text-muted)">Visibility new rows in this table are created with.</span>' +
+          '</div>'
+        : '';
       panel.innerHTML =
         '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
         '<div class="dm-edit-grid">' +
@@ -3117,6 +3321,7 @@ export const appJs = `
             '<button class="btn" id="dm-icon-btn" style="margin-top:6px;">Save</button>' +
           '</div>' +
           shareRow +
+          defaultVisRow +
           '<label>Columns</label>' +
           '<div>' +
             '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
@@ -3166,6 +3371,22 @@ export const appJs = `
           }).then(function () {
             showToast(isShared ? 'Unshared "' + tableName + '" from workspace' : 'Shared "' + tableName + '" with workspace', {});
           }).catch(function (e) { showToast('Share update failed: ' + e.message, {}); });
+        });
+      });
+
+      var rowvisSelect = panel.querySelector('#dm-rowvis-select');
+      if (rowvisSelect) rowvisSelect.addEventListener('change', function () {
+        var next = rowvisSelect.value;
+        withBusy(rowvisSelect, function () {
+          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/default-row-visibility', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ visibility: next }),
+          }).then(function () {
+            return dmRefreshPanel(tableName, false);
+          }).then(function () {
+            showToast(next === 'everyone' ? 'New rows now default to everyone' : 'New rows now default to private', {});
+          }).catch(function (e) { showToast('Default visibility update failed: ' + e.message, {}); });
         });
       });
     }
@@ -3855,6 +4076,7 @@ export const appJs = `
       // enters per-DB things (cloud URL + DB name) in this modal.
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
+          '<p style="font-size:12px;color:#ef4444;margin:0 0 8px">Direct postgres:// connections are deprecated and do not enforce row-level permissions — use a hosted Lattice Teams URL (https://…) instead.</p>' +
           '<div class="field"><label>Cloud URL</label>' +
             '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
           '</div>' +
@@ -3882,6 +4104,7 @@ export const appJs = `
     function showJoinTeamModal(kind) {
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
+          '<p style="font-size:12px;color:#ef4444;margin:0 0 8px">Direct postgres:// connections are deprecated and do not enforce row-level permissions — use a hosted Lattice Teams URL (https://…) instead.</p>' +
           '<div class="field"><label>Cloud URL</label>' +
             '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
           '</div>' +
@@ -5218,7 +5441,7 @@ export const appJs = `
         // scheduleRealtimeRefresh is debounced (200ms) so a burst from one
         // ingest still coalesces into a single refetch — and on Postgres/cloud
         // it shares that debounce with the realtime 'change' handler (no double
-        // fetch). See the bounded-reads rule: /api/entities uses batched counts, not N queries.
+        // fetch). /api/entities batches its row counts into one query, not N.
         if (data && (data.table || data.op === 'schema')) {
           scheduleRealtimeRefresh();
         }

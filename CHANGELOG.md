@@ -8,6 +8,106 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-06-09
+
+**Row-level permissions for Teams.** Sharing a table no longer means every
+member sees every row. Each shared row now has an **owner** (its creator) and a
+**visibility** — `private` (owner only), `everyone` (all members), or `custom`
+(an explicit grant list) — enforced for the REST API, the AI assistant, and the
+cloud sync itself, so a member never receives the bytes of a row they can't
+read. Existing shared tables default to `everyone` on upgrade, so nothing
+changes until an owner opts a table (or a row) into `private`.
+
+**Security note.** Enforcement is **application-layer**, performed by the
+hosted Teams server (and by each Lattice process for its own reads) — there
+are no Postgres `CREATE POLICY` rules on the cloud database. Anyone holding a
+SQL connection string to the cloud Postgres can read and write every row;
+treat the database as the hosted server's private backend and network-isolate
+it. Grandfathered direct `postgres://` team connections (see _Deprecated_)
+bypass row-level security entirely.
+
+### Added
+
+- **Row visibility model.** New cloud-internal tables `__lattice_row_acl`
+  (per-row owner + visibility) and `__lattice_row_grants` (custom grant list),
+  plus `__lattice_shared_objects.default_row_visibility` (the visibility new
+  rows are born with, table-owner-set). Installed + backfilled idempotently on
+  both SQLite and Postgres via `installRowPermsSchema`.
+- **`Lattice.queryVisible(table, opts)`** — an indexed, in-SQL, decrypt-reusing
+  read that returns only the rows a given member may see in a team.
+- **`Lattice.listChangesForRecipient(...)`** — the hosted change-log pull,
+  filtered per recipient so the Teams server is a hard enforcement point.
+- **`src/teams/row-access.ts`** — `resolveRowAcl` / `canAccessRow` /
+  `isRowOwner` / `tableDefaultVisibility` / `listVisibleRows` and owner-gated
+  `setRowVisibility` / `addRowGrant` / `removeRowGrant` /
+  `setTableDefaultVisibility`, with typed `RowAccessError` (→ HTTP 404, hide
+  existence) / `RowOwnerOnlyError` (→ HTTP 403).
+- **GUI** — a per-row visibility eye on the table view (owner toggles
+  everyone↔private; non-owner sees a faded status), a detail-view control, and
+  a Data Model "new rows default to" select. New endpoints:
+  `POST /api/tables/:t/rows/:id/visibility`, `POST`/`DELETE`
+  `/api/tables/:t/rows/:id/grants`, and
+  `POST /api/schema/entities/:name/default-row-visibility`.
+- **GUI: grants checklist.** The detail view's visibility line grows a
+  "Specific people…" / "Manage access" control — an owner-only member
+  checklist wired to the grant endpoints, so `custom` visibility is fully
+  manageable from the GUI. Switching a `custom` row to everyone/private now
+  asks for confirmation first (the grant list is kept server-side and
+  reapplies if the row returns to specific people).
+- **GUI: direct-connection deprecation banner.** A workspace holding a
+  grandfathered direct `postgres://` team connection shows a dismissible
+  amber banner ("Direct database cloud connections are deprecated and don't
+  support row-level security. Migrate to a hosted workspace."), driven by a
+  new `directCloud` field on `GET /api/dbconfig`.
+
+### Security
+
+- **`GET /api/search` now applies the row ACL.** The REST search route
+  returned full-text hits without the per-row post-filter the assistant's
+  search tool already applied, so a member could read snippets of rows shared
+  privately or with other members. Both paths now share one batched filter
+  (`filterVisiblePks` — one ACL query + at most one grants query per table).
+- **Dashboard counts no longer reveal invisible rows.** Entity tiles counted
+  physical rows (`pg_class.reltuples` / exact COUNTs), telling a member that
+  hidden rows exist and how many. In team mode the tiles now run the same
+  visibility predicate as `Lattice.queryVisible`, aggregated into a single
+  round-trip (`Lattice.countVisibleMany`, capped at 50 tables per pass), so
+  counts always match what the rows view lists.
+
+### Changed
+
+- **Enforcement is wired into every path.** The REST row routes, the row
+  mutation primitives, and the AI assistant's `list_rows` / `get_row` /
+  `search` tools all honour the row ACL (the assistant previously bypassed it
+  entirely). Denied reads return 404.
+- **Hosted sync is per-recipient.** Linked rows record an ACL; the change-log
+  pull is filtered per member; delete / unlink / member-kick now fan out a
+  targeted `unlink` to each member who can see the row before tearing the ACL
+  down (a broadcast unlink would be dropped by the new filter).
+- **Dashboard counts (Postgres).** For the suspicious subset of tables whose
+  approximate `pg_class.reltuples` reads 0 or is absent (under autovacuum's
+  ANALYZE threshold), the dashboard now issues one aggregated exact-count
+  round-trip — correcting the "tile shows 0 while drill-in shows rows" case
+  without reintroducing a per-table fan-out. Capped at 50 tables (logged +
+  skipped on overflow).
+- **A cloud IS a workspace with members — no "convert to team" concept.**
+  `TeamsClient.upgradeToTeamCloud(...)` is renamed to
+  `TeamsClient.registerCloudOwner(...)` (same signature + behaviour: bootstraps
+  the first member as owner, rejects direct `postgres://` per the deprecation
+  below). The "upgrade/convert a cloud into a team" framing is gone from the API,
+  the `--team-cloud` CLI help, and the docs — opening a cloud yourself connects
+  you directly (eye-icon row permissions active); `lattice serve --team-cloud`
+  is just the deployment role that hosts the cloud as a shared, auth-gated server
+  for _remote_ members. **Breaking:** external callers of the old method name
+  must update to `registerCloudOwner`.
+
+### Deprecated
+
+- **Direct `postgres://` team-cloud connections.** They can't enforce
+  row-level security, so new direct connections are rejected with guidance to a
+  hosted Teams server; existing direct connections keep working but warn on
+  connect. Unrelated to using Postgres as a Lattice's own storage backend.
+
 ## [2.1.1] - 2026-06-09
 
 **The assistant rail speaks in activity cards — and links to what it found.**
@@ -294,7 +394,7 @@ shipped across 1.16.x), not a breaking change.
   assistant reaches its per-message tool-call cap with work outstanding (e.g.
   "create one row per line of a 150-row CSV"), it emits a warning ("…the task
   may be incomplete. Send 'continue' and I'll finish the rest.") instead of
-  ending with a clean "done" that looked complete (the fail-loudly rule: no silent
+  ending with a clean "done" that looked complete (no silent
   truncation).
 - **Adding a relationship now updates the linked tables' context immediately.**
   A new junction's rollup now appears on the EXISTING tables it links without a
@@ -365,7 +465,7 @@ shipped across 1.16.x), not a breaking change.
   not to claim success after a failed tool call. The tool-loop + output budget
   (`MAX_TOOL_LOOPS` 8→16, `MAX_TOKENS` 2048→4096) were raised so multi-step bulk
   work (e.g. "create one row per line of an attached CSV") isn't truncated.
-  _(Capacity tuning, not a workaround — flagged for review per review policy.)_ The
+  _(Capacity tuning, not a workaround.)_ The
   credential-bearing `secrets` table is now hidden from the assistant entirely —
   excluded from its callable tables and from the schema context — so a request
   (or instructions injected via an attached file) can't induce it to read and
@@ -636,7 +736,7 @@ all collaboration surface are opt-in or GUI-cloud-gated.
 - **Every schema change is now in Version History + the Activity rail, alongside row edits.** Creating/renaming/deleting a table, adding/renaming/deleting a column, and adding/deleting a link/relationship each append an entry to the same `_lattice_gui_audit` history (new `schema.*` operations; one additive nullable `session_id` column, reconciled automatically) with a one-line description ("Created table tasks", "Deleted table tasks", "Added column status to tasks", …) and a **Revert** button. Schema ops also participate in the header ↶/↷ undo/redo stack.
 - **Undo/redo is session-scoped — you step through your OWN recent actions.** The header ↶/↷ stack (for both schema and row ops) is scoped to the current GUI session (one per server process), so in a shared cloud you undo what _you_ just did, not another user's edit. The per-entry **Revert** in Version History stays global — revert any entry, any session, any time.
 - **Deletes are soft — data is never destroyed and reverts are exact.** A delete removes the entity/field from the config (hiding it from the GUI) but **never physically `DROP`s** the SQL table/column; the data stays in the database. Revert just re-adds the config entry, and re-opening reconciles idempotently (`CREATE TABLE IF NOT EXISTS` + skip-existing-column), so the table/column comes back with **all its rows/values intact** — no snapshot, no size limit, on both SQLite and Postgres. The only `DROP` the GUI ever performs is the explicit purge below.
-- **Guards.** Reverts re-open the live DB so the in-memory schema never drifts, and surface any failure loudly (the fail-loudly rule) rather than half-applying. Creating a table/column whose name matches a soft-deleted (orphaned) object is refused ("a deleted `<name>` exists — revert it instead"). Reverting a delete whose object was since purged is refused ("permanently purged"). Renames revert via real `ALTER … RENAME`.
+- **Guards.** Reverts re-open the live DB so the in-memory schema never drifts, and surface any failure loudly rather than half-applying. Creating a table/column whose name matches a soft-deleted (orphaned) object is refused ("a deleted `<name>` exists — revert it instead"). Reverting a delete whose object was since purged is refused ("permanently purged"). Renames revert via real `ALTER … RENAME`.
 - **Purge — API only.** `POST /api/schema/purge` (`{ type: 'table' | 'column', name, column? }`, owner-gated) physically drops an orphaned (soft-deleted) object to reclaim space and is **not surfaced in the GUI**. It's audit-logged as `schema.purge` and is irreversible.
 - **Multiplayer.** Schema ops, reverts, and purges append a `ddl` change envelope in team/cloud mode so other clients re-fetch and converge (the broker treats `ddl` as a refresh signal, not a sharing toggle). Local SQLite is a single-writer no-op.
 
