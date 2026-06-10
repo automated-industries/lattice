@@ -10,8 +10,8 @@ import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
  * history flow, and the database management routes (list / create / switch /
  * delete). These paths ship in the 1.14.x GUI and were lightly tested; this
  * suite exercises them end-to-end against an in-process SQLite server (no
- * Postgres, no 2.0 assistant surface), including the delete-database the fail-loudly rule
- * error branches.
+ * Postgres, no 2.0 assistant surface), including the delete-database
+ * loud-failure error branches.
  */
 
 const dirs: string[] = [];
@@ -377,7 +377,7 @@ describe('GUI server — database management routes', () => {
     expect(brokenSwitch.status).toBe(500);
   });
 
-  it('delete surfaces a filesystem failure loudly instead of half-deleting (the fail-loudly rule)', async () => {
+  it('delete surfaces a filesystem failure loudly instead of half-deleting', async () => {
     const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
     // A second, non-active database whose .db path is a DIRECTORY, so the
     // file unlink throws and the server must report it (500), not swallow it.

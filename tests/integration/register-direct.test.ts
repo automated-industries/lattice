@@ -41,6 +41,7 @@ describe('isPostgresUrl', () => {
 describe('registerDirectViaPostgres — scheme guard', () => {
   it('refuses any non-postgres URL up-front', async () => {
     await expect(
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- the deprecated primitive itself is under test
       registerDirectViaPostgres('http://example.com', 'admin@example.com', 'Admin', 'Atlas'),
     ).rejects.toThrow(/must be a postgres/);
   });

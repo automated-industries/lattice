@@ -31,6 +31,8 @@ interface ChatContext {
   validTables: Set<string>;
   junctionTables: Set<string>;
   softDeletable: Set<string>;
+  /** Team-cloud context for row-level permission enforcement (null outside team mode). */
+  team?: { teamId: string; myUserId: string } | null;
   createEntity?: (name: string, columns: string[]) => Promise<string | null>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   deleteEntity?: DispatchCtx['deleteEntity'];
@@ -432,6 +434,7 @@ export async function dispatchChatRoute(
     validTables: new Set([...ctx.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     junctionTables: new Set([...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     softDeletable: ctx.softDeletable,
+    ...(ctx.team ? { team: ctx.team } : {}),
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
