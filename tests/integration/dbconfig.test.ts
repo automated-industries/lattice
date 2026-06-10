@@ -9,6 +9,8 @@ import {
   saveDbCredential,
 } from '../../src/framework/user-config.js';
 import { resolveDbPath } from '../../src/config/parser.js';
+import { Lattice } from '../../src/lattice.js';
+import { LOCAL_INTERNAL_TABLE_DEFS } from '../../src/teams/internal-tables.js';
 
 /**
  * Project Config "Database" panel endpoints.
@@ -118,6 +120,44 @@ describe('dbconfig endpoints', () => {
     expect(r.body.type).toBe('sqlite');
     expect(r.body.dbFile).toBe('project.db');
     expect(r.body.teamEnabled).toBe(false);
+    // No direct postgres:// team connection → no deprecation banner.
+    expect(r.body.directCloud).toBe(false);
+  });
+
+  it('GET /api/dbconfig flags a grandfathered direct postgres:// team connection', async () => {
+    // Seed the deprecated connection shape BEFORE boot: a local team
+    // connection whose cloud_url is a raw postgres:// URL (pre-2.2 direct
+    // mode). The flag is computed at openConfig, so the server must come up
+    // with directCloud already true — that's what drives the banner.
+    const root = tempDir();
+    const { configPath, outputDir } = writeSqliteConfig(root, 'project');
+    const seed = new Lattice(join(root, 'data', 'project.db'));
+    await seed.init();
+    for (const [name, def] of Object.entries(LOCAL_INTERNAL_TABLE_DEFS)) {
+      await seed.defineLate(name, def);
+    }
+    await seed.upsert('__lattice_team_connections', {
+      team_id: 'team-direct',
+      team_name: 'legacy',
+      cloud_url: 'postgres://cloud.example.test:5432/team',
+      my_user_id: 'user-1',
+      api_token_encrypted: 'tok',
+      joined_at: new Date().toISOString(),
+    });
+    seed.close();
+
+    const handle = await startGuiServer({
+      configPath,
+      outputDir,
+      port: 0,
+      host: '127.0.0.1',
+      teamCloud: false,
+      openBrowser: false,
+    });
+    servers.push(handle);
+    const r = await api(handle.url, '/api/dbconfig');
+    expect(r.status).toBe(200);
+    expect(r.body.directCloud).toBe(true);
   });
 
   it('POST /api/dbconfig/save persists a Postgres URL encrypted + rewrites the YAML', async () => {

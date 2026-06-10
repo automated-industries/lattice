@@ -388,7 +388,7 @@ async function enrichWithLlm(
 
 /**
  * Run {@link enrichWithLlm} for an already-created file row, converting any
- * thrown error into a LOUD, non-silent outcome (the fail-loudly rule): the failure is logged
+ * thrown error into a LOUD, non-silent outcome: the failure is logged
  * to stderr with its stack, recorded durably on the row (`extraction_status =
  * 'enrichment_failed'`, so it's queryable rather than living only in a toast
  * that vanishes), and surfaced to the client. Returns the suggested links on
@@ -710,7 +710,7 @@ export async function dispatchIngestRoute(
     );
   } catch (e) {
     const err = e as Error;
-    // the fail-loudly rule: log loudly server-side (with stack) in addition to the durable
+    // Log loudly server-side (with stack) in addition to the durable
     // row status + client-surfaced error — never let the real cause vanish.
     console.error(
       `[ingest] extraction/enrichment failed for file ${id}: ${err.message}\n${err.stack ?? ''}`,
