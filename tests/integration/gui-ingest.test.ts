@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { Lattice } from '../../src/lattice.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
@@ -74,6 +75,57 @@ describe('ingest routes', () => {
     expect(row.extracted_text).toBe('hello from a paste');
     expect(row.extraction_status).toBe('extracted');
     expect(typeof row.description).toBe('string');
+  });
+
+  it('ingests into a files table that has a NOT NULL slug column (auto-generates the slug)', async () => {
+    // Reproduces "ingest failed: not null constraint failed: files.slug":
+    // a cloud whose `files` table declares `slug NOT NULL` (created outside the
+    // native def). Pre-create that shape, then let the native reconcile add the
+    // rest. Ingest must auto-derive a slug from the filename so the insert
+    // satisfies the constraint instead of 500-ing.
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ingest-slug-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const seed = new Lattice(join(root, 'data', 'test.db'));
+    await seed.init();
+    await seed.adapter.runAsync(
+      'CREATE TABLE files (id TEXT PRIMARY KEY, slug TEXT NOT NULL, original_name TEXT, mime TEXT, size_bytes INTEGER, extracted_text TEXT, description TEXT, extraction_status TEXT, deleted_at TEXT)',
+    );
+    seed.close();
+
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  notes:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      body: { type: text }',
+        '    outputFile: notes.md',
+      ].join('\n'),
+    );
+    const server = await startGuiServer({
+      configPath,
+      outputDir: join(root, 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    const res = await fetch(`${server.url}/api/ingest/text`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'body', title: 'Invoice 2026' }),
+    });
+    expect(res.status).toBe(201); // pre-fix: 500 from the NOT NULL violation
+    const { id } = (await res.json()) as { id: string };
+    const row = await getFile(server.url, id);
+    expect(typeof row.slug).toBe('string');
+    expect(String(row.slug).length).toBeGreaterThan(0);
+    expect(String(row.slug)).toContain('invoice-2026'); // derived from the filename
   });
 
   it('ingests a local text file by path and extracts its content', async () => {

@@ -77,12 +77,6 @@ interface DbConfigContext {
    */
   teamMembership: { joined: boolean; isCreator: boolean; teamId: string; myUserId: string } | null;
   /**
-   * True when the workspace holds a grandfathered direct `postgres://` team
-   * connection (deprecated — bypasses the hosted server's row security).
-   * The SPA shows a deprecation banner when set.
-   */
-  directCloud: boolean;
-  /**
    * Re-open the same configPath after the YAML has been updated.
    * Closes the current Lattice and replaces it. Caller-owned because
    * the parent server holds the mutable `active` reference.
@@ -377,9 +371,6 @@ export async function dispatchDbConfigRoute(
         // exist when the team cloud itself is the active database).
         teamId: ctx.teamMembership?.teamId ?? null,
         myUserId: ctx.teamMembership?.myUserId ?? null,
-        // Deprecated direct postgres:// team connection present → the SPA
-        // shows the migrate-to-hosted deprecation banner.
-        directCloud: ctx.directCloud,
       });
     });
     return true;
