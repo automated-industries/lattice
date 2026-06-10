@@ -27,6 +27,12 @@ export interface GuiTableSummary {
   /** Team cloud only: the operator owns this table. Set by the server. */
   ownedByMe?: boolean;
   /**
+   * Team cloud only: the visibility newly-created rows in this shared table are
+   * born with ('private' | 'everyone'). Drives the Data Model "new rows default
+   * to" select (owner-only). Absent when the table isn't shared. Set by the server.
+   */
+  defaultRowVisibility?: 'private' | 'everyone';
+  /**
    * Team cloud only: the shared table's schema_version, used as the
    * optimistic-concurrency token for data-model edits. Absent when the table
    * isn't shared (or on local). Set by the server.

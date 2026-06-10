@@ -23,7 +23,11 @@
  * Postgres, they're authorized.
  */
 import { Lattice } from '../lattice.js';
-import { CLOUD_INTERNAL_TABLE_DEFS, installCloudInternalTriggers } from './internal-tables.js';
+import {
+  CLOUD_INTERNAL_TABLE_DEFS,
+  installCloudInternalTriggers,
+  installRowPermsSchema,
+} from './internal-tables.js';
 import { type SchemaSpec } from './schema-spec.js';
 import { generateInviteToken, generateToken, hashToken } from './server/auth.js';
 import { isPostgresUrl } from './register-direct.js';
@@ -214,6 +218,7 @@ export async function redeemInviteDirect(
       await db.defineLate(table, def);
     }
     await installCloudInternalTriggers(db);
+    await installRowPermsSchema(db);
 
     const invites = (await db.query('__lattice_invitations', {
       filters: [
@@ -301,10 +306,23 @@ interface SharedObjectRow {
   deleted_at: string | null;
 }
 
+/** Warn-once flag so an existing direct connection logs the 2.2 deprecation a single time per process. */
+let directDeprecationWarned = false;
+
 async function openCloud(cloudUrl: string): Promise<Lattice> {
   if (!isPostgresUrl(cloudUrl)) {
     throw new Error(
       `direct-ops: cloudUrl must be a postgres:// URL (got ${cloudUrl.slice(0, 12)}…)`,
+    );
+  }
+  if (!directDeprecationWarned) {
+    directDeprecationWarned = true;
+    // Existing direct connections keep working but do NOT enforce row-level
+    // security — the local Lattice talks straight to the cloud DB. Surface the
+    // deprecation loudly (once) so operators migrate to a hosted Teams server.
+    console.warn(
+      '[teams] Direct postgres:// team-cloud connection is deprecated and does NOT ' +
+        'enforce 2.2 row-level security. Migrate to a hosted Lattice Teams server.',
     );
   }
   const db = new Lattice(cloudUrl);
@@ -313,6 +331,7 @@ async function openCloud(cloudUrl: string): Promise<Lattice> {
     await db.defineLate(table, def);
   }
   await installCloudInternalTriggers(db);
+  await installRowPermsSchema(db);
   return db;
 }
 
