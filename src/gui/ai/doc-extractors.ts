@@ -737,11 +737,16 @@ function rtfToText(rtf: string): string {
   // Remaining control words and control symbols.
   s = s.replace(/\\[a-zA-Z]+-?\d*\s?/g, '').replace(/\\[^a-zA-Z]/g, '');
   s = s.replace(/[{}]/g, '');
-  return s
-    .replace(/[ \t]+/g, ' ') // collapse horizontal runs FIRST — linear, and stops
-    .replace(/ \n/g, '\n') // the next two from backtracking O(n²) on a space flood
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return (
+    s
+      // Collapse each horizontal-whitespace run to ONE char FIRST — linear, and
+      // stops the next two replaces from backtracking O(n²) on a space flood. Keep
+      // a tab when the run had one, so `\tab`-delimited columns survive.
+      .replace(/[ \t]+/g, (m) => (m.includes('\t') ? '\t' : ' '))
+      .replace(/[ \t]\n/g, '\n') // drop the (now single) trailing ws before a newline
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
 }
 
 async function extractRtf(path: string): Promise<string | null> {

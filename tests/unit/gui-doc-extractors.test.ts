@@ -320,4 +320,10 @@ describe('native document extraction', () => {
     expect(r.text).toContain('Automated Industries');
     expect(r.text).not.toContain('Auto mated');
   });
+
+  it('RTF: \\tab delimiters survive the whitespace collapse', async () => {
+    const rtf = '{\\rtf1 Col1\\tab Col2\\tab Col3\\par}';
+    const r = await parseFile(writeFixture('tabs.rtf', rtf), undefined, 'tabs.rtf');
+    expect(r.text).toContain('Col1\tCol2\tCol3'); // tabs kept, not flattened to spaces
+  });
 });
