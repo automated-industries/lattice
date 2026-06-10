@@ -58,10 +58,6 @@ export const guiAppHtml = `<!doctype html>
       </svg>
     </button>
   </header>
-  <div class="deprecation-banner" id="deprecation-banner" hidden>
-    <span id="deprecation-banner-text"></span>
-    <button id="deprecation-banner-dismiss" title="Dismiss for this session" aria-label="Dismiss">✕</button>
-  </div>
   <div class="layout">
     <nav class="sidebar">
       <label class="sidebar-advanced toggle" title="Advanced mode — row/table editor instead of the file workspace">

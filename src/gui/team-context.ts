@@ -59,15 +59,24 @@ export interface TeamContext {
 
 /**
  * True when `tableName` should be visible to the operator in the given
- * team context: it's shared to the team, owned by the operator, or has
- * no ownership record at all (unowned tables degrade to visible so a
- * failed reconcile never hides data — security-relevant native objects
- * always get an owner via reconcile, so they don't hit this branch).
+ * team context: it's shared to the team, or owned by the operator.
+ *
+ * A table with NO ownership record (e.g. created via raw SQL, or when a
+ * reconcile was skipped because the creator's identity didn't resolve) is
+ * visible ONLY to the cloud creator — never to other members. Earlier this
+ * branch returned `true` for everyone ("degrade to visible so a failed
+ * reconcile never hides data"), which leaked: an unowned table was queryable
+ * by every member while the GUI labelled it "private" (it's not in `shared`).
+ * Scoping the fallback to the creator closes the leak without hiding the
+ * creator's own data, and makes the "private" label truthful — an unowned,
+ * unshared table really is private to the creator. Reconcile still assigns
+ * the creator as the explicit owner when their id resolves, so this fallback
+ * is the defence for the residual unreconciled case.
  */
 export function isVisibleInTeam(tableName: string, ctx: TeamContext): boolean {
   if (ctx.shared.has(tableName)) return true;
   const owner = ctx.owners.get(tableName);
-  if (owner === undefined) return true;
+  if (owner === undefined) return ctx.isCreator;
   return owner === ctx.myUserId;
 }
 

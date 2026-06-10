@@ -306,25 +306,17 @@ interface SharedObjectRow {
   deleted_at: string | null;
 }
 
-/** Warn-once flag so an existing direct connection logs the 2.2 deprecation a single time per process. */
-let directDeprecationWarned = false;
-
 async function openCloud(cloudUrl: string): Promise<Lattice> {
   if (!isPostgresUrl(cloudUrl)) {
     throw new Error(
       `direct-ops: cloudUrl must be a postgres:// URL (got ${cloudUrl.slice(0, 12)}…)`,
     );
   }
-  if (!directDeprecationWarned) {
-    directDeprecationWarned = true;
-    // Existing direct connections keep working but do NOT enforce row-level
-    // security — the local Lattice talks straight to the cloud DB. Surface the
-    // deprecation loudly (once) so operators migrate to a hosted Teams server.
-    console.warn(
-      '[teams] Direct postgres:// team-cloud connection is deprecated and does NOT ' +
-        'enforce 2.2 row-level security. Migrate to a hosted Lattice Teams server.',
-    );
-  }
+  // Existing direct connections keep working but do NOT enforce row-level
+  // security (the local Lattice talks straight to the cloud DB). New direct
+  // connections are rejected at the register/redeem boundary; this path is
+  // grandfathered and intentionally silent — the deprecation is documented as
+  // a breaking change rather than surfaced as a runtime warning.
   const db = new Lattice(cloudUrl);
   await db.init();
   for (const [table, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
