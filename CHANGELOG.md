@@ -8,6 +8,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-06-10
+
+Team-cloud GUI hotfixes.
+
+### Security
+
+- **Unowned tables no longer leak to other members.** On a team cloud a table
+  with no ownership record (created via raw SQL, or when a reconcile was
+  skipped because the creator's identity didn't resolve) was visible to every
+  member — `isVisibleInTeam` returned `true` for an undefined owner — while the
+  Workspace Settings / Data Model graph labelled it "private" (it's not in the
+  shared set). The visibility gate and the label now agree: an unowned, unshared
+  table is visible only to the **cloud creator**, never to other members, so the
+  "private" label is truthful. The creator's own data is not hidden, and
+  explicitly-shared tables are unaffected.
+
+### Fixed
+
+- **Drag-and-drop ingest no longer fails on a `files` table with a `NOT NULL`
+  slug.** Ingest now auto-derives a `slug` (from the filename, with a short
+  unique suffix) on every new `files` row. It's populated only where the table
+  physically carries a `slug` column — e.g. a cloud whose `files` table declares
+  `slug NOT NULL` — and harmlessly dropped for the native `files` entity, fixing
+  `not null constraint failed: files.slug` on Postgres-backed clouds without
+  changing SQLite behaviour.
+- **The Data Model share indicator recolours immediately.** Toggling a table's
+  share status now rebuilds the schema graph, so the node's shared/private
+  colour updates without a manual refresh.
+- **The assistant knows who it's assisting.** The operator's display name (from
+  `~/.lattice/identity.json`) is now included in the assistant's system prompt,
+  so it addresses the user and resolves "me"/"my" instead of asking for a name.
+
+### Changed
+
+- **Breaking: the direct `postgres://` deprecation is now silent.** The GUI
+  banner (and the connect-time console warning) shown for a grandfathered direct
+  `postgres://` team connection have been removed, along with the `directCloud`
+  field on `GET /api/dbconfig`. The deprecation itself is unchanged — **new**
+  direct connections are still rejected at the register/redeem boundary; existing
+  ones keep working without row-level security (network-isolate the cloud
+  Postgres until you migrate). Documented here rather than surfaced at runtime.
+
 ## [2.2.1] - 2026-06-10
 
 Hotfix for two regressions in the 2.2.0 row-level-permission work on team clouds.

@@ -186,6 +186,34 @@ describe('chat tool loop', () => {
     expect(capturedSystem.toLowerCase()).toContain('error');
   });
 
+  it('puts the operator name in the system prompt so the assistant never asks for it (2.2.2)', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(
+      runChat({ client, dispatch, userMessage: 'link this to me', operatorName: 'Ada Lovelace' }),
+    );
+    expect(capturedSystem).toContain('You are assisting Ada Lovelace');
+    expect(capturedSystem).toContain('never ask the user for their own name');
+  });
+
+  it('omits the operator section when no name is available', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'hi' })); // no operatorName
+    expect(capturedSystem).not.toContain('You are assisting');
+    expect(capturedSystem).toContain('# Current database'); // base prompt intact
+  });
+
   it('never exposes the secrets table in the schema context', async () => {
     let capturedSystem = '';
     const client: LlmClient = {
