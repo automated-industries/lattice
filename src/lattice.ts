@@ -137,6 +137,38 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
  */
 const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
 
+/**
+ * The row-ACL visibility test shared by {@link Lattice.queryVisible},
+ * {@link Lattice.countVisibleMany} and {@link Lattice.listChangesForRecipient}:
+ * EXISTS an ACL row for (team, table, pk) that the user may see — they own it,
+ * it's 'everyone'-visible, or it's 'custom' and they hold a grant. The caller
+ * supplies SQL expressions for the team/table/pk slots (`?` placeholders or
+ * column references) and must push exactly TWO user params for the
+ * owner/grantee `?`s embedded here.
+ */
+function rowAclVisibleExists(teamExpr: string, tableExpr: string, pkExpr: string): string {
+  return (
+    `EXISTS (SELECT 1 FROM "__lattice_row_acl" la ` +
+    `WHERE la."team_id" = ${teamExpr} AND la."table_name" = ${tableExpr} AND la."pk" = ${pkExpr} ` +
+    `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
+    `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
+    `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
+    `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?))))`
+  );
+}
+
+/**
+ * NOT EXISTS an ACL row for (team, table, pk) — the legacy/no-ACL-entry test
+ * that pairs with {@link rowAclVisibleExists} (pre-2.2 / never-narrowed rows
+ * fall back to the table default). No params beyond the caller's slots.
+ */
+function rowAclAbsent(teamExpr: string, tableExpr: string, pkExpr: string): string {
+  return (
+    `NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 ` +
+    `WHERE la2."team_id" = ${teamExpr} AND la2."table_name" = ${tableExpr} AND la2."pk" = ${pkExpr})`
+  );
+}
+
 export class Lattice {
   private readonly _adapter: StorageAdapter;
   private _changelogService?: ChangelogService;
@@ -1582,21 +1614,13 @@ export class Lattice {
         opts.deleted === 'only' ? `t."deleted_at" IS NOT NULL AND ` : `t."deleted_at" IS NULL AND `;
     }
 
-    let sql =
-      `SELECT t.* FROM "${table}" t WHERE ${softDelete}(` +
-      `EXISTS (SELECT 1 FROM "__lattice_row_acl" la ` +
-      `WHERE la."team_id" = ? AND la."table_name" = ? AND la."pk" = CAST(t."${pkCol}" AS TEXT) ` +
-      `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
-      `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
-      `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
-      `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?))))`;
+    const pkExpr = `CAST(t."${pkCol}" AS TEXT)`;
+    let sql = `SELECT t.* FROM "${table}" t WHERE ${softDelete}(${rowAclVisibleExists('?', '?', pkExpr)}`;
     const params: unknown[] = [opts.teamId, table, opts.userId, opts.userId];
     if (opts.noAclVisible) {
       // Rows with no ACL entry are visible because the table default is
       // 'everyone' or this user owns the table (pre-2.2 / never-narrowed rows).
-      sql +=
-        ` OR NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 ` +
-        `WHERE la2."team_id" = ? AND la2."table_name" = ? AND la2."pk" = CAST(t."${pkCol}" AS TEXT))`;
+      sql += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
       params.push(opts.teamId, table);
     }
     sql += `)`;
@@ -1658,19 +1682,11 @@ export class Lattice {
       const cols = this._ensureColumnCache(spec.table);
       const pkCol = this._schema.getPrimaryKey(spec.table)[0] ?? 'id';
       const softDelete = cols.has('deleted_at') ? `t."deleted_at" IS NULL AND ` : '';
-      let predicate =
-        `EXISTS (SELECT 1 FROM "__lattice_row_acl" la ` +
-        `WHERE la."team_id" = ? AND la."table_name" = ? AND la."pk" = CAST(t."${pkCol}" AS TEXT) ` +
-        `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
-        `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
-        `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
-        `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?))))`;
+      const pkExpr = `CAST(t."${pkCol}" AS TEXT)`;
+      let predicate = rowAclVisibleExists('?', '?', pkExpr);
       params.push(opts.teamId, spec.table, opts.userId, opts.userId);
       if (spec.noAclVisible) {
-        predicate +=
-          ` OR NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 ` +
-          `WHERE la2."team_id" = ? AND la2."table_name" = ? ` +
-          `AND la2."pk" = CAST(t."${pkCol}" AS TEXT))`;
+        predicate += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
         params.push(opts.teamId, spec.table);
       }
       selects.push(
@@ -1716,14 +1732,8 @@ export class Lattice {
       `SELECT cl.* FROM "__lattice_change_log" cl WHERE cl."team_id" = ? AND cl."seq" > ? AND (` +
       `cl."recipient_user_id" = ? OR (cl."recipient_user_id" IS NULL AND (` +
       `cl."pk" IS NULL ` +
-      `OR EXISTS (SELECT 1 FROM "__lattice_row_acl" la WHERE la."team_id" = cl."team_id" ` +
-      `AND la."table_name" = cl."table_name" AND la."pk" = cl."pk" ` +
-      `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
-      `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
-      `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
-      `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?)))) ` +
-      `OR (NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 WHERE la2."team_id" = cl."team_id" ` +
-      `AND la2."table_name" = cl."table_name" AND la2."pk" = cl."pk") ` +
+      `OR ${rowAclVisibleExists('cl."team_id"', 'cl."table_name"', 'cl."pk"')} ` +
+      `OR (${rowAclAbsent('cl."team_id"', 'cl."table_name"', 'cl."pk"')} ` +
       `AND EXISTS (SELECT 1 FROM "__lattice_shared_objects" so WHERE so."team_id" = cl."team_id" ` +
       `AND so."table_name" = cl."table_name" AND so."deleted_at" IS NULL ` +
       `AND so."default_row_visibility" = 'everyone'))` +

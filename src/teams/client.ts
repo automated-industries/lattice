@@ -254,6 +254,9 @@ export class TeamsClient {
    * members join via `redeemInvite`). Returns the new user + bearer
    * token + team summary so the caller can immediately save a
    * connection.
+   *
+   * @param teamName The workspace display name (stored as `team_name` for
+   * backward compatibility — a cloud IS a workspace with members).
    */
   async register(
     cloudUrl: string,
@@ -389,6 +392,7 @@ export class TeamsClient {
   async registerCloudOwner(opts: {
     label: string;
     cloudUrl: string;
+    /** Workspace display name (stored as `team_name` for backward compatibility). */
     teamName: string;
     email: string;
     displayName: string;

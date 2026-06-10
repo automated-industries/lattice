@@ -274,6 +274,7 @@ export type {
 export { probeCloud } from './framework/cloud-connect.js';
 export type { CloudProbeResult } from './framework/cloud-connect.js';
 
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerDirectViaPostgres stays exported for the grandfathered direct-connection path until 3.0
 export { registerDirectViaPostgres, isPostgresUrl } from './teams/register-direct.js';
 export type { DirectRegisterResult } from './teams/register-direct.js';
 

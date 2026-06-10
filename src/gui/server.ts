@@ -411,6 +411,21 @@ const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
 const DASHBOARD_STALE_DAYS = 14;
 
 /**
+ * Gate a row-permission route on an active team context. Sends the 400 and
+ * returns null when the workspace isn't a team cloud — callers bail with
+ * `if (!ctx) return;`. Shared by the four row-permission endpoints
+ * (visibility, grants add/remove, table default).
+ */
+function requireTeamContext(active: ActiveDb, res: ServerResponse): TeamContext | null {
+  const ctx = active.teamContext;
+  if (!ctx) {
+    sendJson(res, { error: 'Row permissions require a team cloud' }, 400);
+    return null;
+  }
+  return ctx;
+}
+
+/**
  * Whether the operator may edit `table`'s schema (rename, columns,
  * relationships). On a local / single-user DB (no team context) there's no
  * ownership, so always true. On a team cloud, only the table's owner may edit
@@ -2027,11 +2042,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         {
           const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/visibility$/.exec(pathname);
           if (method === 'POST' && m) {
-            const ctx = active.teamContext;
-            if (!ctx) {
-              sendJson(res, { error: 'Row permissions require a team cloud' }, 400);
-              return;
-            }
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
             const table = decodeURIComponent(m[1] ?? '');
             const rowId = decodeURIComponent(m[2] ?? '');
             const body = (await readJson<unknown>(req)) as { visibility?: unknown };
@@ -2049,11 +2061,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         {
           const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/grants$/.exec(pathname);
           if (method === 'POST' && m) {
-            const ctx = active.teamContext;
-            if (!ctx) {
-              sendJson(res, { error: 'Row permissions require a team cloud' }, 400);
-              return;
-            }
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
             const table = decodeURIComponent(m[1] ?? '');
             const rowId = decodeURIComponent(m[2] ?? '');
             const body = (await readJson<unknown>(req)) as { user_id?: unknown; email?: unknown };
@@ -2074,11 +2083,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         {
           const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/grants\/([^/]+)$/.exec(pathname);
           if (method === 'DELETE' && m) {
-            const ctx = active.teamContext;
-            if (!ctx) {
-              sendJson(res, { error: 'Row permissions require a team cloud' }, 400);
-              return;
-            }
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
             const table = decodeURIComponent(m[1] ?? '');
             const rowId = decodeURIComponent(m[2] ?? '');
             const granteeId = decodeURIComponent(m[3] ?? '');
@@ -2091,11 +2097,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         {
           const m = /^\/api\/schema\/entities\/([^/]+)\/default-row-visibility$/.exec(pathname);
           if (method === 'POST' && m) {
-            const ctx = active.teamContext;
-            if (!ctx) {
-              sendJson(res, { error: 'Row permissions require a team cloud' }, 400);
-              return;
-            }
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
             const table = decodeURIComponent(m[1] ?? '');
             const body = (await readJson<unknown>(req)) as { visibility?: unknown };
             const vis = body.visibility;
