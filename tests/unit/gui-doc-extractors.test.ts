@@ -234,4 +234,52 @@ describe('native document extraction', () => {
     expect(Date.now() - start).toBeLessThan(3000);
     expect(r.text).toContain('Marker');
   });
+
+  it('RTF: a destination group between a control word and body keeps the first body word', async () => {
+    // `\ansi{\*\generator …}Body` must not fuse to `\ansiBody` (which the greedy
+    // control-word stripper would then eat). WordPad/Word emit this routinely.
+    const rtf = '{\\rtf1\\ansi{\\*\\generator Riched20 10.0.0;}Body text follows.\\par}';
+    const r = await parseFile(writeFixture('gen.rtf', rtf), undefined, 'gen.rtf');
+    expect(r.text).toContain('Body text follows');
+    expect(r.text).not.toMatch(/Riched20|generator/);
+  });
+
+  it('helper scanners (stripElement / stripTags / odfWhitespace) stay linear on floods', async () => {
+    // Each input is an unclosed-tag flood routed through a different helper; a
+    // global lazy/greedy regex would be O(n²) (seconds). Bound is generous so
+    // only a genuine quadratic regression trips it.
+    const N = 100_000;
+    const start = Date.now();
+
+    // stripElement, via XLSX <rPh> (phonetic-guide) flood inside a shared string.
+    const xlsx = zipFile('rph.xlsx', {
+      'xl/sharedStrings.xml': `${XML}<sst><si><t>Marker</t>${'<rPh>'.repeat(N)}</si></sst>`,
+      'xl/worksheets/sheet1.xml': `${XML}<worksheet><sheetData><row><c t="s"><v>0</v></c></row></sheetData></worksheet>`,
+    });
+    expect((await parseFile(xlsx, undefined, 'rph.xlsx')).text).toContain('Marker');
+
+    // stripTags, via a PPTX <a:t> run holding a '<' flood.
+    const pptx = zipFile('lt.pptx', {
+      'ppt/slides/slide1.xml': `${XML}<p:sld xmlns:a="x"><a:p><a:t>Visible</a:t><a:t>${'<'.repeat(N)}</a:t></a:p></p:sld>`,
+    });
+    expect((await parseFile(pptx, undefined, 'lt.pptx')).text).toContain('Visible');
+
+    // stripElement again, via EPUB <script> flood in an XHTML body (stripHtml).
+    const epub = zipFile('s.epub', {
+      'META-INF/container.xml': `${XML}<container><rootfiles><rootfile full-path="c.opf"/></rootfiles></container>`,
+      'c.opf': `${XML}<package><manifest><item id="a" href="a.xhtml"/></manifest><spine><itemref idref="a"/></spine></package>`,
+      'a.xhtml': `<html><body><p>Readable</p>${'<script>'.repeat(N)}</body></html>`,
+    });
+    expect((await parseFile(epub, undefined, 's.epub')).text).toContain('Readable');
+
+    // odfWhitespace, via ODT <text:s flood in a paragraph.
+    const odt = zipFile('s.odt', {
+      'content.xml':
+        `${XML}<office:document-content xmlns:office="o" xmlns:text="t"><office:body><office:text>` +
+        `<text:p>Paragraph${'<text:s '.repeat(N)}</text:p></office:text></office:body></office:document-content>`,
+    });
+    expect((await parseFile(odt, undefined, 's.odt')).text).toContain('Paragraph');
+
+    expect(Date.now() - start).toBeLessThan(4000);
+  });
 });

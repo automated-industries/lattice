@@ -105,9 +105,25 @@ function safeCodePoint(n: number): string {
   }
 }
 
-/** Strip every XML/HTML tag (linear: a global character-class regex, not lazy). */
+/**
+ * Strip every XML/HTML tag. LINEAR — a global `/<[^>]+>/g` is O(n²) on a `<`
+ * flood (greedy `[^>]+` scans to EOF and backtracks at each unterminated `<`).
+ */
 function stripTags(s: string): string {
-  return s.replace(/<[^>]+>/g, '');
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) {
+      out += s.slice(i);
+      break;
+    }
+    out += s.slice(i, lt);
+    const gt = s.indexOf('>', lt + 1);
+    if (gt < 0) break; // unterminated tag → drop the rest
+    i = gt + 1;
+  }
+  return out;
 }
 
 function isNameBoundary(code: number): boolean {
@@ -191,10 +207,7 @@ function stripElement(xml: string, tag: string): string {
       continue;
     }
     const e = xml.indexOf(close, gt + 1);
-    if (e < 0) {
-      i = gt + 1; // unclosed open tag — drop just the tag
-      continue;
-    }
+    if (e < 0) break; // unclosed → drop from the open tag to EOF (linear; no rescan)
     i = e + close.length;
   }
   return out;
@@ -454,15 +467,20 @@ async function extractXlsx(path: string): Promise<string | null> {
 
 // ── OpenDocument text/presentation (.odt/.odp → paragraph/heading text) ──
 
-/** Map ODF whitespace elements to literal whitespace before tags are stripped. */
+/**
+ * Map ODF whitespace elements to literal whitespace before tags are stripped.
+ * The `[^>]` attribute runs are length-bounded so an unterminated `<text:s`
+ * flood can't drive O(n²) backtracking (a real whitespace element's attributes
+ * are a handful of chars; 400 is a safe ceiling).
+ */
 function odfWhitespace(s: string): string {
   return s
-    .replace(/<text:tab\b[^>]*\/?>/g, '\t')
-    .replace(/<text:line-break\b[^>]*\/?>/g, '\n')
-    .replace(/<text:s\b[^>]*\btext:c="(\d+)"[^>]*\/?>/g, (_, c: string) =>
+    .replace(/<text:tab\b[^>]{0,400}\/?>/g, '\t')
+    .replace(/<text:line-break\b[^>]{0,400}\/?>/g, '\n')
+    .replace(/<text:s\b[^>]{0,400}\btext:c="(\d+)"[^>]{0,400}\/?>/g, (_, c: string) =>
       ' '.repeat(Math.min(parseInt(c, 10) || 1, 100)),
     )
-    .replace(/<text:s\b[^>]*\/?>/g, ' ');
+    .replace(/<text:s\b[^>]{0,400}\/?>/g, ' ');
 }
 
 function odfParagraph(inner: string): string {
@@ -630,7 +648,10 @@ function stripRtfDestinations(s: string): string {
   while (i < s.length) {
     // Bound the lookahead slice so the .test() stays O(1) per brace.
     if (s[i] === '{' && RTF_IGNORED_DESTINATIONS.test(s.slice(i + 1, i + 40))) {
-      kept.push(s.slice(keepFrom, i));
+      // Emit a separator in place of the removed group: a control word right
+      // before it (e.g. `\ansi{\*\generator …}Body`) must not fuse with the text
+      // right after it, or the greedy control-word stripper eats the first word.
+      kept.push(s.slice(keepFrom, i), ' ');
       let depth = 1;
       let j = i + 1;
       for (; j < s.length && depth > 0; j++) {
