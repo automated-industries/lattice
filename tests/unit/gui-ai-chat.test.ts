@@ -215,7 +215,7 @@ describe('chat tool loop', () => {
     };
     const events = await collect(runChat({ client, dispatch, userMessage: 'do a huge bulk job' }));
     const types = events.map((e) => e.type);
-    expect(types).toContain('warn'); // the fail-loudly rule: no silent truncation
+    expect(types).toContain('warn'); // no silent truncation
     const warn = events.find((e) => e.type === 'warn');
     expect((warn as { message: string }).message).toMatch(/limit|incomplete/i);
     expect(types[types.length - 1]).toBe('done'); // still ends cleanly

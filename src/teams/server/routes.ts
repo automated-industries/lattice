@@ -10,6 +10,12 @@ import {
   listSharedObjects,
   unshareObject,
 } from '../team-core.js';
+import {
+  recordRowAcl,
+  tableDefaultVisibility,
+  usersWithRowAccess,
+  deleteRowAcl,
+} from '../row-access.js';
 
 /**
  * Lattice Teams cloud-side route handlers.
@@ -835,26 +841,47 @@ async function autoUnlinkUserRows(db: Lattice, teamId: string, userId: string): 
     ],
   })) as unknown as RowLinkRow[];
   for (const link of links) {
-    await db.delete('__lattice_row_links', {
-      team_id: link.team_id,
-      table_name: link.table_name,
-      pk: link.pk,
-    });
-    try {
-      await db.delete(link.table_name, link.pk);
-    } catch {
-      // Row may already be gone.
-    }
-    await appendChangeEnvelope(db, {
-      team_id: link.team_id,
-      table_name: link.table_name,
-      pk: link.pk,
-      op: 'unlink',
-      payload_json: null,
-      owner_user_id: link.owner_user_id,
-    });
+    await tearDownSharedRow(db, link.team_id, link.table_name, link.pk, link.owner_user_id);
   }
   return links.length;
+}
+
+/**
+ * Tear down a shared row with the 2.2 per-recipient fan-out: enumerate the
+ * members who can currently see the row and emit a TARGETED `unlink` to each
+ * (recipient_user_id = member), then hard-delete the link, the cloud mirror,
+ * and the ACL + grants. Targeting is required because once the ACL is gone a
+ * BROADCAST unlink would be dropped by the per-recipient pull filter, leaving
+ * stale local copies. Enumeration happens before the ACL teardown so
+ * canAccessRow can still see it.
+ */
+async function tearDownSharedRow(
+  db: Lattice,
+  teamId: string,
+  tableName: string,
+  pk: string,
+  ownerUserId: string,
+): Promise<void> {
+  const members = (await listTeamMembers(db, teamId)).map((m) => m.user_id);
+  const permitted = await usersWithRowAccess(db, teamId, tableName, pk, members);
+  await db.delete('__lattice_row_links', { team_id: teamId, table_name: tableName, pk });
+  try {
+    await db.delete(tableName, pk);
+  } catch {
+    // Row may already be gone; not fatal.
+  }
+  for (const uid of permitted) {
+    await appendChangeEnvelope(db, {
+      team_id: teamId,
+      table_name: tableName,
+      pk,
+      op: 'unlink',
+      payload_json: null,
+      owner_user_id: ownerUserId,
+      recipient_user_id: uid,
+    });
+  }
+  await deleteRowAcl(db, teamId, tableName, pk);
 }
 
 async function isObjectShared(db: Lattice, teamId: string, tableName: string): Promise<boolean> {
@@ -997,15 +1024,16 @@ async function handleListChanges(
   const since = sinceRaw !== null && /^\d+$/.test(sinceRaw) ? Number(sinceRaw) : 0;
   const limitParsed = limitRaw !== null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : 500;
   const limit = Math.min(Math.max(limitParsed, 1), 1000);
-  const rows = (await ctx.db.query('__lattice_change_log', {
-    filters: [
-      { col: 'team_id', op: 'eq', val: teamId },
-      { col: 'seq', op: 'gt', val: since },
-    ],
-    orderBy: 'seq',
-    orderDir: 'asc',
+  // Row-level security (2.2): filter the pull PER RECIPIENT so a member never
+  // receives the bytes of a row they can't see. Targeted envelopes go only to
+  // their recipient; broadcast envelopes are gated by __lattice_row_acl. This
+  // is the hosted server's sole enforcement mechanism.
+  const rows = (await ctx.db.listChangesForRecipient(
+    teamId,
+    since,
+    ctx.authContext.user.id,
     limit,
-  })) as unknown as ChangeLogRow[];
+  )) as unknown as ChangeLogRow[];
   const envelopes = rows.map((r) => ({
     seq: r.seq,
     table_name: r.table_name,
@@ -1081,6 +1109,13 @@ async function handleLinkRow(
   // Upsert the row snapshot into the cloud's mirror of the shared table.
   await ctx.db.upsert(tableName, snapshot);
 
+  // Record the per-row ACL (owner = linker, visibility = the table default) so
+  // the per-recipient change-log filter can decide who may receive this row.
+  if (!existing) {
+    const vis = await tableDefaultVisibility(ctx.db, teamId, tableName);
+    await recordRowAcl(ctx.db, teamId, tableName, pk, ctx.authContext.user.id, vis);
+  }
+
   // Emit a link envelope (membership info) + an upsert envelope (data).
   // Receivers process them in seq order.
   await appendChangeEnvelope(ctx.db, {
@@ -1136,26 +1171,9 @@ async function handleUnlinkRow(
     sendJson(res, { error: 'Only the row owner or team creator can unlink' }, 403);
     return;
   }
-  await ctx.db.delete('__lattice_row_links', {
-    team_id: teamId,
-    table_name: tableName,
-    pk,
-  });
-  // Hard-delete the cloud's mirror of the row. Receivers' default unlink
-  // behaviour also hard-deletes locally.
-  try {
-    await ctx.db.delete(tableName, pk);
-  } catch {
-    // Row may already be gone; not fatal.
-  }
-  await appendChangeEnvelope(ctx.db, {
-    team_id: teamId,
-    table_name: tableName,
-    pk,
-    op: 'unlink',
-    payload_json: null,
-    owner_user_id: link.owner_user_id,
-  });
+  // Per-recipient teardown: targeted unlinks to everyone who can see the row,
+  // then drop the link, mirror, and ACL. (Receivers hard-delete on unlink.)
+  await tearDownSharedRow(ctx.db, teamId, tableName, pk, link.owner_user_id);
   sendJson(res, { ok: true });
 }
 
@@ -1242,27 +1260,11 @@ async function handleDeleteRow(
     sendJson(res, { error: 'Only the row owner can delete the row' }, 403);
     return;
   }
-  // For Phase 4 v1, "delete" via the rows endpoint behaves the same as
-  // unlink — the row leaves the cloud's mirror and an `unlink` envelope
-  // propagates. Callers who want a soft-delete instead should `upsert`
-  // a row carrying `deleted_at`.
-  await ctx.db.delete('__lattice_row_links', {
-    team_id: teamId,
-    table_name: tableName,
-    pk,
-  });
-  try {
-    await ctx.db.delete(tableName, pk);
-  } catch {
-    // Row may already be gone.
-  }
-  await appendChangeEnvelope(ctx.db, {
-    team_id: teamId,
-    table_name: tableName,
-    pk,
-    op: 'unlink',
-    payload_json: null,
-    owner_user_id: link.owner_user_id,
-  });
+  // "delete" via the rows endpoint behaves like unlink — the row leaves the
+  // cloud's mirror and an `unlink` propagates. Callers who want a soft-delete
+  // should `upsert` a row carrying `deleted_at`. Per-recipient teardown emits
+  // a targeted unlink to everyone who can currently see the row, then drops
+  // the link, mirror, and ACL.
+  await tearDownSharedRow(ctx.db, teamId, tableName, pk, link.owner_user_id);
   sendJson(res, { ok: true });
 }
