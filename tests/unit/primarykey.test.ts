@@ -149,9 +149,13 @@ describe('Custom primary key', () => {
       await db.init();
     });
 
-    it('insert returns the value of the first PK column', async () => {
+    it('insert returns the full composite key (all PK columns, tab-joined)', async () => {
+      // As of 2.2.1 the change-log/row-ACL key encodes EVERY pk column (a
+      // first-column-only key collided across rows sharing event_id and broke
+      // composite-key row permissions). Single-column keys are still the bare
+      // value (see the custom-PK suite above).
       const pk = await db.insert('seats', { event_id: 'evt-1', seat_no: 5, holder: 'Alice' });
-      expect(pk).toBe('evt-1');
+      expect(pk).toBe('evt-1\t5');
     });
 
     it('get accepts a Record with all PK columns', async () => {
