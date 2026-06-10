@@ -527,7 +527,10 @@ function looksLikeUrl(s: string): boolean {
   return /^https?:\/\/\S+$/i.test(t) && !/\s/.test(t);
 }
 
-function readBuffer(req: IncomingMessage, maxBytes = 50_000_000): Promise<Buffer> {
+/** Max bytes ingested from a single source (upload body or referenced local file). */
+const MAX_INGEST_BYTES = 50_000_000;
+
+function readBuffer(req: IncomingMessage, maxBytes = MAX_INGEST_BYTES): Promise<Buffer> {
   return new Promise((resolve_, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -701,6 +704,13 @@ export async function dispatchIngestRoute(
     size = st.size;
   } catch {
     sendJson(res, { error: `file not found: ${abs}` }, 400);
+    return true;
+  }
+  // Bound the file read before extraction — mirrors the upload route's cap so a
+  // multi-GB local file can't be slurped into memory (and, for zip formats,
+  // inflated on top of that). The extractors add their own decompression caps.
+  if (size > MAX_INGEST_BYTES) {
+    sendJson(res, { error: 'file too large' }, 413);
     return true;
   }
 

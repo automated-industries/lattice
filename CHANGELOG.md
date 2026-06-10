@@ -48,7 +48,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   - Legacy **binary** `.xls` and `.ppt` (pre-2007 BIFF/PPT) have no clean,
     non-vulnerable pure-JS parser and are referenced + marked
     `extraction_status='skipped'`.
-  - The `MARKITDOWN_BIN` env var is no longer read.
+  - The `MARKITDOWN_BIN` env var is no longer read (removed from `.env.example`).
+  - **Hardened against hostile documents.** All XML tag scanning is linear (no
+    global lazy-quantifier regex, which is O(n²) on an unclosed-tag flood); the
+    unzip step caps per-entry and aggregate decompressed size (zip-bomb guard);
+    each extractor stops accumulating at the text cap; the PDF read has a timeout;
+    and `/api/ingest/file` now enforces the same byte cap as the upload route.
+  - **Extraction-quality fixes** in the native parsers: RTF strips `\*`
+    destinations (hyperlink/bookmark/field metadata no longer leaks into text)
+    and decodes `\'xx` as Windows-1252 (smart quotes, em dashes — not invisible
+    C1 controls); PowerPoint/Word runs join within a paragraph without inserting
+    spurious mid-word spaces; EPUB resolves percent-encoded spine hrefs (no more
+    silently dropped chapters); XLSX preserves shared-string slots across a
+    self-closing `<si/>` and strips CJK phonetic guides; ODS reads numeric cells
+    stored only in `office:value`.
 
 ### Fixed
 
