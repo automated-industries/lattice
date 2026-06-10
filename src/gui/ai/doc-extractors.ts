@@ -585,22 +585,19 @@ async function extractEpub(path: string): Promise<string | null> {
   if (opfPath && entries[opfPath]) {
     const opf = decodeUtf8(entries[opfPath]);
     const manifest: Record<string, string> = {};
-    // Tolerant of both `<item .../>` and `<item ...></item>`.
-    const itemRe = /<item\b[^>]*?>/g;
-    let it: RegExpExecArray | null;
-    while ((it = itemRe.exec(opf)) !== null) {
-      const id = /\bid="([^"]+)"/.exec(it[0])?.[1];
-      const href = /\bhref="([^"]+)"/.exec(it[0])?.[1];
+    // Linear scanner (eachElement) — a lazy global `<item\b[^>]*?>` is O(n²) on
+    // an `<item`-flood OPF. Handles `<item .../>` and `<item ...></item>`.
+    eachElement(opf, 'item', (attrs) => {
+      const id = /\bid="([^"]+)"/.exec(attrs)?.[1];
+      const href = /\bhref="([^"]+)"/.exec(attrs)?.[1];
       if (id && href) manifest[id] = href;
-    }
+    });
     const baseDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
-    const spineRe = /<itemref\b[^>]*?>/g;
-    let sp: RegExpExecArray | null;
-    while ((sp = spineRe.exec(opf)) !== null) {
-      const idref = /\bidref="([^"]+)"/.exec(sp[0])?.[1];
+    eachElement(opf, 'itemref', (attrs) => {
+      const idref = /\bidref="([^"]+)"/.exec(attrs)?.[1];
       const href = idref ? manifest[idref] : undefined;
       if (href) order.push(resolveHref(baseDir, href));
-    }
+    });
   }
   // Fallback: every (x)html entry, in numeric-aware name order (chap2 < chap10).
   if (order.length === 0) {
@@ -648,10 +645,14 @@ function stripRtfDestinations(s: string): string {
   while (i < s.length) {
     // Bound the lookahead slice so the .test() stays O(1) per brace.
     if (s[i] === '{' && RTF_IGNORED_DESTINATIONS.test(s.slice(i + 1, i + 40))) {
-      // Emit a separator in place of the removed group: a control word right
-      // before it (e.g. `\ansi{\*\generator …}Body`) must not fuse with the text
-      // right after it, or the greedy control-word stripper eats the first word.
-      kept.push(s.slice(keepFrom, i), ' ');
+      // Separate ONLY when the text right before the group ends in a letter-only
+      // control word (e.g. `\ansi{\*\generator …}Body` → the control-word stripper
+      // would otherwise fuse `\ansiBody` and eat the word). A `\*` destination
+      // mid-word — a `\bkmkstart` bookmark inside `Auto{…}mated` — must NOT get a
+      // spurious space. (A trailing digit like `\deff0` already self-terminates.)
+      const pre = s.slice(keepFrom, i);
+      kept.push(pre);
+      if (/\\[a-zA-Z]+$/.test(pre.slice(-40))) kept.push(' ');
       let depth = 1;
       let j = i + 1;
       for (; j < s.length && depth > 0; j++) {
@@ -737,7 +738,8 @@ function rtfToText(rtf: string): string {
   s = s.replace(/\\[a-zA-Z]+-?\d*\s?/g, '').replace(/\\[^a-zA-Z]/g, '');
   s = s.replace(/[{}]/g, '');
   return s
-    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]+/g, ' ') // collapse horizontal runs FIRST — linear, and stops
+    .replace(/ \n/g, '\n') // the next two from backtracking O(n²) on a space flood
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

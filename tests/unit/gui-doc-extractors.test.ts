@@ -282,4 +282,42 @@ describe('native document extraction', () => {
 
     expect(Date.now() - start).toBeLessThan(4000);
   });
+
+  it('EPUB OPF item/itemref scan stays linear on an <item> flood', async () => {
+    // A trailing `<item ` flood with no closing '>' would make a lazy global
+    // `/<item\b[^>]*?>/g` rescan to EOF per item → O(n²); eachElement breaks.
+    const opf =
+      `${XML}<package><manifest><item id="c1" href="c1.xhtml"/></manifest>` +
+      `<spine><itemref idref="c1"/></spine></package>` +
+      '<item '.repeat(120_000);
+    const epub = zipFile('opfflood.epub', {
+      'META-INF/container.xml': `${XML}<container><rootfiles><rootfile full-path="c.opf"/></rootfiles></container>`,
+      'c.opf': opf,
+      'c1.xhtml': '<html><body><p>Readable body here</p></body></html>',
+    });
+    const start = Date.now();
+    const r = await parseFile(epub, undefined, 'opfflood.epub');
+    expect(Date.now() - start).toBeLessThan(3000);
+    expect(r.text).toContain('Readable body here');
+  });
+
+  it('RTF whitespace collapse stays linear on a space-run flood', async () => {
+    // 300k spaces not followed by a newline: a `/[ \t]+\n/g` with no prior
+    // collapse backtracks O(n²); the leading collapse makes it linear.
+    const rtf = '{\\rtf1 Start' + ' '.repeat(300_000) + 'End.\\par}';
+    const start = Date.now();
+    const r = await parseFile(writeFixture('spaces.rtf', rtf), undefined, 'spaces.rtf');
+    expect(Date.now() - start).toBeLessThan(3000);
+    expect(r.text).toContain('Start');
+    expect(r.text).toContain('End');
+  });
+
+  it('RTF: a \\* destination mid-word does not insert a spurious space', async () => {
+    // `Auto{\*\bkmkstart …}mated` — a bookmark inside a word. The separator must
+    // only fire after a control word (`\ansi`), not between two body letters.
+    const rtf = '{\\rtf1 Auto{\\*\\bkmkstart _Ref1}mated Industries.\\par}';
+    const r = await parseFile(writeFixture('bkmk.rtf', rtf), undefined, 'bkmk.rtf');
+    expect(r.text).toContain('Automated Industries');
+    expect(r.text).not.toContain('Auto mated');
+  });
 });
