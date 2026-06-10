@@ -944,27 +944,6 @@ export const appJs = `
 
     window.addEventListener('hashchange', renderRoute);
 
-    // Deprecation banner: a grandfathered direct database cloud connection
-    // bypasses the hosted server's row security entirely — say so up front.
-    // Dismiss hides it for this browser session only.
-    function initDeprecationBanner() {
-      if (sessionStorage.getItem('lattice-direct-banner-dismissed')) return;
-      fetchJson('/api/dbconfig').then(function (d) {
-        if (!d || !d.directCloud) return;
-        var banner = document.getElementById('deprecation-banner');
-        var text = document.getElementById('deprecation-banner-text');
-        if (!banner || !text) return;
-        text.textContent = "Direct database cloud connections are deprecated and don't support row-level security. Migrate to a hosted workspace.";
-        banner.hidden = false;
-        var dismiss = document.getElementById('deprecation-banner-dismiss');
-        if (dismiss) dismiss.addEventListener('click', function () {
-          banner.hidden = true;
-          sessionStorage.setItem('lattice-direct-banner-dismissed', '1');
-        });
-      }).catch(function () { /* dbconfig unavailable (e.g. team-cloud server mode) — no banner */ });
-    }
-    initDeprecationBanner();
-
     // ────────────────────────────────────────────────────────────
     // Sidebar
     // ────────────────────────────────────────────────────────────
@@ -3365,9 +3344,11 @@ export const appJs = `
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ share: !isShared }),
           }).then(function () {
-            // The server updated team visibility in place (no DB re-open),
-            // so a light in-place refresh reflects it without a full reload.
-            return dmRefreshPanel(tableName, false);
+            // Rebuild the graph (not just the panel) so the node's share-status
+            // colour (gnode-shared/gnode-private) recolours immediately from the
+            // refreshed entities — otherwise the swatch stayed stale until a
+            // manual reload. The editor re-shows for the same table.
+            return dmRefreshPanel(tableName, true);
           }).then(function () {
             showToast(isShared ? 'Unshared "' + tableName + '" from workspace' : 'Shared "' + tableName + '" with workspace', {});
           }).catch(function (e) { showToast('Share update failed: ' + e.message, {}); });

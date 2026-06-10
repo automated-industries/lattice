@@ -120,15 +120,16 @@ describe('dbconfig endpoints', () => {
     expect(r.body.type).toBe('sqlite');
     expect(r.body.dbFile).toBe('project.db');
     expect(r.body.teamEnabled).toBe(false);
-    // No direct postgres:// team connection → no deprecation banner.
-    expect(r.body.directCloud).toBe(false);
+    // The deprecated direct-connection GUI warning was removed in 2.2.2 — no
+    // directCloud field is exposed anymore.
+    expect(r.body.directCloud).toBeUndefined();
   });
 
-  it('GET /api/dbconfig flags a grandfathered direct postgres:// team connection', async () => {
-    // Seed the deprecated connection shape BEFORE boot: a local team
-    // connection whose cloud_url is a raw postgres:// URL (pre-2.2 direct
-    // mode). The flag is computed at openConfig, so the server must come up
-    // with directCloud already true — that's what drives the banner.
+  it('a grandfathered direct postgres:// connection still boots (no GUI warning, no directCloud field)', async () => {
+    // Existing direct connections keep working silently after 2.2.2 (the
+    // deprecation is documented as a breaking change; only NEW direct
+    // connections are rejected, at the register boundary). Seed one and
+    // confirm the server comes up and /api/dbconfig carries no directCloud.
     const root = tempDir();
     const { configPath, outputDir } = writeSqliteConfig(root, 'project');
     const seed = new Lattice(join(root, 'data', 'project.db'));
@@ -157,7 +158,7 @@ describe('dbconfig endpoints', () => {
     servers.push(handle);
     const r = await api(handle.url, '/api/dbconfig');
     expect(r.status).toBe(200);
-    expect(r.body.directCloud).toBe(true);
+    expect(r.body.directCloud).toBeUndefined();
   });
 
   it('POST /api/dbconfig/save persists a Postgres URL encrypted + rewrites the YAML', async () => {
