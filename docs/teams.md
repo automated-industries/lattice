@@ -260,6 +260,24 @@ In direct-Postgres team mode every member connects to the **same physical Postgr
 
 ---
 
+## Row-level permissions (v2.2+)
+
+Sharing a table no longer means every member sees every **row**. Within an already-visible shared table, each row carries its own owner + visibility, enforced at the application layer (same reason as table ownership: every member shares one physical DB).
+
+- **Binary access.** A member either can access a row (read + write + delete) or the row does not exist for them — there is no reader/editor gradation. Denied reads return **404** (existence is hidden).
+- **Owner = creator.** Only the owner may change a row's visibility or manage its grant list.
+- **Visibility** is `private` (owner only), `everyone` (all members), or `custom` (an explicit grant list in `__lattice_row_grants`). It lives out-of-band in **`__lattice_row_acl`** `(team_id, table_name, pk) PK, owner_user_id, visibility` — never injected into your tables.
+- **Table default.** `__lattice_shared_objects.default_row_visibility` is the visibility new rows are born with, set by the table owner. A freshly-shared table defaults to `everyone` (preserving the pre-2.2 "share a table → everyone sees its rows" behaviour); the owner can narrow it.
+- **Upgrade.** Existing shared tables backfill to `everyone` and pre-2.2 rows (no ACL entry) inherit the table default, so nothing disappears on upgrade until an owner opts into `private`.
+- **Enforced everywhere.** The REST row routes (list, single read, search, dashboard counts), the row mutation primitives, and the AI assistant's `list_rows` / `get_row` / `search` tools filter by the ACL (`Lattice.queryVisible`). On the hosted Teams server the change-log pull is filtered **per recipient** (`Lattice.listChangesForRecipient`) — a member never pulls the bytes of a row they can't see — and delete / unlink / kick fan out a targeted `unlink` to each member who can see the row.
+- **Enforcement model.** Row security is enforced by the hosted Lattice server at the **application layer** — there are no Postgres `CREATE POLICY` / RLS rules on the cloud database itself. Anyone who can open a SQL connection to the cloud Postgres can read and write every row in every table. Treat the database as the hosted server's **private backend**: network-isolate it (VPC, firewall, or localhost-only) so that only the hosted server can reach it, and never hand out its connection string.
+- **API.** `POST /api/tables/:t/rows/:id/visibility` `{visibility}` (row owner), `POST` / `DELETE /api/tables/:t/rows/:id/grants` (row owner), `POST /api/schema/entities/:name/default-row-visibility` `{visibility}` (table owner). The helpers live in `src/teams/row-access.ts`.
+- **Known limit.** A _kicked_ ex-member can't pull the targeted `unlink` after de-authorisation, so rows already synced to their local disk aren't guaranteed to be reclaimed. The honest guarantee is "no new bytes after kick."
+
+> **Direct `postgres://` team-cloud connections are deprecated (v2.2)** — they connect straight to the database, so row-level security does not apply to them **at all**: a grandfathered direct connection reads and writes every row in every shared table, including rows marked `private`. New direct connections are rejected with guidance to a hosted Teams server; existing ones keep working but warn on connect and show a deprecation banner in the GUI. Until you migrate, network-isolate the cloud Postgres so only the hosted server (and the people you'd trust with every byte in it) can reach it. (Using Postgres as a Lattice's own storage backend is unrelated and unaffected.)
+
+---
+
 ## Conflict resolution & sync semantics
 
 This is what the sync loop actually does today — read it before designing a multi-writer workflow on top of Teams.

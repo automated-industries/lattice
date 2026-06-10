@@ -156,6 +156,13 @@ export interface ChangeEnvelopeEntry {
   client_ts?: string | null;
   /** Client idempotency key for offline replay (no-op on re-send). */
   edit_id?: string | null;
+  /**
+   * Per-recipient targeting for 2.2 hard row-level sync. NULL = broadcast
+   * (delivered to every member, then filtered at pull time against
+   * `__lattice_row_acl`); non-null = targeted to exactly this user (the
+   * grant / revoke / delete fan-out). See `handleListChanges`.
+   */
+  recipient_user_id?: string | null;
 }
 
 /**
@@ -191,6 +198,7 @@ export async function appendChangeEnvelope(
     created_at: now,
     client_ts: entry.client_ts ?? now,
     edit_id: entry.edit_id ?? null,
+    recipient_user_id: entry.recipient_user_id ?? null,
   });
   return seq;
 }
@@ -265,6 +273,13 @@ export async function shareObject(
       created_at: prior?.created_at ?? now,
       updated_at: now,
       deleted_at: null,
+      // 2.2: a freshly-shared table defaults to 'everyone' so the existing
+      // "share a table → every member sees its rows" contract is preserved.
+      // The owner can narrow the table default (or individual rows) afterward.
+      // Re-share (the branch above) intentionally omits this so an owner's
+      // earlier choice survives a schema bump (the upsert only sets the
+      // columns it lists).
+      default_row_visibility: 'everyone',
     });
   }
   await applySchemaSpec(db, table, outSpec);

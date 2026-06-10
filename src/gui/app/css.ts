@@ -680,7 +680,7 @@ export const css = `
     .view-header .actions { margin-left: auto; display: flex; gap: 8px; }
 
     /* Row delete / restore controls */
-    .row-actions { width: 64px; text-align: center; white-space: nowrap; }
+    .row-actions { width: 88px; text-align: center; white-space: nowrap; }
     .row-delete, .row-restore {
       background: transparent; border: none; color: var(--text-muted);
       font-size: 16px; cursor: pointer; padding: 4px 6px;
@@ -691,6 +691,43 @@ export const css = `
     .row-restore:hover { background: var(--accent-soft); color: var(--accent); }
     tr.row-deleted td { background: rgba(251, 146, 60, 0.08); color: var(--text-muted); }
     tr.row-deleted:hover td { background: #fcf5e3; }
+    /* Per-row visibility indicator (2.2). Reuses the team share colour
+       language — yellow (#eab308) = visible to everyone, red (#ef4444) =
+       private — matching the .sw-shared / .sw-private swatches. Owner =
+       interactive toggle; non-owner = faded + inert (status only). */
+    .row-vis {
+      background: transparent; border: none; padding: 4px 6px; border-radius: 4px;
+      font-size: 14px; line-height: 1; cursor: pointer; text-decoration: none;
+      color: #eab308;
+    }
+    .row-vis:hover { filter: brightness(1.18); }
+    .row-vis-private { color: #ef4444; }
+    .row-vis-disabled { cursor: default; pointer-events: none; opacity: 0.45; }
+    /* Grants checklist (detail view, owner-only): who can see a
+       shared-with-specific-people row. Checkboxes post straight to the
+       row-grant endpoints. */
+    .grants-panel {
+      margin: 4px 0 10px; padding: 10px 12px; max-width: 420px;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2);
+      font-size: 13px;
+    }
+    .grants-panel .grants-title { font-weight: 600; margin-bottom: 6px; }
+    .grants-panel .grants-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
+    .grants-panel .grants-row input { accent-color: var(--accent); }
+    /* Deprecation banner: shown when the workspace holds a grandfathered
+       direct database cloud connection (no row-level security). Amber so
+       it reads as a warning, not an error. */
+    .deprecation-banner {
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px 16px; font-size: 13px;
+      background: rgba(234, 179, 8, 0.12); color: var(--text);
+      border-bottom: 1px solid rgba(234, 179, 8, 0.45);
+    }
+    .deprecation-banner button {
+      margin-left: auto; background: transparent; border: none; cursor: pointer;
+      color: var(--text-muted); font-size: 13px; padding: 2px 6px; border-radius: 4px;
+    }
+    .deprecation-banner button:hover { background: rgba(234, 179, 8, 0.18); }
 
     /* Inline create-row at the bottom of every table */
     tr.create-row td { background: var(--surface-2); }

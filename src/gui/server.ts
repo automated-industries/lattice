@@ -49,8 +49,20 @@ import type { Row } from '../types.js';
 import {
   CLOUD_INTERNAL_TABLE_DEFS,
   installCloudInternalTriggers,
+  installRowPermsSchema,
 } from '../teams/internal-tables.js';
-import { recordObjectOwner } from '../teams/direct-ops.js';
+import {
+  addRowGrant,
+  canAccessRow,
+  listVisibleRows,
+  removeRowGrant,
+  rowAccessSummaries,
+  rowGrantees,
+  setRowVisibility,
+  setTableDefaultVisibility,
+  visibleRowEdits,
+} from '../teams/row-access.js';
+import { recordObjectOwner, resolveUserIdByEmail } from '../teams/direct-ops.js';
 import {
   type TeamContext,
   isVisibleInTeam,
@@ -63,7 +75,8 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../teams/register-direct.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
-import { findEnvelopeByEditId } from '../teams/team-core.js';
+import { filterSearchGroupsByAcl } from './search-acl.js';
+import { appendChangeEnvelope, findEnvelopeByEditId } from '../teams/team-core.js';
 import {
   createRow,
   updateRow,
@@ -122,7 +135,7 @@ import {
   deleteDbCredential,
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import { countManyPostgres } from './count-many.js';
+import { countManyPostgres, exactCountMany } from './count-many.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -265,11 +278,60 @@ async function entitiesWithCounts(
     allTables = allTables.filter((t) => isVisibleInTeam(t.name, teamContext));
   }
 
-  // Postgres: collapse the per-table COUNT(*) fan-out to one query against
-  // pg_class. The naive Promise.all path below issues N parallel COUNTs
-  // through the connection pool; on a session pooler with a small slot
-  // budget (e.g. Supabase's 15-slot session pooler), N > slots locks up
-  // the pool the moment two clients refresh at once.
+  // Per-table default row visibility (batched, one query for the whole shared-
+  // object set) for the Data Model "new rows default to" select — and, below,
+  // for resolving each table's no-ACL visibility for the visible-count pass.
+  const rowVisDefaults = new Map<string, 'private' | 'everyone'>();
+  const sharedCreatedBy = new Map<string, string>();
+  if (teamContext) {
+    const sharedObjs = await db.query('__lattice_shared_objects', {
+      filters: [
+        { col: 'team_id', op: 'eq', val: teamContext.teamId },
+        { col: 'deleted_at', op: 'isNull' },
+      ],
+    });
+    for (const r of sharedObjs) {
+      rowVisDefaults.set(
+        String(r.table_name),
+        r.default_row_visibility === 'everyone' ? 'everyone' : 'private',
+      );
+      if (typeof r.created_by_user_id === 'string') {
+        sharedCreatedBy.set(String(r.table_name), r.created_by_user_id);
+      }
+    }
+  }
+
+  // Team-cloud counts: a physical row count would reveal the existence and
+  // volume of rows this member can't see (a tile reading 47 while the rows
+  // view lists 12 leaks 35 hidden rows — and a denied read is supposed to be
+  // indistinguishable from a missing one). Count through the same visibility
+  // predicate the rows view uses, aggregated into ONE round-trip — the
+  // pool-safety constraint the batched paths below exist for. Each table's
+  // no-ACL fallback mirrors listVisibleRows: visible when the table default
+  // is 'everyone' or the operator owns the table (object owner, falling back
+  // to the shared object's creator).
+  let visibleCounts = new Map<string, number>();
+  if (teamContext) {
+    const tc = teamContext;
+    const specs = allTables.map((t) => {
+      const def = rowVisDefaults.get(t.name) ?? 'private';
+      const owner = tc.owners.get(t.name) ?? sharedCreatedBy.get(t.name) ?? '';
+      return {
+        table: t.name,
+        noAclVisible: def === 'everyone' || (tc.myUserId !== '' && owner === tc.myUserId),
+      };
+    });
+    visibleCounts = await db.countVisibleMany(specs, {
+      teamId: tc.teamId,
+      userId: tc.myUserId,
+    });
+  }
+
+  // Postgres (no team context): collapse the per-table COUNT(*) fan-out to
+  // one query against pg_class. The naive Promise.all path below issues N
+  // parallel COUNTs through the connection pool; on a session pooler with a
+  // small slot budget (e.g. Supabase's 15-slot session pooler), N > slots
+  // locks up the pool the moment two clients refresh at once.
   //
   // `reltuples` is approximate (maintained by ANALYZE / autovacuum). For
   // the entity-list view that's the right tradeoff — operators are
@@ -277,23 +339,45 @@ async function entitiesWithCounts(
   // that tables with a `deleted_at` column now include soft-deleted rows
   // in this number; per-table drill-in still shows the filtered count.
   const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
-  const useBatched = adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
+  const useBatched =
+    !teamContext && adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
   const approxCounts = useBatched
     ? await countManyPostgres(
         adapter,
         allTables.map((t) => t.name),
       )
     : new Map<string, number>();
+  // Correct the stale-stat blind spot: pg_class.reltuples reads 0 for a table
+  // under autovacuum's ANALYZE threshold (~50 changes), so a freshly
+  // bulk-loaded table shows 0 on the dashboard even though drill-in lists its
+  // rows. For exactly that suspicious subset (approx count null or 0) issue ONE
+  // extra aggregated round-trip of real COUNTs — healthy tables keep the fast
+  // approximate path, so the pooler-exhausting fan-out the batched path avoids
+  // is never reintroduced.
+  let exactCounts = new Map<string, number>();
+  if (useBatched) {
+    const suspicious = allTables.map((t) => t.name).filter((n) => (approxCounts.get(n) ?? 0) === 0);
+    if (suspicious.length > 0) {
+      const softDeleteTables = new Set(
+        allTables.filter((t) => t.columns.includes('deleted_at')).map((t) => t.name),
+      );
+      exactCounts = await exactCountMany(adapter, suspicious, softDeleteTables);
+    }
+  }
 
   const enrichedTables = await Promise.all(
     allTables.map(async (t): Promise<GuiTableSummary> => {
       let rowCount: number | null;
-      if (useBatched) {
-        // Postgres: use the batched approximate count when we have it.
-        // Tables absent from pg_class (newly defineLate'd, never analyzed)
-        // get `null` so the SPA renders them as "—". No fallback per-table
-        // COUNT: the whole point of this branch is to avoid the fan-out.
-        rowCount = approxCounts.get(t.name) ?? null;
+      if (teamContext) {
+        // Team cloud: only the rows this member may see (computed in one
+        // aggregated round-trip above). `null` past the per-pass cap so the
+        // SPA renders "—" rather than a leaked physical count.
+        rowCount = visibleCounts.get(t.name) ?? null;
+      } else if (useBatched) {
+        // Postgres: prefer an exact count for the suspicious subset (computed
+        // in one extra round-trip above); otherwise the fast approximate stat.
+        // Still `null` when neither is available so the SPA renders "—".
+        rowCount = exactCounts.get(t.name) ?? approxCounts.get(t.name) ?? null;
       } else {
         // SQLite: in-process, no pool. Keep the exact, soft-delete-aware
         // count we've always shipped.
@@ -314,6 +398,8 @@ async function entitiesWithCounts(
         base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
         const ver = teamContext.sharedVersions.get(t.name);
         if (ver !== undefined) base.schemaVersion = ver;
+        const dv = rowVisDefaults.get(t.name);
+        if (dv) base.defaultRowVisibility = dv;
       }
       return base;
     }),
@@ -323,6 +409,21 @@ async function entitiesWithCounts(
 
 const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
 const DASHBOARD_STALE_DAYS = 14;
+
+/**
+ * Gate a row-permission route on an active team context. Sends the 400 and
+ * returns null when the workspace isn't a team cloud — callers bail with
+ * `if (!ctx) return;`. Shared by the four row-permission endpoints
+ * (visibility, grants add/remove, table default).
+ */
+function requireTeamContext(active: ActiveDb, res: ServerResponse): TeamContext | null {
+  const ctx = active.teamContext;
+  if (!ctx) {
+    sendJson(res, { error: 'Row permissions require a team cloud' }, 400);
+    return null;
+  }
+  return ctx;
+}
 
 /**
  * Whether the operator may edit `table`'s schema (rename, columns,
@@ -578,6 +679,13 @@ export interface ActiveDb {
   validTables: Set<string>;
   /** Team-cloud ownership context, or null for local / non-team DBs. */
   teamContext: TeamContext | null;
+  /**
+   * True when this workspace holds a grandfathered direct `postgres://` team
+   * connection. Those bypass the hosted server — and with it the 2.2 row
+   * security — entirely, so the GUI surfaces a deprecation banner (driven by
+   * `/api/dbconfig`'s `directCloud` field).
+   */
+  directTeamConnection: boolean;
   junctionTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
@@ -939,6 +1047,18 @@ export async function openConfig(
     }
   }
 
+  // Grandfathered direct postgres:// team connections bypass the hosted
+  // server's per-recipient sync — row security does not apply to them at
+  // all. The server console already warns once (direct-ops); surface it in
+  // the GUI too via /api/dbconfig's directCloud flag → deprecation banner.
+  let directTeamConnection = false;
+  try {
+    const conns = await teamsClient.listConnections();
+    directTeamConnection = conns.some((c) => isPostgresUrl(c.cloud_url));
+  } catch (e) {
+    console.warn('[openConfig] could not check for direct team connections:', (e as Error).message);
+  }
+
   // Realtime broker — only meaningful when the active DB is Postgres.
   // The broker connects on creation; status/payload events stream out
   // via the SSE endpoint. SQLite configs leave this as null and the
@@ -999,6 +1119,7 @@ export async function openConfig(
     teamsClient,
     validTables,
     teamContext,
+    directTeamConnection,
     junctionTables,
     entityContextByTable,
     manifest,
@@ -1184,6 +1305,31 @@ async function registerTeamCloudTables(db: Lattice): Promise<void> {
     await db.defineLate(name, def);
   }
   await installCloudInternalTriggers(db);
+  await installRowPermsSchema(db);
+}
+
+/**
+ * Emit a change-log envelope for a single row so other team clients get a
+ * NOTIFY and refetch through the visibility-filtered read path. Used by the
+ * row-permission endpoints after an ACL change. The NOTIFY payload carries no
+ * row bytes (see CLOUD_NOTIFY_CHANGE_LOG_SQL), so it never hands a row to a
+ * recipient who just lost access — access is always re-evaluated on refetch.
+ */
+async function emitRowChangeSignal(
+  db: Lattice,
+  team: TeamContext,
+  table: string,
+  pk: string,
+): Promise<void> {
+  const row = await db.get(table, pk);
+  await appendChangeEnvelope(db, {
+    team_id: team.teamId,
+    table_name: table,
+    pk,
+    op: 'upsert',
+    payload_json: row ? JSON.stringify(row) : null,
+    owner_user_id: team.myUserId,
+  });
 }
 
 /**
@@ -1613,10 +1759,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             tables = tables.filter((t) => want.has(t));
           }
-          sendJson(
-            res,
-            await fullTextSearch(active.db.adapter, tables, { query: q, limitPerTable: limit }),
-          );
+          let result = await fullTextSearch(active.db.adapter, tables, {
+            query: q,
+            limitPerTable: limit,
+          });
+          // Full-text search joins straight to the physical tables, bypassing
+          // the row ACL — post-filter every hit so a member never sees a row
+          // they can't read (same filter the assistant's search tool applies).
+          if (active.teamContext) {
+            result = await filterSearchGroupsByAcl(
+              active.db,
+              active.teamContext.teamId,
+              active.teamContext.myUserId,
+              result,
+            );
+          }
+          sendJson(res, result);
           return;
         }
         // ── Team members (for "last edited by" name resolution) ───────────
@@ -1876,6 +2034,84 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
+        // ── Row-level permissions (2.2, team cloud only) ─────────────────
+        // Anchored regexes that must be tested BEFORE ROWS_PATH below — that
+        // pattern's `(.+)` id group would otherwise swallow `…/rows/:id/visibility`
+        // as id="…/visibility". Owner gating + 404/403 mapping live in the row-
+        // access helpers + the central catch.
+        {
+          const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/visibility$/.exec(pathname);
+          if (method === 'POST' && m) {
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
+            const table = decodeURIComponent(m[1] ?? '');
+            const rowId = decodeURIComponent(m[2] ?? '');
+            const body = (await readJson<unknown>(req)) as { visibility?: unknown };
+            const vis = body.visibility;
+            if (vis !== 'private' && vis !== 'everyone' && vis !== 'custom') {
+              sendJson(res, { error: 'visibility must be private, everyone, or custom' }, 400);
+              return;
+            }
+            await setRowVisibility(active.db, ctx.teamId, table, rowId, ctx.myUserId, vis);
+            await emitRowChangeSignal(active.db, ctx, table, rowId);
+            sendJson(res, { ok: true });
+            return;
+          }
+        }
+        {
+          const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/grants$/.exec(pathname);
+          if (method === 'POST' && m) {
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
+            const table = decodeURIComponent(m[1] ?? '');
+            const rowId = decodeURIComponent(m[2] ?? '');
+            const body = (await readJson<unknown>(req)) as { user_id?: unknown; email?: unknown };
+            let granteeId = typeof body.user_id === 'string' ? body.user_id : '';
+            if (!granteeId && typeof body.email === 'string') {
+              granteeId = (await resolveUserIdByEmail(active.db, body.email)) ?? '';
+            }
+            if (!granteeId) {
+              sendJson(res, { error: 'user_id or a resolvable email is required' }, 400);
+              return;
+            }
+            await addRowGrant(active.db, ctx.teamId, table, rowId, granteeId, ctx.myUserId);
+            await emitRowChangeSignal(active.db, ctx, table, rowId);
+            sendJson(res, { ok: true });
+            return;
+          }
+        }
+        {
+          const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/grants\/([^/]+)$/.exec(pathname);
+          if (method === 'DELETE' && m) {
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
+            const table = decodeURIComponent(m[1] ?? '');
+            const rowId = decodeURIComponent(m[2] ?? '');
+            const granteeId = decodeURIComponent(m[3] ?? '');
+            await removeRowGrant(active.db, ctx.teamId, table, rowId, granteeId, ctx.myUserId);
+            await emitRowChangeSignal(active.db, ctx, table, rowId);
+            sendJson(res, { ok: true });
+            return;
+          }
+        }
+        {
+          const m = /^\/api\/schema\/entities\/([^/]+)\/default-row-visibility$/.exec(pathname);
+          if (method === 'POST' && m) {
+            const ctx = requireTeamContext(active, res);
+            if (!ctx) return;
+            const table = decodeURIComponent(m[1] ?? '');
+            const body = (await readJson<unknown>(req)) as { visibility?: unknown };
+            const vis = body.visibility;
+            if (vis !== 'private' && vis !== 'everyone') {
+              sendJson(res, { error: 'visibility must be private or everyone' }, 400);
+              return;
+            }
+            await setTableDefaultVisibility(active.db, ctx.teamId, table, ctx.myUserId, vis);
+            sendJson(res, { ok: true });
+            return;
+          }
+        }
+
         // ── GUI column metadata (per-column secret flag) ─────────────────
         if (method === 'GET' && pathname === '/api/gui-meta/columns') {
           const rows = (await active.db.query('_lattice_gui_column_meta', {})) as {
@@ -2053,7 +2289,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           // Validate the config edit BEFORE touching SQL so a failed config
           // mutation can never leave the physical schema ahead of the YAML
-          // (our no-drift, fail-loudly rules — no drift). The fields map must exist (it won't for a
+          // (no drift). The fields map must exist (it won't for a
           // table that isn't a declared config entity) and must not already
           // carry this column.
           const doc = loadConfigDoc(active.configPath);
@@ -2134,7 +2370,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `"${newCol}" is a reserved system column` }, 400);
             return;
           }
-          // Validate the config edit BEFORE touching SQL (our no-drift, fail-loudly rules — a failed
+          // Validate the config edit BEFORE touching SQL (a failed
           // YAML mutation must never leave the physical column renamed ahead of
           // the config). Rebuild the fields map by key (object-safe) rather than
           // deleteIn+setIn on the deep path.
@@ -2872,7 +3108,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             switchedTo = fallback.id;
             currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
           }
-          // Drop the registry record, then clean up files (the fail-loudly rule: loud on failure).
+          // Drop the registry record, then clean up files (loud on failure).
           removeWorkspace(latticeRoot, ws.id);
           try {
             if (!ws.configPath && ws.kind === 'local') {
@@ -3065,7 +3301,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             active = next;
             switchedTo = active.configPath;
           }
-          // Surface any filesystem failure loudly (the fail-loudly rule) rather than
+          // Surface any filesystem failure loudly rather than
           // half-deleting silently.
           let deleted: { deletedConfig: string; deletedDbFile: string | null };
           try {
@@ -3193,6 +3429,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
+          // Row-level security: a row's history carries its full payloads, so
+          // only the owner / permitted members may read it. Denied → 404 (hide
+          // existence), mirroring the GET-single CRUD path.
+          if (!(await canAccessRow(active.db, tctx.teamId, table, rowId, tctx.myUserId))) {
+            sendJson(res, { error: 'Row not found' }, 404);
+            return;
+          }
           const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? '50')));
           const rows = (await active.db.query('__lattice_change_log', {
             filters: [
@@ -3240,27 +3483,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
-          // Scan recent change-log rows (newest first) and keep the first
-          // (latest) entry per pk — that's the most recent edit to each row.
-          const scan = (await active.db.query('__lattice_change_log', {
-            filters: [
-              { col: 'team_id', op: 'eq', val: tctx.teamId },
-              { col: 'table_name', op: 'eq', val: table },
-            ],
-            orderBy: 'seq',
-            orderDir: 'desc',
-            limit: 2000,
-          })) as unknown as {
-            pk: string | null;
-            owner_user_id: string | null;
-            created_at: string;
-            client_ts: string | null;
-          }[];
-          const edits: Record<string, { ownerUserId: string | null; at: string }> = {};
-          for (const r of scan) {
-            if (!r.pk || edits[r.pk]) continue;
-            edits[r.pk] = { ownerUserId: r.owner_user_id, at: r.client_ts ?? r.created_at };
-          }
+          // Row-level security: the map is restricted to rows this member can
+          // see (the latest change-log entry per pk, intersected with the
+          // visible set), so it never leaks the existence + last editor of a
+          // private row. The ACL filter lives in visibleRowEdits so it stays
+          // unit-testable (see tests/integration/row-perms-endpoints.test.ts).
+          const edits = await visibleRowEdits(active.db, tctx.teamId, table, tctx.myUserId);
           sendJson(res, { edits });
           return;
         }
@@ -3316,13 +3544,36 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const limit = Number(url.searchParams.get('limit') ?? '500');
               const offset = Number(url.searchParams.get('offset') ?? '0');
               const deletedMode = url.searchParams.get('deleted');
-              const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
-              if (active.softDeletable.has(table) && deletedMode !== 'any') {
-                queryOpts.filters = [
-                  { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
-                ];
+              let rows: Row[];
+              if (active.teamContext) {
+                const tc = active.teamContext;
+                // Row-level security: only the rows this member may see, filtered
+                // in SQL. The table-visibility gate (validTables) already ran.
+                rows = await listVisibleRows(active.db, tc.teamId, table, tc.myUserId, {
+                  limit,
+                  offset,
+                  deleted:
+                    deletedMode === 'any' ? 'any' : deletedMode === 'only' ? 'only' : 'exclude',
+                });
+                // Attach a minimal per-row access summary (batched, no N+1) so the
+                // GUI can render each row's eye icon. Never includes grantees.
+                const summaries = await rowAccessSummaries(
+                  active.db,
+                  tc.teamId,
+                  table,
+                  tc.myUserId,
+                  rows.map((r) => String(r.id)),
+                );
+                rows = rows.map((r) => ({ ...r, _access: summaries.get(String(r.id)) ?? null }));
+              } else {
+                const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
+                if (active.softDeletable.has(table) && deletedMode !== 'any') {
+                  queryOpts.filters = [
+                    { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
+                  ];
+                }
+                rows = await active.db.query(table, queryOpts);
               }
-              const rows = await active.db.query(table, queryOpts);
               sendJson(res, { rows });
               return;
             }
@@ -3337,6 +3588,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const row = await active.db.get(table, id);
               if (row === null) {
                 sendJson(res, { error: 'Row not found' }, 404);
+                return;
+              }
+              if (active.teamContext) {
+                const tc = active.teamContext;
+                // Row-level security: a denied read is indistinguishable from missing.
+                if (!(await canAccessRow(active.db, tc.teamId, table, id, tc.myUserId))) {
+                  sendJson(res, { error: 'Row not found' }, 404);
+                  return;
+                }
+                const summary =
+                  (await rowAccessSummaries(active.db, tc.teamId, table, tc.myUserId, [id])).get(
+                    id,
+                  ) ?? null;
+                // The grantee list is owner-only — never leak it to a non-owner.
+                const access = summary?.ownedByMe
+                  ? { ...summary, grantees: await rowGrantees(active.db, tc.teamId, table, id) }
+                  : summary;
+                sendJson(res, { ...row, _access: access });
                 return;
               }
               sendJson(res, row);
@@ -3453,6 +3722,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             validTables: active.validTables,
             junctionTables: active.junctionTables,
             softDeletable: active.softDeletable,
+            team: active.teamContext
+              ? { teamId: active.teamContext.teamId, myUserId: active.teamContext.myUserId }
+              : null,
             // The assistant can create tables + relationships on request — same
             // audited, no-reopen primitives the Context Constructor uses.
             createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
@@ -3517,6 +3789,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                   myUserId: active.teamContext.myUserId,
                 }
               : null,
+            directCloud: active.directTeamConnection,
             swap: async () => {
               const next = await openConfig(active.configPath, active.outputDir, autoRender);
               await disposeActive(active);
@@ -3528,12 +3801,23 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         sendJson(res, { error: 'Not found' }, 404);
       } catch (err) {
-        // the fail-loudly rule — no silent failures. Any unhandled error in a GUI request
+        // No silent failures. Any unhandled error in a GUI request
         // handler is logged loudly server-side (method, path, stack) BEFORE the
         // 500 goes out, so the real cause survives even when the client only
         // sees a transient toast. Previously this returned the message with no
         // server-side log, making ingest (and other) failures invisible.
-        const e = err as Error;
+        const e = err as Error & { code?: string };
+        // Row-level permission denials are expected control flow, not server
+        // faults: map them to 404 (hide existence) / 403 (owner-only) by the
+        // stable `code` from src/teams/row-access.ts, rather than a 500.
+        if (e.code === 'row_access_denied') {
+          sendJson(res, { error: 'Row not found' }, 404);
+          return;
+        }
+        if (e.code === 'row_owner_only') {
+          sendJson(res, { error: e.message }, 403);
+          return;
+        }
         console.error(
           `[gui] ${req.method ?? '?'} ${req.url ?? '?'} failed: ${e.message}\n${e.stack ?? ''}`,
         );

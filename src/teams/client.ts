@@ -5,7 +5,7 @@ import { applySchemaSpec, TeamsSchemaConflictError, type SchemaSpec } from './sc
 import type { Row, WriteHookContext } from '../types.js';
 import { probeCloud, type CloudProbeResult } from '../framework/cloud-connect.js';
 import { saveDbCredential, writeToken } from '../framework/user-config.js';
-import { isPostgresUrl, registerDirectViaPostgres } from './register-direct.js';
+import { isPostgresUrl } from './register-direct.js';
 import {
   destroyTeamDirect,
   inviteDirect,
@@ -15,11 +15,25 @@ import {
   listPendingInvitationsDirect,
   listSharedObjectsDirect,
   meDirect,
-  redeemInviteDirect,
   shareObjectDirect,
   unlinkRowDirect,
   unshareObjectDirect,
 } from './direct-ops.js';
+
+/**
+ * Direct postgres:// team-cloud connections are deprecated as of 2.2: they
+ * pre-date row-level security and cannot enforce it (the local Lattice talks
+ * straight to the cloud DB as a superuser, bypassing the per-recipient sync
+ * filter). NEW connections must go through a hosted Teams server (an
+ * http(s):// URL); EXISTING direct connections keep working but warn on
+ * connect. This does NOT affect using Postgres as a Lattice's own storage
+ * backend — only the team-sync direct path.
+ */
+export const DIRECT_CLOUD_DEPRECATION_MESSAGE =
+  'Direct postgres:// team-cloud connections are deprecated and do not support ' +
+  'row-level security. Create or join a workspace through a hosted Lattice Teams ' +
+  'server (an http(s):// URL) instead. Existing direct connections continue to ' +
+  'work but should be migrated.';
 
 /**
  * Local-side client for a Lattice Teams cloud. Wraps the cloud HTTP API
@@ -240,6 +254,9 @@ export class TeamsClient {
    * members join via `redeemInvite`). Returns the new user + bearer
    * token + team summary so the caller can immediately save a
    * connection.
+   *
+   * @param teamName The workspace display name (stored as `team_name` for
+   * backward compatibility — a cloud IS a workspace with members).
    */
   async register(
     cloudUrl: string,
@@ -266,8 +283,9 @@ export class TeamsClient {
     // embedded credentials, so when the operator's cloud_url is the
     // saved Postgres URL the HTTP path 404s before it leaves the
     // browser (no server to answer /api/auth/redeem-invite).
+    // New direct postgres:// joins are deprecated (no row-level security).
     if (isPostgresUrl(cloudUrl)) {
-      return redeemInviteDirect(cloudUrl, inviteToken, email, name);
+      throw new Error(DIRECT_CLOUD_DEPRECATION_MESSAGE);
     }
     return this.fetchUnauthed<RedeemResponse>(cloudUrl, 'POST', '/api/auth/redeem-invite', {
       invite_token: inviteToken,
@@ -279,9 +297,11 @@ export class TeamsClient {
   // ── High-level orchestration (v1.13+) ───────────────────────────────────
   // Wraps the multi-step flows the GUI's Database panel + library
   // consumers both need: connecting to an existing cloud DB (with
-  // optional team join), and upgrading a non-team cloud into a team
-  // cloud. The HTTP routes in src/gui/dbconfig-routes.ts are thin
-  // shells over these methods.
+  // optional team join), and initializing a fresh cloud DB's owner so
+  // its members + per-table sharing surface exists. A cloud workspace IS
+  // a workspace with members — there is no separate "team" to convert to.
+  // The HTTP routes in src/gui/dbconfig-routes.ts are thin shells over
+  // these methods.
 
   /**
    * Connect a local project to an existing cloud DB by URL. Probes
@@ -348,15 +368,18 @@ export class TeamsClient {
   }
 
   /**
-   * Upgrade an already-connected cloud DB to a team DB. Two paths
-   * depending on the cloud URL's scheme:
+   * Initialize a fresh cloud DB's owner: register the first member (who
+   * becomes owner) so the cloud's members + per-table sharing surface
+   * exists. This is NOT a "convert a cloud into a team" step — a cloud
+   * workspace IS a workspace with members; this just bootstraps the owner
+   * the first time a cloud is opened. The hosted server path is the only
+   * supported one:
    *
    *   - `http(s)://…` — POST to the cloud's `/api/auth/register` endpoint
-   *     (`lattice serve --team-cloud` is fronting the Postgres).
-   *   - `postgres(ql)://…` — drive the same INSERT sequence directly
-   *     against the cloud Postgres via {@link registerDirectViaPostgres}.
-   *     The HTTP path can't be used here because the browser's Fetch
-   *     API refuses URLs with embedded credentials.
+   *     (a hosted `lattice serve` teams server is fronting the Postgres).
+   *   - `postgres(ql)://…` — rejected: direct postgres:// owner bootstrap
+   *     is deprecated. Row-level security is enforced by the hosted server,
+   *     so it is the only supported connection method for new workspaces.
    *
    * On success writes the bearer token to `~/.lattice/keys/<label>.token`
    * **and** persists the local `__lattice_team_connections` row so the
@@ -366,16 +389,19 @@ export class TeamsClient {
    * the token file, leaving GUI authenticated calls with no
    * `cloud_url` + `my_user_id` + `api_token_encrypted` row to read.
    */
-  async upgradeToTeamCloud(opts: {
+  async registerCloudOwner(opts: {
     label: string;
     cloudUrl: string;
+    /** Workspace display name (stored as `team_name` for backward compatibility). */
     teamName: string;
     email: string;
     displayName: string;
   }): Promise<RegisterResponse> {
-    const reg = isPostgresUrl(opts.cloudUrl)
-      ? await registerDirectViaPostgres(opts.cloudUrl, opts.email, opts.displayName, opts.teamName)
-      : await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
+    // New direct postgres:// workspaces are deprecated (no row-level security).
+    if (isPostgresUrl(opts.cloudUrl)) {
+      throw new Error(DIRECT_CLOUD_DEPRECATION_MESSAGE);
+    }
+    const reg = await this.register(opts.cloudUrl, opts.email, opts.displayName, opts.teamName);
     writeToken(opts.label, reg.raw_token);
     await this.saveConnection({
       team_id: reg.team.id,
@@ -415,7 +441,7 @@ export class TeamsClient {
     }
     try {
       const displayName = opts.displayName?.trim() ? opts.displayName : opts.email;
-      await this.upgradeToTeamCloud({
+      await this.registerCloudOwner({
         label: opts.label,
         cloudUrl: opts.cloudUrl,
         teamName: opts.workspaceName,
