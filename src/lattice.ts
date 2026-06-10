@@ -849,10 +849,10 @@ export class Lattice {
       values,
     );
 
-    // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
-    const pkCol = pkCols[0] ?? 'id';
-    const rawPk = rowWithPk[pkCol];
-    const pkValue = rawPk != null ? String(rawPk as string | number) : '';
+    // Canonical pk: the full (possibly composite) primary key, so the
+    // change-log + row ACL key the row unambiguously. Single-column keys
+    // serialize to the bare value (unchanged from prior behaviour).
+    const pkValue = this._serializeRowPk(table, rowWithPk);
     await this._appendChangelog(table, pkValue, 'insert', rowWithPk, null);
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
@@ -912,10 +912,8 @@ export class Lattice {
       values,
     );
 
-    // pkCols[0] is always defined — validated non-empty in SchemaManager.define()
-    const pkCol = pkCols[0] ?? 'id';
-    const rawPk = rowWithPk[pkCol];
-    const pkValue = rawPk != null ? String(rawPk as string | number) : '';
+    // Canonical pk (full composite key); single-column keys are the bare value.
+    const pkValue = this._serializeRowPk(table, rowWithPk);
     this._sanitizer.emitAudit(table, 'update', pkValue);
     this._scheduleAutoRender();
     return pkValue;
@@ -977,7 +975,9 @@ export class Lattice {
 
     await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
 
-    const auditId = typeof id === 'string' ? id : JSON.stringify(id);
+    // Canonical pk so a row addressed by composite lookup keys its
+    // change-log entry the same way insert() keyed it.
+    const auditId = this._serializePkLookup(table, id);
     await this._appendChangelog(table, auditId, 'update', sanitized, previousValues);
     this._sanitizer.emitAudit(table, 'update', auditId);
     await this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
@@ -1022,7 +1022,9 @@ export class Lattice {
 
     await runAsyncOrSync(this._adapter, `DELETE FROM "${table}" WHERE ${clause}`, params);
 
-    const auditId = typeof id === 'string' ? id : JSON.stringify(id);
+    // Canonical pk so a row addressed by composite lookup keys its
+    // change-log entry the same way insert() keyed it.
+    const auditId = this._serializePkLookup(table, id);
     await this._appendChangelog(
       table,
       auditId,
@@ -1607,23 +1609,33 @@ export class Lattice {
     if (opts.orderBy) this._assertIdent(table, opts.orderBy);
 
     const cols = this._ensureColumnCache(table);
-    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const pkExpr = this._pkSqlExpr(this._resolvedPkCols(table));
     let softDelete = '';
     if (cols.has('deleted_at') && opts.deleted !== 'any') {
       softDelete =
         opts.deleted === 'only' ? `t."deleted_at" IS NOT NULL AND ` : `t."deleted_at" IS NULL AND `;
     }
 
-    const pkExpr = `CAST(t."${pkCol}" AS TEXT)`;
-    let sql = `SELECT t.* FROM "${table}" t WHERE ${softDelete}(${rowAclVisibleExists('?', '?', pkExpr)}`;
-    const params: unknown[] = [opts.teamId, table, opts.userId, opts.userId];
-    if (opts.noAclVisible) {
-      // Rows with no ACL entry are visible because the table default is
-      // 'everyone' or this user owns the table (pre-2.2 / never-narrowed rows).
-      sql += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
-      params.push(opts.teamId, table);
+    const params: unknown[] = [];
+    let visClause: string;
+    if (pkExpr) {
+      visClause = rowAclVisibleExists('?', '?', pkExpr);
+      params.push(opts.teamId, table, opts.userId, opts.userId);
+      if (opts.noAclVisible) {
+        // Rows with no ACL entry are visible because the table default is
+        // 'everyone' or this user owns the table (pre-2.2 / never-narrowed rows).
+        visClause += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
+        params.push(opts.teamId, table);
+      }
+    } else {
+      // Unkeyable table (no Lattice-addressable primary key — e.g. a raw-SQL
+      // junction table with no `id`): no per-row ACL entry can exist for it, so
+      // every row reads as "no ACL entry" and is visible iff the table defaults
+      // to everyone / the caller owns it. Never reference a pk column — that
+      // CAST(t."id" …) on a table without `id` is the 2.2.0 crash.
+      visClause = opts.noAclVisible ? '1=1' : '1=0';
     }
-    sql += `)`;
+    let sql = `SELECT t.* FROM "${table}" t WHERE ${softDelete}(${visClause})`;
 
     if (opts.orderBy && cols.has(opts.orderBy)) {
       const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
@@ -1680,14 +1692,20 @@ export class Lattice {
     for (const [i, spec] of bounded.entries()) {
       this._assertIdent(spec.table);
       const cols = this._ensureColumnCache(spec.table);
-      const pkCol = this._schema.getPrimaryKey(spec.table)[0] ?? 'id';
+      const pkExpr = this._pkSqlExpr(this._resolvedPkCols(spec.table));
       const softDelete = cols.has('deleted_at') ? `t."deleted_at" IS NULL AND ` : '';
-      const pkExpr = `CAST(t."${pkCol}" AS TEXT)`;
-      let predicate = rowAclVisibleExists('?', '?', pkExpr);
-      params.push(opts.teamId, spec.table, opts.userId, opts.userId);
-      if (spec.noAclVisible) {
-        predicate += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
-        params.push(opts.teamId, spec.table);
+      let predicate: string;
+      if (pkExpr) {
+        predicate = rowAclVisibleExists('?', '?', pkExpr);
+        params.push(opts.teamId, spec.table, opts.userId, opts.userId);
+        if (spec.noAclVisible) {
+          predicate += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
+          params.push(opts.teamId, spec.table);
+        }
+      } else {
+        // Unkeyable table — see queryVisible. No pk column reference (no crash);
+        // visible iff the table defaults to everyone / the caller owns it.
+        predicate = spec.noAclVisible ? '1=1' : '1=0';
       }
       selects.push(
         `(SELECT COUNT(*) FROM "${spec.table}" t WHERE ${softDelete}(${predicate})) AS c${String(i)}`,
@@ -2037,6 +2055,74 @@ export class Lattice {
     const clauses = pkCols.map((col) => `"${col}" = ?`);
     const params = pkCols.map((col) => id[col]);
     return { clause: clauses.join(' AND '), params };
+  }
+
+  // ── Composite-key serialization for the row-level-permission layer ───────
+  // The row ACL (`__lattice_row_acl`/`__lattice_row_grants`) and the
+  // change-log key each row by a single TEXT `pk`. For a table whose primary
+  // key spans several columns (e.g. a junction table `(project_id,
+  // meeting_id)` with no `id`), that key must encode EVERY pk column, and the
+  // write side (what we store) must match the read side (the SQL that
+  // reconstructs it from row columns). These three helpers are the single
+  // source of truth for both. A single-column key serializes to the bare
+  // value (so all pre-2.2.1 single-`id` ACL data stays valid).
+
+  private static readonly _PK_SEP = '\t';
+
+  /**
+   * The primary-key columns of `table` that PHYSICALLY exist, in declared
+   * order. Empty when the table has no Lattice-addressable key — e.g. a table
+   * reached via raw SQL whose PK metadata defaulted to `['id']` but that has
+   * no `id` column. Callers treat an empty result as "unkeyable" (no per-row
+   * ACL is possible, so the row-perm SQL must not reference a pk column).
+   */
+  private _resolvedPkCols(table: string): string[] {
+    const cols = this._ensureColumnCache(table);
+    return this._schema.getPrimaryKey(table).filter((c) => cols.has(c));
+  }
+
+  /** Canonical ACL / change-log `pk` string for a row. Matches {@link _pkSqlExpr}. */
+  private _serializeRowPk(table: string, row: Row): string {
+    const pkCols = this._resolvedPkCols(table);
+    const cols = pkCols.length > 0 ? pkCols : ['id'];
+    return cols
+      .map((c) => {
+        const v = row[c];
+        return v != null ? String(v as string | number) : '';
+      })
+      .join(Lattice._PK_SEP);
+  }
+
+  /**
+   * Canonical `pk` string for a {@link PkLookup} used by update/delete, so a
+   * row addressed by lookup keys its change-log entry identically to the way
+   * {@link _serializeRowPk} keyed it at insert time.
+   */
+  private _serializePkLookup(table: string, id: PkLookup): string {
+    if (typeof id === 'string') return id; // single-column key — the bare value
+    const pkCols = this._resolvedPkCols(table);
+    if (pkCols.length === 0) return JSON.stringify(id);
+    return pkCols
+      .map((c) => {
+        const v = id[c];
+        return v != null ? String(v as string | number) : '';
+      })
+      .join(Lattice._PK_SEP);
+  }
+
+  /**
+   * SQL expression reconstructing {@link _serializeRowPk} from a row aliased
+   * `t`. Returns null when the table is unkeyable (no pk columns present) — the
+   * caller must then avoid referencing a pk column at all. Dialect-aware tab
+   * separator: SQLite `char(9)`, Postgres `chr(9)` (both = U+0009), matching
+   * {@link _PK_SEP}.
+   */
+  private _pkSqlExpr(pkCols: string[]): string | null {
+    if (pkCols.length === 0) return null;
+    // A single column joins to itself (no separator) — identical to the
+    // pre-2.2.1 `CAST(t."id" AS TEXT)`, preserving all existing single-key data.
+    const sep = this.getDialect() === 'postgres' ? 'chr(9)' : 'char(9)';
+    return pkCols.map((c) => `CAST(t."${c}" AS TEXT)`).join(` || ${sep} || `);
   }
 
   /**
