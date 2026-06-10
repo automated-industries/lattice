@@ -8,6 +8,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-06-10
+
+Hotfix for two regressions in the 2.2.0 row-level-permission work on team clouds.
+
+### Security
+
+- **Assistant chats are now isolated per member on a team cloud.** Chat threads
+  and messages are stored in the shared cloud database, but the chat read routes
+  queried them with no per-user filter — so a member could list and replay
+  another member's assistant conversations (and the assistant's responses).
+  `chat_threads` / `chat_messages` gain a nullable `owner_user_id` column
+  (additively reconciled onto existing clouds, no migration needed); new chats
+  are stamped with the creating member's cloud id; and every chat read
+  (`GET /api/chat/threads`, `GET /api/chat/threads/:id/messages`, and the
+  cross-turn history rehydration) filters by the operator's id when a team
+  context is present. A thread can only be reused/replayed by its owner, so a
+  guessed thread id can't be hijacked. Local single-user databases (no team
+  context) are unaffected — chats with a NULL owner stay fully visible.
+
+### Fixed
+
+- **Composite (and `id`-less) primary keys no longer break row permissions.**
+  The 2.2.0 row-permission read path keyed every row on the first primary-key
+  column, defaulting to `id`. A table with no single `id` column — a
+  composite-key junction table, or any table reached via raw SQL — hit the `id`
+  fallback and the query emitted `CAST(t."id" AS TEXT)`, throwing
+  `column "id" does not exist` and taking down `queryVisible`,
+  `countVisibleMany`, and the dashboard with it; a registered composite table
+  keyed only its first column, so rows sharing that column collided. The
+  change-log + row-ACL key now encodes the **full** primary key (a single
+  canonical serialization shared by the write and read paths), and a table with
+  no Lattice-addressable key is treated as unkeyable (no per-row ACL; its rows
+  follow the table default and never reference a missing column). Single-column
+  keys are unchanged — existing data and behaviour are preserved.
+
 ## [2.2.0] - 2026-06-09
 
 **Row-level permissions for Teams.** Sharing a table no longer means every
