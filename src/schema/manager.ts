@@ -158,11 +158,11 @@ export class SchemaManager {
       version: 'TEXT PRIMARY KEY',
       applied_at: 'TEXT NOT NULL',
     });
-    // Per-viewer enrichment seam (Stage-0): tables exist now, so this is where a
-    // later stage will generate the per-column cell-masking VIEW + grants from
-    // `this._columnAudience`, idempotently via the migration runner under the
-    // reserved `internal:audience:table:${table}:vN` version key. No-op today —
-    // every column defaults to row-audience, so no view is generated.
+    // Per-viewer enrichment: column audiences (`this._columnAudience`) drive a
+    // generated per-column cell-masking VIEW. That generation runs cloud-side as
+    // part of the RLS setup (`enableAudienceView`, alongside `enableRlsForTable`),
+    // not here — local SQLite has no RLS/views to mask. A table with only
+    // row-audience columns (the default) generates nothing.
   }
 
   /**

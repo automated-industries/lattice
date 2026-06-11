@@ -284,6 +284,13 @@ export {
 } from './cloud/members.js';
 export { discoverCloudTables } from './cloud/discover.js';
 export type { DiscoveredTable } from './cloud/discover.js';
+export {
+  audiencePredicate,
+  audienceViewSql,
+  enableAudienceView,
+  tableNeedsAudienceView,
+  isRowAudience,
+} from './cloud/audience.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing

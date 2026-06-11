@@ -35,6 +35,8 @@ const DEFINER_FUNCTIONS = [
   'lattice_is_subject',
   'lattice_has_role',
   'lattice_source_visible',
+  'lattice_assign_role',
+  'lattice_revoke_role',
 ];
 
 describe('cloud RLS — session_user / SECURITY DEFINER identity invariant', () => {

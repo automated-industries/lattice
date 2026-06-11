@@ -38,7 +38,7 @@ function isPg(db: Lattice): boolean {
 /** Canonical pk SQL expression, matching `Lattice._pkSqlExpr` but with a caller-chosen
  *  column prefix: `''` for a policy row context (`CAST("id" AS TEXT)`), or `NEW.`/`OLD.`
  *  for a trigger (`CAST(NEW."id" AS TEXT)`). Single column → bare (no separator). */
-function pkSqlExpr(pkCols: readonly string[], prefix: string): string {
+export function pkSqlExpr(pkCols: readonly string[], prefix: string): string {
   if (pkCols.length === 0) {
     throw new Error('cloud RLS: cannot key a table with no primary key column');
   }
@@ -97,6 +97,17 @@ CREATE TABLE IF NOT EXISTS "__lattice_row_grants" (
 
 CREATE INDEX IF NOT EXISTS "idx_lattice_row_grants_grantee"
   ON "__lattice_row_grants" ("grantee_role", "table_name", "pk");
+
+-- App-role assignments for the audience layer: maps a member's login role to the
+-- named app roles (e.g. 'hr') a fixed-policy column may require. Owner-managed;
+-- members cannot read or write it (no grant), so a member can't self-promote.
+CREATE TABLE IF NOT EXISTS "__lattice_member_roles" (
+  "member_role" text NOT NULL,
+  "app_role"    text NOT NULL,
+  "granted_by"  text NOT NULL DEFAULT session_user,
+  "granted_at"  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("member_role", "app_role")
+);
 
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
@@ -174,13 +185,40 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
   SELECT p_subject = session_user
 $fn$;
 
--- Does the connected member hold a named role/group? STUB — returns true until a
--- later stage adds the role model. Permissive on purpose: wiring it into a view
--- is an explicit opt-in, never a silent tightening.
+-- Does the connected member hold a named app role? Reads the owner-managed
+-- member-roles table (which members can't see) keyed on session_user, so a
+-- member cannot grant themselves a role to unmask a column.
 CREATE OR REPLACE FUNCTION lattice_has_role(p_role text)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
-  SELECT true
+  SELECT EXISTS (
+    SELECT 1 FROM "__lattice_member_roles"
+     WHERE "member_role" = session_user AND "app_role" = p_role
+  )
 $fn$;
+
+-- Owner-only: assign an app role to a member (so a fixed-policy masked column
+-- becomes visible to them). Raises unless the caller can create roles (a cloud
+-- owner / DBA).
+CREATE OR REPLACE FUNCTION lattice_assign_role(p_member text, p_role text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may assign app roles';
+  END IF;
+  INSERT INTO "__lattice_member_roles" ("member_role", "app_role")
+    VALUES (p_member, p_role) ON CONFLICT DO NOTHING;
+END $fn$;
+
+-- Owner-only: revoke an app role from a member.
+CREATE OR REPLACE FUNCTION lattice_revoke_role(p_member text, p_role text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may revoke app roles';
+  END IF;
+  DELETE FROM "__lattice_member_roles"
+    WHERE "member_role" = p_member AND "app_role" = p_role;
+END $fn$;
 
 -- Can the connected member see a source? Reduces to the source row's own RLS, so
 -- file-sharing drives enrichment visibility for free. p_source_ref is the
@@ -285,10 +323,10 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const migration: Migration = {
-    // v3 adds the Stage-0 audience helpers (lattice_is_subject / lattice_has_role
-    // / lattice_source_visible). The bootstrap is fully idempotent (CREATE OR
-    // REPLACE / IF NOT EXISTS), so re-running on an existing cloud is safe.
-    version: 'internal:cloud-rls:bootstrap:v3',
+    // v3 added the audience helpers; v4 adds the role model (__lattice_member_roles
+    // + real lattice_has_role / lattice_assign_role). The bootstrap is fully
+    // idempotent (CREATE OR REPLACE / IF NOT EXISTS), so re-running is safe.
+    version: 'internal:cloud-rls:bootstrap:v4',
     sql: CLOUD_RLS_BOOTSTRAP_SQL,
   };
   await db.migrate([migration]);

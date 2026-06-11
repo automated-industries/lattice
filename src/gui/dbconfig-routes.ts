@@ -12,6 +12,7 @@ import {
 } from '../framework/user-config.js';
 import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { installCloudRls, enableRlsForTable, backfillOwnership } from '../cloud/rls.js';
+import { enableAudienceView } from '../cloud/audience.js';
 import {
   provisionMemberRole,
   generateMemberPassword,
@@ -421,6 +422,14 @@ export async function dispatchDbConfigRoute(
           // already owns (none yet), so it could stamp nothing.
           await backfillOwnership(target, t, pk);
           await enableRlsForTable(target, t, pk);
+          // Per-viewer column masking: if any column on this table declares an
+          // audience, generate its cell-masking view + grant members SELECT on
+          // it. No-op for tables with only row-audience columns (the default),
+          // so this changes nothing until a schema opts a column in.
+          const cols = target.getRegisteredColumns(t);
+          if (cols) {
+            await enableAudienceView(target, t, Object.keys(cols), pk, target.getColumnAudience(t));
+          }
         }
         target.close();
         const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;

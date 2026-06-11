@@ -591,6 +591,16 @@ export class Lattice {
   }
 
   /**
+   * Per-column audience for a table (per-viewer enrichment) — column name →
+   * audience identifier. A column absent from the map has `row-audience`
+   * (visible to whoever can see the row). Empty until a column declares
+   * `audience:`. Drives the generated cell-masking view.
+   */
+  getColumnAudience(table: string): Record<string, string> {
+    return this._schema.getColumnAudience(table);
+  }
+
+  /**
    * Return the raw column declarations for a registered table, as
    * passed to `define()` / `defineLate()`. Returns null for tables
    * that exist in the DB but were never registered with Lattice (e.g.
