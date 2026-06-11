@@ -158,6 +158,22 @@ describe.skipIf(!PG_URL)(
       // 8) Alice's private row survived every attack, still private.
       const n1 = (await A.query<{ body: string }>(`SELECT body FROM notes WHERE id='n1'`)).rows;
       expect(n1).toEqual([{ body: 'priv' }]);
+
+      // 9) Every member write is recorded in the change feed (which drives realtime
+      //    via NOTIFY) by the DB trigger. Bob's RLS-blocked update/delete affected
+      //    0 rows, so they produced no change entry.
+      const changes = (
+        await admin.query<{ table_name: string; pk: string; op: string }>(
+          `SELECT table_name, pk, op FROM "${schema}"."__lattice_changes" ORDER BY seq`,
+        )
+      ).rows;
+      expect(
+        changes
+          .filter((c) => c.table_name === 'notes' && c.op === 'upsert')
+          .map((c) => c.pk)
+          .sort(),
+      ).toEqual(['n1', 'n2', 'n3']);
+      expect(changes.some((c) => c.table_name === 'memo')).toBe(true);
     });
   },
 );

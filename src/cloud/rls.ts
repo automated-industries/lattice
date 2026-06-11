@@ -158,6 +158,38 @@ BEGIN
   DELETE FROM "__lattice_row_grants"
     WHERE "table_name" = p_table AND "pk" = p_pk AND "grantee_role" = p_grantee;
 END $fn$;
+
+-- Append-only change feed. The per-table ownership trigger records one row per
+-- INSERT/UPDATE/DELETE; the AFTER INSERT trigger here fires pg_notify so a
+-- connected member's realtime broker refreshes. Members get no direct access —
+-- the NOTIFY carries only (table, pk, op) metadata, and the SPA refetches the row
+-- itself through RLS, so another member's content is never broadcast.
+CREATE TABLE IF NOT EXISTS "__lattice_changes" (
+  "seq"        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  "table_name" text NOT NULL,
+  "pk"         text NOT NULL,
+  "op"         text NOT NULL CHECK ("op" IN ('upsert','delete')),
+  "owner_role" text NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION lattice_notify_change() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+  PERFORM pg_notify('lattice_changes', json_build_object(
+    'seq', NEW."seq",
+    'table_name', NEW."table_name",
+    'pk', NEW."pk",
+    'op', NEW."op",
+    'owner_role', NEW."owner_role",
+    'created_at', NEW."created_at"
+  )::text);
+  RETURN NEW;
+END $fn$;
+
+DROP TRIGGER IF EXISTS "lattice_notify_change_trg" ON "__lattice_changes";
+CREATE TRIGGER "lattice_notify_change_trg" AFTER INSERT ON "__lattice_changes"
+  FOR EACH ROW EXECUTE FUNCTION lattice_notify_change();
 `;
 
 /**
@@ -181,10 +213,18 @@ BEGIN
     INSERT INTO "__lattice_owners" ("table_name","pk","owner_role","visibility")
       VALUES (${lit}, ${pkNew}, session_user, 'private')
       ON CONFLICT ("table_name","pk") DO NOTHING;
+    INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
+      VALUES (${lit}, ${pkNew}, 'upsert', session_user);
+    RETURN NEW;
+  ELSIF TG_OP = 'UPDATE' THEN
+    INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
+      VALUES (${lit}, ${pkNew}, 'upsert', session_user);
     RETURN NEW;
   ELSIF TG_OP = 'DELETE' THEN
     DELETE FROM "__lattice_owners"     WHERE "table_name" = ${lit} AND "pk" = ${pkOld};
     DELETE FROM "__lattice_row_grants" WHERE "table_name" = ${lit} AND "pk" = ${pkOld};
+    INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
+      VALUES (${lit}, ${pkOld}, 'delete', session_user);
     RETURN OLD;
   END IF;
   RETURN NEW;
@@ -205,7 +245,7 @@ DROP POLICY IF EXISTS "lattice_ins" ON ${q};
 CREATE POLICY "lattice_ins" ON ${q} FOR INSERT WITH CHECK (true);
 
 DROP TRIGGER IF EXISTS "${trg}" ON ${q};
-CREATE TRIGGER "${trg}" AFTER INSERT OR DELETE ON ${q}
+CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
   FOR EACH ROW EXECUTE FUNCTION "${trg}"();
 `;
 }
@@ -214,7 +254,7 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR DELETE ON ${q}
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const migration: Migration = {
-    version: 'internal:cloud-rls:bootstrap:v1',
+    version: 'internal:cloud-rls:bootstrap:v2',
     sql: CLOUD_RLS_BOOTSTRAP_SQL,
   };
   await db.migrate([migration]);
@@ -228,7 +268,7 @@ export async function enableRlsForTable(
 ): Promise<void> {
   if (!isPg(db)) return;
   const migration: Migration = {
-    version: `internal:cloud-rls:table:${table}:v1`,
+    version: `internal:cloud-rls:table:${table}:v2`,
     sql: tableRlsSql(table, pkCols),
   };
   await db.migrate([migration]);
