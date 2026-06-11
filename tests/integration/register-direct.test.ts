@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { registerDirectViaPostgres, isPostgresUrl } from '../../src/teams/register-direct.js';
 import { Lattice } from '../../src/lattice.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from '../../src/teams/internal-tables.js';
-import { hashToken } from '../../src/teams/server/auth.js';
+import { hashToken } from '../../src/teams/tokens.js';
 
 const dirs: string[] = [];
 
@@ -90,7 +90,7 @@ async function registerDirectAgainstSqlite(
     created_at: now,
     updated_at: now,
   });
-  const { generateToken } = await import('../../src/teams/server/auth.js');
+  const { generateToken } = await import('../../src/teams/tokens.js');
   const { raw, hash } = generateToken();
   await db.insert('__lattice_api_tokens', {
     user_id: userId,

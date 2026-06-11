@@ -1,6 +1,6 @@
 import { Lattice } from '../lattice.js';
 import { CLOUD_INTERNAL_TABLE_DEFS } from './internal-tables.js';
-import { generateToken } from './server/auth.js';
+import { generateToken } from './tokens.js';
 
 /**
  * Shape returned by both the HTTP register path and the Postgres-direct

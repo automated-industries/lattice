@@ -29,7 +29,7 @@ import {
   installRowPermsSchema,
 } from './internal-tables.js';
 import { type SchemaSpec } from './schema-spec.js';
-import { generateInviteToken, generateToken, hashToken } from './server/auth.js';
+import { generateInviteToken, generateToken, hashToken } from './tokens.js';
 import { isPostgresUrl } from './register-direct.js';
 import {
   listTeamMembers,

@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import {
   existsSync,
@@ -106,8 +106,6 @@ import {
   aiDeleteEntity,
   type DeleteResolution,
 } from './schema-ops.js';
-import { authenticate, type AuthContext } from '../teams/server/auth.js';
-import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
 import { TeamsClient } from '../teams/client.js';
 import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
@@ -1379,8 +1377,6 @@ async function syncUserIdentityRow(db: Lattice): Promise<void> {
   }
 }
 
-type RequestWithAuth = IncomingMessage & { authContext?: AuthContext };
-
 // ── Schema history (tracking + soft-delete revert) ────────────────────────
 // Schema/data-model changes are logged to the same `_lattice_gui_audit`
 // history as row edits and are reversible. Deletes are SOFT: the entity/field
@@ -1566,34 +1562,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
-
-        // ── Team-cloud auth gate ──────────────────────────────────────────
-        // Most routes require a valid bearer token. A small allowlist of
-        // bootstrap/redemption endpoints (defined in routes.ts) is exempt
-        // so a new operator can register and invitees can redeem invites
-        // before they have a token.
-        let authContext: AuthContext | null = null;
-        if (teamCloud) {
-          if (!UNAUTHENTICATED_TEAM_PATHS.has(pathname)) {
-            authContext = await authenticate(req, active.db);
-            if (!authContext) {
-              sendJson(res, { error: 'Unauthorized' }, 401);
-              return;
-            }
-            (req as RequestWithAuth).authContext = authContext;
-          }
-        }
-
-        // ── Team-cloud route dispatch ─────────────────────────────────────
-        if (teamCloud) {
-          const handled = await dispatchTeamRoute(req, res, {
-            db: active.db,
-            authContext,
-            pathname,
-            method,
-          });
-          if (handled) return;
-        }
 
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {
