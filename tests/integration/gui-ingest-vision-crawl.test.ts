@@ -19,7 +19,7 @@ vi.mock('../../src/ai/vision.js', async (orig) => {
   };
 });
 // Force parseFile to skip so the PDF test deterministically exercises the
-// Claude-PDF fallback regardless of whether markitdown is installed.
+// Claude-PDF fallback (as if the PDF had no extractable text layer).
 vi.mock('../../src/gui/ai/extract.js', async (orig) => {
   const actual = await orig();
   return { ...actual, parseFile: () => Promise.resolve({ text: '', skip: true }) };
@@ -110,10 +110,10 @@ describe('ingest: image vision + URL crawl', () => {
     expect(String(row.extracted_text)).toContain('red bicycle');
   });
 
-  it('reads a PDF via Claude when markitdown extracts nothing (image-only/scanned)', async () => {
+  it('reads a PDF via Claude when native extraction finds no text (image-only/scanned)', async () => {
     const server = await boot();
-    // Garbage PDF bytes → markitdown fails/returns nothing (whether or not it's
-    // installed) → parseFile skips → the Claude PDF fallback (mocked) reads it.
+    // Garbage PDF bytes → no extractable text layer → parseFile (mocked to skip)
+    // returns nothing → the Claude PDF fallback (mocked) reads it.
     const res = await fetch(`${server.url}/api/ingest/upload`, {
       method: 'POST',
       headers: { 'content-type': 'application/pdf', 'x-filename': 'INV-SA-003-WITH-LOGO.pdf' },
