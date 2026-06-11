@@ -492,6 +492,23 @@ export class Lattice {
 
   /** Async tail of init(). See {@link init} for the sync-validation phase. */
   private async _initAsync(options: InitOptions): Promise<void> {
+    if (options.introspectOnly) {
+      // Scoped cloud member: the owner already installed every table, migration,
+      // and RLS policy. This role can't DDL, so issue none — just introspect the
+      // declared tables to seed the column cache (skip any this member can't see)
+      // and finalize encryption. No migrations, FTS, changelog, or embeddings.
+      for (const tableName of this._schema.getTables().keys()) {
+        try {
+          const cols = await introspectColumnsAsyncOrSync(this._adapter, tableName);
+          this._columnCache.set(tableName, new Set(cols));
+        } catch {
+          // Table absent or not visible to this member — leave it uncached.
+        }
+      }
+      await this._finalizeEncryptionSetup();
+      this._initialized = true;
+      return;
+    }
     await this._schema.applySchema(this._adapter);
     if (options.migrations?.length) {
       // applyMigrationsAsync uses adapter.withClient when available

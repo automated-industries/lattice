@@ -621,6 +621,16 @@ export interface CountOptions {
 
 export interface InitOptions {
   migrations?: Migration[];
+  /**
+   * Open an already-provisioned database WITHOUT issuing any DDL — no
+   * `CREATE TABLE`, no migrations, no FTS/changelog/embeddings setup. Used to
+   * connect as a scoped, non-superuser cloud member: every table, migration,
+   * and policy was installed by the cloud owner, and the member's role has no
+   * CREATE/ALTER privilege, so applying the schema would fail. Declared tables
+   * are introspected (best-effort) to populate the column cache; tables the
+   * member can't see are skipped.
+   */
+  introspectOnly?: boolean;
 }
 
 export interface Migration {

@@ -117,7 +117,8 @@ describe('dbconfig endpoints', () => {
     expect(r.status).toBe(200);
     expect(r.body.type).toBe('sqlite');
     expect(r.body.dbFile).toBe('project.db');
-    expect(r.body.teamEnabled).toBe(false);
+    expect(r.body.isCloud).toBe(false);
+    expect(r.body.state).toBe('local');
     // The deprecated direct-connection GUI warning was removed in 2.2.2 — no
     // directCloud field is exposed anymore.
     expect(r.body.directCloud).toBeUndefined();

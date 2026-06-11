@@ -82,6 +82,33 @@ export async function provisionMemberRole(
   await runAsyncOrSync(db.adapter, `GRANT ${MEMBER_GROUP} TO "${role}"`);
 }
 
+// Sharing levels a row owner may set, mirroring lattice_set_row_visibility's CHECK.
+const VISIBILITY = new Set(['private', 'everyone']);
+
+/**
+ * Change a row's sharing through the owner-only `lattice_set_row_visibility`
+ * SECURITY DEFINER function. Only the row's owner (Postgres raises for anyone
+ * else, enforced inside the function) may call it. `pk` is the row's canonical
+ * primary-key string — a single-column key is the bare value; a composite key is
+ * its columns joined by TAB, matching Lattice's serialization.
+ */
+export async function setRowVisibility(
+  db: Lattice,
+  table: string,
+  pk: string,
+  visibility: string,
+): Promise<void> {
+  assertPg(db);
+  if (!VISIBILITY.has(visibility)) {
+    throw new Error(`lattice: invalid visibility "${visibility}" (expected private | everyone)`);
+  }
+  await runAsyncOrSync(db.adapter, `SELECT lattice_set_row_visibility(?, ?, ?)`, [
+    table,
+    pk,
+    visibility,
+  ]);
+}
+
 /**
  * Remove a member: clear its privileges and drop the role. NOTE: rows the member
  * owned remain in their tables but become unreachable (their `owner_role` no

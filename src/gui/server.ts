@@ -3069,13 +3069,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Project Config "Database" panel — read / save / connect / test.
         // The `swap` callback re-opens the active configPath so the
         // YAML rewrite written by `/save` takes effect.
-        if (!teamCloud && pathname.startsWith('/api/dbconfig')) {
+        if (
+          !teamCloud &&
+          (pathname.startsWith('/api/dbconfig') || pathname.startsWith('/api/cloud'))
+        ) {
           const handled = await dispatchDbConfigRoute(req, res, {
             db: active.db,
             configPath: active.configPath,
             pathname,
             method,
-            teamMembership: null,
             swap: async () => {
               const next = await openConfig(
                 active.configPath,
