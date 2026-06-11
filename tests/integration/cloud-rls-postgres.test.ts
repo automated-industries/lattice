@@ -120,6 +120,18 @@ describe.skipIf(!PG_URL)(
         .rows;
       expect(bobMemo).toEqual([{ a: 'x', b: '2' }]);
 
+      // 4b) Search inherits RLS via the base-table LIKE path (the fallback a
+      //     member hits with no access to the FTS index): bob's search for
+      //     alice's private text 'priv' surfaces nothing; alice finds her own row.
+      const bobSearch = (
+        await B.query<{ id: string }>(`SELECT id FROM notes WHERE CAST(body AS TEXT) LIKE '%priv%'`)
+      ).rows.map((r) => r.id);
+      expect(bobSearch).toEqual([]);
+      const aliceSearch = (
+        await A.query<{ id: string }>(`SELECT id FROM notes WHERE CAST(body AS TEXT) LIKE '%priv%'`)
+      ).rows.map((r) => r.id);
+      expect(aliceSearch).toEqual(['n1']);
+
       // Alice sees all of her own.
       const aliceNotes = (
         await A.query<{ id: string }>(`SELECT id FROM notes ORDER BY id`)
