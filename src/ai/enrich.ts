@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { LlmClient } from './llm-client.js';
-import { DEFAULT_MODEL } from './llm-client.js';
+import { CHEAPEST_MODEL } from './llm-client.js';
 
 /**
  * The enrich pass: when a knowledge object (e.g. a `notes` row the organizer
@@ -112,7 +112,9 @@ export async function enrichKnowledge(db: Lattice, opts: EnrichOptions): Promise
     let newBody = '';
     try {
       const turn = await client.runTurn({
-        model: DEFAULT_MODEL,
+        // Enrichment is a high-volume background pass the customer pays tokens for
+        // → pin the cheapest capable model regardless of the global default.
+        model: CHEAPEST_MODEL,
         system: ENRICH_SYSTEM,
         messages: [{ role: 'user', content: userBlock }],
         tools: [],

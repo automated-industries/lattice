@@ -291,6 +291,17 @@ export {
   tableNeedsAudienceView,
   isRowAudience,
 } from './cloud/audience.js';
+export { foldEntity, observationVisible, observationsFromChange } from './cloud/fold.js';
+export type { Observation, Viewer } from './cloud/fold.js';
+export {
+  InMemorySourceKeyStore,
+  SourceShreddedError,
+  sealUnderSource,
+  openUnderSource,
+  shredSource,
+} from './cloud/shred.js';
+export type { SourceKeyStore } from './cloud/shred.js';
+export { FoldCache } from './cloud/fold-cache.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing
