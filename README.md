@@ -2137,8 +2137,9 @@ Optional extras, each enabled by its own key/binary:
 - **Voice** — set an OpenAI (Whisper) or ElevenLabs key to dictate into the composer.
 - **File ingest** — reference a local file or paste text; it becomes a row in the
   native `files` entity with extracted text + (with a Claude key) an
-  LLM-written description and links to related records. PDFs/office docs use the
-  optional [`markitdown`](https://github.com/microsoft/markitdown) CLI when installed.
+  LLM-written description and links to related records. Documents (PDF, Word,
+  PowerPoint, Excel, OpenDocument, EPUB, RTF) are parsed natively in-process —
+  no external CLI.
 
 Chat threads, files, and secrets are all stored as native Lattice entities.
 
@@ -2295,8 +2296,9 @@ the library API is unchanged and fully backwards-compatible.
   entity. A subscription **Connect** link (PKCE) appears when the `ANTHROPIC_OAUTH_*`
   values are set (see [`.env.example`](.env.example)).
 - **Drop files / paste text / images / URLs.** Sources become native `files` rows
-  (referenced, not copied) and are extracted — text via the optional `markitdown`
-  CLI, **images via Claude vision**, a pasted **URL crawled** for readable text —
+  (referenced, not copied) and are extracted — documents (PDF / Office /
+  OpenDocument / EPUB / RTF) parsed **natively in-process**, **images via Claude
+  vision**, a pasted **URL crawled** for readable text —
   then summarized with **Claude Haiku** and classified against your records, and
   **added, enriched, and linked** automatically, **auto-creating the junction table
   when none exists** (and a new object when a source fits nothing). All audited and
