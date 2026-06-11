@@ -48,6 +48,8 @@ import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../cloud/url.js';
+import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+import { discoverCloudTables } from '../cloud/discover.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
 import {
@@ -730,7 +732,43 @@ export async function openConfig(
       if (!existingContexts.has(table)) db.defineEntityContext(table, definition);
     }
   }
-  await db.init();
+
+  // Member-open vs owner-open for a cloud (Postgres). A scoped member connects
+  // as a non-superuser role with no CREATE/ALTER privilege, so a normal init()
+  // (which applies the schema) would fail against an already-provisioned cloud.
+  // Peek with a throwaway introspect-only connection: if the target is a cloud
+  // (RLS installed) AND this role can't create roles (i.e. it's a member, not the
+  // owner/DBA), open `introspectOnly` (no DDL) and register the physical tables
+  // the role can see — the member's local config may declare none. The owner /
+  // DBA path keeps the full init (idempotent CREATE IF NOT EXISTS on an existing
+  // cloud). SQLite and fresh Postgres fall through to the normal init.
+  let memberOpen = false;
+  if (db.getDialect() === 'postgres') {
+    const peek = new Lattice({ config: configPath }, { encryptionKey });
+    try {
+      await peek.init({ introspectOnly: true });
+      if (await cloudRlsInstalled(peek)) {
+        memberOpen = !(await canManageRoles(peek));
+        if (memberOpen) {
+          const declared = new Set(db.getRegisteredTableNames());
+          for (const t of await discoverCloudTables(peek)) {
+            if (declared.has(t.name)) continue;
+            db.define(t.name, {
+              columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
+              ...(t.pk.length > 0 ? { primaryKey: t.pk.length === 1 ? t.pk[0] : t.pk } : {}),
+              render: () => '',
+              outputFile: `${t.name}/.lattice/${t.name}.md`,
+            });
+          }
+        }
+      }
+    } catch {
+      // Unreachable, not a cloud, or a fresh DB — use the normal init() below.
+    } finally {
+      peek.close();
+    }
+  }
+  await db.init(memberOpen ? { introspectOnly: true } : {});
 
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
   // active Lattice has a current view of who the operator is. Idempotent:

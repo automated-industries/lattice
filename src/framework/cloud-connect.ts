@@ -46,6 +46,25 @@ export async function cloudRlsInstalled(probe: Lattice): Promise<boolean> {
 }
 
 /**
+ * Whether the connected role may create other roles — the capability that
+ * separates a cloud OWNER (ran the migration, owns the rows, can invite members)
+ * from a scoped MEMBER (provisioned `NOCREATEROLE`). Read from
+ * `pg_roles.rolcreaterole` for the live role. SQLite or any error → false.
+ */
+export async function canManageRoles(db: Lattice): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return false;
+  try {
+    const row = (await getAsyncOrSync(
+      db.adapter,
+      `SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`,
+    )) as { rolcreaterole?: boolean } | undefined;
+    return !!row?.rolcreaterole;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Probe a candidate Lattice URL for reachability + cloud status.
  *
  * Never throws. Errors are returned in the result's `error` field with

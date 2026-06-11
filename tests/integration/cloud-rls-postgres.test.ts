@@ -16,6 +16,7 @@ import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { installCloudRls, enableRlsForTable, backfillOwnership } from '../../src/cloud/rls.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
+import { discoverCloudTables } from '../../src/cloud/discover.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
 const SEP = '\t'; // canonical composite-pk separator (chr(9)), matches Lattice._PK_SEP
@@ -220,10 +221,81 @@ describe.skipIf(!PG_URL)(
       const owner = new pg.Pool({ connectionString: url, max: 1 });
       pools.push(owner);
       await owner.query(`SELECT lattice_set_row_visibility('docs','d1','everyone')`);
-      const seen = (
-        await C.query<{ id: string }>(`SELECT id FROM docs ORDER BY id`)
-      ).rows.map((r) => r.id);
+      const seen = (await C.query<{ id: string }>(`SELECT id FROM docs ORDER BY id`)).rows.map(
+        (r) => r.id,
+      );
       expect(seen).toEqual(['d1']);
+    });
+
+    it('member-open: a scoped member discovers its tables introspectOnly + sees only shared rows', async () => {
+      const tag = randomBytes(4).toString('hex');
+      const schema = `mo_${tag}`;
+      const dave = `mo_d_${tag}`;
+      schemas.push(schema);
+      roles.push(dave);
+
+      const admin = new pg.Pool({ connectionString: PG_URL, max: 1 });
+      pools.push(admin);
+      await admin.query(`CREATE SCHEMA "${schema}"`);
+      const url = schemaUrl(schema);
+
+      // Owner builds the cloud: a 'docs' table with two owned rows, RLS forced.
+      const owner = new Lattice(url);
+      owner.define('docs', {
+        columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT' },
+        render: () => '',
+        outputFile: 'docs.md',
+      });
+      await owner.init();
+      await owner.upsert('docs', { id: 'd1', body: 'shared one' });
+      await owner.upsert('docs', { id: 'd2', body: 'secret two' });
+      await installCloudRls(owner);
+      await backfillOwnership(owner, 'docs', owner.getPrimaryKey('docs'));
+      await enableRlsForTable(owner, 'docs', owner.getPrimaryKey('docs'));
+      const davePw = generateMemberPassword();
+      await provisionMemberRole(owner, dave, davePw);
+      owner.close();
+
+      // Owner shares d1 with everyone (as the owning role).
+      const ownerPool = new pg.Pool({ connectionString: url, max: 1 });
+      pools.push(ownerPool);
+      await ownerPool.query(`SELECT lattice_set_row_visibility('docs','d1','everyone')`);
+
+      // Member connection string: its own scoped role embedded in the URL.
+      const mUrl = (() => {
+        const u = new URL(PG_URL!);
+        u.username = dave;
+        u.password = davePw;
+        u.searchParams.set('options', `-c search_path=${schema}`);
+        return u.toString();
+      })();
+
+      // Discovery peek — introspectOnly, issues NO DDL (the member can't).
+      const peek = new Lattice(mUrl);
+      await peek.init({ introspectOnly: true });
+      const discovered = await discoverCloudTables(peek);
+      peek.close();
+      // The member sees its granted user table — never the RLS bookkeeping.
+      expect(discovered.map((d) => d.name)).toContain('docs');
+      expect(discovered.some((d) => d.name.startsWith('_'))).toBe(false);
+      expect(discovered.find((d) => d.name === 'docs')?.pk).toEqual(['id']);
+
+      // Member opens introspectOnly with the discovered tables registered, exactly
+      // as openConfig does, and queries through Lattice — RLS filters the result.
+      const member = new Lattice(mUrl);
+      for (const t of discovered) {
+        member.define(t.name, {
+          columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
+          ...(t.pk.length > 0 ? { primaryKey: t.pk.length === 1 ? t.pk[0] : t.pk } : {}),
+          render: () => '',
+          outputFile: `${t.name}.md`,
+        });
+      }
+      await member.init({ introspectOnly: true });
+      const rows = (await member.query('docs', {})) as { id: string }[];
+      member.close();
+      // Only the shared row — the owner's private d2 is invisible at the database.
+      expect(rows.map((r) => r.id).sort()).toEqual(['d1']);
     });
   },
 );

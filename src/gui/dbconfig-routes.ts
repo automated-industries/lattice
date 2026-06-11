@@ -3,7 +3,6 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../lattice.js';
-import { getAsyncOrSync } from '../db/adapter.js';
 import { sendJson, readJson, tryHandler } from './http.js';
 import {
   getDbCredential,
@@ -11,7 +10,7 @@ import {
   listDbCredentials,
   getOrCreateMasterKey,
 } from '../framework/user-config.js';
-import { probeCloud, cloudRlsInstalled } from '../framework/cloud-connect.js';
+import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { installCloudRls, enableRlsForTable, backfillOwnership } from '../cloud/rls.js';
 import {
   provisionMemberRole,
@@ -141,25 +140,6 @@ interface DbInfo {
   user?: string;
   /** True iff the active DB is an established cloud (Postgres with RLS installed). */
   isCloud: boolean;
-}
-
-/**
- * Whether the connected role may create other roles — the capability that
- * separates a cloud OWNER (can invite members, ran the migration, owns rows)
- * from a scoped MEMBER. Read from `pg_roles.rolcreaterole` for the live role.
- * Any error (or SQLite) → false.
- */
-async function canManageRoles(db: Lattice): Promise<boolean> {
-  if (db.getDialect() !== 'postgres') return false;
-  try {
-    const row = (await getAsyncOrSync(
-      db.adapter,
-      `SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`,
-    )) as { rolcreaterole?: boolean } | undefined;
-    return !!row?.rolcreaterole;
-  } catch {
-    return false;
-  }
 }
 
 /** Derive the cloud state from the live DB: local (sqlite) vs owner/member. */
