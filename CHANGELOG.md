@@ -61,6 +61,30 @@ NOCREATEROLE` LOGIN role in the `lattice_members` group; `generateMemberPassword
 - **Offline editing is preserved** as the client-side local edit queue, decoupled
   from any server.
 
+**Per-column audiences & per-viewer values (experimental, off by default).** Two
+primitives take RLS from whole-row to the cell and to per-viewer values; a column
+with no `audience` behaves exactly as before:
+
+- **Per-column masking** — declare `audience:` on a column and Lattice generates a
+  cell-masking view (`<table>_v`): the column compiles to a `CASE` mask over
+  `session_user`-keyed `SECURITY DEFINER` helpers (`lattice_has_role` /
+  `lattice_is_subject` / `lattice_source_visible`), members read the view (base
+  `SELECT` revoked), and a masked cell reads `NULL`. Owner-managed app roles
+  (`__lattice_member_roles` + `lattice_assign_role`); members can't self-promote.
+  (`enableAudienceView`, `audiencePredicate`.)
+- **Per-viewer values** — `foldEntity()` overlays the observations a viewer may see
+  onto the ground-truth projection (latest-visible-per-attribute wins). A value
+  derived from a source a member can't reach never appears for them, and un-sharing
+  the source reverts it with no residue. Additive + deterministic; cache with
+  `FoldCache`.
+- **Crypto-shred** — `sealUnderSource` / `shredSource` cryptographically erase a
+  sensitive source's derived values (destroy the per-source key → unrecoverable,
+  backups included).
+- The change-log is reconciled to one table (`__lattice_changelog`) and gains
+  provenance columns (`source_ref`, `change_kind`, …); an AI enrichment now stamps
+  the source-set it was derived from instead of discarding it. The enrichment pass
+  pins the cheapest model. See `docs/cloud.md`.
+
 **Migration:** a direct `postgres://` connection string is no longer a Lattice
 cloud connection — each user needs their own scoped role. Stand the cloud up by
 migrating a local Lattice into a fresh Postgres (installs RLS + makes you owner),
