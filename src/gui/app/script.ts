@@ -4057,7 +4057,6 @@ export const appJs = `
       // enters per-DB things (cloud URL + DB name) in this modal.
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
-          '<p style="font-size:12px;color:#ef4444;margin:0 0 8px">Direct postgres:// connections are deprecated and do not enforce row-level permissions — use a hosted Lattice Teams URL (https://…) instead.</p>' +
           '<div class="field"><label>Cloud URL</label>' +
             '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
           '</div>' +
@@ -4085,7 +4084,6 @@ export const appJs = `
     function showJoinTeamModal(kind) {
       fetchJson('/api/userconfig/identity').then(function (id) {
         var bodyHtml =
-          '<p style="font-size:12px;color:#ef4444;margin:0 0 8px">Direct postgres:// connections are deprecated and do not enforce row-level permissions — use a hosted Lattice Teams URL (https://…) instead.</p>' +
           '<div class="field"><label>Cloud URL</label>' +
             '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
           '</div>' +
@@ -5007,10 +5005,6 @@ export const appJs = `
         }, Promise.resolve());
       });
     }
-
-    // (Removed in 1.16.3) The standalone upgrade-to-cloud-sharing modal is
-    // gone; cloud workspaces initialize their member/share machinery
-    // automatically (see TeamsClient.ensureCloudWorkspaceIdentity).
 
     function renderMembersList(members, myUserId, isCreator, invitations) {
       var rows = members.map(function (m) {

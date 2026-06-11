@@ -129,13 +129,6 @@ export interface DispatchCtx {
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
   /**
-   * Team-cloud context for row-level permission enforcement. When set, the
-   * assistant's reads are visibility-filtered and its writes carry the team so
-   * the mutation layer gates them. Null/undefined outside team mode — without
-   * this, the assistant would bypass row-level security entirely.
-   */
-  team?: { teamId: string; myUserId: string } | null;
-  /**
    * Create a new entity (table) with inferred columns — audited + reversible,
    * no DB reopen (defineLate). Supplied by the server when schema creation is
    * allowed; absent → `create_entity` reports it's unavailable. Returns the
@@ -194,9 +187,6 @@ export async function executeFunction(
     feed: ctx.feed,
     softDeletable: ctx.softDeletable,
     source: 'ai',
-    // Thread the team through so create/update/delete enforce the row ACL for
-    // the assistant exactly as they do for the HTTP API.
-    team: ctx.team ?? null,
   };
 
   try {

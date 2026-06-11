@@ -9,8 +9,6 @@ import {
   saveDbCredential,
 } from '../../src/framework/user-config.js';
 import { resolveDbPath } from '../../src/config/parser.js';
-import { Lattice } from '../../src/lattice.js';
-import { LOCAL_INTERNAL_TABLE_DEFS } from '../../src/teams/internal-tables.js';
 
 /**
  * Project Config "Database" panel endpoints.
@@ -122,42 +120,6 @@ describe('dbconfig endpoints', () => {
     expect(r.body.teamEnabled).toBe(false);
     // The deprecated direct-connection GUI warning was removed in 2.2.2 — no
     // directCloud field is exposed anymore.
-    expect(r.body.directCloud).toBeUndefined();
-  });
-
-  it('a grandfathered direct postgres:// connection still boots (no GUI warning, no directCloud field)', async () => {
-    // Existing direct connections keep working silently after 2.2.2 (the
-    // deprecation is documented as a breaking change; only NEW direct
-    // connections are rejected, at the register boundary). Seed one and
-    // confirm the server comes up and /api/dbconfig carries no directCloud.
-    const root = tempDir();
-    const { configPath, outputDir } = writeSqliteConfig(root, 'project');
-    const seed = new Lattice(join(root, 'data', 'project.db'));
-    await seed.init();
-    for (const [name, def] of Object.entries(LOCAL_INTERNAL_TABLE_DEFS)) {
-      await seed.defineLate(name, def);
-    }
-    await seed.upsert('__lattice_team_connections', {
-      team_id: 'team-direct',
-      team_name: 'legacy',
-      cloud_url: 'postgres://cloud.example.test:5432/team',
-      my_user_id: 'user-1',
-      api_token_encrypted: 'tok',
-      joined_at: new Date().toISOString(),
-    });
-    seed.close();
-
-    const handle = await startGuiServer({
-      configPath,
-      outputDir,
-      port: 0,
-      host: '127.0.0.1',
-      teamCloud: false,
-      openBrowser: false,
-    });
-    servers.push(handle);
-    const r = await api(handle.url, '/api/dbconfig');
-    expect(r.status).toBe(200);
     expect(r.body.directCloud).toBeUndefined();
   });
 

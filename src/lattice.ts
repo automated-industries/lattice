@@ -355,8 +355,8 @@ export class Lattice {
    * Idempotent: a second call for an already-registered table is a no-op
    * (the underlying CREATE TABLE IF NOT EXISTS is already idempotent at
    * the DB level; this skip avoids the SchemaManager.define throw on
-   * re-registration). Use this property for clients (e.g. TeamsClient)
-   * that may bootstrap their internal tables on every session start.
+   * re-registration). Useful for callers that may bootstrap their
+   * internal tables on every session start.
    *
    * Throws if called before `init()` (use `define()` instead).
    */
@@ -1579,8 +1579,7 @@ export class Lattice {
    *
    * The ACL predicate joins on the table's primary-key column cast to TEXT
    * (ACL pks are stored as TEXT), so it is correct regardless of the user
-   * table's pk type and works on both SQLite and Postgres. The teams layer's
-   * `listVisibleRows` (src/teams/row-access.ts) is the intended caller.
+   * table's pk type and works on both SQLite and Postgres.
    */
   async queryVisible(
     table: string,

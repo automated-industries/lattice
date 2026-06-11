@@ -250,16 +250,6 @@ export type {
 export { referenceLocalFile, referenceUrl } from './framework/reference-store.js';
 export type { ReferenceMetadata } from './framework/reference-store.js';
 
-export { TeamsClient, TeamsHttpError } from './teams/client.js';
-export type {
-  TeamSummary,
-  RegisterResponse,
-  RedeemResponse,
-  MemberSummary,
-  InviteResponse,
-  TeamConnection,
-} from './teams/client.js';
-
 // v1.13 additions — local-to-cloud migration + cloud-connect probe.
 export {
   migrateLatticeData,
@@ -274,9 +264,7 @@ export type {
 export { probeCloud } from './framework/cloud-connect.js';
 export type { CloudProbeResult } from './framework/cloud-connect.js';
 
-// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerDirectViaPostgres stays exported for the grandfathered direct-connection path until 3.0
-export { registerDirectViaPostgres, isPostgresUrl } from './teams/register-direct.js';
-export type { DirectRegisterResult } from './teams/register-direct.js';
+export { isPostgresUrl } from './cloud/url.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing

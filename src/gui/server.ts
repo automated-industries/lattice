@@ -46,13 +46,8 @@ import {
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
-import {
-  CLOUD_INTERNAL_TABLE_DEFS,
-  installCloudInternalTriggers,
-  installRowPermsSchema,
-} from '../teams/internal-tables.js';
 import { RealtimeBroker } from './realtime.js';
-import { isPostgresUrl } from '../teams/register-direct.js';
+import { isPostgresUrl } from '../cloud/url.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
 import {
@@ -84,7 +79,6 @@ import {
   aiDeleteEntity,
   type DeleteResolution,
 } from './schema-ops.js';
-import { TeamsClient } from '../teams/client.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
@@ -579,14 +573,6 @@ export interface ActiveDb {
   manifest: LatticeManifest | null;
   softDeletable: Set<string>;
   /**
-   * Cached `TeamsClient` so sync write-hooks registered via
-   * `attachWriteHooks` persist across requests. Reuses the same Lattice
-   * instance the GUI's CRUD endpoints write through, so a row update
-   * via the GUI dashboard fires the same outbox-capture hook as a
-   * write from outside.
-   */
-  teamsClient: TeamsClient;
-  /**
    * Active LISTEN/NOTIFY broker when the underlying Lattice is backed
    * by Postgres. Null for SQLite (no realtime). Owned by the active
    * DB; replaced wholesale on switch.
@@ -798,109 +784,18 @@ export async function openConfig(
     const cols = db.getRegisteredColumns(name);
     if (cols && 'deleted_at' in cols) softDeletable.add(name);
   }
-  const teamsClient = new TeamsClient(db);
-  // Re-arm sync write-hooks for any tables that already have local
-  // links (i.e. the user is part of teams + linked rows in a prior
-  // session). Idempotent — safe to call on every openConfig.
-  await teamsClient.attachWriteHooks();
-
-  // Auto-discover shared-table schemas for every team this lattice has
-  // joined. Without this, a fresh `lattice gui` against a joined-team
-  // cloud config opens to "No entities yet. Define entities in your
-  // lattice.config.yml or register them via db.define()..." because
-  // the YAML `entities: {}` block carries no schema and the cloud's
-  // `__lattice_shared_objects` rows haven't been replayed into the
-  // local Lattice's in-memory schema. Each `applyCloudSchemaLocally`
-  // calls `defineLate` under the hood — idempotent on re-open.
-  //
-  // Failures here are isolated per-team: a single dead cloud must not
-  // block the GUI from booting. Discovery errors are logged but
-  // swallowed; the user sees a less-populated dropdown rather than
-  // a 500.
-  try {
-    const connections = await teamsClient.listConnections();
-    for (const conn of connections) {
-      try {
-        const result = await teamsClient.syncSharedSchemas(conn);
-        for (const obj of result.applied) {
-          validTables.add(obj.table);
-        }
-        if (result.conflicts.length > 0) {
-          console.warn(
-            `[openConfig] schema conflicts on team ${conn.team_name}:`,
-            result.conflicts.map((c) => `${c.table}: ${c.reason}`).join('; '),
-          );
-        }
-      } catch (e) {
-        console.warn(
-          `[openConfig] could not auto-sync shared schemas for team ${conn.team_name}:`,
-          (e as Error).message,
-        );
-      }
-    }
-  } catch (e) {
-    console.warn('[openConfig] could not enumerate team connections:', (e as Error).message);
-  }
-
-  // The team schema auto-sync above defineLate's shared tables onto the live
-  // Lattice. `validTables` + `softDeletable` were built BEFORE that ran (and a
-  // shared table that already physically exists is registered without a schema
-  // "change"), so re-capture the live registered set now. Without this, a member
-  // who opens a cloud workspace never sees the tables the owner shared.
+  // The cloud's shared tables are defined by the config `entities:` block and
+  // registered on the live Lattice at init. `validTables` + `softDeletable`
+  // were built from the manifest above; re-capture the live registered set now
+  // so every physically-present, RLS-governed table is queryable here. Row
+  // visibility is enforced by Postgres RLS at the database — the app layer no
+  // longer filters the visible set.
   for (const name of db.getRegisteredTableNames()) {
     if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
     validTables.add(name);
     if (!softDeletable.has(name)) {
       const sharedCols = db.getRegisteredColumns(name);
       if (sharedCols && 'deleted_at' in sharedCols) softDeletable.add(name);
-    }
-  }
-
-  // ── Team-cloud table registration ─────────────────────────────────
-  // When the active DB is a team-enabled Postgres cloud, register the
-  // internal tables on this handle (so direct team ops like kick know
-  // composite PKs). Row visibility is now enforced by Postgres RLS at the
-  // database, so every physically-present table is queryable here and the
-  // app layer no longer filters the visible set. Opening a not-yet-
-  // initialized cloud still auto-initializes the workspace identity (the
-  // opener becomes owner) — that machinery is not ACL.
-  if (db.getDialect() === 'postgres') {
-    let teamEnabled = false;
-    try {
-      teamEnabled = (await db.get('__lattice_team_identity', 'singleton')) != null;
-    } catch {
-      teamEnabled = false;
-    }
-    if (!teamEnabled) {
-      // Opening a not-yet-initialized cloud: set up the member/share machinery
-      // (the opener becomes owner). Best-effort + race-safe (no-op when already a
-      // workspace). Gated on a labeled db: line + the operator having an identity
-      // email.
-      try {
-        const rawDb = parseDocument(readFileSync(configPath, 'utf8')).get('db');
-        const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
-        const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(dbLine);
-        const label = labelMatch?.[1];
-        const identity = readIdentity();
-        if (label && identity.email) {
-          await teamsClient.ensureCloudWorkspaceIdentity({
-            label,
-            cloudUrl: parsed.dbPath,
-            workspaceName: label,
-            email: identity.email,
-            displayName: identity.display_name,
-          });
-          teamEnabled = (await db.get('__lattice_team_identity', 'singleton')) != null;
-        }
-      } catch (e) {
-        console.warn(
-          '[openConfig] could not auto-initialize cloud workspace:',
-          (e as Error).message,
-        );
-      }
-    }
-    if (teamEnabled) {
-      await registerTeamCloudTables(db);
     }
   }
 
@@ -947,7 +842,6 @@ export async function openConfig(
     configPath,
     outputDir,
     db,
-    teamsClient,
     validTables,
     teamCloud,
     junctionTables,
@@ -1128,14 +1022,6 @@ async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<
   const next = await openConfig(active.configPath, active.outputDir, autoRender, active.teamCloud);
   next.feed = feed;
   return next;
-}
-
-async function registerTeamCloudTables(db: Lattice): Promise<void> {
-  for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
-    await db.defineLate(name, def);
-  }
-  await installCloudInternalTriggers(db);
-  await installRowPermsSchema(db);
 }
 
 /**
@@ -1342,9 +1228,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     } else {
       currentWorkspaceId = getActiveWorkspace(latticeRoot)?.id ?? null;
     }
-  }
-  if (teamCloud) {
-    await registerTeamCloudTables(active.db);
   }
 
   const server = createServer((req, res) => {
@@ -2735,22 +2618,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (method === 'GET' && pathname === '/api/databases') {
           const parsedActive = parseConfigFile(active.configPath);
-          // For cloud DBs, the friendly name lives on
-          // __lattice_team_identity.team_name. Fall back to the YAML's
-          // optional name: key (used by local DBs), then the basename.
-          let activeLabel: string | undefined;
-          try {
-            const row = (await active.db.get('__lattice_team_identity', 'singleton')) as {
-              team_name?: string;
-            } | null;
-            if (row && typeof row.team_name === 'string' && row.team_name.trim()) {
-              activeLabel = row.team_name.trim();
-            }
-          } catch {
-            // Table absent or unreachable — leave undefined.
-          }
-          const friendlyLabel =
-            activeLabel ?? friendlyConfigName(parsedActive.name, active.configPath);
+          // Friendly name comes from the YAML's optional `name:` key, falling
+          // back to the config basename.
+          const friendlyLabel = friendlyConfigName(parsedActive.name, active.configPath);
           const kind: 'local' | 'cloud' = active.realtime ? 'cloud' : 'local';
           sendJson(res, {
             current: {
@@ -3024,18 +2894,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
-          const clientTsHeader = req.headers['x-lattice-client-ts'];
-          const editIdHeader = req.headers['x-lattice-edit-id'];
-          const editId = typeof editIdHeader === 'string' ? editIdHeader : undefined;
           const mctx: MutationCtx = {
             db: active.db,
             feed: active.feed,
             softDeletable: active.softDeletable,
             source: 'gui',
             sessionId,
-            team: null,
-            clientTs: typeof clientTsHeader === 'string' ? clientTsHeader : undefined,
-            editId,
           };
 
           if (id === null) {
@@ -3155,7 +3019,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             validTables: active.validTables,
             junctionTables: active.junctionTables,
             softDeletable: active.softDeletable,
-            team: null,
             // The assistant can create tables + relationships on request — same
             // audited, no-reopen primitives the Context Constructor uses.
             createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
@@ -3237,7 +3100,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const e = err as Error & { code?: string };
         // Row-level permission denials are expected control flow, not server
         // faults: map them to 404 (hide existence) / 403 (owner-only) by the
-        // stable `code` from src/teams/row-access.ts, rather than a 500.
+        // stable `code`, rather than a 500.
         if (e.code === 'row_access_denied') {
           sendJson(res, { error: 'Row not found' }, 404);
           return;

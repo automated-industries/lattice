@@ -17,7 +17,6 @@ import {
   migrateLatticeData,
   openTargetLatticeForMigration,
 } from '../framework/cloud-migration.js';
-import { TeamsClient } from '../teams/client.js';
 import { parseConfigFile } from '../config/parser.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
 import {
@@ -525,25 +524,7 @@ export async function dispatchDbConfigRoute(
         const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;
         const backupPath = archiveLocalSqlite(sourceDbPath);
         saveDbCredential(parsed.label, url);
-        // 1.16.3: a cloud workspace IS a cloud DB with members — there is no
-        // separate "team" to upgrade to. Auto-initialize the member/share
-        // machinery now so sharing works immediately; the migrator becomes the
-        // owner. Best-effort: a failure leaves a usable plain cloud DB (the
-        // operator can set their email and reopen to initialize it).
-        try {
-          const identity = readIdentity();
-          if (identity.email) {
-            await new TeamsClient(ctx.db).ensureCloudWorkspaceIdentity({
-              label: parsed.label,
-              cloudUrl: url,
-              workspaceName: parsed.label,
-              email: identity.email,
-              displayName: identity.display_name,
-            });
-          }
-        } catch {
-          // leave as a plain cloud DB; lazy-init on next open will retry
-        }
+        // TODO(v3-rls): installCloudRls(target) + enableRlsForTable per table — owner-side RLS setup goes here
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
         await ctx.swap();
@@ -586,42 +567,27 @@ export async function dispatchDbConfigRoute(
         user: parsed.user,
         password: parsed.password,
       });
-      const identity = readIdentity();
-      const client = new TeamsClient(ctx.db);
       try {
-        const result = await client.connectToExistingCloud({
-          label: parsed.label,
-          cloudUrl: url,
-          ...(inviteToken !== undefined ? { invite_token: inviteToken } : {}),
-          ...(identity.email ? { email: identity.email } : {}),
-          ...(identity.display_name ? { name: identity.display_name } : {}),
-        });
-        // 1.16.3: connecting to a raw cloud DB that isn't a workspace yet
-        // initializes it (the connector becomes owner) — no "upgrade" step.
-        // Joining an existing workspace via invite is handled inside
-        // connectToExistingCloud (teamEnabled branch) and is left untouched.
-        if (!result.probe.teamEnabled && identity.email) {
-          try {
-            await client.ensureCloudWorkspaceIdentity({
-              label: parsed.label,
-              cloudUrl: url,
-              workspaceName: parsed.label,
-              email: identity.email,
-              displayName: identity.display_name,
-            });
-          } catch {
-            // leave as a plain cloud DB; lazy-init on next open will retry
-          }
+        const probe = await probeCloud(url);
+        if (!probe.reachable) {
+          sendJson(res, { ok: false, error: probe.error ?? 'Cloud DB unreachable' }, 502);
+          return;
         }
+        // TODO(v3-rls): member-join via scoped Postgres LOGIN role + RLS — when
+        // `inviteToken` is present, redeem it against the cloud to provision the
+        // member's role/grants; otherwise installCloudRls(target) +
+        // enableRlsForTable per table for the owner-side setup. Owner vs. member
+        // RLS provisioning goes here.
+        void inviteToken;
+        saveDbCredential(parsed.label, url);
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
         await ctx.swap();
         sendJson(res, {
           ok: true,
           label: parsed.label,
-          teamEnabled: result.probe.teamEnabled,
-          ...(result.probe.teamName !== undefined ? { teamName: result.probe.teamName } : {}),
-          ...(result.joinedAsMember !== undefined ? { joinedAsMember: result.joinedAsMember } : {}),
+          teamEnabled: probe.teamEnabled,
+          ...(probe.teamName !== undefined ? { teamName: probe.teamName } : {}),
         });
       } catch (e) {
         const status = (e as { status?: number }).status ?? 500;
@@ -705,11 +671,6 @@ export async function dispatchDbConfigRoute(
     });
     return true;
   }
-
-  // (Removed in 1.16.3) /api/dbconfig/upgrade-to-team — the "team" concept was
-  // deprecated; a cloud workspace's member/share machinery is now initialized
-  // automatically at migrate-to-cloud / connect-existing / open time via
-  // TeamsClient.ensureCloudWorkspaceIdentity. There is no explicit upgrade step.
 
   return false;
 }
