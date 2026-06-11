@@ -180,6 +180,104 @@ describe('ingest routes', () => {
     expect(row.title).toBe('Quarterly-Review.md');
   });
 
+  it('drag-drop ingests into a files table with a NOT NULL path (auto-fills from the filename)', async () => {
+    // Reproduces "Ingest failed: NOT NULL constraint failed: files.path": a
+    // cloud/customized `files` table declares `path` NOT NULL, but a browser drop
+    // has no OS path to send. Ingest must fill `path` from the filename so
+    // drag-drop never breaks, instead of 500-ing.
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ingest-path-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const seed = new Lattice(join(root, 'data', 'test.db'));
+    await seed.init();
+    await seed.adapter.runAsync(
+      'CREATE TABLE files (id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT, title TEXT, slug TEXT, original_name TEXT, mime TEXT, size_bytes INTEGER, extracted_text TEXT, description TEXT, extraction_status TEXT, deleted_at TEXT)',
+    );
+    seed.close();
+
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  notes:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      body: { type: text }',
+        '    outputFile: notes.md',
+      ].join('\n'),
+    );
+    const server = await startGuiServer({
+      configPath,
+      outputDir: join(root, 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    const res = await fetch(`${server.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/markdown', 'x-filename': 'Quarterly-Review.md' },
+      body: '# Quarterly\nrevenue and headcount',
+    });
+    expect(res.status).toBe(201); // pre-fix: 500 from the files.path NOT NULL violation
+    const { id } = (await res.json()) as { id: string };
+    const row = await getFile(server.url, id);
+    expect(row.path).toBe('Quarterly-Review.md'); // filled from the filename
+  });
+
+  it('records the real OS path on upload when a client supplies x-filepath', async () => {
+    // A non-browser/desktop client that knows the dropped file's path sends it;
+    // the upload route then records the real path instead of the filename fallback.
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ingest-xpath-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const seed = new Lattice(join(root, 'data', 'test.db'));
+    await seed.init();
+    await seed.adapter.runAsync(
+      'CREATE TABLE files (id TEXT PRIMARY KEY, path TEXT NOT NULL, original_name TEXT, mime TEXT, size_bytes INTEGER, extracted_text TEXT, description TEXT, extraction_status TEXT, deleted_at TEXT)',
+    );
+    seed.close();
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  notes:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      body: { type: text }',
+        '    outputFile: notes.md',
+      ].join('\n'),
+    );
+    const server = await startGuiServer({
+      configPath,
+      outputDir: join(root, 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    const realPath = '/tmp/dropped/report.md';
+    const res = await fetch(`${server.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'text/markdown',
+        'x-filename': 'report.md',
+        'x-filepath': encodeURIComponent(realPath),
+      },
+      body: '# Report\nbody',
+    });
+    expect(res.status).toBe(201);
+    const { id } = (await res.json()) as { id: string };
+    const row = await getFile(server.url, id);
+    expect(row.path).toBe(realPath);
+  });
+
   it('ingests a local text file by path and extracts its content', async () => {
     const { root, server: sp } = boot();
     const server = await sp;
@@ -226,7 +324,7 @@ describe('ingest routes', () => {
     expect(String(row.description)).toMatch(/binary file/i);
   });
 
-  it('ingests raw uploaded bytes, extracting text and leaving path null', async () => {
+  it('ingests raw uploaded bytes, extracting text and leaving path null on the native schema', async () => {
     const { server: sp } = boot();
     const server = await sp;
     servers.push(server);
@@ -244,7 +342,11 @@ describe('ingest routes', () => {
     expect(extraction_status).toBe('extracted');
     const row = await getFile(server.url, id);
     expect(row.original_name).toBe('dropped.md');
-    expect(row.path == null).toBe(true); // bytes discarded — referenced by content, not path
+    // The native `files.path` is nullable, so a browser drop (no OS path) leaves
+    // it null and is served via the retained blob/ref — NOT a filename shoved into
+    // `path`, which would shadow the blob. requiredFileDefaults only fills `path`
+    // when the physical schema declares it NOT NULL (see the path-required test).
+    expect(row.path == null).toBe(true);
     expect(String(row.extracted_text)).toContain('lazy dog');
   });
 
