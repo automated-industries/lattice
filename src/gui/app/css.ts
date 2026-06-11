@@ -714,6 +714,13 @@ export const css = `
     .grants-panel .grants-title { font-weight: 600; margin-bottom: 6px; }
     .grants-panel .grants-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
     .grants-panel .grants-row input { accent-color: var(--accent); }
+    /* Reconnect-required notice: a cloud opened via an unsupported direct
+       database connection serves no data until reconnected through a server. */
+    .cloud-reconnect {
+      padding: 10px 16px; font-size: 13px; line-height: 1.4;
+      background: rgba(239, 68, 68, 0.12); color: var(--text);
+      border-bottom: 1px solid rgba(239, 68, 68, 0.5);
+    }
 
     /* Inline create-row at the bottom of every table */
     tr.create-row td { background: var(--surface-2); }
