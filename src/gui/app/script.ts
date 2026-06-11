@@ -944,6 +944,20 @@ export const appJs = `
 
     window.addEventListener('hashchange', renderRoute);
 
+    // 2.2.3: a cloud reached via a raw postgres:// connection is refused (it
+    // can't enforce per-user access). The server serves no cloud data; tell the
+    // operator to reconnect through a user-authenticated server.
+    function initCloudReconnectNotice() {
+      fetchJson('/api/dbconfig').then(function (d) {
+        if (!d || !d.cloudReconnectRequired) return;
+        var bar = document.getElementById('cloud-reconnect');
+        if (!bar) return;
+        bar.textContent = 'This cloud is connected with a direct database connection, which is no longer supported. Reconnect through a server (sign in as a user) to access it securely.';
+        bar.hidden = false;
+      }).catch(function () { /* dbconfig unavailable (server mode) — nothing to show */ });
+    }
+    initCloudReconnectNotice();
+
     // ────────────────────────────────────────────────────────────
     // Sidebar
     // ────────────────────────────────────────────────────────────

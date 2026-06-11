@@ -128,6 +128,58 @@ describe('ingest routes', () => {
     expect(String(row.slug)).toContain('invoice-2026'); // derived from the filename
   });
 
+  it('drag-drop ingests into a files table with NOT NULL name/title (auto-fills from the filename)', async () => {
+    // Reproduces "ingest failed: not null constraint failed: files.name" on a
+    // drag-drop upload: a cloud whose `files` table declares name + title NOT
+    // NULL (same class as the slug case above). Ingest must populate both from
+    // the upload's filename so drag-drop never breaks on a NOT NULL identity
+    // column, instead of 500-ing.
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ingest-name-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const seed = new Lattice(join(root, 'data', 'test.db'));
+    await seed.init();
+    await seed.adapter.runAsync(
+      'CREATE TABLE files (id TEXT PRIMARY KEY, name TEXT NOT NULL, title TEXT NOT NULL, slug TEXT, original_name TEXT, mime TEXT, size_bytes INTEGER, extracted_text TEXT, description TEXT, extraction_status TEXT, deleted_at TEXT)',
+    );
+    seed.close();
+
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  notes:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      body: { type: text }',
+        '    outputFile: notes.md',
+      ].join('\n'),
+    );
+    const server = await startGuiServer({
+      configPath,
+      outputDir: join(root, 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    const res = await fetch(`${server.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/markdown', 'x-filename': 'Quarterly-Review.md' },
+      body: '# Quarterly\nrevenue and headcount',
+    });
+    expect(res.status).toBe(201); // pre-fix: 500 from the files.name NOT NULL violation
+    const { id } = (await res.json()) as { id: string };
+    const row = await getFile(server.url, id);
+    expect(String(row.name).length).toBeGreaterThan(0);
+    expect(String(row.title).length).toBeGreaterThan(0);
+    expect(row.name).toBe('Quarterly-Review.md');
+    expect(row.title).toBe('Quarterly-Review.md');
+  });
+
   it('ingests a local text file by path and extracts its content', async () => {
     const { root, server: sp } = boot();
     const server = await sp;
