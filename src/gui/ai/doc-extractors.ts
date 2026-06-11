@@ -1,11 +1,14 @@
 import { readFile } from 'node:fs/promises';
 
 /**
- * Native, dependency-light text extraction for document formats. Each extractor
- * lazily resolves its optional parser (so core latticesql users who never ingest
- * documents pay nothing for the parsers) and NEVER throws — on a missing
- * dependency, an invalid file, or any parse error it returns `null`, and the
- * caller degrades to a `skip` result.
+ * Native, dependency-light text extraction for document formats. The parsers are
+ * regular dependencies (present on every `npm install`), lazily resolved so the
+ * bundler keeps them external. Each extractor NEVER throws — on an invalid file or
+ * any parse error it returns `null` and the caller degrades to a `skip`. A parser
+ * that fails to *load*, by contrast, means a broken/partial install, not an
+ * expected state, so it is logged loudly (see {@link loadParser}) rather than
+ * silently swallowed — silent swallowing is exactly what made dragged documents
+ * extract nothing on installs that dropped the (then-optional) parsers.
  *
  * Coverage, with NO external CLI (this replaced the old `markitdown` subprocess):
  *
@@ -34,9 +37,10 @@ import { readFile } from 'node:fs/promises';
  *     huge part never materializes a multi-GB working string before truncation;
  *   - the PDF read is wrapped in a timeout.
  *
- * The optional parsers are resolved through a string-variable specifier so the
- * bundler leaves them as runtime imports (resolved from the consumer's
- * node_modules) and a missing one is just a caught import error.
+ * The parsers are resolved through a string-variable specifier so the bundler
+ * leaves them as runtime imports (resolved from the consumer's node_modules);
+ * they ship as regular dependencies, so a load failure means a corrupted install
+ * and is surfaced loudly rather than degraded into a silent empty extraction.
  */
 
 const MAX_TEXT = 200_000;
@@ -52,12 +56,26 @@ function decodeUtf8(bytes: Uint8Array): string {
   return textDecoder.decode(bytes);
 }
 
-/** Lazily import an optional parser by name; null when it isn't installed. */
-async function loadOptional<T>(specifier: string): Promise<T | null> {
+/**
+ * Import a document parser by name. The parsers are regular dependencies, so a
+ * failure here means a broken/partial install (e.g. `--omit=optional` carried over
+ * from when these were optional, or a corrupted `node_modules`). Surface it loudly
+ * rather than silently degrading every document to an empty `skip` — that silent
+ * path is precisely what made dropped documents extract nothing. Still returns
+ * `null` so the extractor degrades gracefully (never throws), but the cause is now
+ * on the record.
+ */
+async function loadParser<T>(specifier: string): Promise<T | null> {
   try {
     return (await import(specifier)) as unknown as T;
-  } catch {
-    return null; // optional dependency not installed
+  } catch (err) {
+    console.error(
+      `[latticesql] document parser "${specifier}" failed to load — document ` +
+        `extraction is degraded (likely a broken/partial install or incompatible ` +
+        `build). Reinstall dependencies (\`npm install\`). Cause:`,
+      err,
+    );
+    return null;
   }
 }
 
@@ -270,7 +288,7 @@ interface FflateLib {
  * bounded in practice.)
  */
 async function unzip(path: string): Promise<Record<string, Uint8Array> | null> {
-  const fflate = await loadOptional<FflateLib>('fflate');
+  const fflate = await loadParser<FflateLib>('fflate');
   if (!fflate || typeof fflate.unzipSync !== 'function') return null;
   try {
     const buf = await readFile(path);
@@ -296,7 +314,7 @@ interface MammothLib {
 }
 
 async function extractDocx(path: string): Promise<string | null> {
-  const mod = await loadOptional<{ default?: MammothLib } & Partial<MammothLib>>('mammoth');
+  const mod = await loadParser<{ default?: MammothLib } & Partial<MammothLib>>('mammoth');
   const lib = mod?.default ?? (mod as MammothLib | null);
   if (!lib || typeof lib.extractRawText !== 'function') return null;
   try {
@@ -316,7 +334,7 @@ interface WordExtractorInstance {
 type WordExtractorCtor = new () => WordExtractorInstance;
 
 async function extractDoc(path: string): Promise<string | null> {
-  const mod = await loadOptional<{ default?: WordExtractorCtor } | WordExtractorCtor>(
+  const mod = await loadParser<{ default?: WordExtractorCtor } | WordExtractorCtor>(
     'word-extractor',
   );
   const Ctor = (mod && 'default' in mod ? mod.default : mod) as WordExtractorCtor | undefined;
@@ -340,7 +358,7 @@ interface UnpdfLib {
 }
 
 async function extractPdf(path: string): Promise<string | null> {
-  const unpdf = await loadOptional<UnpdfLib>('unpdf');
+  const unpdf = await loadParser<UnpdfLib>('unpdf');
   if (!unpdf || typeof unpdf.getDocumentProxy !== 'function') return null;
   try {
     const buf = await readFile(path);
