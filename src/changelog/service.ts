@@ -16,6 +16,19 @@ import type { Row, ChangeEntry } from '../types.js';
 /** Structural shape of `Lattice`'s `PkLookup` (avoids a circular import). */
 type PkLookup = string | Record<string, unknown>;
 
+/** Deserialize the `source_ref` column (a JSON array of source ids) back to a
+ *  string[]. NULL (plain edits + pre-3.0 rows) and any malformed value → null,
+ *  so a bad row never throws on read. */
+function parseSourceRef(raw: unknown): string[] | null {
+  if (raw == null || typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.map((v) => String(v)) : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface ChangelogServiceDeps {
   adapter: StorageAdapter;
   pkWhere: (table: string, id: PkLookup) => { clause: string; params: unknown[] };
@@ -55,6 +68,8 @@ export class ChangelogService {
       source: row.source != null ? (row.source as string) : null,
       reason: row.reason != null ? (row.reason as string) : null,
       createdAt: row.created_at as string,
+      sourceRef: parseSourceRef(row.source_ref),
+      changeKind: row.change_kind != null ? (row.change_kind as 'ground_truth' | 'derived') : null,
     };
   }
 

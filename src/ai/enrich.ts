@@ -124,7 +124,16 @@ export async function enrichKnowledge(db: Lattice, opts: EnrichOptions): Promise
     }
 
     if (isBetter(newBody, currentBody)) {
-      await db.update(knowledgeTable, id, { [bodyColumn]: newBody });
+      // Confused-deputy guard: this body is DERIVED from the source files we just
+      // read, so stamp the write with that source-set as provenance instead of
+      // discarding it. The change-log then records which sources produced the
+      // value — the basis for later per-viewer audience gating + revocation.
+      await db.update(
+        knowledgeTable,
+        id,
+        { [bodyColumn]: newBody },
+        { sourceRef: sourceIds, changeKind: 'derived' },
+      );
       enriched.push(id);
     }
   }

@@ -35,12 +35,18 @@ export class SchemaManager {
   private readonly _tablePK = new Map<string, string[]>();
   private readonly _multis = new Map<string, MultiTableDefinition>();
   private readonly _entityContexts = new Map<string, EntityContextDefinition>();
+  /** table → (column → audience). Stage-0 per-viewer enrichment scaffolding;
+   *  only tables with at least one explicit per-column audience appear. */
+  private readonly _columnAudience = new Map<string, Record<string, string>>();
 
   define(table: string, def: CompiledTableDef): void {
     if (this._tables.has(table)) {
       throw new Error(`Table "${table}" is already defined`);
     }
     this._tables.set(table, def);
+    if (def.columnAudience && Object.keys(def.columnAudience).length > 0) {
+      this._columnAudience.set(table, def.columnAudience);
+    }
 
     // Normalise primaryKey to string[] and store separately.
     if (def.primaryKey === undefined || def.primaryKey === 'id') {
@@ -95,10 +101,22 @@ export class SchemaManager {
     this._tablePK.delete(table);
     this._multis.delete(table);
     this._entityContexts.delete(table);
+    this._columnAudience.delete(table);
   }
 
   getTables(): Map<string, CompiledTableDef> {
     return this._tables;
+  }
+
+  /**
+   * Per-column audience for a table (Stage-0 per-viewer enrichment
+   * scaffolding) — column name → audience identifier. A column not present has
+   * `row-audience` (visible to whoever can see the row; today's behavior).
+   * Empty for every table until a column declares `audience:`. A later stage
+   * generates a cell-masking view from this map; Stage-0 only exposes it.
+   */
+  getColumnAudience(table: string): Record<string, string> {
+    return this._columnAudience.get(table) ?? {};
   }
 
   getMultis(): Map<string, MultiTableDefinition> {
@@ -140,6 +158,11 @@ export class SchemaManager {
       version: 'TEXT PRIMARY KEY',
       applied_at: 'TEXT NOT NULL',
     });
+    // Per-viewer enrichment seam (Stage-0): tables exist now, so this is where a
+    // later stage will generate the per-column cell-masking VIEW + grants from
+    // `this._columnAudience`, idempotently via the migration runner under the
+    // reserved `internal:audience:table:${table}:vN` version key. No-op today —
+    // every column defaults to row-audience, so no view is generated.
   }
 
   /**

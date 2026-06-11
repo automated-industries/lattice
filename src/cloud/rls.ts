@@ -160,6 +160,36 @@ BEGIN
     WHERE "table_name" = p_table AND "pk" = p_pk AND "grantee_role" = p_grantee;
 END $fn$;
 
+-- ── Per-viewer audience helpers (Stage-0 scaffolding) ────────────────────────
+-- The predicates a generated per-column cell-masking view will call. ALL are
+-- SECURITY DEFINER and keyed on session_user (NEVER current_user / SECURITY
+-- INVOKER) so they bind to the real member even when an owner-rights view
+-- executes them — the identity invariant the whole cloud model depends on. They
+-- are not referenced by any policy or view yet, so they change NO behavior in
+-- Stage-0; a later stage wires them into generated views.
+
+-- Is the connected member the subject of this row (e.g. their own person row)?
+CREATE OR REPLACE FUNCTION lattice_is_subject(p_subject text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT p_subject = session_user
+$fn$;
+
+-- Does the connected member hold a named role/group? STUB — returns true until a
+-- later stage adds the role model. Permissive on purpose: wiring it into a view
+-- is an explicit opt-in, never a silent tightening.
+CREATE OR REPLACE FUNCTION lattice_has_role(p_role text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT true
+$fn$;
+
+-- Can the connected member see a source? Reduces to the source row's own RLS, so
+-- file-sharing drives enrichment visibility for free. p_source_ref is the
+-- source's primary key in the files table.
+CREATE OR REPLACE FUNCTION lattice_source_visible(p_source_ref text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT lattice_row_visible('files', p_source_ref)
+$fn$;
+
 -- Append-only change feed. The per-table ownership trigger records one row per
 -- INSERT/UPDATE/DELETE; the AFTER INSERT trigger here fires pg_notify so a
 -- connected member's realtime broker refreshes. Members get no direct access —
@@ -255,7 +285,10 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const migration: Migration = {
-    version: 'internal:cloud-rls:bootstrap:v2',
+    // v3 adds the Stage-0 audience helpers (lattice_is_subject / lattice_has_role
+    // / lattice_source_visible). The bootstrap is fully idempotent (CREATE OR
+    // REPLACE / IF NOT EXISTS), so re-running on an existing cloud is safe.
+    version: 'internal:cloud-rls:bootstrap:v3',
     sql: CLOUD_RLS_BOOTSTRAP_SQL,
   };
   await db.migrate([migration]);

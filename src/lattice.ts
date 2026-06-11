@@ -33,6 +33,7 @@ import type {
   SearchResult,
   ChangelogOptions,
   ChangeEntry,
+  ChangeProvenance,
 } from './types.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
 import { existsSync } from 'node:fs';
@@ -136,38 +137,6 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
  * natural-key lookups so a soft-deleted row never satisfies a uniqueness probe.
  */
 const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
-
-/**
- * The row-ACL visibility test shared by {@link Lattice.queryVisible},
- * {@link Lattice.countVisibleMany} and {@link Lattice.listChangesForRecipient}:
- * EXISTS an ACL row for (team, table, pk) that the user may see — they own it,
- * it's 'everyone'-visible, or it's 'custom' and they hold a grant. The caller
- * supplies SQL expressions for the team/table/pk slots (`?` placeholders or
- * column references) and must push exactly TWO user params for the
- * owner/grantee `?`s embedded here.
- */
-function rowAclVisibleExists(teamExpr: string, tableExpr: string, pkExpr: string): string {
-  return (
-    `EXISTS (SELECT 1 FROM "__lattice_row_acl" la ` +
-    `WHERE la."team_id" = ${teamExpr} AND la."table_name" = ${tableExpr} AND la."pk" = ${pkExpr} ` +
-    `AND (la."owner_user_id" = ? OR la."visibility" = 'everyone' ` +
-    `OR (la."visibility" = 'custom' AND EXISTS (SELECT 1 FROM "__lattice_row_grants" lg ` +
-    `WHERE lg."team_id" = la."team_id" AND lg."table_name" = la."table_name" ` +
-    `AND lg."pk" = la."pk" AND lg."grantee_user_id" = ?))))`
-  );
-}
-
-/**
- * NOT EXISTS an ACL row for (team, table, pk) — the legacy/no-ACL-entry test
- * that pairs with {@link rowAclVisibleExists} (pre-2.2 / never-narrowed rows
- * fall back to the table default). No params beyond the caller's slots.
- */
-function rowAclAbsent(teamExpr: string, tableExpr: string, pkExpr: string): string {
-  return (
-    `NOT EXISTS (SELECT 1 FROM "__lattice_row_acl" la2 ` +
-    `WHERE la2."team_id" = ${teamExpr} AND la2."table_name" = ${tableExpr} AND la2."pk" = ${pkExpr})`
-  );
-}
 
 export class Lattice {
   private readonly _adapter: StorageAdapter;
@@ -959,7 +928,12 @@ export class Lattice {
     return this.insert(table, { ...row, [col]: val });
   }
 
-  async update(table: string, id: PkLookup, row: Partial<Row>): Promise<void> {
+  async update(
+    table: string,
+    id: PkLookup,
+    row: Partial<Row>,
+    provenance?: ChangeProvenance,
+  ): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
@@ -995,7 +969,16 @@ export class Lattice {
     // Canonical pk so a row addressed by composite lookup keys its
     // change-log entry the same way insert() keyed it.
     const auditId = this._serializePkLookup(table, id);
-    await this._appendChangelog(table, auditId, 'update', sanitized, previousValues);
+    await this._appendChangelog(
+      table,
+      auditId,
+      'update',
+      sanitized,
+      previousValues,
+      undefined,
+      undefined,
+      provenance,
+    );
     this._sanitizer.emitAudit(table, 'update', auditId);
     await this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     // Re-fetch full row for embedding recomputation
@@ -1583,200 +1566,6 @@ export class Lattice {
     return this._decryptRows(table, rows);
   }
 
-  /**
-   * Row-level-security list read for Lattice Teams (2.2). Returns only the
-   * rows of `table` that `userId` may see in team `teamId`, evaluated
-   * entirely in SQL (indexed, bounded — never "load every row then filter
-   * in JS"). A row is visible iff it has a `__lattice_row_acl` entry owned by
-   * the user or marked 'everyone', or a 'custom' entry with a matching
-   * `__lattice_row_grants` row, OR it has no ACL entry at all and the caller
-   * passes `noAclVisible` (the table default is 'everyone', or the user owns
-   * the table — the pre-2.2 / never-narrowed case). Soft-deleted rows are
-   * excluded by default; results reuse the same decrypt path as `query()`.
-   *
-   * The ACL predicate joins on the table's primary-key column cast to TEXT
-   * (ACL pks are stored as TEXT), so it is correct regardless of the user
-   * table's pk type and works on both SQLite and Postgres.
-   */
-  async queryVisible(
-    table: string,
-    opts: {
-      teamId: string;
-      userId: string;
-      /**
-       * Whether rows with NO `__lattice_row_acl` entry are visible to this
-       * user — true when the table default is 'everyone' OR the user owns the
-       * table (the pre-2.2 / never-narrowed case). Resolved by the teams layer
-       * (`listVisibleRows`); defaults to false, i.e. only rows with an explicit
-       * ACL entry granting access are returned.
-       */
-      noAclVisible?: boolean;
-      /** Soft-delete handling: 'exclude' (default), 'only' (trash), 'any'. */
-      deleted?: 'exclude' | 'only' | 'any';
-      limit?: number;
-      offset?: number;
-      orderBy?: string;
-      orderDir?: 'asc' | 'desc';
-    },
-  ): Promise<Row[]> {
-    const notInit = this._notInitError<Row[]>();
-    if (notInit) return notInit;
-    this._assertIdent(table);
-    if (opts.orderBy) this._assertIdent(table, opts.orderBy);
-
-    const cols = this._ensureColumnCache(table);
-    const pkExpr = this._pkSqlExpr(this._resolvedPkCols(table));
-    let softDelete = '';
-    if (cols.has('deleted_at') && opts.deleted !== 'any') {
-      softDelete =
-        opts.deleted === 'only' ? `t."deleted_at" IS NOT NULL AND ` : `t."deleted_at" IS NULL AND `;
-    }
-
-    const params: unknown[] = [];
-    let visClause: string;
-    if (pkExpr) {
-      visClause = rowAclVisibleExists('?', '?', pkExpr);
-      params.push(opts.teamId, table, opts.userId, opts.userId);
-      if (opts.noAclVisible) {
-        // Rows with no ACL entry are visible because the table default is
-        // 'everyone' or this user owns the table (pre-2.2 / never-narrowed rows).
-        visClause += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
-        params.push(opts.teamId, table);
-      }
-    } else {
-      // Unkeyable table (no Lattice-addressable primary key — e.g. a raw-SQL
-      // junction table with no `id`): no per-row ACL entry can exist for it, so
-      // every row reads as "no ACL entry" and is visible iff the table defaults
-      // to everyone / the caller owns it. Never reference a pk column — that
-      // CAST(t."id" …) on a table without `id` is the 2.2.0 crash.
-      visClause = opts.noAclVisible ? '1=1' : '1=0';
-    }
-    let sql = `SELECT t.* FROM "${table}" t WHERE ${softDelete}(${visClause})`;
-
-    if (opts.orderBy && cols.has(opts.orderBy)) {
-      const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
-      sql += ` ORDER BY t."${opts.orderBy}" ${dir}`;
-    }
-    if (opts.limit !== undefined && Number.isFinite(opts.limit)) {
-      sql += ` LIMIT ${Math.trunc(opts.limit).toString()}`;
-    }
-    if (opts.offset !== undefined && Number.isFinite(opts.offset)) {
-      // SQLite needs a LIMIT before OFFSET (LIMIT -1 = "no limit"); Postgres
-      // rejects LIMIT -1 but accepts a bare OFFSET.
-      if (opts.limit === undefined && this.getDialect() === 'sqlite') sql += ' LIMIT -1';
-      sql += ` OFFSET ${Math.trunc(opts.offset).toString()}`;
-    }
-
-    const rows = await allAsyncOrSync(this._adapter, sql, params);
-    return this._decryptRows(table, rows);
-  }
-
-  /**
-   * Visible-row counts for MANY tables in a single round-trip, using the same
-   * ACL predicate as {@link queryVisible} — so dashboard tiles agree with what
-   * the rows view lists and a physical count never reveals the existence or
-   * volume of rows the user can't see. One aggregated
-   * `SELECT (SELECT COUNT(*) …) AS c0, …` statement (no per-table fan-out, so
-   * a session pooler with few slots survives concurrent refreshes), capped at
-   * 50 tables per pass; overflow is logged and skipped (no silent truncation)
-   * and those tables count as absent — the caller renders "—". Soft-deleted
-   * rows are excluded wherever the table carries `deleted_at`, matching the
-   * default rows view.
-   */
-  async countVisibleMany(
-    specs: { table: string; noAclVisible: boolean }[],
-    opts: { teamId: string; userId: string },
-  ): Promise<Map<string, number>> {
-    const out = new Map<string, number>();
-    const notInit = this._notInitError<Map<string, number>>();
-    if (notInit) return notInit;
-    if (specs.length === 0) return out;
-
-    const VISIBLE_COUNT_CAP = 50;
-    let bounded = specs;
-    if (bounded.length > VISIBLE_COUNT_CAP) {
-      const dropped = bounded.length - VISIBLE_COUNT_CAP;
-      console.warn(
-        `[lattice] visible-count pass capped at ${String(VISIBLE_COUNT_CAP)} tables; ` +
-          `${String(dropped)} table(s) report no count this pass`,
-      );
-      bounded = bounded.slice(0, VISIBLE_COUNT_CAP);
-    }
-
-    const selects: string[] = [];
-    const params: unknown[] = [];
-    for (const [i, spec] of bounded.entries()) {
-      this._assertIdent(spec.table);
-      const cols = this._ensureColumnCache(spec.table);
-      const pkExpr = this._pkSqlExpr(this._resolvedPkCols(spec.table));
-      const softDelete = cols.has('deleted_at') ? `t."deleted_at" IS NULL AND ` : '';
-      let predicate: string;
-      if (pkExpr) {
-        predicate = rowAclVisibleExists('?', '?', pkExpr);
-        params.push(opts.teamId, spec.table, opts.userId, opts.userId);
-        if (spec.noAclVisible) {
-          predicate += ` OR ${rowAclAbsent('?', '?', pkExpr)}`;
-          params.push(opts.teamId, spec.table);
-        }
-      } else {
-        // Unkeyable table — see queryVisible. No pk column reference (no crash);
-        // visible iff the table defaults to everyone / the caller owns it.
-        predicate = spec.noAclVisible ? '1=1' : '1=0';
-      }
-      selects.push(
-        `(SELECT COUNT(*) FROM "${spec.table}" t WHERE ${softDelete}(${predicate})) AS c${String(i)}`,
-      );
-    }
-
-    const row = await getAsyncOrSync(this._adapter, `SELECT ${selects.join(', ')}`, params);
-    if (!row) return out;
-    for (const [i, spec] of bounded.entries()) {
-      const raw = (row as Record<string, unknown>)[`c${String(i)}`];
-      const n = typeof raw === 'bigint' ? Number(raw) : Number(raw);
-      if (Number.isFinite(n) && n >= 0) out.set(spec.table, n);
-    }
-    return out;
-  }
-
-  /**
-   * Hosted-sync change-log pull, filtered per recipient for 2.2 row-level
-   * security (the hosted server's sole enforcement mechanism). Returns
-   * `__lattice_change_log` rows with seq > `since` for team `teamId` that
-   * `userId` is permitted to receive:
-   *   - targeted envelopes (`recipient_user_id = userId`), plus
-   *   - broadcast envelopes (`recipient_user_id IS NULL`) that are either
-   *     table-level (`pk IS NULL` — schema / unshare, delivered to all) or
-   *     whose row is currently visible to the user via `__lattice_row_acl` /
-   *     `__lattice_row_grants` (or has no ACL entry and the table defaults to
-   *     'everyone').
-   * Ordered by seq, capped at `limit`. Raw SQL because the predicate needs
-   * OR / EXISTS that the `query()` API can't express; bounded by the seq
-   * window and indexed ACL point-lookups. Mirrors {@link queryVisible}'s
-   * visibility logic so a member never pulls the bytes of a row they can't see.
-   */
-  async listChangesForRecipient(
-    teamId: string,
-    since: number,
-    userId: string,
-    limit: number,
-  ): Promise<Row[]> {
-    const notInit = this._notInitError<Row[]>();
-    if (notInit) return notInit;
-    const sql =
-      `SELECT cl.* FROM "__lattice_change_log" cl WHERE cl."team_id" = ? AND cl."seq" > ? AND (` +
-      `cl."recipient_user_id" = ? OR (cl."recipient_user_id" IS NULL AND (` +
-      `cl."pk" IS NULL ` +
-      `OR ${rowAclVisibleExists('cl."team_id"', 'cl."table_name"', 'cl."pk"')} ` +
-      `OR (${rowAclAbsent('cl."team_id"', 'cl."table_name"', 'cl."pk"')} ` +
-      `AND EXISTS (SELECT 1 FROM "__lattice_shared_objects" so WHERE so."team_id" = cl."team_id" ` +
-      `AND so."table_name" = cl."table_name" AND so."deleted_at" IS NULL ` +
-      `AND so."default_row_visibility" = 'everyone'))` +
-      `)))` +
-      ` ORDER BY cl."seq" ASC LIMIT ${Math.trunc(limit).toString()}`;
-    const params: unknown[] = [teamId, since, userId, userId, userId];
-    return allAsyncOrSync(this._adapter, sql, params);
-  }
-
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
@@ -2074,14 +1863,14 @@ export class Lattice {
   }
 
   // ── Composite-key serialization for the row-level-permission layer ───────
-  // The row ACL (`__lattice_row_acl`/`__lattice_row_grants`) and the
-  // change-log key each row by a single TEXT `pk`. For a table whose primary
-  // key spans several columns (e.g. a junction table `(project_id,
+  // The cloud RLS bookkeeping (`__lattice_owners`/`__lattice_row_grants`) and
+  // the change-log key each row by a single TEXT `pk`. For a table whose
+  // primary key spans several columns (e.g. a junction table `(project_id,
   // meeting_id)` with no `id`), that key must encode EVERY pk column, and the
   // write side (what we store) must match the read side (the SQL that
-  // reconstructs it from row columns). These three helpers are the single
-  // source of truth for both. A single-column key serializes to the bare
-  // value (so all pre-2.2.1 single-`id` ACL data stays valid).
+  // reconstructs it from row columns). These helpers are the single source of
+  // truth for both. A single-column key serializes to the bare value (so all
+  // pre-2.2.1 single-`id` data stays valid).
 
   private static readonly _PK_SEP = '\t';
 
@@ -2331,7 +2120,17 @@ export class Lattice {
   // Changelog internals
   // -------------------------------------------------------------------------
 
-  /** Create the __lattice_changelog table and index. */
+  /**
+   * Create the __lattice_changelog table and index. This is the single,
+   * canonical change-log substrate (the dead `__lattice_change_log` team-sync
+   * envelope was removed in 3.0). Beyond the field-level delta columns it
+   * carries provenance columns for the per-viewer observation model:
+   * `source_ref` (the source-set that informed a derived value),
+   * `change_kind` (`ground_truth` | `derived`), `superseded_by`, `audience`
+   * (defaults to row audience), and `source_sensitive` (crypto-shred flag).
+   * All are additive + nullable (or defaulted) — Stage-0 metadata, no behavior
+   * change until later stages read them.
+   */
   private async _ensureChangelogTable(): Promise<void> {
     await runAsyncOrSync(
       this._adapter,
@@ -2345,10 +2144,37 @@ export class Lattice {
         previous TEXT,
         source TEXT,
         reason TEXT,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        source_ref TEXT,
+        change_kind TEXT,
+        superseded_by TEXT,
+        audience TEXT,
+        source_sensitive INTEGER NOT NULL DEFAULT 0
       )
     `,
     );
+    // Idempotent additive migration for change-logs created before 3.0:
+    // introspect the live columns and ALTER in any provenance column that is
+    // missing. Each is nullable or defaulted, so existing rows + readers are
+    // unaffected. (CREATE TABLE IF NOT EXISTS above only covers fresh DBs.)
+    const existing = new Set(
+      await introspectColumnsAsyncOrSync(this._adapter, '__lattice_changelog'),
+    );
+    const additive: [string, string][] = [
+      ['source_ref', 'TEXT'],
+      ['change_kind', 'TEXT'],
+      ['superseded_by', 'TEXT'],
+      ['audience', 'TEXT'],
+      ['source_sensitive', 'INTEGER NOT NULL DEFAULT 0'],
+    ];
+    for (const [col, type] of additive) {
+      if (!existing.has(col)) {
+        await runAsyncOrSync(
+          this._adapter,
+          `ALTER TABLE __lattice_changelog ADD COLUMN ${col} ${type}`,
+        );
+      }
+    }
     await runAsyncOrSync(
       this._adapter,
       `
@@ -2358,7 +2184,9 @@ export class Lattice {
     );
   }
 
-  /** Append a changelog entry if the table has changelog enabled. */
+  /** Append a changelog entry if the table has changelog enabled. The optional
+   *  `prov` carries the per-viewer observation provenance (source-set, kind,
+   *  audience, …); when omitted the entry behaves exactly as a pre-3.0 entry. */
   private async _appendChangelog(
     table: string,
     rowId: string,
@@ -2367,13 +2195,21 @@ export class Lattice {
     previous: Record<string, unknown> | null,
     source?: string,
     reason?: string,
+    prov?: ChangeProvenance,
   ): Promise<void> {
     if (!this._changelogTables.has(table)) return;
     const id = uuidv4();
+    // Normalize the source-set to a JSON array string for the source_ref column.
+    const sourceRef =
+      prov?.sourceRef == null
+        ? null
+        : JSON.stringify(Array.isArray(prov.sourceRef) ? prov.sourceRef : [prov.sourceRef]);
     await runAsyncOrSync(
       this._adapter,
-      `INSERT INTO __lattice_changelog (id, table_name, row_id, operation, changes, previous, source, reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO __lattice_changelog
+         (id, table_name, row_id, operation, changes, previous, source, reason,
+          source_ref, change_kind, superseded_by, audience, source_sensitive)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         table,
@@ -2382,7 +2218,12 @@ export class Lattice {
         changes ? JSON.stringify(changes) : null,
         previous ? JSON.stringify(previous) : null,
         source ?? null,
-        reason ?? null,
+        reason ?? prov?.reason ?? null,
+        sourceRef,
+        prov?.changeKind ?? null,
+        prov?.supersededBy ?? null,
+        prov?.audience ?? null,
+        prov?.sourceSensitive ? 1 : 0,
       ],
     );
   }
