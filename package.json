@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "2.2.4",
+  "version": "2.3.0",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -43,10 +43,16 @@
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
     "@mozilla/readability": "^0.5.0",
     "@scarf/scarf": "^1.4.0",
+    "fflate": "^0.8.3",
+    "file-type": "^19.6.0",
     "jsdom": "^25.0.1",
+    "mammoth": "^1.12.0",
+    "unpdf": "^1.6.2",
     "uuid": "^13.0.0",
+    "word-extractor": "^1.0.4",
     "yaml": "^2.8.3"
   },
   "scarfSettings": {
@@ -56,18 +62,11 @@
     "better-sqlite3": ">=11 <13"
   },
   "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.71.2",
-    "fflate": "^0.8.3",
-    "file-type": "^19.6.0",
-    "mammoth": "^1.12.0",
     "pg": "^8.11.0",
     "playwright": "^1.48.0",
-    "sharp": "^0.33.5",
-    "unpdf": "^1.6.2",
-    "word-extractor": "^1.0.4"
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.71.0",
     "@eslint/js": "^9.0.0",
     "@playwright/test": "^1.48.0",
     "@types/better-sqlite3": "^7.6.12",
