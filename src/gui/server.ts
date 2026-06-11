@@ -681,18 +681,10 @@ export interface ActiveDb {
    * True when this process is the auth-gated cloud server (`lattice serve
    * --team-cloud`) — the sole legitimate holder of a cloud's direct database
    * connection. A regular GUI has this false, and is refused a direct cloud
-   * open (see {@link ActiveDb.cloudReconnectRequired}). Rides on ActiveDb so
+   * open. Rides on ActiveDb so
    * same-config reopens propagate it without re-threading every call site.
    */
   teamCloud: boolean;
-  /**
-   * True when the workspace is a cloud (team) reached via a raw `postgres://`
-   * connection in a regular GUI — the deprecated, insecure path. The cloud is
-   * NOT opened: no team context, no tables served. The GUI must reconnect
-   * through a user-authenticated server. Always false for the server process,
-   * for solo (non-team) databases, and for server-mode workspaces.
-   */
-  cloudReconnectRequired: boolean;
   junctionTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
@@ -998,7 +990,6 @@ export async function openConfig(
   // team). Native files/secrets, owned by the creator, vanish for
   // members unless explicitly shared.
   let teamContext: TeamContext | null = null;
-  let cloudReconnectRequired = false;
   if (db.getDialect() === 'postgres') {
     let teamEnabled = false;
     try {
@@ -1006,32 +997,11 @@ export async function openConfig(
     } catch {
       teamEnabled = false;
     }
-    // 2.2.3 — a cloud is reachable ONLY through a user-authenticated server.
-    // A regular GUI (not the server process) pointed straight at a cloud's
-    // `postgres://` connection is the deprecated, insecure path: anyone with
-    // that string would read every table and row, since the database itself
-    // can't tell members apart. So in GUI mode (`!teamCloud`) a direct
-    // `postgres://` connection is NEVER used as a cloud:
-    //   - if it already hosts a team → refuse: serve no team context and no
-    //     tables, and signal the GUI to reconnect through a server;
-    //   - if it is a plain (non-team) Postgres → open it as a solo private
-    //     backend, but do NOT auto-initialize it into a cloud (clouds are made
-    //     by running a server, not by pointing the GUI at a connection string).
-    // The server process (`teamCloud`) is the sole legitimate direct holder of
-    // the connection string and keeps the full init + team-context flow.
-    const directGuiPostgres = !teamCloud && isPostgresUrl(parsed.dbPath);
-    if (directGuiPostgres) {
-      if (teamEnabled) {
-        cloudReconnectRequired = true;
-        teamEnabled = false; // do not resolve team context or expose tables
-        validTables.clear(); // expose nothing from the direct cloud connection
-      }
-      // else: solo private backend — fall through, no team auto-init.
-    } else if (!teamEnabled) {
-      // Server process opening a not-yet-initialized cloud: set up the
-      // member/share machinery (the opener becomes owner). Best-effort +
-      // race-safe (no-op when already a workspace). Gated on a labeled db: line
-      // + the operator having an identity email.
+    if (!teamEnabled) {
+      // Opening a not-yet-initialized cloud: set up the member/share machinery
+      // (the opener becomes owner). Best-effort + race-safe (no-op when already a
+      // workspace). Gated on a labeled db: line + the operator having an identity
+      // email.
       try {
         const rawDb = parseDocument(readFileSync(configPath, 'utf8')).get('db');
         const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
@@ -1078,7 +1048,7 @@ export async function openConfig(
   // via the SSE endpoint. SQLite configs leave this as null and the
   // status pill reports the local-mode (yellow) state.
   let realtime: RealtimeBroker | null = null;
-  if (db.getDialect() === 'postgres' && !cloudReconnectRequired) {
+  if (db.getDialect() === 'postgres') {
     try {
       realtime = new RealtimeBroker(parsed.dbPath);
       await realtime.start();
@@ -1134,7 +1104,6 @@ export async function openConfig(
     validTables,
     teamContext,
     teamCloud,
-    cloudReconnectRequired,
     junctionTables,
     entityContextByTable,
     manifest,
@@ -3791,7 +3760,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                   myUserId: active.teamContext.myUserId,
                 }
               : null,
-            cloudReconnectRequired: active.cloudReconnectRequired,
             swap: async () => {
               const next = await openConfig(
                 active.configPath,
