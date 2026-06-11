@@ -55,7 +55,26 @@ function pkSqlExpr(pkCols: readonly string[], prefix: string): string {
  * members are `NOSUPERUSER` without CREATE on the schema, so they cannot plant a
  * shadowing object; the pin is hardening, tracked for the schema-awareness pass.
  */
+/**
+ * Group role every cloud member inherits. Table privileges are granted to the
+ * group, so adding a shared table or a member is a single GRANT — while RLS still
+ * filters rows per individual login role (`session_user`). The group grants
+ * *access*, never *visibility*.
+ */
+export const MEMBER_GROUP = 'lattice_members';
+
 export const CLOUD_RLS_BOOTSTRAP_SQL = `
+-- Member group (NOLOGIN). Members inherit schema/connect/table privileges from it;
+-- RLS filters per the individual member's login role, so the group never widens
+-- what a member can see. Idempotent.
+DO $LATTICE$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${MEMBER_GROUP}') THEN
+    CREATE ROLE ${MEMBER_GROUP} NOLOGIN;
+  END IF;
+  EXECUTE format('GRANT USAGE ON SCHEMA %I TO ${MEMBER_GROUP}', current_schema());
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO ${MEMBER_GROUP}', current_database());
+END $LATTICE$;
+
 CREATE TABLE IF NOT EXISTS "__lattice_owners" (
   "table_name" text NOT NULL,
   "pk"         text NOT NULL,
@@ -173,6 +192,7 @@ END $fn$;
 
 ALTER TABLE ${q} ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ${q} FORCE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP};
 
 DROP POLICY IF EXISTS "lattice_sel" ON ${q};
 CREATE POLICY "lattice_sel" ON ${q} FOR SELECT USING (lattice_row_visible(${lit}, ${pkRow}));
