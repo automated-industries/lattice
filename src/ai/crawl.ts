@@ -161,14 +161,29 @@ function titleFromUrl(rawUrl: string): string {
 
 /** Sniff a mime type from bytes via `file-type`. Returns '' if undetectable. */
 async function sniffMime(body: Buffer): Promise<string> {
+  type FileTypeMod = {
+    fileTypeFromBuffer: (b: Uint8Array) => Promise<{ mime: string } | undefined>;
+  };
+  let ft: FileTypeMod;
   try {
-    const ft = (await import('file-type')) as unknown as {
-      fileTypeFromBuffer: (b: Uint8Array) => Promise<{ mime: string } | undefined>;
-    };
+    ft = (await import('file-type')) as unknown as FileTypeMod;
+  } catch (err) {
+    // `file-type` is a regular dependency, so a load failure here means a broken/
+    // partial install — surface it loudly rather than silently sniffing nothing
+    // (the same silent-degradation class the document parsers now guard against).
+    console.error(
+      `[latticesql] mime sniffer "file-type" failed to load — crawl mime detection ` +
+        `is degraded (likely a broken/partial install). Reinstall dependencies ` +
+        `(\`npm install\`). Cause:`,
+      err,
+    );
+    return '';
+  }
+  try {
     const result = await ft.fileTypeFromBuffer(body);
     return result?.mime ?? '';
   } catch {
-    return '';
+    return ''; // bytes simply aren't a recognizable binary type — not an error
   }
 }
 
