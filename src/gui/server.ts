@@ -107,7 +107,6 @@ import {
   type DeleteResolution,
 } from './schema-ops.js';
 import { TeamsClient } from '../teams/client.js';
-import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
@@ -3627,34 +3626,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           sendJson(res, { ok: true });
           return;
-        }
-
-        // ── Teams GUI routes ──────────────────────────────────────────────
-        // Dev-tool surface that wraps the user's TeamsClient. Available
-        // only in local GUI mode — team-cloud mode disables these (the
-        // cloud is the server, not the client).
-        if (!teamCloud && pathname.startsWith('/api/teams-gui/')) {
-          const handled = await dispatchTeamsGuiRoute(req, res, {
-            db: active.db,
-            client: active.teamsClient,
-            configPath: active.configPath,
-            pathname,
-            method,
-            validTables: active.validTables,
-            // When the active DB IS the team cloud (direct-Postgres mode),
-            // there's no local connection row — team ops fall back to
-            // this resolved context (cloud url + my identity + role).
-            cloudUrl: active.db.getDialect() === 'postgres' ? active.dbPath : null,
-            teamContext: active.teamContext
-              ? {
-                  teamId: active.teamContext.teamId,
-                  myUserId: active.teamContext.myUserId,
-                  isCreator: active.teamContext.isCreator,
-                  isMember: active.teamContext.isMember,
-                }
-              : null,
-          });
-          if (handled) return;
         }
 
         // ── User Config routes ───────────────────────────────────────────
