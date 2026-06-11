@@ -115,23 +115,14 @@ export interface StartGuiServerOptions {
   openBrowser?: boolean;
   /**
    * Bind address. Defaults to `127.0.0.1`. Use `0.0.0.0` (or a specific
-   * interface) to expose the server outside localhost — only meaningful in
-   * combination with `teamCloud: true`, which adds the auth layer.
+   * interface) to expose the server outside localhost.
    */
   host?: string;
-  /**
-   * Enable team-cloud server mode: registers the Lattice Teams internal
-   * tables via `defineLate()` after init, and requires a valid bearer
-   * token on every API request. The DB-switcher endpoints are disabled
-   * (they assume single-user filesystem trust).
-   */
-  teamCloud?: boolean;
   /**
    * Workspace mode: derive canonical entity contexts for tables without one
    * and keep the rendered Context/ tree synced via auto-render on every write.
    * Set by `lattice gui` when opening a `.lattice` workspace. Off for a plain
-   * `--config` GUI (which serves only externally-rendered context) and for
-   * team-cloud serve.
+   * `--config` GUI (which serves only externally-rendered context).
    */
   autoRender?: boolean;
 }
@@ -549,14 +540,6 @@ export interface ActiveDb {
   outputDir: string;
   db: Lattice;
   validTables: Set<string>;
-  /**
-   * True when this process is the auth-gated cloud server (`lattice serve
-   * --team-cloud`) — the sole legitimate holder of a cloud's direct database
-   * connection. A regular GUI has this false, and is refused a direct cloud
-   * open. Rides on ActiveDb so
-   * same-config reopens propagate it without re-threading every call site.
-   */
-  teamCloud: boolean;
   junctionTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
@@ -623,7 +606,6 @@ export async function openConfig(
   configPath: string,
   outputDir: string,
   autoRender = false,
-  teamCloud = false,
 ): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
@@ -881,7 +863,6 @@ export async function openConfig(
     outputDir,
     db,
     validTables,
-    teamCloud,
     junctionTables,
     entityContextByTable,
     manifest,
@@ -1057,7 +1038,7 @@ async function disposeActive(active: ActiveDb): Promise<void> {
 async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<ActiveDb> {
   const feed = active.feed;
   await disposeActive(active);
-  const next = await openConfig(active.configPath, active.outputDir, autoRender, active.teamCloud);
+  const next = await openConfig(active.configPath, active.outputDir, autoRender);
   next.feed = feed;
   return next;
 }
@@ -1220,7 +1201,7 @@ async function applySchemaConfig(
   for (const sql of ddl) await execSql(active.db, sql);
   saveConfigDoc(active.configPath, doc);
   await disposeActive(active);
-  return openConfig(active.configPath, active.outputDir, autoRender, active.teamCloud);
+  return openConfig(active.configPath, active.outputDir, autoRender);
 }
 
 /** Human one-liner for an undo/redo/revert of a schema entry (activity feed). */
@@ -1234,7 +1215,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const outputDir = resolve(options.outputDir);
   const startPort = options.port ?? 4317;
   const host = options.host ?? '127.0.0.1';
-  const teamCloud = options.teamCloud ?? false;
   const autoRender = options.autoRender ?? false;
   // One id per GUI server process. Stamped on every audit entry so the header
   // undo/redo stack is scoped to THIS session's own actions (you undo what you
@@ -1242,7 +1222,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const sessionId = crypto.randomUUID();
 
   // Mutable reference: switching DBs replaces this wholesale.
-  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender, teamCloud);
+  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender);
   // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
   // GUI was opened on a plain config; the switcher stays hidden.
@@ -2358,8 +2338,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           //
           // The pre-1.13.4 implementation listed tables via `sqlite_master`
           // and columns via `PRAGMA table_info` — both SQLite-only. On a
-          // Postgres-backed Lattice (migrated cloud, team cloud) those
-          // queries threw and the System sidebar silently rendered empty.
+          // Postgres-backed Lattice (a migrated cloud) those queries threw
+          // and the System sidebar silently rendered empty.
           // We dispatch on adapter.dialect for the listing query and
           // delegate column enumeration to `Lattice.introspectColumns()`,
           // which is already dialect-portable.
@@ -2428,17 +2408,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Database switcher ─────────────────────────────────────────────
-        // Disabled in team-cloud mode — switching the active DB out from
-        // under other members would corrupt their session view and bypass
-        // the team's auth + share contract.
         // ── Workspaces (header switcher) ──────────────────────────────────
         // Additive: when the GUI was not opened inside a `.lattice` root,
         // these return empty and the header switcher stays hidden.
         if (method === 'GET' && pathname === '/api/workspaces') {
-          if (teamCloud || !latticeRoot) {
-            // Disabled in team-cloud mode (switching the active DB out from
-            // under members would bypass the auth + share contract).
+          if (!latticeRoot) {
             sendJson(res, { current: null, workspaces: [] });
             return;
           }
@@ -2458,10 +2432,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/workspaces/switch') {
-          if (teamCloud) {
-            sendJson(res, { error: 'Workspace switching is disabled in team-cloud mode' }, 403);
-            return;
-          }
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
@@ -2479,7 +2449,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const paths = resolveWorkspacePaths(latticeRoot, ws);
           let next: ActiveDb;
           try {
-            next = await openConfig(paths.configPath, paths.contextDir, autoRender, teamCloud);
+            next = await openConfig(paths.configPath, paths.contextDir, autoRender);
           } catch (e) {
             const err = e as Error;
             sendJson(
@@ -2497,10 +2467,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/workspaces/create') {
-          if (teamCloud) {
-            sendJson(res, { error: 'Workspace creation is disabled in team-cloud mode' }, 403);
-            return;
-          }
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
@@ -2522,12 +2488,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const newPaths = resolveWorkspacePaths(latticeRoot, created);
           let newActive: ActiveDb;
           try {
-            newActive = await openConfig(
-              newPaths.configPath,
-              newPaths.contextDir,
-              autoRender,
-              teamCloud,
-            );
+            newActive = await openConfig(newPaths.configPath, newPaths.contextDir, autoRender);
           } catch (e) {
             sendJson(
               res,
@@ -2546,10 +2507,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/workspaces/delete') {
-          if (teamCloud) {
-            sendJson(res, { error: 'Workspace deletion is disabled in team-cloud mode' }, 403);
-            return;
-          }
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
@@ -2585,12 +2542,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             const fbPaths = resolveWorkspacePaths(latticeRoot, fallback);
             let next: ActiveDb;
             try {
-              next = await openConfig(
-                fbPaths.configPath,
-                fbPaths.contextDir,
-                autoRender,
-                teamCloud,
-              );
+              next = await openConfig(fbPaths.configPath, fbPaths.contextDir, autoRender);
             } catch (e) {
               const err = e as Error & { code?: string };
               const codePrefix = err.code ? `[${err.code}] ` : '';
@@ -2650,10 +2602,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        if (teamCloud && pathname.startsWith('/api/databases')) {
-          sendJson(res, { error: 'Database switching is disabled in team-cloud mode' }, 403);
-          return;
-        }
         if (method === 'GET' && pathname === '/api/databases') {
           const parsedActive = parseConfigFile(active.configPath);
           // Friendly name comes from the YAML's optional `name:` key, falling
@@ -2693,12 +2641,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // own directory), not the launch-wide outputDir. Reusing one
             // outputDir across every DB switch is what bled one DB's rendered
             // "files" view into another DB that had none of its own.
-            next = await openConfig(
-              newPath,
-              resolveOutputDirForConfig(newPath),
-              autoRender,
-              teamCloud,
-            );
+            next = await openConfig(newPath, resolveOutputDirForConfig(newPath), autoRender);
           } catch (e) {
             const err = e as Error & { code?: string };
             console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
@@ -2726,7 +2669,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             newConfigPath,
             resolveOutputDirForConfig(newConfigPath),
             autoRender,
-            teamCloud,
           );
           await disposeActive(active);
           active = next;
@@ -2771,7 +2713,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 fallback.path,
                 resolveOutputDirForConfig(fallback.path),
                 autoRender,
-                teamCloud,
               );
             } catch (e) {
               const err = e as Error & { code?: string };
@@ -2901,13 +2842,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Per-row version history (team cloud): the recoverable trail of
-        // every edit to one row, newest first, from __lattice_change_log.
+        // ── Per-row version history (cloud): the recoverable trail of every
+        // edit to one row, newest first.
         // GET /api/tables/:table/rows/:id/history. Empty on local SQLite.
         const rowHistMatch = ROW_HISTORY_PATH.exec(pathname);
         if (rowHistMatch && method === 'GET') {
-          // Per-row history was sourced from the team change-log. Now empty —
-          // history is rebuilt on the RLS model later.
+          // Per-row history is rebuilt on the RLS change-feed (__lattice_changes)
+          // in a follow-up; empty for now.
           sendJson(res, { history: [] });
           return;
         }
@@ -3023,9 +2964,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
         // ── User Config routes ───────────────────────────────────────────
         // Reads + writes machine-local user identity and the saved
-        // cloud-DB credential catalog. Same auth model as the other
-        // GUI dev-tool routes — localhost trust, team-cloud disables.
-        if (!teamCloud && pathname.startsWith('/api/userconfig/')) {
+        // cloud-DB credential catalog. Localhost-trust dev-tool routes.
+        if (pathname.startsWith('/api/userconfig/')) {
           const handled = await dispatchUserConfigRoute(req, res, {
             db: active.db,
             configPath: active.configPath,
@@ -3036,9 +2976,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── AI assistant: credentials, OAuth, voice transcription ─────────
-        // Local-only (gated !teamCloud): the assistant rail is a single-user
-        // dev tool. Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
-        if (!teamCloud && pathname.startsWith('/api/assistant/')) {
+        // Local-only: the assistant rail is a single-user dev tool.
+        // Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
+        if (pathname.startsWith('/api/assistant/')) {
           const handled = await dispatchAssistantRoute(req, res, {
             db: active.db,
             pathname,
@@ -3050,7 +2990,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Chat route ────────────────────────────────────────────────────
         // POST /api/chat — assistant tool loop, streamed as SSE. Executes
         // tool calls against the active DB via the shared mutation chokepoint.
-        if (!teamCloud && pathname.startsWith('/api/chat')) {
+        if (pathname.startsWith('/api/chat')) {
           const handled = await dispatchChatRoute(req, res, {
             db: active.db,
             feed: active.feed,
@@ -3074,7 +3014,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Ingest routes ─────────────────────────────────────────────────
         // Reference a local file / pasted text as a native `files` row and
         // summarize it. Writes via the shared mutation chokepoint (source=ingest).
-        if (!teamCloud && pathname.startsWith('/api/ingest/')) {
+        if (pathname.startsWith('/api/ingest/')) {
           const handled = await dispatchIngestRoute(req, res, {
             db: active.db,
             feed: active.feed,
@@ -3093,7 +3033,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── Files: blob serving + open-in-finder ──────────────────────────
-        if (!teamCloud && pathname.startsWith('/api/files/')) {
+        if (pathname.startsWith('/api/files/')) {
           const handled = await dispatchFilesRoute(req, res, {
             db: active.db,
             latticeRoot: dirname(active.configPath),
@@ -3107,22 +3047,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Project Config "Database" panel — read / save / connect / test.
         // The `swap` callback re-opens the active configPath so the
         // YAML rewrite written by `/save` takes effect.
-        if (
-          !teamCloud &&
-          (pathname.startsWith('/api/dbconfig') || pathname.startsWith('/api/cloud'))
-        ) {
+        if (pathname.startsWith('/api/dbconfig') || pathname.startsWith('/api/cloud')) {
           const handled = await dispatchDbConfigRoute(req, res, {
             db: active.db,
             configPath: active.configPath,
             pathname,
             method,
             swap: async () => {
-              const next = await openConfig(
-                active.configPath,
-                active.outputDir,
-                autoRender,
-                active.teamCloud,
-              );
+              const next = await openConfig(active.configPath, active.outputDir, autoRender);
               await disposeActive(active);
               active = next;
             },

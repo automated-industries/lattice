@@ -125,8 +125,8 @@ export const appJs = `
     }
 
     // Redact the userinfo portion of a connection URL so the password
-    // never reaches the rendered DOM. Used for every place the GUI
-    // displays a cloud_url field (team cards, connection list, etc).
+    // never reaches the rendered DOM. Used wherever the GUI displays a
+    // postgres:// connection string (e.g. the create-cloud wizard review).
     // Defensive fallback returns the input as-is when it doesn't parse
     // as a URL — better to render a non-credential string verbatim than
     // to silently swallow the value.
@@ -153,6 +153,27 @@ export const appJs = `
       if (s == null) return '';
       s = String(s);
       return s.length > n ? s.slice(0, n) + '…' : s;
+    }
+
+    // Parse a postgres:// connection string into the discrete fields the v3
+    // dbconfig endpoints expect (host/port/dbname/user/password). Returns null
+    // when the string isn't a parseable postgres URL.
+    function parsePostgresUrl(url, label) {
+      try {
+        var u = new URL(String(url || ''));
+        if (!/^postgres(ql)?:$/i.test(u.protocol)) return null;
+        return {
+          type: 'postgres',
+          label: label || '',
+          host: decodeURIComponent(u.hostname || ''),
+          port: Number(u.port || 5432),
+          dbname: decodeURIComponent((u.pathname || '').replace(/^\\//, '')),
+          user: decodeURIComponent(u.username || ''),
+          password: decodeURIComponent(u.password || ''),
+        };
+      } catch (_) {
+        return null;
+      }
     }
 
     // Lockstep mirror of isJunctionTable in src/gui/data.ts: a junction joins
@@ -1471,10 +1492,10 @@ export const appJs = `
             var cur = btn.getAttribute('data-vis-cur');
             var next = cur === 'everyone' ? 'private' : 'everyone';
             withBusy(btn, function () {
-              return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
+              return fetchJson('/api/cloud/share', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ visibility: next }),
+                body: JSON.stringify({ table: tableName, pk: id, visibility: next }),
               }).then(function () {
                 invalidate(tableName);
                 return refreshEntities();
@@ -1759,10 +1780,10 @@ export const appJs = `
           if (!editing && tableName === 'files') renderFilePreview(row);
 
           function postVisibility(next) {
-            return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/visibility', {
+            return fetchJson('/api/cloud/share', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ visibility: next }),
+              body: JSON.stringify({ table: tableName, pk: id, visibility: next }),
             });
           }
           var detailVisBtn = content.querySelector('#detail-vis-toggle');
@@ -3934,8 +3955,8 @@ export const appJs = `
 
         function goNext() {
           if (wizState.step === 1) {
-            // Join a team: hand off to the invite-redeem modal, which collects
-            // the cloud URL + invite token and joins as a member.
+            // Join a cloud: hand off to the join modal, which collects the
+            // scoped connection credentials and connects directly as a member.
             if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
             if (!wizState.name.trim()) { showToast('Workspace name is required'); return; }
             // The display name is free-form (special characters allowed). The
@@ -3943,9 +3964,10 @@ export const appJs = `
             // (toSafeDirName) — so the only constraint here is a sane length.
             if (wizState.name.trim().length > 200) { showToast('Workspace name must be 200 characters or fewer'); return; }
             if (wizState.kind === 'cloud') {
+              // v3 creates a cloud by migrating this new workspace into the
+              // Postgres URL — only the connection string is needed (no email
+              // / display-name identity binding).
               if (!/^postgres(ql)?:\\/\\//i.test(wizState.cloudUrl.trim())) { showToast('Cloud URL must start with postgres://'); return; }
-              if (!wizState.email.trim()) { showToast('Email is required for cloud workspaces'); return; }
-              if (!wizState.displayName.trim()) { showToast('Display name is required for cloud workspaces'); return; }
             }
             wizState.step = 2;
             render();
@@ -3996,34 +4018,34 @@ export const appJs = `
         }
 
         function submitCloud() {
-          return fetchJson('/api/teams-gui/connections/register-and-create', {
+          // v3: "create a cloud" = create a fresh local workspace, add its
+          // starter entities, then migrate that workspace into the Postgres
+          // cloud (installs row-level security, you become owner). Rows are
+          // private-by-default and shared per-row via the eye toggle — there
+          // is no per-table sharing at creation time.
+          var fields = parsePostgresUrl(wizState.cloudUrl.trim(), wizState.name.trim());
+          if (!fields) return Promise.reject(new Error('Cloud URL must be a valid postgres:// connection string.'));
+          return fetchJson('/api/workspaces/create', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              cloud_url: wizState.cloudUrl.trim(),
-              email: wizState.email.trim(),
-              user_name: wizState.displayName.trim(),
-              team_name: wizState.name.trim(),
-            }),
-          }).then(function (result) {
-            var createdTeamId = result && result.team && result.team.id;
-            var wsId = result && result.workspace_id;
-            // Switch INTO the new cloud workspace so starter entities are
-            // created there (not in the previously-active local workspace).
-            var switched = wsId
-              ? fetchJson('/api/workspaces/switch', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ id: wsId }),
-                })
-              : Promise.resolve();
-            return switched.then(function () {
-              return createStarterEntities(wizState.entities, createdTeamId);
-            });
+            body: JSON.stringify({ name: wizState.name.trim() }),
+          }).then(function () {
+            return createStarterEntities(wizState.entities);
+          }).then(function () {
+            // The new workspace is now active; migrate it into the cloud.
+            return fetch('/api/dbconfig/migrate-to-cloud', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(fields),
+            })
+              .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+              .then(function (r) {
+                if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              });
           });
         }
 
-        function createStarterEntities(entities, teamId) {
+        function createStarterEntities(entities) {
           if (entities.length === 0) return Promise.resolve();
           // Sequential creates — order matters for any FK refs the user
           // adds later, and the volume is small (wizard cap is user-driven).
@@ -4033,18 +4055,6 @@ export const appJs = `
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ name: e.name.trim() }),
-              }).then(function () {
-                if (wizState.kind === 'cloud' && e.share && teamId) {
-                  // Share the new entity with the cloud team. Best-effort:
-                  // failure here doesn't roll back the create; the user
-                  // can retry from Data Model → Share later.
-                  return fetchJson('/api/teams-gui/teams/' + encodeURIComponent(teamId) + '/shared', {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ table: e.name.trim() }),
-                  }).catch(function () { /* swallow */ });
-                }
-                return null;
               });
             });
           }, Promise.resolve());
@@ -4052,75 +4062,39 @@ export const appJs = `
       }
     }
 
-    function showCreateTeamModal() {
-      // Prefill identity from ~/.lattice/identity.json so the user only
-      // enters per-DB things (cloud URL + DB name) in this modal.
-      fetchJson('/api/userconfig/identity').then(function (id) {
-        var bodyHtml =
-          '<div class="field"><label>Cloud URL</label>' +
-            '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
-          '</div>' +
-          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" autocapitalize="off" /></div>' +
-          '<div class="field"><label>Your display name</label><input name="user_name" value="' + escapeHtml(id.display_name || '') + '" /></div>' +
-          '<div class="field"><label>Database name</label><input name="team_name" /></div>' +
-          '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-          'Registers you on the cloud (bootstrap-only — must be a fresh cloud) and creates the cloud database in one step. ' +
-          'Email + display name are pulled from your User Config identity; edit them below to override for this database only.' +
-          '</p>';
-        showModal('Create cloud database', bodyHtml, {
-          primaryLabel: 'Create',
-          onSubmit: function (scope) {
-            var data = collectFormValues(scope);
-            return fetchJson('/api/teams-gui/connections/register-and-create', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(data),
-            }).then(function () { refreshSettingsRoute(); });
-          },
-        });
-      });
-    }
-
     function showJoinTeamModal(kind) {
-      fetchJson('/api/userconfig/identity').then(function (id) {
-        var bodyHtml =
-          '<div class="field"><label>Cloud URL</label>' +
-            '<input name="cloud_url" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
-          '</div>' +
-          '<div class="field"><label>Invite token</label><textarea name="invite_token" placeholder="latinv_..." autocapitalize="off" autocorrect="off" spellcheck="false"></textarea></div>' +
-          // Identity is fixed to the operator's User Settings — readonly so
-          // you join as yourself (and the email matches the invite binding).
-          '<div class="field"><label>Your email</label><input name="email" value="' + escapeHtml(id.email || '') + '" readonly tabindex="-1" style="opacity:0.7;cursor:not-allowed" /></div>' +
-          '<div class="field"><label>Your display name</label><input name="name" value="' + escapeHtml(id.display_name || '') + '" readonly tabindex="-1" style="opacity:0.7;cursor:not-allowed" /></div>' +
-          '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-          'Use the same Postgres URL the inviter used (postgres://…). Your email + display name come from User Settings — change them there. The email must match the address the invitation was addressed to.' +
-          '</p>';
-        showModal('Join workspace', bodyHtml, {
-          primaryLabel: 'Join',
-          onSubmit: function (scope) {
-            var data = collectFormValues(scope);
-            return fetchJson('/api/teams-gui/connections/join', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(data),
-            }).then(function (res) {
-              // Auto-switch to the joined cloud workspace so it shows in the
-              // header switcher and becomes active immediately — no manual
-              // refresh. The join response carries the new workspace id.
-              var wsId = res && res.workspace_id;
-              if (!wsId) {
-                return reloadEverything().then(function () { refreshSettingsRoute(kind); });
-              }
-              return fetchJson('/api/workspaces/switch', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ id: wsId }),
-              })
-                .then(function () { return reloadEverything(); })
-                .then(function () { showToast('Joined "' + (res.team && res.team.name || 'workspace') + '" — switched to it', {}); });
+      void kind;
+      // v3: join a cloud by connecting DIRECTLY with the scoped credentials the
+      // owner gave you (the invite blob). No invite token, no email binding —
+      // the database (row-level security) enforces what your role can see.
+      var bodyHtml =
+        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+          'Paste the connection credentials the cloud owner sent you. You connect ' +
+          'directly with your own scoped Postgres role — access is enforced by the ' +
+          'database, not a server.' +
+        '</p>' +
+        postgresFormHtml({}) +
+        '<div id="join-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+      showModal('Join a cloud', bodyHtml, {
+        primaryLabel: 'Join',
+        onSubmit: function (scope) {
+          void scope;
+          var body = readPostgresWizardForm();
+          var msg = document.getElementById('join-msg');
+          if (msg) msg.textContent = 'Connecting…';
+          return fetch('/api/dbconfig/connect-existing', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+            .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+            .then(function (r) {
+              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              return reloadEverything().then(function () {
+                showToast('Joined "' + (r.body.label || 'cloud') + '"', {});
+              });
             });
-          },
-        });
+        },
       });
     }
 
@@ -4460,44 +4434,28 @@ export const appJs = `
           return p.then(function () { location.hash = '#/'; renderRoute(); });
         };
 
-        if (cfg.state === 'team-cloud-creator') {
-          // Owner: disconnect the database from the cloud — kicks all members.
+        if (cfg.state === 'cloud-owner' || cfg.state === 'cloud-member') {
+          // v3: "leaving" a cloud just forgets the local connection and
+          // switches this client back to another (local) workspace. It does
+          // NOT mutate the cloud — the cloud keeps running for everyone else,
+          // and there is no server-side registry to update.
+          var cloudLabel = cfg.label || label || 'this cloud';
           host.innerHTML =
             '<div class="danger-zone">' +
               '<h3>Danger zone</h3>' +
               '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-                'Disconnect this database from the cloud. This dissolves the cloud workspace and <strong>kicks all members</strong>. This cannot be undone.' +
+                'Forget this cloud connection on this device and switch back to a local workspace. ' +
+                'The cloud keeps running for everyone else — this only affects your client.' +
               '</p>' +
-              '<button class="btn destructive" id="db-disconnect-btn">Disconnect from cloud</button>' +
+              '<button class="btn destructive" id="db-forget-btn">Forget this cloud</button>' +
             '</div>';
-          host.querySelector('#db-disconnect-btn').addEventListener('click', function () {
-            if (!confirm('Disconnect "' + (cfg.teamName || label || 'this database') + '" from the cloud? This kicks all members and cannot be undone.')) return;
-            var dbtn = host.querySelector('#db-disconnect-btn');
-            withBusy(dbtn, function () {
-              return fetchJson('/api/teams-gui/teams/' + cfg.teamId, { method: 'DELETE' })
-                .then(function () { showToast('Disconnected from cloud', {}); return switchAway(); })
-                .catch(function (e) { showToast('Disconnect failed: ' + e.message); });
-            });
-          });
-          return;
-        }
-        if (cfg.state === 'team-cloud-member') {
-          // Member: leave the team. The cloud DB keeps running for others.
-          host.innerHTML =
-            '<div class="danger-zone">' +
-              '<h3>Danger zone</h3>' +
-              '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-                'Leave this cloud workspace. It keeps running for everyone else; you simply stop being a member.' +
-              '</p>' +
-              '<button class="btn destructive" id="db-leave-btn">Leave workspace</button>' +
-            '</div>';
-          host.querySelector('#db-leave-btn').addEventListener('click', function () {
-            if (!confirm('Leave "' + (cfg.teamName || label || 'this team') + '"?')) return;
-            var lbtn = host.querySelector('#db-leave-btn');
-            withBusy(lbtn, function () {
-              return fetchJson('/api/teams-gui/teams/' + cfg.teamId + '/members/' + encodeURIComponent(cfg.myUserId), { method: 'DELETE' })
-                .then(function () { showToast('Left the workspace', {}); return switchAway(); })
-                .catch(function (e) { showToast('Leave failed: ' + e.message); });
+          host.querySelector('#db-forget-btn').addEventListener('click', function () {
+            if (!confirm('Forget "' + cloudLabel + '" on this device and switch back to a local workspace?')) return;
+            var fbtn = host.querySelector('#db-forget-btn');
+            withBusy(fbtn, function () {
+              return switchAway()
+                .then(function () { showToast('Forgot the cloud connection', {}); })
+                .catch(function (e) { showToast('Failed: ' + e.message); });
             });
           });
           return;
@@ -4529,9 +4487,9 @@ export const appJs = `
     }
 
     function renderDatabaseNamePanel(host) {
-      // Pull the friendly name from /api/workspaces and the team role from
-      // /api/dbconfig (isCreator) so a non-owner member sees the name
-      // read-only — renaming a team cloud broadcasts to every member, so
+      // Pull the friendly name from /api/workspaces and the cloud role from
+      // /api/dbconfig (isOwner) so a non-owner member sees the name
+      // read-only — renaming a cloud broadcasts to every member, so
       // only the owner may do it.
       Promise.all([fetchJson('/api/workspaces'), fetchJson('/api/dbconfig').catch(function () { return {}; })])
         .then(function (results) {
@@ -4542,8 +4500,8 @@ export const appJs = `
         var name = current.label || '';
         var isCloud = current.kind === 'cloud';
         var kind = isCloud ? 'Cloud' : 'Local';
-        // Members (cloud, non-creator) can't rename. Locals + creators can.
-        var canRename = !isCloud || cfg.isCreator === true;
+        // Members (cloud, non-owner) can't rename. Locals + owners can.
+        var canRename = !isCloud || cfg.isOwner === true;
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Name</h3>' +
@@ -4640,12 +4598,11 @@ export const appJs = `
       });
     }
 
-    // State-machine Database panel (v1.13+). Renders a different body
-    // per info.state: local -> Migrate / Connect-existing wizards;
-    // team-cloud-creator/member -> connection details + members. A connected
-    // cloud workspace is always a member workspace (created or invited), so
-    // there is no in-settings "join via invite" — that lives in the Join
-    // Workspace flow only.
+    // State-machine Database panel (v3). Renders a different body per
+    // info.state: local -> Migrate to cloud; cloud-owner -> connection
+    // summary + Invite a member; cloud-member -> connection summary + a
+    // "you are a member" note. Security is enforced by the database (row-
+    // level security) — there is no server-side member registry.
     function renderDatabasePanel(host) {
       fetchJson('/api/dbconfig').then(function (info) {
         var badge = renderStateBadge(info);
@@ -4673,11 +4630,11 @@ export const appJs = `
           label = 'LOCAL';
           color = 'var(--text-muted)';
           break;
-        case 'team-cloud-creator':
+        case 'cloud-owner':
           label = '👑 CLOUD · OWNER';
           color = 'var(--accent)';
           break;
-        case 'team-cloud-member':
+        case 'cloud-member':
           label = 'CLOUD · MEMBER';
           color = 'var(--accent)';
           break;
@@ -4700,20 +4657,22 @@ export const appJs = `
           '</div>'
         );
       }
-      if (info.state === 'team-cloud-creator' || info.state === 'team-cloud-member') {
-        var isOwner = info.state === 'team-cloud-creator';
+      if (info.state === 'cloud-owner' || info.state === 'cloud-member') {
+        var isOwner = info.isOwner === true;
+        var cloudLabel = info.label || 'this cloud';
         return (
           renderConnectionSummary(info) +
           '<div style="margin-top:10px;font-size:13px">' +
-            '<strong>Cloud workspace:</strong> ' + escapeHtml(info.teamName || '(unnamed)') +
-            (isOwner ? ' · <span style="color:var(--accent)">you are the owner</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
+            '<strong>Cloud:</strong> ' + escapeHtml(cloudLabel) +
+            (isOwner ? ' · <span style="color:var(--accent)">owner</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
-            (isOwner ? '<button class="btn primary" data-act="open-invite">Invite member</button>' : '') +
+            (isOwner ? '<button class="btn primary" data-act="open-invite">Invite a member</button>' : '') +
           '</div>' +
-          // Exit actions (Disconnect for the owner / Leave for a member) live
-          // in the Danger Zone below — not on a member row.
-          '<div id="db-members-host" style="margin-top:12px"><div style="font-size:12px;color:var(--text-muted)">Loading members…</div></div>'
+          // Owner: invite affordance below. Member: a short note. Row-level
+          // security is enforced by the database, not this panel — there is
+          // no server-side member registry to render.
+          '<div id="db-members-host" style="margin-top:12px"></div>'
         );
       }
       return '<p style="color:var(--text-muted)">Unknown database state.</p>';
@@ -4742,51 +4701,24 @@ export const appJs = `
         showMigrateToCloudModal(rerender);
       });
 
-      // team_id / my_user_id / isCreator come from /api/dbconfig (info),
-      // resolved against the ACTIVE cloud DB — not a local connection row
-      // (which doesn't exist when the team cloud itself is active). This
-      // is what fixes "No local team connection found" for members + the
-      // creator's own invite flow.
-      var teamId = info.teamId;
-      var myUserId = info.myUserId;
-      var isCreator = !!info.isCreator;
+      // v3: there is NO server-side member registry. Security is enforced by
+      // the database (row-level security); each member connects directly with
+      // their own scoped Postgres role. The owner invites by provisioning a
+      // scoped role and handing the credentials to the new member.
+      var isOwner = info.isOwner === true;
 
       var inviteBtn = host.querySelector('[data-act="open-invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
-        if (!teamId) { showToast('No team is active.'); return; }
-        showInviteByEmailModal(teamId, info);
+        showInviteMemberModal(info);
       });
 
-      // Inline member list for the active team cloud. Marks "you"; your
-      // own row carries Leave (member) / Destroy team (creator); other
-      // rows carry Kick, shown only to the creator.
+      // No members list to fetch. The owner sees the invite affordance (the
+      // button above); a member sees a short note that they're connected.
       var membersHost = host.querySelector('#db-members-host');
-      if (membersHost && teamId && (info.state === 'team-cloud-creator' || info.state === 'team-cloud-member')) {
-        Promise.all([
-          fetchJson('/api/teams-gui/teams/' + teamId + '/members'),
-          // Pending invitees (I). Resilient: an older cloud without the GET
-          // invitations route shouldn't blank the whole member list.
-          fetchJson('/api/teams-gui/teams/' + teamId + '/invitations').catch(function () { return { invitations: [] }; }),
-        ]).then(function (results) {
-          var members = (results[0] && results[0].members) || [];
-          var invitations = (results[1] && results[1].invitations) || [];
-          membersHost.innerHTML = renderMembersList(members, myUserId, isCreator, invitations);
-          // Kick another member (creator only).
-          membersHost.querySelectorAll('[data-act="kick"]').forEach(function (btn) {
-            var row = btn.closest('[data-user-id]');
-            var userId = row && row.getAttribute('data-user-id');
-            btn.addEventListener('click', function () {
-              if (!confirm('Remove this member from the workspace?')) return;
-              withBusy(btn, function () {
-                return fetchJson('/api/teams-gui/teams/' + teamId + '/members/' + encodeURIComponent(userId), { method: 'DELETE' })
-                  .then(function () { rerender(); })
-                  .catch(function (e) { setMsg('Kick failed: ' + e.message, false); });
-              });
-            });
-          });
-        }).catch(function () { membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Members unavailable.</div>'; });
+      if (membersHost && info.state === 'cloud-member') {
+        membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
       }
-
+      void isOwner;
     }
 
     // ── v1.13 wizards ─────────────────────────────────────────────
@@ -4905,60 +4837,30 @@ export const appJs = `
     }
 
     function showMigrateToCloudModal(onClose) {
-      // List every non-system user-defined table so the operator can
-      // opt-OUT of sharing per-table before migrating. Default: every
-      // user table is checked. System tables (__lattice_*, _lattice_*)
-      // are filtered out — they're always migrated and never "shared"
-      // in the team sense.
-      var shareableTables = ((state.entities && state.entities.tables) || [])
-        .filter(function (t) { return !/^_/.test(t.name) && !isJunction(t); })
-        .map(function (t) { return t.name; });
-      var shareRows = shareableTables.length === 0
-        ? '<p style="margin:0;color:var(--text-muted);font-size:12px">No user-defined tables to share yet.</p>'
-        : shareableTables.map(function (t) {
-            return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-weight:400;text-transform:none;letter-spacing:0">' +
-              '<input type="checkbox" class="mig-share" data-table="' + escapeHtml(t) + '" checked />' +
-              '<span style="font-family:ui-monospace,monospace;font-size:12.5px">' + escapeHtml(t) + '</span>' +
-            '</label>';
-          }).join('');
+      // v3: rows are private-by-default and shared per-row via the eye toggle,
+      // not per-table at migrate time. Migrate copies the local SQLite into a
+      // fresh Postgres, installs row-level security, and makes you the owner.
       var bodyHtml =
         '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
           'Enter credentials for a <strong>fresh, empty</strong> Postgres database. ' +
-          'Lattice will copy every row from your local SQLite into the new DB, then ' +
-          'rename the SQLite file to <code>.db.local-bak</code> and switch the project ' +
+          'Lattice will copy every row from your local SQLite into the new DB, ' +
+          'install row-level security, make you the owner, then switch the project ' +
           'to read from the cloud. This action cannot be undone.' +
         '</p>' +
         postgresFormHtml({}) +
-        '<div style="margin-top:14px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02)">' +
-          '<div style="font-size:12px;color:var(--text);text-transform:uppercase;letter-spacing:0.04em;font-weight:500;margin-bottom:6px">Share with cloud</div>' +
-          '<p style="margin:0 0 8px;font-size:12px;color:var(--text-muted)">' +
-            'Checked tables become visible to every member you invite. Uncheck any you want to keep ' +
-            'cloud-stored but unshared. You can change this later from Data Model.' +
-          '</p>' +
-          shareRows +
-        '</div>' +
         '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
       showModal('Migrate to cloud', bodyHtml, {
         primaryLabel: 'Migrate →',
         onSubmit: function (scope) {
+          void scope;
           var body = readPostgresWizardForm();
           var msg = document.getElementById('w-msg');
-          // Snapshot which tables the user wants shared before the
-          // migrate runs — we share them after the migrate completes.
-          var tablesToShare = [];
-          scope.querySelectorAll('input.mig-share').forEach(function (cb) {
-            if (cb.checked) tablesToShare.push(cb.getAttribute('data-table'));
-          });
           // Validate Supabase URL pattern + probe the cloud before
           // persisting a credential that would just blow up on the next
           // open.
           return probeBeforeCredentialSave(body, msg).then(function (probe) {
-            if (probe.teamEnabled) {
-              throw new Error(
-                'Target is already a cloud workspace' +
-                (probe.teamName ? ' (' + probe.teamName + ')' : '') +
-                '. Migrate-to-cloud only works against fresh empty targets.'
-              );
+            if (probe.isCloud) {
+              throw new Error('That database is already a Lattice cloud — use Join instead.');
             }
             msg.textContent = 'Migrating… (this may take a moment for large DBs)';
             return fetch('/api/dbconfig/migrate-to-cloud', {
@@ -4967,187 +4869,70 @@ export const appJs = `
               .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
               .then(function (r) {
                 if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
-                // After the migrate, the active DB has been swapped to
-                // the cloud. Share the checked tables — best-effort; a
-                // share failure surfaces a toast but doesn't undo the
-                // migration. The user can retry from Data Model later.
-                if (tablesToShare.length === 0) {
-                  if (onClose) onClose();
-                  return;
-                }
-                return shareTablesPostMigrate(tablesToShare).finally(function () {
-                  if (onClose) onClose();
-                });
+                if (onClose) onClose();
               });
           });
         },
       });
     }
 
-    function shareTablesPostMigrate(tables) {
-      // After migrate-to-cloud the user has a single team. Look it up
-      // and share each requested table. Best-effort: errors surface as
-      // toasts, the migrated DB is still good.
-      return fetchJson('/api/teams-gui/connections').then(function (data) {
-        var conns = (data && data.connections) || [];
-        var teamId = conns[0] && conns[0].team_id;
-        if (!teamId) return;
-        return tables.reduce(function (chain, table) {
-          return chain.then(function () {
-            return fetchJson('/api/teams-gui/teams/' + encodeURIComponent(teamId) + '/shared', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ table: table }),
-            }).catch(function (err) {
-              showToast('Share "' + table + '" failed: ' + err.message, {});
-            });
-          });
-        }, Promise.resolve());
-      });
-    }
-
-    function renderMembersList(members, myUserId, isCreator, invitations) {
-      var rows = members.map(function (m) {
-        var label = m.name || m.email || '(unknown)';
-        var isSelf = m.user_id === myUserId;
-        // Other rows: Kick, but only the creator may remove other members.
-        // Your own exit (Disconnect for the owner / Leave for a member) lives
-        // in the Danger Zone, not on a member row.
-        var btn = '';
-        if (!isSelf && isCreator) {
-          btn = '<button class="btn danger-btn" data-act="kick">Kick</button>';
-        }
-        return '<div class="member-row" data-user-id="' + escapeHtml(m.user_id) + '">' +
-          '<span>' + escapeHtml(label) +
-            (isSelf ? ' <span style="color:var(--accent);font-size:11px">(you)</span>' : '') +
-            ' <span style="color:var(--text-muted);font-size:11px">' + escapeHtml(m.email || '') + '</span>' +
-            ' <span class="role-tag' + (m.role === 'creator' ? '' : ' role-member') + '">' + m.role + '</span>' +
-          '</span>' +
-          btn +
-        '</div>';
-      }).join('');
-      // Pending (unredeemed) invitations — shown below active members so the
-      // owner can see who's been invited but hasn't joined yet (I).
-      var pending = (invitations || []).filter(function (iv) { return iv && iv.invitee_email; });
-      var pendingHtml = pending.length
-        ? '<h4 style="margin-top:14px">Pending invitations</h4>' +
-            pending.map(function (iv) {
-              return '<div class="member-row member-row-pending">' +
-                '<span style="color:var(--text-muted)">' + escapeHtml(iv.invitee_email) +
-                  ' <span class="role-tag' + (iv.expired ? ' role-expired' : ' role-member') + '">' +
-                    (iv.expired ? 'expired' : 'invited') +
-                  '</span>' +
-                '</span>' +
-              '</div>';
-            }).join('')
-        : '';
-      return '<div class="members-list"><h4>Members</h4>' + rows + pendingHtml + '</div>';
-    }
-
-    function showInviteByEmailModal(teamId, info) {
-      // Owner-facing: list the workspace's shareable tables, ALL CHECKED by
-      // default, so inviting a member shares those tables with them in one step.
-      // Uncheck any you want to keep private. Re-sharing an already-shared table
-      // is idempotent, so it's safe to leave them checked.
-      var shareable = ((state.entities && state.entities.tables) || [])
-        .filter(function (t) { return t.name.charAt(0) !== '_' && !isJunction(t); })
-        .map(function (t) { return t.name; });
-      var shareRows = shareable.length === 0
-        ? '<p style="margin:0;color:var(--text-muted);font-size:12px">No tables to share yet.</p>'
-        : shareable.map(function (t) {
-            return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-weight:400;text-transform:none;letter-spacing:0">' +
-              '<input type="checkbox" class="invite-share" data-table="' + escapeHtml(t) + '" checked />' +
-              '<span style="font-family:ui-monospace,monospace;font-size:12.5px">' + escapeHtml(t) + '</span>' +
-            '</label>';
-          }).join('');
+    function showInviteMemberModal(info) {
+      // v3 owner-only invite: the server provisions a scoped member role and
+      // returns a connection blob. That blob IS the invite — copy it and hand
+      // it to the new member, who pastes the fields into "Join a cloud". There
+      // is no per-table sharing here (rows are private-by-default, shared per
+      // row via the eye toggle).
+      info = info || {};
       var bodyHtml =
-        '<div class="field"><label>Invitee email</label>' +
-        '<input name="invitee_email" type="email" placeholder="bob@example.com" /></div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-        'Invitations are bound to this email — only the recipient can redeem.' +
-        '</p>' +
-        (shareable.length > 0
-          ? '<div style="margin-top:4px;padding:10px;border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02)">' +
-              '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">Share tables with this member</div>' +
-              '<p style="margin:0 0 8px;font-size:12px;color:var(--text-muted)">All tables are shared by default — uncheck any you want to keep private.</p>' +
-              shareRows +
-            '</div>'
-          : '');
-      showModal('Invite member', bodyHtml, {
+        '<div class="field"><label>Member label</label>' +
+        '<input name="label" type="text" placeholder="bob" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+        'A short name for the scoped role you are provisioning. Lattice returns ' +
+        'connection credentials below — send them to the new member, who pastes ' +
+        'them into “Join a cloud”.' +
+        '</p>';
+      showModal('Invite a member', bodyHtml, {
         primaryLabel: 'Generate invite',
         onSubmit: function (scope) {
           var data = collectFormValues(scope);
-          if (!data.invitee_email) throw new Error('invitee_email is required');
-          var tablesToShare = [];
-          scope.querySelectorAll('input.invite-share:checked').forEach(function (cb) {
-            tablesToShare.push(cb.getAttribute('data-table'));
-          });
-          return fetchJson('/api/teams-gui/teams/' + teamId + '/invitations', {
+          if (!data.label) throw new Error('label is required');
+          return fetchJson('/api/cloud/invite', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ invitee_email: data.invitee_email }),
-          }).then(function (inv) {
-            // Share the checked tables, then show the invite token.
-            return shareTablesForTeam(teamId, tablesToShare).then(function () {
-              showInviteTokenModal(inv, info);
-            });
+            body: JSON.stringify({ label: data.label }),
+          }).then(function (res) {
+            showInviteCredentialsModal((res && res.invite) || {});
           });
         },
       });
     }
 
-    /** Share each table with the team sequentially (idempotent; per-table errors toast, don't abort). */
-    function shareTablesForTeam(teamId, tables) {
-      return (tables || []).reduce(function (chain, table) {
-        return chain.then(function () {
-          return fetchJson('/api/teams-gui/teams/' + encodeURIComponent(teamId) + '/shared', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ table: table }),
-          }).catch(function (err) { showToast('Share "' + table + '" failed: ' + err.message, {}); });
-        });
-      }, Promise.resolve());
-    }
-
-    function showInviteTokenModal(inv, info) {
-      info = info || {};
-      // The invitee needs the cloud connection string AND the token. Show the
-      // URL with the password MASKED — redeem never needs the owner's password
-      // (the invitee authenticates with their own credentials).
-      var connStr = info.host
-        ? 'postgres://' + (info.user || 'user') + ':****@' + info.host + ':' + (info.port || 5432) + '/' + (info.dbname || '')
-        : '';
-      var connBlock = connStr
-        ? '<h4 style="margin:14px 0 4px">Cloud connection</h4>' +
-          '<div class="copy-token" id="copy-conn">' + escapeHtml(connStr) + '</div>' +
-          '<p style="font-size:12px;color:var(--text-muted);margin:4px 0 0">Share this URL with the invitee (password masked). Click to copy.</p>'
-        : '';
+    function showInviteCredentialsModal(invite) {
+      invite = invite || {};
+      // Render the returned connection blob in a single copyable block. The
+      // member pastes these fields into "Join a cloud".
+      var lines = [
+        'host=' + (invite.host || ''),
+        'port=' + (invite.port || 5432),
+        'dbname=' + (invite.dbname || ''),
+        'user=' + (invite.user || ''),
+        'password=' + (invite.password || ''),
+      ].join('\\n');
       var bodyHtml =
-        '<p style="margin-top:0">Share this token with the invitee (one-time use). It expires at <code>' +
-        escapeHtml(inv.expires_at || '(no expiry)') + '</code>.</p>' +
-        '<div class="copy-token" id="copy-token">' + escapeHtml(inv.raw_token) + '</div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>' +
-        connBlock;
-      var handle = showModal('Invitation token', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
-      var tokenEl = document.getElementById('copy-token');
-      if (tokenEl) {
-        tokenEl.addEventListener('click', function () {
-          navigator.clipboard.writeText(inv.raw_token).then(function () {
-            tokenEl.textContent = 'Copied!';
-            setTimeout(function () { tokenEl.textContent = inv.raw_token; }, 1200);
+        '<p style="margin-top:0">Send these credentials to your new member — they paste them into “Join a cloud”.</p>' +
+        '<div class="copy-token" id="copy-invite" style="white-space:pre">' + escapeHtml(lines) + '</div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the block to copy.</p>';
+      var handle = showModal('Invite credentials', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
+      var blockEl = document.getElementById('copy-invite');
+      if (blockEl) {
+        blockEl.addEventListener('click', function () {
+          navigator.clipboard.writeText(lines).then(function () {
+            var prev = blockEl.textContent;
+            blockEl.textContent = 'Copied!';
+            setTimeout(function () { blockEl.textContent = prev; }, 1200);
           });
         });
       }
-      var connEl = document.getElementById('copy-conn');
-      if (connEl) {
-        connEl.addEventListener('click', function () {
-          navigator.clipboard.writeText(connStr).then(function () {
-            connEl.textContent = 'Copied!';
-            setTimeout(function () { connEl.textContent = connStr; }, 1200);
-          });
-        });
-      }
-      // Suppress unused-var on handle
       void handle;
     }
 

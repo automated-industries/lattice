@@ -261,10 +261,29 @@ export type {
   MigrationResult,
   MigrationOptions,
 } from './framework/cloud-migration.js';
-export { probeCloud } from './framework/cloud-connect.js';
+export { probeCloud, cloudRlsInstalled, canManageRoles } from './framework/cloud-connect.js';
 export type { CloudProbeResult } from './framework/cloud-connect.js';
 
 export { isPostgresUrl } from './cloud/url.js';
+
+// v3.0 — shared-cloud Row-Level Security. A cloud is a Postgres DB each user
+// connects to directly as their own scoped role; these install RLS + provision
+// members + share rows with plain SQL. No-ops / throws on SQLite (local only).
+export {
+  installCloudRls,
+  enableRlsForTable,
+  backfillOwnership,
+  MEMBER_GROUP,
+} from './cloud/rls.js';
+export {
+  provisionMemberRole,
+  revokeMemberRole,
+  generateMemberPassword,
+  memberRoleName,
+  setRowVisibility,
+} from './cloud/members.js';
+export { discoverCloudTables } from './cloud/discover.js';
+export type { DiscoveredTable } from './cloud/discover.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing

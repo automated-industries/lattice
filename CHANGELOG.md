@@ -8,6 +8,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-06-11
+
+### Breaking — clouds are now a shared Postgres DB secured by row-level security
+
+A "cloud" is now a **shared Postgres database that every user connects to
+directly as their own scoped, non-superuser role**, with real Postgres
+Row-Level Security as the only security boundary. The server/replica model is
+**deleted**. A cloud and a "team" are the same thing — one concept.
+
+**Removed (breaking):**
+
+- **`lattice serve` and the entire HTTP/bearer server.** There is no Lattice
+  server process in front of Postgres anymore — no `serve --team-cloud`, no
+  bearer-token auth, no `__lattice_api_tokens`, no team-server routes.
+- **The replica / sync client** (`TeamsClient`, the outbox/DLQ, and the
+  `__lattice_team_*` tables: `_identity`, `_connections`, `_outbox`, `_dlq`,
+  `_members`). Members read and write the shared database live over their own
+  scoped connection.
+- **App-layer row ACLs as the security boundary.** Row visibility is enforced by
+  Postgres RLS policies, not by application `WHERE`-injection.
+- **The direct-cloud reconnect banner** and the "hosted Lattice Teams URL"
+  affordance.
+
+**Added:**
+
+- **RLS installer (plain idempotent SQL).** `installCloudRls` + `enableRlsForTable`
+  install `FORCE ROW LEVEL SECURITY` and per-table policies keyed on
+  `session_user`, plus ownership/grant bookkeeping (`__lattice_owners`,
+  `__lattice_row_grants`) and a `__lattice_changes` change feed (drives realtime
+  via `pg_notify`). Rows are **private by default**; the owner shares a row with
+  `lattice_set_row_visibility(table, pk, 'everyone' | 'private')` or grants a
+  specific member with `lattice_grant_row` (owner-only `SECURITY DEFINER`
+  functions). SQLite is a no-op — it stays a single-user local store.
+- **Scoped member provisioning.** `provisionMemberRole` creates a `NOSUPERUSER
+NOCREATEROLE` LOGIN role in the `lattice_members` group; `generateMemberPassword`
+  / `memberRoleName` / `revokeMemberRole` / `setRowVisibility` round it out. The
+  credential a member holds is a dead end for privilege escalation.
+- **`Lattice.init({ introspectOnly })`** — open an already-provisioned database
+  issuing NO DDL. This is how a scoped member (no CREATE/ALTER privilege) opens a
+  cloud: the GUI discovers the member's privileged tables from `information_schema`
+  and registers them, then opens introspect-only.
+- **`probeCloud(url)`** now reports `{ reachable, dialect, isCloud }` — `isCloud`
+  detects an established cloud (Postgres with `__lattice_owners` installed) via
+  `to_regclass`, so even a member denied SELECT on the bookkeeping gets a truthful
+  answer. `canManageRoles` / `cloudRlsInstalled` are exported helpers.
+- **Three GUI flows on the new model:** migrate a local Lattice into a cloud
+  (you become the owner, RLS installed, you own the migrated rows), join an
+  existing cloud with the scoped credentials the owner issued (the invite IS the
+  credentials — there is no token redemption), and invite a member (an owner with
+  `CREATEROLE` provisions a scoped role and hands over the connection blob).
+- **Offline editing is preserved** as the client-side local edit queue, decoupled
+  from any server.
+
+**Migration:** a direct `postgres://` connection string is no longer a Lattice
+cloud connection — each user needs their own scoped role. Stand the cloud up by
+migrating a local Lattice into a fresh Postgres (installs RLS + makes you owner),
+then invite members; each member connects with their issued credentials. See
+`docs/cloud.md`.
+
 ## [2.3.0] - 2026-06-11
 
 ### Fixed

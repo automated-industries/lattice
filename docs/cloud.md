@@ -1,337 +1,412 @@
-# Lattice Teams
+# Lattice Cloud
 
-Multi-user cloud-shared Lattice databases on your own Postgres. The same `latticesql` binary boots in two modes:
+A **Lattice cloud** is a shared Postgres database protected by real Postgres
+**Row-Level Security (RLS)**. Several people connect to the same database and each
+sees only their own rows plus the rows others have explicitly shared — and that
+boundary is enforced by Postgres itself, not by any application code.
 
-- **Local mode** — what you've always used. SQLite (or your own Postgres) for a single user.
-- **Team-cloud mode** — `lattice gui --team-cloud` exposes a bearer-gated HTTP API on top of a Postgres database that one or more local Lattices sync into. Identity is local-first (email + bearer tokens, no central web auth). Invitations are bound to a recipient email so an invite token is safe to share over an unauthenticated channel.
+There is exactly **one** concept here: the cloud. A cloud _is_ the set of people
+who can connect to it; there is no separate "team" object to create and no "enable
+sharing" step. We call the people on a cloud its **members**, the person who set it
+up its **owner**, and the database itself the **cloud**.
 
-One cloud = one team. The cloud's Postgres database holds the team identity, member list, shared object schemas, change log, and row-link table. Each member's local Lattice keeps a connection row, an outbox, and a DLQ. The puller and outbox drainer drive the sync loop.
-
----
-
-## Architecture at a glance
-
-```
-┌─ Alice's local lattice ─────────┐                      ┌─ Bob's local lattice ──────────┐
-│                                 │                      │                                │
-│  user-defined entities          │                      │  user-defined entities         │
-│  __lattice_team_connections     │                      │  __lattice_team_connections    │
-│  __lattice_local_links          │ ──┐         ┌──── ── │  __lattice_local_links         │
-│  __lattice_team_outbox          │   │         │        │  __lattice_team_outbox         │
-│  __lattice_team_dlq             │   │         │        │  __lattice_team_dlq            │
-└─────────────────────────────────┘   │         │        └────────────────────────────────┘
-                                      ▼         ▼
-                              ┌─ Cloud Postgres (team-cloud mode) ─┐
-                              │                                    │
-                              │  __lattice_users                   │
-                              │  __lattice_api_tokens              │
-                              │  __lattice_team                    │
-                              │  __lattice_team_identity           │  ← singleton, "this cloud's team"
-                              │  __lattice_team_members            │
-                              │  __lattice_invitations             │
-                              │  __lattice_shared_objects          │
-                              │  __lattice_object_owners           │  ← per-table ownership (v1.14)
-                              │  __lattice_change_log              │
-                              │  __lattice_row_links               │
-                              │  (mirrored user tables for shared  │
-                              │   objects + linked rows)           │
-                              └────────────────────────────────────┘
-```
-
-The cloud Postgres is fully under the operator's control — Lattice doesn't host anything. Connection URLs (with passwords) live encrypted in each operator's `~/.lattice/db-credentials.enc`; the YAML config references them by label (`db: ${LATTICE_DB:atlas}`).
+> **SQLite is single-user and local.** RLS and the cloud model are Postgres-only.
+> A local SQLite Lattice is just your private store; every cloud installer in the
+> library is a no-op on SQLite. To go from a local Lattice to a shared one, you
+> **migrate** it into a cloud Postgres (see below).
 
 ---
 
-## Local user config (`~/.lattice/`)
+## What makes it different: no server
 
-Machine-local, outside any Lattice DB. Files are created lazily on first use; the directory is `chmod 0700` on POSIX, best-effort on Windows.
+There is **no Lattice server process**. There is no HTTP API in front of Postgres,
+no bearer tokens, no replica, and no sync client. A cloud is _only_ a Postgres
+database with RLS installed.
 
-| File                 | Purpose                                                                                                        |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `master.key`         | 32-byte AES-256 key (base64). Auto-generated. `LATTICE_ENCRYPTION_KEY` env var takes precedence. `chmod 0600`. |
-| `identity.json`      | `{display_name, email}`. Mirrored into `__lattice_user_identity` (singleton) on every Lattice open.            |
-| `db-credentials.enc` | AES-GCM-encrypted JSON `{ [label]: postgresUrl }`. Decrypted in-memory; never returned over HTTP.              |
-| `keys/<label>.token` | Per-joined-team bearer token. One file per joined team.                                                        |
+```
+┌─ alice (owner) ────────┐        ┌─ bob (member) ─────────┐        ┌─ carol (member) ──────┐
+│  psql / lattice gui    │        │  psql / lattice gui    │        │  psql / lattice gui   │
+│  role: alice           │        │  role: lm_bob_a91c     │        │  role: lm_carol_3f70  │
+│  password: ••••••      │        │  password: ••••••      │        │  password: ••••••     │
+└───────────┬────────────┘        └───────────┬────────────┘        └──────────┬────────────┘
+            │  direct postgres:// connection, each as its OWN scoped role       │
+            └──────────────────────────────┬──────────────────────────────────┘
+                                            ▼
+                       ┌─ Cloud Postgres (RLS installed) ────────────┐
+                       │  your user-defined tables                   │
+                       │    └ ENABLE + FORCE ROW LEVEL SECURITY      │
+                       │  __lattice_owners      (row → owner role)   │
+                       │  __lattice_row_grants  (custom grants)      │
+                       │  __lattice_changes     (append-only feed)   │
+                       │  lattice_members       (group role)         │
+                       │  SECURITY DEFINER fns: lattice_row_visible, │
+                       │    lattice_set_row_visibility, _grant, …    │
+                       └─────────────────────────────────────────────┘
+```
 
-The `src/framework/user-config.ts` module exposes the read/write API:
+**Each member connects directly to Postgres as their own scoped, non-superuser
+role** — never a shared owner/superuser connection string. Postgres RLS is the
+security boundary: a member who opens a raw `psql` against their own connection
+**physically cannot read or write another member's rows**. There is no privileged
+layer to bypass because there is no layer at all — the database is the boundary.
+
+The DBA's entire job is to **set up the Postgres database and create
+usernames/passwords**. Lattice installs the security model on top using plain SQL:
+`CREATE ROLE`, `CREATE POLICY`, `FORCE ROW LEVEL SECURITY`, and a handful of
+`SECURITY DEFINER` functions.
+
+### Identity is the Postgres role
+
+A member's identity is simply **which Postgres role they authenticated as**.
+Policies key on `session_user` / `current_user`, which Postgres resolves from the
+login — it is reliable even behind a **transaction-mode connection pooler**, where
+`SET LOCAL`-based identity schemes break because a pooled transaction can land on
+any backend. Because the login role _is_ the identity, there is nothing to spoof:
+to act as another member you would need that member's password.
+
+---
+
+## The security model
+
+Lattice installs the cloud security model in two parts, both via plain SQL
+migrations against the cloud Postgres.
+
+### 1. Bootstrap (once per cloud)
+
+`installCloudRls(db)` creates the shared machinery:
+
+- **`lattice_members`** — a `NOLOGIN` group role. Table and schema privileges are
+  granted to the group, so adding a member or a shared table is a single `GRANT`.
+  The group grants _access_; RLS still filters _visibility_ per individual login
+  role. Membership in the group never lets you see another member's rows.
+- **`__lattice_owners`** `(table_name, pk, owner_role, visibility, …)` — the
+  out-of-band record of who owns each row and how widely it's shared
+  (`private` | `everyone` | `custom`). It is never injected into your tables and
+  members cannot read or write it directly.
+- **`__lattice_row_grants`** `(table_name, pk, grantee_role, granted_by, …)` — the
+  explicit grant list backing `custom` visibility.
+- **`__lattice_changes`** — an append-only change feed (`seq`, `table_name`, `pk`,
+  `op`, `owner_role`, `created_at`). A per-row `AFTER INSERT` trigger fires
+  `pg_notify('lattice_changes', …)` carrying only _metadata_ (table, pk, op) — never
+  row content — so a connected GUI can refetch the affected row _through RLS_.
+- **`SECURITY DEFINER` functions** that read the bookkeeping a member can't:
+  - `lattice_row_visible(table, pk)` — the visibility predicate the policies call,
+    keyed on `session_user`. A row with no ownership record is visible to nobody.
+  - `lattice_set_row_visibility(table, pk, visibility)` — owner-only; raises if the
+    caller isn't the row's owner.
+  - `lattice_grant_row(table, pk, grantee)` / `lattice_revoke_row(table, pk, grantee)`
+    — owner-only; manage the `custom` grant list.
+
+### 2. Per-table RLS
+
+`enableRlsForTable(db, table, pkCols)` secures one shared table:
+
+```sql
+ALTER TABLE "items" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "items" FORCE  ROW LEVEL SECURITY;   -- applies even to the table owner
+GRANT SELECT, INSERT, UPDATE, DELETE ON "items" TO lattice_members;
+
+CREATE POLICY "lattice_sel" ON "items" FOR SELECT USING (lattice_row_visible('items', CAST("id" AS TEXT)));
+CREATE POLICY "lattice_upd" ON "items" FOR UPDATE USING (...) WITH CHECK (...);
+CREATE POLICY "lattice_del" ON "items" FOR DELETE USING (...);
+CREATE POLICY "lattice_ins" ON "items" FOR INSERT WITH CHECK (true);
+```
+
+plus a per-table `SECURITY DEFINER` trigger that, on every write, stamps the
+inserting member as the row's owner in `__lattice_owners` and records the change in
+`__lattice_changes`. Members cannot write the bookkeeping tables directly — only the
+definer-owned trigger can.
+
+`FORCE ROW LEVEL SECURITY` is the critical flag: without it, the table's owner role
+would bypass its own policies. With it, the policies apply to everyone, so the cloud
+owner is bound by the same row rules as any member.
+
+> **Composite keys.** The `pk` string written to `__lattice_owners.pk` uses
+> Lattice's canonical serialization: a single-column key is the bare value; a
+> composite key is its columns joined by a TAB (`chr(9)`). This is the same key the
+> change feed and the row-visibility functions use.
+
+> **Empirically verified.** Two non-superuser roles connecting directly cannot
+> see, update, or delete each other's private rows; cannot read the bookkeeping
+> tables; cannot `DISABLE ROW LEVEL SECURITY`; and cannot `SET ROLE` to another
+> member.
+
+---
+
+## The role & privilege model
+
+| Who        | Postgres role attributes                                                                                     | Can do                                                                                                      |
+| ---------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| **Owner**  | a normal login role with **`CREATEROLE`**                                                                    | migrate a local Lattice in, install RLS, provision members, share/unshare their own rows                    |
+| **Member** | a login role, **`NOSUPERUSER NOCREATEDB NOCREATEROLE`**, in the `lattice_members` group, with RLS **forced** | read/write only their own + shared rows; cannot escalate, cannot run DDL, cannot read another member's data |
+
+A member's credential is a dead end for privilege escalation: the role is
+`NOSUPERUSER`, can't create roles or databases, isn't granted DDL on the schema, and
+RLS is forced on every shared table.
+
+The DBA may either let an owner provision member roles (the owner connection needs
+`CREATEROLE`), or pre-create the login roles by hand and skip provisioning entirely —
+Lattice only needs the roles to exist and to be members of `lattice_members`.
+
+---
+
+## Sharing: private by default
+
+Every row is **private to its owner** the moment it's written — the per-table
+trigger stamps `visibility = 'private'`. The owner opts a row into wider visibility:
+
+- **`private`** — only the owner sees it (the default).
+- **`everyone`** — every member of the cloud sees it.
+- **`custom`** — only the owner plus an explicit grant list (`lattice_grant_row`).
+
+Sharing is done through the owner-only `SECURITY DEFINER` function — Postgres raises
+for anyone who isn't the row's owner:
+
+```sql
+-- Make one row visible to every member of the cloud:
+SELECT lattice_set_row_visibility('items', 'item-42', 'everyone');
+
+-- Take it private again:
+SELECT lattice_set_row_visibility('items', 'item-42', 'private');
+
+-- Or grant just one member (sets visibility = 'custom'):
+SELECT lattice_grant_row('items', 'item-42', 'lm_bob_a91c');
+SELECT lattice_revoke_row('items', 'item-42', 'lm_bob_a91c');
+```
+
+From the library, the same thing through `setRowVisibility` (validates `private` |
+`everyone` before calling the function):
+
+```ts
+import { Lattice, setRowVisibility } from 'latticesql';
+
+const db = new Lattice('postgres://alice:secret@cloud.example.com:5432/app');
+await db.init();
+
+// 'item-42' is the row's canonical primary-key string (composite keys are
+// TAB-joined). Only the row's owner may call this; Postgres raises otherwise.
+await setRowVisibility(db, 'items', 'item-42', 'everyone');
+```
+
+Because sharing lives in `__lattice_owners` (out of band), opting a row in or out
+never touches your table's columns.
+
+---
+
+## The three user flows
+
+There are exactly three things you do with a cloud: **migrate** into one, **join**
+an existing one, or **invite** someone to yours.
+
+### 1. Migrate — turn a local Lattice into a cloud
+
+You have a local SQLite (or single-user Postgres) Lattice and want to share it. You
+point it at a fresh, empty Postgres database; Lattice copies your data in, installs
+RLS, and stamps **you** as the owner of every migrated row.
+
+From the GUI: **Workspace Settings → Migrate to cloud**, which posts to
+`POST /api/dbconfig/migrate-to-cloud` with the target Postgres credentials. The
+handler:
+
+1. **Probes** the target with `probeCloud(url)`. It refuses if the database is
+   unreachable (`502`) or is _already_ a Lattice cloud (`409` — migrating into it
+   would mix two owners' data; you should **join** it instead).
+2. Opens a target Lattice matching your schema and **copies every row** (your
+   tables plus the native `files` / `secrets`). Encrypted columns round-trip.
+3. **Installs RLS** (`installCloudRls`) and, for each keyed table,
+   **backfills ownership** to your role _before_ forcing RLS (otherwise FORCE would
+   hide the not-yet-owned rows from your own backfill `SELECT`), then
+   `enableRlsForTable`.
+4. Archives the local SQLite file, saves the connection string encrypted, and
+   rewrites the config's `db:` line to reference it by label.
+
+After migration you're connected to the cloud as its owner, your rows are private by
+default, and you can invite members.
+
+The same flow from the library:
 
 ```ts
 import {
-  getOrCreateMasterKey,
-  readIdentity,
-  writeIdentity,
-  saveDbCredential,
-  getDbCredential,
-  writeToken,
-  readToken,
-} from 'latticesql/framework/user-config';
+  Lattice,
+  openTargetLatticeForMigration,
+  migrateLatticeData,
+  installCloudRls,
+  backfillOwnership,
+  enableRlsForTable,
+  archiveLocalSqlite,
+} from 'latticesql';
+
+const encryptionKey = process.env.LATTICE_ENCRYPTION_KEY;
+const cloudUrl = 'postgres://alice:secret@cloud.example.com:5432/app';
+
+const source = new Lattice({ config: './lattice.config.yml' }, { encryptionKey });
+await source.init();
+
+const target = await openTargetLatticeForMigration('./lattice.config.yml', cloudUrl, encryptionKey);
+await migrateLatticeData(source, target); // → { tablesCopied, rowsCopied }
+
+// Owner-side RLS install. Backfill ownership BEFORE forcing RLS on each table.
+await installCloudRls(target);
+for (const table of target.getRegisteredTableNames()) {
+  if (table.startsWith('__lattice_')) continue;
+  const pk = target.getPrimaryKey(table);
+  if (pk.length === 0) continue; // unkeyable table — no per-row RLS
+  await backfillOwnership(target, table, pk);
+  await enableRlsForTable(target, table, pk);
+}
+target.close();
+
+archiveLocalSqlite('./data/app.db'); // renames to .db.local-bak
+```
+
+### 2. Join — connect to an existing cloud with the credentials you were given
+
+The owner provisioned a scoped role for you and handed you the connection details:
+**host, port, database, username, password**. **Those credentials _are_ the
+invite** — there is no token to redeem and no server to sign into. You connect
+directly.
+
+From the GUI: **+ New workspace… → Join a cloud**, then paste the connection blob.
+It posts to `POST /api/dbconfig/connect-existing`, which:
+
+1. **Probes** the target as your role. The probe both authenticates the login and
+   confirms the database is actually a Lattice cloud (RLS installed). It refuses if
+   unreachable (`502`) or if the database isn't a cloud yet (`409` — the owner must
+   migrate a local Lattice into it first).
+2. Saves the credential encrypted, rewrites the config, and opens the cloud. Your
+   role can't (and needn't) run DDL — the owner already created the role and RLS
+   confines it — so the cloud is opened in introspect-only mode.
+
+From there you query the cloud directly and see exactly the rows RLS allows: your
+own, anything shared to `everyone`, and anything granted to you specifically.
+
+```ts
+import { Lattice, probeCloud } from 'latticesql';
+
+const url = 'postgres://lm_bob_a91c:the-password@cloud.example.com:5432/app';
+
+const probe = await probeCloud(url);
+// → { reachable: true, dialect: 'postgres', isCloud: true }
+if (!probe.reachable) throw new Error(probe.error);
+if (!probe.isCloud) throw new Error('Not a Lattice cloud yet — ask the owner to migrate into it.');
+
+const db = new Lattice(url);
+await db.init();
+const visibleItems = await db.query('items'); // RLS-filtered to what you may see
+```
+
+### 3. Invite — provision a member role and hand them the connection blob
+
+You own a cloud and want to add someone. As the owner (your connection holds
+`CREATEROLE`), you provision a scoped member role and give them its credentials.
+
+From the GUI: **Workspace Settings → Invite**, which posts to
+`POST /api/cloud/invite`. The handler verifies the active database is a cloud and
+that your role can manage roles (`403` otherwise), then provisions a fresh scoped
+role and returns the **complete connection blob** to hand off:
+
+```jsonc
+{
+  "ok": true,
+  "invite": {
+    "host": "cloud.example.com",
+    "port": 5432,
+    "dbname": "app",
+    "user": "lm_bob_a91c", // freshly provisioned scoped role
+    "password": "…48 hex chars…", // generated once; this is the only time it's shown
+  },
+}
+```
+
+That blob _is_ the invite. The new member pastes it into **Join a cloud** (flow 2).
+
+The same thing from the library:
+
+```ts
+import { Lattice, memberRoleName, generateMemberPassword, provisionMemberRole } from 'latticesql';
+
+// owner connection — must hold CREATEROLE
+const db = new Lattice('postgres://alice:secret@cloud.example.com:5432/app');
+await db.init();
+
+const role = memberRoleName('bob'); // e.g. 'lm_bob_a91c' — collision-safe, ≤63 bytes
+const password = generateMemberPassword(); // 48 hex chars
+await provisionMemberRole(db, role, password);
+// Member is created NOSUPERUSER NOCREATEDB NOCREATEROLE and added to lattice_members.
+
+// Hand off:  host / port / dbname  +  user=role  +  password
+```
+
+Removing a member is the inverse — `revokeMemberRole(db, role)` drops the role.
+(Rows the departed member owned stay in their tables but become unreachable until
+you deliberately reassign or purge them — revoking access is not the same as
+purging their data.)
+
+```ts
+import { Lattice, revokeMemberRole } from 'latticesql';
+await revokeMemberRole(db, 'lm_bob_a91c');
 ```
 
 ---
 
-## Identity & email-bound invitations
+## How a member opens the cloud
 
-`__lattice_users.email` is `NOT NULL`. Every member of the cloud's team has a `__lattice_team_members` row keyed by `(team_id, user_id)`, and the team has a singleton `__lattice_team_identity` row carrying the team name + creator email.
-
-Invitations have an `invitee_email TEXT NOT NULL` column. `POST /api/auth/redeem-invite` requires `{email, invite_token, name}` and verifies that the caller's claimed email matches the invitation's bound `invitee_email` (case-insensitive). Mismatched email → `403`. The check happens **before** the token-already-used check, so an attacker who steals an invite link still can't redeem it without also knowing (or guessing) the bound email.
-
-The bootstrap flow:
-
-```
-1. Operator A points lattice at a fresh cloud Postgres.
-2. POST /api/auth/register { email, name, team_name }
-   → atomic: creates user A, the singleton team, A's creator membership, A's bearer token.
-   ← { user, raw_token, team }
-3. A invites B: POST /api/team/invitations { invitee_email: 'b@example.com' }
-   → { raw_token: 'latinv_…' }
-4. A shares the latinv_ token with B (e.g. email or chat).
-5. B redeems: POST /api/auth/redeem-invite
-   { invite_token, email: 'b@example.com', name: 'B' }
-   → { user, raw_token, team }   (B is now a member; bearer token issued)
-```
-
-After the first user exists, `POST /api/auth/register` returns `403` — new members must come through `redeem-invite`.
+A member opens the cloud by **connecting directly as their scoped role** — there is
+no separate sign-in. The connection string the owner handed over (host / port /
+database / username / password) is the whole credential. Lattice opens the cloud in
+introspect-only mode for a member: the role is `NOSUPERUSER` without DDL on the
+schema, so it never tries to create or alter tables — it reads the existing schema
+and works against the rows RLS lets it see. Every query, insert, update, and delete
+runs as that role, so RLS scopes the member to their own rows plus whatever has been
+shared with them. Nothing about being a member requires elevated privileges or a
+side channel; the database does all the gatekeeping.
 
 ---
 
-## HTTP surface
+## GUI cloud endpoints
 
-All routes live on the cloud Postgres-backed Lattice booted via `lattice gui --team-cloud`. Auth is `Authorization: Bearer <token>` with the token issued by `register` or `redeem-invite`.
+`lattice gui` drives all three flows from the browser. The relevant endpoints (all
+localhost-only, same model as the rest of the GUI):
 
-**Unauthenticated** (the only routes the cloud accepts without a bearer):
+| Method | Route                            | Does                                                               |
+| ------ | -------------------------------- | ------------------------------------------------------------------ |
+| POST   | `/api/dbconfig/migrate-to-cloud` | Migrate the active local Lattice into a fresh cloud (you = owner)  |
+| POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)         |
+| POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob |
+| POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)            |
 
-| Method | Route                     | Notes                                                                     |
-| ------ | ------------------------- | ------------------------------------------------------------------------- |
-| POST   | `/api/auth/register`      | Bootstrap-only — fails 403 once a user exists. Atomic with team creation. |
-| POST   | `/api/auth/redeem-invite` | Email-bound; checks `invitee_email` match before consuming the token.     |
+`POST /api/cloud/share` body is `{ table, pk, visibility }` and calls
+`setRowVisibility` under the hood; Postgres raises if you aren't the row's owner.
 
-**Authenticated**:
-
-| Method | Route                                          | Notes                                                         |
-| ------ | ---------------------------------------------- | ------------------------------------------------------------- |
-| GET    | `/api/auth/me`                                 | Current user from the bearer.                                 |
-| POST   | `/api/auth/tokens`                             | Mint a second bearer for this user.                           |
-| DELETE | `/api/auth/tokens/:id`                         | Revoke a bearer (self-revoke allowed).                        |
-| GET    | `/api/team`                                    | Singleton: team identity + member list.                       |
-| DELETE | `/api/team`                                    | Destroy the team (creator-only).                              |
-| POST   | `/api/team/invitations`                        | Invite by email (creator-only). Singleton alias.              |
-| GET    | `/api/teams/:id/members`                       | Members of the (one) team.                                    |
-| DELETE | `/api/teams/:id/members/:userId`               | Kick (creator-only) or self-leave.                            |
-| POST   | `/api/teams/:id/invitations`                   | Multi-team-shaped alias for `POST /api/team/invitations`.     |
-| POST   | `/api/teams/:id/objects`                       | Share a table (member-only).                                  |
-| GET    | `/api/teams/:id/objects`                       | List shared objects (member-only).                            |
-| DELETE | `/api/teams/:id/objects/:table`                | Unshare (sharer or creator).                                  |
-| GET    | `/api/teams/:id/changes?since=<seq>&limit=<n>` | Pull the monotonic change feed (envelopes for schema + rows). |
-| POST   | `/api/teams/:id/objects/:table/links`          | Link a local row to the team.                                 |
-| DELETE | `/api/teams/:id/objects/:table/links/:pk`      | Unlink (owner or creator).                                    |
-| POST   | `/api/teams/:id/objects/:table/rows`           | Push an owner-side update.                                    |
-| DELETE | `/api/teams/:id/objects/:table/rows/:pk`       | Owner-side delete (emits `unlink` envelope to receivers).     |
-
-`/api/team/*` are the singleton-shaped routes for new code. `/api/teams/:id/*` are the per-team routes — there's only ever one team, so `:id` is just the singleton's UUID. Both are kept because the sync engine is happier addressing the team by id.
+The probe used throughout is `probeCloud(url)`, returning
+`{ reachable, dialect, isCloud }` — `isCloud` is `true` when the target Postgres
+already has the RLS machinery installed.
 
 ---
 
-## Local → Cloud-Workspace progression (v1.13+, reframed in v1.16.3)
+## Offline editing
 
-The GUI's Database panel models the project lifecycle as a one-way state machine: a project starts on local SQLite and can be promoted to a BYO Postgres. As of v1.16.3 a cloud database **is** a cloud workspace with members — there is no separate "upgrade to team" step and no intermediate `cloud-connected` state. Migrating or connecting to Postgres initializes the workspace's member/share machinery automatically (the opener becomes owner). There is no revert path in the UI.
-
-```
-LOCAL  →  CLOUD WORKSPACE (creator | member)
-       migrate / connect-existing (+invite)
-```
-
-State detection (returned by `GET /api/dbconfig` as the `state` field; `isCreator`, `teamId`, and `myUserId` are returned alongside it for the SPA's member-admin UI):
-
-| State                | Detection                                                                                                                                  |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `local`              | YAML `db:` is a local path (not `${LATTICE_DB:...}` and not `postgres://...`).                                                             |
-| `team-cloud-creator` | YAML is cloud, identity row present, and the operator's resolved identity is a member whose user id matches the workspace creator.         |
-| `team-cloud-member`  | YAML is cloud, identity row present, operator is a member but not the creator (the default — a connected cloud always implies membership). |
-
-> **v1.16.3 change:** the `cloud-connected` state was removed. A Postgres-backed database whose `__lattice_team_identity` row is absent now initializes that row automatically (on migrate, connect, or open), so it resolves directly to one of the two `team-cloud-*` states rather than sitting in an intermediate "connected but not a workspace" state. The SPA badge labels these "CLOUD · OWNER / MEMBER".
->
-> **v2.1.1 change:** the `team-cloud-needs-invite` state was removed. Every cloud Postgres database is an auto-initialized team-cloud workspace, and the only ways to be connected to one are creating it (owner) or joining via an invite (member) — so a connected cloud DB is **always** a member workspace, never "needs invite". A failed membership probe never downgrades a connected cloud to a re-join form; joining via invite lives exclusively in the Join Workspace flow, and the settings panel of a connected cloud always shows connection details + members.
->
-> **v1.14 change:** membership is the authoritative signal — the state is derived from whether the operator's identity resolves to a live `__lattice_team_members` row, not from whether a `~/.lattice/keys/<label>.token` file happens to be on disk. This stopped an already-joined member from being shown a re-join form. (As of v2.1.1 there is no re-join form for a connected cloud at all — see the v2.1.1 note above.)
-
-### Transition: Local → Cloud (migrate)
-
-Driven by `POST /api/dbconfig/migrate-to-cloud`. The handler:
-
-1. Probes the target via `probeCloud(url)` → refuses on `reachable: false` (502) or `teamEnabled: true` (409 — migration is into-empty only).
-2. Opens a fresh target Lattice via `openTargetLatticeForMigration(configPath, url, encryptionKey)` — registers the same user entities + native `secrets`/`files` as the source, then `init()`s.
-3. Calls `migrateLatticeData(source, target)` — copies every user-defined entity row + `secrets` + `files` row in batches of 500. Encrypted columns round-trip via decrypt-on-read + encrypt-on-write.
-4. Closes the target. Calls `archiveLocalSqlite(sourceDbPath)` to rename `<name>.db` (+ `-shm`/`-wal`) to `.db.local-bak`.
-5. `saveDbCredential(label, url)` + rewrites the YAML's `db:` line to `${LATTICE_DB:<label>}`.
-6. Swaps the active Lattice via the GUI server's `swap()` callback.
-
-On any error before step 4 the YAML is untouched and the SQLite file stays in place. Blobs under `data/blobs/` are not moved — the migrated `files` rows reference relative paths that remain valid against the same project root.
-
-### Transition: Join a team via invite
-
-Driven by `POST /api/dbconfig/connect-existing`. (The standalone "Connect to existing cloud" wizard was removed in 1.16.4 — the two cloud operations are Migrate to cloud and Join a team via invite; this endpoint now backs the invite‑redeem case for an active cloud.) Used when a teammate has already created a team — you redeem an invite to join; the local project's data is discarded.
-
-1. Probes the target.
-2. If `teamEnabled: true`, requires `invite_token` in the body. The handler resolves email + display name from `~/.lattice/identity.json`, calls `TeamsClient.connectToExistingCloud()` which internally runs `POST /api/auth/redeem-invite` against the cloud.
-3. On success the bearer lands in `~/.lattice/keys/<label>.token` and the credential in `db-credentials.enc`. The YAML is rewritten, active Lattice swapped.
-
-### Automatic workspace initialization (v1.16.3)
-
-There is no longer an explicit "upgrade to team" transition. The member/share machinery (`__lattice_users` / `__lattice_api_tokens` / `__lattice_team` / `__lattice_team_members` / `__lattice_team_identity` + bearer + saved connection) is created automatically at three points:
-
-1. **Migrate-to-cloud** — after the data copy succeeds, the migrating operator becomes the workspace owner.
-2. **Connect-to-existing** — if the target cloud has no `__lattice_team_identity` yet, the connecting operator initializes it as owner.
-3. **On open** — opening a Postgres-backed database that lacks `__lattice_team_identity` initializes it lazily (opener = owner).
-
-All three call `TeamsClient.ensureCloudWorkspaceIdentity({ label, cloudUrl, workspaceName, email, displayName })` (idempotent — a no-op if the cloud is already a workspace; the workspace name defaults to the database label). It refuses only when the operator has no identity email (clear error → set it in User Settings), and a duplicate-identity race is treated as "already a workspace". The `POST /api/dbconfig/upgrade-to-team` route was removed.
-
-### v1.13 HTTP routes (thin wrappers over the public API)
-
-| Method | Route                            | Wraps                                                                                   |
-| ------ | -------------------------------- | --------------------------------------------------------------------------------------- |
-| GET    | `/api/dbconfig`                  | adds `state` field per the table above                                                  |
-| POST   | `/api/dbconfig/probe`            | `probeCloud(url)` from `latticesql/framework/cloud-connect`                             |
-| POST   | `/api/dbconfig/migrate-to-cloud` | `migrateLatticeData` + `archiveLocalSqlite` from `latticesql/framework/cloud-migration` |
-| POST   | `/api/dbconfig/connect-existing` | `TeamsClient.connectToExistingCloud`                                                    |
-
-All are reachable as public functions from the `latticesql` package — the frontend is just a wrapper.
+Offline editing is preserved as a **client-side local edit queue**: edits you make
+while disconnected are held locally and replayed when you reconnect. This is a
+client behavior only — it is **not** tied to any replica or sync server (there is
+no server). When you reconnect, the queued writes go to the cloud as your role and
+land under the same RLS rules as any other write.
 
 ---
 
-## CLI
+## Limits & notes
 
-```
-lattice teams <subcommand> [options]
-
-Subcommands:
-  register   Bootstrap on a fresh cloud: create user + team in one call
-             (requires --cloud --email --name --team-name)
-  join       Redeem an invitation (requires --cloud --token --email --name)
-  list       List your local team connections
-  members    List members of the team (--team)
-  invite     Generate an invitation (creator only; --team --invitee-email)
-  leave      Leave the team (--team)
-  destroy    Destroy the team (creator only; --team)
-  share      Share a local table (--team --table)
-  unshare    Stop sharing a table (--team --table)
-  shared     List shared objects (--team)
-  sync       Apply cloud-shared schemas locally (--team)
-  link       Link a local row (--team --table --pk)
-  unlink     Unlink a row (--team --table --pk)
-  pull       Pull change envelopes (--team)
-  push       Drain the outbox (--team)
-  status     Show sync status (--team)
-  dlq        Inspect the dead-letter queue: dlq list|retry|purge (--team [--id])
-```
-
-`--name` is the user's display name; `--team-name` is the team's name. They were previously overloaded onto a single `--name` flag — that was clarified in v1.12.
-
----
-
-## GUI (v1.14+)
-
-`lattice gui` (no `--team-cloud`) drives the same flows from a browser. As of v1.14 the settings sidebar has three entries and **Workspace Settings is the hub for everything about the active database** — there is no separate "Teams" or "Project Config" page:
-
-- **Lattice Settings** — the catalog of every database this lattice can switch to (the same list as the header dropdown), plus an Add-new-database entry. Each row shows a Local | Cloud tag, and is click-to-switch (no per-row Delete — deletion lives in each workspace's Danger Zone).
-- **Workspace Settings** — everything about the _active_ database:
-  - **Name** — editable for the owner; read-only for members. Cloud renames write `__lattice_team_identity.team_name` and broadcast to every member in realtime; local renames write a `name:` key into the YAML.
-  - **Database** — connection summary + state badge. For a cloud workspace it shows the **Members** list inline, including **pending invitees** who haven't joined yet (the owner is always listed as `creator`, and your own row is marked "(you)").
-  - **Data Model** — the entity graph (moved here from a separate nav item), including the native `files`/`secrets` objects, with a **Share with workspace / Make private** toggle on each table you own and nodes colored by share status (yellow = shared, red = private, green = selected).
-- **User Settings** — identity (`~/.lattice/identity.json`) + machine-local preferences. The Join-via-invite modal pulls your email + display name from here read-only, so you always join as yourself.
-
-Member administration is resolved against the active cloud database (workspace id + your user id + role come from `GET /api/dbconfig`), so it works whether the cloud workspace itself is the active DB or you're on a local DB with a saved connection:
-
-- **Invite** (owner only) generates an email-bound `latinv_` token. Pending invitees appear in the Members list until redeemed (`GET /api/teams/:id/invitations`).
-- **Kick** (owner only) removes another member; the button is hidden for non-owners and the route 403s them.
-- **Leave** (your own row, member) / **Disconnect** (owner, Danger Zone) removes you from the workspace. Leaving tears down the local config + saved credential so the database disappears from the dropdown and is no longer reachable, then switches you to another database.
-
-The GUI is localhost-only and unauthenticated by default. `--team-cloud` mode swaps the dev-tool surface for the bearer-gated cloud routes.
-
----
-
-## Per-table ownership & opt-in sharing (v1.14+)
-
-In direct-Postgres team mode every member connects to the **same physical Postgres**, so every table exists for everyone at the SQL level. Visibility is therefore enforced at the application layer.
-
-- A new cloud table **`__lattice_object_owners`** `(team_id, table_name) PK, owner_user_id, created_at` records the creator of every user-facing table (including the native `files`/`secrets` objects).
-- **A user sees only the tables they own, plus tables explicitly shared to the team** (present in `__lattice_shared_objects`). This filter gates the GUI's queryable allowlist, the entity cards, and the Data Model graph — so a table you can't see is also not reachable through the API.
-- **Native `files`/`secrets` are owned by the database creator and are private by default** — other members can't see or query them unless the owner shares them.
-- Ownership is recorded at table-creation time (first-writer-wins) and reconciled on open: any unowned table is assigned to the team creator, so visibility is deterministic. Creating a table no longer auto-shares it — sharing is an explicit action in the Data Model dialog, and only the owner of a table may share or unshare it.
-
----
-
-## Row-level permissions (v2.2+)
-
-Sharing a table no longer means every member sees every **row**. Within an already-visible shared table, each row carries its own owner + visibility, enforced at the application layer (same reason as table ownership: every member shares one physical DB).
-
-- **Binary access.** A member either can access a row (read + write + delete) or the row does not exist for them — there is no reader/editor gradation. Denied reads return **404** (existence is hidden).
-- **Owner = creator.** Only the owner may change a row's visibility or manage its grant list.
-- **Visibility** is `private` (owner only), `everyone` (all members), or `custom` (an explicit grant list in `__lattice_row_grants`). It lives out-of-band in **`__lattice_row_acl`** `(team_id, table_name, pk) PK, owner_user_id, visibility` — never injected into your tables.
-- **Table default.** `__lattice_shared_objects.default_row_visibility` is the visibility new rows are born with, set by the table owner. A freshly-shared table defaults to `everyone` (preserving the pre-2.2 "share a table → everyone sees its rows" behaviour); the owner can narrow it.
-- **Upgrade.** Existing shared tables backfill to `everyone` and pre-2.2 rows (no ACL entry) inherit the table default, so nothing disappears on upgrade until an owner opts into `private`.
-- **Enforced everywhere.** The REST row routes (list, single read, search, dashboard counts), the row mutation primitives, and the AI assistant's `list_rows` / `get_row` / `search` tools filter by the ACL (`Lattice.queryVisible`). On the hosted Teams server the change-log pull is filtered **per recipient** (`Lattice.listChangesForRecipient`) — a member never pulls the bytes of a row they can't see — and delete / unlink / kick fan out a targeted `unlink` to each member who can see the row.
-- **Enforcement model.** Row security is enforced by the hosted Lattice server at the **application layer** — there are no Postgres `CREATE POLICY` / RLS rules on the cloud database itself. Anyone who can open a SQL connection to the cloud Postgres can read and write every row in every table. Treat the database as the hosted server's **private backend**: network-isolate it (VPC, firewall, or localhost-only) so that only the hosted server can reach it, and never hand out its connection string.
-- **API.** `POST /api/tables/:t/rows/:id/visibility` `{visibility}` (row owner), `POST` / `DELETE /api/tables/:t/rows/:id/grants` (row owner), `POST /api/schema/entities/:name/default-row-visibility` `{visibility}` (table owner). The helpers live in `src/teams/row-access.ts`.
-- **Known limit.** A _kicked_ ex-member can't pull the targeted `unlink` after de-authorisation, so rows already synced to their local disk aren't guaranteed to be reclaimed. The honest guarantee is "no new bytes after kick."
-
-> **Breaking (v2.2.3): a cloud is reachable only through a user-authenticated server.** There is one way to work on a shared cloud — connect to a server and sign in as a user. The server holds the database connection and enforces per-user access (it filters every member's sync so they only ever receive the rows they're allowed to see); members never hold the database connection string. A direct `postgres://` connection straight at a cloud is **refused** by the GUI: a raw connection can't tell members apart, so it would expose every table and row. If a workspace is still on a direct connection, the GUI serves no data and prompts you to reconnect through a server. (Using Postgres as your **own**, single-user storage backend — a workspace with no team — is unrelated and keeps working directly.)
-
----
-
-## Conflict resolution & sync semantics
-
-This is what the sync loop actually does today — read it before designing a multi-writer workflow on top of Teams.
-
-- **Last-write-wins, no version comparison.** Applying a pulled `upsert` envelope is a blind `local.upsert(table, payload)`. There is no `updated_at` / version-vector check, no causal ordering, and no merge step — whichever write the cloud serializes last is the one everyone ends up with. The cloud `__lattice_change_log.seq` is a monotonic **delivery cursor** (so a receiver knows where it left off), not a conflict signal.
-- **Single-writer per row (owner-only push).** A row is owned by whoever first `link`ed it (`__lattice_row_links.owner_user_id`). The cloud rejects a push to a row from anyone but its owner with `403`. So in practice two members can't both push the _same_ row — only its owner can. Different rows can have different owners.
-- **Non-owner local edits are overwritten on the next pull.** A non-owner can still edit a mirrored row in their own local DB. That edit produces **no** outbox entry (only owners push), so it never reaches the cloud — and the owner's next update overwrites it. As of **v1.14+** this is no longer silent: before the overwrite, the puller compares the current local row against `__lattice_local_links.synced_hash` (the hash captured at the last sync) and, if they differ, writes a **`divergence`** entry to the DLQ capturing both the lost local content and the incoming row. The row still converges to the owner's state (LWW); the loss is now visible.
-- **DLQ = pull-apply failures + divergence notices.** When a pulled envelope throws while applying (e.g. it arrived before the table/dependency it needs), it lands in `__lattice_team_dlq` and the pull cursor advances past it — so one bad envelope doesn't stall the stream, but the envelope isn't lost. Inspect and recover with:
-
-  ```
-  lattice teams dlq list  --team <name>           # show entries (op, target, error)
-  lattice teams dlq retry --team <name> [--id <id>]  # replay; succeeds clear, failures stay
-  lattice teams dlq purge --team <name> [--id <id>]  # discard without applying
-  ```
-
-  `retry` replays through the normal apply path, so an envelope that failed because its dependency hadn't arrived yet applies cleanly once the dependency lands. (Push failures are different — they stay in the **outbox** and retry automatically with exponential backoff; they never enter the DLQ.)
-
-- **Recommended operating practice.** Until the conflict rate on your team is understood, review `lattice teams dlq list` periodically (e.g. weekly). A non-empty DLQ means either an out-of-order delivery to replay or a divergence to reconcile — both want a human's eye.
-
----
-
-## Schema reference
-
-Cloud-side:
-
-| Table                      | Columns                                                                                                                                |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `__lattice_users`          | `id, email NOT NULL, name, created_at, updated_at, deleted_at`                                                                         |
-| `__lattice_api_tokens`     | `id, user_id, token_hash UNIQUE, name, created_at, last_used_at, revoked_at`                                                           |
-| `__lattice_team`           | `id, name, created_by_user_id, created_at, updated_at, deleted_at`                                                                     |
-| `__lattice_team_identity`  | `id='singleton', team_id, team_name, creator_email, created_at`                                                                        |
-| `__lattice_team_members`   | `(team_id, user_id) PK, role IN ('creator','member'), joined_at`                                                                       |
-| `__lattice_invitations`    | `id, team_id, token_hash UNIQUE, invitee_email NOT NULL, invited_by_user_id, created_at, expires_at, redeemed_at, redeemed_by_user_id` |
-| `__lattice_shared_objects` | `(team_id, table_name) PK, schema_spec_json, schema_version, …` — tables shared to the whole team                                      |
-| `__lattice_object_owners`  | `(team_id, table_name) PK, owner_user_id, created_at` — creator of every user-facing table; drives per-user visibility (v1.14+)        |
-| `__lattice_change_log`     | `id, seq (monotonic), team_id, table_name, pk, op, payload_json, owner_user_id, created_at`                                            |
-| `__lattice_row_links`      | `(team_id, table_name, pk) PK, owner_user_id, linked_at`                                                                               |
-
-Local-side:
-
-| Table                        | Columns                                                                                                                                                      |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `__lattice_user_identity`    | Singleton (`id='singleton'`) mirroring `~/.lattice/identity.json`.                                                                                           |
-| `__lattice_team_connections` | `team_id PK, team_name, cloud_url, my_user_id, api_token_encrypted, last_change_seq, joined_at`                                                              |
-| `__lattice_local_links`      | `__lattice_row_links` shape plus `synced_hash` (last-applied row hash, for divergence detection on receiver mirrors — v1.14+)                                |
-| `__lattice_team_outbox`      | FIFO outbox of local writes pending **push** to the cloud (retries with exponential backoff)                                                                 |
-| `__lattice_team_dlq`         | Dead-letter for change envelopes that failed to apply on **pull**, plus non-owner-overwrite divergence notices (inspect/retry/purge via `lattice teams dlq`) |
-
----
-
-## Limits + known gaps (v1.12)
-
-- **No web identity layer.** Email is asserted by the local install, not verified. Two coordinating users could collide on the same email. A future release may add latticesql.com-side identity for compliance/audit use cases.
-- **Bearer tokens never expire** until explicitly revoked. Use `lattice teams destroy` (or `DELETE /api/team`) to drop the whole team — this cascades to memberships + tokens.
-- **One team per DB.** If you need multiple teams, stand up multiple cloud Postgres databases — each gets its own URL in `db-credentials.enc` and its own YAML config.
-- **Schema migrations on shared tables** are additive only. Dropping a column from a shared table will surface as a divergence on receivers; coordinate manually.
-- **Postgres SSL** is up to your connection string. Lattice doesn't override; pass `?sslmode=require` (or your provider's equivalent) in the URL.
+- **Cloud is Postgres-only.** SQLite has no roles or RLS; a local SQLite Lattice is
+  your private single-user store. The bridge between them is **migrate**.
+- **Identity is the Postgres login.** There is no separate account system. A member
+  _is_ their role; to act as someone else you'd need their password. Provision
+  one role per person so you can revoke individually.
+- **Owner needs `CREATEROLE`** to provision members from Lattice. Alternatively the
+  DBA pre-creates the login roles by hand and adds them to `lattice_members`.
+- **Departed members' rows persist.** `revokeMemberRole` drops the role but leaves
+  the rows it owned (now unreachable). Reassign or purge them deliberately.
+- **Postgres SSL** is governed by your connection string — pass `?sslmode=require`
+  (or your provider's equivalent). Lattice doesn't override it.
+- **Connection strings are secrets.** A member's scoped string is safe to hand to
+  that member (RLS confines it), but the **owner's** string is a superuser-adjacent
+  credential to the whole cloud — keep it encrypted and never share it.
