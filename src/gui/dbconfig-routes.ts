@@ -77,6 +77,12 @@ interface DbConfigContext {
    */
   teamMembership: { joined: boolean; isCreator: boolean; teamId: string; myUserId: string } | null;
   /**
+   * True when the workspace is a cloud reached via a raw `postgres://`
+   * connection in a regular GUI — refused as of 2.2.3. The SPA shows a
+   * "reconnect through a server" prompt instead of cloud data.
+   */
+  cloudReconnectRequired: boolean;
+  /**
    * Re-open the same configPath after the YAML has been updated.
    * Closes the current Lattice and replaces it. Caller-owned because
    * the parent server holds the mutable `active` reference.
@@ -371,6 +377,9 @@ export async function dispatchDbConfigRoute(
         // exist when the team cloud itself is the active database).
         teamId: ctx.teamMembership?.teamId ?? null,
         myUserId: ctx.teamMembership?.myUserId ?? null,
+        // 2.2.3: a direct postgres:// cloud connection is refused — the SPA
+        // shows a "reconnect through a server" prompt instead of cloud data.
+        cloudReconnectRequired: ctx.cloudReconnectRequired,
       });
     });
     return true;
