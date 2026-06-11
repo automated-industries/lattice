@@ -12,6 +12,7 @@ import {
   readIdentity,
 } from '../framework/user-config.js';
 import { probeCloud } from '../framework/cloud-connect.js';
+import { installCloudRls, enableRlsForTable, backfillOwnership } from '../cloud/rls.js';
 import {
   archiveLocalSqlite,
   migrateLatticeData,
@@ -520,11 +521,25 @@ export async function dispatchDbConfigRoute(
       const target = await openTargetLatticeForMigration(ctx.configPath, url, encryptionKey);
       try {
         const result = await migrateLatticeData(ctx.db, target);
+        // Owner-side RLS setup: the migrator's connection owns the cloud, so it
+        // installs RLS and stamps itself as owner of every just-migrated row.
+        // Each member later sees only its own rows (private by default) until the
+        // owner shares them; chat / secrets / history are isolated the same way.
+        await installCloudRls(target);
+        for (const t of target.getRegisteredTableNames()) {
+          if (t.startsWith('__lattice_')) continue; // RLS bookkeeping is definer-managed
+          const pk = target.getPrimaryKey(t);
+          if (pk.length === 0) continue; // unkeyable table — no per-row RLS
+          // Backfill ownership BEFORE forcing RLS: once FORCE ROW LEVEL SECURITY
+          // is on, a non-superuser owner's own SELECT is filtered to rows it
+          // already owns (none yet), so it could stamp nothing.
+          await backfillOwnership(target, t, pk);
+          await enableRlsForTable(target, t, pk);
+        }
         target.close();
         const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;
         const backupPath = archiveLocalSqlite(sourceDbPath);
         saveDbCredential(parsed.label, url);
-        // TODO(v3-rls): installCloudRls(target) + enableRlsForTable per table — owner-side RLS setup goes here
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
         await ctx.swap();

@@ -14,7 +14,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { installCloudRls, enableRlsForTable } from '../../src/cloud/rls.js';
+import { installCloudRls, enableRlsForTable, backfillOwnership } from '../../src/cloud/rls.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -174,6 +174,56 @@ describe.skipIf(!PG_URL)(
           .sort(),
       ).toEqual(['n1', 'n2', 'n3']);
       expect(changes.some((c) => c.table_name === 'memo')).toBe(true);
+    });
+
+    it('migrate flow: backfilled pre-existing rows are owned + isolated, then shareable', async () => {
+      const tag = randomBytes(4).toString('hex');
+      const schema = `mig_${tag}`;
+      const carol = `mig_c_${tag}`;
+      schemas.push(schema);
+      roles.push(carol);
+
+      const admin = new pg.Pool({ connectionString: PG_URL, max: 1 });
+      pools.push(admin);
+      await admin.query(`CREATE SCHEMA "${schema}"`);
+      const url = schemaUrl(schema);
+
+      // Simulate a migration: rows are written BEFORE RLS / the ownership trigger
+      // exist (the trigger only fires on new writes, so it never sees these).
+      const db = new Lattice(url);
+      db.define('docs', {
+        columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT' },
+        render: () => '',
+        outputFile: 'docs.md',
+      });
+      await db.init();
+      await db.upsert('docs', { id: 'd1', body: 'one' });
+      await db.upsert('docs', { id: 'd2', body: 'two' });
+
+      // Owner-side setup, in the exact order the migrate-to-cloud handler uses:
+      // install RLS bookkeeping, backfill ownership while the table is still
+      // unforced (so the owner can SELECT every row to stamp it), THEN force RLS.
+      await installCloudRls(db);
+      await backfillOwnership(db, 'docs', db.getPrimaryKey('docs'));
+      await enableRlsForTable(db, 'docs', db.getPrimaryKey('docs'));
+      const carolPw = generateMemberPassword();
+      await provisionMemberRole(db, carol, carolPw);
+      db.close();
+
+      // Carol (a scoped member) sees NONE of the migrated rows — they are the
+      // owner's private rows. Without the backfill they'd be invisible to
+      // everyone (no ownership record); with it they belong to the owner.
+      const C = memberPool(schema, carol, carolPw);
+      expect((await C.query<{ id: string }>(`SELECT id FROM docs`)).rows).toEqual([]);
+
+      // The owner shares d1 → carol now sees exactly d1, still not d2.
+      const owner = new pg.Pool({ connectionString: url, max: 1 });
+      pools.push(owner);
+      await owner.query(`SELECT lattice_set_row_visibility('docs','d1','everyone')`);
+      const seen = (
+        await C.query<{ id: string }>(`SELECT id FROM docs ORDER BY id`)
+      ).rows.map((r) => r.id);
+      expect(seen).toEqual(['d1']);
     });
   },
 );

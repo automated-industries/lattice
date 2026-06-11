@@ -1,5 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
+import { runAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Database-enforced row-level security for a shared cloud Postgres.
@@ -272,4 +273,28 @@ export async function enableRlsForTable(
     sql: tableRlsSql(table, pkCols),
   };
   await db.migrate([migration]);
+}
+
+/**
+ * Stamp the current role as owner of every row that already exists in a table —
+ * for data migrated into a cloud BEFORE the ownership trigger existed (the
+ * trigger only fires on new writes). Without this, migrated rows have no
+ * ownership record and RLS would hide them from everyone. Idempotent; no-op on
+ * SQLite or an unkeyable table.
+ */
+export async function backfillOwnership(
+  db: Lattice,
+  table: string,
+  pkCols: readonly string[],
+): Promise<void> {
+  if (!isPg(db) || pkCols.length === 0) return;
+  const q = `"${table.replace(/"/g, '""')}"`;
+  const lit = `'${table.replace(/'/g, "''")}'`;
+  const pkRow = pkSqlExpr(pkCols, '');
+  await runAsyncOrSync(
+    db.adapter,
+    `INSERT INTO "__lattice_owners" ("table_name","pk","owner_role","visibility")
+       SELECT ${lit}, ${pkRow}, current_user, 'private' FROM ${q}
+       ON CONFLICT ("table_name","pk") DO NOTHING`,
+  );
 }
