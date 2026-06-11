@@ -4,6 +4,7 @@ import { writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
+import { allAsyncOrSync } from '../db/adapter.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js';
 import { parseFile, describe, type ExtractResult } from './ai/extract.js';
@@ -176,6 +177,83 @@ function labelColumn(cols: Record<string, string>): string | null {
   for (const p of LABEL_PREF) if (p in cols) return p;
   const text = Object.keys(cols).find((c) => !STRUCTURAL.has(c) && !c.endsWith('_id'));
   return text ?? null;
+}
+
+const TEXT_COL_RE = /\b(TEXT|VARCHAR|CHAR|CLOB|CHARACTER|STRING|NAME|CITEXT)\b/i;
+
+/**
+ * Names of the NOT-NULL, no-default, text-typed columns on the LIVE `files`
+ * table, by PHYSICAL introspection — so it reflects the actual table (a legacy
+ * schema, a raw-SQL table, or a cloud-synced one), not just Lattice's declared
+ * definition, which can diverge. Dialect-aware; best-effort (returns empty on any
+ * introspection error so ingest still proceeds). Primary-key columns are excluded
+ * (`id` is always supplied), as are non-text columns (a filename can't satisfy a
+ * NOT NULL integer/blob; the known numeric columns are set explicitly).
+ */
+async function requiredTextFileColumns(db: Lattice): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    if (db.getDialect() === 'postgres') {
+      const rows = await allAsyncOrSync(
+        db.adapter,
+        `SELECT column_name AS name, data_type AS type, is_nullable, column_default AS dflt
+           FROM information_schema.columns
+          WHERE table_name = 'files' AND table_schema = current_schema()`,
+      );
+      for (const r of rows) {
+        if (
+          String(r.is_nullable).toUpperCase() === 'NO' &&
+          r.dflt == null &&
+          TEXT_COL_RE.test(String(r.type))
+        ) {
+          out.add(String(r.name));
+        }
+      }
+    } else {
+      const rows = await allAsyncOrSync(db.adapter, `PRAGMA table_info("files")`);
+      for (const r of rows) {
+        if (
+          Number(r.notnull) === 1 &&
+          r.dflt_value == null &&
+          Number(r.pk) === 0 &&
+          TEXT_COL_RE.test(String(r.type))
+        ) {
+          out.add(String(r.name));
+        }
+      }
+    }
+  } catch {
+    /* best-effort — leave the set empty and let the insert proceed */
+  }
+  return out;
+}
+
+/**
+ * Fill any required text column on the live `files` table that the ingest insert
+ * doesn't already set, with a filename-derived value — so a drag-drop NEVER fails
+ * on a required column, whatever the (customized/legacy/cloud-synced) `files`
+ * schema declares NOT NULL, including `path`. Slug-like columns get a filename
+ * slug; everything else gets the display name. The native `files` entity declares
+ * these all nullable, so this is a no-op there: it only fires on a schema that
+ * genuinely requires the column (the "NOT NULL constraint failed: files.<col>"
+ * case) and never writes a bogus `path` onto a nullable schema (which would
+ * shadow the blob/ref the file is actually served from).
+ */
+export async function requiredFileDefaults(
+  db: Lattice,
+  displayName: string,
+  id: string,
+  provided: Record<string, unknown>,
+): Promise<Record<string, string>> {
+  const required = await requiredTextFileColumns(db);
+  const label = displayName.trim() || 'file';
+  const out: Record<string, string> = {};
+  for (const col of required) {
+    if (STRUCTURAL.has(col)) continue;
+    if (provided[col] != null) continue;
+    out[col] = /slug/i.test(col) ? fileSlug(displayName, id) : label;
+  }
+  return out;
 }
 
 /**
@@ -611,9 +689,27 @@ export async function dispatchIngestRoute(
       await rm(tmp, { force: true }).catch(() => undefined);
     }
     const fileId = crypto.randomUUID();
-    const { id } = await createRow(mctx, 'files', {
+    // A browser hides a dragged file's OS path, so set `path` only when a client
+    // can actually supply the real one (a non-browser/desktop client, via
+    // `x-filepath`). For a browser drop with no path, `path` is left to
+    // requiredFileDefaults — which fills it from the filename ONLY if the physical
+    // `files` table declares `path NOT NULL`, so an upload never 500s on a required
+    // path WITHOUT writing a bogus path onto the native (nullable) schema, where a
+    // set `path` would shadow the retained blob the file is served from.
+    const rawFilePath =
+      (typeof req.headers['x-filepath'] === 'string' && req.headers['x-filepath']) || '';
+    let realPath = '';
+    if (rawFilePath) {
+      try {
+        realPath = decodeURIComponent(rawFilePath);
+      } catch {
+        realPath = rawFilePath;
+      }
+    }
+    const uploadRow: Record<string, unknown> = {
       id: fileId,
       ...fileIdentity(name, fileId),
+      ...(realPath ? { path: realPath } : {}),
       original_name: name,
       mime,
       size_bytes: buf.length,
@@ -621,6 +717,10 @@ export async function dispatchIngestRoute(
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
       ...(blob ? { ref_kind: 'blob', blob_path: blob.blob_path, sha256: blob.sha256 } : {}),
+    };
+    const { id } = await createRow(mctx, 'files', {
+      ...(await requiredFileDefaults(ctx.db, name, fileId, uploadRow)),
+      ...uploadRow,
     });
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
@@ -670,7 +770,7 @@ export async function dispatchIngestRoute(
       }
     }
     const textFileId = crypto.randomUUID();
-    const { id } = await createRow(mctx, 'files', {
+    const textRow: Record<string, unknown> = {
       id: textFileId,
       ...fileIdentity(title, textFileId),
       original_name: title,
@@ -680,6 +780,10 @@ export async function dispatchIngestRoute(
       description: describe(content, mime, title),
       extraction_status: 'extracted',
       ...(sourceUrl ? { ref_kind: 'cloud_ref', ref_uri: sourceUrl, ref_provider: 'web' } : {}),
+    };
+    const { id } = await createRow(mctx, 'files', {
+      ...(await requiredFileDefaults(ctx.db, title, textFileId, textRow)),
+      ...textRow,
     });
     const suggestedLinks = await enrichOrFail(mctx, ctx.db, id, content, title, ctx, res);
     if (suggestedLinks === null) return true; // enrichment failed — already reported
@@ -717,7 +821,7 @@ export async function dispatchIngestRoute(
   const name = basename(abs);
   const mime = mimeFor(name);
   const localFileId = crypto.randomUUID();
-  const { id } = await createRow(mctx, 'files', {
+  const localRow: Record<string, unknown> = {
     id: localFileId,
     ...fileIdentity(name, localFileId),
     path: abs,
@@ -725,6 +829,10 @@ export async function dispatchIngestRoute(
     mime,
     size_bytes: size,
     extraction_status: 'pending',
+  };
+  const { id } = await createRow(mctx, 'files', {
+    ...(await requiredFileDefaults(ctx.db, name, localFileId, localRow)),
+    ...localRow,
   });
 
   // Extract inline (the GUI is local; files are typically small). Failures are
