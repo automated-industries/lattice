@@ -8,6 +8,71 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-06-10
+
+### Security / Breaking
+
+- **A cloud is reachable only through a user-authenticated server.** A regular
+  GUI pointed straight at a cloud's `postgres://` connection is now **refused**:
+  a raw connection string can't tell members apart, so anyone holding it would
+  read every table and row regardless of sharing. When the GUI detects a cloud
+  (a database that hosts `__lattice_team_identity`) reached over a direct
+  `postgres://` connection, it serves **no** team context and **no** tables, and
+  prompts the operator to reconnect through a server (sign in as a user). The
+  server is the single connection model and the security boundary — it holds the
+  database connection and filters every member's sync so they only ever receive
+  rows they're allowed to see; members never hold the connection string. The
+  server process itself (`lattice serve --team-cloud`) is the sole legitimate
+  direct holder of the connection. **Migration:** stand up a server in front of
+  the cloud Postgres and have members reconnect via invite; the direct
+  connection string is retired.
+- Using Postgres as your **own**, single-user storage backend — a workspace with
+  no team — is unaffected and keeps connecting directly.
+- The GUI surfaces a `cloudReconnectRequired` state on `GET /api/dbconfig` and a
+  notice in the UI when a workspace is on the refused direct path.
+
+### Changed
+
+- **Documents parse natively, with no external CLI.** Ingest no longer shells out
+  to the optional `markitdown` Python CLI (a dragged document silently extracted
+  nothing on any machine without it installed). Text is now extracted in-process
+  for **PDF** (`unpdf` — a serverless pdf.js build, no native/canvas deps),
+  **Word** (`.docx` via `mammoth`, legacy `.doc` via `word-extractor`),
+  **PowerPoint** (`.pptx`), **Excel** (`.xlsx`), **OpenDocument**
+  (`.odt`/`.ods`/`.odp`), **EPUB**, and **RTF** (the OOXML/ODF/EPUB formats via the
+  tiny `fflate` zip reader; RTF via a built-in de-RTF). Scanned/image-only PDFs
+  with no text layer still fall back to Claude's native PDF read. Every parser is
+  a lazily-loaded **optional dependency**, so a format whose parser isn't
+  installed degrades to a `skip` rather than failing, and core latticesql users
+  who never ingest documents pull none of them.
+  - Legacy **binary** `.xls` and `.ppt` (pre-2007 BIFF/PPT) have no clean,
+    non-vulnerable pure-JS parser and are referenced + marked
+    `extraction_status='skipped'`.
+  - The `MARKITDOWN_BIN` env var is no longer read (removed from `.env.example`).
+  - **Hardened against hostile documents.** All XML tag scanning is linear (no
+    global lazy-quantifier regex, which is O(n²) on an unclosed-tag flood); the
+    unzip step caps per-entry and aggregate decompressed size (zip-bomb guard);
+    each extractor stops accumulating at the text cap; the PDF read has a timeout;
+    and `/api/ingest/file` now enforces the same byte cap as the upload route.
+  - **Extraction-quality fixes** in the native parsers: RTF strips `\*`
+    destinations (hyperlink/bookmark/field metadata no longer leaks into text)
+    and decodes `\'xx` as Windows-1252 (smart quotes, em dashes — not invisible
+    C1 controls); PowerPoint/Word runs join within a paragraph without inserting
+    spurious mid-word spaces; EPUB resolves percent-encoded spine hrefs (no more
+    silently dropped chapters); XLSX preserves shared-string slots across a
+    self-closing `<si/>` and strips CJK phonetic guides; ODS reads numeric cells
+    stored only in `office:value`.
+
+### Fixed
+
+- **Drag-and-drop ingest no longer fails on a `files` table with a `NOT NULL`
+  `name` (or `title`).** Ingest now fills `name` and `title` from the upload's
+  filename on every new `files` row — the same auto-population already done for
+  `slug`. They're written only where the table physically carries those columns
+  (e.g. a cloud whose `files` table declares `name NOT NULL`) and harmlessly
+  dropped for the native `files` entity, so an uploaded file never trips a
+  `not null constraint failed: files.name` again.
+
 ## [2.2.2] - 2026-06-10
 
 Team-cloud GUI hotfixes.

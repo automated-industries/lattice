@@ -679,6 +679,22 @@ export interface ActiveDb {
   validTables: Set<string>;
   /** Team-cloud ownership context, or null for local / non-team DBs. */
   teamContext: TeamContext | null;
+  /**
+   * True when this process is the auth-gated cloud server (`lattice serve
+   * --team-cloud`) — the sole legitimate holder of a cloud's direct database
+   * connection. A regular GUI has this false, and is refused a direct cloud
+   * open (see {@link ActiveDb.cloudReconnectRequired}). Rides on ActiveDb so
+   * same-config reopens propagate it without re-threading every call site.
+   */
+  teamCloud: boolean;
+  /**
+   * True when the workspace is a cloud (team) reached via a raw `postgres://`
+   * connection in a regular GUI — the deprecated, insecure path. The cloud is
+   * NOT opened: no team context, no tables served. The GUI must reconnect
+   * through a user-authenticated server. Always false for the server process,
+   * for solo (non-team) databases, and for server-mode workspaces.
+   */
+  cloudReconnectRequired: boolean;
   junctionTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
@@ -753,6 +769,7 @@ export async function openConfig(
   configPath: string,
   outputDir: string,
   autoRender = false,
+  teamCloud = false,
 ): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
@@ -983,6 +1000,7 @@ export async function openConfig(
   // team). Native files/secrets, owned by the creator, vanish for
   // members unless explicitly shared.
   let teamContext: TeamContext | null = null;
+  let cloudReconnectRequired = false;
   if (db.getDialect() === 'postgres') {
     let teamEnabled = false;
     try {
@@ -990,15 +1008,32 @@ export async function openConfig(
     } catch {
       teamEnabled = false;
     }
-    // 1.16.3: a cloud workspace IS a cloud DB with members — there is no
-    // separate "team" to upgrade to. The first time we open a cloud DB that
-    // isn't initialized yet, set up the member/share machinery (the opener
-    // becomes owner) so the members + per-table sharing surface is always
-    // available. Best-effort + race-safe (ensureCloudWorkspaceIdentity is a
-    // no-op when the cloud is already a workspace); a failure leaves a plain
-    // cloud DB. Gated on a labeled db: line (need a label to store the token)
-    // + the operator having an identity email.
-    if (!teamEnabled) {
+    // 2.2.3 — a cloud is reachable ONLY through a user-authenticated server.
+    // A regular GUI (not the server process) pointed straight at a cloud's
+    // `postgres://` connection is the deprecated, insecure path: anyone with
+    // that string would read every table and row, since the database itself
+    // can't tell members apart. So in GUI mode (`!teamCloud`) a direct
+    // `postgres://` connection is NEVER used as a cloud:
+    //   - if it already hosts a team → refuse: serve no team context and no
+    //     tables, and signal the GUI to reconnect through a server;
+    //   - if it is a plain (non-team) Postgres → open it as a solo private
+    //     backend, but do NOT auto-initialize it into a cloud (clouds are made
+    //     by running a server, not by pointing the GUI at a connection string).
+    // The server process (`teamCloud`) is the sole legitimate direct holder of
+    // the connection string and keeps the full init + team-context flow.
+    const directGuiPostgres = !teamCloud && isPostgresUrl(parsed.dbPath);
+    if (directGuiPostgres) {
+      if (teamEnabled) {
+        cloudReconnectRequired = true;
+        teamEnabled = false; // do not resolve team context or expose tables
+        validTables.clear(); // expose nothing from the direct cloud connection
+      }
+      // else: solo private backend — fall through, no team auto-init.
+    } else if (!teamEnabled) {
+      // Server process opening a not-yet-initialized cloud: set up the
+      // member/share machinery (the opener becomes owner). Best-effort +
+      // race-safe (no-op when already a workspace). Gated on a labeled db: line
+      // + the operator having an identity email.
       try {
         const rawDb = parseDocument(readFileSync(configPath, 'utf8')).get('db');
         const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
@@ -1045,7 +1080,7 @@ export async function openConfig(
   // via the SSE endpoint. SQLite configs leave this as null and the
   // status pill reports the local-mode (yellow) state.
   let realtime: RealtimeBroker | null = null;
-  if (db.getDialect() === 'postgres') {
+  if (db.getDialect() === 'postgres' && !cloudReconnectRequired) {
     try {
       realtime = new RealtimeBroker(parsed.dbPath);
       await realtime.start();
@@ -1100,6 +1135,8 @@ export async function openConfig(
     teamsClient,
     validTables,
     teamContext,
+    teamCloud,
+    cloudReconnectRequired,
     junctionTables,
     entityContextByTable,
     manifest,
@@ -1275,7 +1312,7 @@ async function disposeActive(active: ActiveDb): Promise<void> {
 async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<ActiveDb> {
   const feed = active.feed;
   await disposeActive(active);
-  const next = await openConfig(active.configPath, active.outputDir, autoRender);
+  const next = await openConfig(active.configPath, active.outputDir, autoRender, active.teamCloud);
   next.feed = feed;
   return next;
 }
@@ -1472,7 +1509,7 @@ async function applySchemaConfig(
   for (const sql of ddl) await execSql(active.db, sql);
   saveConfigDoc(active.configPath, doc);
   await disposeActive(active);
-  return openConfig(active.configPath, active.outputDir, autoRender);
+  return openConfig(active.configPath, active.outputDir, autoRender, active.teamCloud);
 }
 
 /** Human one-liner for an undo/redo/revert of a schema entry (activity feed). */
@@ -1494,7 +1531,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const sessionId = crypto.randomUUID();
 
   // Mutable reference: switching DBs replaces this wholesale.
-  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender);
+  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender, teamCloud);
   // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
   // GUI was opened on a plain config; the switcher stays hidden.
@@ -2959,7 +2996,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const paths = resolveWorkspacePaths(latticeRoot, ws);
           let next: ActiveDb;
           try {
-            next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+            next = await openConfig(paths.configPath, paths.contextDir, autoRender, teamCloud);
           } catch (e) {
             const err = e as Error;
             sendJson(
@@ -3002,7 +3039,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const newPaths = resolveWorkspacePaths(latticeRoot, created);
           let newActive: ActiveDb;
           try {
-            newActive = await openConfig(newPaths.configPath, newPaths.contextDir, autoRender);
+            newActive = await openConfig(
+              newPaths.configPath,
+              newPaths.contextDir,
+              autoRender,
+              teamCloud,
+            );
           } catch (e) {
             sendJson(
               res,
@@ -3069,7 +3111,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             const fbPaths = resolveWorkspacePaths(latticeRoot, fallback);
             let next: ActiveDb;
             try {
-              next = await openConfig(fbPaths.configPath, fbPaths.contextDir, autoRender);
+              next = await openConfig(
+                fbPaths.configPath,
+                fbPaths.contextDir,
+                autoRender,
+                teamCloud,
+              );
             } catch (e) {
               const err = e as Error & { code?: string };
               const codePrefix = err.code ? `[${err.code}] ` : '';
@@ -3185,7 +3232,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // own directory), not the launch-wide outputDir. Reusing one
             // outputDir across every DB switch is what bled one DB's rendered
             // "files" view into another DB that had none of its own.
-            next = await openConfig(newPath, resolveOutputDirForConfig(newPath), autoRender);
+            next = await openConfig(
+              newPath,
+              resolveOutputDirForConfig(newPath),
+              autoRender,
+              teamCloud,
+            );
           } catch (e) {
             const err = e as Error & { code?: string };
             console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
@@ -3213,6 +3265,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             newConfigPath,
             resolveOutputDirForConfig(newConfigPath),
             autoRender,
+            teamCloud,
           );
           await disposeActive(active);
           active = next;
@@ -3264,6 +3317,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 fallback.path,
                 resolveOutputDirForConfig(fallback.path),
                 autoRender,
+                teamCloud,
               );
             } catch (e) {
               const err = e as Error & { code?: string };
@@ -3769,8 +3823,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                   myUserId: active.teamContext.myUserId,
                 }
               : null,
+            cloudReconnectRequired: active.cloudReconnectRequired,
             swap: async () => {
-              const next = await openConfig(active.configPath, active.outputDir, autoRender);
+              const next = await openConfig(
+                active.configPath,
+                active.outputDir,
+                autoRender,
+                active.teamCloud,
+              );
               await disposeActive(active);
               active = next;
             },
