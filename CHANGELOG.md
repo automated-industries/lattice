@@ -8,6 +8,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-11
+
+### Fixed
+
+- **Dropped documents now extract on every install — the parsers are no longer
+  optional.** The native document parsers (`mammoth` for `.docx`, `unpdf` for PDF,
+  `word-extractor` for legacy `.doc`, `fflate` for the OOXML/ODF/EPUB zip formats),
+  the `file-type` sniffer, and the `@anthropic-ai/sdk` used to summarize and
+  classify an ingested file were declared as `optionalDependencies`. Any install
+  that omits optional dependencies — `npm install --omit=optional`,
+  `npm ci --omit=optional`, a Docker layer that prunes them, or an optional native
+  build such as `sharp` failing and taking the whole optional group down with it —
+  silently shipped **without** them. A dragged `.docx`/PDF/spreadsheet then
+  extracted nothing, produced no summary, and linked to nothing, with no error
+  surfaced. The parsers and the SDK are now regular `dependencies`, present on
+  every install, so document ingest works out of the box. `pg`, `playwright`, and
+  `sharp` stay optional — a Postgres backend, browser crawling, and image
+  down-scaling are genuinely opt-in and already degrade gracefully when absent.
+- **A document parser that fails to load is now logged loudly** instead of
+  silently degrading the file to an empty extraction. Because the parsers now ship
+  as regular dependencies, an import failure means a broken or partial install and
+  is reported on the console (the extractor still returns gracefully and never
+  throws).
+
+### Changed
+
+- `@anthropic-ai/sdk`, `mammoth`, `unpdf`, `word-extractor`, `fflate`, and
+  `file-type` moved from `optionalDependencies` to `dependencies`.
+
 ## [2.2.4] - 2026-06-11
 
 ### Fixed
