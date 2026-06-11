@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [2.2.4] - 2026-06-11
+
 ### Fixed
 
 - **Drag-and-drop ingest never fails on a required `files` column.** A `files`
@@ -15,7 +17,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   one synced from a cloud — now ingests cleanly instead of 500-ing (e.g. "NOT NULL
   constraint failed: files.path"). Ingest fills any required **text** column from
   the upload's filename. Detection is by **physical table introspection** (`PRAGMA
-  table_info` / `information_schema.columns`), so it reflects the actual table, not
+table_info` / `information_schema.columns`), so it reflects the actual table, not
   Lattice's declared schema, and fires only for columns the table genuinely
   requires: a nullable native `files.path` is left null, so a byte upload is still
   served from its retained blob rather than shadowed by a filename written into
