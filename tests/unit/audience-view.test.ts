@@ -55,9 +55,11 @@ describe('audienceViewSql', () => {
     expect(sql).toContain('WHERE lattice_row_visible(\'person\', CAST("id" AS TEXT))');
     // Plain columns pass through verbatim.
     expect(sql).toMatch(/SELECT "id", "name",/);
-    // The audience column is wrapped.
+    // The audience column is wrapped with the column predicate OR a per-card
+    // override (lattice_cell_visible), masked to NULL otherwise.
     expect(sql).toContain(
-      'CASE WHEN (lattice_is_subject("owner_role")) OR (lattice_has_role(\'hr\')) THEN "comp" END AS "comp"',
+      'CASE WHEN ((lattice_is_subject("owner_role")) OR (lattice_has_role(\'hr\')))' +
+        ' OR lattice_cell_visible(\'person\', CAST("id" AS TEXT), \'comp\') THEN "comp" END AS "comp"',
     );
   });
 

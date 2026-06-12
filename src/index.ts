@@ -282,6 +282,8 @@ export {
   generateMemberPassword,
   memberRoleName,
   setRowVisibility,
+  grantCell,
+  revokeCell,
 } from './cloud/members.js';
 export { discoverCloudTables } from './cloud/discover.js';
 export type { DiscoveredTable } from './cloud/discover.js';
@@ -303,6 +305,7 @@ export {
 } from './cloud/shred.js';
 export type { SourceKeyStore } from './cloud/shred.js';
 export { FoldCache } from './cloud/fold-cache.js';
+export { secureCloud } from './cloud/setup.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing

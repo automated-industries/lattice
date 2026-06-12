@@ -73,11 +73,11 @@ export class ChangelogService {
     };
   }
 
-  /** Insertion-order expression, newest first. SQLite has `rowid`; Postgres has
-   *  no such pseudo-column, so order by the explicit `created_at` (+ `id` for a
-   *  deterministic tiebreak) — both are stamped on every write. */
+  /** Insertion-order expression, newest first. SQLite has the `rowid`
+   *  pseudo-column; Postgres has the monotonic `seq` identity column (see
+   *  Lattice._ensureChangelogTable) — both give a strict, tie-free order. */
   private get _orderDesc(): string {
-    return this.adapter.dialect === 'postgres' ? 'created_at DESC, id DESC' : 'rowid DESC';
+    return this.adapter.dialect === 'postgres' ? 'seq DESC' : 'rowid DESC';
   }
 
   /** Get change history for a specific row, newest first. */
@@ -238,31 +238,24 @@ export class ChangelogService {
   async snapshot(table: string, id: string, changeId: string): Promise<Record<string, unknown>> {
     const pg = this.adapter.dialect === 'postgres';
     // Replay up to + including the target entry, in insertion order. SQLite keys
-    // that order on `rowid`; Postgres has none, so it keys on (created_at, id).
+    // that order on `rowid`; Postgres on the monotonic `seq` identity column.
+    const seqCol = pg ? 'seq' : 'rowid';
     const target = await getAsyncOrSync(
       this.adapter,
-      `SELECT ${pg ? 'created_at, id' : 'rowid'} FROM __lattice_changelog WHERE id = ?`,
+      `SELECT ${seqCol} FROM __lattice_changelog WHERE id = ?`,
       [changeId],
     );
     if (!target) {
       throw new Error(`Lattice: changelog entry "${changeId}" not found`);
     }
 
-    const entries = pg
-      ? await allAsyncOrSync(
-          this.adapter,
-          `SELECT * FROM __lattice_changelog
-           WHERE table_name = ? AND row_id = ? AND (created_at, id) <= (?, ?)
-           ORDER BY created_at ASC, id ASC`,
-          [table, id, target.created_at, target.id],
-        )
-      : await allAsyncOrSync(
-          this.adapter,
-          `SELECT * FROM __lattice_changelog
-           WHERE table_name = ? AND row_id = ? AND rowid <= ?
-           ORDER BY rowid ASC`,
-          [table, id, target.rowid],
-        );
+    const entries = await allAsyncOrSync(
+      this.adapter,
+      `SELECT * FROM __lattice_changelog
+       WHERE table_name = ? AND row_id = ? AND ${seqCol} <= ?
+       ORDER BY ${seqCol} ASC`,
+      [table, id, target[seqCol]],
+    );
 
     // Replay to build state
     let state: Record<string, unknown> = {};

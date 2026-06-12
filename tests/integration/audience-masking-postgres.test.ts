@@ -21,7 +21,7 @@ import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { installCloudRls, enableRlsForTable, backfillOwnership } from '../../src/cloud/rls.js';
 import { enableAudienceView } from '../../src/cloud/audience.js';
-import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
+import { provisionMemberRole, generateMemberPassword, grantCell } from '../../src/cloud/members.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
 
@@ -163,5 +163,77 @@ describe.skipIf(!PG_URL)('cloud audience masking — generated cell-masking view
     const aP1 = (await A.query<{ comp: string | null }>(`SELECT comp FROM person_v WHERE id='p1'`))
       .rows[0];
     expect(aP1?.comp).toBe('alice-comp');
+  });
+
+  it('per-card override: the owner grants one member one masked cell, nothing more', async () => {
+    const tag = randomBytes(4).toString('hex');
+    const schema = `card_${tag}`;
+    const dave = `card_d_${tag}`;
+    schemas.push(schema);
+    roles.push(dave);
+
+    const admin = new pg.Pool({ connectionString: PG_URL, max: 1 });
+    pools.push(admin);
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    const url = schemaUrl(schema);
+
+    // comp is masked to non-HR members by the schema-level audience.
+    const owner = new Lattice(url);
+    owner.define('person', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', comp: 'TEXT' },
+      columnAudience: { comp: 'role:hr' },
+      render: () => '',
+      outputFile: 'person.md',
+    });
+    await owner.init();
+    await owner.upsert('person', { id: 'p1', name: 'A', comp: 'p1-comp' });
+    await owner.upsert('person', { id: 'p2', name: 'B', comp: 'p2-comp' });
+    await installCloudRls(owner);
+    const pk = owner.getPrimaryKey('person');
+    await backfillOwnership(owner, 'person', pk);
+    await enableRlsForTable(owner, 'person', pk);
+    await enableAudienceView(
+      owner,
+      'person',
+      Object.keys(owner.getRegisteredColumns('person')!),
+      pk,
+      owner.getColumnAudience('person'),
+    );
+    const davePw = generateMemberPassword();
+    await provisionMemberRole(owner, dave, davePw);
+
+    const ownerPool = new pg.Pool({ connectionString: url, max: 1 });
+    pools.push(ownerPool);
+    await ownerPool.query(`SELECT lattice_set_row_visibility('person','p1','everyone')`);
+    await ownerPool.query(`SELECT lattice_set_row_visibility('person','p2','everyone')`);
+
+    const D = memberPool(schema, dave, davePw);
+    // Dave holds no 'hr' role → every comp is masked.
+    expect(
+      (
+        await D.query<{ id: string; comp: string | null }>(
+          `SELECT id, comp FROM person_v ORDER BY id`,
+        )
+      ).rows,
+    ).toEqual([
+      { id: 'p1', comp: null },
+      { id: 'p2', comp: null },
+    ]);
+
+    // Owner grants dave the single p1.comp cell (per-card override).
+    await grantCell(owner, 'person', 'p1', 'comp', dave);
+    owner.close();
+
+    // Dave now sees exactly p1.comp — and still nothing on p2.
+    expect(
+      (
+        await D.query<{ id: string; comp: string | null }>(
+          `SELECT id, comp FROM person_v ORDER BY id`,
+        )
+      ).rows,
+    ).toEqual([
+      { id: 'p1', comp: 'p1-comp' },
+      { id: 'p2', comp: null },
+    ]);
   });
 });

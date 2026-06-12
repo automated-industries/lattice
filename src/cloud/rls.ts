@@ -109,6 +109,20 @@ CREATE TABLE IF NOT EXISTS "__lattice_member_roles" (
   PRIMARY KEY ("member_role", "app_role")
 );
 
+-- Per-card audience overrides: a row owner can grant a SPECIFIC member access to
+-- a SPECIFIC masked cell (table + pk + column), without changing the column's
+-- schema-level audience. The generated mask view ORs this in. Owner-managed;
+-- members can't read or write it.
+CREATE TABLE IF NOT EXISTS "__lattice_cell_grants" (
+  "table_name"   text NOT NULL,
+  "pk"           text NOT NULL,
+  "column_name"  text NOT NULL,
+  "grantee_role" text NOT NULL,
+  "granted_by"   text NOT NULL DEFAULT session_user,
+  "granted_at"   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("table_name", "pk", "column_name", "grantee_role")
+);
+
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
 -- is visible to nobody.
@@ -220,6 +234,46 @@ BEGIN
     WHERE "member_role" = p_member AND "app_role" = p_role;
 END $fn$;
 
+-- Per-card override check: does the connected member hold a specific-cell grant?
+-- The generated mask view ORs this into a masked column's predicate.
+CREATE OR REPLACE FUNCTION lattice_cell_visible(p_table text, p_pk text, p_column text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT EXISTS (
+    SELECT 1 FROM "__lattice_cell_grants"
+     WHERE "table_name" = p_table AND "pk" = p_pk
+       AND "column_name" = p_column AND "grantee_role" = session_user
+  )
+$fn$;
+
+-- Owner-only: grant a member access to one masked cell (a per-card override).
+CREATE OR REPLACE FUNCTION lattice_grant_cell(p_table text, p_pk text, p_column text, p_grantee text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+DECLARE v_owner text;
+BEGIN
+  SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
+    WHERE o."table_name" = p_table AND o."pk" = p_pk;
+  IF v_owner IS NULL OR v_owner <> session_user THEN
+    RAISE EXCEPTION 'lattice: only the row owner may set a per-cell audience';
+  END IF;
+  INSERT INTO "__lattice_cell_grants" ("table_name","pk","column_name","grantee_role")
+    VALUES (p_table, p_pk, p_column, p_grantee) ON CONFLICT DO NOTHING;
+END $fn$;
+
+-- Owner-only: revoke a per-cell override.
+CREATE OR REPLACE FUNCTION lattice_revoke_cell(p_table text, p_pk text, p_column text, p_grantee text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+DECLARE v_owner text;
+BEGIN
+  SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
+    WHERE o."table_name" = p_table AND o."pk" = p_pk;
+  IF v_owner IS NULL OR v_owner <> session_user THEN
+    RAISE EXCEPTION 'lattice: only the row owner may change a per-cell audience';
+  END IF;
+  DELETE FROM "__lattice_cell_grants"
+    WHERE "table_name" = p_table AND "pk" = p_pk
+      AND "column_name" = p_column AND "grantee_role" = p_grantee;
+END $fn$;
+
 -- Can the connected member see a source? Reduces to the source row's own RLS, so
 -- file-sharing drives enrichment visibility for free. p_source_ref is the
 -- source's primary key in the files table.
@@ -323,10 +377,10 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const migration: Migration = {
-    // v3 added the audience helpers; v4 adds the role model (__lattice_member_roles
-    // + real lattice_has_role / lattice_assign_role). The bootstrap is fully
-    // idempotent (CREATE OR REPLACE / IF NOT EXISTS), so re-running is safe.
-    version: 'internal:cloud-rls:bootstrap:v4',
+    // v3 added the audience helpers; v4 the role model; v5 the per-card override
+    // model (__lattice_cell_grants + lattice_cell_visible / lattice_grant_cell).
+    // The bootstrap is fully idempotent (CREATE OR REPLACE / IF NOT EXISTS).
+    version: 'internal:cloud-rls:bootstrap:v5',
     sql: CLOUD_RLS_BOOTSTRAP_SQL,
   };
   await db.migrate([migration]);

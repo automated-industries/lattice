@@ -109,12 +109,17 @@ export function audienceViewSql(
   const view = quoteIdent(`${table}_v`);
   const base = quoteIdent(table);
   const lit = `'${table.replace(/'/g, "''")}'`;
+  const pkExpr = pkSqlExpr(pkCols, '');
   const selectCols = columns.map((col) => {
     const aud = columnAudience[col] ?? '';
     if (isRowAudience(aud)) return quoteIdent(col);
     const pred = audiencePredicate(aud);
     if (pred === 'true') return quoteIdent(col);
-    return `CASE WHEN ${pred} THEN ${quoteIdent(col)} END AS ${quoteIdent(col)}`;
+    // OR a per-card override: the row owner may grant a specific member this one
+    // cell without changing the column's schema-level audience.
+    const colLit = `'${col.replace(/'/g, "''")}'`;
+    const full = `(${pred}) OR lattice_cell_visible(${lit}, ${pkExpr}, ${colLit})`;
+    return `CASE WHEN ${full} THEN ${quoteIdent(col)} END AS ${quoteIdent(col)}`;
   });
   return [
     `CREATE OR REPLACE VIEW ${view} AS SELECT ${selectCols.join(', ')} FROM ${base}` +

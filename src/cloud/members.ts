@@ -110,6 +110,44 @@ export async function setRowVisibility(
 }
 
 /**
+ * Per-card audience override: grant (or revoke) one member access to ONE masked
+ * cell — a specific (table, pk, column) — without changing the column's
+ * schema-level audience. Owner-only (the SQL function raises for a non-owner).
+ * `pk` is the row's canonical primary-key string.
+ */
+export async function grantCell(
+  db: Lattice,
+  table: string,
+  pk: string,
+  column: string,
+  grantee: string,
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_grant_cell(?, ?, ?, ?)`, [
+    table,
+    pk,
+    column,
+    grantee,
+  ]);
+}
+
+export async function revokeCell(
+  db: Lattice,
+  table: string,
+  pk: string,
+  column: string,
+  grantee: string,
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_revoke_cell(?, ?, ?, ?)`, [
+    table,
+    pk,
+    column,
+    grantee,
+  ]);
+}
+
+/**
  * Remove a member: clear its privileges and drop the role. NOTE: rows the member
  * owned remain in their tables but become unreachable (their `owner_role` no
  * longer matches any login role, and RLS shows a row only to its owner / grantees

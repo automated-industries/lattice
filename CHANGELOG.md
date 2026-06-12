@@ -72,18 +72,31 @@ with no `audience` behaves exactly as before:
   `SELECT` revoked), and a masked cell reads `NULL`. Owner-managed app roles
   (`__lattice_member_roles` + `lattice_assign_role`); members can't self-promote.
   (`enableAudienceView`, `audiencePredicate`.)
-- **Per-viewer values** — `foldEntity()` overlays the observations a viewer may see
-  onto the ground-truth projection (latest-visible-per-attribute wins). A value
-  derived from a source a member can't reach never appears for them, and un-sharing
-  the source reverts it with no residue. Additive + deterministic; cache with
-  `FoldCache`.
+- **Per-viewer values** — an enrichment is recorded as a per-viewer OBSERVATION,
+  not written into the shared row: `Lattice.observe()` appends a derived
+  observation (no canonical mutation, so the row's `updated_at` doesn't move and a
+  viewer who can't see the source can't even tell an enrichment exists), and
+  `Lattice.foldForViewer()` folds the observations a viewer may reach onto the
+  ground-truth row (latest-visible-per-attribute wins). A value derived from a
+  source a member can't reach never appears for them; un-sharing the source reverts
+  it with no residue. On a cloud the substrate is sealed by RLS
+  (`enableChangelogRls`) so a member only ever reads observations whose sources it
+  can see. Deterministic; cache with `FoldCache`.
 - **Crypto-shred** — `sealUnderSource` / `shredSource` cryptographically erase a
   sensitive source's derived values (destroy the per-source key → unrecoverable,
-  backups included).
-- The change-log is reconciled to one table (`__lattice_changelog`) and gains
-  provenance columns (`source_ref`, `change_kind`, …); an AI enrichment now stamps
-  the source-set it was derived from instead of discarding it. The enrichment pass
-  pins the cheapest model. See `docs/cloud.md`.
+  backups included); `observe()` seals sensitive observations and `foldForViewer()`
+  reverts them once the key is gone.
+- **Per-card overrides** — a row owner can grant one member one masked cell with
+  `grantCell()` / `POST /api/cloud/cell-share`, without changing the column's
+  schema-level audience; the generated mask view ORs it in.
+- **Cutover in place** — `secureCloud()` / `POST /api/cloud/secure` turns an
+  already-populated Postgres into a secured cloud (install RLS + own the existing
+  rows), not only migrate-from-SQLite.
+- The change-log is reconciled to one table (`__lattice_changelog`, Postgres-valid
+  with a monotonic `seq`) and gains provenance columns (`source_ref`,
+  `change_kind`, …); all of `insert`/`update`/`delete` accept provenance, and an
+  AI enrichment stamps the source-set it was derived from instead of discarding it.
+  The enrichment pass pins the cheapest model. See `docs/cloud.md`.
 
 **Migration:** a direct `postgres://` connection string is no longer a Lattice
 cloud connection — each user needs their own scoped role. Stand the cloud up by

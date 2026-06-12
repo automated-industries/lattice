@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { installCloudRls, enableRlsForTable, backfillOwnership } from '../../src/cloud/rls.js';
+import { secureCloud } from '../../src/cloud/setup.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 import { discoverCloudTables } from '../../src/cloud/discover.js';
 
@@ -156,6 +157,11 @@ describe.skipIf(!PG_URL)(
         /must be owner/i,
       );
 
+      // 7b) Bob cannot SET ROLE to another member to assume their identity — he is
+      //     not a member of alice's role, so Postgres refuses. (This is what makes
+      //     session_user a trustworthy identity: a member can't switch into another.)
+      await expect(B.query(`SET ROLE "${alice}"`)).rejects.toThrow(/permission denied|cannot/i);
+
       // 8) Alice's private row survived every attack, still private.
       const n1 = (await A.query<{ body: string }>(`SELECT body FROM notes WHERE id='n1'`)).rows;
       expect(n1).toEqual([{ body: 'priv' }]);
@@ -296,6 +302,53 @@ describe.skipIf(!PG_URL)(
       member.close();
       // Only the shared row — the owner's private d2 is invisible at the database.
       expect(rows.map((r) => r.id).sort()).toEqual(['d1']);
+    });
+
+    it('secureCloud: cutover of an already-populated Postgres in one call', async () => {
+      const tag = randomBytes(4).toString('hex');
+      const schema = `sec_${tag}`;
+      const eve = `sec_e_${tag}`;
+      schemas.push(schema);
+      roles.push(eve);
+
+      const admin = new pg.Pool({ connectionString: PG_URL, max: 1 });
+      pools.push(admin);
+      await admin.query(`CREATE SCHEMA "${schema}"`);
+      const url = schemaUrl(schema);
+
+      // An EXISTING populated Postgres that is NOT a cloud yet — plain rows, no RLS.
+      const owner = new Lattice(url);
+      owner.define('docs', {
+        columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT' },
+        render: () => '',
+        outputFile: 'docs.md',
+      });
+      await owner.init();
+      await owner.upsert('docs', { id: 'd1', body: 'one' });
+      await owner.upsert('docs', { id: 'd2', body: 'two' });
+
+      // One-call cutover: install RLS + the substrate + own the existing rows.
+      await secureCloud(owner);
+      const evePw = generateMemberPassword();
+      await provisionMemberRole(owner, eve, evePw);
+      owner.close();
+
+      // The secured cloud has RLS installed (owners bookkeeping present) and the
+      // observation substrate is sealed.
+      const ownerPool = new pg.Pool({ connectionString: url, max: 1 });
+      pools.push(ownerPool);
+      expect(
+        (await ownerPool.query(`SELECT to_regclass('__lattice_owners') AS reg`)).rows[0].reg,
+      ).not.toBeNull();
+
+      // Eve (a fresh member) sees none of the pre-existing rows — secureCloud made
+      // the owner the owner of them (private by default) — until one is shared.
+      const E = memberPool(schema, eve, evePw);
+      expect((await E.query(`SELECT id FROM docs`)).rows).toEqual([]);
+      await ownerPool.query(`SELECT lattice_set_row_visibility('docs','d1','everyone')`);
+      expect((await E.query(`SELECT id FROM docs ORDER BY id`)).rows.map((r) => r.id)).toEqual([
+        'd1',
+      ]);
     });
   },
 );

@@ -57,4 +57,18 @@ describe('FoldCache', () => {
     const updated: Observation = { ...obs, value: 'v2', createdAt: '2026-02-01T00:00:00Z' };
     expect(c.get('c1', ground, [updated], v('F')).phone).toBe('v2');
   });
+
+  it('egress: a collection is folded once at pull, then served from cache (no re-fold)', () => {
+    const c = new FoldCache();
+    const collection = Array.from({ length: 50 }, (_, i) => ({ id: `r${i}`, phone: 'gt' }));
+    const obsFor = (id: string): Observation[] => [{ ...obs, value: `e-${id}` }];
+    // First pass = the pull: each row is folded exactly once.
+    const first = collection.map((r) => c.get(r.id, r, obsFor(r.id), v('F')));
+    expect(c.size).toBe(50);
+    // Second pass = subsequent reads: every row is served from cache (identical
+    // object), so nothing is re-folded and no observations are re-pulled.
+    const second = collection.map((r) => c.get(r.id, r, obsFor(r.id), v('F')));
+    for (let i = 0; i < collection.length; i++) expect(second[i]).toBe(first[i]);
+    expect(c.size).toBe(50); // no growth — reads were pure cache hits
+  });
 });

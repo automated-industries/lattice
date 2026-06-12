@@ -11,18 +11,14 @@ import {
   getOrCreateMasterKey,
 } from '../framework/user-config.js';
 import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
-import {
-  installCloudRls,
-  enableRlsForTable,
-  backfillOwnership,
-  enableChangelogRls,
-} from '../cloud/rls.js';
-import { enableAudienceView } from '../cloud/audience.js';
+import { secureCloud } from '../cloud/setup.js';
 import {
   provisionMemberRole,
   generateMemberPassword,
   memberRoleName,
   setRowVisibility,
+  grantCell,
+  revokeCell,
 } from '../cloud/members.js';
 import {
   archiveLocalSqlite,
@@ -413,34 +409,13 @@ export async function dispatchDbConfigRoute(
       const target = await openTargetLatticeForMigration(ctx.configPath, url, encryptionKey);
       try {
         const result = await migrateLatticeData(ctx.db, target);
-        // Owner-side RLS setup: the migrator's connection owns the cloud, so it
-        // installs RLS and stamps itself as owner of every just-migrated row.
-        // Each member later sees only its own rows (private by default) until the
-        // owner shares them; chat / secrets / history are isolated the same way.
-        await installCloudRls(target);
-        // Secure the per-viewer observation substrate so members read only the
-        // derived observations whose sources they can see (hidden enrichments
-        // never reach them).
-        await target.ensureObservationSubstrate();
-        await enableChangelogRls(target);
-        for (const t of target.getRegisteredTableNames()) {
-          if (t.startsWith('__lattice_')) continue; // RLS bookkeeping is definer-managed
-          const pk = target.getPrimaryKey(t);
-          if (pk.length === 0) continue; // unkeyable table — no per-row RLS
-          // Backfill ownership BEFORE forcing RLS: once FORCE ROW LEVEL SECURITY
-          // is on, a non-superuser owner's own SELECT is filtered to rows it
-          // already owns (none yet), so it could stamp nothing.
-          await backfillOwnership(target, t, pk);
-          await enableRlsForTable(target, t, pk);
-          // Per-viewer column masking: if any column on this table declares an
-          // audience, generate its cell-masking view + grant members SELECT on
-          // it. No-op for tables with only row-audience columns (the default),
-          // so this changes nothing until a schema opts a column in.
-          const cols = target.getRegisteredColumns(t);
-          if (cols) {
-            await enableAudienceView(target, t, Object.keys(cols), pk, target.getColumnAudience(t));
-          }
-        }
+        // Owner-side cloud setup: the migrator's connection owns the cloud, so it
+        // installs RLS + the observation substrate and stamps itself as owner of
+        // every just-migrated row. Each member later sees only its own rows
+        // (private by default) until the owner shares them; chat / secrets /
+        // history are isolated the same way; per-viewer enrichment observations
+        // are gated by source visibility.
+        await secureCloud(target);
         target.close();
         const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;
         const backupPath = archiveLocalSqlite(sourceDbPath);
@@ -558,6 +533,34 @@ export async function dispatchDbConfigRoute(
     return true;
   }
 
+  // POST /api/cloud/secure — the existing-cloud cutover. Secure an
+  // already-populated Postgres in place: install RLS + the observation substrate
+  // and make the connecting role the owner of every existing row. Idempotent.
+  // Owner-only (needs CREATEROLE + table ownership). Use this when you already
+  // have data in a Postgres database and want to turn it INTO a Lattice cloud
+  // without migrating from a local SQLite store first.
+  if (pathname === '/api/cloud/secure' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres') {
+        sendJson(res, { error: 'Only a Postgres database can be secured as a cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(
+          res,
+          { error: 'Securing a cloud requires a connection that can create roles' },
+          403,
+        );
+        return;
+      }
+      const alreadyCloud = await cloudRlsInstalled(ctx.db);
+      await secureCloud(ctx.db);
+      await ctx.swap();
+      sendJson(res, { ok: true, alreadyCloud, secured: true });
+    });
+    return true;
+  }
+
   // POST /api/cloud/share — set a row's visibility (private | everyone) via the
   // owner-only RLS function. Only the row's owner may change its sharing; the
   // database raises for anyone else, which surfaces as a 403-ish error here.
@@ -577,6 +580,32 @@ export async function dispatchDbConfigRoute(
       }
       await setRowVisibility(ctx.db, table, pk, visibility);
       sendJson(res, { ok: true, table, pk, visibility });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/cell-share — per-card audience override. The row owner grants
+  // (or revokes) one member access to one masked cell (table + pk + column),
+  // without changing the column's schema-level audience. Owner-only.
+  if (pathname === '/api/cloud/cell-share' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const table = typeof body.table === 'string' ? body.table : '';
+      const pk = typeof body.pk === 'string' ? body.pk : '';
+      const column = typeof body.column === 'string' ? body.column : '';
+      const grantee = typeof body.grantee === 'string' ? body.grantee : '';
+      const revoke = body.revoke === true;
+      if (!table || !pk || !column || !grantee) {
+        sendJson(res, { error: 'table, pk, column and grantee are required' }, 400);
+        return;
+      }
+      if (ctx.db.getDialect() !== 'postgres') {
+        sendJson(res, { error: 'Per-cell sharing requires a cloud (Postgres) database' }, 400);
+        return;
+      }
+      if (revoke) await revokeCell(ctx.db, table, pk, column, grantee);
+      else await grantCell(ctx.db, table, pk, column, grantee);
+      sendJson(res, { ok: true, table, pk, column, grantee, revoked: revoke });
     });
     return true;
   }

@@ -36,6 +36,13 @@ import type {
   ChangeProvenance,
 } from './types.js';
 import { foldEntity, observationsFromChange, type Observation } from './cloud/fold.js';
+import {
+  sealUnderSource,
+  openUnderSource,
+  SourceShreddedError,
+  type SourceKeyStore,
+} from './cloud/shred.js';
+import { isEncrypted } from './security/encryption.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
 import { existsSync } from 'node:fs';
 import type Database from 'better-sqlite3';
@@ -1082,24 +1089,40 @@ export class Lattice {
     id: PkLookup,
     changes: Record<string, unknown>,
     provenance?: ChangeProvenance,
+    opts?: { keyStore?: SourceKeyStore },
   ): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
     await this._ensureChangelogTable();
+    const prov: ChangeProvenance = { changeKind: 'derived', ...provenance };
+    // Crypto-shred: when the observation is derived from a source flagged
+    // sensitive and a key store is provided, SEAL each string value under that
+    // single source's key. The change-log then holds only ciphertext; destroying
+    // the source's key (shredSource) makes the value unrecoverable everywhere the
+    // ciphertext exists — the durable, backup-proof half of "forget this source".
+    let toWrite = changes;
+    const keyStore = opts?.keyStore;
+    const sources = prov.sourceRef == null ? [] : ([] as string[]).concat(prov.sourceRef);
+    const sealSource = sources.length === 1 ? sources[0] : undefined;
+    if (keyStore && prov.sourceSensitive && sealSource !== undefined) {
+      toWrite = Object.fromEntries(
+        Object.entries(changes).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? sealUnderSource(v, sealSource, keyStore) : v,
+        ]),
+      );
+    }
     const auditId = this._serializePkLookup(table, id);
     await this._writeChangelogRow(
       table,
       auditId,
       'update',
-      changes,
+      toWrite,
       null,
       'observation',
       undefined,
-      {
-        changeKind: 'derived',
-        ...provenance,
-      },
+      prov,
     );
   }
 
@@ -1115,7 +1138,7 @@ export class Lattice {
   async foldForViewer(
     table: string,
     id: PkLookup,
-    opts?: { visibleSources?: Iterable<string> | 'all' },
+    opts?: { visibleSources?: Iterable<string> | 'all'; keyStore?: SourceKeyStore },
   ): Promise<Row | null> {
     const ground = await this.get(table, id);
     if (!ground) return null;
@@ -1125,22 +1148,59 @@ export class Lattice {
     // simply no observations, so return ground truth.
     if (!(await this._changelogTableExists())) return ground;
     const history = await this.history(table, auditId);
-    const observations: Observation[] = history
-      .filter((h) => h.changeKind === 'derived')
-      .flatMap((h) =>
-        observationsFromChange({
-          changes: h.changes,
+    const observations: Observation[] = [];
+    for (const h of history) {
+      if (h.changeKind !== 'derived') continue;
+      const sources = h.sourceRef ?? null;
+      const opened = this._openSealedObservation(h.changes, sources, opts?.keyStore);
+      // A null result means a sealed value could not be opened — its source was
+      // crypto-shredded — so the observation is dropped and the attribute reverts
+      // to ground truth (or the prior visible observation), with no residue.
+      if (opened === null) continue;
+      observations.push(
+        ...observationsFromChange({
+          changes: opened,
           createdAt: h.createdAt,
           changeKind: 'derived',
-          sourceRef: h.sourceRef ?? null,
+          sourceRef: sources,
         }),
       );
+    }
     const vs = opts?.visibleSources;
     const visibleSources =
       vs === undefined || vs === 'all'
         ? new Set(observations.flatMap((o) => [...(o.sourceRef ?? [])]))
         : new Set(vs);
     return foldEntity(ground, observations, { visibleSources });
+  }
+
+  /** Open any crypto-sealed values in a derived observation's `changes`. Returns
+   *  the plaintext changes, or `null` if a sealed value can't be opened because
+   *  its source's key was shredded (the value is gone for good). Values that
+   *  aren't sealed pass through; with no key store, sealed values can't be read,
+   *  so the observation is dropped (returns null). */
+  private _openSealedObservation(
+    changes: Record<string, unknown> | null,
+    sources: readonly string[] | null,
+    keyStore?: SourceKeyStore,
+  ): Record<string, unknown> | null {
+    if (!changes) return changes;
+    const sealed = Object.values(changes).some((v) => typeof v === 'string' && isEncrypted(v));
+    if (!sealed) return changes;
+    let sourceId: string | undefined;
+    if (sources?.length === 1) sourceId = sources[0];
+    if (!keyStore || sourceId === undefined) return null;
+    try {
+      return Object.fromEntries(
+        Object.entries(changes).map(([k, v]) => [
+          k,
+          typeof v === 'string' && isEncrypted(v) ? openUnderSource(v, sourceId, keyStore) : v,
+        ]),
+      );
+    } catch (e) {
+      if (e instanceof SourceShreddedError) return null; // shredded → unrecoverable → revert
+      throw e;
+    }
   }
 
   async get(table: string, id: PkLookup): Promise<Row | null> {
@@ -2307,6 +2367,16 @@ export class Lattice {
           `ALTER TABLE __lattice_changelog ADD COLUMN ${col} ${type}`,
         );
       }
+    }
+    // Monotonic insertion order. SQLite has `rowid` natively; Postgres needs an
+    // explicit identity column — ordering by `created_at` alone ties when two
+    // entries land in the same millisecond (the uuid `id` is no tiebreak), which
+    // corrupts history/replay order. The change feed uses the same pattern.
+    if (this.getDialect() === 'postgres' && !existing.has('seq')) {
+      await runAsyncOrSync(
+        this._adapter,
+        `ALTER TABLE __lattice_changelog ADD COLUMN seq BIGINT GENERATED ALWAYS AS IDENTITY`,
+      );
     }
     await runAsyncOrSync(
       this._adapter,

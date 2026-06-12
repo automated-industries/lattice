@@ -64,4 +64,28 @@ describe('changelog provenance (Stage-0)', () => {
     const hist = await db.history('notes', 'n3');
     expect(hist.find((h) => h.operation === 'update')?.sourceRef).toEqual(['only-source']);
   });
+
+  it('observe() does not move the canonical row or its count (existence non-disclosure)', async () => {
+    db = await openNotes();
+    await db.insert('notes', { id: 'n4', body: 'ground-truth' });
+    const before = await db.get('notes', 'n4');
+    const countBefore = await db.count('notes');
+
+    await db.observe(
+      'notes',
+      'n4',
+      { body: 'enriched-from-secret-source' },
+      { sourceRef: ['F'], changeKind: 'derived' },
+    );
+
+    // The canonical row and the collection count are byte-identical — a viewer
+    // who can't see the source sees neither the value nor any sign it exists.
+    expect(await db.get('notes', 'n4')).toEqual(before);
+    expect(await db.count('notes')).toBe(countBefore);
+    // A viewer who can see the source folds the value in.
+    expect((await db.foldForViewer('notes', 'n4'))?.body).toBe('enriched-from-secret-source');
+    expect((await db.foldForViewer('notes', 'n4', { visibleSources: [] }))?.body).toBe(
+      'ground-truth',
+    );
+  });
 });
