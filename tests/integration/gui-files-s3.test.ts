@@ -141,6 +141,42 @@ describe('S3-backed file serving', () => {
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toBe('text/plain');
     expect(await r.text()).toBe('bytes that live only in S3');
+    // The bytes + mime come from a row another member can write (PutObject + row
+    // CRUD), so the serve response must neutralize active content served same-origin.
+    expect(r.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(r.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
+  });
+
+  it('serves a member-staged text/html cloud_ref with nosniff + a sandbox CSP (no same-origin script execution)', async () => {
+    // A malicious member stages HTML/JS in the shared bucket and points a row's
+    // mime at text/html. Serving it inline must not let it run against another
+    // member's GUI origin.
+    const s = await boot();
+    const payload = '<script>steal()</script>';
+    const sha = createHash('sha256').update(payload).digest('hex');
+    const key = `blobs/${sha}`;
+    bucketState.set(key, Buffer.from(payload));
+    const row = {
+      id: randomUUID(),
+      original_name: 'evil.html',
+      mime: 'text/html',
+      sha256: sha,
+      ref_kind: 'cloud_ref',
+      ref_provider: 's3',
+      ref_uri: `s3://test-bucket/${key}`,
+      source_json: JSON.stringify({ bucket: 'test-bucket', key, region: 'us-east-1' }),
+    };
+    const seeded = await fetch(`${s.url}/api/tables/files/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(row),
+    });
+    const { id } = (await seeded.json()) as { id: string };
+    const r = await fetch(`${s.url}/api/files/${id}/blob`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('x-content-type-options')).toBe('nosniff');
+    // A no-allowances sandbox CSP — script/forms/same-origin all denied.
+    expect(r.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
   });
 
   it('still 404s an unknown id (the RLS-gated db.get returns null before S3)', async () => {

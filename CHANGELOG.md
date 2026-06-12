@@ -124,7 +124,15 @@ only on the uploader's machine.
   (never 500). `forcePathStyle` when a custom `endpoint` is set (R2 / MinIO /
   LocalStack). New exports: `createS3Store`, `s3Key`, `S3UnavailableError`,
   `RemoteBlobStore`, `S3StoreConfig`, `resolveActiveS3Config`, `activeWorkspaceLabel`,
-  `S3Config`.
+  `S3Config`, `mergeS3ConfigForSave`.
+- **The local-only fallback is never silent.** A failed S3 PUT on an enabled cloud
+  still succeeds locally but the upload response carries `s3: { status: 'failed',
+error }` (a clean push returns `status: 'stored'`), so the uploader knows the bytes
+  didn't reach the shared bucket and won't share a file other members would 404 on.
+- **Serve hardening.** `/api/files/:id/blob` sends `X-Content-Type-Options: nosniff`
+  and a no-allowances `Content-Security-Policy: sandbox`, since both the bytes and the
+  row's `mime` are member-writable — without them a member could stage `text/html` in
+  the shared bucket and have it execute in another member's GUI origin.
 - **Security ceiling is documented, not hidden:** byte-access is app-mediated (not
   S3-enforced), revoking row visibility doesn't retract bytes a member already
   fetched, the shared credential is a single point of compromise, and there's no

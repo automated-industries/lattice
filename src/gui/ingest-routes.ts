@@ -699,11 +699,18 @@ export async function dispatchIngestRoute(
     // can pull them — the uploader keeps the local blob for fast preview (hybrid).
     // Best-effort: a storage error never fails the upload; the row stays local-only.
     let s3Ref: { ref_uri: string; source_json: string; sha256: string } | null = null;
+    // `null` = S3 not enabled for this workspace (the common non-cloud case, no
+    // signal needed). When S3 IS enabled, `s3Status` becomes 'stored' or 'failed'
+    // so the outcome is surfaced in the response — a failed share to the cloud must
+    // not masquerade as a fully-successful upload (Rule 16). Other members fetch
+    // the bytes from S3, so a silently-dropped PUT would 404 for everyone but the
+    // uploader, who still has the local blob.
+    let s3Status: { status: 'stored' | 'failed'; key?: string; error?: string } | null = null;
     const s3cfg = resolveActiveS3Config(ctx.configPath);
     if (s3cfg) {
+      const sha256 = blob?.sha256 ?? createHash('sha256').update(buf).digest('hex');
+      const key = s3Key(s3cfg.prefix, sha256);
       try {
-        const sha256 = blob?.sha256 ?? createHash('sha256').update(buf).digest('hex');
-        const key = s3Key(s3cfg.prefix, sha256);
         const store = await createS3Store(s3cfg);
         await store.put(key, buf, { contentType: mime });
         s3Ref = {
@@ -716,8 +723,14 @@ export async function dispatchIngestRoute(
           }),
           sha256,
         };
+        s3Status = { status: 'stored', key };
       } catch (e) {
-        console.warn('[ingest] S3 upload failed; keeping local-only:', (e as Error).message);
+        // Best-effort for the upload itself (never 500), but NOT silent: the row
+        // is kept local-only and the caller is told the cloud share failed so they
+        // can retry before sharing a file other members can't fetch.
+        const error = (e as Error).message;
+        console.warn('[ingest] S3 upload failed; keeping local-only:', error);
+        s3Status = { status: 'failed', error };
       }
     }
     const fileId = crypto.randomUUID();
@@ -776,7 +789,16 @@ export async function dispatchIngestRoute(
     }
     sendJson(
       res,
-      { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks },
+      {
+        id,
+        extraction_status: result.skip ? 'skipped' : 'extracted',
+        suggestedLinks,
+        // Present only when S3 is enabled for this workspace. 'failed' tells the
+        // uploader the bytes did NOT reach the shared bucket — other members would
+        // 404 until it's re-uploaded — so the GUI can warn rather than imply a
+        // clean cloud share.
+        ...(s3Status ? { s3: s3Status } : {}),
+      },
       201,
     );
     return true;

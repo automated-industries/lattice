@@ -10,7 +10,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
-const { bucketState } = vi.hoisted(() => ({ bucketState: new Map<string, Buffer>() }));
+const { bucketState, ctl } = vi.hoisted(() => ({
+  bucketState: new Map<string, Buffer>(),
+  ctl: { failPut: false },
+}));
 
 vi.mock('@aws-sdk/client-s3', () => {
   class PutObjectCommand {
@@ -25,6 +28,13 @@ vi.mock('@aws-sdk/client-s3', () => {
   class S3Client {
     send(cmd: unknown): Promise<unknown> {
       if (cmd instanceof PutObjectCommand) {
+        if (ctl.failPut) {
+          return Promise.reject(
+            Object.assign(new Error('AccessDenied: simulated PUT failure'), {
+              name: 'AccessDenied',
+            }),
+          );
+        }
         bucketState.set(cmd.input.Key, cmd.input.Body);
         return Promise.resolve({});
       }
@@ -53,6 +63,7 @@ const ENV = [
 
 beforeEach(() => {
   bucketState.clear();
+  ctl.failPut = false;
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-s3i-cfg-'));
   dirs.push(cfgDir);
   for (const k of ENV) savedEnv[k] = process.env[k];
@@ -124,7 +135,10 @@ describe('S3-backed upload', () => {
       body: PNG,
     });
     expect(res.status).toBe(201);
-    const { id } = (await res.json()) as { id: string };
+    const uploaded = (await res.json()) as { id: string; s3?: { status: string; key?: string } };
+    const { id } = uploaded;
+    // Success surfaces the S3 outcome so the GUI can distinguish a clean cloud share.
+    expect(uploaded.s3?.status).toBe('stored');
 
     const row = await getFile(s.url, id);
     expect(row.ref_kind).toBe('cloud_ref');
@@ -143,5 +157,39 @@ describe('S3-backed upload', () => {
     const blob = await fetch(`${s.url}/api/files/${id}/blob`);
     expect(blob.status).toBe(200);
     expect(Buffer.from(await blob.arrayBuffer()).equals(PNG)).toBe(true);
+  });
+
+  it('surfaces the failure (does not 500, does not pretend success) when the S3 PUT fails on an enabled cloud', async () => {
+    // S3 is enabled (env), but the PUT fails (rotated cred / outage / region
+    // mismatch). The upload must not 500, but it also must NOT return a byte-
+    // identical success: other members fetch from S3, so a silently-dropped PUT
+    // would 404 for everyone but the uploader. The response says so (Rule 16).
+    ctl.failPut = true;
+    const s = await boot();
+    const res = await fetch(`${s.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: { 'content-type': 'image/png', 'x-filename': 'pic.png' },
+      body: PNG,
+    });
+    expect(res.status).toBe(201); // never 500 — the upload itself succeeded locally
+    const body = (await res.json()) as { id: string; s3?: { status: string; error?: string } };
+    // The degradation is reported, not swallowed.
+    expect(body.s3).toBeDefined();
+    expect(body.s3?.status).toBe('failed');
+    expect(typeof body.s3?.error).toBe('string');
+
+    // Nothing reached the bucket.
+    expect(bucketState.size).toBe(0);
+
+    // The row is local-only (the uploader keeps their copy) — NOT a cloud_ref that
+    // would imply the bytes are shared.
+    const row = await getFile(s.url, body.id);
+    expect(row.ref_kind).toBe('blob');
+    expect(row.ref_provider).toBeFalsy();
+
+    // The uploader still serves from local; other members (no local copy, no S3
+    // object) would correctly get nothing — but the uploader was TOLD at upload time.
+    const blob = await fetch(`${s.url}/api/files/${body.id}/blob`);
+    expect(blob.status).toBe(200);
   });
 });

@@ -429,16 +429,32 @@ via environment variables for headless/CI use:
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Credentials (or the standard AWS chain)               |
 
 `@aws-sdk/client-s3` is an **optional dependency**, lazy-imported only when S3 is
-enabled. If it isn't installed, uploads transparently fall back to local-only and
-the serve route reports that the bytes aren't reachable here — it never 500s.
-Setting `LATTICE_S3_ENDPOINT` switches the client to path-style addressing, which
-is what R2, MinIO, and LocalStack expect.
+enabled. If it isn't installed, uploads fall back to local-only and the serve route
+reports that the bytes aren't reachable here — it never 500s. Setting
+`LATTICE_S3_ENDPOINT` switches the client to path-style addressing, which is what
+R2, MinIO, and LocalStack expect.
 
 When enabled, an upload keeps the **local blob too** (hybrid): the uploader gets
 instant local preview while every other member streams from S3. The row records
 `ref_kind='cloud_ref'`, `ref_provider='s3'`, `ref_uri='s3://<bucket>/<key>'`, and
 `source_json={bucket,key,region,size_bytes}` — no schema migration; these fields
 already exist.
+
+The fallback is **never silent**: if S3 is enabled but the upload's PUT fails
+(rotated credential, outage, region mismatch, SDK absent), the upload still
+succeeds locally — but the response carries `s3: { status: 'failed', error }` so
+the uploader is told the bytes did **not** reach the shared bucket. Other members
+fetch from S3, so a file shared after a failed PUT would 404 for everyone but the
+uploader; surfacing the failure lets the GUI prompt a re-upload instead of implying
+a clean share. A clean upload returns `s3: { status: 'stored', key }`.
+
+The serve route (`GET /api/files/:id/blob`) sends bytes inline with
+`X-Content-Type-Options: nosniff` and a no-allowances `Content-Security-Policy:
+sandbox`. Both the bytes and the row's `mime` are member-writable (PutObject to the
+shared bucket + the generic row CRUD), so without these headers a member could stage
+`text/html` and have it execute in another member's GUI origin. Image/PDF previews
+still render (they load `/blob` as a subresource); a hostile HTML blob opened
+directly is inert.
 
 ### Least-privilege IAM policy
 

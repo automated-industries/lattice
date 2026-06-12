@@ -7,7 +7,11 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveActiveS3Config, activeWorkspaceLabel } from '../../src/framework/s3-config.js';
+import {
+  resolveActiveS3Config,
+  activeWorkspaceLabel,
+  mergeS3ConfigForSave,
+} from '../../src/framework/s3-config.js';
 
 const ENV_KEYS = [
   'LATTICE_S3_BUCKET',
@@ -85,5 +89,68 @@ describe('resolveActiveS3Config — env fallback', () => {
     clearEnv();
     expect(resolveActiveS3Config(undefined)).toBeNull();
     expect(resolveActiveS3Config(configWith('db: ./data/local.db'))).toBeNull();
+  });
+});
+
+describe('mergeS3ConfigForSave — partial updates must not drop the stored secret', () => {
+  const stored = {
+    enabled: true,
+    bucket: 'b',
+    region: 'us-east-1',
+    prefix: 'team/blobs',
+    accessKeyId: 'AKIA-OLD',
+    secretAccessKey: 'super-secret',
+  };
+
+  it('preserves the stored secret + access key when the body omits them', () => {
+    // The GET handler redacts secretAccessKey, so a UI round-trip that just flips a
+    // field never carries the secret back. The merge must keep it.
+    const out = mergeS3ConfigForSave(stored, { enabled: true, bucket: 'b', region: 'us-east-1' });
+    expect(out.secretAccessKey).toBe('super-secret');
+    expect(out.accessKeyId).toBe('AKIA-OLD');
+    expect(out.prefix).toBe('team/blobs');
+  });
+
+  it('preserves the secret while changing a non-credential field (prefix)', () => {
+    const out = mergeS3ConfigForSave(stored, {
+      enabled: true,
+      bucket: 'b',
+      region: 'us-east-1',
+      prefix: 'new/prefix',
+    });
+    expect(out.prefix).toBe('new/prefix');
+    expect(out.secretAccessKey).toBe('super-secret');
+  });
+
+  it('replaces the credential when the body supplies a new non-empty value', () => {
+    const out = mergeS3ConfigForSave(stored, {
+      enabled: true,
+      bucket: 'b',
+      region: 'us-east-1',
+      accessKeyId: 'AKIA-NEW',
+      secretAccessKey: 'rotated',
+    });
+    expect(out.accessKeyId).toBe('AKIA-NEW');
+    expect(out.secretAccessKey).toBe('rotated');
+  });
+
+  it('omits credentials entirely when neither body nor stored has them', () => {
+    const out = mergeS3ConfigForSave(
+      { enabled: false, bucket: 'b', region: 'us-east-1' },
+      { enabled: true, bucket: 'b', region: 'us-east-1' },
+    );
+    expect(out.accessKeyId).toBeUndefined();
+    expect(out.secretAccessKey).toBeUndefined();
+  });
+
+  it('takes enabled/bucket/region from the body and trims them', () => {
+    const out = mergeS3ConfigForSave(stored, {
+      enabled: false,
+      bucket: '  b2  ',
+      region: '  eu-west-1 ',
+    });
+    expect(out).toMatchObject({ enabled: false, bucket: 'b2', region: 'eu-west-1' });
+    // credentials still preserved across a disable toggle
+    expect(out.secretAccessKey).toBe('super-secret');
   });
 });

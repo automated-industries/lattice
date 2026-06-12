@@ -106,6 +106,26 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\r\n"\\]/g, '_');
 }
 
+/**
+ * Response headers for serving file bytes inline. The bytes AND the `mime` come
+ * from a `files` row whose content another member can write (PutObject to the
+ * shared bucket + the generic row CRUD), so a member could stage `text/html`
+ * over the shared bucket and have it execute same-origin in another member's GUI
+ * when served `inline`. `X-Content-Type-Options: nosniff` stops a declared
+ * `image/*` being sniffed as HTML, and a no-allowances `sandbox` CSP neutralizes
+ * script/form/same-origin if an HTML blob is opened directly — while still
+ * letting the GUI embed an image/PDF as a subresource for preview.
+ */
+function blobResponseHeaders(contentType: string, name: string): Record<string, string> {
+  return {
+    'content-type': contentType,
+    'content-disposition': `inline; filename="${name}"`,
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'; sandbox",
+  };
+}
+
 const BLOB_RE = /^\/api\/files\/([^/]+)\/blob$/;
 const OPEN_RE = /^\/api\/files\/([^/]+)\/open-in-finder$/;
 
@@ -133,11 +153,7 @@ export async function dispatchFilesRoute(
     // legacy local-only blob) — instant, no S3 round-trip.
     const loc = localPathOf(row, ctx.latticeRoot);
     if (localFileExists(loc)) {
-      res.writeHead(200, {
-        'content-type': contentType,
-        'content-disposition': `inline; filename="${name}"`,
-        'cache-control': 'no-store',
-      });
+      res.writeHead(200, blobResponseHeaders(contentType, name));
       const stream = createReadStream(loc);
       stream.on('error', () => res.destroy());
       stream.pipe(res);
@@ -152,11 +168,7 @@ export async function dispatchFilesRoute(
       try {
         const store = await createS3Store(s3cfg);
         const stream = await store.get(s3.key);
-        res.writeHead(200, {
-          'content-type': contentType,
-          'content-disposition': `inline; filename="${name}"`,
-          'cache-control': 'no-store',
-        });
+        res.writeHead(200, blobResponseHeaders(contentType, name));
         stream.on('error', () => res.destroy());
         stream.pipe(res);
       } catch (e) {

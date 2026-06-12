@@ -12,7 +12,7 @@ import {
   getS3ConfigRaw,
   saveS3ConfigRaw,
 } from '../framework/user-config.js';
-import { activeWorkspaceLabel } from '../framework/s3-config.js';
+import { activeWorkspaceLabel, mergeS3ConfigForSave } from '../framework/s3-config.js';
 import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { secureCloud } from '../cloud/setup.js';
 import {
@@ -654,31 +654,17 @@ export async function dispatchDbConfigRoute(
         return;
       }
       const body = await readJson(req);
-      const enabled = body.enabled === true;
-      const bucket = typeof body.bucket === 'string' ? body.bucket.trim() : '';
-      const region = typeof body.region === 'string' ? body.region.trim() : '';
-      if (enabled && (!bucket || !region)) {
+      // Merge over the existing stored config so a PARTIAL update (toggling
+      // `enabled`, changing `prefix`) doesn't silently drop the stored secret — the
+      // GET handler redacts secretAccessKey, so a UI round-trip never carries it
+      // back. (See mergeS3ConfigForSave.)
+      const toSave = mergeS3ConfigForSave(getS3ConfigRaw(label) ?? {}, body);
+      if (toSave.enabled && (!toSave.bucket || !toSave.region)) {
         sendJson(res, { error: 'bucket and region are required to enable S3' }, 400);
         return;
       }
-      saveS3ConfigRaw(label, {
-        enabled,
-        bucket,
-        region,
-        ...(typeof body.prefix === 'string' && body.prefix.trim()
-          ? { prefix: body.prefix.trim() }
-          : {}),
-        ...(typeof body.endpoint === 'string' && body.endpoint.trim()
-          ? { endpoint: body.endpoint.trim() }
-          : {}),
-        ...(typeof body.accessKeyId === 'string' && body.accessKeyId
-          ? { accessKeyId: body.accessKeyId }
-          : {}),
-        ...(typeof body.secretAccessKey === 'string' && body.secretAccessKey
-          ? { secretAccessKey: body.secretAccessKey }
-          : {}),
-      });
-      sendJson(res, { ok: true, enabled, bucket: bucket || null });
+      saveS3ConfigRaw(label, toSave);
+      sendJson(res, { ok: true, enabled: toSave.enabled, bucket: toSave.bucket || null });
     });
     return true;
   }
