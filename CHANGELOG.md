@@ -98,6 +98,18 @@ with no `audience` behaves exactly as before:
   AI enrichment stamps the source-set it was derived from instead of discarding it.
   The enrichment pass pins the cheapest model. See `docs/cloud.md`.
 
+**Owner-set chat system prompt per workspace.** A cloud owner can set a chat
+system prompt (in workspace settings) that's bundled into every member's assistant
+chat for that cloud — injected into each member's system message alongside the live
+schema. Owner-only to view and edit: it's stored in `__lattice_cloud_settings`
+(reached via `SECURITY DEFINER` `lattice_get_cloud_setting` / `lattice_set_cloud_setting`,
+the setter gated on `rolcreaterole`), the member group has no grant on the table, and
+`GET /api/cloud/system-prompt` returns the text only to an owner. Secrecy is
+**app-mediated** (hidden from the UI + API, not cryptographic — a member's own chat
+must inject it, so a member who digs can read it); documented in `docs/cloud.md`. New
+exports: `installCloudSettings`, `getCloudSetting`, `setCloudSetting`,
+`CLOUD_SETTING_SYSTEM_PROMPT`. Postgres-only; no-op on local SQLite.
+
 **S3-backed file bytes for cloud workspaces (opt-in, off by default).** When a
 cloud enables S3, an uploaded file's bytes go to S3 in addition to the uploader's
 local disk, so any member who can SELECT the `files` row can pull the bytes down

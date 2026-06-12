@@ -4674,6 +4674,7 @@ export const appJs = `
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
             (isOwner ? '<button class="btn primary" data-act="open-invite">Invite a member</button>' : '') +
+            (isOwner ? '<button class="btn" data-act="open-system-prompt">Edit chat system prompt</button>' : '') +
           '</div>' +
           // Owner: invite affordance below. Member: a short note. Row-level
           // security is enforced by the database, not this panel — there is
@@ -4716,6 +4717,13 @@ export const appJs = `
       var inviteBtn = host.querySelector('[data-act="open-invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
         showInviteMemberModal(info);
+      });
+
+      // Owner-only: edit the cloud's chat system prompt (bundled into every
+      // member's chat; members can neither see nor edit it).
+      var promptBtn = host.querySelector('[data-act="open-system-prompt"]');
+      if (promptBtn) promptBtn.addEventListener('click', function () {
+        showSystemPromptModal();
       });
 
       // No members list to fetch. The owner sees the invite affordance (the
@@ -4879,6 +4887,43 @@ export const appJs = `
               });
           });
         },
+      });
+    }
+
+    function showSystemPromptModal() {
+      // Owner-only editor for the cloud chat system prompt. Load the current value
+      // first (the GET returns the text ONLY to an owner), then open the editor.
+      fetchJson('/api/cloud/system-prompt').then(function (cfg) {
+        if (!cfg || cfg.canEdit !== true) {
+          showToast('Only a cloud owner can edit the chat system prompt');
+          return;
+        }
+        var current = typeof cfg.prompt === 'string' ? cfg.prompt : '';
+        var bodyHtml =
+          '<p style="margin-top:0;font-size:13px;color:var(--text-muted)">' +
+          'Added to every member chat in this cloud. Members cannot see or edit it — only you, the owner, can.' +
+          '</p>' +
+          '<div class="field"><label>Chat system prompt</label>' +
+          '<textarea name="system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
+          'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
+          escapeHtml(current) +
+          '</textarea></div>';
+        showModal('Chat system prompt', bodyHtml, {
+          primaryLabel: 'Save',
+          onSubmit: function (scope) {
+            var ta = scope.querySelector('textarea[name="system-prompt"]');
+            var value = ta ? ta.value : '';
+            return fetchJson('/api/cloud/system-prompt', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ prompt: value }),
+            }).then(function () {
+              showToast('Chat system prompt saved');
+            });
+          },
+        });
+      }).catch(function (err) {
+        showToast('Failed to load: ' + (err && err.message ? err.message : String(err)));
       });
     }
 

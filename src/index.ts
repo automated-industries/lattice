@@ -310,6 +310,12 @@ export {
 export type { SourceKeyStore } from './cloud/shred.js';
 export { FoldCache } from './cloud/fold-cache.js';
 export { secureCloud } from './cloud/setup.js';
+export {
+  installCloudSettings,
+  getCloudSetting,
+  setCloudSetting,
+  CLOUD_SETTING_SYSTEM_PROMPT,
+} from './cloud/settings.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing

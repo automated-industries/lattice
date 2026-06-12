@@ -5,6 +5,7 @@ import {
   enableRlsForTable,
   backfillOwnership,
 } from './rls.js';
+import { installCloudSettings } from './settings.js';
 import { enableAudienceView } from './audience.js';
 
 /**
@@ -23,6 +24,7 @@ import { enableAudienceView } from './audience.js';
 export async function secureCloud(db: Lattice): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
   await installCloudRls(db);
+  await installCloudSettings(db);
   await db.ensureObservationSubstrate();
   await enableChangelogRls(db);
   for (const table of db.getRegisteredTableNames()) {

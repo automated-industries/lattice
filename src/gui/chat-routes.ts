@@ -8,6 +8,7 @@ import {
 } from './assistant-routes.js';
 import { createAnthropicClient, runChat, type LlmMessage, type ContentBlock } from './ai/chat.js';
 import { readIdentity } from '../framework/user-config.js';
+import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
 import {
@@ -510,6 +511,13 @@ export async function dispatchChatRoute(
         ts: fe.ts,
       });
   });
+  // The cloud owner's workspace system prompt, bundled into every member's chat.
+  // Best-effort + read through the member's own RLS-scoped connection: a member
+  // never sees this text in the UI/API (owner-only there), it's only injected into
+  // the turn here. null on local / unset / un-upgraded cloud → no injection.
+  const cloudSystemPrompt =
+    (await getCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT)) ?? undefined;
+
   try {
     const client = createAnthropicClient(auth);
     const temperature = aggressivenessToTemperature(getAggressiveness());
@@ -522,6 +530,7 @@ export async function dispatchChatRoute(
       // Give the assistant the operator's name so it addresses them and
       // resolves "me"/"my" without asking for a name it already has.
       operatorName: readIdentity().display_name,
+      ...(cloudSystemPrompt ? { cloudSystemPrompt } : {}),
       // Capture each executed tool call (capped) for cross-turn replay memory.
       onToolRecord: (rec) => {
         turns[turns.length - 1]?.toolCalls.push(rec);

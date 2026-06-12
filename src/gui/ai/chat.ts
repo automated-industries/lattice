@@ -105,14 +105,25 @@ async function buildSchemaContext(d: DispatchCtx): Promise<string> {
   return lines.join('\n');
 }
 
-function buildSystemPrompt(schema: string, operatorName?: string): string {
+function buildSystemPrompt(
+  schema: string,
+  operatorName?: string,
+  cloudSystemPrompt?: string,
+): string {
   // Tell the assistant who it's talking to so it can address the operator and
   // link records to "you" without asking for a name it already has access to.
   const who =
     operatorName && operatorName.trim().length > 0
       ? `\n\n# Who you are assisting\nYou are assisting ${operatorName.trim()}. When the user says "me" / "my", they mean ${operatorName.trim()}; never ask the user for their own name.`
       : '';
-  return `${BASE_SYSTEM_PROMPT}${who}\n\n# Current database\n${schema}`;
+  // The cloud OWNER's workspace instructions, bundled into every member's chat.
+  // The member never sees this text in the UI/API (owner-only there) — it's
+  // injected here, in the member's own local turn assembly.
+  const workspace =
+    cloudSystemPrompt && cloudSystemPrompt.trim().length > 0
+      ? `\n\n# Workspace instructions\n${cloudSystemPrompt.trim()}`
+      : '';
+  return `${BASE_SYSTEM_PROMPT}${who}${workspace}\n\n# Current database\n${schema}`;
 }
 
 /** A content block in the Anthropic message format we use. */
@@ -170,6 +181,13 @@ export interface RunChatOptions {
    */
   operatorName?: string;
   /**
+   * The cloud workspace's owner-set chat system prompt, injected into the system
+   * message. On a cloud the chat route resolves this from the owner-controlled
+   * setting (members can't see it in the UI/API); null/absent on local or when
+   * unset. See `src/cloud/settings.ts`.
+   */
+  cloudSystemPrompt?: string;
+  /**
    * Optional sink for cross-turn tool memory: each executed tool call's id,
    * name, (capped) input, and (capped) result content. The chat route persists
    * these so a later turn is replayed with real tool_use/tool_result blocks —
@@ -204,7 +222,11 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   // Build the schema-aware system prompt once per turn — gives the model the
   // real table list so it stops guessing (and re-establishes context each turn,
   // since the persisted history is text-only).
-  const system = buildSystemPrompt(await buildSchemaContext(opts.dispatch), opts.operatorName);
+  const system = buildSystemPrompt(
+    await buildSchemaContext(opts.dispatch),
+    opts.operatorName,
+    opts.cloudSystemPrompt,
+  );
 
   let loop = 0;
   try {

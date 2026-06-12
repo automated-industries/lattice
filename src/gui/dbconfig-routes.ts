@@ -16,6 +16,12 @@ import { activeWorkspaceLabel, mergeS3ConfigForSave } from '../framework/s3-conf
 import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { secureCloud } from '../cloud/setup.js';
 import {
+  installCloudSettings,
+  getCloudSetting,
+  setCloudSetting,
+  CLOUD_SETTING_SYSTEM_PROMPT,
+} from '../cloud/settings.js';
+import {
   provisionMemberRole,
   generateMemberPassword,
   memberRoleName,
@@ -665,6 +671,53 @@ export async function dispatchDbConfigRoute(
       }
       saveS3ConfigRaw(label, toSave);
       sendJson(res, { ok: true, enabled: toSave.enabled, bucket: toSave.bucket || null });
+    });
+    return true;
+  }
+
+  // GET/POST /api/cloud/system-prompt — the workspace chat system prompt the cloud
+  // OWNER bundles into every member's chat. Owner-only to VIEW and to EDIT: the GET
+  // returns the text ONLY to an owner (a member gets canEdit:false and NO text), so
+  // the prompt never crosses the product API to a member. Secrecy is app-mediated
+  // (see src/cloud/settings.ts) — it's hidden from the UI + API, not cryptographic.
+  if (pathname === '/api/cloud/system-prompt' && method === 'GET') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        // Not a cloud — no shared/secret prompt concept. Report unsupported so the
+        // UI hides the control rather than showing an empty editor.
+        sendJson(res, { supported: false, canEdit: false });
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        // A member: never return the prompt text through the product API.
+        sendJson(res, { supported: true, canEdit: false });
+        return;
+      }
+      // Owner: ensure the store exists (covers clouds secured before this feature),
+      // then return the current prompt for editing.
+      await installCloudSettings(ctx.db);
+      const prompt = await getCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT);
+      sendJson(res, { supported: true, canEdit: true, prompt: prompt ?? '' });
+    });
+    return true;
+  }
+  if (pathname === '/api/cloud/system-prompt' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can edit the chat system prompt' }, 403);
+        return;
+      }
+      const body = await readJson(req);
+      const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+      await installCloudSettings(ctx.db);
+      // The setter is owner-guarded inside Postgres too (RAISEs for a non-owner) —
+      // the API gate above is defense in depth + a clean error.
+      await setCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT, prompt);
+      sendJson(res, { ok: true, length: prompt.length });
     });
     return true;
   }

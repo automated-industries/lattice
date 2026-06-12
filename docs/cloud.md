@@ -368,14 +368,16 @@ side channel; the database does all the gatekeeping.
 `lattice gui` drives all three flows from the browser. The relevant endpoints (all
 localhost-only, same model as the rest of the GUI):
 
-| Method | Route                            | Does                                                               |
-| ------ | -------------------------------- | ------------------------------------------------------------------ |
-| POST   | `/api/dbconfig/migrate-to-cloud` | Migrate the active local Lattice into a fresh cloud (you = owner)  |
-| POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)         |
-| POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob |
-| POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)            |
-| GET    | `/api/cloud/s3-config`           | Read this member's S3 config (secret redacted)                     |
-| POST   | `/api/cloud/s3-config`           | Owner sets S3 for the cloud (see **S3-backed file bytes** below)   |
+| Method | Route                            | Does                                                                 |
+| ------ | -------------------------------- | -------------------------------------------------------------------- |
+| POST   | `/api/dbconfig/migrate-to-cloud` | Migrate the active local Lattice into a fresh cloud (you = owner)    |
+| POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)           |
+| POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob   |
+| POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)              |
+| GET    | `/api/cloud/s3-config`           | Read this member's S3 config (secret redacted)                       |
+| POST   | `/api/cloud/s3-config`           | Owner sets S3 for the cloud (see **S3-backed file bytes** below)     |
+| GET    | `/api/cloud/system-prompt`       | Owner reads the chat system prompt (members get no text)             |
+| POST   | `/api/cloud/system-prompt`       | Owner sets the chat system prompt (see **Chat system prompt** below) |
 
 `POST /api/cloud/share` body is `{ table, pk, visibility }` and calls
 `setRowVisibility` under the hood; Postgres raises if you aren't the row's owner.
@@ -393,6 +395,39 @@ while disconnected are held locally and replayed when you reconnect. This is a
 client behavior only — it is **not** tied to any replica or sync server (there is
 no server). When you reconnect, the queued writes go to the cloud as your role and
 land under the same RLS rules as any other write.
+
+---
+
+## Chat system prompt (owner-set, per workspace)
+
+A cloud **owner** can set a **chat system prompt** that's bundled into every
+member's assistant chat for that workspace — house style, domain facts, a fiscal
+calendar, whatever the team should always have in context. The owner edits it in
+**workspace settings** ("Edit chat system prompt"); members never see the control.
+It's stored in the shared DB (`__lattice_cloud_settings`, key `chat_system_prompt`)
+and injected into the system message of each member's turn, alongside the live
+schema.
+
+**Owner-only to view and edit, app-mediated.** Two `SECURITY DEFINER` helpers back
+it (`src/cloud/settings.ts`): `lattice_set_cloud_setting` raises unless the caller
+can create roles (the owner gate), and `lattice_get_cloud_setting` is the read path.
+The member group has **no grant on the table**, so the prompt never appears in a
+member's table browser or the data API, and `GET /api/cloud/system-prompt` returns
+the text **only to an owner** (a member gets `canEdit: false` and no text).
+
+> **Ceiling — same shape as the S3 feature.** This is **app-mediated** secrecy, not
+> cryptographic. Each member's chat call is assembled in their OWN local process
+> over their OWN scoped connection, so the prompt must be readable by that
+> connection to be injected — which means `lattice_get_cloud_setting` is callable by
+> a member, and a member who goes looking (calling the function in `psql`, or
+> inspecting their app's outbound request to the model) **can** read the prompt.
+> What this guarantees is that the prompt is hidden from the product surface (the
+> UI and every API response), not that it is secret from a member's own SQL session.
+> True secrecy would require a server-side chat relay members can't reach, which the
+> no-server v3 model deliberately doesn't have.
+
+On a local SQLite workspace there are no members and nothing to keep secret, so the
+editor is hidden (`GET` reports `supported: false`).
 
 ---
 
