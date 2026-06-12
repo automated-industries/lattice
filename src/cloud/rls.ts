@@ -332,6 +332,45 @@ export async function installCloudRls(db: Lattice): Promise<void> {
   await db.migrate([migration]);
 }
 
+/**
+ * Secure the observation substrate (`__lattice_changelog`) so a member reads
+ * only what they're allowed to: a DERIVED observation only when it can reach
+ * EVERY source it was derived from (so a hidden enrichment never reaches the
+ * member — existence-hiding is structural), and a ground-truth / audit entry
+ * only for a row that is itself visible to the member. Both predicates route
+ * through the `session_user`-keyed SECURITY DEFINER helpers, so they bind to the
+ * real member. `FORCE ROW LEVEL SECURITY` applies the policy even to the table
+ * owner. No-op on SQLite (single-user; no cross-viewer leak to guard). Run after
+ * the change-log table exists (`Lattice.ensureObservationSubstrate`).
+ */
+export async function enableChangelogRls(db: Lattice): Promise<void> {
+  if (!isPg(db)) return;
+  const migration: Migration = {
+    version: 'internal:cloud-rls:changelog:v1',
+    sql: `
+ALTER TABLE "__lattice_changelog" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "__lattice_changelog" FORCE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON "__lattice_changelog" TO ${MEMBER_GROUP};
+
+DROP POLICY IF EXISTS "lattice_changelog_sel" ON "__lattice_changelog";
+CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING (
+  CASE
+    WHEN "change_kind" = 'derived' THEN
+      "source_ref" IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text("source_ref"::jsonb) AS src(sid)
+         WHERE NOT lattice_source_visible(src.sid)
+      )
+    ELSE lattice_row_visible("table_name", "row_id")
+  END
+);
+DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
+CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH CHECK (true);
+`,
+  };
+  await db.migrate([migration]);
+}
+
 /** Enable RLS on one shared table. No-op on SQLite. Idempotent via a per-table version key. */
 export async function enableRlsForTable(
   db: Lattice,

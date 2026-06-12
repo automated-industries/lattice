@@ -35,6 +35,7 @@ import type {
   ChangeEntry,
   ChangeProvenance,
 } from './types.js';
+import { foldEntity, observationsFromChange, type Observation } from './cloud/fold.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
 import { existsSync } from 'node:fs';
 import type Database from 'better-sqlite3';
@@ -811,7 +812,7 @@ export class Lattice {
     for (const c of cols) assertSafeIdentifier(c, 'column');
   }
 
-  async insert(table: string, row: Row): Promise<string> {
+  async insert(table: string, row: Row, provenance?: ChangeProvenance): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table);
@@ -849,7 +850,16 @@ export class Lattice {
     // change-log + row ACL key the row unambiguously. Single-column keys
     // serialize to the bare value (unchanged from prior behaviour).
     const pkValue = this._serializeRowPk(table, rowWithPk);
-    await this._appendChangelog(table, pkValue, 'insert', rowWithPk, null);
+    await this._appendChangelog(
+      table,
+      pkValue,
+      'insert',
+      rowWithPk,
+      null,
+      undefined,
+      undefined,
+      provenance,
+    );
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
@@ -1015,7 +1025,7 @@ export class Lattice {
     );
   }
 
-  async delete(table: string, id: PkLookup): Promise<void> {
+  async delete(table: string, id: PkLookup, provenance?: ChangeProvenance): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
@@ -1041,10 +1051,96 @@ export class Lattice {
       'delete',
       null,
       previousRow as Record<string, unknown> | null,
+      undefined,
+      undefined,
+      provenance,
     );
     this._sanitizer.emitAudit(table, 'delete', auditId);
     await this._fireWriteHooks(table, 'delete', { id: auditId }, auditId);
     this._syncEmbedding(table, 'delete', {}, auditId);
+  }
+
+  /**
+   * Record a DERIVED observation about a row WITHOUT mutating the canonical row.
+   * The canonical row stays broadly-visible ground truth; the observation carries
+   * its provenance (the source-set it was derived from) and is folded into a
+   * per-viewer entity at read time by {@link foldForViewer} — visible only to a
+   * viewer who can reach every one of its sources. This is how an AI enrichment
+   * lands a per-viewer value without leaking it into the shared row, and without
+   * moving the row's `updated_at` (so a viewer who can't see the source can't even
+   * detect that the enrichment exists). `changes` maps column → derived value.
+   */
+  /** Ensure the observation substrate (`__lattice_changelog`) exists. Cloud setup
+   *  calls this before `enableChangelogRls` so the table is present to secure
+   *  even if nothing has written an observation yet. Idempotent. */
+  async ensureObservationSubstrate(): Promise<void> {
+    await this._ensureChangelogTable();
+  }
+
+  async observe(
+    table: string,
+    id: PkLookup,
+    changes: Record<string, unknown>,
+    provenance?: ChangeProvenance,
+  ): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    this._assertIdent(table);
+    await this._ensureChangelogTable();
+    const auditId = this._serializePkLookup(table, id);
+    await this._writeChangelogRow(
+      table,
+      auditId,
+      'update',
+      changes,
+      null,
+      'observation',
+      undefined,
+      {
+        changeKind: 'derived',
+        ...provenance,
+      },
+    );
+  }
+
+  /**
+   * Compile the per-viewer view of a row: the ground-truth canonical row with the
+   * DERIVED observations the viewer is allowed to see folded on top (latest
+   * audience-visible observation per attribute wins). A derived value is visible
+   * only when the viewer can reach every source it came from, so un-sharing a
+   * source reverts the value with no residue. `visibleSources` is the set of
+   * source ids the viewer can see; omit it (or pass `'all'`) for the local
+   * single-user case where you see everything. Returns null if the row is absent.
+   */
+  async foldForViewer(
+    table: string,
+    id: PkLookup,
+    opts?: { visibleSources?: Iterable<string> | 'all' },
+  ): Promise<Row | null> {
+    const ground = await this.get(table, id);
+    if (!ground) return null;
+    const auditId = this._serializePkLookup(table, id);
+    // Do NOT create the substrate here: a scoped cloud member (who has no DDL
+    // right) must be able to fold. If the change-log doesn't exist yet there are
+    // simply no observations, so return ground truth.
+    if (!(await this._changelogTableExists())) return ground;
+    const history = await this.history(table, auditId);
+    const observations: Observation[] = history
+      .filter((h) => h.changeKind === 'derived')
+      .flatMap((h) =>
+        observationsFromChange({
+          changes: h.changes,
+          createdAt: h.createdAt,
+          changeKind: 'derived',
+          sourceRef: h.sourceRef ?? null,
+        }),
+      );
+    const vs = opts?.visibleSources;
+    const visibleSources =
+      vs === undefined || vs === 'all'
+        ? new Set(observations.flatMap((o) => [...(o.sourceRef ?? [])]))
+        : new Set(vs);
+    return foldEntity(ground, observations, { visibleSources });
   }
 
   async get(table: string, id: PkLookup): Promise<Row | null> {
@@ -2141,7 +2237,34 @@ export class Lattice {
    * All are additive + nullable (or defaulted) — Stage-0 metadata, no behavior
    * change until later stages read them.
    */
+  /** Whether `__lattice_changelog` physically exists (read-only; no DDL), so a
+   *  scoped member can decide there are no observations without trying to create
+   *  the table. */
+  private async _changelogTableExists(): Promise<boolean> {
+    if (this.getDialect() === 'postgres') {
+      const row = (await getAsyncOrSync(
+        this._adapter,
+        `SELECT to_regclass('__lattice_changelog') AS reg`,
+      )) as { reg?: string | null } | undefined;
+      return !!row && row.reg != null;
+    }
+    const row = (await getAsyncOrSync(
+      this._adapter,
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='__lattice_changelog'`,
+    )) as { name?: string } | undefined;
+    return !!row;
+  }
+
   private async _ensureChangelogTable(): Promise<void> {
+    // `created_at` default is dialect-specific: SQLite's `strftime` isn't valid
+    // Postgres, and a cloud change-log (the per-viewer observation substrate)
+    // must create cleanly on Postgres. Both produce a sortable ISO-8601 string;
+    // every write also passes `created_at` explicitly (see _writeChangelogRow),
+    // so the default only matters for any out-of-band insert.
+    const createdAtDefault =
+      this.getDialect() === 'postgres'
+        ? `to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
+        : `(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
     await runAsyncOrSync(
       this._adapter,
       `
@@ -2154,7 +2277,7 @@ export class Lattice {
         previous TEXT,
         source TEXT,
         reason TEXT,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        created_at TEXT NOT NULL DEFAULT ${createdAtDefault},
         source_ref TEXT,
         change_kind TEXT,
         superseded_by TEXT,
@@ -2208,18 +2331,38 @@ export class Lattice {
     prov?: ChangeProvenance,
   ): Promise<void> {
     if (!this._changelogTables.has(table)) return;
+    await this._writeChangelogRow(table, rowId, operation, changes, previous, source, reason, prov);
+  }
+
+  /** The ungated change-log INSERT. `_appendChangelog` wraps it with the
+   *  changelog-enabled gate; `observe()` calls it directly (an observation is an
+   *  explicit, always-recorded write to the substrate). The change-log table must
+   *  exist already. */
+  private async _writeChangelogRow(
+    table: string,
+    rowId: string,
+    operation: 'insert' | 'update' | 'delete' | 'rollback',
+    changes: Record<string, unknown> | null,
+    previous: Record<string, unknown> | null,
+    source?: string,
+    reason?: string,
+    prov?: ChangeProvenance,
+  ): Promise<void> {
     const id = uuidv4();
     // Normalize the source-set to a JSON array string for the source_ref column.
     const sourceRef =
       prov?.sourceRef == null
         ? null
         : JSON.stringify(Array.isArray(prov.sourceRef) ? prov.sourceRef : [prov.sourceRef]);
+    // Stamp created_at explicitly so the value + ordering are identical on SQLite
+    // and Postgres (the column default differs per dialect; see _ensureChangelogTable).
+    const createdAt = new Date().toISOString();
     await runAsyncOrSync(
       this._adapter,
       `INSERT INTO __lattice_changelog
          (id, table_name, row_id, operation, changes, previous, source, reason,
-          source_ref, change_kind, superseded_by, audience, source_sensitive)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          source_ref, change_kind, superseded_by, audience, source_sensitive, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         table,
@@ -2234,6 +2377,7 @@ export class Lattice {
         prov?.supersededBy ?? null,
         prov?.audience ?? null,
         prov?.sourceSensitive ? 1 : 0,
+        createdAt,
       ],
     );
   }

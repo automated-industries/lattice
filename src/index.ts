@@ -272,6 +272,7 @@ export { isPostgresUrl } from './cloud/url.js';
 export {
   installCloudRls,
   enableRlsForTable,
+  enableChangelogRls,
   backfillOwnership,
   MEMBER_GROUP,
 } from './cloud/rls.js';

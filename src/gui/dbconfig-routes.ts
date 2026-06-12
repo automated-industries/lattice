@@ -11,7 +11,12 @@ import {
   getOrCreateMasterKey,
 } from '../framework/user-config.js';
 import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
-import { installCloudRls, enableRlsForTable, backfillOwnership } from '../cloud/rls.js';
+import {
+  installCloudRls,
+  enableRlsForTable,
+  backfillOwnership,
+  enableChangelogRls,
+} from '../cloud/rls.js';
 import { enableAudienceView } from '../cloud/audience.js';
 import {
   provisionMemberRole,
@@ -413,6 +418,11 @@ export async function dispatchDbConfigRoute(
         // Each member later sees only its own rows (private by default) until the
         // owner shares them; chat / secrets / history are isolated the same way.
         await installCloudRls(target);
+        // Secure the per-viewer observation substrate so members read only the
+        // derived observations whose sources they can see (hidden enrichments
+        // never reach them).
+        await target.ensureObservationSubstrate();
+        await enableChangelogRls(target);
         for (const t of target.getRegisteredTableNames()) {
           if (t.startsWith('__lattice_')) continue; // RLS bookkeeping is definer-managed
           const pk = target.getPrimaryKey(t);

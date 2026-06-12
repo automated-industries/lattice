@@ -73,14 +73,21 @@ export class ChangelogService {
     };
   }
 
+  /** Insertion-order expression, newest first. SQLite has `rowid`; Postgres has
+   *  no such pseudo-column, so order by the explicit `created_at` (+ `id` for a
+   *  deterministic tiebreak) — both are stamped on every write. */
+  private get _orderDesc(): string {
+    return this.adapter.dialect === 'postgres' ? 'created_at DESC, id DESC' : 'rowid DESC';
+  }
+
   /** Get change history for a specific row, newest first. */
   async history(table: string, id: string, opts?: { limit?: number }): Promise<ChangeEntry[]> {
     const limit = opts?.limit ?? 100;
     const rows = await allAsyncOrSync(
       this.adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog
+      `SELECT * FROM __lattice_changelog
        WHERE table_name = ? AND row_id = ?
-       ORDER BY rowid DESC
+       ORDER BY ${this._orderDesc}
        LIMIT ?`,
       [table, id, limit],
     );
@@ -110,8 +117,8 @@ export class ChangelogService {
 
     const rows = await allAsyncOrSync(
       this.adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog ${where}
-       ORDER BY rowid DESC
+      `SELECT * FROM __lattice_changelog ${where}
+       ORDER BY ${this._orderDesc}
        LIMIT ?`,
       [...params, limit],
     );
@@ -229,24 +236,33 @@ export class ChangelogService {
    * all operations up to and including that entry.
    */
   async snapshot(table: string, id: string, changeId: string): Promise<Record<string, unknown>> {
-    // Get the target entry's rowid for reliable ordering
+    const pg = this.adapter.dialect === 'postgres';
+    // Replay up to + including the target entry, in insertion order. SQLite keys
+    // that order on `rowid`; Postgres has none, so it keys on (created_at, id).
     const target = await getAsyncOrSync(
       this.adapter,
-      `SELECT rowid FROM __lattice_changelog WHERE id = ?`,
+      `SELECT ${pg ? 'created_at, id' : 'rowid'} FROM __lattice_changelog WHERE id = ?`,
       [changeId],
     );
     if (!target) {
       throw new Error(`Lattice: changelog entry "${changeId}" not found`);
     }
 
-    // Get all entries for this row up to and including the target, in insertion order
-    const entries = await allAsyncOrSync(
-      this.adapter,
-      `SELECT * FROM __lattice_changelog
-       WHERE table_name = ? AND row_id = ? AND rowid <= ?
-       ORDER BY rowid ASC`,
-      [table, id, target.rowid],
-    );
+    const entries = pg
+      ? await allAsyncOrSync(
+          this.adapter,
+          `SELECT * FROM __lattice_changelog
+           WHERE table_name = ? AND row_id = ? AND (created_at, id) <= (?, ?)
+           ORDER BY created_at ASC, id ASC`,
+          [table, id, target.created_at, target.id],
+        )
+      : await allAsyncOrSync(
+          this.adapter,
+          `SELECT * FROM __lattice_changelog
+           WHERE table_name = ? AND row_id = ? AND rowid <= ?
+           ORDER BY rowid ASC`,
+          [table, id, target.rowid],
+        );
 
     // Replay to build state
     let state: Record<string, unknown> = {};

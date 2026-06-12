@@ -126,11 +126,16 @@ export async function enrichKnowledge(db: Lattice, opts: EnrichOptions): Promise
     }
 
     if (isBetter(newBody, currentBody)) {
-      // Confused-deputy guard: this body is DERIVED from the source files we just
-      // read, so stamp the write with that source-set as provenance instead of
-      // discarding it. The change-log then records which sources produced the
-      // value — the basis for later per-viewer audience gating + revocation.
-      await db.update(
+      // The enriched body is DERIVED from these source files, so record it as a
+      // per-viewer OBSERVATION rather than writing it into the shared canonical
+      // row. The observation is stamped with the source-set that produced it
+      // (the confused-deputy guard) and is folded into the entity at read time
+      // only for a viewer who can reach those sources (`db.foldForViewer`). The
+      // canonical body stays ground truth, so a member who can't see the sources
+      // sees neither the value nor — because `updated_at` doesn't move — any sign
+      // that an enrichment exists. Revocation is then structural: lose the
+      // source, lose the value, with no residue.
+      await db.observe(
         knowledgeTable,
         id,
         { [bodyColumn]: newBody },
