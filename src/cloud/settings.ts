@@ -5,8 +5,10 @@ import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 /**
  * Workspace-level settings for a cloud — cloud-wide values the OWNER controls and
  * members never see in the product surface. Stored in `__lattice_cloud_settings`,
- * a bookkeeping table members have no grant on (so it never shows in their table
- * browser or the data API), reached only through two `SECURITY DEFINER` helpers:
+ * a bookkeeping table members have no grant on — so its VALUE is unreadable to a
+ * member (SELECT is denied, like every other `__lattice_*` table; the System view
+ * may still list the table's existence + column names from the catalog, but never
+ * its contents). It is reached only through two `SECURITY DEFINER` helpers:
  *
  *   - `lattice_get_cloud_setting(key)` — readable by members, because a member's
  *     own chat must inject the value (the chat call is assembled in each member's
@@ -25,8 +27,9 @@ export const CLOUD_SETTING_SYSTEM_PROMPT = 'chat_system_prompt';
 
 const CLOUD_SETTINGS_BOOTSTRAP_SQL = `
 -- Owner-controlled, cloud-wide key/value settings. No grant to the member group,
--- so members cannot SELECT it directly (it never appears in their table browser);
--- the SECURITY DEFINER getter below is the only member-reachable read path.
+-- so a member's SELECT is denied (the VALUE is unreadable — the catalog may still
+-- reveal the table exists, like every other __lattice_* table); the SECURITY
+-- DEFINER getter below is the only member-reachable read path.
 CREATE TABLE IF NOT EXISTS "__lattice_cloud_settings" (
   "key"        text PRIMARY KEY,
   "value"      text,
@@ -90,6 +93,23 @@ export async function getCloudSetting(db: Lattice, key: string): Promise<string 
   } catch {
     return null;
   }
+}
+
+/**
+ * Read a cloud workspace setting, THROWING on a genuine DB error instead of
+ * swallowing it. Use this on the OWNER read/edit surface: an owner who opens the
+ * editor must see a load error (a 500 the route surfaces) rather than a deceptive
+ * empty textarea that invites a blind overwrite of the live prompt. Returns null
+ * ONLY when genuinely unset (the getter returned NULL) or on a non-Postgres db.
+ * The hot chat path uses {@link getCloudSetting} (best-effort) instead.
+ */
+export async function getCloudSettingStrict(db: Lattice, key: string): Promise<string | null> {
+  if (db.getDialect() !== 'postgres') return null;
+  const row = (await getAsyncOrSync(db.adapter, `SELECT lattice_get_cloud_setting(?) AS value`, [
+    key,
+  ])) as { value?: string | null } | undefined;
+  const v = row?.value;
+  return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
 /**

@@ -411,9 +411,11 @@ schema.
 **Owner-only to view and edit, app-mediated.** Two `SECURITY DEFINER` helpers back
 it (`src/cloud/settings.ts`): `lattice_set_cloud_setting` raises unless the caller
 can create roles (the owner gate), and `lattice_get_cloud_setting` is the read path.
-The member group has **no grant on the table**, so the prompt never appears in a
-member's table browser or the data API, and `GET /api/cloud/system-prompt` returns
-the text **only to an owner** (a member gets `canEdit: false` and no text).
+The member group has **no grant on the table**, so a member's `SELECT` is denied —
+the prompt **value** is unreadable to them through the data API (the System view may
+still list the table's existence + column names from the catalog, like every other
+`__lattice_*` table, but never its contents). And `GET /api/cloud/system-prompt`
+returns the text **only to an owner** (a member gets `canEdit: false` and no text).
 
 > **Ceiling — same shape as the S3 feature.** This is **app-mediated** secrecy, not
 > cryptographic. Each member's chat call is assembled in their OWN local process

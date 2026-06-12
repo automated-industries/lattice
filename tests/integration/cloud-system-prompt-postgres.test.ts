@@ -19,6 +19,7 @@ import { installCloudRls } from '../../src/cloud/rls.js';
 import {
   installCloudSettings,
   getCloudSetting,
+  getCloudSettingStrict,
   setCloudSetting,
   CLOUD_SETTING_SYSTEM_PROMPT,
 } from '../../src/cloud/settings.js';
@@ -119,7 +120,12 @@ describe.skipIf(!PG_URL)('cloud workspace system prompt', () => {
     const owner = new Lattice(schemaUrl(schema));
     dbs.push(owner);
     await owner.init();
-    // No installCloudSettings → the getter function doesn't exist → best-effort null.
+    // No installCloudSettings → the getter function doesn't exist. The best-effort
+    // reader (used on the hot chat path) swallows it to null...
     expect(await getCloudSetting(owner, CLOUD_SETTING_SYSTEM_PROMPT)).toBeNull();
+    // ...but the STRICT reader (used on the owner edit surface) lets the error
+    // surface, so a real read failure can't masquerade as "unset" and invite a
+    // blind overwrite.
+    await expect(getCloudSettingStrict(owner, CLOUD_SETTING_SYSTEM_PROMPT)).rejects.toThrow();
   });
 });

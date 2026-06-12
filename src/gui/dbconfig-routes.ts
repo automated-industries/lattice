@@ -17,10 +17,15 @@ import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/clou
 import { secureCloud } from '../cloud/setup.js';
 import {
   installCloudSettings,
-  getCloudSetting,
+  getCloudSettingStrict,
   setCloudSetting,
   CLOUD_SETTING_SYSTEM_PROMPT,
 } from '../cloud/settings.js';
+
+/** Generous upper bound on the stored chat system prompt — well past any real
+ *  house-style/domain preamble, but it stops an accidental multi-MB paste from
+ *  bloating every member's turn (and the model context). Owner-only input. */
+const MAX_SYSTEM_PROMPT_CHARS = 100_000;
 import {
   provisionMemberRole,
   generateMemberPassword,
@@ -694,9 +699,12 @@ export async function dispatchDbConfigRoute(
         return;
       }
       // Owner: ensure the store exists (covers clouds secured before this feature),
-      // then return the current prompt for editing.
+      // then return the current prompt for editing. Use the STRICT reader: a real
+      // read failure must surface (tryHandler → 500, the modal shows a load error)
+      // rather than swallow to '' — a deceptive empty editor would invite a blind
+      // overwrite of the live prompt (Rule 16). '' means genuinely unset.
       await installCloudSettings(ctx.db);
-      const prompt = await getCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT);
+      const prompt = await getCloudSettingStrict(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT);
       sendJson(res, { supported: true, canEdit: true, prompt: prompt ?? '' });
     });
     return true;
@@ -713,6 +721,14 @@ export async function dispatchDbConfigRoute(
       }
       const body = await readJson(req);
       const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+      if (prompt.length > MAX_SYSTEM_PROMPT_CHARS) {
+        sendJson(
+          res,
+          { error: `prompt is too long (max ${String(MAX_SYSTEM_PROMPT_CHARS)} characters)` },
+          400,
+        );
+        return;
+      }
       await installCloudSettings(ctx.db);
       // The setter is owner-guarded inside Postgres too (RAISEs for a non-owner) —
       // the API gate above is defense in depth + a clean error.
