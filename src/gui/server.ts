@@ -3026,6 +3026,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             aggressiveness: getAggressiveness(),
 
             latticeRoot: dirname(active.configPath),
+            configPath: active.configPath,
             pathname,
             method,
           });
@@ -3037,6 +3038,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const handled = await dispatchFilesRoute(req, res, {
             db: active.db,
             latticeRoot: dirname(active.configPath),
+            configPath: active.configPath,
             pathname,
             method,
           });

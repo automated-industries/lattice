@@ -1588,6 +1588,12 @@ export const appJs = `
         (row.ref_kind === 'blob' && row.blob_path)
       );
     }
+    // Bytes are viewable when there's a local copy OR an S3-backed cloud_ref — the
+    // /blob route resolves local-or-S3 transparently, so the browser just hits it.
+    function hasViewableFile(row) {
+      return hasLocalFile(row) ||
+        (row.ref_kind === 'cloud_ref' && row.ref_provider === 's3' && (row.ref_uri || row.blob_path));
+    }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
@@ -1595,9 +1601,9 @@ export const appJs = `
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
       var html = '';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
-      if (mime.indexOf('image/') === 0 && hasLocalFile(row)) {
+      if (mime.indexOf('image/') === 0 && hasViewableFile(row)) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
-      } else if (mime === 'application/pdf' && hasLocalFile(row)) {
+      } else if (mime === 'application/pdf' && hasViewableFile(row)) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
       } else if (row.extracted_text && MD_MIMES.indexOf(mime) >= 0) {
         html += '<div class="md-body">' + mdToHtml(String(row.extracted_text).slice(0, 40000)) + '</div>';
@@ -1607,9 +1613,9 @@ export const appJs = `
         html += '<div class="file-unsupported">No inline preview for this file type' +
           (mime ? ' (' + escapeHtml(mime) + ')' : '') + '.</div>';
       }
-      if (hasLocalFile(row)) {
+      if (hasViewableFile(row)) {
         html += '<div class="file-actions">' +
-          '<button class="btn" id="file-open">Open in Finder</button>' +
+          (hasLocalFile(row) ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
           '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' +
         '</div>';
       }

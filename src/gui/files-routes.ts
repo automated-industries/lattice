@@ -4,6 +4,8 @@ import { isAbsolute, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Lattice } from '../lattice.js';
 import { sendJson } from './http.js';
+import { createS3Store } from '../framework/s3-store.js';
+import { resolveActiveS3Config } from '../framework/s3-config.js';
 
 /**
  * Serving + OS integration for ingested files. A `files` row points at a local
@@ -20,6 +22,9 @@ interface FilesContext {
   db: Lattice;
   /** Workspace root (holds `data/blobs/`), to resolve `blob_path` references. */
   latticeRoot?: string;
+  /** Active config path, to resolve the workspace's S3 settings (a cloud file's
+   *  bytes may live in S3 rather than on this member's disk). */
+  configPath?: string;
   pathname: string;
   method: string;
 }
@@ -28,6 +33,8 @@ interface FileRow {
   path?: string | null;
   ref_kind?: string | null;
   ref_uri?: string | null;
+  ref_provider?: string | null;
+  source_json?: string | null;
   blob_path?: string | null;
   mime?: string | null;
   original_name?: string | null;
@@ -45,8 +52,15 @@ function localPathOf(row: FileRow, latticeRoot?: string): string | null {
   if (row.ref_kind === 'local_ref' && typeof row.ref_uri === 'string' && row.ref_uri) {
     return row.ref_uri;
   }
-  // Retained upload: a content-addressed blob under the workspace's data/blobs/.
-  if (row.ref_kind === 'blob' && typeof row.blob_path === 'string' && row.blob_path) {
+  // A content-addressed blob under the workspace's data/blobs/. Resolved for both
+  // a local-only 'blob' row AND a 'cloud_ref' row that still has a local copy
+  // (the uploader's hybrid fast path) — the caller stat-checks it and falls back
+  // to S3 when the file isn't on this member's disk.
+  if (
+    (row.ref_kind === 'blob' || row.ref_kind === 'cloud_ref') &&
+    typeof row.blob_path === 'string' &&
+    row.blob_path
+  ) {
     return isAbsolute(row.blob_path)
       ? row.blob_path
       : latticeRoot
@@ -54,6 +68,38 @@ function localPathOf(row: FileRow, latticeRoot?: string): string | null {
         : null;
   }
   return null;
+}
+
+/** The S3 object `{ bucket, key }` a row points at, or null. Prefers `source_json`
+ *  (where the upload recorded it), falling back to parsing the `s3://bucket/key`
+ *  `ref_uri`. */
+function s3RefOf(row: FileRow): { bucket: string; key: string } | null {
+  if (row.ref_kind !== 'cloud_ref' || row.ref_provider !== 's3') return null;
+  if (typeof row.source_json === 'string' && row.source_json) {
+    try {
+      const j = JSON.parse(row.source_json) as { bucket?: unknown; key?: unknown };
+      if (typeof j.bucket === 'string' && typeof j.key === 'string') {
+        return { bucket: j.bucket, key: j.key };
+      }
+    } catch {
+      // fall through to ref_uri
+    }
+  }
+  if (typeof row.ref_uri === 'string') {
+    const m = /^s3:\/\/([^/]+)\/(.+)$/.exec(row.ref_uri);
+    if (m) return { bucket: m[1] ?? '', key: m[2] ?? '' };
+  }
+  return null;
+}
+
+/** Whether a resolved local path is a readable regular file on THIS machine. */
+function localFileExists(loc: string | null): loc is string {
+  if (!loc) return false;
+  try {
+    return statSync(loc).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function sanitizeFilename(name: string): string {
@@ -71,36 +117,59 @@ export async function dispatchFilesRoute(
   const blobMatch = BLOB_RE.exec(ctx.pathname);
   if (blobMatch && ctx.method === 'GET') {
     const id = decodeURIComponent(blobMatch[1] ?? '');
+    // RLS gate: on a cloud this get() runs as the member's scoped role, so a row
+    // they can't see returns null → 404. S3 access rides entirely on this — there
+    // is no separate byte-level check.
     const row = (await ctx.db.get('files', id)) as FileRow | null;
     if (!row || row.deleted_at) {
       sendJson(res, { error: 'file not found' }, 404);
       return true;
     }
-    const loc = localPathOf(row, ctx.latticeRoot);
-    if (!loc) {
-      sendJson(res, { error: 'this file has no underlying blob (text-only ingest)' }, 404);
-      return true;
-    }
-    try {
-      const st = statSync(loc);
-      if (!st.isFile()) throw new Error('not a file');
-    } catch {
-      sendJson(res, { error: 'referenced file is no longer on disk' }, 410);
-      return true;
-    }
     const name = sanitizeFilename(row.original_name ?? 'file');
-    res.writeHead(200, {
-      'content-type':
-        typeof row.mime === 'string' && row.mime ? row.mime : 'application/octet-stream',
-      'content-disposition': `inline; filename="${name}"`,
-      'cache-control': 'no-store',
-    });
-    const stream = createReadStream(loc);
-    stream.on('error', () => {
-      // Headers are already sent; just terminate the response.
-      res.destroy();
-    });
-    stream.pipe(res);
+    const contentType =
+      typeof row.mime === 'string' && row.mime ? row.mime : 'application/octet-stream';
+
+    // Prefer a local copy when this member has the bytes (the uploader, or a
+    // legacy local-only blob) — instant, no S3 round-trip.
+    const loc = localPathOf(row, ctx.latticeRoot);
+    if (localFileExists(loc)) {
+      res.writeHead(200, {
+        'content-type': contentType,
+        'content-disposition': `inline; filename="${name}"`,
+        'cache-control': 'no-store',
+      });
+      const stream = createReadStream(loc);
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+      return true;
+    }
+
+    // No local bytes — if this is an S3-backed file, stream it from S3 using the
+    // workspace's S3 config. (The RLS gate above already authorized the read.)
+    const s3 = s3RefOf(row);
+    const s3cfg = s3 ? resolveActiveS3Config(ctx.configPath) : null;
+    if (s3 && s3cfg) {
+      try {
+        const store = await createS3Store(s3cfg);
+        const stream = await store.get(s3.key);
+        res.writeHead(200, {
+          'content-type': contentType,
+          'content-disposition': `inline; filename="${name}"`,
+          'cache-control': 'no-store',
+        });
+        stream.on('error', () => res.destroy());
+        stream.pipe(res);
+      } catch (e) {
+        sendJson(res, { error: `file bytes unavailable from S3: ${(e as Error).message}` }, 502);
+      }
+      return true;
+    }
+
+    sendJson(
+      res,
+      { error: 'this file has no underlying blob here (text-only ingest, or S3 not configured)' },
+      404,
+    );
     return true;
   }
 

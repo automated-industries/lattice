@@ -374,6 +374,8 @@ localhost-only, same model as the rest of the GUI):
 | POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)         |
 | POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob |
 | POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)            |
+| GET    | `/api/cloud/s3-config`           | Read this member's S3 config (secret redacted)                     |
+| POST   | `/api/cloud/s3-config`           | Owner sets S3 for the cloud (see **S3-backed file bytes** below)   |
 
 `POST /api/cloud/share` body is `{ table, pk, visibility }` and calls
 `setRowVisibility` under the hood; Postgres raises if you aren't the row's owner.
@@ -391,6 +393,105 @@ while disconnected are held locally and replayed when you reconnect. This is a
 client behavior only — it is **not** tied to any replica or sync server (there is
 no server). When you reconnect, the queued writes go to the cloud as your role and
 land under the same RLS rules as any other write.
+
+---
+
+## S3-backed file bytes (opt-in)
+
+A `files` row is shared by RLS like any other row, but a file's **bytes** are
+written to the uploader's local disk (`<root>/data/blobs/<sha256>`). On a cloud
+that means another member can SELECT the row yet can't fetch the bytes — they live
+on someone else's machine. Enabling S3 closes that gap: uploaded bytes also go to
+an S3 bucket, and any member who can see the row pulls them down in the viewer.
+
+**It adds no new access machinery — it rides the same `files`-row RLS.** The serve
+route does `db.get('files', id)` as the member's own scoped role; a row RLS won't
+let them SELECT returns NULL → 404 _before S3 is ever touched_. The object key is
+content-addressed (`<prefix>/<sha256>`) and appears **only** inside that
+RLS-gated row. The bucket credential grants `GetObject`+`PutObject` and nothing
+else — **no `ListBucket`, no `Delete`** — so the key is the only handle to an
+object and there's no way to enumerate the bucket. A member learns a key exactly
+when, and only when, RLS lets them read the row that holds it.
+
+### Enabling it
+
+S3 config is **per member, machine-local, and encrypted** — it sits in the same
+AES-GCM store as your scoped DB credential (`db-credentials.enc`), never in the
+shared database. Set it from the GUI (owner-only `POST /api/cloud/s3-config`) or
+via environment variables for headless/CI use:
+
+| Variable                                      | Meaning                                               |
+| --------------------------------------------- | ----------------------------------------------------- |
+| `LATTICE_S3_BUCKET`                           | Bucket name (enables S3 when set)                     |
+| `LATTICE_S3_REGION`                           | Region (falls back to `AWS_REGION`)                   |
+| `LATTICE_S3_PREFIX`                           | Key prefix; defaults to `blobs`                       |
+| `LATTICE_S3_ENDPOINT`                         | Custom endpoint for S3-compatible stores (R2 / MinIO) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Credentials (or the standard AWS chain)               |
+
+`@aws-sdk/client-s3` is an **optional dependency**, lazy-imported only when S3 is
+enabled. If it isn't installed, uploads transparently fall back to local-only and
+the serve route reports that the bytes aren't reachable here — it never 500s.
+Setting `LATTICE_S3_ENDPOINT` switches the client to path-style addressing, which
+is what R2, MinIO, and LocalStack expect.
+
+When enabled, an upload keeps the **local blob too** (hybrid): the uploader gets
+instant local preview while every other member streams from S3. The row records
+`ref_kind='cloud_ref'`, `ref_provider='s3'`, `ref_uri='s3://<bucket>/<key>'`, and
+`source_json={bucket,key,region,size_bytes}` — no schema migration; these fields
+already exist.
+
+### Least-privilege IAM policy
+
+Grant the workspace credential exactly this — `GetObject` + `PutObject` scoped to
+the prefix, and nothing that can list or delete:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "LatticeCloudBlobsReadWrite",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::YOUR_BUCKET/blobs/*"
+    }
+  ]
+}
+```
+
+Do **not** add `s3:ListBucket` or `s3:DeleteObject`. ListBucket would let a holder
+enumerate every key (defeating the "the key only appears in an RLS row" boundary);
+Delete isn't needed by the app and widens the blast radius of a leaked credential.
+Enable default bucket encryption (SSE-S3 or SSE-KMS) and block public access.
+
+### Security model & caveats (read before enabling)
+
+This is **app-mediated** access control, which is the honest ceiling for a model
+with no Lattice server in front of the bytes. Understand what it does and does not
+guarantee:
+
+1. **Byte-access is app-mediated, not S3-enforced.** The boundary is "the
+   RLS-gated `files` row is the only place the object key appears." S3 itself can't
+   tell one member from another — both present the same shared credential.
+2. **Revocation doesn't retract bytes.** Un-sharing a row (`visibility → private`)
+   stops future DB reads, but a member who already fetched the object (or just
+   learned its key) keeps access to the content-addressed object. Rotate/relocate
+   the object if you need true retraction.
+3. **The shared workspace credential is a single point of compromise.** Treat it
+   exactly like the owner's Postgres URL — machine-local, `0600`, encrypted. Anyone
+   with the credential _and_ a key can read that object.
+4. **No per-member S3 audit.** CloudTrail sees one shared principal, so S3 access
+   logs can't attribute a fetch to a person. DB-layer provenance still attributes
+   the row itself.
+5. **Security depends on never granting `ListBucket` and always using the
+   unguessable sha256 keys.** Both are required; relaxing either collapses the
+   boundary.
+
+For teams that need true per-member byte enforcement and per-member audit, the
+documented upgrade path is an online, RLS-checking presign edge (it reintroduces a
+small server that signs per-member, time-boxed URLs only after re-checking RLS) —
+out of scope here. Crypto-shred of S3 objects on row delete is likewise an
+owner-run admin follow-up.
 
 ---
 

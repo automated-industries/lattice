@@ -98,6 +98,38 @@ with no `audience` behaves exactly as before:
   AI enrichment stamps the source-set it was derived from instead of discarding it.
   The enrichment pass pins the cheapest model. See `docs/cloud.md`.
 
+**S3-backed file bytes for cloud workspaces (opt-in, off by default).** When a
+cloud enables S3, an uploaded file's bytes go to S3 in addition to the uploader's
+local disk, so any member who can SELECT the `files` row can pull the bytes down
+in the viewer. Previously the metadata row was shared via RLS but the bytes lived
+only on the uploader's machine.
+
+- **No new access machinery — it rides the `files`-row RLS.** The serve route's
+  `db.get('files', id)` runs as the member's scoped role; a member only ever
+  learns an object's (content-addressed) key for a row RLS lets them SELECT. IAM
+  is `GetObject`+`PutObject` only — **no `ListBucket`, no `Delete`** — so the key
+  is the only handle, and the RLS row is the only place it appears.
+- **Per-member, machine-local credentials.** S3 config is stored AES-GCM-encrypted
+  on each member's machine (the `db-credentials.enc` store), never in the shared
+  DB; env-var fallback (`LATTICE_S3_BUCKET`/`_REGION`/`_PREFIX`/`_ENDPOINT` + the
+  standard `AWS_*` chain) for headless/CI. Owner-only `GET`/`POST
+/api/cloud/s3-config` (secret redacted on read).
+- **Hybrid copy.** The uploader keeps the local blob (instant local preview); every
+  other member streams from S3. Content-addressed key `<prefix>/<sha256>`;
+  idempotent put. Reuses the existing reference model (`ref_kind='cloud_ref'`,
+  `ref_provider='s3'`, `ref_uri='s3://<bucket>/<key>'`, `source_json`) — **no schema
+  migration**.
+- `@aws-sdk/client-s3` is an **optional dependency, lazy-imported** like `sharp`:
+  absent SDK throws a typed `S3UnavailableError` and uploads fall back to local-only
+  (never 500). `forcePathStyle` when a custom `endpoint` is set (R2 / MinIO /
+  LocalStack). New exports: `createS3Store`, `s3Key`, `S3UnavailableError`,
+  `RemoteBlobStore`, `S3StoreConfig`, `resolveActiveS3Config`, `activeWorkspaceLabel`,
+  `S3Config`.
+- **Security ceiling is documented, not hidden:** byte-access is app-mediated (not
+  S3-enforced), revoking row visibility doesn't retract bytes a member already
+  fetched, the shared credential is a single point of compromise, and there's no
+  per-member S3 audit. See the S3 section + caveats in `docs/cloud.md`.
+
 **Migration:** a direct `postgres://` connection string is no longer a Lattice
 cloud connection — each user needs their own scoped role. Stand the cloud up by
 migrating a local Lattice into a fresh Postgres (installs RLS + makes you owner),

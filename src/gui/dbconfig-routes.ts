@@ -9,7 +9,10 @@ import {
   saveDbCredential,
   listDbCredentials,
   getOrCreateMasterKey,
+  getS3ConfigRaw,
+  saveS3ConfigRaw,
 } from '../framework/user-config.js';
+import { activeWorkspaceLabel } from '../framework/s3-config.js';
 import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { secureCloud } from '../cloud/setup.js';
 import {
@@ -606,6 +609,76 @@ export async function dispatchDbConfigRoute(
       if (revoke) await revokeCell(ctx.db, table, pk, column, grantee);
       else await grantCell(ctx.db, table, pk, column, grantee);
       sendJson(res, { ok: true, table, pk, column, grantee, revoked: revoke });
+    });
+    return true;
+  }
+
+  // GET/POST /api/cloud/s3-config — enable S3 file storage for this cloud
+  // workspace. When on, uploaded file bytes go to S3 so other members can pull
+  // them (access still gated by the files-row RLS at the serve route). Config is
+  // stored per-member + machine-local (encrypted), NOT in the shared DB. Setting
+  // it is owner-only; the secret is redacted on read.
+  if (pathname === '/api/cloud/s3-config' && method === 'GET') {
+    // Reads this member's machine-local config only (no DB/network), so the
+    // handler is synchronous; return a resolved promise for tryHandler's signature.
+    await tryHandler(res, () => {
+      const label = activeWorkspaceLabel(ctx.configPath);
+      const raw = label ? getS3ConfigRaw(label) : null;
+      sendJson(res, {
+        enabled: raw?.enabled === true,
+        bucket: typeof raw?.bucket === 'string' ? raw.bucket : null,
+        region: typeof raw?.region === 'string' ? raw.region : null,
+        prefix: typeof raw?.prefix === 'string' ? raw.prefix : null,
+        endpoint: typeof raw?.endpoint === 'string' ? raw.endpoint : null,
+        // Never return the secret; just whether one is stored.
+        accessKeyId: typeof raw?.accessKeyId === 'string' ? raw.accessKeyId : null,
+        hasSecret: typeof raw?.secretAccessKey === 'string' && raw.secretAccessKey.length > 0,
+      });
+      return Promise.resolve();
+    });
+    return true;
+  }
+  if (pathname === '/api/cloud/s3-config' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can configure S3 file storage' }, 403);
+        return;
+      }
+      const label = activeWorkspaceLabel(ctx.configPath);
+      if (!label) {
+        sendJson(res, { error: 'The active workspace is not a labelled cloud connection' }, 400);
+        return;
+      }
+      const body = await readJson(req);
+      const enabled = body.enabled === true;
+      const bucket = typeof body.bucket === 'string' ? body.bucket.trim() : '';
+      const region = typeof body.region === 'string' ? body.region.trim() : '';
+      if (enabled && (!bucket || !region)) {
+        sendJson(res, { error: 'bucket and region are required to enable S3' }, 400);
+        return;
+      }
+      saveS3ConfigRaw(label, {
+        enabled,
+        bucket,
+        region,
+        ...(typeof body.prefix === 'string' && body.prefix.trim()
+          ? { prefix: body.prefix.trim() }
+          : {}),
+        ...(typeof body.endpoint === 'string' && body.endpoint.trim()
+          ? { endpoint: body.endpoint.trim() }
+          : {}),
+        ...(typeof body.accessKeyId === 'string' && body.accessKeyId
+          ? { accessKeyId: body.accessKeyId }
+          : {}),
+        ...(typeof body.secretAccessKey === 'string' && body.secretAccessKey
+          ? { secretAccessKey: body.secretAccessKey }
+          : {}),
+      });
+      sendJson(res, { ok: true, enabled, bucket: bucket || null });
     });
     return true;
   }

@@ -162,6 +162,10 @@ export {
 export type { AdoptNativeOptions, AdoptResult } from './framework/native-entities.js';
 export { attachBlob, hashFile } from './framework/blob-store.js';
 export type { BlobMetadata } from './framework/blob-store.js';
+export { createS3Store, s3Key, S3UnavailableError } from './framework/s3-store.js';
+export type { RemoteBlobStore, S3StoreConfig } from './framework/s3-store.js';
+export { resolveActiveS3Config, activeWorkspaceLabel } from './framework/s3-config.js';
+export type { S3Config } from './framework/s3-config.js';
 export {
   configDir,
   getOrCreateMasterKey,
