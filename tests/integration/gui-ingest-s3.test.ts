@@ -191,5 +191,8 @@ describe('S3-backed upload', () => {
     // object) would correctly get nothing — but the uploader was TOLD at upload time.
     const blob = await fetch(`${s.url}/api/files/${body.id}/blob`);
     expect(blob.status).toBe(200);
+    // Drain the body so the server-side read stream closes — otherwise the open
+    // file handle blocks the temp-dir cleanup on Windows (rmdir ENOTEMPTY).
+    expect(Buffer.from(await blob.arrayBuffer()).equals(PNG)).toBe(true);
   });
 });

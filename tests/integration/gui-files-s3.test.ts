@@ -177,6 +177,7 @@ describe('S3-backed file serving', () => {
     expect(r.headers.get('x-content-type-options')).toBe('nosniff');
     // A no-allowances sandbox CSP — script/forms/same-origin all denied.
     expect(r.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
+    expect(await r.text()).toBe(payload); // drain the body (close the stream)
   });
 
   it('still 404s an unknown id (the RLS-gated db.get returns null before S3)', async () => {
