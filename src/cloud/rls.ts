@@ -1,6 +1,29 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
+
+/**
+ * Run idempotent cloud-bootstrap DDL directly, serialized by the SAME
+ * transaction-scoped advisory lock the migration path uses. Going direct (rather
+ * than a one-shot version-gated migration) is what makes the bootstrap CONVERGE
+ * on every owner open; the advisory lock is what keeps two concurrent runners (a
+ * second owner open, or an open racing `secure`) from colliding on catalog
+ * updates ("tuple concurrently updated"). The DDL is all CREATE … IF NOT EXISTS /
+ * CREATE OR REPLACE, so re-running is cheap + safe. No-op-safe on adapters
+ * without `withClient` (falls back to a plain run).
+ */
+export async function runCloudBootstrapSql(db: Lattice, sql: string): Promise<void> {
+  const adapter = db.adapter;
+  if (adapter.withClient) {
+    await adapter.withClient(async (tx) => {
+      await tx.run('SELECT pg_advisory_xact_lock($1::bigint)', [LATTICE_MIGRATION_LOCK_ID.toString()]);
+      await tx.run(sql);
+    });
+  } else {
+    await runAsyncOrSync(adapter, sql);
+  }
+}
 
 /**
  * Database-enforced row-level security for a shared cloud Postgres.
@@ -587,19 +610,15 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const schema = await cloudSchema(db);
-  const migration: Migration = {
-    // v3 added the audience helpers; v4 the role model; v5 the per-card override
-    // model (__lattice_cell_grants + lattice_cell_visible / lattice_grant_cell);
-    // v6 added per-table policy (__lattice_table_policy: default_row_visibility +
-    // never_share, enforced in the insert trigger + share/grant guards), the
-    // canonical column-audience store (__lattice_column_policy), lattice_is_owner,
-    // and the owner-only setters; v7 pins search_path on every SECURITY DEFINER
-    // helper (closes the pg_temp-shadow RLS bypass) + revokes schema CREATE from
-    // PUBLIC. The bootstrap is fully idempotent.
-    version: 'internal:cloud-rls:bootstrap:v7',
-    sql: pinDefinerSearchPath(CLOUD_RLS_BOOTSTRAP_SQL, schema) + revokeSchemaCreateSql(schema),
-  };
-  await db.migrate([migration]);
+  // Run the bootstrap DIRECTLY — NOT via a version-gated migration. Every object
+  // here is CREATE … IF NOT EXISTS / CREATE OR REPLACE / DROP POLICY IF EXISTS +
+  // CREATE POLICY / REVOKE, so re-running is cheap and, crucially, CONVERGES.
+  // A version gate (once a version is recorded it never re-runs) meant objects
+  // ADDED to the bootstrap in a later release — e.g. __lattice_member_invites —
+  // never reached clouds already stamped at that version, and `secure` no-op'd.
+  // Running it directly on every owner open (see openConfig) closes that gap.
+  const sql = pinDefinerSearchPath(CLOUD_RLS_BOOTSTRAP_SQL, schema) + revokeSchemaCreateSql(schema);
+  await runCloudBootstrapSql(db, sql);
 }
 
 /**

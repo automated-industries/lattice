@@ -8,6 +8,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — cloud bootstrap converges on owner open (3.2)
+
+- **The cloud object bootstrap now converges.** `installCloudRls` /
+  `installCloudSettings` run their idempotent DDL directly (serialized by the
+  shared `pg_advisory_xact_lock`) instead of behind a one-shot version gate, and
+  run on every cloud-OWNER open. So an object added to the bootstrap in a later
+  release (e.g. `__lattice_member_invites`) now reaches clouds already stamped at
+  an earlier version, and "secure this cloud" no longer no-ops. The expensive
+  per-table ownership/RLS backfill stays version/secure-gated (Rule 28 — no
+  whole-table scans on open).
+
 ### Changed — concurrent background render (3.2)
 
 - **Entity-context tables now render concurrently** (bounded fan-out) instead of

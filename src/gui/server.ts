@@ -50,6 +50,8 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
+import { installCloudRls } from '../cloud/rls.js';
+import { installCloudSettings } from '../cloud/settings.js';
 import { rowAccessSummaries } from '../cloud/members.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
@@ -837,6 +839,27 @@ export async function openConfig(
   // preferences now (machine-local), so this soft-deletes any leftover rows
   // so they stop appearing in the workspace's Secrets object. Idempotent.
   await retireLegacyPreferenceSecrets(db);
+
+  // Cloud OWNER open: converge the idempotent cloud bootstrap (RLS objects +
+  // settings + observation substrate) so objects ADDED to the bootstrap in a
+  // later release reach clouds already stamped at an earlier version — the class
+  // of bug where __lattice_member_invites never reached existing clouds and a
+  // version-gated `secure` no-op'd. Pure CREATE … IF NOT EXISTS / CREATE OR
+  // REPLACE — cheap, no row scans. The EXPENSIVE per-table ownership/RLS backfill
+  // stays gated in secureCloud (Rule 28 — no whole-table scans on open).
+  if (db.getDialect() === 'postgres' && !memberOpen) {
+    try {
+      if ((await cloudRlsInstalled(db)) && (await canManageRoles(db))) {
+        await installCloudRls(db);
+        await installCloudSettings(db);
+        await db.ensureObservationSubstrate();
+      }
+    } catch (e) {
+      // Rule 16: never silently swallow. A converge failure must be visible, but
+      // shouldn't crash the GUI — the owner can still work; `secure` re-runs it.
+      console.error('[openConfig] cloud bootstrap converge failed:', (e as Error).message);
+    }
+  }
 
   // Queryable tables = YAML-declared tables PLUS every table registered on the
   // live Lattice that isn't internal bookkeeping. This includes native
