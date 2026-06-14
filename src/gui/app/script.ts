@@ -2100,6 +2100,21 @@ export const appJs = `
       });
     }
 
+    // Count related rows WITHOUT downloading the whole table. Used for the
+    // object view's relationship-folder badges. hasMany counts the target
+    // table on its FK; manyToMany counts the junction on the local side (one
+    // junction row per link). A single indexed COUNT(*) per relation instead
+    // of fetching ≤500 rows of the target (+ junction) table over the network.
+    function countRows(tableName, col, val) {
+      return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/count' +
+        '?col=' + encodeURIComponent(col) + '&val=' + encodeURIComponent(val))
+        .then(function (d) { return d.count; });
+    }
+    function fsRelatedCount(rel, parentId) {
+      if (rel.kind === 'hasMany') return countRows(rel.targetTable, rel.foreignKey, parentId);
+      return countRows(rel.junction, rel.localFk, parentId);
+    }
+
     // Walk a drill path, fetching each (table,id) node row and resolving each
     // relation token. Returns an ordered crumb list: 'node' crumbs (a row) and
     // 'rel' crumbs (a relation from the preceding node).
@@ -2348,45 +2363,63 @@ export const appJs = `
         var d = displayFor(table);
         var bt = belongsToColumns(t);
         var rels = fsRelations(table);
-        // Preload belongsTo targets so parent links can show names.
-        Promise.all(bt.map(function (b) { return loadAllRows(b.rel.table); })).then(function () {
-          var fields = [];
-          intrinsicColumns(t).forEach(function (c) { fields.push(fsFieldHtml(table, row, c)); });
-          bt.forEach(function (b) {
-            var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
-            var dd = ref
-              ? '<a class="fs-link" href="#/fs/' + encodeURIComponent(b.rel.table) + '/' + encodeURIComponent(ref.id) + '">📁 ' + escapeHtml(fsDisplayName(ref)) + '</a>'
-              : '<span class="fs-empty-val">—</span>';
-            fields.push('<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) +
-              '</div><div class="fs-field-val">' + dd + '</div></div>');
-          });
-          var base = fsHref(segs);
-          var folderTiles = rels.map(function (rel) {
-            return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
-              '<div class="fs-tile-icon">📁</div>' +
-              '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
-              '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
-            '</a>';
-          }).join('');
-          content.innerHTML =
-            fsBreadcrumb(segs, crumbs) +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + (table === 'files' ? fileEmoji(row) : d.icon) + '</span>' +
-              '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
-            '</div>' +
-            (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
-            '<div class="fs-doc">' + fields.join('') + '</div>' +
-            '<div class="fs-context" id="fs-context"></div>' +
-            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
-          if (table === 'files') renderFilePreview(row);
-          loadFsContext(table, id);
-          wireFsEdit(content, table, id, t, row);
-          rels.forEach(function (rel) {
-            fsRelatedRows(table, row, rel).then(function (rs) {
-              var el = content.querySelector('[data-count-for="' + rel.token + '"]');
-              if (el) el.textContent = rs.length + (rs.length === 1 ? ' item' : ' items');
-            }).catch(function () { /* count is best-effort */ });
-          });
+        // Render immediately. Parent-link names and folder counts fill in
+        // async below — we no longer preload whole related tables (each was a
+        // full /rows fetch, ≤500 rows, over the network) just to compute them.
+        // belongsTo fields here are display-only links (no inline edit), so the
+        // parent table is never needed up front — only the referenced row's name.
+        var fields = [];
+        intrinsicColumns(t).forEach(function (c) { fields.push(fsFieldHtml(table, row, c)); });
+        bt.forEach(function (b) {
+          var pid = row[b.rel.foreignKey];
+          var dd = pid
+            ? '<a class="fs-link" href="#/fs/' + encodeURIComponent(b.rel.table) + '/' + encodeURIComponent(pid) + '">📁 ' +
+                '<span class="bt-name" data-bt-name-for="' + escapeHtml(b.rel.foreignKey) + '">…</span></a>'
+            : '<span class="fs-empty-val">—</span>';
+          fields.push('<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) +
+            '</div><div class="fs-field-val">' + dd + '</div></div>');
+        });
+        var base = fsHref(segs);
+        var folderTiles = rels.map(function (rel) {
+          return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
+            '<div class="fs-tile-icon">📁</div>' +
+            '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
+            '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
+          '</a>';
+        }).join('');
+        content.innerHTML =
+          fsBreadcrumb(segs, crumbs) +
+          '<div class="view-header">' +
+            '<span class="entity-icon">' + (table === 'files' ? fileEmoji(row) : d.icon) + '</span>' +
+            '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+          '</div>' +
+          (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
+          '<div class="fs-doc">' + fields.join('') + '</div>' +
+          '<div class="fs-context" id="fs-context"></div>' +
+          (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
+        if (table === 'files') renderFilePreview(row);
+        loadFsContext(table, id);
+        wireFsEdit(content, table, id, t, row);
+        // Resolve each parent-link name with a single indexed row fetch
+        // (not a whole-table download).
+        bt.forEach(function (b) {
+          var pid = row[b.rel.foreignKey];
+          if (!pid) return;
+          var fill = function (text) {
+            var el = content.querySelector('[data-bt-name-for="' + b.rel.foreignKey + '"]');
+            if (el) el.textContent = text;
+          };
+          fetchJson('/api/tables/' + encodeURIComponent(b.rel.table) + '/rows/' + encodeURIComponent(pid))
+            .then(function (ref) { fill(fsDisplayName(ref) || pid); })
+            .catch(function () { fill(pid); });
+        });
+        // Folder counts via the count endpoint — one cheap indexed COUNT per
+        // relation instead of downloading the entire related table.
+        rels.forEach(function (rel) {
+          fsRelatedCount(rel, row.id).then(function (n) {
+            var el = content.querySelector('[data-count-for="' + rel.token + '"]');
+            if (el) el.textContent = n + (n === 1 ? ' item' : ' items');
+          }).catch(function () { /* count is best-effort */ });
         });
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
@@ -3708,6 +3741,7 @@ export const appJs = `
         '<div class="modal">' +
           '<div class="modal-head">' + escapeHtml(title) + '</div>' +
           '<div class="modal-body">' + bodyHtml + '</div>' +
+          '<div class="modal-error" role="alert" hidden></div>' +
           '<div class="modal-foot">' +
             '<button class="btn" data-act="cancel">Cancel</button>' +
             '<button class="btn ' + primaryClass + '" data-act="ok">' + escapeHtml(primaryLabel) + '</button>' +
@@ -3716,11 +3750,28 @@ export const appJs = `
       document.body.appendChild(backdrop);
       if (opts.onBody) opts.onBody(backdrop);
       function close() { if (backdrop.parentNode) document.body.removeChild(backdrop); }
+      // Submit failures render INSIDE the modal pane, not as a toast. A toast
+      // (z-index 200) paints behind the modal backdrop (z-index 1000, blurred),
+      // so the error came out blurry and detached from the dialog.
+      var errBox = backdrop.querySelector('.modal-error');
+      function showErr(err) {
+        var message = err && err.message ? err.message : String(err);
+        if (errBox) {
+          errBox.textContent = 'Failed: ' + message;
+          errBox.hidden = false;
+        } else {
+          showToast('Failed: ' + message);
+        }
+      }
+      function clearErr() {
+        if (errBox) { errBox.textContent = ''; errBox.hidden = true; }
+      }
       backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
       backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
       backdrop.querySelector('[data-act="ok"]').addEventListener('click', function () {
         var btn = backdrop.querySelector('[data-act="ok"]');
         if (btn.disabled) return;
+        clearErr();
         var label = btn.innerHTML;
         var spin = function () {
           btn.disabled = true;
@@ -3738,13 +3789,13 @@ export const appJs = `
             spin();
             result.then(function () { close(); }).catch(function (err) {
               unspin();
-              showToast('Failed: ' + (err && err.message ? err.message : String(err)));
+              showErr(err);
             });
           } else {
             close();
           }
         } catch (err) {
-          showToast('Failed: ' + (err && err.message ? err.message : String(err)));
+          showErr(err);
         }
       });
       return { close: close };

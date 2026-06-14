@@ -137,6 +137,38 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toMatch(/u\.password = '••+'/);
   });
 
+  it('renders modal submit errors inside the pane, not as a blurred toast behind the backdrop', () => {
+    // The generic showModal failure path used to call
+    // showToast('Failed: ' + (err && err.message ? …)). A .toast (z-index 200)
+    // paints behind .modal-backdrop (z-index 1000, backdrop-filter: blur(3px)),
+    // so the error came out blurry and detached from the dialog. 3.0.1 renders
+    // the failure in an inline .modal-error region inside the modal pane.
+    expect(guiAppHtml).toContain('class="modal-error"');
+    expect(guiAppHtml).toContain('function showErr(');
+    expect(guiAppHtml).toContain('function clearErr(');
+    // Both the async reject path and the sync throw path route to showErr.
+    expect(guiAppHtml).toContain('showErr(err)');
+    // The regression: showModal must NOT toast its own submit failures.
+    expect(guiAppHtml).not.toContain("showToast('Failed: ' + (err && err.message");
+    // The banner uses the danger palette and is hidden until there's an error.
+    expect(guiAppHtml).toMatch(/\.modal-error \{[\s\S]*?color: var\(--danger/);
+    expect(guiAppHtml).toContain('.modal-error[hidden]');
+  });
+
+  it('object view fills folder counts + parent names async, not via whole-table downloads', () => {
+    // Bug #2 (3.0.1): clicking an object used to preload entire related tables
+    // (≤500 rows each, over the network) to compute relationship-folder counts
+    // AND block first paint on preloading whole belongsTo tables just to show a
+    // parent's name. Now it paints immediately and fills both async: counts via
+    // a cheap indexed COUNT endpoint, names via a single-row fetch.
+    expect(guiAppHtml).toContain('function fsRelatedCount(');
+    expect(guiAppHtml).toContain("'/count'");
+    expect(guiAppHtml).toContain('data-bt-name-for=');
+    // Regression: the item view must NOT block paint by preloading whole
+    // belongsTo tables.
+    expect(guiAppHtml).not.toContain('bt.map(function (b) { return loadAllRows(b.rel.table); })');
+  });
+
   it('cloud member admin lives in Database Settings, not a legacy team card', () => {
     // The legacy project-config team-card UI (renderTeamCard /
     // renderTeamsForProjectConfig / wireTeamCardActions) was removed.

@@ -850,6 +850,15 @@ export const css = `
     .modal-body {
       padding: 16px 18px; overflow-y: auto; flex: 1;
     }
+    /* Submit-error banner shown inside the modal pane (not as a blurred toast
+       behind the backdrop). Reuses the danger palette from .dm-danger. */
+    .modal-error {
+      padding: 12px 18px; border-top: 1px solid var(--border);
+      color: var(--danger, #ef4444); font-size: 13px; line-height: 1.4;
+      background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
+      word-break: break-word;
+    }
+    .modal-error[hidden] { display: none; }
     .modal-foot {
       padding: 12px 18px; border-top: 1px solid var(--border);
       display: flex; gap: 8px; justify-content: flex-end;

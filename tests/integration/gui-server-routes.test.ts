@@ -127,6 +127,38 @@ describe('GUI server — SQLite read routes', () => {
   });
 });
 
+describe('GUI server — filtered row count', () => {
+  it('counts by col/val and excludes soft-deleted by default (object-view folder badges)', async () => {
+    const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
+    const h = await boot(cfg);
+
+    // Seed: two rows named "x", one named "y".
+    const ids: string[] = [];
+    for (const name of ['x', 'x', 'y']) {
+      const r = await api(h.url, '/api/tables/items/rows', { method: 'POST', body: { name } });
+      ids.push(r.body.id as string);
+    }
+
+    // Whole-table count.
+    const all = await api(h.url, '/api/tables/items/count');
+    expect(all.status).toBe(200);
+    expect(all.body.count).toBe(3);
+
+    // Filtered by col/val (this is how a folder badge is computed — no
+    // whole-table download).
+    const xs = await api(h.url, '/api/tables/items/count?col=name&val=x');
+    expect(xs.body.count).toBe(2);
+
+    // Soft-delete one "x": the default count excludes it, deleted=any includes it.
+    await api(h.url, `/api/tables/items/rows/${ids[0]!}`, { method: 'DELETE' });
+    expect((await api(h.url, '/api/tables/items/count?col=name&val=x')).body.count).toBe(1);
+    expect((await api(h.url, '/api/tables/items/count?col=name&val=x&deleted=any')).body.count).toBe(2);
+
+    // Unknown table → 400 (not a silent 0).
+    expect((await api(h.url, '/api/tables/nope/count')).status).toBe(400);
+  });
+});
+
 describe('GUI server — row CRUD + audit history', () => {
   it('inserts, reads, patches, lists history, undoes, redoes, and deletes a row', async () => {
     const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');

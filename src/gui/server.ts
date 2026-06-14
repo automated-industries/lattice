@@ -399,6 +399,7 @@ async function dashboardPayload(
 }
 
 const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
+const COUNT_PATH = /^\/api\/tables\/([^/]+)\/count$/;
 const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const ROW_HISTORY_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/history$/;
 const LAST_EDITED_PATH = /^\/api\/tables\/([^/]+)\/last-edited$/;
@@ -2860,6 +2861,38 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const lastEditedMatch = LAST_EDITED_PATH.exec(pathname);
         if (lastEditedMatch && method === 'GET') {
           sendJson(res, { edits: {} });
+          return;
+        }
+
+        // ── Filtered row COUNT: /api/tables/:table/count?col=&val=&deleted=
+        // A cheap, indexed COUNT(*) the SPA uses to fill relationship-folder
+        // badges on the object view WITHOUT downloading the whole related table
+        // (≤500 rows per fetch). `col`/`val` are optional (omit → whole-table
+        // count). Soft-delete is excluded by default, matching the rows route.
+        const countMatch = COUNT_PATH.exec(pathname);
+        if (countMatch) {
+          const table = decodeURIComponent(countMatch[1] ?? '');
+          if (method !== 'GET') {
+            sendJson(res, { error: `Method ${method} not allowed` }, 405);
+            return;
+          }
+          if (!active.validTables.has(table)) {
+            sendJson(res, { error: `Unknown table: ${table}` }, 400);
+            return;
+          }
+          const col = url.searchParams.get('col');
+          const val = url.searchParams.get('val');
+          const deletedMode = url.searchParams.get('deleted');
+          const countOpts: Parameters<typeof active.db.count>[1] = {};
+          if (active.softDeletable.has(table) && deletedMode !== 'any') {
+            countOpts.filters = [
+              { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
+            ];
+          }
+          if (col && val !== null) countOpts.where = { [col]: val };
+          // Row visibility is enforced by Postgres RLS at the database.
+          const count = await active.db.count(table, countOpts);
+          sendJson(res, { count });
           return;
         }
 
