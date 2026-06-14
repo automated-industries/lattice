@@ -676,21 +676,28 @@ export async function dispatchDbConfigRoute(
           ORDER BY m.rolname`,
         [MEMBER_GROUP, ownerRole],
       )) as { role: string }[];
-      // role → its latest non-revoked invite email, for human-readable display.
+      // role → its latest non-revoked invite (email + whether it's been redeemed)
+      // for human-readable display + accurate status. An invite with redeemed_at
+      // NULL means the person was invited but hasn't joined yet → "Invited"; once
+      // they redeem (redeemed_at set) → "Member". A member-group role with no
+      // invite row (e.g. a DBA-created role) is treated as a redeemed member.
       const invites = (await allAsyncOrSync(
         ctx.db.adapter,
-        `SELECT DISTINCT ON ("role") "role", "email"
+        `SELECT DISTINCT ON ("role") "role", "email", "redeemed_at"
            FROM "__lattice_member_invites"
           WHERE "revoked_at" IS NULL
           ORDER BY "role", "created_at" DESC`,
-      ).catch(() => [])) as { role: string; email?: string }[];
-      const emailByRole = new Map(invites.map((r) => [r.role, r.email ?? '']));
+      ).catch(() => [])) as { role: string; email?: string; redeemed_at?: string | null }[];
+      const inviteByRole = new Map(invites.map((r) => [r.role, r]));
       const members = [
         { role: ownerRole, name: ownerName, email: ownerEmail, status: 'owner', isYou: true },
         ...rows.map((r) => {
-          const email = emailByRole.get(r.role) ?? '';
+          const inv = inviteByRole.get(r.role);
+          const email = inv?.email ?? '';
           const name = email ? (email.split('@')[0] ?? r.role) : r.role;
-          return { role: r.role, name, email, status: 'member', isYou: false };
+          // Pending (un-redeemed) invite → Invited; redeemed or no invite → Member.
+          const status = inv && inv.redeemed_at == null ? 'invited' : 'member';
+          return { role: r.role, name, email, status, isYou: false };
         }),
       ];
       sendJson(res, { members });

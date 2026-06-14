@@ -259,13 +259,34 @@ export async function revokeMemberRole(db: Lattice, role: string): Promise<void>
     [role],
   )) as { x?: number } | undefined;
   if (!exists) return;
-  // Handle the member's owned objects EXPLICITLY (don't swallow — Rule 16). A
-  // role can't be dropped while it owns objects or holds grants. First reassign
-  // any objects it owns to the current owner, then drop its remaining
-  // privileges/grants/defaults, then the role. A bare `DROP OWNED BY ... .catch()`
-  // used to hide Supabase's "permission denied to drop objects" (42501) for a
-  // restricted-superuser owner, leaving stale roles to pile up; surface it now.
-  await runAsyncOrSync(db.adapter, `REASSIGN OWNED BY "${role}" TO CURRENT_USER`);
-  await runAsyncOrSync(db.adapter, `DROP OWNED BY "${role}"`);
+  // Clean up the member's owned objects + grants before dropping the role. On a
+  // real-superuser cloud this REASSIGNs/DROPs whatever the role owns. But a scoped
+  // member is NOSUPERUSER + has no CREATE on the schema, so it owns NO persistent
+  // objects — and on managed Postgres (Supabase) the owner ISN'T a true superuser
+  // and is NOT a member of the scoped role, so `REASSIGN OWNED` / `DROP OWNED`
+  // raise "permission denied to reassign/drop objects" (42501). That error is
+  // benign HERE (there is nothing to reassign), so tolerate ONLY the
+  // insufficient-privilege code and let the DROP ROLE below be the source of
+  // truth. Any OTHER error still propagates (Rule: surface real failures). The
+  // DROP ROLE itself is NOT swallowed — if it fails, the kick fails loudly.
+  for (const stmt of [`REASSIGN OWNED BY "${role}" TO CURRENT_USER`, `DROP OWNED BY "${role}"`]) {
+    try {
+      await runAsyncOrSync(db.adapter, stmt);
+    } catch (e) {
+      if (!isInsufficientPrivilege(e)) throw e;
+      console.warn(
+        `[cloud] "${stmt.split(' ').slice(0, 2).join(' ')} …" skipped (insufficient privilege; ` +
+          `a scoped member owns no objects): ${(e as Error).message}`,
+      );
+    }
+  }
   await runAsyncOrSync(db.adapter, `DROP ROLE IF EXISTS "${role}"`);
+}
+
+/** True for a Postgres "permission denied" / insufficient-privilege error
+ *  (SQLSTATE 42501) — the class a restricted-superuser owner hits on
+ *  REASSIGN/DROP OWNED for a role it isn't a member of. */
+function isInsufficientPrivilege(e: unknown): boolean {
+  const err = (e ?? {}) as { code?: string; message?: string };
+  return err.code === '42501' || /permission denied/i.test(err.message ?? '');
 }

@@ -155,4 +155,44 @@ describe.skipIf(!PG_URL)('#3.1/#3.4 invite lifecycle', () => {
     // second revoke on the now-absent role must NOT throw (no "role does not exist")
     await expect(revokeMemberRole(o, role)).resolves.toBeUndefined();
   });
+
+  it('kick: revoke succeeds for a restricted-superuser owner that cannot REASSIGN OWNED (Supabase 42501)', async () => {
+    // Reproduce the managed-Postgres condition on vanilla PG: a CREATEROLE
+    // NOSUPERUSER owner that created the member role can DROP it but is NOT a
+    // member of it, so REASSIGN/DROP OWNED raise "permission denied to reassign
+    // objects" (42501). Before the fix that 42501 propagated and the kick failed
+    // ("Could not remove member: permission denied to reassign objects"); now it's
+    // tolerated (a scoped member owns nothing) and the role is dropped.
+    const pw = generateMemberPassword();
+    const ro = `ro_${randomBytes(3).toString('hex')}`;
+    roles.push(ro);
+    const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+    await admin.query(`CREATE ROLE "${ro}" LOGIN PASSWORD '${pw}' CREATEROLE NOSUPERUSER`);
+    await admin.end();
+
+    const u = new URL(PG_URL!);
+    u.username = ro;
+    u.password = pw;
+    const roDb = new Lattice(u.toString());
+    dbs.push(roDb);
+    await roDb.init({ introspectOnly: true });
+
+    const lm = `lm_${randomBytes(3).toString('hex')}`;
+    roles.push(lm);
+    // The restricted owner creates the member role (so it has admin to drop it),
+    // but is not a member of it (so REASSIGN OWNED is denied).
+    await runAsyncOrSync(
+      roDb.adapter,
+      `CREATE ROLE "${lm}" LOGIN PASSWORD '${generateMemberPassword()}' NOSUPERUSER NOCREATEDB NOCREATEROLE`,
+    );
+
+    await expect(revokeMemberRole(roDb, lm)).resolves.toBeUndefined();
+
+    const gone = (await getAsyncOrSync(
+      roDb.adapter,
+      `SELECT count(*)::int AS n FROM pg_roles WHERE rolname = ?`,
+      [lm],
+    )) as { n?: number } | undefined;
+    expect(gone?.n).toBe(0); // the member role was actually dropped
+  });
 });

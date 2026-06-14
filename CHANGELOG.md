@@ -8,6 +8,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — members panel + kick (3.2)
+
+- **Kicking a member works on managed Postgres.** `revokeMemberRole` did
+  `REASSIGN OWNED` / `DROP OWNED` unconditionally, which a restricted-superuser
+  owner (e.g. Supabase's `postgres`) can't do for a role it isn't a member of —
+  it raised "permission denied to reassign objects" and the kick failed. A scoped
+  member owns no objects, so that insufficient-privilege error is now tolerated
+  (logged) and the role is still dropped; any other error — and a failed DROP ROLE
+  — still surfaces.
+- **Members list shows people, not roles, with the right status.** A pending
+  (un-redeemed) invite now shows the invitee email + an **Invited** status instead
+  of the raw Postgres role labeled "Member"; redeemed members show as **Member**.
+
 ### Fixed — member reads of masked tables + row-access enrichment (3.2)
 
 - **Members can read audience-masked tables again.** A secured cloud REVOKEs base
