@@ -1,4 +1,4 @@
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import {
   existsSync,
@@ -440,6 +440,19 @@ const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const ROW_HISTORY_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/history$/;
 const LAST_EDITED_PATH = /^\/api\/tables\/([^/]+)\/last-edited$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
+
+/**
+ * Read one request header as a trimmed string (Node lowercases header names and
+ * may hand back an array for repeated headers — collapse to the first value).
+ * Returns undefined when absent or blank so callers can treat "no header" and
+ * "empty header" identically.
+ */
+function headerValue(req: IncomingMessage, name: string): string | undefined {
+  const raw = req.headers[name.toLowerCase()];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  const trimmed = typeof v === 'string' ? v.trim() : '';
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 interface ContextFile {
   name: string;
@@ -3256,8 +3269,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
             if (method === 'POST') {
               const body = (await readJson<unknown>(req)) as Row;
-              const { id: newId } = await createRow(mctx, table, body);
-              sendJson(res, { id: newId }, 201);
+              // #3.6 — pass the client edit-id through so a replayed offline POST
+              // resolves to the same row (idempotent no-op) instead of a duplicate.
+              const editId = headerValue(req, 'x-lattice-edit-id');
+              const created = await createRow(mctx, table, body, undefined, editId);
+              // A replayed POST (the row already existed) is reported as 200, not
+              // 201, so the client can tell a fresh insert from an idempotent no-op.
+              sendJson(res, { id: created.id }, created.idempotent ? 200 : 201);
               return;
             }
           } else {

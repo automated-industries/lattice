@@ -258,6 +258,30 @@ CREATE TABLE IF NOT EXISTS "__lattice_member_invites" (
 -- bootstrap is now run directly + idempotently, not version-gated).
 ALTER TABLE "__lattice_member_invites" ADD COLUMN IF NOT EXISTS "email" text;
 
+-- #3.1 — one-time-use + revocation enforcement. After a member authenticates to
+-- the cloud with their minted credential, the join path calls this to CLAIM the
+-- invite. The single atomic UPDATE stamps redeemed_at and returns true ONLY when
+-- an invite for the CALLING role (session_user) is still pending: not already
+-- redeemed (one-time-use), not revoked, and not expired. A replayed redeem of a
+-- leaked token, a revoked invite, or an expired one returns false, so the caller
+-- rejects the join. Members have no direct grant on the owner-only
+-- __lattice_member_invites table — this SECURITY DEFINER function is the only
+-- path, and it can claim ONLY the caller's own invite (keyed on session_user,
+-- never a caller-supplied parameter, so one member can't burn another's invite).
+CREATE OR REPLACE FUNCTION lattice_claim_invite()
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+DECLARE v_ok boolean;
+BEGIN
+  UPDATE "__lattice_member_invites"
+     SET "redeemed_at" = now()
+   WHERE "role" = session_user
+     AND "redeemed_at" IS NULL
+     AND "revoked_at" IS NULL
+     AND "expires_at" > now()
+  RETURNING true INTO v_ok;
+  RETURN COALESCE(v_ok, false);
+END $fn$;
+
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
 -- is visible to nobody.

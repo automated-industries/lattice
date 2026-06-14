@@ -120,3 +120,40 @@ export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
     }
   }
 }
+
+/**
+ * Atomically CLAIM a pending member invite as the connecting (member) role
+ * (#3.1 one-time-use + revocation). Opens the cloud with the member credential
+ * and calls the SECURITY DEFINER `lattice_claim_invite()`, which stamps
+ * `redeemed_at` and returns true ONLY when an un-redeemed, un-revoked, un-expired
+ * invite exists for `session_user`. A second redeem (a replayed/leaked token), a
+ * revoked invite, or an expired one returns `claimed: false`. Any connection or
+ * SQL failure also yields `claimed: false` with the message — the join path FAILS
+ * CLOSED and surfaces it (Rule 16: never a silent success). Runs only on the
+ * email-bound redeem flow; the manual connect-existing flow (no invite row) does
+ * not call it.
+ */
+export async function claimMemberInvite(
+  targetUrl: string,
+): Promise<{ claimed: boolean; error?: string }> {
+  let conn: Lattice | null = null;
+  try {
+    conn = new Lattice(targetUrl);
+    await conn.init({ introspectOnly: true });
+    const row = (await getAsyncOrSync(conn.adapter, `SELECT lattice_claim_invite() AS ok`)) as
+      | { ok?: unknown }
+      | undefined;
+    const ok = row?.ok;
+    return { claimed: ok === true || ok === 't' || ok === 1 };
+  } catch (e) {
+    return { claimed: false, error: (e as Error).message };
+  } finally {
+    if (conn) {
+      try {
+        conn.close();
+      } catch {
+        // best-effort
+      }
+    }
+  }
+}

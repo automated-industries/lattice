@@ -248,6 +248,15 @@ export async function revokeCell(
 export async function revokeMemberRole(db: Lattice, role: string): Promise<void> {
   assertPg(db);
   if (!ROLE_RE.test(role)) throw new Error(`lattice: invalid member role name "${role}"`);
+  // Idempotent on a role that's already gone: REASSIGN/DROP OWNED raise "role
+  // does not exist", so short-circuit when the role is absent. This lets the
+  // re-invite + orphan sweep (#3.4) call revoke on a possibly-already-dropped
+  // role without a spurious failure. (DROP ROLE IF EXISTS would tolerate it, but
+  // the two OWNED statements before it would not.)
+  const exists = (await getAsyncOrSync(db.adapter, `SELECT 1 AS x FROM pg_roles WHERE rolname = ?`, [
+    role,
+  ])) as { x?: number } | undefined;
+  if (!exists) return;
   // Handle the member's owned objects EXPLICITLY (don't swallow — Rule 16). A
   // role can't be dropped while it owns objects or holds grants. First reassign
   // any objects it owns to the current owner, then drop its remaining

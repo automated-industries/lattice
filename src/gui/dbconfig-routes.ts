@@ -13,7 +13,12 @@ import {
   saveS3ConfigRaw,
 } from '../framework/user-config.js';
 import { activeWorkspaceLabel, mergeS3ConfigForSave } from '../framework/s3-config.js';
-import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+import {
+  probeCloud,
+  cloudRlsInstalled,
+  canManageRoles,
+  claimMemberInvite,
+} from '../framework/cloud-connect.js';
 import { secureCloud } from '../cloud/setup.js';
 import {
   installCloudSettings,
@@ -278,6 +283,42 @@ function resolveRelativeToConfig(configPath: string, candidate: string): string 
 }
 
 /**
+ * #3.4 — orphan-role cleanup, run by the owner at invite time (the owner holds
+ * CREATEROLE here). Two passes, both stamping `revoked_at` and dropping the scoped
+ * role so it can never be redeemed and never piles up:
+ *   1. RE-INVITE: any still-PENDING invite for THIS email (un-redeemed,
+ *      un-revoked) — re-inviting mints a fresh suffixed role, so without this the
+ *      prior role is orphaned AND its old token stays live. Revoking it makes the
+ *      newest invite the only valid one.
+ *   2. SWEEP: any pending invite that has EXPIRED — its role would otherwise
+ *      linger forever (invites have a TTL but nothing dropped the role on expiry).
+ * `revokeMemberRole` is idempotent on an already-gone role, so a stale invite
+ * whose role was dropped elsewhere just gets its `revoked_at` stamped. Failures
+ * surface (Rule 16) — a re-invite must not silently leave a live orphan behind.
+ */
+async function reclaimStaleInviteRoles(
+  db: DbConfigContext['db'],
+  emailHash: string,
+): Promise<void> {
+  const stale = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT DISTINCT "role" FROM "__lattice_member_invites"
+       WHERE "redeemed_at" IS NULL AND "revoked_at" IS NULL
+         AND ("email_hash" = ? OR "expires_at" <= now())`,
+    [emailHash],
+  )) as { role: string }[];
+  for (const { role } of stale) {
+    await revokeMemberRole(db, role);
+    await runAsyncOrSync(
+      db.adapter,
+      `UPDATE "__lattice_member_invites" SET "revoked_at" = now()
+         WHERE "role" = ? AND "revoked_at" IS NULL`,
+      [role],
+    );
+  }
+}
+
+/**
  * Join an existing Lattice cloud as a scoped member: probe the connection, then
  * persist the encrypted credential, point the workspace at it, and swap the
  * active DB. Shared by the manual `connect-existing` flow and the email-bound
@@ -289,6 +330,7 @@ async function joinCloudAsMember(
   res: ServerResponse,
   fields: { host: string; port: number; dbname: string; user: string; password: string },
   label: string,
+  opts: { claimInvite?: boolean } = {},
 ): Promise<void> {
   const url = buildPostgresUrl(fields);
   const probe = await probeCloud(url);
@@ -307,6 +349,28 @@ async function joinCloudAsMember(
       409,
     );
     return;
+  }
+  // #3.1 — one-time-use + revocation. On the email-bound redeem path, atomically
+  // CLAIM the invite as the member (stamp redeemed_at) BEFORE creating the
+  // workspace. A replayed/leaked token, a revoked invite, or an expired one is
+  // rejected here — and because the workspace hasn't been created yet, there is
+  // nothing to roll back (atomic by construction). The manual connect-existing
+  // flow has no invite row and skips this.
+  if (opts.claimInvite) {
+    const claim = await claimMemberInvite(url);
+    if (!claim.claimed) {
+      sendJson(
+        res,
+        {
+          ok: false,
+          error:
+            claim.error ??
+            'This invite has already been used, was revoked, or has expired. Ask the owner for a new one.',
+        },
+        403,
+      );
+      return;
+    }
   }
   // Create a NEW workspace for the cloud and switch to it — never repoint
   // (hijack) the currently-open workspace, which previously overwrote the user's
@@ -648,6 +712,12 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { error: 'Could not resolve the cloud connection coordinates' }, 500);
         return;
       }
+      const emailHash = createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
+      // #3.4 — before minting a fresh role, revoke any prior PENDING invite for
+      // this email (a re-invite would otherwise orphan the previous role + leave
+      // its token live) and sweep any expired-but-unredeemed orphans. Runs as the
+      // owner (who holds CREATEROLE) so the role drops actually take effect.
+      await reclaimStaleInviteRoles(ctx.db, emailHash);
       // Provision a fresh scoped role, then HARD-ASSERT it is non-privileged
       // before embedding it in a token (security non-regression — never a
       // superuser / CREATEROLE / BYPASSRLS / owner role).
@@ -683,7 +753,7 @@ export async function dispatchDbConfigRoute(
         [
           randomUUID(),
           role,
-          createHash('sha256').update(email.trim().toLowerCase()).digest('hex'),
+          emailHash,
           // Plaintext email stored ONLY in this owner-only table so the owner's
           // Members list can show who each member is (the hash above stays for
           // tamper-evident audit; the password is still never stored anywhere).
@@ -781,6 +851,7 @@ export async function dispatchDbConfigRoute(
           password: payload.password,
         },
         label,
+        { claimInvite: true }, // #3.1 — enforce one-time-use + revocation on redeem
       );
     });
     return true;

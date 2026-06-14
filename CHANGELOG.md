@@ -8,6 +8,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — cloud role lifecycle + offline integrity (3.2)
+
+- **Offline edits replay idempotently.** The GUI stamps every row write with a
+  stable `x-lattice-edit-id` and replays queued writes after a reconnect (or when
+  the original response was lost after the row committed), but the server ignored
+  the header — so a replayed `POST` created a duplicate row. The row-create path
+  now derives a deterministic id from the edit-id and treats a replay whose row
+  already exists as a no-op (HTTP 200, same id), never a duplicate. Scoped to the
+  edit-id path; the assistant/ingest create paths are unchanged.
+- **Invites are one-time-use, with revocation + expiry enforced.** A leaked or
+  replayed invite token was redeemable until expiry, and a revoked invite was
+  never checked on redeem. The member now atomically CLAIMS its invite on join via
+  a `SECURITY DEFINER` `lattice_claim_invite()` (keyed on `session_user`, so a
+  member can only burn its own invite): a second redeem, a revoked invite, or an
+  expired one is rejected before any workspace is created.
+- **Re-inviting an email no longer orphans the prior role.** Each re-invite mints
+  a fresh suffixed role; the prior pending invite's role is now revoked + dropped
+  (and expired-but-unredeemed invite roles are swept) at invite time, so scoped
+  roles don't pile up and a superseded token goes dead. `revokeMemberRole` is now
+  idempotent on an already-gone role.
+
 ### Fixed — data-model sharing controls restored (3.2)
 
 - **Per-object sharing is back in the Data Model panel.** The 3.0 RLS rewrite

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
@@ -287,14 +288,47 @@ async function announceAddedColumns(
   );
 }
 
+/**
+ * Derive a STABLE row id from a client edit-id (#3.6 offline-replay idempotency).
+ * The GUI stamps every logical row write with an `x-lattice-edit-id` (a per-edit
+ * UUID, persisted in its offline IndexedDB queue) and may REPLAY the same POST
+ * after a reconnect — or when the original response was lost after the row had
+ * already been committed. Deriving the new row's id deterministically from that
+ * edit-id means a replay targets the SAME id, so {@link createRow} can detect the
+ * row already exists and no-op instead of inserting a duplicate. Hashing (rather
+ * than using the header verbatim) bounds the id length and normalizes the charset
+ * regardless of what the client sent. The 128-bit slice is collision-resistant.
+ */
+export function deriveRowIdFromEditId(editId: string): string {
+  return createHash('sha256').update(editId).digest('hex').slice(0, 32);
+}
+
 export async function createRow(
   ctx: MutationCtx,
   table: string,
   values: Row,
   forceVisibility?: 'private' | 'everyone',
-): Promise<{ id: string; row: Row | null }> {
+  editId?: string,
+): Promise<{ id: string; row: Row | null; idempotent: boolean }> {
+  // #3.6 — offline-replay idempotency. Scoped to callers that carry an edit-id
+  // (the GUI row-write path; the assistant/ingest paths pass none and keep their
+  // prior behaviour untouched). When the table uses the default single-column
+  // `id` PK, derive a deterministic id from the edit-id (unless the caller pinned
+  // one) so a replayed POST resolves to the SAME id; if that row already exists,
+  // it's a true no-op — no duplicate row, no duplicate audit entry, no duplicate
+  // feed event. Composite/custom-PK tables (e.g. junctions) keep normal id
+  // assignment and are never deduped here.
+  const pk = ctx.db.getPrimaryKey(table);
+  const isDefaultPk = pk.length === 1 && pk[0] === 'id';
+  let toInsert = values;
+  if (editId && isDefaultPk) {
+    const targetId = values.id != null ? String(values.id) : deriveRowIdFromEditId(editId);
+    if (values.id == null) toInsert = { ...values, id: targetId };
+    const existing = await ctx.db.get(table, targetId);
+    if (existing !== null) return { id: targetId, row: existing, idempotent: true };
+  }
   // Persist fields the schema lacks by creating the columns first (no silent drop).
-  const addedCols = await ensureColumns(ctx.db, table, values);
+  const addedCols = await ensureColumns(ctx.db, table, toInsert);
   await announceAddedColumns(ctx, table, addedCols);
   // When the caller demands a specific cloud visibility for this row (e.g. chat
   // "private mode"), stamp it atomically at insert via insertForcingVisibility —
@@ -305,13 +339,13 @@ export async function createRow(
   // silently left shared (Rule: no silent failures).
   const id =
     forceVisibility !== undefined
-      ? await ctx.db.insertForcingVisibility(table, values, forceVisibility)
-      : await ctx.db.insert(table, values);
+      ? await ctx.db.insertForcingVisibility(table, toInsert, forceVisibility)
+      : await ctx.db.insert(table, toInsert);
   const row = await ctx.db.get(table, id);
   // On a cloud, row ownership + the change feed are recorded by Postgres
   // triggers; no app-layer ACL or change-envelope write is needed.
   await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source, ctx.sessionId);
-  return { id, row };
+  return { id, row, idempotent: false };
 }
 
 /**
