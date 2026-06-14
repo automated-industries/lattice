@@ -142,13 +142,14 @@ export async function rowAccessSummaries(
   const out = new Map<string, RowAccess>();
   if (db.getDialect() !== 'postgres' || pks.length === 0) return out;
   if (!(await cloudRlsInstalled(db))) return out;
-  const placeholders = pks.map(() => '?').join(', ');
+  // #2.1 — go through the SECURITY DEFINER summary function, NOT a direct read of
+  // __lattice_owners: members have no grant on that bookkeeping table, so the
+  // direct read 500'd every member row fetch. The function returns only the rows
+  // the caller can see (lattice_row_visible) + whether the caller owns each.
   const owners = (await allAsyncOrSync(
     db.adapter,
-    `SELECT "pk", "visibility", ("owner_role" = session_user) AS owned
-       FROM "__lattice_owners"
-      WHERE "table_name" = ? AND "pk" IN (${placeholders})`,
-    [table, ...pks],
+    `SELECT "pk", "visibility", "owned" FROM lattice_rows_access(?, ?)`,
+    [table, [...pks]],
   )) as { pk: string; visibility: string | null; owned: unknown }[];
   for (const o of owners) {
     out.set(o.pk, {
@@ -158,12 +159,11 @@ export async function rowAccessSummaries(
   }
   const customPks = owners.filter((o) => o.visibility === 'custom').map((o) => o.pk);
   if (customPks.length > 0) {
-    const cph = customPks.map(() => '?').join(', ');
+    // Grantees of the caller's OWN custom-shared rows (member-safe DEFINER fn).
     const grants = (await allAsyncOrSync(
       db.adapter,
-      `SELECT "pk", "grantee_role" FROM "__lattice_row_grants"
-         WHERE "table_name" = ? AND "pk" IN (${cph})`,
-      [table, ...customPks],
+      `SELECT "pk", "grantee_role" FROM lattice_row_grantees(?, ?)`,
+      [table, customPks],
     )) as { pk: string; grantee_role: string }[];
     for (const g of grants) {
       const a = out.get(g.pk);

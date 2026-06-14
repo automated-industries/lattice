@@ -589,6 +589,38 @@ LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
    ORDER BY c."seq" ASC
    LIMIT GREATEST(0, LEAST(COALESCE(p_limit, 500), 1000));
 $fn$;
+
+-- #2.1 — per-row access summary for the connecting role. The GUI attaches this as
+-- each row's _access so the sharing affordance renders, but __lattice_owners is
+-- owner-only bookkeeping (members have no grant), so a member reading it directly
+-- got "permission denied". This SECURITY DEFINER function returns visibility +
+-- whether the CALLER owns the row, ONLY for the rows the caller can actually see
+-- (lattice_row_visible, keyed on session_user) — so a member learns nothing about
+-- rows hidden from it. Member-callable; the owner gets the same view of its rows.
+CREATE OR REPLACE FUNCTION lattice_rows_access(p_table text, p_pks text[])
+RETURNS TABLE(pk text, visibility text, owned boolean)
+LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT o."pk", o."visibility", (o."owner_role" = session_user) AS owned
+    FROM "__lattice_owners" o
+   WHERE o."table_name" = p_table
+     AND o."pk" = ANY(p_pks)
+     AND lattice_row_visible(o."table_name", o."pk");
+$fn$;
+
+-- #2.1 — grantees of a CALLER-OWNED custom-shared row (who you shared YOUR row
+-- with). Only the row owner sees this (the WHERE pins owner_role = session_user),
+-- so a member can't enumerate another owner's grants. __lattice_row_grants is
+-- member-ungranted, so this SECURITY DEFINER function is the member-safe path.
+CREATE OR REPLACE FUNCTION lattice_row_grantees(p_table text, p_pks text[])
+RETURNS TABLE(pk text, grantee_role text)
+LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT g."pk", g."grantee_role"
+    FROM "__lattice_row_grants" g
+    JOIN "__lattice_owners" o ON o."table_name" = g."table_name" AND o."pk" = g."pk"
+   WHERE g."table_name" = p_table
+     AND g."pk" = ANY(p_pks)
+     AND o."owner_role" = session_user;
+$fn$;
 `;
 
 /**

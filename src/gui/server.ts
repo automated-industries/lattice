@@ -47,7 +47,7 @@ import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
-import { getAsyncOrSync } from '../db/adapter.js';
+import { getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
@@ -692,6 +692,15 @@ export interface ActiveDb {
   renderAbort: AbortController;
   /** Folded snapshot of {@link renderProgress}, served over `/api/render/status`. */
   renderState: RenderStatusSnapshot;
+  /**
+   * #2.1 — base table → its audience-masking view (`<table>_v`) for the rows a
+   * MEMBER must read through. A secured cloud REVOKEs base SELECT from members
+   * for any table with a column audience and grants only the masking view, so a
+   * member's base read would be `permission denied`; the read path routes those
+   * SELECTs to the view (writes still target the base under RLS). Empty for an
+   * owner open and for local/SQLite (no masking, base SELECT intact).
+   */
+  maskedReadViews: Map<string, string>;
 }
 
 /**
@@ -838,6 +847,9 @@ export async function openConfig(
   // DBA path keeps the full init (idempotent CREATE IF NOT EXISTS on an existing
   // cloud). SQLite and fresh Postgres fall through to the normal init.
   let memberOpen = false;
+  // #2.1 — base table → masking view (`<table>_v`) for member reads. Populated on a
+  // cloud member open for tables whose base SELECT was revoked in favor of the view.
+  const maskedReadViews = new Map<string, string>();
   if (db.getDialect() === 'postgres') {
     const peek = new Lattice({ config: configPath }, { encryptionKey });
     try {
@@ -846,7 +858,9 @@ export async function openConfig(
         memberOpen = !(await canManageRoles(peek));
         if (memberOpen) {
           const declared = new Set(db.getRegisteredTableNames());
-          for (const t of await discoverCloudTables(peek)) {
+          const discovered = await discoverCloudTables(peek);
+          const knownTables = new Set<string>([...declared, ...discovered.map((t) => t.name)]);
+          for (const t of discovered) {
             if (declared.has(t.name)) continue;
             db.define(t.name, {
               columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
@@ -854,6 +868,19 @@ export async function openConfig(
               render: () => '',
               outputFile: `${t.name}/.lattice/${t.name}.md`,
             });
+          }
+          // A member only SEES `<base>_v` views it was granted SELECT on (the
+          // audience-masking view for a table whose base SELECT was revoked).
+          // `information_schema.views` is privilege-filtered, so this is exactly
+          // the set of base tables whose reads must route to the view.
+          const views = (await allAsyncOrSync(
+            peek.adapter,
+            `SELECT table_name AS name FROM information_schema.views
+               WHERE table_schema = current_schema() AND table_name LIKE '%\\_v' ESCAPE '\\'`,
+          )) as { name: string }[];
+          for (const { name } of views) {
+            const base = name.slice(0, -2); // strip the "_v" suffix
+            if (knownTables.has(base)) maskedReadViews.set(base, name);
           }
         }
       }
@@ -1014,6 +1041,7 @@ export async function openConfig(
     renderProgress: new RenderProgressBus(),
     renderAbort: new AbortController(),
     renderState: { phase: 'idle', tables: {} },
+    maskedReadViews,
   };
 }
 
@@ -1271,6 +1299,18 @@ export async function changeVisibleToActiveRole(
 /** True for a delete op (which can't be visibility-probed post-hoc). */
 function isDeleteOp(op: string): boolean {
   return op === 'delete' || op === 'DELETE';
+}
+
+/**
+ * #2.1 — the relation a SELECT for `table` should target: the audience-masking
+ * view (`<table>_v`) when this (member) connection lost base SELECT, else the base
+ * table itself. Passing `<table>_v` to `db.query`/`db.get`-style SELECTs is safe —
+ * the view is unregistered (column validation passes through) so it never appears
+ * as a sidebar entity, and the view re-applies row visibility + cell masking. Only
+ * reads route here; writes always target the base table under RLS.
+ */
+function readRelationFor(active: ActiveDb, table: string): string {
+  return active.maskedReadViews.get(table) ?? table;
 }
 
 async function attachRowAccess(db: Lattice, table: string, rows: Row[]): Promise<void> {
@@ -3340,7 +3380,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                   { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
                 ];
               }
-              const rows = await active.db.query(table, queryOpts);
+              // #2.1 — a member reads an audience-masked table through its
+              // `<table>_v` view (base SELECT was revoked); the base name is used
+              // everywhere else (validTables, ownership lookups, writes).
+              const rows = await active.db.query(readRelationFor(active, table), queryOpts);
               await attachRowAccess(active.db, table, rows);
               sendJson(res, { rows });
               return;
@@ -3358,13 +3401,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
           } else {
             if (method === 'GET') {
-              const row = await active.db.get(table, id);
+              // #2.1 — route a masked table's single-row read through `<table>_v`
+              // too (base SELECT revoked for members). Build the pk filter from the
+              // BASE table's registered key; the view exposes the same columns.
+              const readRel = readRelationFor(active, table);
+              let row: Row | null;
+              if (readRel === table) {
+                row = await active.db.get(table, id);
+              } else {
+                // Masked tables use a single `id` PK in practice; filter the view
+                // on the first PK column (fallback `id`) — the view exposes it.
+                const pkCol = active.db.getPrimaryKey(table)[0] ?? 'id';
+                const found = await active.db.query(readRel, { where: { [pkCol]: id }, limit: 1 });
+                row = found[0] ?? null;
+              }
               if (row === null) {
                 sendJson(res, { error: 'Row not found' }, 404);
                 return;
               }
-              // A row the operator can't read already returns null from db.get
-              // (RLS-filtered), so reaching here means the row is visible.
+              // A row the operator can't read already returns null (RLS-filtered /
+              // not in the view), so reaching here means the row is visible.
               await attachRowAccess(active.db, table, [row]);
               sendJson(res, row);
               return;

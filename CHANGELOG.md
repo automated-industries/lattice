@@ -8,6 +8,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — member reads of masked tables + row-access enrichment (3.2)
+
+- **Members can read audience-masked tables again.** A secured cloud REVOKEs base
+  `SELECT` from members for any table with a column audience and grants only the
+  `<table>_v` masking view, but the read path still queried the base table — so a
+  member got `permission denied` (and column masking gave the read path zero
+  protection). Member SELECTs now route to the masking view (writes still target
+  the base under RLS); the view is never exposed as a separate sidebar object.
+- **Per-row `_access` no longer 500s for members.** The sharing-affordance
+  enrichment read `__lattice_owners` directly, which members have no grant on, so
+  every member row fetch failed. It now goes through `SECURITY DEFINER`
+  `lattice_rows_access` / `lattice_row_grantees`, which return only the rows the
+  caller can see (and grantees only for rows the caller owns).
+
 ### Fixed — realtime, egress + misc cloud hardening (3.2)
 
 - **Realtime actually delivers other clients' changes.** The change feed's op
