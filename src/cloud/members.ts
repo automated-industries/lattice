@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
-import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
+import { runAsyncOrSync, allAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
 import { MEMBER_GROUP } from './rls.js';
 import { cloudRlsInstalled } from '../framework/cloud-connect.js';
 
@@ -166,6 +166,33 @@ export async function rowAccessSummaries(
     }
   }
   return out;
+}
+
+/**
+ * Guard for invite minting (security non-regression): only a freshly provisioned,
+ * non-privileged `lm_*` member role may be embedded in an invite token. Refuse a
+ * role that is superuser / has CREATEROLE / has BYPASSRLS, or that is the cloud
+ * owner itself (the connecting role) — none of which must ever leave the owner's
+ * machine inside a member-facing token. Throws loudly; never silently downgrades.
+ */
+export async function assertScopedMemberRole(db: Lattice, role: string): Promise<void> {
+  assertPg(db);
+  const row = (await getAsyncOrSync(
+    db.adapter,
+    `SELECT rolsuper, rolcreaterole, rolbypassrls, (rolname = session_user) AS is_self
+       FROM pg_roles WHERE rolname = ?`,
+    [role],
+  )) as
+    | { rolsuper: unknown; rolcreaterole: unknown; rolbypassrls: unknown; is_self: unknown }
+    | undefined;
+  if (!row) throw new Error(`lattice: role "${role}" does not exist`);
+  const truthy = (v: unknown): boolean => v === true || v === 't' || v === 1;
+  if (truthy(row.rolsuper) || truthy(row.rolcreaterole) || truthy(row.rolbypassrls)) {
+    throw new Error('lattice: refusing to embed a privileged role in an invite token');
+  }
+  if (truthy(row.is_self)) {
+    throw new Error('lattice: refusing to embed the cloud owner role in an invite token');
+  }
 }
 
 /**
