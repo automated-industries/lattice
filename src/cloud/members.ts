@@ -144,10 +144,10 @@ export async function rowAccessSummaries(
        FROM "__lattice_owners"
       WHERE "table_name" = ? AND "pk" IN (${placeholders})`,
     [table, ...pks],
-  )) as { pk: string; visibility: string; owned: unknown }[];
+  )) as { pk: string; visibility: string | null; owned: unknown }[];
   for (const o of owners) {
     out.set(o.pk, {
-      visibility: (o.visibility as RowAccess['visibility']) || 'private',
+      visibility: (o.visibility ?? 'private') as RowAccess['visibility'],
       ownedByMe: o.owned === true || o.owned === 't' || o.owned === 1,
     });
   }

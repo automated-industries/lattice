@@ -1,10 +1,4 @@
-import {
-  randomBytes,
-  scryptSync,
-  hkdfSync,
-  createCipheriv,
-  createDecipheriv,
-} from 'node:crypto';
+import { randomBytes, scryptSync, hkdfSync, createCipheriv, createDecipheriv } from 'node:crypto';
 
 /**
  * Email-bound, encrypted cloud-invite tokens. An invite carries the SAME scoped
