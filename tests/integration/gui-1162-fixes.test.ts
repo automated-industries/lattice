@@ -92,13 +92,15 @@ describe('1.16.2 — C/D/E: served bundle ships the new UI', () => {
     expect(html).toContain('renderFsCreate');
     expect(html).toContain('fs-create-form');
     expect(html).not.toContain('openFsCreateModal');
-    // D2 — invite-member flow + redacted connection string block.
-    expect(html).toContain('Invite member');
-    expect(html).toContain('copy-conn');
-    // D3 — Danger Zone disconnect (owner) / leave (member).
-    // (1.16.3 reworded "Leave team" → "Leave workspace" per the team deprecation.)
-    expect(html).toContain('Disconnect from cloud');
-    expect(html).toContain('Leave workspace');
+    // D2 — v3 invite flow: owner provisions a scoped member role and gets a
+    // copyable credentials blob (the invite IS the credentials).
+    expect(html).toContain('Invite a member');
+    expect(html).toContain('copy-invite');
+    // D3 — v3 leaving a cloud is a purely local action ("Forget this cloud"):
+    // the client switches back to a local workspace; it never mutates the cloud
+    // (there is no server-side member registry to disconnect from).
+    expect(html).toContain('Forget this cloud');
+    expect(html).toContain('db-forget-btn');
     // E — clickable rows, no per-row Switch button. (1.16.4: rows switch by
     // workspace id via /api/workspaces/switch.)
     expect(html).toContain('data-switch-id');

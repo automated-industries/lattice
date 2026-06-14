@@ -13,6 +13,9 @@ import { crawlUrl } from '../ai/crawl.js';
 import type { FileJunction } from './data.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import { attachBlob } from '../framework/blob-store.js';
+import { createS3Store, s3Key } from '../framework/s3-store.js';
+import { resolveActiveS3Config } from '../framework/s3-config.js';
+import { createHash } from 'node:crypto';
 import {
   resolveClaudeAuth,
   aggressivenessToTemperature,
@@ -99,6 +102,9 @@ interface IngestContext {
    * content-addressed blob under `data/blobs/` so the GUI can preview them.
    */
   latticeRoot?: string;
+  /** Active config path, to resolve the workspace's S3 settings (cloud uploads
+   *  also push bytes to S3 so other members can pull them). */
+  configPath?: string;
   pathname: string;
   method: string;
 }
@@ -688,6 +694,45 @@ export async function dispatchIngestRoute(
     } finally {
       await rm(tmp, { force: true }).catch(() => undefined);
     }
+    // S3: when enabled for this cloud workspace, ALSO push the bytes to S3 under a
+    // content-addressed key so OTHER members (who can see the files row via RLS)
+    // can pull them — the uploader keeps the local blob for fast preview (hybrid).
+    // Best-effort: a storage error never fails the upload; the row stays local-only.
+    let s3Ref: { ref_uri: string; source_json: string; sha256: string } | null = null;
+    // `null` = S3 not enabled for this workspace (the common non-cloud case, no
+    // signal needed). When S3 IS enabled, `s3Status` becomes 'stored' or 'failed'
+    // so the outcome is surfaced in the response — a failed share to the cloud must
+    // not masquerade as a fully-successful upload (internal guideline). Other members fetch
+    // the bytes from S3, so a silently-dropped PUT would 404 for everyone but the
+    // uploader, who still has the local blob.
+    let s3Status: { status: 'stored' | 'failed'; key?: string; error?: string } | null = null;
+    const s3cfg = resolveActiveS3Config(ctx.configPath);
+    if (s3cfg) {
+      const sha256 = blob?.sha256 ?? createHash('sha256').update(buf).digest('hex');
+      const key = s3Key(s3cfg.prefix, sha256);
+      try {
+        const store = await createS3Store(s3cfg);
+        await store.put(key, buf, { contentType: mime });
+        s3Ref = {
+          ref_uri: `s3://${s3cfg.bucket}/${key}`,
+          source_json: JSON.stringify({
+            bucket: s3cfg.bucket,
+            key,
+            region: s3cfg.region,
+            size_bytes: buf.length,
+          }),
+          sha256,
+        };
+        s3Status = { status: 'stored', key };
+      } catch (e) {
+        // Best-effort for the upload itself (never 500), but NOT silent: the row
+        // is kept local-only and the caller is told the cloud share failed so they
+        // can retry before sharing a file other members can't fetch.
+        const error = (e as Error).message;
+        console.warn('[ingest] S3 upload failed; keeping local-only:', error);
+        s3Status = { status: 'failed', error };
+      }
+    }
     const fileId = crypto.randomUUID();
     // A browser hides a dragged file's OS path, so set `path` only when a client
     // can actually supply the real one (a non-browser/desktop client, via
@@ -716,7 +761,21 @@ export async function dispatchIngestRoute(
       extracted_text: result.text,
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
-      ...(blob ? { ref_kind: 'blob', blob_path: blob.blob_path, sha256: blob.sha256 } : {}),
+      // Reference fields. When S3 stored the bytes, record the cloud_ref (other
+      // members fetch via S3) AND keep the uploader's local blob_path (their fast
+      // path). Otherwise the legacy local-only blob, or nothing (text-only).
+      ...(s3Ref
+        ? {
+            ref_kind: 'cloud_ref',
+            ref_provider: 's3',
+            ref_uri: s3Ref.ref_uri,
+            source_json: s3Ref.source_json,
+            sha256: s3Ref.sha256,
+            ...(blob ? { blob_path: blob.blob_path } : {}),
+          }
+        : blob
+          ? { ref_kind: 'blob', blob_path: blob.blob_path, sha256: blob.sha256 }
+          : {}),
     };
     const { id } = await createRow(mctx, 'files', {
       ...(await requiredFileDefaults(ctx.db, name, fileId, uploadRow)),
@@ -730,7 +789,16 @@ export async function dispatchIngestRoute(
     }
     sendJson(
       res,
-      { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks },
+      {
+        id,
+        extraction_status: result.skip ? 'skipped' : 'extracted',
+        suggestedLinks,
+        // Present only when S3 is enabled for this workspace. 'failed' tells the
+        // uploader the bytes did NOT reach the shared bucket — other members would
+        // 404 until it's re-uploaded — so the GUI can warn rather than imply a
+        // clean cloud share.
+        ...(s3Status ? { s3: s3Status } : {}),
+      },
       201,
     );
     return true;

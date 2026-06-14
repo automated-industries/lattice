@@ -64,9 +64,11 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       // instead of owning a copy. All nullable + additive (back-compat).
       //   ref_kind     discriminator: 'blob' | 'local_ref' | 'cloud_ref'
       //                (NULL ⇒ legacy/owned blob)
-      //   ref_uri      durable pointer: absolute local path or remote URL
-      //   ref_provider resolver selector: 'fs' | 'web' | 'gdrive'
-      //   source_json  provider-specific metadata (etag, availability, …)
+      //   ref_uri      durable pointer: absolute local path, remote URL, or
+      //                `s3://bucket/key` for an S3-backed cloud blob
+      //   ref_provider resolver selector: 'fs' | 'web' | 'gdrive' | 's3'
+      //   source_json  provider-specific metadata (etag, availability, …; for
+      //                's3' it holds { bucket, key, region, size_bytes })
       ref_kind: 'TEXT',
       ref_uri: 'TEXT',
       ref_provider: 'TEXT',

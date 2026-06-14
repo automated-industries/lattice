@@ -120,5 +120,7 @@ the transcript is inserted when you stop.
 
 ## Cloud
 
-The assistant runs against local SQLite and a direct `postgres://` connection.
-It is not yet mounted in hosted multiplayer team-cloud mode.
+The assistant runs against local SQLite and any `postgres://` connection, including
+a Lattice cloud. On a cloud it connects as your own scoped role, so its reads and
+writes are confined by Postgres Row-Level Security to the rows you may see — see
+[cloud.md](cloud.md).

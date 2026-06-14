@@ -15,7 +15,7 @@ import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
  *  E/K — "team" wording stripped; "Workspace" nomenclature; share controls reworded.
  *  G — data-model graph carries share-status classes + a legend.
  *  H — generic empty-state copy (not the "edit lattice.config.yml" nag).
- *  I — member list renders pending invitations.
+ *  I — owner can invite a member via /api/cloud/invite (no team registry).
  */
 
 const dirs: string[] = [];
@@ -84,9 +84,9 @@ describe('1.16.3 — served bundle ships the reframe + polish', () => {
 
   it('E: user-facing "team" wording is gone from the cloud controls', async () => {
     const html = await (await fetch(`${(await boot()).url}/`)).text();
-    // Reworded controls.
-    expect(html).toContain('Leave workspace');
-    expect(html).toContain('Join workspace');
+    // v3 controls: forgetting a cloud / joining a cloud (no team registry).
+    expect(html).toContain('Forget this cloud');
+    expect(html).toContain('Join a cloud');
     expect(html).toContain('Share with workspace');
     expect(html).toContain('Cloud sharing');
     // The deprecated upgrade-to-team affordance is gone entirely.
@@ -113,10 +113,12 @@ describe('1.16.3 — served bundle ships the reframe + polish', () => {
     expect(html).toContain('This workspace is empty');
   });
 
-  it('I: member list renders pending invitations', async () => {
+  it('I: owner can invite a member via /api/cloud/invite', async () => {
     const html = await (await fetch(`${(await boot()).url}/`)).text();
-    expect(html).toContain('Pending invitations');
-    expect(html).toContain('member-row-pending');
-    expect(html).toContain("'/api/teams-gui/teams/' + teamId + '/invitations'");
+    // v3: no server-side member registry / pending-invitations UI. The owner
+    // provisions a scoped role via /api/cloud/invite and hands the returned
+    // credentials to the new member.
+    expect(html).toContain('/api/cloud/invite');
+    expect(html).toContain('Invite a member');
   });
 });
