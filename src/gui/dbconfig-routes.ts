@@ -36,7 +36,8 @@ import {
   assertScopedMemberRole,
 } from '../cloud/members.js';
 import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../cloud/invite.js';
-import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { MEMBER_GROUP } from '../cloud/rls.js';
+import { getAsyncOrSync, runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   archiveLocalSqlite,
@@ -527,6 +528,42 @@ export async function dispatchDbConfigRoute(
         const status = (e as { status?: number }).status ?? 500;
         sendJson(res, { ok: false, error: (e as Error).message }, status);
       }
+    });
+    return true;
+  }
+
+  // GET /api/cloud/members — list the cloud's members (the owner + every role in
+  // the member group). Owner-only enumeration; off a secured cloud returns []
+  // (the panel then just shows the local single-user state).
+  if (pathname === '/api/cloud/members' && method === 'GET') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { members: [] });
+        return;
+      }
+      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
+        | { u?: string }
+        | undefined;
+      const owner = me?.u ?? '';
+      // Only an owner can enumerate roles; a scoped member just sees itself.
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { members: owner ? [{ role: owner, isOwner: false, isYou: true }] : [] });
+        return;
+      }
+      const rows = (await allAsyncOrSync(
+        ctx.db.adapter,
+        `SELECT m.rolname AS role
+           FROM pg_auth_members am
+           JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = ?
+           JOIN pg_roles m ON m.oid = am.member
+          ORDER BY m.rolname`,
+        [MEMBER_GROUP],
+      )) as { role: string }[];
+      const members = [
+        ...(owner ? [{ role: owner, isOwner: true, isYou: true }] : []),
+        ...rows.map((r) => ({ role: r.role, isOwner: false, isYou: r.role === owner })),
+      ];
+      sendJson(res, { members });
     });
     return true;
   }

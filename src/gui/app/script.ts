@@ -4316,28 +4316,35 @@ export const appJs = `
 
     function showJoinTeamModal(kind) {
       void kind;
-      // v3: join a cloud by connecting DIRECTLY with the scoped credentials the
-      // owner gave you (the invite blob). No invite token, no email binding —
-      // the database (row-level security) enforces what your role can see.
+      // Join a cloud with the email-bound invite token the owner sent you. The
+      // token decrypts LOCALLY with your email to the same scoped credential —
+      // the member UI never handles a postgres:// string. You then connect
+      // directly with your own scoped role; the database (RLS) enforces access.
       var bodyHtml =
         '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
-          'Paste the connection credentials the cloud owner sent you. You connect ' +
-          'directly with your own scoped Postgres role — access is enforced by the ' +
-          'database, not a server.' +
+          'Enter the email this invite was sent to and the invite token the cloud ' +
+          'owner gave you.' +
         '</p>' +
-        postgresFormHtml({}) +
+        '<div class="field"><label>Email</label>' +
+          '<input id="join-email" type="email" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%"></div>' +
+        '<div class="field" style="margin-top:8px"><label>Invite token</label>' +
+          '<textarea id="join-token" rows="4" placeholder="paste the invite token" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;resize:vertical;font-family:JetBrains Mono,monospace;font-size:12px"></textarea></div>' +
         '<div id="join-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
       showModal('Join a cloud', bodyHtml, {
         primaryLabel: 'Join',
         onSubmit: function (scope) {
           void scope;
-          var body = readPostgresWizardForm();
+          var emailEl = document.getElementById('join-email');
+          var tokenEl = document.getElementById('join-token');
+          var email = (emailEl && emailEl.value ? emailEl.value : '').trim();
+          var token = (tokenEl && tokenEl.value ? tokenEl.value : '').trim();
+          if (!email || !token) throw new Error('Enter your email and the invite token');
           var msg = document.getElementById('join-msg');
           if (msg) msg.textContent = 'Connecting…';
-          return fetch('/api/dbconfig/connect-existing', {
+          return fetch('/api/cloud/redeem-invite', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
+            body: JSON.stringify({ email: email, token: token }),
           })
             .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
             .then(function (r) {
@@ -4941,7 +4948,6 @@ export const appJs = `
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
             (isOwner ? '<button class="btn primary" data-act="open-invite">Invite a member</button>' : '') +
-            (isOwner ? '<button class="btn" data-act="open-system-prompt">Edit chat system prompt</button>' : '') +
           '</div>' +
           // Owner: invite affordance below. Member: a short note. Row-level
           // security is enforced by the database, not this panel — there is
@@ -4986,20 +4992,42 @@ export const appJs = `
         showInviteMemberModal(info);
       });
 
-      // Owner-only: edit the cloud's chat system prompt (bundled into every
-      // member's chat; members can neither see nor edit it).
-      var promptBtn = host.querySelector('[data-act="open-system-prompt"]');
-      if (promptBtn) promptBtn.addEventListener('click', function () {
-        showSystemPromptModal();
-      });
-
-      // No members list to fetch. The owner sees the invite affordance (the
-      // button above); a member sees a short note that they're connected.
+      // Members list: the owner sees the owner + every member role; a member
+      // sees a short note. Backed by /api/cloud/members (the lattice_members
+      // group). The inline list itself is recovered from latticesql 1.14.0.
       var membersHost = host.querySelector('#db-members-host');
-      if (membersHost && info.state === 'cloud-member') {
-        membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
+      if (membersHost) {
+        if (info.state === 'cloud-member') {
+          membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
+        } else {
+          membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading members…</div>';
+          fetchJson('/api/cloud/members').then(function (data) {
+            membersHost.innerHTML = renderMembersList((data && data.members) || []);
+          }).catch(function (e) {
+            membersHost.innerHTML = '<div style="font-size:12px;color:var(--warn)">Could not load members: ' + escapeHtml(e.message) + '</div>';
+          });
+        }
       }
       void isOwner;
+    }
+
+    /** Members list (owner + member roles), recovered from latticesql 1.14.0
+     *  (commit 2862959), adapted to the RLS-cloud member model. */
+    function renderMembersList(members) {
+      if (!members.length) {
+        return '<div class="members-list"><h4>Members</h4>' +
+          '<div style="font-size:12px;color:var(--text-muted)">Just you.</div></div>';
+      }
+      var rows = members.map(function (m) {
+        var pill = m.isOwner ? 'Owner' : 'Member';
+        return '<div class="member-row" data-role="' + escapeHtml(m.role) + '">' +
+          '<span><code>' + escapeHtml(m.role) + '</code>' +
+            (m.isYou ? ' <span style="color:var(--accent);font-size:11px">(you)</span>' : '') +
+            ' <span class="role-tag' + (m.isOwner ? '' : ' role-member') + '">' + pill + '</span>' +
+          '</span>' +
+        '</div>';
+      }).join('');
+      return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
     }
 
     // ── v1.13 wizards ─────────────────────────────────────────────
@@ -5195,56 +5223,48 @@ export const appJs = `
     }
 
     function showInviteMemberModal(info) {
-      // v3 owner-only invite: the server provisions a scoped member role and
-      // returns a connection blob. That blob IS the invite — copy it and hand
-      // it to the new member, who pastes the fields into "Join a cloud". There
-      // is no per-table sharing here (rows are private-by-default, shared per
-      // row via the eye toggle).
+      // Owner-only invite: collect the invitee's email; the server provisions a
+      // scoped role and returns ONE email-bound token carrying its credential.
+      // The invitee redeems it with the same email in "Join a cloud" — no
+      // postgres:// fields ever change hands. (Recovered from 1.14.0's email
+      // invite flow, adapted to the RLS-cloud token.)
       info = info || {};
       var bodyHtml =
-        '<div class="field"><label>Member label</label>' +
-        '<input name="label" type="text" placeholder="bob" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>' +
+        '<div class="field"><label>Invitee email</label>' +
+        '<input name="email" type="email" placeholder="bob@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>' +
         '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-        'A short name for the scoped role you are provisioning. Lattice returns ' +
-        'connection credentials below — send them to the new member, who pastes ' +
-        'them into “Join a cloud”.' +
+        'The invite is bound to this email — only the recipient can redeem it.' +
         '</p>';
       showModal('Invite a member', bodyHtml, {
         primaryLabel: 'Generate invite',
         onSubmit: function (scope) {
           var data = collectFormValues(scope);
-          if (!data.label) throw new Error('label is required');
+          if (!data.email) throw new Error('an invitee email is required');
           return fetchJson('/api/cloud/invite', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ label: data.label }),
+            body: JSON.stringify({ email: data.email }),
           }).then(function (res) {
-            showInviteCredentialsModal((res && res.invite) || {});
+            showInviteTokenModal(res || {});
           });
         },
       });
     }
 
-    function showInviteCredentialsModal(invite) {
-      invite = invite || {};
-      // Render the returned connection blob in a single copyable block. The
-      // member pastes these fields into "Join a cloud".
-      var lines = [
-        'host=' + (invite.host || ''),
-        'port=' + (invite.port || 5432),
-        'dbname=' + (invite.dbname || ''),
-        'user=' + (invite.user || ''),
-        'password=' + (invite.password || ''),
-      ].join('\\n');
+    function showInviteTokenModal(res) {
+      res = res || {};
+      var token = res.token || '';
       var bodyHtml =
-        '<p style="margin-top:0">Send these credentials to your new member — they paste them into “Join a cloud”.</p>' +
-        '<div class="copy-token" id="copy-invite" style="white-space:pre">' + escapeHtml(lines) + '</div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the block to copy.</p>';
-      var handle = showModal('Invite credentials', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
+        '<p style="margin-top:0">Send this invite token to <code>' + escapeHtml(res.email || '') +
+        '</code> (privately). They enter their email + this token in “Join a cloud”. It expires in ~7 days.</p>' +
+        '<div class="copy-token" id="copy-invite" style="white-space:pre-wrap;word-break:break-all">' +
+        escapeHtml(token) + '</div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>';
+      var handle = showModal('Invite token', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
       var blockEl = document.getElementById('copy-invite');
       if (blockEl) {
         blockEl.addEventListener('click', function () {
-          navigator.clipboard.writeText(lines).then(function () {
+          navigator.clipboard.writeText(token).then(function () {
             var prev = blockEl.textContent;
             blockEl.textContent = 'Copied!';
             setTimeout(function () { blockEl.textContent = prev; }, 1200);
