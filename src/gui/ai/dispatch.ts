@@ -2,6 +2,7 @@ import type { Lattice } from '../../lattice.js';
 import type { Row } from '../../types.js';
 import type { FeedBus } from '../feed.js';
 import { getFunction } from './registry.js';
+import { searchLatticeDocs } from './lattice-docs.js';
 import { fullTextSearch } from '../../search/fts.js';
 import type { DeleteResolution, DeleteEntityOutcome } from '../schema-ops.js';
 import {
@@ -43,6 +44,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_rows',
   'get_row',
   'search',
+  'lattice_help',
   'get_history',
   'create_row',
   'update_row',
@@ -257,6 +259,12 @@ export async function executeFunction(
         const row = await ctx.db.get(table, id);
         if (row === null) return { ok: false, error: 'Row not found' };
         return { ok: true, result: redactRow(row, await secretColumnsFor(ctx.db, table)) };
+      }
+      case 'lattice_help': {
+        // Answer questions about Lattice ITSELF from the canonical bundled docs —
+        // not the user's data. Read-only; no DB access, no permission concerns.
+        const query = requireString(args.query, 'query');
+        return { ok: true, result: searchLatticeDocs(query) };
       }
       case 'search': {
         const query = requireString(args.query, 'query');

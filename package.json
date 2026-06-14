@@ -22,7 +22,8 @@
     "lattice": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ],
   "engines": {
     "node": ">=18"

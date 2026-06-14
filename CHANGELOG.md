@@ -8,6 +8,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — ask the assistant about Lattice itself (3.2)
+
+- **`lattice_help` tool.** The chat assistant can now answer questions about
+  Lattice's own features ("what is private mode?", "how do I invite a member?")
+  by searching Lattice's documentation, instead of guessing or searching your
+  data. It reads the SINGLE canonical docs source — the repo's `docs/*.md`, which
+  are the GitHub docs and now ship in the npm package (`files` includes `docs`) —
+  so there's no separate, drift-prone copy.
+
 ### Added — chat knows the record you're viewing (3.2)
 
 - **The assistant resolves "this".** The chat now sends the record currently open
