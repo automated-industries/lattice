@@ -302,15 +302,15 @@ target.close();
 archiveLocalSqlite('./data/app.db'); // renames to .db.local-bak
 ```
 
-### 2. Join — connect to an existing cloud with the credentials you were given
+### 2. Join — redeem your email-bound invite token
 
-The owner provisioned a scoped role for you and handed you the connection details:
-**host, port, database, username, password**. **Those credentials _are_ the
-invite** — there is no token to redeem and no server to sign into. You connect
-directly.
-
-From the GUI: **+ New workspace… → Join a cloud**, then paste the connection blob.
-It posts to `POST /api/dbconfig/connect-existing`, which:
+The owner sent you a single **invite token**, bound to your email. From the GUI:
+**+ New workspace… → Join a cloud**, then enter your **email + the token**. The
+token decrypts **locally** — the email is required to derive the key — to the
+scoped connection details the owner minted, and the same connect path runs. The
+member UI never handles a `postgres://` string. It posts to
+`POST /api/cloud/redeem-invite` → the shared join path (`joinCloudAsMember`, the
+same logic as `connect-existing`), which:
 
 1. **Probes** the target as your role. The probe both authenticates the login and
    confirms the database is actually a Lattice cloud (RLS installed). It refuses if
@@ -338,30 +338,36 @@ await db.init();
 const visibleItems = await db.query('items'); // RLS-filtered to what you may see
 ```
 
-### 3. Invite — provision a member role and hand them the connection blob
+### 3. Invite — mint an email-bound token for a member
 
 You own a cloud and want to add someone. As the owner (your connection holds
-`CREATEROLE`), you provision a scoped member role and give them its credentials.
+`CREATEROLE`), you provision a scoped member role and hand them a single
+email-bound token that carries its credential.
 
-From the GUI: **Workspace Settings → Invite**, which posts to
-`POST /api/cloud/invite`. The handler verifies the active database is a cloud and
-that your role can manage roles (`403` otherwise), then provisions a fresh scoped
-role and returns the **complete connection blob** to hand off:
+From the GUI: **Workspace Settings → Database Connection → Invite a member**, and
+enter the invitee's **email**. It posts to `POST /api/cloud/invite`, which verifies
+the active database is a cloud and that your role can manage roles (`403`
+otherwise), provisions a fresh scoped role, **asserts it is non-privileged** (never
+a superuser / `CREATEROLE` / `BYPASSRLS` / the owner — refused otherwise), mints the
+token, writes an owner-only audit row (`__lattice_member_invites`; email hashed, no
+password stored), and returns just the token:
 
 ```jsonc
-{
-  "ok": true,
-  "invite": {
-    "host": "cloud.example.com",
-    "port": 5432,
-    "dbname": "app",
-    "user": "lm_bob_a91c", // freshly provisioned scoped role
-    "password": "…48 hex chars…", // generated once; this is the only time it's shown
-  },
-}
+{ "ok": true, "token": "AaR…base64url…", "role": "lm_bob_a91c", "email": "bob@example.com" }
 ```
 
-That blob _is_ the invite. The new member pastes it into **Join a cloud** (flow 2).
+Send that token to the invitee (privately); they redeem it with their email in
+flow 2. It expires in ~7 days.
+
+**Token threat model (bearer / magic-link grade).** The token _is_ the secret. It
+embeds a random secret plus the scoped credential, encrypted with AES-256-GCM under
+a key derived via `HKDF(token secret)` salted by `scrypt(email)`, with the email as
+GCM AAD — so it decrypts **only with the matching email**. The email _binds_ the
+token (you cannot redeem it without knowing the email) but is not strong
+confidentiality against an attacker holding _both_ the token and the email. The real
+protections are: **private delivery**, **short expiry**, and the embedded credential
+being a **scoped, RLS-confined, revocable** `lm_*` role — so a leaked token grants
+only what that member could already see, and the owner can revoke it.
 
 The same thing from the library:
 

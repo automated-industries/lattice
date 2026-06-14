@@ -8,6 +8,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — email-bound cloud invites + members list (3.1)
+
+- **Email-bound invite tokens.** `POST /api/cloud/invite` takes an invitee email,
+  provisions a fresh scoped `lm_*` role (asserted non-privileged — never a
+  superuser / `CREATEROLE` / `BYPASSRLS` / owner role), and returns ONE opaque,
+  email-bound token. AES-256-GCM; the key is `HKDF(random token secret)` salted by
+  `scrypt(email)` with the email as AAD, so a token decrypts only with the matching
+  email. The member redeems it with their email in "Join a cloud"
+  (`POST /api/cloud/redeem-invite`) — the member UI never handles a `postgres://`
+  string. The pooler-correct user is baked in for Supabase hosts. Owner-only audit
+  in `__lattice_member_invites` (email hashed; password never stored). New
+  `src/cloud/invite.ts`; threat model documented in `docs/cloud.md`.
+- **Members list.** `GET /api/cloud/members` lists the owner plus every role in the
+  member group; the owner Database-Connection panel renders it.
+- **`__lattice_user_identity` granted to the member group** in `secureCloud`, so a
+  member can drive the GUI (previously hit `permission denied`, blocking every
+  member on connect).
+- **Chat system prompt** now edits inline in its own "Chat" settings section
+  (replacing the modal).
+
+### Fixed (3.1)
+
+- **Cloud sharing UI restored.** Row reads re-attach the per-row `_access` summary
+  (`rowAccessSummaries` over `__lattice_owners` + `__lattice_row_grants`) that the
+  3.0 RLS rewrite dropped without a replacement, so the per-row sharing affordance
+  renders again. Bounded to one query per page; no-op off a secured cloud.
+- **Assistant writes are no longer silently dropped.** The GUI mutation layer
+  auto-creates columns the table lacks (instead of filtering them away while
+  reporting success), persists the value, regenerates the cloud audience view, and
+  records the schema change to the activity feed. `update()` also no-ops a
+  fully-filtered `SET` instead of emitting invalid SQL.
+- **GUI settings.** The Advanced View toggle moved from the sidebar into
+  Settings → Lattice; the active workspace row is highlighted and clicking another
+  switches it AND closes the drawer; the voice provider gains a "No Voice" option
+  that disables voice; error toasts render above modal overlays instead of behind.
+
 ### Added — all cloud config stored + enforced in Postgres (3.1)
 
 - **Per-table policy (`__lattice_table_policy`).** A table now carries an
