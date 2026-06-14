@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import {
+  analyticsEnabled,
   listDbCredentials,
   readIdentity,
   readPreferences,
@@ -113,7 +114,10 @@ export async function dispatchUserConfigRoute(
 
   if (pathname === '/api/userconfig/preferences' && method === 'GET') {
     await tryHandler(res, () => {
-      sendJson(res, readPreferences());
+      // analytics_effective folds the env opt-outs (DO_NOT_TRACK / SCARF_ANALYTICS)
+      // onto the stored pref, so the GUI gates browser analytics on the SAME
+      // resolved consent the server already uses for install pings.
+      sendJson(res, { ...readPreferences(), analytics_effective: analyticsEnabled() });
       return Promise.resolve();
     });
     return true;

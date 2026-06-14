@@ -37,7 +37,33 @@ export const appJs = `
       columnMeta: {},
       systemTables: [],
       preferences: { show_system_tables: false, analytics: true },
+      // Server-resolved analytics consent (stored pref AND env opt-outs). Drives
+      // window.LatticeGA. False until loaded → no tracking before consent is known.
+      analyticsEffective: false,
     };
+
+    // Anonymous analytics passthrough — a no-op unless window.LatticeGA exists and
+    // consent is on. Params are sanitized to coarse enums/bools/numbers by
+    // LatticeGA.track (never table names, ids, queries, or PII).
+    function gaTrack(name, params) {
+      if (window.LatticeGA) window.LatticeGA.track(name, params || {});
+    }
+    // Coarse route TYPE from the hash — the prefix segment(s) ONLY, never the
+    // table / row-id / db segments that follow (those would be identifying).
+    // Fed to LatticeGA.pageView (which itself never sends the raw hash).
+    function routeType(hash) {
+      var h = String(hash || '#/');
+      if (h === '#/' || h === '') return 'dashboard';
+      var parts = h.replace(/^#/, '').split('/').filter(Boolean);
+      var top = (parts[0] || 'other').toLowerCase();
+      if (!/^[a-z0-9_-]+$/.test(top)) return 'other';
+      if (top === 'settings') {
+        var sub = (parts[1] || 'root').toLowerCase();
+        return /^[a-z0-9_-]+$/.test(sub) ? 'settings_' + sub : 'settings_root';
+      }
+      if (top === 'fs' || top === 'objects' || top === 'system') return top;
+      return 'other';
+    }
 
     function isSecretColumn(tableName, colName) {
       var t = state.columnMeta[tableName];
@@ -284,6 +310,11 @@ export const appJs = `
         state.columnMeta = results[2] || {};
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
+        state.analyticsEffective = !!(results[4] && results[4].analytics_effective);
+        // Boot analytics with the resolved consent (no network contact when off),
+        // then record the session open. advanced_mode is a boolean — safe to send.
+        if (window.LatticeGA) window.LatticeGA.init(state.analyticsEffective);
+        gaTrack('app_open', { advanced_mode: advancedMode() });
         document.body.classList.toggle('advanced-mode', advancedMode());
         wireSettingsDrawer();
         renderWsSwitcher(results[5]);
@@ -503,6 +534,10 @@ export const appJs = `
      * IndexedDB and replayed on reconnect; returns { queued: true }.
      */
     function rowWrite(method, path, body) {
+      // Coarse, anonymized analytics — the verb only, never the path/table/ids.
+      var gaEvent =
+        method === 'POST' ? 'row_create' : method === 'PUT' ? 'row_update' : method === 'DELETE' ? 'row_delete' : '';
+      if (gaEvent) gaTrack(gaEvent, {});
       var editId = newEditId();
       var clientTs = new Date().toISOString();
       var item = { editId: editId, method: method, path: path, body: body || null, clientTs: clientTs, status: 'pending', attempts: 0 };
@@ -1260,6 +1295,7 @@ export const appJs = `
       highlightActive();
       var content = document.getElementById('content');
       var hash = location.hash || '#/';
+      if (window.LatticeGA) window.LatticeGA.pageView(routeType(hash));
 
       if (hash === '#/' || hash === '') { renderDashboard(content); return; }
 
@@ -4584,8 +4620,11 @@ export const appJs = `
             '<span>Send anonymous analytics</span>' +
           '</label>' +
           '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
-            'Anonymous analytics will be shared with Lattice using ' +
-            '<a href="https://scarf.sh" target="_blank" rel="noopener">Scarf</a>.' +
+            'Anonymous usage analytics — via ' +
+            '<a href="https://scarf.sh" target="_blank" rel="noopener">Scarf</a> for installs and ' +
+            'Google Analytics inside the app — help us improve Lattice. No table or column names, ' +
+            'row data, queries, file names, or personal info are ever sent: only coarse, anonymized ' +
+            'events. Respects Do-Not-Track.' +
           '</p>' +
           '<div id="pref-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
         '</div>';
@@ -4606,7 +4645,18 @@ export const appJs = `
           .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
       }
       host.querySelector('#pref-analytics').addEventListener('change', function (e) {
-        savePref({ analytics: !!e.target.checked });
+        var on = !!e.target.checked;
+        // Apply browser-analytics consent immediately. Record the opt-in AFTER
+        // enabling (track needs consent) and the opt-out BEFORE disabling.
+        if (on) {
+          if (window.LatticeGA) window.LatticeGA.setConsent(true);
+          gaTrack('analytics_opt_in', {});
+        } else {
+          gaTrack('analytics_opt_out', {});
+          if (window.LatticeGA) window.LatticeGA.setConsent(false);
+        }
+        state.analyticsEffective = on;
+        savePref({ analytics: on });
       });
     }
 
@@ -5689,6 +5739,7 @@ export const appJs = `
       feedGroups = {};
     }
     function newChat() {
+      gaTrack('assistant_thread_new', {});
       currentThreadId = null;
       clearChat();
       var sel = document.getElementById('rail-threads');
@@ -5852,6 +5903,8 @@ export const appJs = `
     function sendChat(text) {
       if (chatBusy || !text) return;
       chatBusy = true;
+      gaTrack('assistant_message', {}); // no message text — just the event
+
       // Open a fresh turn scope: this turn's activity cards group together (no
       // window expiry) and their timers measure from now.
       feedTurnId += 1;
@@ -6082,6 +6135,7 @@ export const appJs = `
     }
     function uploadFiles(files) {
       if (!files) return;
+      gaTrack('file_ingest', { count: files.length }); // count only — never file names
       for (var i = 0; i < files.length; i++) uploadFile(files[i]);
     }
     // Mobile: tapping the handle expands/collapses the bottom drawer.

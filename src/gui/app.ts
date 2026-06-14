@@ -1,5 +1,6 @@
 import { css } from './app/css.js';
 import { appJs } from './app/script.js';
+import { analyticsJs } from './app/analytics.js';
 
 export const guiAppHtml = `<!doctype html>
 <html lang="en">
@@ -97,6 +98,7 @@ export const guiAppHtml = `<!doctype html>
     <div class="drawer-body" id="drawer-body"></div>
   </aside>
 
+  <script>${analyticsJs}</script>
   <script>${appJs}</script>
 </body>
 </html>`;

@@ -49,6 +49,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   matched no grouping rule, so each spammed its own pill in the assistant feed.
   A run now collapses into one counted "Linked N relationships" bubble.
 
+### Added — opt-in Google Analytics (3.2)
+
+- **Anonymous, opt-in product analytics (GA4).** Gated on the existing "Send
+  anonymous analytics" preference (and `DO_NOT_TRACK` / `SCARF_ANALYTICS` env):
+  gtag.js is loaded lazily only after consent, so there is zero network contact
+  while opted out. Configured with `send_page_view:false`, `allow_google_signals:
+  false`, `allow_ad_personalization_signals:false`, `anonymize_ip:true`.
+- **Strict anonymization.** Event params are whitelisted to booleans / finite
+  numbers / short enum tokens — table and column names, row ids/content, file
+  names, queries, chat text, display name, email, paths, and the port are never
+  sent. `page_view` reports a synthetic route-type location, never the real hash.
+- Wired events so far: `app_open`, `page_view`, `row_create`/`row_update`/
+  `row_delete`, `file_ingest`, `assistant_message`, `assistant_thread_new`,
+  `analytics_opt_in`/`analytics_opt_out` (more coarse events can be layered on the
+  same `gaTrack` helper). The preference now reports `analytics_effective`.
+
 ### Changed — settings layout (3.2)
 
 - **Chat system prompt moved into Settings → Workspace.** The standalone "Chat"
