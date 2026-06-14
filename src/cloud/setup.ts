@@ -6,7 +6,8 @@ import {
   backfillOwnership,
 } from './rls.js';
 import { installCloudSettings } from './settings.js';
-import { enableAudienceView } from './audience.js';
+import { seedColumnPolicyFromYaml, regenerateAudienceViewFromDb } from './audience.js';
+import { runAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Turn a Postgres database into a secured Lattice cloud, in place: install the
@@ -27,7 +28,8 @@ export async function secureCloud(db: Lattice): Promise<void> {
   await installCloudSettings(db);
   await db.ensureObservationSubstrate();
   await enableChangelogRls(db);
-  for (const table of db.getRegisteredTableNames()) {
+  const registered = db.getRegisteredTableNames();
+  for (const table of registered) {
     // RLS bookkeeping + GUI-internal tables are definer-managed, not per-row RLS.
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     const pk = db.getPrimaryKey(table);
@@ -36,7 +38,15 @@ export async function secureCloud(db: Lattice): Promise<void> {
     await enableRlsForTable(db, table, pk);
     const cols = db.getRegisteredColumns(table);
     if (cols) {
-      await enableAudienceView(db, table, Object.keys(cols), pk, db.getColumnAudience(table));
+      // Seed the YAML-declared audiences into the canonical __lattice_column_policy
+      // (once), then build the mask view FROM the DB so it's cloud-canonical.
+      await seedColumnPolicyFromYaml(db, table, db.getColumnAudience(table));
+      await regenerateAudienceViewFromDb(db, table, Object.keys(cols), pk);
     }
+  }
+  // `secrets` is never shareable by default (a private-only table): the share/grant
+  // functions refuse it and new rows are forced private, at the data-model level.
+  if (registered.includes('secrets')) {
+    await runAsyncOrSync(db.adapter, `SELECT lattice_set_table_never_share('secrets', true)`);
   }
 }

@@ -123,6 +123,35 @@ CREATE TABLE IF NOT EXISTS "__lattice_cell_grants" (
   PRIMARY KEY ("table_name", "pk", "column_name", "grantee_role")
 );
 
+-- Per-table policy: the owner-controlled defaults that govern a whole table.
+-- default_row_visibility is the visibility NEW rows are stamped with (the insert
+-- trigger reads it); never_share is a hard exclusion — the share/grant functions
+-- refuse to elevate such a table and the trigger forces its rows private. Owner-
+-- managed; members have no grant (it never appears in their data API).
+CREATE TABLE IF NOT EXISTS "__lattice_table_policy" (
+  "table_name"             text PRIMARY KEY,
+  "default_row_visibility" text NOT NULL DEFAULT 'private'
+    CHECK ("default_row_visibility" IN ('private','everyone')),
+  "never_share"            boolean NOT NULL DEFAULT false,
+  "updated_by"             text NOT NULL DEFAULT session_user,
+  "updated_at"             timestamptz NOT NULL DEFAULT now()
+);
+
+-- Per-column audience policy: the CANONICAL store of which column carries which
+-- audience spec (role: / subject: / source: / owner / everyone). Previously the
+-- spec lived only in the owner's on-disk YAML and was compiled into the mask view
+-- once at init; storing it here makes it cloud-canonical and member-consistent.
+-- The generated <table>_v mask view is regenerated from THIS table on change.
+-- Owner-managed; members have no grant.
+CREATE TABLE IF NOT EXISTS "__lattice_column_policy" (
+  "table_name"  text NOT NULL,
+  "column_name" text NOT NULL,
+  "audience"    text NOT NULL,
+  "updated_by"  text NOT NULL DEFAULT session_user,
+  "updated_at"  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("table_name", "column_name")
+);
+
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
 -- is visible to nobody.
@@ -148,6 +177,10 @@ BEGIN
   IF p_visibility NOT IN ('private','everyone','custom') THEN
     RAISE EXCEPTION 'lattice: invalid visibility %', p_visibility;
   END IF;
+  IF p_visibility <> 'private'
+     AND COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table and cannot be shared', p_table;
+  END IF;
   SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
     WHERE o."table_name" = p_table AND o."pk" = p_pk;
   IF v_owner IS NULL THEN RAISE EXCEPTION 'lattice: no ownership record for %/%', p_table, p_pk; END IF;
@@ -161,6 +194,9 @@ CREATE OR REPLACE FUNCTION lattice_grant_row(p_table text, p_pk text, p_grantee 
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
 DECLARE v_owner text;
 BEGIN
+  IF COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table and cannot be shared', p_table;
+  END IF;
   SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
     WHERE o."table_name" = p_table AND o."pk" = p_pk;
   IF v_owner IS NULL THEN RAISE EXCEPTION 'lattice: no ownership record for %/%', p_table, p_pk; END IF;
@@ -250,6 +286,9 @@ CREATE OR REPLACE FUNCTION lattice_grant_cell(p_table text, p_pk text, p_column 
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
 DECLARE v_owner text;
 BEGIN
+  IF COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table and cannot be shared', p_table;
+  END IF;
   SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
     WHERE o."table_name" = p_table AND o."pk" = p_pk;
   IF v_owner IS NULL OR v_owner <> session_user THEN
@@ -281,6 +320,77 @@ CREATE OR REPLACE FUNCTION lattice_source_visible(p_source_ref text)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
   SELECT lattice_row_visible('files', p_source_ref)
 $fn$;
+
+-- Is the connected member the OWNER of this row? Used by the "owner" column
+-- audience (a secret column reveals only to the row owner). SECURITY DEFINER +
+-- session_user, like the other predicates.
+CREATE OR REPLACE FUNCTION lattice_is_owner(p_table text, p_pk text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT EXISTS (
+    SELECT 1 FROM "__lattice_owners" o
+     WHERE o."table_name" = p_table AND o."pk" = p_pk AND o."owner_role" = session_user
+  )
+$fn$;
+
+-- Owner-only: set a table's default row visibility for NEW rows. Raises unless the
+-- caller can create roles (a cloud owner / DBA), like lattice_assign_role. Rejects
+-- 'everyone' on a never-share table.
+CREATE OR REPLACE FUNCTION lattice_set_table_default_visibility(p_table text, p_visibility text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may set a table''s default visibility';
+  END IF;
+  IF p_visibility NOT IN ('private','everyone') THEN
+    RAISE EXCEPTION 'lattice: invalid default visibility %', p_visibility;
+  END IF;
+  IF p_visibility = 'everyone'
+     AND COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table; its rows cannot default to everyone', p_table;
+  END IF;
+  INSERT INTO "__lattice_table_policy" ("table_name","default_row_visibility","updated_by","updated_at")
+    VALUES (p_table, p_visibility, session_user, now())
+    ON CONFLICT ("table_name") DO UPDATE
+      SET "default_row_visibility" = EXCLUDED."default_row_visibility",
+          "updated_by" = session_user, "updated_at" = now();
+END $fn$;
+
+-- Owner-only: mark a table never-shareable (Secrets/Messages-class). When true the
+-- share/grant functions raise and the insert trigger forces new rows private; the
+-- default visibility is also forced private.
+CREATE OR REPLACE FUNCTION lattice_set_table_never_share(p_table text, p_on boolean)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may change a table''s never-share flag';
+  END IF;
+  INSERT INTO "__lattice_table_policy" ("table_name","never_share","default_row_visibility","updated_by","updated_at")
+    VALUES (p_table, p_on, CASE WHEN p_on THEN 'private' ELSE 'private' END, session_user, now())
+    ON CONFLICT ("table_name") DO UPDATE
+      SET "never_share" = EXCLUDED."never_share",
+          "default_row_visibility" = CASE WHEN EXCLUDED."never_share"
+                                          THEN 'private' ELSE "__lattice_table_policy"."default_row_visibility" END,
+          "updated_by" = session_user, "updated_at" = now();
+END $fn$;
+
+-- Owner-only: set (or clear) a column's audience spec in the canonical DB store.
+-- An empty/null spec removes the policy row (column becomes unmasked). The GUI/lib
+-- regenerates the table's mask view from this store after calling this.
+CREATE OR REPLACE FUNCTION lattice_set_column_audience(p_table text, p_column text, p_audience text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may set a column audience';
+  END IF;
+  IF p_audience IS NULL OR btrim(p_audience) = '' THEN
+    DELETE FROM "__lattice_column_policy" WHERE "table_name" = p_table AND "column_name" = p_column;
+  ELSE
+    INSERT INTO "__lattice_column_policy" ("table_name","column_name","audience","updated_by","updated_at")
+      VALUES (p_table, p_column, p_audience, session_user, now())
+      ON CONFLICT ("table_name","column_name") DO UPDATE
+        SET "audience" = EXCLUDED."audience", "updated_by" = session_user, "updated_at" = now();
+  END IF;
+END $fn$;
 
 -- Append-only change feed. The per-table ownership trigger records one row per
 -- INSERT/UPDATE/DELETE; the AFTER INSERT trigger here fires pg_notify so a
@@ -334,7 +444,11 @@ CREATE OR REPLACE FUNCTION "${trg}"() RETURNS trigger LANGUAGE plpgsql SECURITY 
 BEGIN
   IF TG_OP = 'INSERT' THEN
     INSERT INTO "__lattice_owners" ("table_name","pk","owner_role","visibility")
-      VALUES (${lit}, ${pkNew}, session_user, 'private')
+      VALUES (${lit}, ${pkNew}, session_user,
+        CASE WHEN COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = ${lit}), false)
+             THEN 'private'
+             ELSE COALESCE((SELECT "default_row_visibility" FROM "__lattice_table_policy" WHERE "table_name" = ${lit}), 'private')
+        END)
       ON CONFLICT ("table_name","pk") DO NOTHING;
     INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
       VALUES (${lit}, ${pkNew}, 'upsert', session_user);
@@ -378,9 +492,12 @@ export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const migration: Migration = {
     // v3 added the audience helpers; v4 the role model; v5 the per-card override
-    // model (__lattice_cell_grants + lattice_cell_visible / lattice_grant_cell).
-    // The bootstrap is fully idempotent (CREATE OR REPLACE / IF NOT EXISTS).
-    version: 'internal:cloud-rls:bootstrap:v5',
+    // model (__lattice_cell_grants + lattice_cell_visible / lattice_grant_cell);
+    // v6 added per-table policy (__lattice_table_policy: default_row_visibility +
+    // never_share, enforced in the insert trigger + share/grant guards), the
+    // canonical column-audience store (__lattice_column_policy), lattice_is_owner,
+    // and the owner-only setters. The bootstrap is fully idempotent.
+    version: 'internal:cloud-rls:bootstrap:v6',
     sql: CLOUD_RLS_BOOTSTRAP_SQL,
   };
   await db.migrate([migration]);

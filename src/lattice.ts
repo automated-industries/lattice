@@ -63,6 +63,7 @@ import { ChangelogService } from './changelog/service.js';
 import { ReportBuilder } from './report/builder.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine, NOOP_RENDER } from './render/engine.js';
+import type { RenderOptions } from './render/progress.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
 import { ReverseSeedEngine } from './reverse-seed/engine.js';
 import { SyncLoop } from './sync/loop.js';
@@ -1772,13 +1773,34 @@ export class Lattice {
   // Sync
   // -------------------------------------------------------------------------
 
-  async render(outputDir: string): Promise<RenderResult> {
+  async render(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
-    const result = await this._render.render(outputDir);
+    const result = await this._render.render(outputDir, opts);
     for (const h of this._renderHandlers) h(result);
     return result;
+  }
+
+  /**
+   * Render into `outputDir` through the shared single-flight guard, intended to
+   * be called fire-and-forget (e.g. the GUI's instant-open background render).
+   *
+   * The guard ({@link _renderGuarded}) holds {@link _autoRenderInFlight} for the
+   * render's duration, so a data mutation that lands while this render is in
+   * flight is deferred by {@link _runAutoRender} and coalesced — when this
+   * render settles, `finally` clears the flag and re-arms exactly one follow-up
+   * render via {@link _rearmAutoRenderIfPending}. Net invariant: at most one
+   * render to a given dir at a time.
+   *
+   * Errors propagate to the caller (the GUI surfaces them per Rule 16); they are
+   * not swallowed here.
+   */
+  async renderInBackground(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
+    const notInit = this._notInitError<RenderResult>();
+    if (notInit) return notInit;
+
+    return this._renderGuarded(outputDir, opts);
   }
 
   async sync(outputDir: string): Promise<SyncResult> {
@@ -2223,11 +2245,43 @@ export class Lattice {
     this._autoRenderTimer.unref();
   }
 
+  /**
+   * Shared single-flight render path used by {@link renderInBackground}.
+   *
+   * Holds {@link _autoRenderInFlight} for the render's duration so the
+   * mutation-driven {@link _runAutoRender} defers while this render runs (it
+   * sees the flag and marks itself pending instead of starting a second,
+   * overlapping render). On settle, `finally` clears the flag and re-arms a
+   * single coalesced follow-up render if any mutation arrived mid-flight.
+   * Errors propagate to the caller; the flag is always cleared.
+   */
+  private async _renderGuarded(outputDir: string, opts: RenderOptions): Promise<RenderResult> {
+    // If an auto-render is already in flight, wait for it to clear before
+    // claiming the guard so the two never overlap on the same dir.
+    while (this._autoRenderInFlight) {
+      await new Promise((r) => setImmediate(r));
+    }
+    this._autoRenderInFlight = true;
+    try {
+      const result = await this._render.render(outputDir, opts);
+      for (const h of this._renderHandlers) h(result);
+      return result;
+    } finally {
+      this._autoRenderInFlight = false;
+      // A mutation may have arrived during the render (hitting the in-flight
+      // guard in _runAutoRender without arming a timer); re-arm so exactly one
+      // coalesced follow-up render runs.
+      this._rearmAutoRenderIfPending();
+    }
+  }
+
   private async _runAutoRender(): Promise<void> {
     const dir = this._autoRenderDir;
     if (!dir || !this._initialized) return;
     if (this._autoRenderInFlight) {
-      // A render is mid-flight; mark pending and re-arm when it finishes.
+      // A render is mid-flight (auto-render OR a guarded background render);
+      // mark pending and re-arm when it finishes so we coalesce into exactly
+      // one follow-up render rather than overlapping.
       this._autoRenderPending = true;
       return;
     }
