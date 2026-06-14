@@ -6,10 +6,9 @@ describe('guiAppHtml', () => {
     // Sidebar / content mount points
     expect(guiAppHtml).toContain('id="object-nav"');
     expect(guiAppHtml).toContain('id="content"');
-    // The sidebar carries the Advanced-mode toggle at its top (the old
-    // collapse control was removed); the static settings nav moved into the
-    // gear-triggered drawer.
-    expect(guiAppHtml).toContain('class="sidebar-advanced');
+    // The Advanced-mode toggle moved out of the sidebar into Settings → Lattice
+    // (the old collapse control + static settings nav were already removed).
+    expect(guiAppHtml).not.toContain('class="sidebar-advanced');
     expect(guiAppHtml).not.toContain('id="sidebar-collapse"');
     expect(guiAppHtml).not.toContain('id="settings-nav"');
 

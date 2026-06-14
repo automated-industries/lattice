@@ -212,6 +212,23 @@ CREATE TABLE IF NOT EXISTS "__lattice_column_policy" (
   PRIMARY KEY ("table_name", "column_name")
 );
 
+-- Owner-only audit of issued member invites: which scoped role was minted for
+-- which email (HASHED — the plaintext email is never stored), when it expires,
+-- and whether it was redeemed/revoked. No plaintext password is ever stored
+-- (the credential lives only inside the email-bound token the owner delivers).
+-- Owner-managed; members have no grant. Named distinctly from any legacy
+-- team-model invitations table so a pre-existing cloud never collides.
+CREATE TABLE IF NOT EXISTS "__lattice_member_invites" (
+  "id"          text PRIMARY KEY,
+  "role"        text NOT NULL,
+  "email_hash"  text NOT NULL,
+  "created_by"  text NOT NULL DEFAULT session_user,
+  "created_at"  timestamptz NOT NULL DEFAULT now(),
+  "expires_at"  timestamptz NOT NULL,
+  "redeemed_at" timestamptz,
+  "revoked_at"  timestamptz
+);
+
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
 -- is visible to nobody.

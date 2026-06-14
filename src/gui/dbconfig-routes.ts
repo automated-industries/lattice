@@ -33,7 +33,11 @@ import {
   setRowVisibility,
   grantCell,
   revokeCell,
+  assertScopedMemberRole,
 } from '../cloud/members.js';
+import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../cloud/invite.js';
+import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   archiveLocalSqlite,
   migrateLatticeData,
@@ -258,6 +262,44 @@ function resolveRelativeToConfig(configPath: string, candidate: string): string 
   return isAbsolute(candidate) ? candidate : resolve(configPath, '..', candidate);
 }
 
+/**
+ * Join an existing Lattice cloud as a scoped member: probe the connection, then
+ * persist the encrypted credential, point the workspace at it, and swap the
+ * active DB. Shared by the manual `connect-existing` flow and the email-bound
+ * `redeem-invite` flow so both take the IDENTICAL path (probe → save → swap) —
+ * the member connects directly as their scoped role under RLS, exactly as today.
+ */
+async function joinCloudAsMember(
+  ctx: DbConfigContext,
+  res: ServerResponse,
+  fields: { host: string; port: number; dbname: string; user: string; password: string },
+  label: string,
+): Promise<void> {
+  const url = buildPostgresUrl(fields);
+  const probe = await probeCloud(url);
+  if (!probe.reachable) {
+    sendJson(res, { ok: false, error: probe.error ?? 'Cloud DB unreachable' }, 502);
+    return;
+  }
+  if (!probe.isCloud) {
+    sendJson(
+      res,
+      {
+        ok: false,
+        error:
+          'That Postgres database is not a Lattice cloud yet. The owner must migrate a local Lattice into it first.',
+      },
+      409,
+    );
+    return;
+  }
+  saveDbCredential(label, url);
+  rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + label + '}');
+  updateActiveWorkspaceToCloud(ctx.configPath, label);
+  await ctx.swap();
+  sendJson(res, { ok: true, label, isCloud: true });
+}
+
 export async function dispatchDbConfigRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -465,42 +507,22 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
         return;
       }
-      const url = buildPostgresUrl({
-        host: parsed.host,
-        port: Number(parsed.port),
-        dbname: parsed.dbname,
-        user: parsed.user,
-        password: parsed.password,
-      });
       try {
         // Join = connect DIRECTLY with the scoped credentials the owner issued
-        // (the "invite" is those credentials). The probe authenticates the role
-        // and confirms the target is actually a Lattice cloud (RLS installed) —
-        // there's nothing to provision here, the owner already created the role
-        // and RLS confines it. openConfig opens it `introspectOnly` because the
-        // member role can't (and needn't) run DDL.
-        const probe = await probeCloud(url);
-        if (!probe.reachable) {
-          sendJson(res, { ok: false, error: probe.error ?? 'Cloud DB unreachable' }, 502);
-          return;
-        }
-        if (!probe.isCloud) {
-          sendJson(
-            res,
-            {
-              ok: false,
-              error:
-                'That Postgres database is not a Lattice cloud yet. The owner must migrate a local Lattice into it first.',
-            },
-            409,
-          );
-          return;
-        }
-        saveDbCredential(parsed.label, url);
-        rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
-        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
-        await ctx.swap();
-        sendJson(res, { ok: true, label: parsed.label, isCloud: true });
+        // (the "invite" is those credentials). joinCloudAsMember probes, saves,
+        // and swaps; the member role can't (and needn't) run DDL.
+        await joinCloudAsMember(
+          ctx,
+          res,
+          {
+            host: parsed.host,
+            port: Number(parsed.port),
+            dbname: parsed.dbname,
+            user: parsed.user,
+            password: parsed.password,
+          },
+          parsed.label,
+        );
       } catch (e) {
         const status = (e as { status?: number }).status ?? 500;
         sendJson(res, { ok: false, error: (e as Error).message }, status);
@@ -509,10 +531,11 @@ export async function dispatchDbConfigRoute(
     return true;
   }
 
-  // POST /api/cloud/invite — owner provisions a scoped member role and returns
-  // the connection details the new member pastes into "Join a cloud". The invite
-  // IS those credentials (there is no server, no token redemption). Requires the
-  // connected role to hold CREATEROLE (a cloud owner); members get a 403.
+  // POST /api/cloud/invite — owner provisions a scoped member role and returns a
+  // single email-bound, encrypted token carrying that scoped credential (the
+  // member redeems it with their email in "Join a cloud"). Requires the connected
+  // role to hold CREATEROLE (a cloud owner); members get a 403. No plaintext
+  // credential leaves in the response except inside the opaque token.
   if (pathname === '/api/cloud/invite' && method === 'POST') {
     await tryHandler(res, async () => {
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
@@ -524,25 +547,87 @@ export async function dispatchDbConfigRoute(
         return;
       }
       const body = await readJson(req);
-      const label =
-        typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'member';
-      const role = memberRoleName(label);
+      const email = typeof body.email === 'string' ? body.email.trim() : '';
+      if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        sendJson(res, { error: 'A valid invitee email is required' }, 400);
+        return;
+      }
+      const coords = activeCloudCoords(ctx.configPath);
+      if (!coords) {
+        sendJson(res, { error: 'Could not resolve the cloud connection coordinates' }, 500);
+        return;
+      }
+      // Provision a fresh scoped role, then HARD-ASSERT it is non-privileged
+      // before embedding it in a token (security non-regression — never a
+      // superuser / CREATEROLE / BYPASSRLS / owner role).
+      const role = memberRoleName(email);
       const password = generateMemberPassword();
       await provisionMemberRole(ctx.db, role, password);
-      // Surface the connection coordinates of the active cloud so the owner can
-      // hand the member a complete invite. Read from the saved credential of the
-      // active label when present, else from the raw `db:` URL.
-      const coords = activeCloudCoords(ctx.configPath);
-      sendJson(res, {
-        ok: true,
-        invite: {
-          host: coords?.host ?? null,
-          port: coords?.port ?? null,
-          dbname: coords?.dbname ?? null,
-          user: role,
-          password,
+      await assertScopedMemberRole(ctx.db, role);
+      // Bake the pooler-correct user from the owner's own connection role so the
+      // invitee never has to type/know the username.
+      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
+        | { u?: string }
+        | undefined;
+      const user = poolerAwareUser(coords.host, role, me?.u ?? '');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      const token = mintInviteToken({ coords, user, password, role, email, expiresAt });
+      // Owner-only audit row. Plaintext email + password are NEVER stored — only a
+      // hash of the email and the role name (for later revocation).
+      await runAsyncOrSync(
+        ctx.db.adapter,
+        `INSERT INTO "__lattice_member_invites" ("id","role","email_hash","expires_at")
+           VALUES (?, ?, ?, ?)`,
+        [
+          randomUUID(),
+          role,
+          createHash('sha256').update(email.trim().toLowerCase()).digest('hex'),
+          expiresAt.toISOString(),
+        ],
+      );
+      sendJson(res, { ok: true, token, role, email });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/redeem-invite — the MEMBER side. Decrypt the email-bound
+  // token locally with the invitee's email, reconstruct the SAME scoped
+  // credential the owner minted, and join via the shared connect path. The UI
+  // only ever handles email + token — never a postgres:// string.
+  if (pathname === '/api/cloud/redeem-invite' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const email = typeof body.email === 'string' ? body.email.trim() : '';
+      const token = typeof body.token === 'string' ? body.token.trim() : '';
+      if (!email || !token) {
+        sendJson(
+          res,
+          { ok: false, error: 'Enter the email this invite was sent to and the invite token.' },
+          400,
+        );
+        return;
+      }
+      let payload;
+      try {
+        payload = redeemInviteToken(email, token);
+      } catch (e) {
+        sendJson(res, { ok: false, error: (e as Error).message }, 400);
+        return;
+      }
+      const label =
+        typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Cloud workspace';
+      await joinCloudAsMember(
+        ctx,
+        res,
+        {
+          host: payload.host,
+          port: payload.port,
+          dbname: payload.dbname,
+          user: payload.user,
+          password: payload.password,
         },
-      });
+        label,
+      );
     });
     return true;
   }
