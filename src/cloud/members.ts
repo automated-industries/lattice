@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
-import { runAsyncOrSync } from '../db/adapter.js';
+import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import { MEMBER_GROUP } from './rls.js';
+import { cloudRlsInstalled } from '../framework/cloud-connect.js';
 
 /**
  * Cloud member provisioning. A "member" is a scoped, non-superuser Postgres LOGIN
@@ -107,6 +108,64 @@ export async function setRowVisibility(
     pk,
     visibility,
   ]);
+}
+
+/** Per-row sharing summary the GUI attaches to each row as `_access`. */
+export interface RowAccess {
+  visibility: 'private' | 'everyone' | 'custom';
+  /** True when the connected role owns the row (only the owner may re-share). */
+  ownedByMe: boolean;
+  /** Member roles a `custom`-shared row is shared with (owner view only). */
+  grantees?: string[];
+}
+
+/**
+ * Batched per-row access summary over `__lattice_owners` (+ `__lattice_row_grants`
+ * for custom shares), keyed by each row's canonical primary-key string. The GUI
+ * attaches the result to rows as `_access` so the per-row sharing affordance can
+ * render — it is hidden when `_access` is absent, which is why the 3.0 RLS rewrite
+ * (which dropped the old `__lattice_row_acl` enrichment without a replacement)
+ * made sharing "disappear". Returns an empty map when the active DB is not a
+ * secured cloud (SQLite, or a Postgres without the RLS layer) — those workspaces
+ * correctly show no sharing UI. One query per page (Rule 28: bounded, not per-row).
+ */
+export async function rowAccessSummaries(
+  db: Lattice,
+  table: string,
+  pks: readonly string[],
+): Promise<Map<string, RowAccess>> {
+  const out = new Map<string, RowAccess>();
+  if (db.getDialect() !== 'postgres' || pks.length === 0) return out;
+  if (!(await cloudRlsInstalled(db))) return out;
+  const placeholders = pks.map(() => '?').join(', ');
+  const owners = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT "pk", "visibility", ("owner_role" = session_user) AS owned
+       FROM "__lattice_owners"
+      WHERE "table_name" = ? AND "pk" IN (${placeholders})`,
+    [table, ...pks],
+  )) as { pk: string; visibility: string; owned: unknown }[];
+  for (const o of owners) {
+    out.set(o.pk, {
+      visibility: (o.visibility as RowAccess['visibility']) || 'private',
+      ownedByMe: o.owned === true || o.owned === 't' || o.owned === 1,
+    });
+  }
+  const customPks = owners.filter((o) => o.visibility === 'custom').map((o) => o.pk);
+  if (customPks.length > 0) {
+    const cph = customPks.map(() => '?').join(', ');
+    const grants = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT "pk", "grantee_role" FROM "__lattice_row_grants"
+         WHERE "table_name" = ? AND "pk" IN (${cph})`,
+      [table, ...customPks],
+    )) as { pk: string; grantee_role: string }[];
+    for (const g of grants) {
+      const a = out.get(g.pk);
+      if (a) (a.grantees ??= []).push(g.grantee_role);
+    }
+  }
+  return out;
 }
 
 /**

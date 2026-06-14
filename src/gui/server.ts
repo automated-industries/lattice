@@ -50,6 +50,7 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
+import { rowAccessSummaries } from '../cloud/members.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
 import {
@@ -1153,6 +1154,27 @@ function startBackgroundRender(active: ActiveDb): void {
       });
     },
   );
+}
+
+/**
+ * Attach a per-row `_access` summary (visibility + ownedByMe [+ grantees]) onto
+ * each row so the GUI's sharing affordance renders. The frontend hides the share
+ * UI when `_access` is absent, so this is what makes cloud sharing visible again
+ * (the 3.0 RLS rewrite dropped the old enrichment without a replacement). No-op
+ * off a secured cloud. Each row's key is its canonical pk string (single = bare
+ * value, composite = TAB-joined), matching `__lattice_owners.pk`.
+ */
+async function attachRowAccess(db: Lattice, table: string, rows: Row[]): Promise<void> {
+  if (rows.length === 0) return;
+  const pkCols = db.getPrimaryKey(table);
+  if (pkCols.length === 0) return;
+  const pkOf = (r: Row): string => pkCols.map((c) => String(r[c])).join('\t');
+  const summaries = await rowAccessSummaries(db, table, rows.map(pkOf));
+  if (summaries.size === 0) return;
+  for (const r of rows) {
+    const a = summaries.get(pkOf(r));
+    if (a) (r as Row & { _access?: unknown })._access = a;
+  }
 }
 
 async function disposeActive(active: ActiveDb): Promise<void> {
@@ -3183,6 +3205,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 ];
               }
               const rows = await active.db.query(table, queryOpts);
+              await attachRowAccess(active.db, table, rows);
               sendJson(res, { rows });
               return;
             }
@@ -3201,6 +3224,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               }
               // A row the operator can't read already returns null from db.get
               // (RLS-filtered), so reaching here means the row is visible.
+              await attachRowAccess(active.db, table, [row]);
               sendJson(res, row);
               return;
             }
