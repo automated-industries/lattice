@@ -1121,7 +1121,7 @@ function startBackgroundRender(active: ActiveDb): void {
     } else if (e.kind === 'error') {
       state.phase = 'error';
       state.error = e.message ?? 'render failed';
-      // Rule 16: a render failure is surfaced loudly, never swallowed.
+      // A render failure is surfaced loudly, never swallowed.
       console.error('[render] background render error:', e.message ?? '(no message)');
     }
     bus.publish(e);
@@ -1140,7 +1140,7 @@ function startBackgroundRender(active: ActiveDb): void {
       const message = err instanceof Error ? err.message : String(err);
       state.phase = 'error';
       state.error = message;
-      // Rule 16: never swallow a background render rejection.
+      // Never swallow a background render rejection.
       console.error('[render] background render rejected:', message);
       bus.publish({
         kind: 'error',

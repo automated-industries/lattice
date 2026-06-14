@@ -1865,7 +1865,7 @@ export class Lattice {
    * render via {@link _rearmAutoRenderIfPending}. Net invariant: at most one
    * render to a given dir at a time.
    *
-   * Errors propagate to the caller (the GUI surfaces them per Rule 16); they are
+   * Errors propagate to the caller (the GUI surfaces them, never silently swallowed); they are
    * not swallowed here.
    */
   async renderInBackground(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {

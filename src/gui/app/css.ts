@@ -393,7 +393,7 @@ export const css = `
     /* The render pill reuses the shared .spinner + @keyframes lattice-spin. */
     .card-render-pill .spinner { margin-right: 0; }
     /* A render that errors out paints a red card state instead of a stuck
-       spinner (Rule 16 — surface the failure, don't hide it). */
+       spinner (surface the failure, don't hide it). */
     .card.is-render-error { border-color: #ef4444; }
     .card.is-render-error .card-render-fill { background: #ef4444; }
     .card.is-render-error .card-render-pill { background: rgba(239, 68, 68, 0.14); color: #ef4444; }

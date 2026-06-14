@@ -127,7 +127,7 @@ export interface RowAccess {
  * (which dropped the old `__lattice_row_acl` enrichment without a replacement)
  * made sharing "disappear". Returns an empty map when the active DB is not a
  * secured cloud (SQLite, or a Postgres without the RLS layer) — those workspaces
- * correctly show no sharing UI. One query per page (Rule 28: bounded, not per-row).
+ * correctly show no sharing UI. One query per page (bounded, not per-row).
  */
 export async function rowAccessSummaries(
   db: Lattice,

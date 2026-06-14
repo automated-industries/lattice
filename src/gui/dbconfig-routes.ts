@@ -824,7 +824,7 @@ export async function dispatchDbConfigRoute(
       // then return the current prompt for editing. Use the STRICT reader: a real
       // read failure must surface (tryHandler → 500, the modal shows a load error)
       // rather than swallow to '' — a deceptive empty editor would invite a blind
-      // overwrite of the live prompt (Rule 16). '' means genuinely unset.
+      // overwrite of the live prompt (fail loudly, never silently). '' means genuinely unset.
       await installCloudSettings(ctx.db);
       const prompt = await getCloudSettingStrict(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT);
       sendJson(res, { supported: true, canEdit: true, prompt: prompt ?? '' });
