@@ -185,17 +185,23 @@ test('Advanced mode toggle restores the classic row/table editor', async ({ page
   const card = page.locator('.card').first();
   await expect(card).toHaveAttribute('href', /#\/fs\//);
 
-  // Flip Advanced mode on via the sidebar toggle. The checkbox is visually
-  // hidden behind a styled track; click the track the way a user would.
-  await page.locator('.sidebar-advanced .toggle-track').click();
+  // Advanced View now lives in Settings → Lattice (moved out of the sidebar).
+  // Open the gear → Lattice tab, then click the toggle track the way a user would.
+  await page.locator('#settings-gear').click();
+  await page.locator('.drawer-tab[data-tab="lattice"]').click();
+  await page.locator('#drawer-body .toggle-track').click();
   await expect(page.locator('#advanced-toggle')).toBeChecked();
+  await page.keyboard.press('Escape'); // close the drawer to reach the sidebar
 
   // Object navigation now targets the classic #/objects route …
   await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/objects\//);
-  // … which renders the row table with its inline create row.
+  // … which renders the row table with its inline create row. Scope to the main
+  // content region: the settings drawer we just opened retains its rendered
+  // Lattice panel (which has its own workspace-list <table>), so an unscoped
+  // `table` locator is ambiguous after a hash-only navigation.
   await page.goto(`${gui.url}#/objects/authors`);
-  await expect(page.locator('table')).toBeVisible();
-  await expect(page.locator('tr.create-row')).toBeVisible();
+  await expect(page.locator('#content table')).toBeVisible();
+  await expect(page.locator('#content tr.create-row')).toBeVisible();
 });
 
 test('the gear opens a settings drawer with Database / Lattice / User tabs', async ({ page }) => {

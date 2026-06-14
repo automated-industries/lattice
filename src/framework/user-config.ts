@@ -368,7 +368,7 @@ function loadS3Configs(): Record<string, Record<string, unknown>> {
   } catch (e) {
     // The file EXISTS but won't decrypt/parse — a corrupt store or a wrong master
     // key, NOT "no config". Returning {} would silently present a configured
-    // workspace as "S3 off" (Rule 16). Surface it loudly; degrade to no-config so
+    // workspace as "S3 off" (a real failure). Surface it loudly; degrade to no-config so
     // a corrupt local file can't crash every upload/serve, but make it observable.
     console.warn(
       `[s3-config] ${S3_CONFIG_FILENAME} exists but could not be read (corrupt store or wrong key); treating as no S3 config: ${(e as Error).message}`,

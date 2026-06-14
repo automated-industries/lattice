@@ -97,6 +97,14 @@ migrations against the cloud Postgres.
   - `lattice_grant_row(table, pk, grantee)` / `lattice_revoke_row(table, pk, grantee)`
     — owner-only; manage the `custom` grant list.
 
+  Every cloud `SECURITY DEFINER` function pins `search_path = "<schema>", pg_temp`
+  (the cloud schema first, `pg_temp` **last**). Without the pin, a definer function
+  resolves unqualified table names via the _caller's_ `pg_temp` first, so a member
+  could `CREATE TEMP TABLE __lattice_owners(...)` to shadow the bookkeeping and make
+  the visibility check return whatever they like — a full RLS bypass. The pin forces
+  every unqualified name to resolve against the real schema; the installer also
+  revokes schema `CREATE` from `PUBLIC` as defense-in-depth.
+
 ### 2. Per-table RLS
 
 `enableRlsForTable(db, table, pkCols)` secures one shared table:
@@ -191,6 +199,41 @@ await setRowVisibility(db, 'items', 'item-42', 'everyone');
 Because sharing lives in `__lattice_owners` (out of band), opting a row in or out
 never touches your table's columns.
 
+### Per-table defaults & never-share (v3.1)
+
+The owner can set a table's policy in `__lattice_table_policy` — **stored and
+enforced in Postgres**, so a direct `psql` insert obeys it too:
+
+- **`default_row_visibility`** (`private` | `everyone`) — the visibility NEW rows in
+  that table are stamped with. The per-table insert trigger reads it; default
+  `private` (unchanged behavior). `setTableDefaultVisibility(db, table, vis)`.
+- **`never_share`** — a hard exclusion. `lattice_set_row_visibility` /
+  `lattice_grant_row` / `lattice_grant_cell` RAISE for the table, and its new rows
+  are forced private regardless of the default. `setTableNeverShare(db, table, on)`.
+  Turning it **on is retroactive**: any already-shared row is reset to private and
+  every row/cell grant on the table is dropped, so flagging an existing table
+  never-share never leaves previously-shared rows visible. `secrets` is seeded
+  never-share by `secureCloud`.
+
+```ts
+import { setTableDefaultVisibility, setTableNeverShare } from 'latticesql';
+await setTableDefaultVisibility(db, 'tickets', 'everyone'); // team-shared by default
+await setTableNeverShare(db, 'secrets', true); // can never be shared, ever
+```
+
+**"Private mode"** in the GUI chat composer is a per-request override: when on, rows
+the assistant creates that turn are forced private regardless of the table default.
+The row is stamped private **atomically at insert** (`insertForcingVisibility` sets a
+transaction-local GUC the insert trigger reads), so it is never momentarily visible
+at the table default and the change-feed `NOTIFY` only fires once it is already
+private — there is no create-then-demote window.
+
+**Secret columns (`owner` audience).** Marking a column secret stores an `owner`
+audience in `__lattice_column_policy`, so Postgres masks it to everyone but the row
+owner via the generated `<table>_v` view — the DB is the boundary (the assistant-side
+redaction is just model-context safety). See _Per-column audiences_ below; the spec
+now lives canonically in the DB and the mask view regenerates from it on change.
+
 ---
 
 ## The three user flows
@@ -259,15 +302,15 @@ target.close();
 archiveLocalSqlite('./data/app.db'); // renames to .db.local-bak
 ```
 
-### 2. Join — connect to an existing cloud with the credentials you were given
+### 2. Join — redeem your email-bound invite token
 
-The owner provisioned a scoped role for you and handed you the connection details:
-**host, port, database, username, password**. **Those credentials _are_ the
-invite** — there is no token to redeem and no server to sign into. You connect
-directly.
-
-From the GUI: **+ New workspace… → Join a cloud**, then paste the connection blob.
-It posts to `POST /api/dbconfig/connect-existing`, which:
+The owner sent you a single **invite token**, bound to your email. From the GUI:
+**+ New workspace… → Join a cloud**, then enter your **email + the token**. The
+token decrypts **locally** — the email is required to derive the key — to the
+scoped connection details the owner minted, and the same connect path runs. The
+member UI never handles a `postgres://` string. It posts to
+`POST /api/cloud/redeem-invite` → the shared join path (`joinCloudAsMember`, the
+same logic as `connect-existing`), which:
 
 1. **Probes** the target as your role. The probe both authenticates the login and
    confirms the database is actually a Lattice cloud (RLS installed). It refuses if
@@ -295,30 +338,36 @@ await db.init();
 const visibleItems = await db.query('items'); // RLS-filtered to what you may see
 ```
 
-### 3. Invite — provision a member role and hand them the connection blob
+### 3. Invite — mint an email-bound token for a member
 
 You own a cloud and want to add someone. As the owner (your connection holds
-`CREATEROLE`), you provision a scoped member role and give them its credentials.
+`CREATEROLE`), you provision a scoped member role and hand them a single
+email-bound token that carries its credential.
 
-From the GUI: **Workspace Settings → Invite**, which posts to
-`POST /api/cloud/invite`. The handler verifies the active database is a cloud and
-that your role can manage roles (`403` otherwise), then provisions a fresh scoped
-role and returns the **complete connection blob** to hand off:
+From the GUI: **Workspace Settings → Database Connection → Invite a member**, and
+enter the invitee's **email**. It posts to `POST /api/cloud/invite`, which verifies
+the active database is a cloud and that your role can manage roles (`403`
+otherwise), provisions a fresh scoped role, **asserts it is non-privileged** (never
+a superuser / `CREATEROLE` / `BYPASSRLS` / the owner — refused otherwise), mints the
+token, writes an owner-only audit row (`__lattice_member_invites`; email hashed, no
+password stored), and returns just the token:
 
 ```jsonc
-{
-  "ok": true,
-  "invite": {
-    "host": "cloud.example.com",
-    "port": 5432,
-    "dbname": "app",
-    "user": "lm_bob_a91c", // freshly provisioned scoped role
-    "password": "…48 hex chars…", // generated once; this is the only time it's shown
-  },
-}
+{ "ok": true, "token": "AaR…base64url…", "role": "lm_bob_a91c", "email": "bob@example.com" }
 ```
 
-That blob _is_ the invite. The new member pastes it into **Join a cloud** (flow 2).
+Send that token to the invitee (privately); they redeem it with their email in
+flow 2. It expires in ~7 days.
+
+**Token threat model (bearer / magic-link grade).** The token _is_ the secret. It
+embeds a random secret plus the scoped credential, encrypted with AES-256-GCM under
+a key derived via `HKDF(token secret)` salted by `scrypt(email)`, with the email as
+GCM AAD — so it decrypts **only with the matching email**. The email _binds_ the
+token (you cannot redeem it without knowing the email) but is not strong
+confidentiality against an attacker holding _both_ the token and the email. The real
+protections are: **private delivery**, **short expiry**, and the embedded credential
+being a **scoped, RLS-confined, revocable** `lm_*` role — so a leaked token grants
+only what that member could already see, and the owner can revoke it.
 
 The same thing from the library:
 
@@ -605,6 +654,15 @@ sees its derived value, and **un-sharing the source reverts the value with no
 residue** (revocation is structural, not a cleanup job). Run it on the member's
 local replica over already-gated observations, cached with `FoldCache` and
 re-rendered only when an observation changes — egress is paid once at pull.
+
+**Change-log visibility.** The observation substrate (`__lattice_changelog`) is RLS-
+protected with two cases. A **derived** observation is visible only to a member who
+can reach every source it was derived from (the source-visibility predicate above) —
+existence-hiding is structural. A **ground-truth / audit** entry is **owner-only**
+(`lattice_is_owner`): it carries the full row in cleartext, including columns the
+`<table>_v` mask hides from a non-owner, so the row's raw history is an owner artifact
+— a member who can merely see a shared row reads it through the masked view, never its
+change-log.
 
 **3. Forgetting a source — crypto-shred.** For a legally sensitive source, seal
 its derived values under a per-source key (`sealUnderSource`) and call

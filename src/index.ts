@@ -297,7 +297,19 @@ export {
   enableAudienceView,
   tableNeedsAudienceView,
   isRowAudience,
+  // WS2/WS3 — per-column audience spec stored canonically in Postgres
+  loadColumnPolicy,
+  seedColumnPolicyFromYaml,
+  regenerateAudienceViewFromDb,
+  setColumnAudience,
 } from './cloud/audience.js';
+export type { AudienceRowCtx } from './cloud/audience.js';
+export {
+  getTablePolicy,
+  setTableDefaultVisibility,
+  setTableNeverShare,
+} from './cloud/table-policy.js';
+export type { TablePolicy, RowVisibilityDefault } from './cloud/table-policy.js';
 export { foldEntity, observationVisible, observationsFromChange } from './cloud/fold.js';
 export type { Observation, Viewer } from './cloud/fold.js';
 export {
@@ -316,6 +328,14 @@ export {
   setCloudSetting,
   CLOUD_SETTING_SYSTEM_PROMPT,
 } from './cloud/settings.js';
+// v3.1 — progress-bearing render API (background render + live per-table %)
+export { ProgressThrottle } from './render/progress.js';
+export type {
+  RenderProgress,
+  RenderProgressKind,
+  RenderProgressCallback,
+  RenderOptions,
+} from './render/progress.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing

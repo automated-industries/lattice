@@ -16,6 +16,16 @@ import type {
 import { writeManifest } from '../lifecycle/manifest.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
+import type { RenderOptions } from './progress.js';
+import { ProgressThrottle } from './progress.js';
+
+/**
+ * Yield back to the event loop every this-many entities during the per-entity
+ * render loop. SQLite adapter queries resolve synchronously, so a large render
+ * would otherwise starve the HTTP server (delaying an abort from taking effect)
+ * and freeze the GUI. The yield is cheap and only happens a handful of times.
+ */
+const YIELD_EVERY_ENTITIES = 200;
 
 /**
  * Sentinel render function assigned to tables registered without a `render`
@@ -46,13 +56,18 @@ export class RenderEngine {
     this._skipEmpty = options?.skipEmpty ?? false;
   }
 
-  async render(outputDir: string): Promise<RenderResult> {
+  async render(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
     const start = Date.now();
     const filesWritten: string[] = [];
     const counters = { skipped: 0 };
+    const signal = opts.signal;
+    const throttle = new ProgressThrottle(opts.onProgress);
 
-    // Single-table renders
+    // Single-table renders (phase 1 — fast; lightweight table-done only).
     for (const [name, def] of this._schema.getTables()) {
+      // Bail before each table if the render was aborted (e.g. a workspace
+      // switch). Returns the partial manifest, which the caller discards.
+      if (signal?.aborted) return this._abortedResult(filesWritten, counters, start);
       // Opt-in: a spec-less table renders to an empty `.schema-only` file, so
       // when skipEmpty is on we skip both the full-table read and the write —
       // avoiding pulling a whole (possibly large) table off the wire for an
@@ -102,10 +117,22 @@ export class RenderEngine {
       } else {
         counters.skipped++;
       }
+      // Phase-1 tables are fast: emit a lightweight table-done only (no
+      // per-entity progress). The `force` path is never throttled.
+      throttle.force({
+        kind: 'table-done',
+        table: name,
+        entitiesRendered: rows.length,
+        entitiesTotal: rows.length,
+        tableIndex: 0,
+        tableCount: 0,
+        pct: 100,
+      });
     }
 
-    // Multi-table renders
-    for (const [, def] of this._schema.getMultis()) {
+    // Multi-table renders (phase 2 — fast; lightweight table-done only).
+    for (const [name, def] of this._schema.getMultis()) {
+      if (signal?.aborted) return this._abortedResult(filesWritten, counters, start);
       const keys = await def.keys();
       const tables: Record<string, import('../types.js').Row[]> = {};
 
@@ -124,14 +151,31 @@ export class RenderEngine {
           counters.skipped++;
         }
       }
+      throttle.force({
+        kind: 'table-done',
+        table: name,
+        entitiesRendered: keys.length,
+        entitiesTotal: keys.length,
+        tableIndex: 0,
+        tableCount: 0,
+        pct: 100,
+      });
     }
 
-    // Entity context renders
+    // Entity context renders — the heavy phase, with per-entity progress.
     const entityContextManifest = await this._renderEntityContexts(
       outputDir,
       filesWritten,
       counters,
+      throttle,
+      signal,
     );
+
+    // An abort during entity rendering surfaces as a null manifest; bail with
+    // the partial result so the caller can discard it.
+    if (entityContextManifest === null) {
+      return this._abortedResult(filesWritten, counters, start);
+    }
 
     // Write manifest if there are any entity contexts
     if (this._schema.getEntityContexts().size > 0) {
@@ -142,6 +186,37 @@ export class RenderEngine {
       });
     }
 
+    const result = {
+      filesWritten,
+      filesSkipped: counters.skipped,
+      durationMs: Date.now() - start,
+    };
+
+    // Terminal progress event — the render finished without being aborted.
+    throttle.force({
+      kind: 'done',
+      table: null,
+      entitiesRendered: 0,
+      entitiesTotal: 0,
+      tableIndex: 0,
+      tableCount: 0,
+      pct: 100,
+      durationMs: result.durationMs,
+    });
+
+    return result;
+  }
+
+  /**
+   * Build the partial RenderResult to return when a render is aborted. No
+   * `done` event is emitted — the caller treats abort as "discard the partial
+   * tree", not as a successful completion.
+   */
+  private _abortedResult(
+    filesWritten: string[],
+    counters: { skipped: number },
+    start: number,
+  ): RenderResult {
     return {
       filesWritten,
       filesSkipped: counters.skipped,
@@ -184,13 +259,18 @@ export class RenderEngine {
   /**
    * Render all entity context definitions.
    * Mutates `filesWritten` and `counters` in place.
-   * Returns manifest data for the entity contexts rendered this cycle.
+   * Returns manifest data for the entity contexts rendered this cycle, or
+   * `null` if the render was aborted mid-flight (the caller discards the
+   * partial tree). Progress is reported through `throttle`; abort is observed
+   * via `signal`.
    */
   private async _renderEntityContexts(
     outputDir: string,
     filesWritten: string[],
     counters: { skipped: number },
-  ): Promise<Record<string, EntityContextManifestEntry>> {
+    throttle: ProgressThrottle,
+    signal: AbortSignal | undefined,
+  ): Promise<Record<string, EntityContextManifestEntry> | null> {
     const manifestData: Record<string, EntityContextManifestEntry> = {};
 
     // Build set of protected table names for source filtering
@@ -199,10 +279,30 @@ export class RenderEngine {
       if (d.protected) protectedTables.add(t);
     }
 
-    for (const [table, def] of this._schema.getEntityContexts()) {
+    const entityTables = [...this._schema.getEntityContexts()];
+    const tableCount = entityTables.length;
+
+    for (let tableIndex = 0; tableIndex < tableCount; tableIndex++) {
+      // Bail at the top of each entity-context table if aborted.
+      if (signal?.aborted) return null;
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const [table, def] = entityTables[tableIndex]!;
       const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
       const allRows = await this._schema.queryTable(this._adapter, table);
       const directoryRoot = def.directoryRoot ?? table;
+
+      // `entitiesTotal` is the free denominator already read above — no
+      // pre-count pass. Per-table % is exact: entitiesRendered / entitiesTotal.
+      const entitiesTotal = allRows.length;
+      throttle.force({
+        kind: 'table-start',
+        table,
+        entitiesRendered: 0,
+        entitiesTotal,
+        tableIndex,
+        tableCount,
+        pct: 0,
+      });
 
       const manifestEntry: EntityContextManifestEntry = {
         directoryRoot,
@@ -223,7 +323,20 @@ export class RenderEngine {
       }
 
       // --- per-entity files ---
-      for (const entityRow of allRows) {
+      for (let i = 0; i < allRows.length; i++) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const entityRow = allRows[i]!;
+
+        // Bail mid-table if aborted, before doing any more work for this row.
+        if (signal?.aborted) return null;
+
+        // Yield to the event loop periodically. SQLite queries resolve
+        // synchronously, so without this a large render starves the HTTP
+        // server (delaying abort) and freezes the GUI. Cheap and infrequent.
+        if (i > 0 && i % YIELD_EVERY_ENTITIES === 0) {
+          await new Promise((r) => setImmediate(r));
+        }
+
         // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
         // U+202F in screenshot filenames) with regular space, strip control characters.
         const rawSlug = def.slug(entityRow);
@@ -295,6 +408,10 @@ export class RenderEngine {
           protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
 
         for (const [filename, spec] of Object.entries(def.files)) {
+          // Bail before each file's source query: an entity with many files would
+          // otherwise keep issuing DB queries for the whole row after an abort
+          // (e.g. a workspace switch), delaying teardown and wasting egress.
+          if (signal?.aborted) return null;
           const mergeDefaults =
             def.sourceDefaults &&
             spec.source.type !== 'self' &&
@@ -361,9 +478,31 @@ export class RenderEngine {
 
         // Track what was written for this entity in the manifest (v2: with hashes)
         manifestEntry.entities[slug] = entityFileHashes;
+
+        // Per-entity progress, coalesced by the throttle to ≤ ~5/sec per table.
+        const entitiesRendered = i + 1;
+        throttle.tick({
+          kind: 'table-progress',
+          table,
+          entitiesRendered,
+          entitiesTotal,
+          tableIndex,
+          tableCount,
+          pct: entitiesTotal > 0 ? (entitiesRendered / entitiesTotal) * 100 : 100,
+        });
       }
 
       manifestData[table] = manifestEntry;
+
+      throttle.force({
+        kind: 'table-done',
+        table,
+        entitiesRendered: entitiesTotal,
+        entitiesTotal,
+        tableIndex,
+        tableCount,
+        pct: 100,
+      });
     }
 
     return manifestData;

@@ -88,7 +88,7 @@ function coerce(raw: Record<string, unknown> | null): S3Config | null {
   const secretAccessKey = typeof raw.secretAccessKey === 'string' ? raw.secretAccessKey : '';
   // A half-supplied pair is a config error, not a request to use the default chain:
   // dropping it silently would surface only later as an opaque S3 auth failure
-  // (Rule 16). Both-absent legitimately falls back to the AWS default chain.
+  // (surfaced loudly, never swallowed). Both-absent legitimately falls back to the AWS default chain.
   if ((accessKeyId && !secretAccessKey) || (!accessKeyId && secretAccessKey)) {
     console.warn(
       '[s3-config] only one of accessKeyId/secretAccessKey is set; ignoring the partial credential and using the default AWS credential chain. Supply both, or neither.',
