@@ -38,9 +38,12 @@ export interface CloudProbeResult {
  *  privilege on the table, so a scoped member (who is denied SELECT on the
  *  bookkeeping tables) still gets a truthful answer. */
 export async function cloudRlsInstalled(probe: Lattice): Promise<boolean> {
+  // Resolve via the search_path (current schema), NOT a hardcoded `public.` — the
+  // cloud bootstrap installs into the connection's schema (cloudSchema), so a
+  // cloud in a non-public schema was mis-detected as "not a cloud".
   const row = (await getAsyncOrSync(
     probe.adapter,
-    `SELECT to_regclass('public.__lattice_owners') AS reg`,
+    `SELECT to_regclass('__lattice_owners') AS reg`,
   )) as { reg?: string | null } | undefined;
   return !!row && row.reg != null;
 }

@@ -35,6 +35,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   wire the previously-unreachable `revokeMemberRole`; revocation reassigns/drops
   the member's objects and surfaces failures (Rule 16) instead of swallowing them.
 
+### Fixed — cloud join path + schema detection (3.2)
+
+- **Join no longer silently lands a member on an empty local DB.** A
+  `${LATTICE_DB:<label>}` reference whose label was malformed (e.g. the default
+  join label "Cloud workspace", which has a space) used to fall through to
+  filesystem-path resolution — creating a literal `${LATTICE_DB:…}` file (0-byte
+  on Windows) and a silent empty SQLite DB. `resolveDbPath` now THROWS on a
+  shaped-but-invalid reference (new shared `parseDbRef`/`isDbRefShaped` helpers),
+  and the join flow sanitizes the credential key / `${LATTICE_DB:…}` reference
+  (via `slugify`) while keeping the human display name — so the credential
+  actually resolves.
+- **`cloudRlsInstalled` resolves via the search_path**, not a hardcoded `public.`,
+  so a cloud installed into a non-public schema is detected correctly.
+
 ### Fixed — cloud bootstrap converges on owner open (3.2)
 
 - **The cloud object bootstrap now converges.** `installCloudRls` /

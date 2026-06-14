@@ -37,6 +37,7 @@ import {
   revokeMemberRole,
 } from '../cloud/members.js';
 import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../cloud/invite.js';
+import { slugify } from '../render/markdown.js';
 import { MEMBER_GROUP } from '../cloud/rls.js';
 import { getAsyncOrSync, runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -59,14 +60,17 @@ import { resolveContextDirForConfig } from '../framework/gui-bootstrap.js';
  * the header switcher + Settings reflect that this workspace is now cloud. No-op
  * when not running inside a `.lattice` root.
  */
-function updateActiveWorkspaceToCloud(configPath: string, label: string): void {
+function updateActiveWorkspaceToCloud(configPath: string, displayName: string, key: string): void {
   const root = findLatticeRoot(dirname(configPath));
   if (!root) return;
   registerOrUpdateCloudWorkspace(root, {
     configPath,
     contextDir: resolveContextDirForConfig(configPath),
-    displayName: label,
-    db: '${LATTICE_DB:' + label + '}',
+    displayName,
+    // The credential key + ${LATTICE_DB:…} reference must be a SANITIZED,
+    // space-free label (resolveDbPath rejects anything else); the human
+    // displayName is separate.
+    db: '${LATTICE_DB:' + key + '}',
     makeActive: true,
   });
 }
@@ -295,9 +299,15 @@ async function joinCloudAsMember(
     );
     return;
   }
-  saveDbCredential(label, url);
-  rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + label + '}');
-  updateActiveWorkspaceToCloud(ctx.configPath, label);
+  // The credential key + ${LATTICE_DB:…} reference MUST be a sanitized,
+  // space-free label or resolveDbPath rejects it (and the default join label
+  // "Cloud workspace" — with a space — never resolved, which silently dropped
+  // the member onto an empty local DB). Sanitize the key; keep the human label
+  // as the display name.
+  const key = slugify(label) || 'cloud';
+  saveDbCredential(key, url);
+  rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + key + '}');
+  updateActiveWorkspaceToCloud(ctx.configPath, label, key);
   await ctx.swap();
   sendJson(res, { ok: true, label, isCloud: true });
 }
@@ -479,7 +489,9 @@ export async function dispatchDbConfigRoute(
         const backupPath = archiveLocalSqlite(sourceDbPath);
         saveDbCredential(parsed.label, url);
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
-        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
+        // parsed.label already satisfies the ${LATTICE_DB:…} charset (it was
+        // parsed from one), so it's a valid key + a fine display name.
+        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label, parsed.label);
         await ctx.swap();
         sendJson(res, {
           ok: true,
