@@ -100,6 +100,12 @@ async function secretColumnsFor(db: Lattice, table: string): Promise<Set<string>
  * (e.g. an `api_key` on an `integrations` table) never reaches the model — the
  * reads decrypt, so without this they'd leak into chat output. Mirrors the
  * row-context endpoint's redaction (server.ts).
+ *
+ * NOTE (v3.1): on a cloud this is **model-context safety only**, NOT the
+ * cross-member privacy boundary. Marking a column secret now also sets its
+ * `owner` audience in `__lattice_column_policy`, so Postgres masks it to non-owner
+ * members at the database (`<table>_v` view) — that DB mask is the real boundary;
+ * this redaction just keeps secret values out of the LLM prompt for the owner too.
  */
 function redactRow(row: Row, secretCols: Set<string>): Row {
   if (secretCols.size === 0) return row;
@@ -122,6 +128,14 @@ export interface AssistantJunction {
 export interface DispatchCtx {
   db: Lattice;
   feed: FeedBus;
+  /**
+   * "Private mode" (a chat-composer toggle): when true, rows the assistant creates
+   * this turn are forced PRIVATE regardless of the table's default visibility — a
+   * transient per-action choice, applied by calling the existing owner-only
+   * `set_row_visibility` after create (the creator owns the new row). Off ⇒ new
+   * rows follow the table default. Cloud (Postgres) only.
+   */
+  privateMode?: boolean;
   /** Allowlist of queryable/writable user tables (mirrors the HTTP gate). */
   validTables: Set<string>;
   /** Junction tables eligible for link/unlink. */
@@ -261,7 +275,16 @@ export async function executeFunction(
         if (!args.values || typeof args.values !== 'object') {
           throw new Error('values object is required');
         }
-        const { id } = await createRow(mctx, table, args.values as Row);
+        // Private mode: force the new row private atomically at insert (the trigger
+        // stamps it private regardless of the table default — no create-then-demote
+        // window). Any failure propagates out of createRow and is reported as a
+        // failed action rather than silently leaving the row at the table default.
+        const { id } = await createRow(
+          mctx,
+          table,
+          args.values as Row,
+          ctx.privateMode ? 'private' : undefined,
+        );
         return { ok: true, result: { id } };
       }
       case 'update_row': {

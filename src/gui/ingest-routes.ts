@@ -702,7 +702,7 @@ export async function dispatchIngestRoute(
     // `null` = S3 not enabled for this workspace (the common non-cloud case, no
     // signal needed). When S3 IS enabled, `s3Status` becomes 'stored' or 'failed'
     // so the outcome is surfaced in the response — a failed share to the cloud must
-    // not masquerade as a fully-successful upload (internal guideline). Other members fetch
+    // not masquerade as a fully-successful upload (surfaced, never swallowed). Other members fetch
     // the bytes from S3, so a silently-dropped PUT would 404 for everyone but the
     // uploader, who still has the local blob.
     let s3Status: { status: 'stored' | 'failed'; key?: string; error?: string } | null = null;
