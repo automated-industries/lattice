@@ -93,9 +93,9 @@ describe('files routes', () => {
     expect(blob.status).toBe(404);
   });
 
-  it('reports open-in-finder disabled unless LATTICE_LOCAL_OPEN=1', async () => {
+  it('reports open-in-finder disabled when LATTICE_LOCAL_OPEN=0 (default is now on)', async () => {
     const saved = process.env.LATTICE_LOCAL_OPEN;
-    delete process.env.LATTICE_LOCAL_OPEN;
+    process.env.LATTICE_LOCAL_OPEN = '0'; // explicit opt-out — default is now enabled
     try {
       const { root, server } = await boot();
       const docPath = join(root, 'doc.txt');
