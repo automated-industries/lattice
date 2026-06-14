@@ -6014,6 +6014,13 @@ export const appJs = `
         )
         .finally(function () { done(); });
     }
+    // Max uploads in flight at once. A folder pick can be thousands of files;
+    // firing them all concurrently exhausts the browser's ~6-connections-per-
+    // origin pool, which starves the two SSE streams AND the live-refresh
+    // /api/entities refetch — so the dashboard counts wouldn't climb until the
+    // whole upload drained. A small worker pool keeps the queue shallow so those
+    // requests still get a slot and the UI updates live during the upload.
+    var UPLOAD_CONCURRENCY = 4;
     function uploadFiles(files) {
       if (!files) return;
       var list = Array.prototype.slice.call(files);
@@ -6022,7 +6029,16 @@ export const appJs = `
       // pick / multi-select) shows an aggregate progress toast instead.
       if (list.length === 1) { uploadFile(list[0]); return; }
       var batch = enqueueUploadBatch(list.length);
-      list.forEach(function (file) { uploadFile(file, { silentFeed: true, batch: batch }); });
+      // Worker-pool drain: each of N workers pulls the next file when its current
+      // upload settles. uploadFile never rejects (errors tick the batch toast),
+      // so the same next() handler covers both the resolve and reject arms.
+      var i = 0;
+      function next() {
+        if (i >= list.length) return;
+        var file = list[i++];
+        uploadFile(file, { silentFeed: true, batch: batch }).then(next, next);
+      }
+      for (var w = 0; w < Math.min(UPLOAD_CONCURRENCY, list.length); w++) next();
     }
     // ── Aggregate upload-progress toast (bottom-right) ──────────────
     // One persistent card with a progress bar for a whole batch, instead of one

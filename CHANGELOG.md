@@ -37,6 +37,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `FileList`), and both entry points feed the same ingest flow — a single file
   gets a per-file feed row, a batch gets the aggregate upload-progress toast with
   the "not fully ingested" list.
+- **Bounded upload concurrency.** A batch (folder pick / multi-select) now uploads
+  through a small worker pool (4 in flight) instead of firing every file at once.
+  A large folder previously opened thousands of simultaneous requests, exhausting
+  the browser's ~6-connections-per-origin pool and starving the SSE feed + the
+  live-refresh `/api/entities` poll — so the dashboard counts stayed frozen until
+  the whole upload drained. With the pool, connection slots stay free and the
+  counts climb live while the upload runs.
 
 ### Changed — activity-feed attribution
 

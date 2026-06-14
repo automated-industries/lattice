@@ -43,3 +43,41 @@ test('dropping a file on the rail shows an "Analyzing…" indicator while ingest
   // …and is removed once ingest resolves.
   await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0, { timeout: 5000 });
 });
+
+test('a multi-file upload bounds concurrency (worker pool) and ingests every file', async ({
+  page,
+}) => {
+  // A folder pick can be thousands of files; firing them all at once exhausts the
+  // browser connection pool and starves the SSE streams + live-refresh refetch.
+  // The worker pool must keep concurrency capped while still sending every file.
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let total = 0;
+  await page.route('**/api/ingest/upload', async (route) => {
+    inFlight += 1;
+    total += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 40)); // hold the slot so overlap is observable
+    inFlight -= 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ extraction_status: 'extracted' }),
+    });
+  });
+
+  await page.goto(gui.url);
+  const N = 12;
+  const files = Array.from({ length: N }, (_, i) => ({
+    name: `f${i}.txt`,
+    mimeType: 'text/plain',
+    buffer: Buffer.from(`content ${i}`),
+  }));
+  // The topbar "Files…" input feeds uploadFiles() — the same batch path a folder
+  // pick / composer-paperclip folder uses.
+  await page.setInputFiles('#upload-input', files);
+
+  await expect.poll(() => total, { timeout: 8000 }).toBe(N); // every file sent, none dropped
+  expect(maxInFlight).toBeLessThanOrEqual(4); // capped (would be 6+ if unbounded)
+  expect(maxInFlight).toBeGreaterThan(1); // but it does parallelize
+});
