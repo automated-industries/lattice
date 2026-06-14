@@ -18,6 +18,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `mapWithConcurrency` moved to a package-root module (re-exported from its old
   path) so the render engine can share it without inverting layering.
 
+### Fixed — assistant never overflows the context window (3.2)
+
+- **Big reads no longer blow the prompt.** Each tool result is now budget-capped
+  before it enters the turn's prompt (which is re-sent on every tool-loop step), so
+  a few wide 200-row reads can't recompound past the model's context window.
+- **Invisible auto-recovery.** If the provider still rejects a turn as too long,
+  the assistant trims the oldest bulky tool result and retries automatically — the
+  user never sees a "prompt is too long" error.
+- **Friendly fallback, never the raw 400.** If recovery is exhausted, the user gets
+  a short actionable message instead of the raw provider error JSON (the real error
+  is logged for ops).
+- **`list_rows` pagination.** `list_rows` accepts `limit` + `offset` so the
+  assistant pages through large tables deliberately; the system prompt now tells it
+  to batch large work instead of loading whole tables.
+
 ### Fixed — ingest auto-link surfaces failures (3.2)
 
 - **No more silent auto-link failures (Rule 16).** When ingest auto-linking can't

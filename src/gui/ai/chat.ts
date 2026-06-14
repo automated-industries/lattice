@@ -56,6 +56,68 @@ function capToolInput(input: Record<string, unknown>): Record<string, unknown> {
   return JSON.stringify(input).length > MAX_TOOL_INPUT_CHARS ? { _truncated: true } : input;
 }
 
+// The LIVE per-tool-result budget. Distinct from the cross-turn replay cap above
+// (which shrinks hard for persistence): this bounds how big a SINGLE tool result
+// may be when it enters THIS turn's prompt — and that prompt is re-sent on every
+// subsequent tool-loop iteration. Without it, a few wide 200-row reads recompound
+// past the model's context window (the reported "prompt is too long: 211074"
+// failure). ~16k chars (~4k tokens) is ample for the model to use the data while
+// keeping a full 16-loop run well under the window. The note nudges the model to
+// page instead of re-pulling the whole thing.
+const LIVE_TOOL_RESULT_CHARS = 16000;
+function capLiveToolResult(s: string): string {
+  if (s.length <= LIVE_TOOL_RESULT_CHARS) return s;
+  return (
+    s.slice(0, LIVE_TOOL_RESULT_CHARS) +
+    `\n…[truncated ${String(
+      s.length - LIVE_TOOL_RESULT_CHARS,
+    )} chars — this result was too large to include in full. Read it in smaller pieces: list_rows with a smaller limit + offset, or a narrower filter.]`
+  );
+}
+
+// How many times to auto-trim + retry a turn the provider rejects for being too
+// long, before giving up. Each trim shrinks the oldest bulky tool result in the
+// in-flight history; this happens invisibly so the user never sees the 400.
+const MAX_CONTEXT_RECOVERY_TRIMS = 8;
+const TRIMMED_PLACEHOLDER = '[earlier tool result omitted to fit the context window]';
+
+/** True for a provider "prompt is too long" / context-window-exceeded error. */
+function isContextLengthError(e: unknown): boolean {
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return (
+    msg.includes('prompt is too long') ||
+    msg.includes('context length') ||
+    msg.includes('context_length') ||
+    msg.includes('context window') ||
+    msg.includes('too many tokens') ||
+    (msg.includes('maximum') && msg.includes('token'))
+  );
+}
+
+/**
+ * Shrink the in-flight prompt by replacing the OLDEST still-substantial
+ * tool_result block's content with a short placeholder. The block stays (so the
+ * tool_use ↔ tool_result pairing the API requires is preserved) — only its bytes
+ * shrink. Returns false when nothing is left to trim. Invisible to the user.
+ */
+function trimOldestToolResult(messages: LlmMessage[]): boolean {
+  for (const m of messages) {
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (
+        b.type === 'tool_result' &&
+        typeof b.content === 'string' &&
+        b.content.length > TRIMMED_PLACEHOLDER.length &&
+        b.content !== TRIMMED_PLACEHOLDER
+      ) {
+        b.content = TRIMMED_PLACEHOLDER;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 const BASE_SYSTEM_PROMPT = [
   'You are the assistant inside a Lattice database GUI. Help the user inspect and edit their data by calling the provided tools.',
   '',
@@ -64,6 +126,7 @@ const BASE_SYSTEM_PROMPT = [
   '- To relate two tables (link their rows), call create_relationship(table_a, table_b) to get a junction + its two foreign-key columns, then `link` each pair using those columns. If the junction already exists, just `link`.',
   '- Use the exact table names from the schema (or one you just created) — never guess a name for a table that should already exist.',
   '- Prefer reading (list_rows, get_row) before writing.',
+  '- Work in small batches on large tables. NEVER try to load an entire big table at once — page through it with list_rows using `limit` + successive `offset` values, and process bulk edits a page at a time. If a tool result says it was truncated, do NOT re-request the whole thing; narrow it (a filter, or a smaller limit/offset) and continue. Use the row counts under "Current database" to decide how many pages you need.',
   '- When you point the user at a specific row/object — especially if they ask you to "link", "open", or "show" it — make it clickable with an INLINE link in this exact form: [short label](lattice://<table>/<id>), using the real table name and the row id from your tool results (e.g. [the offer contract](lattice://contracts/9b7c60f0-fbc2-4f87-a550-c59e3c5d761f)). It renders as a pill that opens that object in the GUI. Only link ids you actually retrieved — never invent one — and prefer the user-facing record (the contract/person/etc. row) over an internal `files` id.',
   "- Attached files are rows in the `files` table; a file's full text content (CSV, document, etc.) is in its `extracted_text` column. To work from an attached file, read the relevant `files` row(s) and parse `extracted_text` — never guess a file's contents.",
   '- A tool result that contains "error" means the call FAILED. Do NOT claim success or proceed as if it returned data — read the error, correct your arguments, and retry.',
@@ -233,14 +296,35 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     for (; loop < MAX_TOOL_LOOPS; loop++) {
       const deltas: string[] = [];
       yield { type: 'assistant_message_start', id: `m${String(loop)}` };
-      const turn = await opts.client.runTurn({
-        model,
-        system,
-        messages,
-        tools,
-        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-        onText: (d) => deltas.push(d),
-      });
+      // Run the turn; if the provider rejects the prompt for being too long,
+      // auto-trim the oldest bulky tool result and retry — invisibly, so the user
+      // never sees a "prompt is too long" 400. Give up only when nothing is left
+      // to trim or the retry budget is exhausted (the outer catch then translates
+      // it into a friendly message).
+      let turn!: TurnResult;
+      for (let trims = 0; ; trims++) {
+        deltas.length = 0;
+        try {
+          turn = await opts.client.runTurn({
+            model,
+            system,
+            messages,
+            tools,
+            ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+            onText: (d) => deltas.push(d),
+          });
+          break;
+        } catch (e) {
+          if (
+            trims < MAX_CONTEXT_RECOVERY_TRIMS &&
+            isContextLengthError(e) &&
+            trimOldestToolResult(messages)
+          ) {
+            continue;
+          }
+          throw e;
+        }
+      }
       for (const d of deltas) yield { type: 'text_delta', delta: d };
       yield { type: 'assistant_message_end' };
 
@@ -260,21 +344,25 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         yield { type: 'tool_use', id: tu.id, name: tu.name };
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
         yield { type: 'tool_result', toolUseId: tu.id, isError: !res.ok };
-        const content = JSON.stringify(res.ok ? res.result : { error: res.error });
+        const rawContent = JSON.stringify(res.ok ? res.result : { error: res.error });
+        // Cap the result that enters THIS turn's prompt (it's re-sent on every
+        // later tool-loop iteration), so one big read can't blow the context
+        // window. Cross-turn persistence keeps its own (smaller) cap below.
+        const content = capLiveToolResult(rawContent);
         resultBlocks.push({
           type: 'tool_result',
           tool_use_id: tu.id,
           content,
           is_error: !res.ok,
         });
-        // Record (capped) for cross-turn replay. `content` is already secret-
+        // Record (capped) for cross-turn replay. The content is already secret-
         // redacted by the dispatcher (redactRow before the result is returned),
         // so the masked value is what gets persisted — never a raw secret.
         opts.onToolRecord?.({
           id: tu.id,
           name: tu.name,
           input: capToolInput(tu.input),
-          content: capToolResult(content),
+          content: capToolResult(rawContent),
           isError: !res.ok,
         });
       }
@@ -291,7 +379,16 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       };
     }
   } catch (e) {
-    yield { type: 'error', message: (e as Error).message };
+    // Never surface a raw provider error (e.g. a 400 "prompt is too long" JSON)
+    // to the user. Context-length issues are auto-recovered above; if one still
+    // lands here (trim budget exhausted), translate it to a friendly, actionable
+    // message. The real error is logged loudly for ops (Rule 16).
+    const raw = e instanceof Error ? e.message : String(e);
+    console.error('[chat] turn failed:', raw);
+    const message = isContextLengthError(e)
+      ? 'That request was too large for me to process in one step, even after trimming older context. Try narrowing it, or start a new chat — your data is safe.'
+      : raw;
+    yield { type: 'error', message };
   }
   yield { type: 'done' };
 }

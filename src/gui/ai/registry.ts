@@ -72,13 +72,22 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   },
   {
     name: 'list_rows',
-    description: 'List rows in a table. Omits soft-deleted rows unless includeDeleted is true.',
+    description:
+      'List rows in a table (paginated, max 200/page). For a large table, page through it with limit + successive offsets instead of trying to read it all at once. Omits soft-deleted rows unless includeDeleted is true.',
     mutates: false,
     category: 'read',
     args: obj(
       {
         table: str('Table name to list rows from.'),
         includeDeleted: { type: 'boolean', description: 'Include soft-deleted rows.' },
+        limit: {
+          type: 'number',
+          description: 'Max rows to return (1–200, default 200). Use a smaller page for big tables.',
+        },
+        offset: {
+          type: 'number',
+          description: 'Rows to skip from the start — combine with limit to page through a table.',
+        },
       },
       ['table'],
     ),

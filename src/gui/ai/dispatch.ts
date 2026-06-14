@@ -231,8 +231,17 @@ export async function executeFunction(
         const cols = ctx.db.getRegisteredColumns(table);
         const orderBy =
           cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
+        // Paginate so the model can page a large table deliberately (limit +
+        // offset) instead of pulling a 200-row blob every read. Default + max stay
+        // 200 (unchanged behavior when the model omits them); offset is new.
+        const limit = Math.min(
+          200,
+          Math.max(1, typeof args.limit === 'number' ? Math.floor(args.limit) : 200),
+        );
+        const offset = Math.max(0, typeof args.offset === 'number' ? Math.floor(args.offset) : 0);
         // On a cloud, Postgres RLS filters reads to the rows this member may see.
-        const opts: Parameters<typeof ctx.db.query>[1] = { limit: 200, orderBy, orderDir: 'asc' };
+        const opts: Parameters<typeof ctx.db.query>[1] = { limit, orderBy, orderDir: 'asc' };
+        if (offset > 0) opts.offset = offset;
         if (ctx.softDeletable.has(table) && !includeDeleted) {
           opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
         }
