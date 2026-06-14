@@ -63,6 +63,7 @@ import { ChangelogService } from './changelog/service.js';
 import { ReportBuilder } from './report/builder.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine, NOOP_RENDER } from './render/engine.js';
+import type { RenderOptions } from './render/progress.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
 import { ReverseSeedEngine } from './reverse-seed/engine.js';
 import { SyncLoop } from './sync/loop.js';
@@ -822,12 +823,73 @@ export class Lattice {
   async insert(table: string, row: Row, provenance?: ChangeProvenance): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
-    this._assertIdent(table);
+    const { sql, values, pkValue, rowWithPk } = this._prepareInsert(table, row);
+    await runAsyncOrSync(this._adapter, sql, values);
+    await this._afterInsert(table, pkValue, rowWithPk, provenance);
+    return pkValue;
+  }
 
+  /**
+   * Insert a row while atomically forcing its cloud row-visibility, regardless of
+   * the table's `default_row_visibility`. The per-table insert trigger reads a
+   * transaction-local GUC (`lattice.force_row_visibility`); we set it and run the
+   * INSERT inside a single transaction, so the row is stamped at `visibility` the
+   * instant it exists — it is never momentarily visible at the table default, and
+   * the change-feed `NOTIFY` (delivered only at COMMIT) fires when the row already
+   * carries this visibility. This closes the create-then-demote window that a
+   * plain `insert()` + `setRowVisibility()` would leave open.
+   *
+   * Postgres-only: SQLite is single-user (no cross-viewer leak) and has no trigger
+   * to read the GUC, so it degrades to a plain {@link insert}. A `never_share`
+   * table still wins — its rows are forced private even if `visibility` is
+   * `'everyone'` (the trigger enforces that precedence).
+   *
+   * @since 3.1.0
+   */
+  async insertForcingVisibility(
+    table: string,
+    row: Row,
+    visibility: 'private' | 'everyone',
+    provenance?: ChangeProvenance,
+  ): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+    // Defensive against untyped JS callers — the value is parameterized into
+    // set_config below, so a bad one can't inject, but reject it explicitly.
+    const vis: string = visibility;
+    if (vis !== 'private' && vis !== 'everyone') {
+      throw new Error(`lattice: invalid forced visibility "${vis}"`);
+    }
+    const withClient = this._adapter.withClient?.bind(this._adapter);
+    if (this.getDialect() !== 'postgres' || !withClient) {
+      return this.insert(table, row, provenance);
+    }
+    const { sql, values, pkValue, rowWithPk } = this._prepareInsert(table, row);
+    await withClient(async (tx) => {
+      // Transaction-local (third arg = is_local) so it never leaks to another
+      // statement on this pooled connection; the trigger that fires for the very
+      // next INSERT reads it via current_setting('…', true).
+      await tx.run(`SELECT set_config('lattice.force_row_visibility', ?, true)`, [visibility]);
+      await tx.run(sql, values);
+    });
+    await this._afterInsert(table, pkValue, rowWithPk, provenance);
+    return pkValue;
+  }
+
+  /**
+   * Build the INSERT statement + canonical pk for a row (sanitize → schema-filter →
+   * auto-pk → encrypt). Shared by {@link insert} and {@link insertForcingVisibility}
+   * so both produce byte-identical writes; the latter only differs in running it
+   * inside a GUC-scoped transaction.
+   */
+  private _prepareInsert(
+    table: string,
+    row: Row,
+  ): { sql: string; values: unknown[]; pkValue: string; rowWithPk: Row } {
+    this._assertIdent(table);
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
-
     // Auto-generate UUID only for the default 'id' PK when the field is absent.
     let rowWithPk: Row;
     if (isDefaultPk) {
@@ -836,9 +898,7 @@ export class Lattice {
     } else {
       rowWithPk = sanitized;
     }
-
     const encrypted = this._encryptRow(table, rowWithPk);
-
     const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
       .join(', ');
@@ -846,17 +906,26 @@ export class Lattice {
       .map(() => '?')
       .join(', ');
     const values = Object.values(encrypted);
-
-    await runAsyncOrSync(
-      this._adapter,
-      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`,
-      values,
-    );
-
-    // Canonical pk: the full (possibly composite) primary key, so the
-    // change-log + row ACL key the row unambiguously. Single-column keys
-    // serialize to the bare value (unchanged from prior behaviour).
+    // Canonical pk: the full (possibly composite) primary key, so the change-log +
+    // row ACL key the row unambiguously. Single-column keys serialize to the bare
+    // value (unchanged from prior behaviour).
     const pkValue = this._serializeRowPk(table, rowWithPk);
+    return {
+      sql: `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`,
+      values,
+      pkValue,
+      rowWithPk,
+    };
+  }
+
+  /** Post-insert side effects (changelog, audit, write hooks, embedding sync),
+   *  identical for the plain and force-visibility insert paths. */
+  private async _afterInsert(
+    table: string,
+    pkValue: string,
+    rowWithPk: Row,
+    provenance?: ChangeProvenance,
+  ): Promise<void> {
     await this._appendChangelog(
       table,
       pkValue,
@@ -870,7 +939,6 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
-    return pkValue;
   }
 
   /**
@@ -970,6 +1038,11 @@ export class Lattice {
     const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
       .join(', ');
+    // Every requested column was filtered out as non-schema → nothing to update.
+    // A bare `UPDATE "t" SET  WHERE …` is invalid SQL; no-op instead of crashing.
+    // (The GUI mutation layer auto-creates unknown columns before calling update,
+    // so an assistant's intended data lands; this guards any caller that doesn't.)
+    if (setCols === '') return;
 
     const { clause, params: pkParams } = this._pkWhere(table, id);
 
@@ -1772,13 +1845,34 @@ export class Lattice {
   // Sync
   // -------------------------------------------------------------------------
 
-  async render(outputDir: string): Promise<RenderResult> {
+  async render(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
-    const result = await this._render.render(outputDir);
+    const result = await this._render.render(outputDir, opts);
     for (const h of this._renderHandlers) h(result);
     return result;
+  }
+
+  /**
+   * Render into `outputDir` through the shared single-flight guard, intended to
+   * be called fire-and-forget (e.g. the GUI's instant-open background render).
+   *
+   * The guard ({@link _renderGuarded}) holds {@link _autoRenderInFlight} for the
+   * render's duration, so a data mutation that lands while this render is in
+   * flight is deferred by {@link _runAutoRender} and coalesced — when this
+   * render settles, `finally` clears the flag and re-arms exactly one follow-up
+   * render via {@link _rearmAutoRenderIfPending}. Net invariant: at most one
+   * render to a given dir at a time.
+   *
+   * Errors propagate to the caller (the GUI surfaces them, never silently swallowed); they are
+   * not swallowed here.
+   */
+  async renderInBackground(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
+    const notInit = this._notInitError<RenderResult>();
+    if (notInit) return notInit;
+
+    return this._renderGuarded(outputDir, opts);
   }
 
   async sync(outputDir: string): Promise<SyncResult> {
@@ -2223,11 +2317,43 @@ export class Lattice {
     this._autoRenderTimer.unref();
   }
 
+  /**
+   * Shared single-flight render path used by {@link renderInBackground}.
+   *
+   * Holds {@link _autoRenderInFlight} for the render's duration so the
+   * mutation-driven {@link _runAutoRender} defers while this render runs (it
+   * sees the flag and marks itself pending instead of starting a second,
+   * overlapping render). On settle, `finally` clears the flag and re-arms a
+   * single coalesced follow-up render if any mutation arrived mid-flight.
+   * Errors propagate to the caller; the flag is always cleared.
+   */
+  private async _renderGuarded(outputDir: string, opts: RenderOptions): Promise<RenderResult> {
+    // If an auto-render is already in flight, wait for it to clear before
+    // claiming the guard so the two never overlap on the same dir.
+    while (this._autoRenderInFlight) {
+      await new Promise((r) => setImmediate(r));
+    }
+    this._autoRenderInFlight = true;
+    try {
+      const result = await this._render.render(outputDir, opts);
+      for (const h of this._renderHandlers) h(result);
+      return result;
+    } finally {
+      this._autoRenderInFlight = false;
+      // A mutation may have arrived during the render (hitting the in-flight
+      // guard in _runAutoRender without arming a timer); re-arm so exactly one
+      // coalesced follow-up render runs.
+      this._rearmAutoRenderIfPending();
+    }
+  }
+
   private async _runAutoRender(): Promise<void> {
     const dir = this._autoRenderDir;
     if (!dir || !this._initialized) return;
     if (this._autoRenderInFlight) {
-      // A render is mid-flight; mark pending and re-arm when it finishes.
+      // A render is mid-flight (auto-render OR a guarded background render);
+      // mark pending and re-arm when it finishes so we coalesce into exactly
+      // one follow-up render rather than overlapping.
       this._autoRenderPending = true;
       return;
     }

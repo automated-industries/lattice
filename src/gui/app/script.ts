@@ -252,8 +252,6 @@ export const appJs = `
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
         document.body.classList.toggle('advanced-mode', advancedMode());
-        var advToggle = document.getElementById('advanced-toggle');
-        if (advToggle) advToggle.checked = advancedMode();
         wireSettingsDrawer();
         renderWsSwitcher(results[5]);
         renderSidebar();
@@ -261,6 +259,7 @@ export const appJs = `
         refreshHistoryState();
         renderRoute();
         startRealtime();
+        startRenderProgress();
         initSearch();
         initLastEdited();
         initOffline();
@@ -622,6 +621,153 @@ export const appJs = `
     }
 
     // ────────────────────────────────────────────────────────────
+    // Background-render progress — Server-Sent Events from
+    // /api/render/progress. A workspace opens/switches instantly and renders its
+    // context tree in the background; this paints a per-table % overlay on the
+    // dashboard cards (bottom-edge bar + ⟳ pill) and dims the row count until
+    // each table completes. Row COUNTS come only from /api/entities — the render
+    // stream drives only the transient overlay and one reconciling refetch on
+    // completion. Mirrors the realtime EventSource pattern above.
+    // ────────────────────────────────────────────────────────────
+    var renderSource = null;
+    // { [table]: { pct, rendered, total, done, error } } — the live render state,
+    // re-applied to cards after every dashboard rebuild (drawDashboard wipes the
+    // DOM overlays but not this map).
+    var renderProgress = {};
+    // Apply one table's render % to its matching card only (no full rebuild).
+    function applyCardProgress(table, pct) {
+      if (!table) return;
+      var sel = '.card[data-table="' + (window.CSS && CSS.escape ? CSS.escape(table) : table) + '"]';
+      var card = document.querySelector(sel);
+      if (!card) return;
+      var st = renderProgress[table];
+      if (st && st.error) {
+        card.classList.remove('is-rendering');
+        card.classList.add('is-render-error');
+        var perr = card.querySelector('.card-render-pct');
+        if (perr) perr.textContent = 'error';
+        return;
+      }
+      card.classList.remove('is-render-error');
+      var clamped = Math.max(0, Math.min(100, Math.round(pct || 0)));
+      card.classList.add('is-rendering');
+      var fill = card.querySelector('.card-render-fill');
+      if (fill) fill.style.width = clamped + '%';
+      var pctEl = card.querySelector('.card-render-pct');
+      if (pctEl) pctEl.textContent = clamped + '%';
+    }
+    // Clear the overlay for a finished/aborted table.
+    function clearCardProgress(table) {
+      if (!table) return;
+      var sel = '.card[data-table="' + (window.CSS && CSS.escape ? CSS.escape(table) : table) + '"]';
+      var card = document.querySelector(sel);
+      if (!card) return;
+      card.classList.remove('is-rendering', 'is-render-error');
+    }
+    // Repaint every still-in-flight card from the renderProgress map. Called at
+    // the end of drawDashboard so overlays survive a feed-triggered rebuild.
+    function reapplyRenderOverlays() {
+      Object.keys(renderProgress).forEach(function (table) {
+        var st = renderProgress[table];
+        if (!st) return;
+        if (st.done && !st.error) { clearCardProgress(table); return; }
+        applyCardProgress(table, st.pct);
+      });
+    }
+    // Fold one render event into the renderProgress map + paint the card.
+    function onRenderEvent(e) {
+      if (!e) return;
+      if (e.kind === 'error') {
+        var t = e.table;
+        if (t) {
+          renderProgress[t] = { pct: e.pct || 0, rendered: 0, total: 0, done: false, error: true };
+          applyCardProgress(t, e.pct || 0);
+        }
+        return;
+      }
+      if (e.kind === 'done') {
+        // Whole-render completion: clear every overlay and let the debounced
+        // refetch snap the counts to their real values.
+        Object.keys(renderProgress).forEach(function (table) {
+          var s = renderProgress[table];
+          if (s) s.done = true;
+          clearCardProgress(table);
+        });
+        scheduleRealtimeRefresh();
+        return;
+      }
+      if (!e.table) return;
+      var done = e.kind === 'table-done';
+      renderProgress[e.table] = {
+        pct: e.pct,
+        rendered: e.entitiesRendered,
+        total: e.entitiesTotal,
+        done: done,
+        error: false,
+      };
+      if (done) {
+        clearCardProgress(e.table);
+        // The count for this table is now final on the server; nudge one
+        // reconciling refetch from /api/entities (debounced, coalesced).
+        scheduleRealtimeRefresh();
+      } else {
+        applyCardProgress(e.table, e.pct);
+      }
+    }
+    // Paint from a full snapshot (initial connect / status fetch): the snapshot
+    // carries { phase, tables: { [t]: { pct, entitiesRendered, entitiesTotal,
+    // done } } }. Fold each table in and paint.
+    function applyRenderSnapshot(snap) {
+      if (!snap || !snap.tables) return;
+      Object.keys(snap.tables).forEach(function (table) {
+        var s = snap.tables[table];
+        if (!s) return;
+        renderProgress[table] = {
+          pct: s.pct,
+          rendered: s.entitiesRendered,
+          total: s.entitiesTotal,
+          done: !!s.done,
+          error: false,
+        };
+        if (s.done) clearCardProgress(table);
+        else applyCardProgress(table, s.pct);
+      });
+      if (snap.phase === 'error') {
+        // A whole-render failure with no table attribution still surfaces on the
+        // currently-rendering card if we know one.
+        if (snap.currentTable) {
+          renderProgress[snap.currentTable] = renderProgress[snap.currentTable] || { pct: 0 };
+          renderProgress[snap.currentTable].error = true;
+          applyCardProgress(snap.currentTable, renderProgress[snap.currentTable].pct);
+        }
+      }
+    }
+    function startRenderProgress() {
+      if (renderSource) {
+        try { renderSource.close(); } catch (_) { /* ignore */ }
+        renderSource = null;
+      }
+      if (typeof EventSource === 'undefined') return;
+      // On (re)connect, fetch the single-shot snapshot so a tab that connects
+      // mid- or post-render paints correctly even before the next event. The SSE
+      // endpoint ALSO replays a 'snapshot' event on connect, so both paths agree.
+      fetchJson('/api/render/status').then(applyRenderSnapshot).catch(function () { /* ignore */ });
+      renderSource = new EventSource('/api/render/progress');
+      renderSource.addEventListener('snapshot', function (ev) {
+        var snap = null;
+        try { snap = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
+        if (snap) applyRenderSnapshot(snap);
+      });
+      renderSource.addEventListener('progress', function (ev) {
+        var e = null;
+        try { e = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
+        if (e) onRenderEvent(e);
+      });
+      // EventSource auto-reconnects on error; the status refetch on the next
+      // open repaints from the authoritative snapshot.
+    }
+
+    // ────────────────────────────────────────────────────────────
     // Shared activity helpers — the operation-icon map and relative-time
     // formatter, used by Version History and the dashboard activity list. The
     // standalone Activity rail was removed in 1.16.1 (redundant with Version
@@ -850,7 +996,56 @@ export const appJs = `
         else renderRoute();
         loadedTables = {};
         startRealtime();
+        // A switch swaps the server-side render bus to the new workspace; drop the
+        // old workspace's overlay state and re-subscribe so the new render streams
+        // onto this workspace's cards.
+        renderProgress = {};
+        startRenderProgress();
       });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Workspace-switch progress on the STABLE header button.
+    // The old menu-item spinner (withBusy on the open-menu db-item) is lost the
+    // moment the menu closes or rebuilds mid-switch. We additionally surface
+    // "switching" on the always-visible #ws-button for the ENTIRE switch (POST +
+    // reloadEverything), so the user always sees a live signal. The menu-item
+    // withBusy spinner is kept too.
+    // ────────────────────────────────────────────────────────────
+    var wsSwitching = false;
+    function beginWsSwitching() {
+      wsSwitching = true;
+      var btn = document.getElementById('ws-button');
+      var nameEl = document.getElementById('ws-name');
+      var iconEl = btn && btn.querySelector('.db-icon');
+      if (btn) { btn.classList.add('is-switching'); btn.classList.remove('is-switch-error'); }
+      if (iconEl) iconEl.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+      if (nameEl) nameEl.textContent = 'Switching…';
+    }
+    function endWsSwitching(failed) {
+      wsSwitching = false;
+      var btn = document.getElementById('ws-button');
+      var iconEl = btn && btn.querySelector('.db-icon');
+      if (iconEl) iconEl.textContent = '📂';
+      if (btn) {
+        btn.classList.remove('is-switching');
+        if (failed) btn.classList.add('is-switch-error');
+        else btn.classList.remove('is-switch-error');
+      }
+      // The label writes inside reloadEverything ran while wsSwitching was still
+      // true (guarded out to preserve "Switching…"), and they already completed
+      // BEFORE this call — so nothing else will apply the NEW workspace name. Now
+      // that the switch resolved, re-render the switcher so the real name lands
+      // (otherwise #ws-name stays stuck on "Switching…").
+      if (!failed) {
+        fetchJson('/api/workspaces')
+          .then(function (d) {
+            if (d) renderWsSwitcher(d);
+          })
+          .catch(function () {
+            /* best-effort: the next reload re-renders the switcher anyway */
+          });
+      }
     }
 
     var wsOutsideClickBound = false;
@@ -866,7 +1061,10 @@ export const appJs = `
       wrap.hidden = false;
       var list = (data && data.workspaces) || [];
       var current = list.filter(function (w) { return w.id === (data && data.current); })[0];
-      nameEl.textContent = (current && current.label) || 'workspace';
+      // Don't clobber the "Switching…" label/icon while a switch is in flight —
+      // renderWsSwitcher runs mid-reload, and the new workspace label should only
+      // land once the switch resolves (endWsSwitching → next render).
+      if (!wsSwitching) nameEl.textContent = (current && current.label) || 'workspace';
       var curKind = (current && current.kind) || 'local';
       setStatusPill(curKind, curKind === 'cloud' ? 'connecting' : 'local');
 
@@ -897,6 +1095,10 @@ export const appJs = `
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-id');
             if (id === currentId) { menu.hidden = true; return; }
+            // Surface "switching" on the stable header button for the WHOLE
+            // switch (POST + reloadEverything), independent of the ephemeral
+            // menu-item withBusy spinner — the menu can close/rebuild mid-switch.
+            beginWsSwitching();
             withBusy(b, function () {
               return fetchJson('/api/workspaces/switch', {
                 method: 'POST',
@@ -913,6 +1115,7 @@ export const appJs = `
                 return reloadEverything();
               }).then(function () {
                 menu.hidden = true;
+                endWsSwitching(false);
                 // Conversations + activity both live in the workspace DB. Drop
                 // the old workspace's thread + activity cards, reconnect the feed
                 // to THIS workspace, and reload its thread list (+ latest convo).
@@ -921,7 +1124,7 @@ export const appJs = `
                 startFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
-              }).catch(function (err) { menu.hidden = true; showToast('Switch failed: ' + err.message, {}); });
+              }).catch(function (err) { menu.hidden = true; endWsSwitching(true); showToast('Switch failed: ' + err.message, {}); });
             });
           });
         });
@@ -1103,14 +1306,24 @@ export const appJs = `
           ? '<div class="card-fresh" title="Last updated ' +
               escapeHtml(String(e.lastUpdatedAt)) + '">' + relTime(e.lastUpdatedAt) + '</div>'
           : '';
-        return '<a class="card" href="' + cardPrefix + e.name + '">' +
+        return '<a class="card" data-table="' + escapeHtml(e.name) + '" href="' + cardPrefix + e.name + '">' +
           '<div class="card-icon">' + disp.icon + '</div>' +
           '<div class="card-label">' + escapeHtml(disp.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +
           fresh +
+          // Hidden until a background render touches this table; revealed by the
+          // .is-rendering class applied in applyCardProgress(). The fill is the
+          // bottom-edge bar (width = %); the pill is the ⟳ <pct>% corner badge.
+          '<div class="card-render" aria-hidden="true">' +
+            '<div class="card-render-fill"></div>' +
+            '<span class="card-render-pill"><span class="spinner" aria-hidden="true"></span><span class="card-render-pct">0%</span></span>' +
+          '</div>' +
           '</a>';
       }).join('');
       content.innerHTML = '<div class="dashboard">' + cards + '</div>';
+      // drawDashboard wiped the previous overlays; repaint any still-in-flight
+      // render state from the renderProgress map onto the freshly-built cards.
+      reapplyRenderOverlays();
     }
     function renderDashboard(content) {
       // Workspace overview: counts + freshness + recent activity from
@@ -2447,8 +2660,6 @@ export const appJs = `
       if (!drawer || !backdrop) return;
       backdrop.hidden = false;
       drawer.hidden = false;
-      var toggle = document.getElementById('advanced-toggle');
-      if (toggle) toggle.checked = advancedMode();
       // Allow the elements to lay out before transitioning in.
       window.requestAnimationFrame(function () {
         drawer.classList.add('open');
@@ -2472,6 +2683,7 @@ export const appJs = `
       var body = document.getElementById('drawer-body');
       if (!body) return;
       if (tab === 'database') renderDatabaseSettings(body);
+      else if (tab === 'chat') renderChatSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);
     }
@@ -2485,8 +2697,6 @@ export const appJs = `
       document.querySelectorAll('.drawer-tab').forEach(function (b) {
         b.addEventListener('click', function () { selectDrawerTab(b.getAttribute('data-tab')); });
       });
-      var toggle = document.getElementById('advanced-toggle');
-      if (toggle) toggle.addEventListener('change', function () { setAdvancedMode(toggle.checked); });
       document.addEventListener('keydown', function (e) {
         if (e.key !== 'Escape') return;
         var drawer = document.getElementById('settings-drawer');
@@ -3302,15 +3512,30 @@ export const appJs = `
           '</div>'
         : '';
       // Owner-only "new rows default to" control, shown for a shared table.
+      // A never-share table's rows are always private, so the default-visibility
+      // select is disabled while never-share is on.
       var defaultVis = (t && t.defaultRowVisibility) || 'private';
+      var neverShare = !!(t && t.neverShare);
       var defaultVisRow = canShare && isShared
         ? '<label>New rows default to</label>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-            '<select id="dm-rowvis-select">' +
+            '<select id="dm-rowvis-select"' + (neverShare ? ' disabled' : '') + '>' +
               '<option value="private"' + (defaultVis === 'private' ? ' selected' : '') + '>Private (owner only)</option>' +
               '<option value="everyone"' + (defaultVis === 'everyone' ? ' selected' : '') + '>Everyone on the workspace</option>' +
             '</select>' +
             '<span style="font-size:12px;color:var(--text-muted)">Visibility new rows in this table are created with.</span>' +
+          '</div>'
+        : '';
+      // Owner-only "Never share" control, shown for a shared table. When on, the
+      // table's rows are always private to their owner regardless of the default
+      // visibility above — a hard floor the owner can set per shared table.
+      var neverShareRow = canShare && isShared
+        ? '<label>Never share</label>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<label class="dm-secret-toggle">' +
+              '<input type="checkbox" id="dm-nevershare-check"' + (neverShare ? ' checked' : '') + ' /> Keep all rows private' +
+            '</label>' +
+            '<span style="font-size:12px;color:var(--text-muted)">When on, rows in this table are always private to their owner, ignoring the default above.</span>' +
           '</div>'
         : '';
       panel.innerHTML =
@@ -3328,6 +3553,7 @@ export const appJs = `
           '</div>' +
           shareRow +
           defaultVisRow +
+          neverShareRow +
           '<label>Columns</label>' +
           '<div>' +
             '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
@@ -3395,6 +3621,27 @@ export const appJs = `
           }).then(function () {
             showToast(next === 'everyone' ? 'New rows now default to everyone' : 'New rows now default to private', {});
           }).catch(function (e) { showToast('Default visibility update failed: ' + e.message, {}); });
+        });
+      });
+
+      var neverShareCheck = panel.querySelector('#dm-nevershare-check');
+      if (neverShareCheck) neverShareCheck.addEventListener('change', function () {
+        var on = neverShareCheck.checked;
+        // Disable while the round-trip is in flight; dmRefreshPanel rebuilds the
+        // panel (and the default-visibility select's disabled state) on success.
+        neverShareCheck.disabled = true;
+        fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/never-share', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ on: on }),
+        }).then(function () {
+          return dmRefreshPanel(tableName, false);
+        }).then(function () {
+          showToast(on ? 'Rows in "' + tableName + '" are now always private' : 'Rows in "' + tableName + '" follow the default visibility', {});
+        }).catch(function (e) {
+          neverShareCheck.disabled = false;
+          neverShareCheck.checked = !on;
+          showToast('Never-share update failed: ' + e.message, {});
         });
       });
     }
@@ -4070,28 +4317,35 @@ export const appJs = `
 
     function showJoinTeamModal(kind) {
       void kind;
-      // v3: join a cloud by connecting DIRECTLY with the scoped credentials the
-      // owner gave you (the invite blob). No invite token, no email binding —
-      // the database (row-level security) enforces what your role can see.
+      // Join a cloud with the email-bound invite token the owner sent you. The
+      // token decrypts LOCALLY with your email to the same scoped credential —
+      // the member UI never handles a postgres:// string. You then connect
+      // directly with your own scoped role; the database (RLS) enforces access.
       var bodyHtml =
         '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
-          'Paste the connection credentials the cloud owner sent you. You connect ' +
-          'directly with your own scoped Postgres role — access is enforced by the ' +
-          'database, not a server.' +
+          'Enter the email this invite was sent to and the invite token the cloud ' +
+          'owner gave you.' +
         '</p>' +
-        postgresFormHtml({}) +
+        '<div class="field"><label>Email</label>' +
+          '<input id="join-email" type="email" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%"></div>' +
+        '<div class="field" style="margin-top:8px"><label>Invite token</label>' +
+          '<textarea id="join-token" rows="4" placeholder="paste the invite token" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;resize:vertical;font-family:JetBrains Mono,monospace;font-size:12px"></textarea></div>' +
         '<div id="join-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
       showModal('Join a cloud', bodyHtml, {
         primaryLabel: 'Join',
         onSubmit: function (scope) {
           void scope;
-          var body = readPostgresWizardForm();
+          var emailEl = document.getElementById('join-email');
+          var tokenEl = document.getElementById('join-token');
+          var email = (emailEl && emailEl.value ? emailEl.value : '').trim();
+          var token = (tokenEl && tokenEl.value ? tokenEl.value : '').trim();
+          if (!email || !token) throw new Error('Enter your email and the invite token');
           var msg = document.getElementById('join-msg');
           if (msg) msg.textContent = 'Connecting…';
-          return fetch('/api/dbconfig/connect-existing', {
+          return fetch('/api/cloud/redeem-invite', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
+            body: JSON.stringify({ email: email, token: token }),
           })
             .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
             .then(function (r) {
@@ -4143,7 +4397,7 @@ export const appJs = `
           '</div>';
         }
         // Only the selected provider's key input is shown (declutter). 'auto'
-        // ("Select provider…") shows no key row until a provider is chosen.
+        // ("No Voice") shows no key row and disables voice — no STT provider.
         function voiceRowHtml(provider) {
           if (provider === 'openai') {
             return rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…');
@@ -4185,7 +4439,7 @@ export const appJs = `
             '<div style="margin:6px 0 8px;display:flex;align-items:center;gap:8px">' +
               '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
               '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
-                '<option value="auto">Select provider…</option>' +
+                '<option value="auto">No Voice</option>' +
                 '<option value="openai">OpenAI</option>' +
                 '<option value="elevenlabs">ElevenLabs</option>' +
               '</select>' +
@@ -4239,7 +4493,9 @@ export const appJs = `
               body: JSON.stringify({ provider: sttSel.value }),
             })
               .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-              .then(function () { msg.textContent = 'Saved.'; })
+              // Refresh the composer so the mic affordance disappears immediately
+              // when "No Voice" is selected (and reappears for a real provider).
+              .then(function () { msg.textContent = 'Saved.'; renderComposer(); })
               .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
           });
         }
@@ -4560,9 +4816,24 @@ export const appJs = `
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Lattice Settings</h2>' +
+          '<div class="dbconfig-panel" style="margin-bottom:14px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<label class="toggle" title="Advanced mode — row/table editor instead of the file workspace" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer">' +
+              '<input type="checkbox" id="advanced-toggle">' +
+              '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
+              '<span class="toggle-label">Advanced View</span>' +
+            '</label>' +
+            '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">Row/table editor instead of the file workspace.</p>' +
+          '</div>' +
           '<p class="lead">Every workspace this lattice can switch to. This is the same list as the header dropdown.</p>' +
           '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading workspaces…</div></div>' +
         '</div>';
+      // Advanced View toggle lives here now (moved out of the sidebar). Wired on
+      // each render since renderLatticeSettings rebuilds the drawer body.
+      var advToggle = content.querySelector('#advanced-toggle');
+      if (advToggle) {
+        advToggle.checked = advancedMode();
+        advToggle.addEventListener('change', function () { setAdvancedMode(advToggle.checked); });
+      }
       var host = document.getElementById('lattice-dbs-host');
       // Single source of truth: the workspace registry (same as the header switcher).
       fetchJson('/api/workspaces').then(function (data) {
@@ -4572,7 +4843,8 @@ export const appJs = `
           var isActive = w.id === currentId;
           var kind = w.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)';
           // Rows are click-to-switch; deletion lives in Workspace Settings → Danger Zone.
-          return '<tr' + (isActive ? '' : ' class="ws-row" data-switch-id="' + escapeHtml(w.id) + '"') + '>' +
+          // The active row is highlighted (.ws-active) and not click-to-switch.
+          return '<tr class="' + (isActive ? 'ws-active' : 'ws-row') + '"' + (isActive ? '' : ' data-switch-id="' + escapeHtml(w.id) + '"') + '>' +
             '<td>' + escapeHtml(w.label) + (isActive ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>' + kind + '</td>' +
             '<td><code>' + escapeHtml(w.dir || '') + '</code></td>' +
@@ -4592,10 +4864,13 @@ export const appJs = `
         host.querySelectorAll('tr.ws-row[data-switch-id]').forEach(function (row) {
           row.addEventListener('click', function () {
             var id = row.getAttribute('data-switch-id');
+            // Switch the workspace AND close the settings drawer at the same time —
+            // close immediately (concurrent with the switch) so it isn't left open.
+            closeSettingsDrawer();
             fetch('/api/workspaces/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: id }) })
               .then(function (r) { return r.json(); })
               .then(function () { return reloadEverything(); })
-              .then(function () { renderLatticeSettings(document.getElementById('content')); });
+              .catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
           });
         });
         host.querySelector('#action-add-db').addEventListener('click', showCreateDatabaseWizard);
@@ -4674,7 +4949,6 @@ export const appJs = `
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
             (isOwner ? '<button class="btn primary" data-act="open-invite">Invite a member</button>' : '') +
-            (isOwner ? '<button class="btn" data-act="open-system-prompt">Edit chat system prompt</button>' : '') +
           '</div>' +
           // Owner: invite affordance below. Member: a short note. Row-level
           // security is enforced by the database, not this panel — there is
@@ -4719,20 +4993,42 @@ export const appJs = `
         showInviteMemberModal(info);
       });
 
-      // Owner-only: edit the cloud's chat system prompt (bundled into every
-      // member's chat; members can neither see nor edit it).
-      var promptBtn = host.querySelector('[data-act="open-system-prompt"]');
-      if (promptBtn) promptBtn.addEventListener('click', function () {
-        showSystemPromptModal();
-      });
-
-      // No members list to fetch. The owner sees the invite affordance (the
-      // button above); a member sees a short note that they're connected.
+      // Members list: the owner sees the owner + every member role; a member
+      // sees a short note. Backed by /api/cloud/members (the lattice_members
+      // group). The inline list itself is recovered from latticesql 1.14.0.
       var membersHost = host.querySelector('#db-members-host');
-      if (membersHost && info.state === 'cloud-member') {
-        membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
+      if (membersHost) {
+        if (info.state === 'cloud-member') {
+          membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
+        } else {
+          membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading members…</div>';
+          fetchJson('/api/cloud/members').then(function (data) {
+            membersHost.innerHTML = renderMembersList((data && data.members) || []);
+          }).catch(function (e) {
+            membersHost.innerHTML = '<div style="font-size:12px;color:var(--warn)">Could not load members: ' + escapeHtml(e.message) + '</div>';
+          });
+        }
       }
       void isOwner;
+    }
+
+    /** Members list (owner + member roles), recovered from latticesql 1.14.0
+     *  (commit 2862959), adapted to the RLS-cloud member model. */
+    function renderMembersList(members) {
+      if (!members.length) {
+        return '<div class="members-list"><h4>Members</h4>' +
+          '<div style="font-size:12px;color:var(--text-muted)">Just you.</div></div>';
+      }
+      var rows = members.map(function (m) {
+        var pill = m.isOwner ? 'Owner' : 'Member';
+        return '<div class="member-row" data-role="' + escapeHtml(m.role) + '">' +
+          '<span><code>' + escapeHtml(m.role) + '</code>' +
+            (m.isYou ? ' <span style="color:var(--accent);font-size:11px">(you)</span>' : '') +
+            ' <span class="role-tag' + (m.isOwner ? '' : ' role-member') + '">' + pill + '</span>' +
+          '</span>' +
+        '</div>';
+      }).join('');
+      return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
     }
 
     // ── v1.13 wizards ─────────────────────────────────────────────
@@ -4890,94 +5186,104 @@ export const appJs = `
       });
     }
 
-    function showSystemPromptModal() {
-      // Owner-only editor for the cloud chat system prompt. Load the current value
-      // first (the GET returns the text ONLY to an owner), then open the editor.
+    // Chat settings (drawer tab): the cloud chat system prompt, edited INLINE
+    // with a Save button — no overlay. Owner-only (the GET returns the text only
+    // to an owner); members / local workspaces see a short note instead.
+    function renderChatSettings(content) {
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>Chat</h2>' +
+          '<div id="chat-settings-host"><div class="placeholder" style="padding:18px">Loading…</div></div>' +
+        '</div>';
+      var host = document.getElementById('chat-settings-host');
       fetchJson('/api/cloud/system-prompt').then(function (cfg) {
+        var panelOpen =
+          '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 8px">Chat system prompt</h3>';
         if (!cfg || cfg.canEdit !== true) {
-          showToast('Only a cloud owner can edit the chat system prompt');
+          host.innerHTML = panelOpen +
+            '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+            'The chat system prompt is owner-only and applies to a cloud workspace. ' +
+            'Nothing to edit here for this workspace.</p></div>';
           return;
         }
         var current = typeof cfg.prompt === 'string' ? cfg.prompt : '';
-        var bodyHtml =
-          '<p style="margin-top:0;font-size:13px;color:var(--text-muted)">' +
-          'Added to every member chat in this cloud. Members cannot see or edit it — only you, the owner, can.' +
-          '</p>' +
-          '<div class="field"><label>Chat system prompt</label>' +
-          '<textarea name="system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
-          'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
-          escapeHtml(current) +
-          '</textarea></div>';
-        showModal('Chat system prompt', bodyHtml, {
-          primaryLabel: 'Save',
-          onSubmit: function (scope) {
-            var ta = scope.querySelector('textarea[name="system-prompt"]');
-            var value = ta ? ta.value : '';
-            return fetchJson('/api/cloud/system-prompt', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ prompt: value }),
-            }).then(function () {
-              showToast('Chat system prompt saved');
-            });
-          },
+        host.innerHTML = panelOpen +
+          '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+            'Added to every member chat in this cloud. Members cannot see or edit it — only you, the owner, can.</p>' +
+          '<textarea id="chat-system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
+            'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
+            escapeHtml(current) + '</textarea>' +
+          '<div style="margin-top:10px;display:flex;align-items:center;gap:10px">' +
+            '<button class="btn primary" id="chat-prompt-save">Save</button>' +
+            '<span id="chat-prompt-msg" style="font-size:12px;color:var(--text-muted)"></span>' +
+          '</div>' +
+        '</div>';
+        var saveBtn = document.getElementById('chat-prompt-save');
+        var msg = document.getElementById('chat-prompt-msg');
+        if (saveBtn) saveBtn.addEventListener('click', function () {
+          var ta = document.getElementById('chat-system-prompt');
+          var value = ta ? ta.value : '';
+          if (msg) msg.textContent = 'Saving…';
+          fetchJson('/api/cloud/system-prompt', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ prompt: value }),
+          }).then(function () {
+            if (msg) msg.textContent = 'Saved.';
+          }).catch(function (e) {
+            if (msg) msg.textContent = 'Failed: ' + (e && e.message ? e.message : String(e));
+          });
         });
       }).catch(function (err) {
-        showToast('Failed to load: ' + (err && err.message ? err.message : String(err)));
+        host.innerHTML = '<div class="placeholder">Could not load: ' +
+          escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
       });
     }
 
     function showInviteMemberModal(info) {
-      // v3 owner-only invite: the server provisions a scoped member role and
-      // returns a connection blob. That blob IS the invite — copy it and hand
-      // it to the new member, who pastes the fields into "Join a cloud". There
-      // is no per-table sharing here (rows are private-by-default, shared per
-      // row via the eye toggle).
+      // Owner-only invite: collect the invitee's email; the server provisions a
+      // scoped role and returns ONE email-bound token carrying its credential.
+      // The invitee redeems it with the same email in "Join a cloud" — no
+      // postgres:// fields ever change hands. (Recovered from 1.14.0's email
+      // invite flow, adapted to the RLS-cloud token.)
       info = info || {};
       var bodyHtml =
-        '<div class="field"><label>Member label</label>' +
-        '<input name="label" type="text" placeholder="bob" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>' +
+        '<div class="field"><label>Invitee email</label>' +
+        '<input name="email" type="email" placeholder="bob@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>' +
         '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-        'A short name for the scoped role you are provisioning. Lattice returns ' +
-        'connection credentials below — send them to the new member, who pastes ' +
-        'them into “Join a cloud”.' +
+        'The invite is bound to this email — only the recipient can redeem it.' +
         '</p>';
       showModal('Invite a member', bodyHtml, {
         primaryLabel: 'Generate invite',
         onSubmit: function (scope) {
           var data = collectFormValues(scope);
-          if (!data.label) throw new Error('label is required');
+          if (!data.email) throw new Error('an invitee email is required');
           return fetchJson('/api/cloud/invite', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ label: data.label }),
+            body: JSON.stringify({ email: data.email }),
           }).then(function (res) {
-            showInviteCredentialsModal((res && res.invite) || {});
+            showInviteTokenModal(res || {});
           });
         },
       });
     }
 
-    function showInviteCredentialsModal(invite) {
-      invite = invite || {};
-      // Render the returned connection blob in a single copyable block. The
-      // member pastes these fields into "Join a cloud".
-      var lines = [
-        'host=' + (invite.host || ''),
-        'port=' + (invite.port || 5432),
-        'dbname=' + (invite.dbname || ''),
-        'user=' + (invite.user || ''),
-        'password=' + (invite.password || ''),
-      ].join('\\n');
+    function showInviteTokenModal(res) {
+      res = res || {};
+      var token = res.token || '';
       var bodyHtml =
-        '<p style="margin-top:0">Send these credentials to your new member — they paste them into “Join a cloud”.</p>' +
-        '<div class="copy-token" id="copy-invite" style="white-space:pre">' + escapeHtml(lines) + '</div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the block to copy.</p>';
-      var handle = showModal('Invite credentials', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
+        '<p style="margin-top:0">Send this invite token to <code>' + escapeHtml(res.email || '') +
+        '</code> (privately). They enter their email + this token in “Join a cloud”. It expires in ~7 days.</p>' +
+        '<div class="copy-token" id="copy-invite" style="white-space:pre-wrap;word-break:break-all">' +
+        escapeHtml(token) + '</div>' +
+        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>';
+      var handle = showModal('Invite token', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
       var blockEl = document.getElementById('copy-invite');
       if (blockEl) {
         blockEl.addEventListener('click', function () {
-          navigator.clipboard.writeText(lines).then(function () {
+          navigator.clipboard.writeText(token).then(function () {
             var prev = blockEl.textContent;
             blockEl.textContent = 'Copied!';
             setTimeout(function () { blockEl.textContent = prev; }, 1200);
@@ -5515,9 +5821,13 @@ export const appJs = `
       if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
       if (sendBtn) sendBtn.disabled = true;
       var actx = null; var assembled = '';
+      // Private mode: when the composer checkbox is checked, items the assistant
+      // adds on this turn stay private to the current user.
+      var privEl = document.getElementById('chat-private');
+      var privateMode = !!(privEl && privEl.checked);
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId })
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
@@ -5783,6 +6093,12 @@ export const appJs = `
               '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
             '</div>' +
+            // Private mode — when checked, items the assistant adds on this send
+            // stay private to me (passed as privateMode in the /api/chat body).
+            '<label class="composer-private">' +
+              '<input type="checkbox" id="chat-private" /> Private mode ' +
+              '<span class="composer-private-hint">New items I add stay private to you</span>' +
+            '</label>' +
             '<input type="file" id="chat-file" multiple style="display:none">';
           var input = document.getElementById('chat-input');
           var sendBtn = document.getElementById('chat-send');
