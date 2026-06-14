@@ -33,6 +33,12 @@ export interface GuiTableSummary {
    */
   defaultRowVisibility?: 'private' | 'everyone';
   /**
+   * Cloud (owner view) only: this table is marked never-shareable — the share/grant
+   * functions refuse it and new rows are forced private (a Secrets/Messages-class
+   * hard exclusion). Drives the Data Model "never share" indicator. Set by the server.
+   */
+  neverShare?: boolean;
+  /**
    * Team cloud only: the shared table's schema_version, used as the
    * optimistic-concurrency token for data-model edits. Absent when the table
    * isn't shared (or on local). Set by the server.

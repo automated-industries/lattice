@@ -41,6 +41,8 @@ describe('1.16.1 — F: updateRow surfaces a write that did not persist', () => 
       db: {
         get: () => Promise.resolve({ ...stored }), // before === after (write blocked)
         update: () => Promise.resolve(),
+        getRegisteredColumns: () => ({ id: 'TEXT', title: 'TEXT' }),
+        getDialect: () => 'sqlite',
       },
       feed: { publish: () => undefined },
       softDeletable: new Set<string>(),
