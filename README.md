@@ -2404,12 +2404,27 @@ const visible = await db.query('items'); // RLS-filtered to what this role may s
 | POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)         |
 | POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob |
 | POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)            |
+| POST   | `/api/cloud/s3-config`           | Owner enables S3-backed file bytes for the cloud (secret redacted) |
+| POST   | `/api/cloud/system-prompt`       | Owner sets the chat system prompt (owner-only to view/edit)        |
+
+**S3-backed file bytes (opt-in).** By default an uploaded file's bytes live only on
+the uploader's machine, so other members can see the `files` row but not fetch the
+content. Enable S3 for the cloud and uploaded bytes also go to S3 under a
+content-addressed (`<prefix>/<sha256>`) key, so any member who can SELECT the
+`files` row pulls them in the viewer. Access rides entirely on the files-row RLS;
+the bucket credential is least-privilege (`GetObject`+`PutObject`, no `ListBucket`),
+per-member and machine-local. See the caveats in [docs/cloud.md](./docs/cloud.md).
+
+**Chat system prompt (owner-set).** A cloud owner can set a chat system prompt that
+is bundled into every member's assistant chat for that workspace. It's owner-only to
+view and edit (stored in `__lattice_cloud_settings`, reached via owner-gated
+`SECURITY DEFINER` functions); members never see it through the UI or API.
 
 Offline editing is preserved as a **client-side local edit queue** that replays on
 reconnect — it is not tied to any replica or sync server.
 
-The full architecture, the three flows in detail, the RLS / role model, and the
-sharing API live in [docs/cloud.md](./docs/cloud.md).
+The full architecture, the three flows in detail, the RLS / role model, the S3 +
+system-prompt designs, and the sharing API live in [docs/cloud.md](./docs/cloud.md).
 
 ---
 
