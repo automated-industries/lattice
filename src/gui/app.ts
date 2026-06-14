@@ -91,7 +91,6 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="database">Workspace</button>
-      <button class="drawer-tab" data-tab="chat">Chat</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>

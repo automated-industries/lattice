@@ -2724,7 +2724,6 @@ export const appJs = `
       var body = document.getElementById('drawer-body');
       if (!body) return;
       if (tab === 'database') renderDatabaseSettings(body);
-      else if (tab === 'chat') renderChatSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);
     }
@@ -4662,11 +4661,15 @@ export const appJs = `
           '<h2>Workspace Settings</h2>' +
           '<div id="db-name-host"><div class="placeholder" style="padding:14px">Loading workspace name…</div></div>' +
           '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
+          // System Prompt subsection — directly beneath Database connection,
+          // owner-only (the panel renders nothing for members / local).
+          '<div id="system-prompt-host"></div>' +
           '<div id="data-model-host"><div class="placeholder" style="padding:18px">Loading data model…</div></div>' +
           '<div id="db-danger-host"></div>' +
         '</div>';
       renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
+      renderSystemPromptPanel(document.getElementById('system-prompt-host'));
       renderDataModelInto(document.getElementById('data-model-host'));
       renderDatabaseDangerZone(document.getElementById('db-danger-host'));
     }
@@ -5233,36 +5236,29 @@ export const appJs = `
     // Chat settings (drawer tab): the cloud chat system prompt, edited INLINE
     // with a Save button — no overlay. Owner-only (the GET returns the text only
     // to an owner); members / local workspaces see a short note instead.
-    function renderChatSettings(content) {
-      content.innerHTML =
-        '<div class="teams-page">' +
-          '<h2>Chat</h2>' +
-          '<div id="chat-settings-host"><div class="placeholder" style="padding:18px">Loading…</div></div>' +
-        '</div>';
-      var host = document.getElementById('chat-settings-host');
+    // The cloud chat System Prompt editor — a subsection of Settings → Workspace,
+    // beneath Database connection. Owner-only: renders nothing for a member or a
+    // local workspace (the GET reports supported=false / canEdit=false there), so
+    // the subsection simply doesn't appear for them.
+    function renderSystemPromptPanel(host) {
+      if (!host) return;
+      host.innerHTML = '';
       fetchJson('/api/cloud/system-prompt').then(function (cfg) {
-        var panelOpen =
-          '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 8px">Chat system prompt</h3>';
-        if (!cfg || cfg.canEdit !== true) {
-          host.innerHTML = panelOpen +
-            '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-            'The chat system prompt is owner-only and applies to a cloud workspace. ' +
-            'Nothing to edit here for this workspace.</p></div>';
-          return;
-        }
+        if (!cfg || cfg.supported !== true || cfg.canEdit !== true) return; // owner+cloud only
         var current = typeof cfg.prompt === 'string' ? cfg.prompt : '';
-        host.innerHTML = panelOpen +
-          '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-            'Added to every member chat in this cloud. Members cannot see or edit it — only you, the owner, can.</p>' +
-          '<textarea id="chat-system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
-            'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
-            escapeHtml(current) + '</textarea>' +
-          '<div style="margin-top:10px;display:flex;align-items:center;gap:10px">' +
-            '<button class="btn primary" id="chat-prompt-save">Save</button>' +
-            '<span id="chat-prompt-msg" style="font-size:12px;color:var(--text-muted)"></span>' +
-          '</div>' +
-        '</div>';
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 8px">System Prompt</h3>' +
+            '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+              'Added to every member chat in this cloud workspace. Members cannot see or edit it — only you, the owner, can.</p>' +
+            '<textarea id="chat-system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
+              'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
+              escapeHtml(current) + '</textarea>' +
+            '<div style="margin-top:10px;display:flex;align-items:center;gap:10px">' +
+              '<button class="btn primary" id="chat-prompt-save">Save</button>' +
+              '<span id="chat-prompt-msg" style="font-size:12px;color:var(--text-muted)"></span>' +
+            '</div>' +
+          '</div>';
         var saveBtn = document.getElementById('chat-prompt-save');
         var msg = document.getElementById('chat-prompt-msg');
         if (saveBtn) saveBtn.addEventListener('click', function () {
@@ -5279,9 +5275,8 @@ export const appJs = `
             if (msg) msg.textContent = 'Failed: ' + (e && e.message ? e.message : String(e));
           });
         });
-      }).catch(function (err) {
-        host.innerHTML = '<div class="placeholder">Could not load: ' +
-          escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+      }).catch(function () {
+        // Not a cloud / not the owner / probe failed — leave the subsection empty.
       });
     }
 

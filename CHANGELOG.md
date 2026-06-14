@@ -49,6 +49,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   matched no grouping rule, so each spammed its own pill in the assistant feed.
   A run now collapses into one counted "Linked N relationships" bubble.
 
+### Changed — settings layout (3.2)
+
+- **Chat system prompt moved into Settings → Workspace.** The standalone "Chat"
+  settings tab is gone; the cloud system-prompt editor is now a "System Prompt"
+  subsection directly beneath "Database connection", shown only to the workspace
+  owner (it's absent for members and local workspaces). Endpoint unchanged.
+
 ### Fixed — GUI polish (3.2)
 
 - **Render progress label.** The per-card background-render indicator reads
