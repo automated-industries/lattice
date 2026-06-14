@@ -18,6 +18,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `mapWithConcurrency` moved to a package-root module (re-exported from its old
   path) so the render engine can share it without inverting layering.
 
+### Fixed — ingest auto-link surfaces failures (3.2)
+
+- **No more silent auto-link failures (Rule 16).** When ingest auto-linking can't
+  run or a link/junction write fails (e.g. a cloud permission/RLS error), the
+  reason is now logged loudly AND surfaced in the activity feed, instead of a bare
+  `catch { return []; }` that left "nothing linked" with no explanation. The
+  LLM-client-init failure path, the classify failure, and per-match junction/link
+  failures all surface now.
+
 ### Fixed — activity feed grouping (3.2)
 
 - **Relationship-link activity now collapses.** Junction-materialization events
