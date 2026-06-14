@@ -8,6 +8,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — file view: inline image + Open/Download buttons (3.2)
+
+- **Uploaded images preview inline again.** The preview only rendered when the
+  stored `mime` started `image/`; an upload that didn't record a mime showed no
+  image. It now also detects images by filename extension.
+- **Open in Finder / Download are mutually exclusive + correctly gated.** A file
+  with bytes on this machine shows **Open in Finder** (when `LATTICE_LOCAL_OPEN`
+  is enabled — now the **default**; set `=0` to disable, which hides the button
+  rather than offering a dead one); a cloud (S3) file with no local copy shows
+  **Download**. Never both.
+
 ### Fixed — GUI activity feed + data-model sharing (3.2)
 
 - **No feed pills for internal plumbing tables.** Writes to the assistant's own

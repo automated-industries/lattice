@@ -40,6 +40,8 @@ export const appJs = `
       // Server-resolved analytics consent (stored pref AND env opt-outs). Drives
       // window.LatticeGA. False until loaded → no tracking before consent is known.
       analyticsEffective: false,
+      // Whether the GUI may "Open in Finder" (LATTICE_LOCAL_OPEN, default on).
+      localOpen: true,
     };
 
     // Anonymous analytics passthrough — a no-op unless window.LatticeGA exists and
@@ -311,6 +313,9 @@ export const appJs = `
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
         state.analyticsEffective = !!(results[4] && results[4].analytics_effective);
+        // local_open defaults true (the server defaults it on) — drives whether the
+        // file view offers "Open in Finder". Treat a missing field as enabled.
+        state.localOpen = !results[4] || results[4].local_open !== false;
         // Boot analytics with the resolved consent (no network contact when off),
         // then record the session open. advanced_mode is a boolean — safe to send.
         if (window.LatticeGA) window.LatticeGA.init(state.analyticsEffective);
@@ -1892,19 +1897,42 @@ export const appJs = `
     // Bytes are viewable when there's a local copy OR an S3-backed cloud_ref — the
     // /blob route resolves local-or-S3 transparently, so the browser just hits it.
     function hasViewableFile(row) {
-      return hasLocalFile(row) ||
-        (row.ref_kind === 'cloud_ref' && row.ref_provider === 's3' && (row.ref_uri || row.blob_path));
+      return hasLocalFile(row) || isS3File(row);
+    }
+    // The file's bytes live in S3 (cloud). Download (not Open in Finder) applies.
+    function isS3File(row) {
+      return row.ref_kind === 'cloud_ref' && row.ref_provider === 's3' && !!(row.ref_uri || row.blob_path);
+    }
+    // True when the row's bytes are reachable on THIS machine's disk (so "Open in
+    // Finder" is meaningful). Mirrors the server's localPathOf: a legacy path, a
+    // local_ref, or a blob/cloud_ref whose blob_path was kept locally.
+    function hasLocalBytes(row) {
+      return !!(
+        row.path ||
+        (row.ref_kind === 'local_ref' && row.ref_uri) ||
+        ((row.ref_kind === 'blob' || row.ref_kind === 'cloud_ref') && row.blob_path)
+      );
+    }
+    var IMAGE_EXTS = ['png','jpg','jpeg','gif','webp','bmp','svg','avif','heic','heif','ico','tif','tiff'];
+    function isImageFile(row) {
+      // Detect by mime, FALLING BACK to the filename extension — an upload that
+      // didn't record a mime still previews (the inline image was silently missing).
+      if (String(row.mime || '').indexOf('image/') === 0) return true;
+      var name = String(row.original_name || '').toLowerCase();
+      var dot = name.lastIndexOf('.');
+      return dot >= 0 && IMAGE_EXTS.indexOf(name.slice(dot + 1)) >= 0;
     }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
       var mime = row.mime || '';
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
+      var viewable = hasViewableFile(row);
       var html = '';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
-      if (mime.indexOf('image/') === 0 && hasViewableFile(row)) {
+      if (isImageFile(row) && viewable) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
-      } else if (mime === 'application/pdf' && hasViewableFile(row)) {
+      } else if (mime === 'application/pdf' && viewable) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
       } else if (row.extracted_text && MD_MIMES.indexOf(mime) >= 0) {
         html += '<div class="md-body">' + mdToHtml(String(row.extracted_text).slice(0, 40000)) + '</div>';
@@ -1914,10 +1942,15 @@ export const appJs = `
         html += '<div class="file-unsupported">No inline preview for this file type' +
           (mime ? ' (' + escapeHtml(mime) + ')' : '') + '.</div>';
       }
-      if (hasViewableFile(row)) {
+      // Open in Finder vs Download are MUTUALLY EXCLUSIVE: a file on this machine's
+      // disk opens locally (when LATTICE_LOCAL_OPEN is on); a cloud (S3) file with
+      // no local copy is downloaded. Never both — there's only ever one source.
+      var canOpen = hasLocalBytes(row) && state.localOpen;
+      var canDownload = isS3File(row) && !hasLocalBytes(row);
+      if (canOpen || canDownload) {
         html += '<div class="file-actions">' +
-          (hasLocalFile(row) ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
-          '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' +
+          (canOpen ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
+          (canDownload ? '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' : '') +
         '</div>';
       }
       host.innerHTML = html;
