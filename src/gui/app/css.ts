@@ -187,6 +187,12 @@ export const css = `
     .db-button .db-status.is-cloud-connecting { background: var(--warn); }
     .db-button:hover { background: rgba(255, 255, 255, 0.08); }
     .db-button .db-caret { color: #9aa1ad; font-size: 10px; }
+    /* While a workspace switch is in flight, the stable header button shows a
+       spinner (swapped for the 📂 icon) so the switch is visible for its whole
+       duration — POST + reloadEverything — not just while the dropdown is open. */
+    .db-button.is-switching { opacity: 0.85; cursor: progress; }
+    .db-button.is-switching .db-icon .spinner { margin-right: 0; }
+    .db-button.is-switching.is-switch-error .db-name { color: #ef4444; }
     .db-menu {
       position: absolute; top: 38px; left: 0;
       min-width: 260px; background: var(--glass-strong);
@@ -351,6 +357,7 @@ export const css = `
       max-width: 1100px;
     }
     .card {
+      position: relative; overflow: hidden;
       background: var(--sheen), var(--surface); border: 1px solid var(--border);
       border-radius: 12px; padding: 22px;
       min-height: 160px;
@@ -363,6 +370,33 @@ export const css = `
     .card-label { font-size: 15px; font-weight: 600; }
     .card-count { font-size: 28px; font-weight: 700; color: var(--text-muted); margin-top: auto; }
     .card-fresh { font-size: 11px; color: var(--text-muted); }
+    /* ── Per-card background-render progress overlay ─────
+       Hidden by default; .card.is-rendering reveals the bottom-edge bar + the
+       corner pill while the context tree is rendered in the background. The row
+       count dims so the live value reads as not-yet-final until completion. */
+    .card-render { display: none; }
+    .card.is-rendering .card-render { display: block; }
+    .card.is-rendering .card-count { opacity: 0.45; transition: opacity 0.2s ease; }
+    .card-render-fill {
+      position: absolute; left: 0; bottom: 0; height: 3px; width: 0%;
+      background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+      transition: width 0.2s ease; pointer-events: none;
+    }
+    .card-render-pill {
+      position: absolute; top: 10px; right: 10px;
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 10px;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 11px; font-weight: 600; line-height: 1.4;
+      pointer-events: none;
+    }
+    /* The render pill reuses the shared .spinner + @keyframes lattice-spin. */
+    .card-render-pill .spinner { margin-right: 0; }
+    /* A render that errors out paints a red card state instead of a stuck
+       spinner (Rule 16 — surface the failure, don't hide it). */
+    .card.is-render-error { border-color: #ef4444; }
+    .card.is-render-error .card-render-fill { background: #ef4444; }
+    .card.is-render-error .card-render-pill { background: rgba(239, 68, 68, 0.14); color: #ef4444; }
 
     /* ── Table view ───────────────────────────────────── */
     .view-header {
@@ -1208,6 +1242,13 @@ export const css = `
     .rail-composer .composer-send:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
     .rail-composer .composer-setup { font-size: 12.5px; color: var(--text-muted); text-align: center; }
     .rail-composer .composer-setup a { color: var(--accent); }
+    /* Private-mode toggle under the composer row. */
+    .rail-composer .composer-private {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      margin-top: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer;
+    }
+    .rail-composer .composer-private input { cursor: pointer; }
+    .rail-composer .composer-private-hint { color: var(--text-muted); opacity: 0.8; font-size: 11px; }
     .rail-composer .composer-mic {
       flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;
       border: 1px solid var(--border-strong); border-radius: 8px;

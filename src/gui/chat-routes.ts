@@ -474,6 +474,9 @@ export async function dispatchChatRoute(
   const dispatch: DispatchCtx = {
     db: ctx.db,
     feed: ctx.feed,
+    // "Private mode" chat toggle: force rows the assistant creates this turn private
+    // regardless of the table default (a transient per-request choice).
+    privateMode: body.privateMode === true,
     validTables: new Set([...ctx.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     junctionTables: new Set([...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     softDeletable: ctx.softDeletable,

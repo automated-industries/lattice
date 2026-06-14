@@ -261,6 +261,7 @@ export const appJs = `
         refreshHistoryState();
         renderRoute();
         startRealtime();
+        startRenderProgress();
         initSearch();
         initLastEdited();
         initOffline();
@@ -622,6 +623,153 @@ export const appJs = `
     }
 
     // ────────────────────────────────────────────────────────────
+    // Background-render progress — Server-Sent Events from
+    // /api/render/progress. A workspace opens/switches instantly and renders its
+    // context tree in the background; this paints a per-table % overlay on the
+    // dashboard cards (bottom-edge bar + ⟳ pill) and dims the row count until
+    // each table completes. Row COUNTS come only from /api/entities — the render
+    // stream drives only the transient overlay and one reconciling refetch on
+    // completion. Mirrors the realtime EventSource pattern above.
+    // ────────────────────────────────────────────────────────────
+    var renderSource = null;
+    // { [table]: { pct, rendered, total, done, error } } — the live render state,
+    // re-applied to cards after every dashboard rebuild (drawDashboard wipes the
+    // DOM overlays but not this map).
+    var renderProgress = {};
+    // Apply one table's render % to its matching card only (no full rebuild).
+    function applyCardProgress(table, pct) {
+      if (!table) return;
+      var sel = '.card[data-table="' + (window.CSS && CSS.escape ? CSS.escape(table) : table) + '"]';
+      var card = document.querySelector(sel);
+      if (!card) return;
+      var st = renderProgress[table];
+      if (st && st.error) {
+        card.classList.remove('is-rendering');
+        card.classList.add('is-render-error');
+        var perr = card.querySelector('.card-render-pct');
+        if (perr) perr.textContent = 'error';
+        return;
+      }
+      card.classList.remove('is-render-error');
+      var clamped = Math.max(0, Math.min(100, Math.round(pct || 0)));
+      card.classList.add('is-rendering');
+      var fill = card.querySelector('.card-render-fill');
+      if (fill) fill.style.width = clamped + '%';
+      var pctEl = card.querySelector('.card-render-pct');
+      if (pctEl) pctEl.textContent = clamped + '%';
+    }
+    // Clear the overlay for a finished/aborted table.
+    function clearCardProgress(table) {
+      if (!table) return;
+      var sel = '.card[data-table="' + (window.CSS && CSS.escape ? CSS.escape(table) : table) + '"]';
+      var card = document.querySelector(sel);
+      if (!card) return;
+      card.classList.remove('is-rendering', 'is-render-error');
+    }
+    // Repaint every still-in-flight card from the renderProgress map. Called at
+    // the end of drawDashboard so overlays survive a feed-triggered rebuild.
+    function reapplyRenderOverlays() {
+      Object.keys(renderProgress).forEach(function (table) {
+        var st = renderProgress[table];
+        if (!st) return;
+        if (st.done && !st.error) { clearCardProgress(table); return; }
+        applyCardProgress(table, st.pct);
+      });
+    }
+    // Fold one render event into the renderProgress map + paint the card.
+    function onRenderEvent(e) {
+      if (!e) return;
+      if (e.kind === 'error') {
+        var t = e.table;
+        if (t) {
+          renderProgress[t] = { pct: e.pct || 0, rendered: 0, total: 0, done: false, error: true };
+          applyCardProgress(t, e.pct || 0);
+        }
+        return;
+      }
+      if (e.kind === 'done') {
+        // Whole-render completion: clear every overlay and let the debounced
+        // refetch snap the counts to their real values.
+        Object.keys(renderProgress).forEach(function (table) {
+          var s = renderProgress[table];
+          if (s) s.done = true;
+          clearCardProgress(table);
+        });
+        scheduleRealtimeRefresh();
+        return;
+      }
+      if (!e.table) return;
+      var done = e.kind === 'table-done';
+      renderProgress[e.table] = {
+        pct: e.pct,
+        rendered: e.entitiesRendered,
+        total: e.entitiesTotal,
+        done: done,
+        error: false,
+      };
+      if (done) {
+        clearCardProgress(e.table);
+        // The count for this table is now final on the server; nudge one
+        // reconciling refetch from /api/entities (debounced, coalesced).
+        scheduleRealtimeRefresh();
+      } else {
+        applyCardProgress(e.table, e.pct);
+      }
+    }
+    // Paint from a full snapshot (initial connect / status fetch): the snapshot
+    // carries { phase, tables: { [t]: { pct, entitiesRendered, entitiesTotal,
+    // done } } }. Fold each table in and paint.
+    function applyRenderSnapshot(snap) {
+      if (!snap || !snap.tables) return;
+      Object.keys(snap.tables).forEach(function (table) {
+        var s = snap.tables[table];
+        if (!s) return;
+        renderProgress[table] = {
+          pct: s.pct,
+          rendered: s.entitiesRendered,
+          total: s.entitiesTotal,
+          done: !!s.done,
+          error: false,
+        };
+        if (s.done) clearCardProgress(table);
+        else applyCardProgress(table, s.pct);
+      });
+      if (snap.phase === 'error') {
+        // A whole-render failure with no table attribution still surfaces on the
+        // currently-rendering card if we know one.
+        if (snap.currentTable) {
+          renderProgress[snap.currentTable] = renderProgress[snap.currentTable] || { pct: 0 };
+          renderProgress[snap.currentTable].error = true;
+          applyCardProgress(snap.currentTable, renderProgress[snap.currentTable].pct);
+        }
+      }
+    }
+    function startRenderProgress() {
+      if (renderSource) {
+        try { renderSource.close(); } catch (_) { /* ignore */ }
+        renderSource = null;
+      }
+      if (typeof EventSource === 'undefined') return;
+      // On (re)connect, fetch the single-shot snapshot so a tab that connects
+      // mid- or post-render paints correctly even before the next event. The SSE
+      // endpoint ALSO replays a 'snapshot' event on connect, so both paths agree.
+      fetchJson('/api/render/status').then(applyRenderSnapshot).catch(function () { /* ignore */ });
+      renderSource = new EventSource('/api/render/progress');
+      renderSource.addEventListener('snapshot', function (ev) {
+        var snap = null;
+        try { snap = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
+        if (snap) applyRenderSnapshot(snap);
+      });
+      renderSource.addEventListener('progress', function (ev) {
+        var e = null;
+        try { e = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
+        if (e) onRenderEvent(e);
+      });
+      // EventSource auto-reconnects on error; the status refetch on the next
+      // open repaints from the authoritative snapshot.
+    }
+
+    // ────────────────────────────────────────────────────────────
     // Shared activity helpers — the operation-icon map and relative-time
     // formatter, used by Version History and the dashboard activity list. The
     // standalone Activity rail was removed in 1.16.1 (redundant with Version
@@ -850,7 +998,45 @@ export const appJs = `
         else renderRoute();
         loadedTables = {};
         startRealtime();
+        // A switch swaps the server-side render bus to the new workspace; drop the
+        // old workspace's overlay state and re-subscribe so the new render streams
+        // onto this workspace's cards.
+        renderProgress = {};
+        startRenderProgress();
       });
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Workspace-switch progress on the STABLE header button.
+    // The old menu-item spinner (withBusy on the open-menu db-item) is lost the
+    // moment the menu closes or rebuilds mid-switch. We additionally surface
+    // "switching" on the always-visible #ws-button for the ENTIRE switch (POST +
+    // reloadEverything), so the user always sees a live signal. The menu-item
+    // withBusy spinner is kept too.
+    // ────────────────────────────────────────────────────────────
+    var wsSwitching = false;
+    function beginWsSwitching() {
+      wsSwitching = true;
+      var btn = document.getElementById('ws-button');
+      var nameEl = document.getElementById('ws-name');
+      var iconEl = btn && btn.querySelector('.db-icon');
+      if (btn) { btn.classList.add('is-switching'); btn.classList.remove('is-switch-error'); }
+      if (iconEl) iconEl.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+      if (nameEl) nameEl.textContent = 'Switching…';
+    }
+    function endWsSwitching(failed) {
+      wsSwitching = false;
+      var btn = document.getElementById('ws-button');
+      var iconEl = btn && btn.querySelector('.db-icon');
+      // Restore the 📂 icon; the workspace label is re-applied by the
+      // renderWsSwitcher run inside reloadEverything (now that wsSwitching is
+      // false, that write is no longer guarded out).
+      if (iconEl) iconEl.textContent = '📂';
+      if (btn) {
+        btn.classList.remove('is-switching');
+        if (failed) btn.classList.add('is-switch-error');
+        else btn.classList.remove('is-switch-error');
+      }
     }
 
     var wsOutsideClickBound = false;
@@ -866,7 +1052,10 @@ export const appJs = `
       wrap.hidden = false;
       var list = (data && data.workspaces) || [];
       var current = list.filter(function (w) { return w.id === (data && data.current); })[0];
-      nameEl.textContent = (current && current.label) || 'workspace';
+      // Don't clobber the "Switching…" label/icon while a switch is in flight —
+      // renderWsSwitcher runs mid-reload, and the new workspace label should only
+      // land once the switch resolves (endWsSwitching → next render).
+      if (!wsSwitching) nameEl.textContent = (current && current.label) || 'workspace';
       var curKind = (current && current.kind) || 'local';
       setStatusPill(curKind, curKind === 'cloud' ? 'connecting' : 'local');
 
@@ -897,6 +1086,10 @@ export const appJs = `
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-id');
             if (id === currentId) { menu.hidden = true; return; }
+            // Surface "switching" on the stable header button for the WHOLE
+            // switch (POST + reloadEverything), independent of the ephemeral
+            // menu-item withBusy spinner — the menu can close/rebuild mid-switch.
+            beginWsSwitching();
             withBusy(b, function () {
               return fetchJson('/api/workspaces/switch', {
                 method: 'POST',
@@ -913,6 +1106,7 @@ export const appJs = `
                 return reloadEverything();
               }).then(function () {
                 menu.hidden = true;
+                endWsSwitching(false);
                 // Conversations + activity both live in the workspace DB. Drop
                 // the old workspace's thread + activity cards, reconnect the feed
                 // to THIS workspace, and reload its thread list (+ latest convo).
@@ -921,7 +1115,7 @@ export const appJs = `
                 startFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
-              }).catch(function (err) { menu.hidden = true; showToast('Switch failed: ' + err.message, {}); });
+              }).catch(function (err) { menu.hidden = true; endWsSwitching(true); showToast('Switch failed: ' + err.message, {}); });
             });
           });
         });
@@ -1103,14 +1297,24 @@ export const appJs = `
           ? '<div class="card-fresh" title="Last updated ' +
               escapeHtml(String(e.lastUpdatedAt)) + '">' + relTime(e.lastUpdatedAt) + '</div>'
           : '';
-        return '<a class="card" href="' + cardPrefix + e.name + '">' +
+        return '<a class="card" data-table="' + escapeHtml(e.name) + '" href="' + cardPrefix + e.name + '">' +
           '<div class="card-icon">' + disp.icon + '</div>' +
           '<div class="card-label">' + escapeHtml(disp.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +
           fresh +
+          // Hidden until a background render touches this table; revealed by the
+          // .is-rendering class applied in applyCardProgress(). The fill is the
+          // bottom-edge bar (width = %); the pill is the ⟳ <pct>% corner badge.
+          '<div class="card-render" aria-hidden="true">' +
+            '<div class="card-render-fill"></div>' +
+            '<span class="card-render-pill"><span class="spinner" aria-hidden="true"></span><span class="card-render-pct">0%</span></span>' +
+          '</div>' +
           '</a>';
       }).join('');
       content.innerHTML = '<div class="dashboard">' + cards + '</div>';
+      // drawDashboard wiped the previous overlays; repaint any still-in-flight
+      // render state from the renderProgress map onto the freshly-built cards.
+      reapplyRenderOverlays();
     }
     function renderDashboard(content) {
       // Workspace overview: counts + freshness + recent activity from
@@ -3302,15 +3506,30 @@ export const appJs = `
           '</div>'
         : '';
       // Owner-only "new rows default to" control, shown for a shared table.
+      // A never-share table's rows are always private, so the default-visibility
+      // select is disabled while never-share is on.
       var defaultVis = (t && t.defaultRowVisibility) || 'private';
+      var neverShare = !!(t && t.neverShare);
       var defaultVisRow = canShare && isShared
         ? '<label>New rows default to</label>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-            '<select id="dm-rowvis-select">' +
+            '<select id="dm-rowvis-select"' + (neverShare ? ' disabled' : '') + '>' +
               '<option value="private"' + (defaultVis === 'private' ? ' selected' : '') + '>Private (owner only)</option>' +
               '<option value="everyone"' + (defaultVis === 'everyone' ? ' selected' : '') + '>Everyone on the workspace</option>' +
             '</select>' +
             '<span style="font-size:12px;color:var(--text-muted)">Visibility new rows in this table are created with.</span>' +
+          '</div>'
+        : '';
+      // Owner-only "Never share" control, shown for a shared table. When on, the
+      // table's rows are always private to their owner regardless of the default
+      // visibility above — a hard floor the owner can set per shared table.
+      var neverShareRow = canShare && isShared
+        ? '<label>Never share</label>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<label class="dm-secret-toggle">' +
+              '<input type="checkbox" id="dm-nevershare-check"' + (neverShare ? ' checked' : '') + ' /> Keep all rows private' +
+            '</label>' +
+            '<span style="font-size:12px;color:var(--text-muted)">When on, rows in this table are always private to their owner, ignoring the default above.</span>' +
           '</div>'
         : '';
       panel.innerHTML =
@@ -3328,6 +3547,7 @@ export const appJs = `
           '</div>' +
           shareRow +
           defaultVisRow +
+          neverShareRow +
           '<label>Columns</label>' +
           '<div>' +
             '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
@@ -3395,6 +3615,27 @@ export const appJs = `
           }).then(function () {
             showToast(next === 'everyone' ? 'New rows now default to everyone' : 'New rows now default to private', {});
           }).catch(function (e) { showToast('Default visibility update failed: ' + e.message, {}); });
+        });
+      });
+
+      var neverShareCheck = panel.querySelector('#dm-nevershare-check');
+      if (neverShareCheck) neverShareCheck.addEventListener('change', function () {
+        var on = neverShareCheck.checked;
+        // Disable while the round-trip is in flight; dmRefreshPanel rebuilds the
+        // panel (and the default-visibility select's disabled state) on success.
+        neverShareCheck.disabled = true;
+        fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/never-share', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ on: on }),
+        }).then(function () {
+          return dmRefreshPanel(tableName, false);
+        }).then(function () {
+          showToast(on ? 'Rows in "' + tableName + '" are now always private' : 'Rows in "' + tableName + '" follow the default visibility', {});
+        }).catch(function (e) {
+          neverShareCheck.disabled = false;
+          neverShareCheck.checked = !on;
+          showToast('Never-share update failed: ' + e.message, {});
         });
       });
     }
@@ -5515,9 +5756,13 @@ export const appJs = `
       if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
       if (sendBtn) sendBtn.disabled = true;
       var actx = null; var assembled = '';
+      // Private mode: when the composer checkbox is checked, items the assistant
+      // adds on this turn stay private to the current user.
+      var privEl = document.getElementById('chat-private');
+      var privateMode = !!(privEl && privEl.checked);
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId })
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
@@ -5783,6 +6028,12 @@ export const appJs = `
               '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
             '</div>' +
+            // Private mode — when checked, items the assistant adds on this send
+            // stay private to me (passed as privateMode in the /api/chat body).
+            '<label class="composer-private">' +
+              '<input type="checkbox" id="chat-private" /> Private mode ' +
+              '<span class="composer-private-hint">New items I add stay private to you</span>' +
+            '</label>' +
             '<input type="file" id="chat-file" multiple style="display:none">';
           var input = document.getElementById('chat-input');
           var sendBtn = document.getElementById('chat-send');

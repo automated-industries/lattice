@@ -107,6 +107,14 @@ import {
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
+import { RenderProgressBus } from './render-progress.js';
+import type { RenderProgress } from '../render/progress.js';
+import {
+  setTableDefaultVisibility,
+  setTableNeverShare,
+  getAllTablePolicies,
+} from '../cloud/table-policy.js';
+import { setColumnAudience } from '../cloud/audience.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -294,6 +302,24 @@ async function entitiesWithCounts(
       return base;
     }),
   );
+
+  // Cloud (Postgres) owner only: stamp each table's owner-controlled policy
+  // (default new-row visibility + never-share) so the Data Model panel can show
+  // and edit it. Members don't need it (the panel is owner-only) and SQLite has
+  // no such policy, so both skip these per-table reads entirely.
+  if (
+    db.getDialect() === 'postgres' &&
+    (await cloudRlsInstalled(db)) &&
+    (await canManageRoles(db))
+  ) {
+    const policies = await getAllTablePolicies(db); // one query, not one-per-table
+    for (const t of enrichedTables) {
+      const policy = policies[t.name];
+      t.defaultRowVisibility = policy?.defaultRowVisibility ?? 'private';
+      t.neverShare = policy?.neverShare ?? false;
+    }
+  }
+
   return { ...payload, tables: enrichedTables };
 }
 
@@ -535,6 +561,33 @@ function readRowContext(
 }
 
 /** Everything tied to a single open lattice config / DB. Swapped wholesale when the user picks a different DB. */
+/**
+ * Live snapshot of the background render's progress for the active workspace.
+ * Folded from the engine's {@link RenderProgress} events by
+ * {@link startBackgroundRender} and served to the GUI over
+ * `/api/render/status` (single-shot) + `/api/render/progress` (SSE). A fresh
+ * one is constructed per {@link openConfig}, so a workspace switch starts clean.
+ */
+export interface RenderStatusSnapshot {
+  /** Coarse lifecycle: idle (never started) → running → done | error. */
+  phase: 'idle' | 'running' | 'done' | 'error';
+  /** The table currently being rendered, if any. */
+  currentTable?: string;
+  /** Zero-based index of {@link currentTable} among the entity-context tables. */
+  tableIndex?: number;
+  /** Total number of entity-context tables in this render. */
+  tableCount?: number;
+  /** Per-table progress, keyed by table name. */
+  tables: Record<
+    string,
+    { pct: number; entitiesRendered: number; entitiesTotal: number; done: boolean }
+  >;
+  /** Wall-clock duration of the render, set when it completes. */
+  durationMs?: number;
+  /** Error text when {@link phase} is `error`. */
+  error?: string;
+}
+
 export interface ActiveDb {
   configPath: string;
   outputDir: string;
@@ -579,6 +632,21 @@ export interface ActiveDb {
    * reopen). False for plain `lattice gui --config x.yml` (manifest-only).
    */
   autoRender: boolean;
+  /**
+   * Per-table render progress bus for this workspace. The background render
+   * publishes {@link RenderProgress} events here; the GUI subscribes over
+   * `/api/render/progress`. Always constructed (even for SQLite / non-autoRender)
+   * so the endpoints have a live target; replaced wholesale on switch.
+   */
+  renderProgress: RenderProgressBus;
+  /**
+   * Aborts the in-flight background render for this workspace. {@link disposeActive}
+   * fires it before closing the DB so the render loop bails before its next query
+   * hits a closing adapter. One controller per workspace (single-use).
+   */
+  renderAbort: AbortController;
+  /** Folded snapshot of {@link renderProgress}, served over `/api/render/status`. */
+  renderState: RenderStatusSnapshot;
 }
 
 /**
@@ -844,11 +912,11 @@ export async function openConfig(
   // what was rendered externally.
   if (autoRender) {
     db.enableAutoRender(outputDir);
-    try {
-      await db.render(outputDir);
-    } catch (e) {
-      console.warn('[openConfig] initial render failed:', (e as Error).message);
-    }
+    // The full render is intentionally NOT awaited here — `openConfig` runs
+    // before `disposeActive` on every switch, so it must stay a pure "construct
+    // ActiveDb" function that returns instantly. The caller kicks off the actual
+    // render in the background via `startBackgroundRender(active)` once the server
+    // is already serving (see the call sites after each `active =` assignment).
     if (!existsSync(manifestPath(outputDir))) {
       writeManifest(outputDir, {
         version: 2,
@@ -871,6 +939,9 @@ export async function openConfig(
     feed: new FeedBus(),
     dbPath: parsed.dbPath,
     autoRender,
+    renderProgress: new RenderProgressBus(),
+    renderAbort: new AbortController(),
+    renderState: { phase: 'idle', tables: {} },
   };
 }
 
@@ -1005,7 +1076,93 @@ export function deleteDatabaseFiles(targetConfigPath: string): {
  * the Lattice. Called before reopening or swapping configs so listeners
  * + pg clients don't leak.
  */
+/**
+ * Kick off the background render for `active` — fire-and-forget. Returns
+ * immediately; the render churns on its own and folds progress into
+ * `active.renderState` while publishing each event to `active.renderProgress`
+ * for the GUI's `/api/render/progress` SSE stream.
+ *
+ * Called once the server is already serving and after every `active =`
+ * (re)assignment, so opening/switching a workspace answers `/` and
+ * `/api/entities` instantly while the context tree renders in the background.
+ * Idempotent per workspace: no-op when this workspace doesn't auto-render or a
+ * render is already running. Cancellation is handled by {@link disposeActive},
+ * which aborts the render before closing the DB on switch/close.
+ */
+function startBackgroundRender(active: ActiveDb): void {
+  if (!active.autoRender) return;
+  if (active.renderState.phase === 'running') return;
+  active.renderState.phase = 'running';
+  const db = active.db;
+  const signal = active.renderAbort.signal;
+  const state = active.renderState;
+  const bus = active.renderProgress;
+  const startedAt = Date.now();
+
+  const onProgress = (e: RenderProgress): void => {
+    // An abort that lands mid-render: stop folding/publishing — the partial
+    // tree is discarded and the next workspace owns the stream.
+    if (signal.aborted) return;
+    if (e.table) {
+      state.tables[e.table] = {
+        pct: e.pct,
+        entitiesRendered: e.entitiesRendered,
+        entitiesTotal: e.entitiesTotal,
+        done: e.kind === 'table-done',
+      };
+      state.currentTable = e.table;
+      state.tableIndex = e.tableIndex;
+      state.tableCount = e.tableCount;
+    }
+    if (e.kind === 'done') {
+      state.phase = 'done';
+      state.durationMs = e.durationMs ?? Date.now() - startedAt;
+    } else if (e.kind === 'error') {
+      state.phase = 'error';
+      state.error = e.message ?? 'render failed';
+      // Rule 16: a render failure is surfaced loudly, never swallowed.
+      console.error('[render] background render error:', e.message ?? '(no message)');
+    }
+    bus.publish(e);
+  };
+
+  // Fire-and-forget. The promise settling is handled below; the caller does NOT
+  // await this, so the originating HTTP handler returns sub-second.
+  void db.renderInBackground(active.outputDir, { signal, onProgress }).then(
+    () => {
+      // Normal completion is reported by the engine's `done` event handled in
+      // onProgress; nothing more to do here.
+    },
+    (err: unknown) => {
+      // An abort is expected control flow on switch/close — not an error.
+      if (signal.aborted) return;
+      const message = err instanceof Error ? err.message : String(err);
+      state.phase = 'error';
+      state.error = message;
+      // Rule 16: never swallow a background render rejection.
+      console.error('[render] background render rejected:', message);
+      bus.publish({
+        kind: 'error',
+        table: state.currentTable ?? null,
+        entitiesRendered: 0,
+        entitiesTotal: 0,
+        tableIndex: state.tableIndex ?? 0,
+        tableCount: state.tableCount ?? 0,
+        pct: 0,
+        message,
+      });
+    },
+  );
+}
+
 async function disposeActive(active: ActiveDb): Promise<void> {
+  // Abort the in-flight background render FIRST — before closing the DB — so the
+  // render loop bails before its next query hits a closing adapter.
+  try {
+    active.renderAbort.abort();
+  } catch {
+    // best-effort
+  }
   if (active.realtime) {
     try {
       await active.realtime.stop();
@@ -1040,6 +1197,9 @@ async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<
   await disposeActive(active);
   const next = await openConfig(active.configPath, active.outputDir, autoRender);
   next.feed = feed;
+  // Re-render in the background; the caller awaits this reopen (fast) but the
+  // render runs detached, so the handler responds without blocking on it.
+  startBackgroundRender(next);
   return next;
 }
 
@@ -1201,7 +1361,11 @@ async function applySchemaConfig(
   for (const sql of ddl) await execSql(active.db, sql);
   saveConfigDoc(active.configPath, doc);
   await disposeActive(active);
-  return openConfig(active.configPath, active.outputDir, autoRender);
+  const next = await openConfig(active.configPath, active.outputDir, autoRender);
+  // Re-render in the background; the caller awaits this reopen (fast) but the
+  // render runs detached, so the handler responds without blocking on it.
+  startBackgroundRender(next);
+  return next;
 }
 
 /** Human one-liner for an undo/redo/revert of a schema entry (activity feed). */
@@ -1378,6 +1542,54 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             clearInterval(keepalive);
             offFeed();
             if (offBroker) offBroker();
+          };
+          req.on('close', cleanup);
+          req.on('error', cleanup);
+          return;
+        }
+
+        // ── Background render: per-table progress (snapshot + SSE) ──────────
+        // /api/render/status — single-shot JSON snapshot of the live render
+        // state (phase + per-table %). /api/render/progress — Server-Sent
+        // Events; one event per RenderProgress emission, with an immediate
+        // `snapshot` replay on connect so a late (or post-completion) tab paints
+        // correctly. Both read `active` at request time so a reconnecting tab
+        // binds to the workspace in force after a switch.
+        if (method === 'GET' && pathname === '/api/render/status') {
+          sendJson(res, active.renderState);
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/render/progress') {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-store, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+          });
+          const writeEvent = (event: string, data: unknown): void => {
+            try {
+              res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+            } catch {
+              // socket closed — handled by 'close' below
+            }
+          };
+          // Replay the current folded state immediately so a tab that connects
+          // mid- or post-render renders the right card overlays without waiting
+          // for the next event.
+          writeEvent('snapshot', active.renderState);
+          const keepalive = setInterval(() => {
+            try {
+              res.write(`: keepalive\n\n`);
+            } catch {
+              // socket closed
+            }
+          }, 25_000);
+          const offProgress = active.renderProgress.subscribe((e) => {
+            writeEvent('progress', e);
+          });
+          const cleanup = (): void => {
+            clearInterval(keepalive);
+            offProgress();
           };
           req.on('close', cleanup);
           req.on('error', cleanup);
@@ -1682,7 +1894,78 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               updated_at: new Date().toISOString(),
             });
           }
+          // The `_lattice_gui_column_meta.secret` write above is the local
+          // model-context redaction (the assistant never sees a secret value).
+          // On a cloud (Postgres) DB, ALSO enforce it in the database: mask the
+          // column to non-owners via the audience view, so a member's connection
+          // can't read it at all. SQLite is a no-op inside setColumnAudience.
+          if (active.db.getDialect() === 'postgres') {
+            const columnNames = Object.keys(active.db.getRegisteredColumns(tableName) ?? {});
+            const pkCols = active.db.getPrimaryKey(tableName);
+            await setColumnAudience(
+              active.db,
+              tableName,
+              colName,
+              secret ? 'owner' : '',
+              columnNames,
+              pkCols,
+            );
+          }
           sendJson(res, { ok: true });
+          return;
+        }
+
+        // ── Cloud table policy: per-table default row visibility + never-share ──
+        // Owner-only (Postgres cloud); the underlying SQL functions also raise for
+        // a non-owner, so the gate here is defense-in-depth + a clean error.
+        if (
+          method === 'POST' &&
+          /^\/api\/schema\/entities\/[^/]+\/default-row-visibility$/.test(pathname)
+        ) {
+          const table = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(table)) {
+            sendJson(res, { error: `Unknown table: ${table}` }, 400);
+            return;
+          }
+          if (active.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(active.db))) {
+            sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+            return;
+          }
+          if (!(await canManageRoles(active.db))) {
+            sendJson(res, { error: 'Only a cloud owner can change default row visibility' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { visibility?: unknown };
+          const visibility = body.visibility === 'everyone' ? 'everyone' : 'private';
+          if (body.visibility !== 'everyone' && body.visibility !== 'private') {
+            sendJson(res, { error: "visibility must be 'private' or 'everyone'" }, 400);
+            return;
+          }
+          await setTableDefaultVisibility(active.db, table, visibility);
+          sendJson(res, { ok: true, table, visibility });
+          return;
+        }
+        if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/never-share$/.test(pathname)) {
+          const table = decodeURIComponent(pathname.split('/')[4] ?? '');
+          if (!active.validTables.has(table)) {
+            sendJson(res, { error: `Unknown table: ${table}` }, 400);
+            return;
+          }
+          if (active.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(active.db))) {
+            sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+            return;
+          }
+          if (!(await canManageRoles(active.db))) {
+            sendJson(res, { error: 'Only a cloud owner can change never-share' }, 403);
+            return;
+          }
+          const body = (await readJson<unknown>(req)) as { on?: unknown };
+          if (typeof body.on !== 'boolean') {
+            sendJson(res, { error: 'on must be a boolean' }, 400);
+            return;
+          }
+          await setTableNeverShare(active.db, table, body.on);
+          sendJson(res, { ok: true, table, on: body.on });
           return;
         }
 
@@ -2462,6 +2745,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           setActiveWorkspace(latticeRoot, ws.id);
           await disposeActive(active);
           active = next;
+          startBackgroundRender(active); // render the new workspace's tree off the response path
           currentWorkspaceId = ws.id; // header now tracks the just-switched DB
           sendJson(res, { ok: true, id: ws.id });
           return;
@@ -2502,6 +2786,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           setActiveWorkspace(latticeRoot, created.id);
           await disposeActive(active);
           active = newActive;
+          startBackgroundRender(active); // render the new workspace's tree off the response path
           currentWorkspaceId = created.id; // header tracks the new, now-served DB
           sendJson(res, { ok: true, id: created.id });
           return;
@@ -2558,6 +2843,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             setActiveWorkspace(latticeRoot, fallback.id);
             await disposeActive(active);
             active = next;
+            startBackgroundRender(active); // render the fallback workspace's tree off the response path
             switchedTo = fallback.id;
             currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
           }
@@ -2655,6 +2941,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           await disposeActive(active);
           active = next;
+          startBackgroundRender(active); // render the switched-to DB's tree off the response path
           sendJson(res, { ok: true, path: active.configPath });
           return;
         }
@@ -2672,6 +2959,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           );
           await disposeActive(active);
           active = next;
+          startBackgroundRender(active); // render the newly-created DB's tree off the response path
           sendJson(res, { ok: true, path: active.configPath });
           return;
         }
@@ -2728,6 +3016,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             }
             await disposeActive(active);
             active = next;
+            startBackgroundRender(active); // render the fallback DB's tree off the response path
             switchedTo = active.configPath;
           }
           // Surface any filesystem failure loudly rather than
@@ -3059,6 +3348,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const next = await openConfig(active.configPath, active.outputDir, autoRender);
               await disposeActive(active);
               active = next;
+              startBackgroundRender(active); // re-render the reopened DB's tree off the response path
             },
           });
           if (handled) return;
@@ -3092,6 +3382,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   });
 
   const port = await listenWithPortFallback(server, startPort, host);
+  // Now that the server is accepting connections, render the initial workspace's
+  // context tree in the background — `/` and `/api/entities` answer instantly
+  // while it churns, and a render that finishes before any tab connects is
+  // covered by the snapshot replay on `/api/render/progress`.
+  startBackgroundRender(active);
   // For 0.0.0.0 bindings, advertise via 127.0.0.1 so the printed URL is
   // actually clickable; real external access uses the operator's known
   // hostname/IP, not the bind wildcard.
