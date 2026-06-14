@@ -1,6 +1,7 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { MEMBER_GROUP, pkSqlExpr } from './rls.js';
+import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Per-column audience → a generated cell-masking view (Stage 2 of the per-viewer
@@ -26,9 +27,17 @@ import { MEMBER_GROUP, pkSqlExpr } from './rls.js';
 //   role:<name>              → lattice_has_role('<name>')
 //   subject:<col>            → lattice_is_subject("<col>")   (col holds the subject's role id)
 //   source:<col>             → lattice_source_visible("<col>") (col holds the source's pk)
+//   owner                    → lattice_is_owner(<table>, <pk>) (only the row owner; a
+//                              DB-enforced "secret" column — needs the row context below)
 // An unknown clause throws at generation time — fail closed, never silently open.
 const ROLE_NAME_RE = /^[A-Za-z0-9_-]{1,63}$/;
 const COL_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+
+/** Row context the `owner` clause needs (the table literal + pk SQL expression). */
+export interface AudienceRowCtx {
+  tableLit: string;
+  pkExpr: string;
+}
 
 /** True when this audience means "no mask" (visible to whoever can see the row). */
 export function isRowAudience(audience: string | undefined): boolean {
@@ -41,7 +50,7 @@ export function isRowAudience(audience: string | undefined): boolean {
  * functions. Returns `'true'` for the row-audience / everyone case. Throws on an
  * unknown or malformed clause.
  */
-export function audiencePredicate(audience: string): string {
+export function audiencePredicate(audience: string, ctx?: AudienceRowCtx): string {
   if (isRowAudience(audience)) return 'true';
   const clauses = audience
     .split('+')
@@ -50,6 +59,11 @@ export function audiencePredicate(audience: string): string {
   const parts: string[] = [];
   for (const clause of clauses) {
     if (clause === 'everyone' || clause === 'row-audience') return 'true';
+    if (clause === 'owner') {
+      if (!ctx) throw new Error('lattice: the "owner" audience needs a row context');
+      parts.push(`lattice_is_owner(${ctx.tableLit}, ${ctx.pkExpr})`);
+      continue;
+    }
     const idx = clause.indexOf(':');
     const kind = idx === -1 ? clause : clause.slice(0, idx);
     const arg = idx === -1 ? '' : clause.slice(idx + 1).trim();
@@ -113,7 +127,7 @@ export function audienceViewSql(
   const selectCols = columns.map((col) => {
     const aud = columnAudience[col] ?? '';
     if (isRowAudience(aud)) return quoteIdent(col);
-    const pred = audiencePredicate(aud);
+    const pred = audiencePredicate(aud, { tableLit: lit, pkExpr });
     if (pred === 'true') return quoteIdent(col);
     // OR a per-card override: the row owner may grant a specific member this one
     // cell without changing the column's schema-level audience.
@@ -174,4 +188,110 @@ export async function enableAudienceView(
     sql: audienceViewSql(table, columns, pkCols, columnAudience),
   };
   await db.migrate([migration]);
+}
+
+// ── WS2: per-column audience spec stored in Postgres (canonical) ──────────────
+// The spec previously lived only in the owner's on-disk YAML and was compiled into
+// the mask view once at init. These helpers make __lattice_column_policy the source
+// of truth: seed the YAML spec into it once (on upgrade), then regenerate the
+// <table>_v view FROM the DB on every change, so every member sees identical masking
+// regardless of their local config and a spec edit re-masks without re-init.
+
+/** Read a table's canonical column->audience map from __lattice_column_policy. */
+export async function loadColumnPolicy(
+  db: Lattice,
+  table: string,
+): Promise<Record<string, string>> {
+  if (db.getDialect() !== 'postgres') return {};
+  const rows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT "column_name", "audience" FROM "__lattice_column_policy" WHERE "table_name" = ?`,
+    [table],
+  )) as { column_name: string; audience: string }[];
+  const out: Record<string, string> = {};
+  for (const r of rows) out[r.column_name] = r.audience;
+  return out;
+}
+
+/** Seed a table's YAML-declared audiences into __lattice_column_policy — ONE TIME
+ *  per table, the migration from the legacy on-disk spec to the DB-canonical store.
+ *  A marker in __lattice_migrations gates it: after the first run we never seed from
+ *  YAML again, because a later secureCloud would otherwise re-insert a policy row
+ *  for a column the owner has since CLEARED through the DB (a cleared column has no
+ *  row, so ON CONFLICT DO NOTHING would NOT protect it) — silently re-masking a
+ *  column the owner deliberately un-masked. Once seeded, the DB is canonical and
+ *  the only path to change a column's audience is setColumnAudience. */
+export async function seedColumnPolicyFromYaml(
+  db: Lattice,
+  table: string,
+  yamlAudience: Record<string, string>,
+): Promise<void> {
+  if (db.getDialect() !== 'postgres') return;
+  const marker = `internal:cloud-column-seed:${table}:v1`;
+  const already = await getAsyncOrSync(
+    db.adapter,
+    `SELECT 1 AS one FROM "__lattice_migrations" WHERE "version" = ?`,
+    [marker],
+  );
+  if (already) return;
+  for (const [col, aud] of Object.entries(yamlAudience)) {
+    if (isRowAudience(aud)) continue; // a default/everyone column needs no policy row
+    await runAsyncOrSync(
+      db.adapter,
+      `INSERT INTO "__lattice_column_policy" ("table_name","column_name","audience")
+         VALUES (?, ?, ?) ON CONFLICT ("table_name","column_name") DO NOTHING`,
+      [table, col, aud],
+    );
+  }
+  await runAsyncOrSync(
+    db.adapter,
+    `INSERT INTO "__lattice_migrations" ("version","applied_at") VALUES (?, ?)
+       ON CONFLICT ("version") DO NOTHING`,
+    [marker, new Date().toISOString()],
+  );
+}
+
+/** Regenerate a table's cell-masking view FROM the DB column-policy (not YAML). If
+ *  the table now has no audience columns, drop the view and restore base SELECT to
+ *  members; otherwise (re)create the masked view and revoke base SELECT. Runs the
+ *  DDL directly (not via db.migrate) so it always reflects the current spec. */
+export async function regenerateAudienceViewFromDb(
+  db: Lattice,
+  table: string,
+  columns: readonly string[],
+  pkCols: readonly string[],
+): Promise<void> {
+  if (db.getDialect() !== 'postgres') return;
+  if (pkCols.length === 0) return;
+  const spec = await loadColumnPolicy(db, table);
+  const view = quoteIdent(`${table}_v`);
+  const base = quoteIdent(table);
+  if (!tableNeedsAudienceView(spec)) {
+    await runAsyncOrSync(
+      db.adapter,
+      `DROP VIEW IF EXISTS ${view};\nGRANT SELECT ON ${base} TO ${MEMBER_GROUP};`,
+    );
+    return;
+  }
+  await runAsyncOrSync(db.adapter, audienceViewSql(table, columns, pkCols, spec));
+}
+
+/** Owner-only: set (or clear, with an empty spec) a column's audience in the DB and
+ *  regenerate the table's mask view from the DB. The owner gate is enforced inside
+ *  lattice_set_column_audience (raises for a non-owner). */
+export async function setColumnAudience(
+  db: Lattice,
+  table: string,
+  column: string,
+  audience: string,
+  columns: readonly string[],
+  pkCols: readonly string[],
+): Promise<void> {
+  if (db.getDialect() !== 'postgres') return;
+  await runAsyncOrSync(db.adapter, `SELECT lattice_set_column_audience(?, ?, ?)`, [
+    table,
+    column,
+    audience,
+  ]);
+  await regenerateAudienceViewFromDb(db, table, columns, pkCols);
 }

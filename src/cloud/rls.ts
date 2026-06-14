@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
-import { runAsyncOrSync } from '../db/adapter.js';
+import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Database-enforced row-level security for a shared cloud Postgres.
@@ -51,10 +51,10 @@ export function pkSqlExpr(pkCols: readonly string[], prefix: string): string {
  * `CREATE OR REPLACE FUNCTION`). Multi-statement — Postgres-only, so it never hits
  * the single-statement SQLite migration path.
  *
- * NOTE (follow-up): the `SECURITY DEFINER` helpers below should pin `search_path`
- * to the cloud schema to fully close the definer-search_path class of issue. Today
- * members are `NOSUPERUSER` without CREATE on the schema, so they cannot plant a
- * shadowing object; the pin is hardening, tracked for the schema-awareness pass.
+ * Every `SECURITY DEFINER` helper below gets `search_path` pinned at install time
+ * via {@link pinDefinerSearchPath} (see its doc for the threat it closes). The pin
+ * is applied in {@link installCloudRls}, not baked into the literal here, because
+ * the cloud's schema name is only known at runtime (`current_schema()`).
  */
 /**
  * Group role every cloud member inherits. Table privileges are granted to the
@@ -63,6 +63,66 @@ export function pkSqlExpr(pkCols: readonly string[], prefix: string): string {
  * *access*, never *visibility*.
  */
 export const MEMBER_GROUP = 'lattice_members';
+
+/**
+ * Pin `search_path` on every `SECURITY DEFINER` function in a cloud SQL blob.
+ *
+ * A `SECURITY DEFINER` function with no `SET search_path` resolves unqualified
+ * relation names using the CALLER's search_path — and Postgres searches the
+ * caller's `pg_temp` schema FIRST for relations unless `pg_temp` is named
+ * explicitly later in the path. A scoped member could therefore
+ * `CREATE TEMP TABLE __lattice_owners(...)` to SHADOW the ownership bookkeeping
+ * these helpers read, and make `lattice_row_visible` / `lattice_is_owner` return
+ * whatever they like — a full RLS bypass. Pinning `search_path = "<schema>",
+ * pg_temp` (real schema first, `pg_temp` LAST) forces every unqualified name to
+ * resolve against the genuine cloud schema and never a member's temp object.
+ *
+ * The regex matches the `SECURITY DEFINER AS` that introduces each function body.
+ * The only non-DEFINER function in these blobs (`lattice_notify_change`) is plain
+ * `AS` with no `SECURITY DEFINER`, so it is intentionally left untouched.
+ */
+export function pinDefinerSearchPath(sql: string, schema: string): string {
+  const safe = schema.replace(/"/g, '""');
+  return sql.replace(
+    /SECURITY DEFINER AS/g,
+    `SECURITY DEFINER SET search_path = "${safe}", pg_temp AS`,
+  );
+}
+
+/**
+ * The schema the cloud bookkeeping lives in (where the bootstrap created its tables
+ * and where unqualified names must resolve). Read at install time so the
+ * `search_path` pin baked into each DEFINER function names the real schema. Throws
+ * rather than guessing if `current_schema()` is unexpectedly empty.
+ */
+export async function cloudSchema(db: Lattice): Promise<string> {
+  const row = (await getAsyncOrSync(db.adapter, `SELECT current_schema() AS schema`)) as
+    | { schema?: string | null }
+    | undefined;
+  const s = row?.schema;
+  if (typeof s !== 'string' || s.length === 0) {
+    throw new Error('cloud RLS: could not resolve current_schema() for search_path pinning');
+  }
+  return s;
+}
+
+/**
+ * Defense-in-depth companion to the `search_path` pin: revoke the schema-level
+ * `CREATE` that (pre-PG15) `public` grants to `PUBLIC` by default, so a member
+ * cannot plant a PERMANENT object to shadow the bookkeeping either. Best-effort —
+ * a cloud whose installer doesn't own the schema simply skips it (the pin above is
+ * the actual guarantee; this only narrows the attack surface further).
+ */
+function revokeSchemaCreateSql(schema: string): string {
+  const lit = `'${schema.replace(/'/g, "''")}'`;
+  return `
+DO $LATTICE_REVOKE$ BEGIN
+  EXECUTE format('REVOKE CREATE ON SCHEMA %I FROM PUBLIC', ${lit});
+EXCEPTION WHEN OTHERS THEN
+  NULL; -- not the schema owner, or already revoked
+END $LATTICE_REVOKE$;
+`;
+}
 
 export const CLOUD_RLS_BOOTSTRAP_SQL = `
 -- Member group (NOLOGIN). Members inherit schema/connect/table privileges from it;
@@ -123,6 +183,52 @@ CREATE TABLE IF NOT EXISTS "__lattice_cell_grants" (
   PRIMARY KEY ("table_name", "pk", "column_name", "grantee_role")
 );
 
+-- Per-table policy: the owner-controlled defaults that govern a whole table.
+-- default_row_visibility is the visibility NEW rows are stamped with (the insert
+-- trigger reads it); never_share is a hard exclusion — the share/grant functions
+-- refuse to elevate such a table and the trigger forces its rows private. Owner-
+-- managed; members have no grant (it never appears in their data API).
+CREATE TABLE IF NOT EXISTS "__lattice_table_policy" (
+  "table_name"             text PRIMARY KEY,
+  "default_row_visibility" text NOT NULL DEFAULT 'private'
+    CHECK ("default_row_visibility" IN ('private','everyone')),
+  "never_share"            boolean NOT NULL DEFAULT false,
+  "updated_by"             text NOT NULL DEFAULT session_user,
+  "updated_at"             timestamptz NOT NULL DEFAULT now()
+);
+
+-- Per-column audience policy: the CANONICAL store of which column carries which
+-- audience spec (role: / subject: / source: / owner / everyone). Previously the
+-- spec lived only in the owner's on-disk YAML and was compiled into the mask view
+-- once at init; storing it here makes it cloud-canonical and member-consistent.
+-- The generated <table>_v mask view is regenerated from THIS table on change.
+-- Owner-managed; members have no grant.
+CREATE TABLE IF NOT EXISTS "__lattice_column_policy" (
+  "table_name"  text NOT NULL,
+  "column_name" text NOT NULL,
+  "audience"    text NOT NULL,
+  "updated_by"  text NOT NULL DEFAULT session_user,
+  "updated_at"  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("table_name", "column_name")
+);
+
+-- Owner-only audit of issued member invites: which scoped role was minted for
+-- which email (HASHED — the plaintext email is never stored), when it expires,
+-- and whether it was redeemed/revoked. No plaintext password is ever stored
+-- (the credential lives only inside the email-bound token the owner delivers).
+-- Owner-managed; members have no grant. Named distinctly from any legacy
+-- team-model invitations table so a pre-existing cloud never collides.
+CREATE TABLE IF NOT EXISTS "__lattice_member_invites" (
+  "id"          text PRIMARY KEY,
+  "role"        text NOT NULL,
+  "email_hash"  text NOT NULL,
+  "created_by"  text NOT NULL DEFAULT session_user,
+  "created_at"  timestamptz NOT NULL DEFAULT now(),
+  "expires_at"  timestamptz NOT NULL,
+  "redeemed_at" timestamptz,
+  "revoked_at"  timestamptz
+);
+
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
 -- is visible to nobody.
@@ -148,6 +254,10 @@ BEGIN
   IF p_visibility NOT IN ('private','everyone','custom') THEN
     RAISE EXCEPTION 'lattice: invalid visibility %', p_visibility;
   END IF;
+  IF p_visibility <> 'private'
+     AND COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table and cannot be shared', p_table;
+  END IF;
   SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
     WHERE o."table_name" = p_table AND o."pk" = p_pk;
   IF v_owner IS NULL THEN RAISE EXCEPTION 'lattice: no ownership record for %/%', p_table, p_pk; END IF;
@@ -161,6 +271,9 @@ CREATE OR REPLACE FUNCTION lattice_grant_row(p_table text, p_pk text, p_grantee 
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
 DECLARE v_owner text;
 BEGIN
+  IF COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table and cannot be shared', p_table;
+  END IF;
   SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
     WHERE o."table_name" = p_table AND o."pk" = p_pk;
   IF v_owner IS NULL THEN RAISE EXCEPTION 'lattice: no ownership record for %/%', p_table, p_pk; END IF;
@@ -250,6 +363,9 @@ CREATE OR REPLACE FUNCTION lattice_grant_cell(p_table text, p_pk text, p_column 
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
 DECLARE v_owner text;
 BEGIN
+  IF COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table and cannot be shared', p_table;
+  END IF;
   SELECT o."owner_role" INTO v_owner FROM "__lattice_owners" o
     WHERE o."table_name" = p_table AND o."pk" = p_pk;
   IF v_owner IS NULL OR v_owner <> session_user THEN
@@ -281,6 +397,87 @@ CREATE OR REPLACE FUNCTION lattice_source_visible(p_source_ref text)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
   SELECT lattice_row_visible('files', p_source_ref)
 $fn$;
+
+-- Is the connected member the OWNER of this row? Used by the "owner" column
+-- audience (a secret column reveals only to the row owner). SECURITY DEFINER +
+-- session_user, like the other predicates.
+CREATE OR REPLACE FUNCTION lattice_is_owner(p_table text, p_pk text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT EXISTS (
+    SELECT 1 FROM "__lattice_owners" o
+     WHERE o."table_name" = p_table AND o."pk" = p_pk AND o."owner_role" = session_user
+  )
+$fn$;
+
+-- Owner-only: set a table's default row visibility for NEW rows. Raises unless the
+-- caller can create roles (a cloud owner / DBA), like lattice_assign_role. Rejects
+-- 'everyone' on a never-share table.
+CREATE OR REPLACE FUNCTION lattice_set_table_default_visibility(p_table text, p_visibility text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may set a table''s default visibility';
+  END IF;
+  IF p_visibility NOT IN ('private','everyone') THEN
+    RAISE EXCEPTION 'lattice: invalid default visibility %', p_visibility;
+  END IF;
+  IF p_visibility = 'everyone'
+     AND COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table), false) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table; its rows cannot default to everyone', p_table;
+  END IF;
+  INSERT INTO "__lattice_table_policy" ("table_name","default_row_visibility","updated_by","updated_at")
+    VALUES (p_table, p_visibility, session_user, now())
+    ON CONFLICT ("table_name") DO UPDATE
+      SET "default_row_visibility" = EXCLUDED."default_row_visibility",
+          "updated_by" = session_user, "updated_at" = now();
+END $fn$;
+
+-- Owner-only: mark a table never-shareable (Secrets/Messages-class). When true the
+-- share/grant functions raise and the insert trigger forces new rows private; the
+-- default visibility is also forced private. Turning it ON also RETROACTIVELY
+-- privatizes the table: any row currently shared ('everyone'/'custom') is reset to
+-- 'private' and every existing row/cell grant on the table is dropped — otherwise
+-- flagging a table never-share would leave already-leaked rows visible, defeating
+-- the point. Idempotent: re-running with already-private rows updates nothing.
+CREATE OR REPLACE FUNCTION lattice_set_table_never_share(p_table text, p_on boolean)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may change a table''s never-share flag';
+  END IF;
+  INSERT INTO "__lattice_table_policy" ("table_name","never_share","default_row_visibility","updated_by","updated_at")
+    VALUES (p_table, p_on, CASE WHEN p_on THEN 'private' ELSE 'private' END, session_user, now())
+    ON CONFLICT ("table_name") DO UPDATE
+      SET "never_share" = EXCLUDED."never_share",
+          "default_row_visibility" = CASE WHEN EXCLUDED."never_share"
+                                          THEN 'private' ELSE "__lattice_table_policy"."default_row_visibility" END,
+          "updated_by" = session_user, "updated_at" = now();
+  IF p_on THEN
+    UPDATE "__lattice_owners" SET "visibility" = 'private', "updated_at" = now()
+      WHERE "table_name" = p_table AND "visibility" <> 'private';
+    DELETE FROM "__lattice_row_grants"  WHERE "table_name" = p_table;
+    DELETE FROM "__lattice_cell_grants" WHERE "table_name" = p_table;
+  END IF;
+END $fn$;
+
+-- Owner-only: set (or clear) a column's audience spec in the canonical DB store.
+-- An empty/null spec removes the policy row (column becomes unmasked). The GUI/lib
+-- regenerates the table's mask view from this store after calling this.
+CREATE OR REPLACE FUNCTION lattice_set_column_audience(p_table text, p_column text, p_audience text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+BEGIN
+  IF NOT (SELECT rolcreaterole FROM pg_roles WHERE rolname = session_user) THEN
+    RAISE EXCEPTION 'lattice: only a cloud owner may set a column audience';
+  END IF;
+  IF p_audience IS NULL OR btrim(p_audience) = '' THEN
+    DELETE FROM "__lattice_column_policy" WHERE "table_name" = p_table AND "column_name" = p_column;
+  ELSE
+    INSERT INTO "__lattice_column_policy" ("table_name","column_name","audience","updated_by","updated_at")
+      VALUES (p_table, p_column, p_audience, session_user, now())
+      ON CONFLICT ("table_name","column_name") DO UPDATE
+        SET "audience" = EXCLUDED."audience", "updated_by" = session_user, "updated_at" = now();
+  END IF;
+END $fn$;
 
 -- Append-only change feed. The per-table ownership trigger records one row per
 -- INSERT/UPDATE/DELETE; the AFTER INSERT trigger here fires pg_notify so a
@@ -334,7 +531,20 @@ CREATE OR REPLACE FUNCTION "${trg}"() RETURNS trigger LANGUAGE plpgsql SECURITY 
 BEGIN
   IF TG_OP = 'INSERT' THEN
     INSERT INTO "__lattice_owners" ("table_name","pk","owner_role","visibility")
-      VALUES (${lit}, ${pkNew}, session_user, 'private')
+      VALUES (${lit}, ${pkNew}, session_user,
+        CASE
+          -- never-share always wins: such a table's rows are private, full stop.
+          WHEN COALESCE((SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = ${lit}), false)
+            THEN 'private'
+          -- per-INSERT override: a caller forcing visibility for THIS write (e.g.
+          -- chat "private mode") sets the transaction-local lattice.force_row_visibility
+          -- GUC, so the row is stamped atomically at insert — never momentarily at
+          -- the table default, and the change-feed NOTIFY (deferred to COMMIT) only
+          -- fires once the row already carries this visibility.
+          WHEN NULLIF(current_setting('lattice.force_row_visibility', true), '') IN ('private','everyone')
+            THEN current_setting('lattice.force_row_visibility', true)
+          ELSE COALESCE((SELECT "default_row_visibility" FROM "__lattice_table_policy" WHERE "table_name" = ${lit}), 'private')
+        END)
       ON CONFLICT ("table_name","pk") DO NOTHING;
     INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
       VALUES (${lit}, ${pkNew}, 'upsert', session_user);
@@ -376,12 +586,18 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 /** Install the cloud RLS bootstrap (bookkeeping + helper functions). No-op on SQLite. */
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
+  const schema = await cloudSchema(db);
   const migration: Migration = {
     // v3 added the audience helpers; v4 the role model; v5 the per-card override
-    // model (__lattice_cell_grants + lattice_cell_visible / lattice_grant_cell).
-    // The bootstrap is fully idempotent (CREATE OR REPLACE / IF NOT EXISTS).
-    version: 'internal:cloud-rls:bootstrap:v5',
-    sql: CLOUD_RLS_BOOTSTRAP_SQL,
+    // model (__lattice_cell_grants + lattice_cell_visible / lattice_grant_cell);
+    // v6 added per-table policy (__lattice_table_policy: default_row_visibility +
+    // never_share, enforced in the insert trigger + share/grant guards), the
+    // canonical column-audience store (__lattice_column_policy), lattice_is_owner,
+    // and the owner-only setters; v7 pins search_path on every SECURITY DEFINER
+    // helper (closes the pg_temp-shadow RLS bypass) + revokes schema CREATE from
+    // PUBLIC. The bootstrap is fully idempotent.
+    version: 'internal:cloud-rls:bootstrap:v7',
+    sql: pinDefinerSearchPath(CLOUD_RLS_BOOTSTRAP_SQL, schema) + revokeSchemaCreateSql(schema),
   };
   await db.migrate([migration]);
 }
@@ -391,16 +607,30 @@ export async function installCloudRls(db: Lattice): Promise<void> {
  * only what they're allowed to: a DERIVED observation only when it can reach
  * EVERY source it was derived from (so a hidden enrichment never reaches the
  * member — existence-hiding is structural), and a ground-truth / audit entry
- * only for a row that is itself visible to the member. Both predicates route
- * through the `session_user`-keyed SECURITY DEFINER helpers, so they bind to the
- * real member. `FORCE ROW LEVEL SECURITY` applies the policy even to the table
- * owner. No-op on SQLite (single-user; no cross-viewer leak to guard). Run after
- * the change-log table exists (`Lattice.ensureObservationSubstrate`).
+ * only when the member OWNS the row it records. Both predicates route through the
+ * `session_user`-keyed SECURITY DEFINER helpers, so they bind to the real member.
+ * `FORCE ROW LEVEL SECURITY` applies the policy even to the table owner. No-op on
+ * SQLite (single-user; no cross-viewer leak to guard). Run after the change-log
+ * table exists (`Lattice.ensureObservationSubstrate`).
+ *
+ * Ground-truth entries are OWNER-ONLY (v2), not merely "row is visible". A
+ * changelog row carries the full `changes`/`previous` JSON of the underlying row —
+ * EVERY column in cleartext, including ones the `<table>_v` mask hides from a
+ * non-owner (an `owner`-audience secret column, a role-gated column). If a member
+ * who was merely granted the row could read its history, those masked columns
+ * would leak in cleartext, bypassing column masking. The row's full mutation
+ * history is an owner/audit artifact; a non-owner sees the row only through the
+ * masked view, never its raw history. (The derived-observation branch is the
+ * per-viewer enrichment path and is unaffected — it carries enrichment, not the
+ * base row's masked columns.)
  */
 export async function enableChangelogRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const migration: Migration = {
-    version: 'internal:cloud-rls:changelog:v1',
+    // v2: ground-truth/audit entries are owner-only (was lattice_row_visible),
+    // closing the masked-column-via-history leak. Bump re-installs the policy on
+    // existing clouds.
+    version: 'internal:cloud-rls:changelog:v2',
     sql: `
 ALTER TABLE "__lattice_changelog" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "__lattice_changelog" FORCE ROW LEVEL SECURITY;
@@ -415,7 +645,7 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
         SELECT 1 FROM jsonb_array_elements_text("source_ref"::jsonb) AS src(sid)
          WHERE NOT lattice_source_visible(src.sid)
       )
-    ELSE lattice_row_visible("table_name", "row_id")
+    ELSE lattice_is_owner("table_name", "row_id")
   END
 );
 DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
@@ -425,16 +655,23 @@ CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH C
   await db.migrate([migration]);
 }
 
-/** Enable RLS on one shared table. No-op on SQLite. Idempotent via a per-table version key. */
+/**
+ * Enable RLS on one shared table. No-op on SQLite. Idempotent via a per-table
+ * version key. v3 bumps the key so existing clouds re-install the policy-aware
+ * insert trigger (which now stamps the per-table `default_row_visibility` / forces
+ * private under `never_share`) and pick up the `search_path` pin on the trigger
+ * function — neither of which a v2-stamped clone would otherwise get.
+ */
 export async function enableRlsForTable(
   db: Lattice,
   table: string,
   pkCols: readonly string[],
 ): Promise<void> {
   if (!isPg(db)) return;
+  const schema = await cloudSchema(db);
   const migration: Migration = {
-    version: `internal:cloud-rls:table:${table}:v2`,
-    sql: tableRlsSql(table, pkCols),
+    version: `internal:cloud-rls:table:${table}:v3`,
+    sql: pinDefinerSearchPath(tableRlsSql(table, pkCols), schema),
   };
   await db.migrate([migration]);
 }
