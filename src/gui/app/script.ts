@@ -252,8 +252,6 @@ export const appJs = `
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
         document.body.classList.toggle('advanced-mode', advancedMode());
-        var advToggle = document.getElementById('advanced-toggle');
-        if (advToggle) advToggle.checked = advancedMode();
         wireSettingsDrawer();
         renderWsSwitcher(results[5]);
         renderSidebar();
@@ -2662,8 +2660,6 @@ export const appJs = `
       if (!drawer || !backdrop) return;
       backdrop.hidden = false;
       drawer.hidden = false;
-      var toggle = document.getElementById('advanced-toggle');
-      if (toggle) toggle.checked = advancedMode();
       // Allow the elements to lay out before transitioning in.
       window.requestAnimationFrame(function () {
         drawer.classList.add('open');
@@ -2700,8 +2696,6 @@ export const appJs = `
       document.querySelectorAll('.drawer-tab').forEach(function (b) {
         b.addEventListener('click', function () { selectDrawerTab(b.getAttribute('data-tab')); });
       });
-      var toggle = document.getElementById('advanced-toggle');
-      if (toggle) toggle.addEventListener('change', function () { setAdvancedMode(toggle.checked); });
       document.addEventListener('keydown', function (e) {
         if (e.key !== 'Escape') return;
         var drawer = document.getElementById('settings-drawer');
@@ -4395,7 +4389,7 @@ export const appJs = `
           '</div>';
         }
         // Only the selected provider's key input is shown (declutter). 'auto'
-        // ("Select provider…") shows no key row until a provider is chosen.
+        // ("No Voice") shows no key row and disables voice — no STT provider.
         function voiceRowHtml(provider) {
           if (provider === 'openai') {
             return rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…');
@@ -4437,7 +4431,7 @@ export const appJs = `
             '<div style="margin:6px 0 8px;display:flex;align-items:center;gap:8px">' +
               '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
               '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
-                '<option value="auto">Select provider…</option>' +
+                '<option value="auto">No Voice</option>' +
                 '<option value="openai">OpenAI</option>' +
                 '<option value="elevenlabs">ElevenLabs</option>' +
               '</select>' +
@@ -4491,7 +4485,9 @@ export const appJs = `
               body: JSON.stringify({ provider: sttSel.value }),
             })
               .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-              .then(function () { msg.textContent = 'Saved.'; })
+              // Refresh the composer so the mic affordance disappears immediately
+              // when "No Voice" is selected (and reappears for a real provider).
+              .then(function () { msg.textContent = 'Saved.'; renderComposer(); })
               .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
           });
         }
@@ -4812,9 +4808,24 @@ export const appJs = `
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Lattice Settings</h2>' +
+          '<div class="dbconfig-panel" style="margin-bottom:14px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<label class="toggle" title="Advanced mode — row/table editor instead of the file workspace" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer">' +
+              '<input type="checkbox" id="advanced-toggle">' +
+              '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
+              '<span class="toggle-label">Advanced View</span>' +
+            '</label>' +
+            '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">Row/table editor instead of the file workspace.</p>' +
+          '</div>' +
           '<p class="lead">Every workspace this lattice can switch to. This is the same list as the header dropdown.</p>' +
           '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading workspaces…</div></div>' +
         '</div>';
+      // Advanced View toggle lives here now (moved out of the sidebar). Wired on
+      // each render since renderLatticeSettings rebuilds the drawer body.
+      var advToggle = content.querySelector('#advanced-toggle');
+      if (advToggle) {
+        advToggle.checked = advancedMode();
+        advToggle.addEventListener('change', function () { setAdvancedMode(advToggle.checked); });
+      }
       var host = document.getElementById('lattice-dbs-host');
       // Single source of truth: the workspace registry (same as the header switcher).
       fetchJson('/api/workspaces').then(function (data) {
@@ -4824,7 +4835,8 @@ export const appJs = `
           var isActive = w.id === currentId;
           var kind = w.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)';
           // Rows are click-to-switch; deletion lives in Workspace Settings → Danger Zone.
-          return '<tr' + (isActive ? '' : ' class="ws-row" data-switch-id="' + escapeHtml(w.id) + '"') + '>' +
+          // The active row is highlighted (.ws-active) and not click-to-switch.
+          return '<tr class="' + (isActive ? 'ws-active' : 'ws-row') + '"' + (isActive ? '' : ' data-switch-id="' + escapeHtml(w.id) + '"') + '>' +
             '<td>' + escapeHtml(w.label) + (isActive ? ' <span class="role-tag">active</span>' : '') + '</td>' +
             '<td>' + kind + '</td>' +
             '<td><code>' + escapeHtml(w.dir || '') + '</code></td>' +
@@ -4844,10 +4856,13 @@ export const appJs = `
         host.querySelectorAll('tr.ws-row[data-switch-id]').forEach(function (row) {
           row.addEventListener('click', function () {
             var id = row.getAttribute('data-switch-id');
+            // Switch the workspace AND close the settings drawer at the same time —
+            // close immediately (concurrent with the switch) so it isn't left open.
+            closeSettingsDrawer();
             fetch('/api/workspaces/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: id }) })
               .then(function (r) { return r.json(); })
               .then(function () { return reloadEverything(); })
-              .then(function () { renderLatticeSettings(document.getElementById('content')); });
+              .catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
           });
         });
         host.querySelector('#action-add-db').addEventListener('click', showCreateDatabaseWizard);

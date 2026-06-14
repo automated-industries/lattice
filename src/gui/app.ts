@@ -60,11 +60,6 @@ export const guiAppHtml = `<!doctype html>
   </header>
   <div class="layout">
     <nav class="sidebar">
-      <label class="sidebar-advanced toggle" title="Advanced mode — row/table editor instead of the file workspace">
-        <input type="checkbox" id="advanced-toggle">
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-        <span class="toggle-label">Advanced View</span>
-      </label>
       <div class="section-label">Objects</div>
       <ul id="object-nav"></ul>
       <div id="system-section" hidden>

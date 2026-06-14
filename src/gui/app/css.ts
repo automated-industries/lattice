@@ -663,7 +663,9 @@ export const css = `
       padding: 10px 18px; border-radius: 999px;
       display: flex; align-items: center; gap: 14px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-      z-index: 200; font-size: 13.5px;
+      /* Above every overlay (.modal-backdrop is z-index 1000, drawers 120-130) so
+         an error thrown by an overlay screen is always visible on top. */
+      z-index: 2000; font-size: 13.5px;
       animation: toast-in 0.18s ease;
     }
     @keyframes toast-in {
@@ -798,6 +800,11 @@ export const css = `
     .teams-page { padding: 24px 28px; max-width: 1000px; }
     .teams-page h2 { margin: 0 0 4px 0; font-size: 22px; }
     .teams-page .lead { color: var(--text-muted); margin-bottom: 24px; font-size: 13.5px; }
+    /* Workspace list (Lattice Settings): active row highlighted, others click-to-switch. */
+    .teams-page tr.ws-row { cursor: pointer; }
+    .teams-page tr.ws-row:hover td { background: var(--surface-2); }
+    .teams-page tr.ws-active td { background: var(--accent-soft); }
+    .teams-page tr.ws-active td:first-child { font-weight: 600; color: var(--accent); }
     .teams-actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
     .team-card {
       background: var(--sheen), var(--surface); border: 1px solid var(--border);
