@@ -1038,6 +1038,11 @@ export class Lattice {
     const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
       .join(', ');
+    // Every requested column was filtered out as non-schema → nothing to update.
+    // A bare `UPDATE "t" SET  WHERE …` is invalid SQL; no-op instead of crashing.
+    // (The GUI mutation layer auto-creates unknown columns before calling update,
+    // so an assistant's intended data lands; this guards any caller that doesn't.)
+    if (setCols === '') return;
 
     const { clause, params: pkParams } = this._pkWhere(table, id);
 

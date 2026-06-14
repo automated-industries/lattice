@@ -1,6 +1,8 @@
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
+import { cloudRlsInstalled } from '../framework/cloud-connect.js';
+import { regenerateAudienceViewFromDb } from '../cloud/audience.js';
 
 /**
  * Shared GUI mutation primitives. The HTTP row-CRUD routes write through these
@@ -229,12 +231,71 @@ export interface MutationCtx {
   applySchemaForward?: (entry: AuditEntry) => Promise<void>;
 }
 
+/** Infer a column type for an auto-created column from its first written value. */
+function inferColumnType(v: unknown): string {
+  if (typeof v === 'number') return Number.isInteger(v) ? 'INTEGER' : 'REAL';
+  if (typeof v === 'boolean') return 'INTEGER';
+  return 'TEXT';
+}
+
+/**
+ * Auto-create any columns present in `values` that the table's schema lacks, so
+ * a caller (e.g. the assistant) that writes a field the table doesn't have gets
+ * the data PERSISTED rather than silently dropped (Rule: no silent failures —
+ * the old behaviour filtered unknown columns away and still reported success).
+ * Internal bookkeeping tables (`_lattice_*` / `__lattice_*`) are never extended.
+ * On a secured cloud the generated per-column audience (mask) view is rebuilt so
+ * members see the new columns too. Returns the names of columns it created (for
+ * the activity feed). `addColumn` throws on an unsafe identifier — surfaced, not
+ * silently skipped.
+ */
+async function ensureColumns(db: Lattice, table: string, values: Row): Promise<string[]> {
+  if (table.startsWith('_lattice_') || table.startsWith('__lattice_')) return [];
+  const existing = db.getRegisteredColumns(table);
+  if (!existing) return []; // unknown table — the write fails loudly downstream
+  const added = Object.keys(values).filter((k) => !(k in existing));
+  if (added.length === 0) return [];
+  for (const col of added) await db.addColumn(table, col, inferColumnType(values[col]));
+  // Cloud: the masked audience view selects an explicit column list, so a newly
+  // added column is invisible to members until the view is regenerated.
+  if (db.getDialect() === 'postgres' && (await cloudRlsInstalled(db))) {
+    const cols = db.getRegisteredColumns(table);
+    const pk = db.getPrimaryKey(table);
+    if (cols && pk.length > 0) await regenerateAudienceViewFromDb(db, table, Object.keys(cols), pk);
+  }
+  return added;
+}
+
+/** Record + surface an auto-column-add so it is never a silent schema change. */
+async function announceAddedColumns(
+  ctx: MutationCtx,
+  table: string,
+  added: string[],
+): Promise<void> {
+  if (added.length === 0) return;
+  const summary = `Added column${added.length > 1 ? 's' : ''} ${added.join(', ')} to ${table}`;
+  await recordSchemaAudit(
+    ctx.db,
+    ctx.feed,
+    table,
+    'schema.add_column',
+    null,
+    { columns: added },
+    summary,
+    ctx.source,
+    ctx.sessionId,
+  );
+}
+
 export async function createRow(
   ctx: MutationCtx,
   table: string,
   values: Row,
   forceVisibility?: 'private' | 'everyone',
 ): Promise<{ id: string; row: Row | null }> {
+  // Persist fields the schema lacks by creating the columns first (no silent drop).
+  const addedCols = await ensureColumns(ctx.db, table, values);
+  await announceAddedColumns(ctx, table, addedCols);
   // When the caller demands a specific cloud visibility for this row (e.g. chat
   // "private mode"), stamp it atomically at insert via insertForcingVisibility —
   // never create-then-demote, which would leave the row briefly visible at the
@@ -290,6 +351,9 @@ export async function updateRow(
   if (before === null) {
     throw new Error(`Cannot update "${table}": no row with id "${id}"`);
   }
+  // Persist fields the schema lacks by creating the columns first (no silent drop).
+  const addedCols = await ensureColumns(ctx.db, table, values as Row);
+  await announceAddedColumns(ctx, table, addedCols);
   // No app-layer permission gate: on a cloud, Postgres RLS confines a member to
   // the rows it may edit (an update to an invisible row simply affects 0 rows).
   await ctx.db.update(table, id, values);
