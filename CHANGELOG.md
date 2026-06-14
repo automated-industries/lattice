@@ -207,10 +207,12 @@ false`, `allow_ad_personalization_signals:false`, `anonymize_ip:true`.
   numbers / short enum tokens — table and column names, row ids/content, file
   names, queries, chat text, display name, email, paths, and the port are never
   sent. `page_view` reports a synthetic route-type location, never the real hash.
-- Wired events so far: `app_open`, `page_view`, `row_create`/`row_update`/
-  `row_delete`, `file_ingest`, `assistant_message`, `assistant_thread_new`,
-  `analytics_opt_in`/`analytics_opt_out` (more coarse events can be layered on the
-  same `gaTrack` helper). The preference now reports `analytics_effective`.
+- Wired events: `app_open`, `page_view`, `row_create`/`row_update`/`row_delete`,
+  `file_ingest`, `assistant_message`, `assistant_thread_new`, `history_action`
+  (undo/redo/revert), `member_invite`, `table_create`/`table_delete`,
+  `data_model_share`, `workspace_create`/`workspace_switch`, `search`,
+  `setting_change`, `analytics_opt_in`/`analytics_opt_out`. All params are coarse
+  enums/counts only. The preference reports `analytics_effective`.
 
 ### Changed — settings layout (3.2)
 

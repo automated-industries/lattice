@@ -59,6 +59,36 @@ describe('#4 Google Analytics — static contract', () => {
     // must be NO static <script src="...googletagmanager..."> tag.
     expect(guiAppHtml).not.toMatch(/<script[^>]+src=["']https:\/\/www\.googletagmanager/i);
   });
+
+  it('the curated event set is wired into the embedded SPA (no silent drop)', () => {
+    // Guards the #4 instrumentation: every coarse, anonymized action event is
+    // emitted somewhere in the bundle. (The events fire client-side; param
+    // anonymization is enforced by sanitize(), tested below.)
+    const expected = [
+      'app_open',
+      'analytics_opt_in',
+      'analytics_opt_out',
+      'assistant_message',
+      'assistant_thread_new',
+      'file_ingest',
+      'history_action',
+      'member_invite',
+      'table_create',
+      'table_delete',
+      'data_model_share',
+      'workspace_create',
+      'workspace_switch',
+      'search',
+      'setting_change',
+    ];
+    for (const evt of expected) {
+      expect(guiAppHtml, `event ${evt} should be instrumented`).toContain(`'${evt}'`);
+    }
+    // Row writes go through a single rowWrite() with a computed verb.
+    expect(guiAppHtml).toContain("'row_create'");
+    expect(guiAppHtml).toContain("'row_update'");
+    expect(guiAppHtml).toContain("'row_delete'");
+  });
 });
 
 describe('#4 Google Analytics — runtime consent + anonymization', () => {

@@ -918,7 +918,7 @@ export const appJs = `
         else if (e.key === 'Enter') {
           e.preventDefault();
           var q = input.value.trim();
-          if (q) askAssistant(q);
+          if (q) { gaTrack('search', {}); askAssistant(q); } // event only — never the query text
         }
       });
     }
@@ -1004,6 +1004,7 @@ export const appJs = `
 
     /** Standard undo: hit /api/history/undo and refresh views. */
     function undoLast() {
+      gaTrack('history_action', { action: 'undo' });
       return fetchJson('/api/history/undo', { method: 'POST' })
         .then(afterMutation)
         .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
@@ -1014,12 +1015,14 @@ export const appJs = `
     // ────────────────────────────────────────────────────────────
     function wireHistoryControls() {
       document.getElementById('undo-btn').addEventListener('click', function () {
+        gaTrack('history_action', { action: 'undo' });
         fetchJson('/api/history/undo', { method: 'POST' })
           .then(function () { return afterMutation(); })
           .then(function () { showToast('Last change undone', {}); })
           .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
       });
       document.getElementById('redo-btn').addEventListener('click', function () {
+        gaTrack('history_action', { action: 'redo' });
         fetchJson('/api/history/redo', { method: 'POST' })
           .then(function () { return afterMutation(); })
           .then(function () { showToast('Redone', {}); })
@@ -1174,6 +1177,7 @@ export const appJs = `
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-id');
             if (id === currentId) { menu.hidden = true; return; }
+            gaTrack('workspace_switch', {}); // event only — never the workspace id/name
             // Surface "switching" on the stable header button for the WHOLE
             // switch (POST + reloadEverything), independent of the ephemeral
             // menu-item withBusy spinner — the menu can close/rebuild mid-switch.
@@ -2265,6 +2269,7 @@ export const appJs = `
       return window.localStorage.getItem(FS_KEYS.advanced) === '1';
     }
     function setAdvancedMode(on) {
+      gaTrack('setting_change', { setting: 'advanced_mode', value: !!on }); // coarse enum + bool
       window.localStorage.setItem(FS_KEYS.advanced, on ? '1' : '0');
       document.body.classList.toggle('advanced-mode', on);
       // Preserve context: map the current location between the file-system
@@ -2883,6 +2888,7 @@ export const appJs = `
         mount.querySelectorAll('button.history-revert').forEach(function (btn) {
           btn.addEventListener('click', function () {
             var id = btn.getAttribute('data-id');
+            gaTrack('history_action', { action: 'revert' });
             fetchJson('/api/history/revert/' + encodeURIComponent(id), { method: 'POST' })
               .then(afterMutation)
               .then(function () {
@@ -3448,6 +3454,7 @@ export const appJs = `
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ name: name, icon: icon || undefined }),
             }).then(function () {
+              gaTrack('table_create', {}); // event only — never the table name
               // New node not in the current graph → rebuild it (in place, no
               // route change so the drawer scroll is preserved).
               return dmRefreshPanel(name, true);
@@ -3683,6 +3690,7 @@ export const appJs = `
         // removed in the RLS rewrite — calling it 404'd, which is why the control
         // appeared dead.)
         var nextVis = isShared ? 'private' : 'everyone';
+        gaTrack('data_model_share', { visibility: nextVis }); // coarse enum only, no table name
         withBusy(shareBtn, function () {
           return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/default-row-visibility', {
             method: 'POST',
@@ -4019,6 +4027,7 @@ export const appJs = `
             return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName), {
               method: 'DELETE',
             }).then(function () {
+              gaTrack('table_delete', {}); // event only — never the table name
               return dmRefreshPanel(null, true);
             }).then(function () {
               showToast('Table "' + tableName + '" deleted', {});
@@ -4350,6 +4359,7 @@ export const appJs = `
         }
 
         function submitLocal() {
+          gaTrack('workspace_create', { kind: 'local' }); // coarse enum only, no name
           // Create + activate a new local workspace in the registry (the single
           // source of truth). The friendly name is the workspace display name —
           // no separate slug/config-file/rename dance.
@@ -4370,6 +4380,7 @@ export const appJs = `
           // is no per-table sharing at creation time.
           var fields = parsePostgresUrl(wizState.cloudUrl.trim(), wizState.name.trim());
           if (!fields) return Promise.reject(new Error('Cloud URL must be a valid postgres:// connection string.'));
+          gaTrack('workspace_create', { kind: 'cloud' }); // coarse enum only, no name/URL
           return fetchJson('/api/workspaces/create', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -4974,6 +4985,7 @@ export const appJs = `
         host.querySelectorAll('tr.ws-row[data-switch-id]').forEach(function (row) {
           row.addEventListener('click', function () {
             var id = row.getAttribute('data-switch-id');
+            gaTrack('workspace_switch', {}); // event only — never the workspace id/name
             // Switch the workspace AND close the settings drawer at the same time —
             // close immediately (concurrent with the switch) so it isn't left open.
             closeSettingsDrawer();
@@ -5397,6 +5409,7 @@ export const appJs = `
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ email: data.email }),
           }).then(function (res) {
+            gaTrack('member_invite', {}); // event only — never the invitee email
             showInviteTokenModal(res || {});
           });
         },
