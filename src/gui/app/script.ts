@@ -371,6 +371,21 @@ export const appJs = `
       var m = /^#\\/objects\\/([^/]+)/.exec(hash);
       return m ? m[1] : null;
     }
+    // The record the user is currently viewing — the deepest table/id pair in the
+    // route (a file/row detail). Returned to the chat as activeContext so "this
+    // file"/"this row" resolves to it. null when just browsing a list / dashboard.
+    function activeElement() {
+      var hash = location.hash || '#/';
+      var segs = (typeof fsParse === 'function') ? fsParse(hash) : null;
+      if (segs && segs.length >= 2) {
+        // segments alternate table,id,table,id… — take the last complete pair.
+        var lastId = (segs.length % 2 === 0) ? segs.length - 1 : segs.length - 2;
+        if (lastId >= 1) return { table: segs[lastId - 1], id: segs[lastId] };
+      }
+      var m = /^#\\/objects\\/([^/]+)\\/([^/]+)/.exec(hash);
+      if (m) return { table: decodeURIComponent(m[1]), id: decodeURIComponent(m[2]) };
+      return null;
+    }
     // Briefly highlight a row that just changed (data-id === pk) in the view.
     function flashRow(pk) {
       var content = document.getElementById('content');
@@ -6034,7 +6049,8 @@ export const appJs = `
       var privateMode = !!(privEl && privEl.checked);
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode })
+        // activeContext: the record on screen, so "this file"/"this row" resolves.
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement() })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });

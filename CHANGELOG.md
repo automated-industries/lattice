@@ -8,6 +8,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — chat knows the record you're viewing (3.2)
+
+- **The assistant resolves "this".** The chat now sends the record currently open
+  in the GUI (table + id) as context, so "delete this file", "summarize this", or
+  "share this row" act on it directly instead of asking which one. The hint is
+  validated server-side (table must exist) and every action still flows through
+  the permission-gated tools, so it can't widen access.
+
 ### Fixed — chat rail follows the active workspace (3.2)
 
 - **Switching workspaces now resets the chat rail.** `chat_threads`/`chat_messages`

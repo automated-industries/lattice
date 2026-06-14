@@ -172,6 +172,7 @@ function buildSystemPrompt(
   schema: string,
   operatorName?: string,
   cloudSystemPrompt?: string,
+  activeContext?: { table: string; id: string },
 ): string {
   // Tell the assistant who it's talking to so it can address the operator and
   // link records to "you" without asking for a name it already has access to.
@@ -186,7 +187,14 @@ function buildSystemPrompt(
     cloudSystemPrompt && cloudSystemPrompt.trim().length > 0
       ? `\n\n# Workspace instructions\n${cloudSystemPrompt.trim()}`
       : '';
-  return `${BASE_SYSTEM_PROMPT}${who}${workspace}\n\n# Current database\n${schema}`;
+  // What the user is looking at right now, so deictic references ("this file",
+  // "this row", "delete this") resolve without asking. The assistant should act
+  // on it via the normal tools (get_row/update_row/delete_row by this id).
+  const view =
+    activeContext?.table && activeContext.id
+      ? `\n\n# What the user is viewing\nThe user is currently viewing the "${activeContext.table}" record with id "${activeContext.id}". When they say "this", "this file", "this row", "this record", "it", or similar without naming a specific record, they mean THAT one — operate on it directly (read it with get_row, change or delete it by that id) rather than asking which record they mean.`
+      : '';
+  return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}\n\n# Current database\n${schema}`;
 }
 
 /** A content block in the Anthropic message format we use. */
@@ -251,6 +259,13 @@ export interface RunChatOptions {
    */
   cloudSystemPrompt?: string;
   /**
+   * The record the user is currently looking at in the GUI (table + id), so a
+   * message like "delete this file" / "summarize this" resolves to it instead of
+   * the assistant asking which one. Client-supplied hint only — every action the
+   * assistant takes still goes through the permission-gated tools.
+   */
+  activeContext?: { table: string; id: string };
+  /**
    * Optional sink for cross-turn tool memory: each executed tool call's id,
    * name, (capped) input, and (capped) result content. The chat route persists
    * these so a later turn is replayed with real tool_use/tool_result blocks —
@@ -289,6 +304,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     await buildSchemaContext(opts.dispatch),
     opts.operatorName,
     opts.cloudSystemPrompt,
+    opts.activeContext,
   );
 
   let loop = 0;

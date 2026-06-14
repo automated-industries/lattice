@@ -76,6 +76,26 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
+/**
+ * Validate the client's "what am I looking at" hint into `{ table, id }`, or null.
+ * The table must be a known table (so a bogus hint can't inject a fake name into
+ * the prompt) and the id a short non-empty string. Access is still enforced by the
+ * tools the assistant calls; this only resolves deictic references ("this file").
+ */
+export function parseActiveContext(
+  raw: unknown,
+  validTables: Set<string>,
+): { table: string; id: string } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const table = (raw as { table?: unknown }).table;
+  const id = (raw as { id?: unknown }).id;
+  if (typeof table !== 'string' || typeof id !== 'string') return undefined;
+  if (!validTables.has(table)) return undefined;
+  const trimmedId = id.trim();
+  if (trimmedId.length === 0 || trimmedId.length > 256) return undefined;
+  return { table, id: trimmedId };
+}
+
 /** Map client-supplied prior turns into the loop's message format. */
 function mapHistory(raw: unknown): LlmMessage[] {
   if (!Array.isArray(raw)) return [];
@@ -444,6 +464,10 @@ export async function dispatchChatRoute(
     return true;
   }
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
+  // The record the user is currently viewing (table + id), so "delete this file"
+  // resolves to it. Client-supplied hint, validated to a known table; every action
+  // still flows through the permission-gated tools, so this can't widen access.
+  const activeContext = parseActiveContext(body.activeContext, ctx.validTables);
   // Server-authoritative prior-turn context: real tool_use/tool_result blocks
   // rebuilt from the persisted thread so the model retains row ids across turns
   // (the text-only client history drops them). New thread → text-only fallback.
@@ -534,6 +558,7 @@ export async function dispatchChatRoute(
       // resolves "me"/"my" without asking for a name it already has.
       operatorName: readIdentity().display_name,
       ...(cloudSystemPrompt ? { cloudSystemPrompt } : {}),
+      ...(activeContext ? { activeContext } : {}),
       // Capture each executed tool call (capped) for cross-turn replay memory.
       onToolRecord: (rec) => {
         turns[turns.length - 1]?.toolCalls.push(rec);
