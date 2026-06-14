@@ -1079,6 +1079,14 @@ export const appJs = `
         // the composer so the Private-mode toggle reflects local vs cloud (it is
         // forced checked+disabled on local). See #7.
         renderComposer();
+        // #G — the chat rail is per-workspace (chat_threads/chat_messages live in
+        // the workspace DB), so a switch/create must reset it to the NEW
+        // workspace's conversation instead of stranding the previous one on screen.
+        // (Reset inline rather than via newChat() so it doesn't fire the
+        // assistant_thread_new analytics event on every switch.)
+        currentThreadId = null;
+        clearChat();
+        refreshThreadList(true);
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
         loadedTables = {};

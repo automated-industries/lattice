@@ -8,6 +8,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — chat rail follows the active workspace (3.2)
+
+- **Switching workspaces now resets the chat rail.** `chat_threads`/`chat_messages`
+  live in the workspace DB, but a workspace switch/create left the previous
+  workspace's conversation on screen. The rail now clears and reloads the new
+  workspace's threads on every switch.
+
 ### Fixed — file view: inline image + Open/Download buttons (3.2)
 
 - **Uploaded images preview inline again.** The preview only rendered when the
