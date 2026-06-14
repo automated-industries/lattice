@@ -169,6 +169,23 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('bt.map(function (b) { return loadAllRows(b.rel.table); })');
   });
 
+  it('renders a definition tooltip on column headers + field labels', () => {
+    // Feature (3.0.1): hovering a column shows its definition — the resolved
+    // description (authored/built-in, from /api/gui-meta/columns) combined with
+    // the column's type/role. Wired on the classic table headers AND the FS
+    // object-view field labels, plus an editable description box in the data
+    // model editor.
+    expect(guiAppHtml).toContain('function columnTooltip(');
+    expect(guiAppHtml).toContain('function columnTypeRole(');
+    // Classic table headers carry the tooltip.
+    expect(guiAppHtml).toContain('columnTooltip(tableName, c)');
+    // FS field labels carry it too.
+    expect(guiAppHtml).toContain('columnTooltip(table, col)');
+    // The data-model editor exposes an editable description box per column.
+    expect(guiAppHtml).toContain('dm-col-desc');
+    expect(guiAppHtml).toContain('data-was-desc=');
+  });
+
   it('cloud member admin lives in Database Settings, not a legacy team card', () => {
     // The legacy project-config team-card UI (renderTeamCard /
     // renderTeamsForProjectConfig / wireTeamCardActions) was removed.

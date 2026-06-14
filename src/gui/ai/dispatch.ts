@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../../lattice.js';
 import type { Row } from '../../types.js';
 import type { FeedBus } from '../feed.js';
@@ -52,6 +53,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'create_entity',
   'create_relationship',
   'delete_entity',
+  'set_column_description',
   'undo',
   'redo',
   'revert',
@@ -355,6 +357,44 @@ export async function executeFunction(
         ctx.validTables.delete(target);
         ctx.junctionTables.delete(target);
         return { ok: true, result: outcome };
+      }
+      case 'set_column_description': {
+        // Persist the column's definition to _lattice_gui_column_meta. This is
+        // pure metadata (no schema reopen), so it writes directly via ctx.db —
+        // the same path the data-model UI's description editor uses. The value
+        // drives the GUI tooltip AND this assistant's future schema context.
+        const table = requireTable(args.table, ctx.validTables);
+        const column = requireString(args.column, 'column');
+        const cols = ctx.db.getRegisteredColumns(table);
+        if (!cols || !(column in cols)) {
+          return { ok: false, error: `Unknown column "${column}" on "${table}"` };
+        }
+        const raw = typeof args.description === 'string' ? args.description.trim() : '';
+        const description = raw === '' ? null : raw;
+        const existing = (
+          (await ctx.db.query('_lattice_gui_column_meta', {
+            filters: [
+              { col: 'table_name', op: 'eq', val: table },
+              { col: 'column_name', op: 'eq', val: column },
+            ],
+          })) as { id: string }[]
+        )[0];
+        if (existing) {
+          await ctx.db.update('_lattice_gui_column_meta', existing.id, {
+            description,
+            updated_at: new Date().toISOString(),
+          });
+        } else {
+          await ctx.db.insert('_lattice_gui_column_meta', {
+            id: randomUUID(),
+            table_name: table,
+            column_name: column,
+            secret: 0,
+            description,
+            updated_at: new Date().toISOString(),
+          });
+        }
+        return { ok: true, result: { table, column, description } };
       }
       case 'get_history': {
         const limit = typeof args.limit === 'number' ? args.limit : 50;

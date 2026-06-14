@@ -327,6 +327,25 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'set_column_description',
+    description:
+      "Set the definition of a column — what data belongs in it. Call this " +
+      'whenever the user explains or defines what a column means. The description ' +
+      'is shown as the column-header tooltip in the GUI AND added to your own ' +
+      'schema context on future turns, so defining a column improves how you ' +
+      'categorize and extract data into it. Pass an empty description to clear it.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        table: str('Table name.'),
+        column: str('Column name.'),
+        description: str('Plain-language definition of the column (empty string clears it).'),
+      },
+      ['table', 'column', 'description'],
+    ),
+  },
+  {
     name: 'set_entity_icon',
     description: 'Set the emoji icon override for an entity.',
     mutates: true,

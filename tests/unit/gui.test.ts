@@ -655,7 +655,9 @@ describe('GUI server', () => {
     const initial = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
       r.json(),
     )) as Record<string, Record<string, { secret: boolean }>>;
-    expect(initial).toEqual({});
+    // The endpoint now enumerates every column (for the definition tooltip), so
+    // the initial state is "present but not secret" rather than an empty map.
+    expect(initial.agents?.name?.secret).toBe(false);
 
     const put = await fetch(`${server.url}/api/gui-meta/columns/agents/name`, {
       method: 'PUT',

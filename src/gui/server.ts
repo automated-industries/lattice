@@ -107,6 +107,7 @@ import {
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
+import { resolveColumnDescription } from './column-descriptions.js';
 
 export interface StartGuiServerOptions {
   configPath: string;
@@ -643,14 +644,20 @@ export async function openConfig(
     render: () => '',
     outputFile: '.lattice-gui/meta.md',
   });
-  // Per-column GUI metadata — currently just the 'secret' flag used to
-  // mask values with bullets in the table / detail / context views.
+  // Per-column GUI metadata — the 'secret' flag (masks values with bullets in
+  // the table / detail / context views) and an optional human 'description'
+  // (the column's definition). The description drives the hover tooltip AND is
+  // injected into the assistant's schema context, so describing a column once
+  // helps both the operator and the assistant's categorization. The
+  // `description` column is additive — SchemaManager.applySchemaFor adds it to
+  // existing workspaces on the next boot (dialect-safe).
   db.define('_lattice_gui_column_meta', {
     columns: {
       id: 'TEXT PRIMARY KEY',
       table_name: 'TEXT NOT NULL',
       column_name: 'TEXT NOT NULL',
       secret: 'INTEGER NOT NULL DEFAULT 0',
+      description: 'TEXT',
       updated_at: "TEXT DEFAULT (datetime('now'))",
     },
     render: () => '',
@@ -1621,17 +1628,48 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── GUI column metadata (per-column secret flag) ─────────────────
+        // ── GUI column metadata (per-column secret flag + description) ────
+        // Enumerates every column of every user-facing table so the client can
+        // render a definition tooltip on each one. `description` is the resolved
+        // value: operator-authored (in _lattice_gui_column_meta) wins, else a
+        // built-in default, else null (client falls back to the column's type).
         if (method === 'GET' && pathname === '/api/gui-meta/columns') {
           const rows = (await active.db.query('_lattice_gui_column_meta', {})) as {
             table_name: string;
             column_name: string;
             secret: number;
+            description: string | null;
           }[];
-          const out: Record<string, Record<string, { secret: boolean }>> = {};
+          const authored = new Map<string, { secret: number; description: string | null }>();
           for (const r of rows) {
-            const bucket = out[r.table_name] ?? (out[r.table_name] = {});
-            bucket[r.column_name] = { secret: r.secret === 1 };
+            authored.set(`${r.table_name} ${r.column_name}`, {
+              secret: r.secret,
+              description: r.description ?? null,
+            });
+          }
+          const out: Record<
+            string,
+            Record<string, { secret: boolean; description: string | null; authored: string | null }>
+          > = {};
+          for (const table of active.validTables) {
+            if (table.startsWith('_')) continue; // internal bookkeeping tables aren't browsed
+            const cols = active.db.getRegisteredColumns(table);
+            if (!cols) continue;
+            const bucket = (out[table] = {} as Record<
+              string,
+              { secret: boolean; description: string | null; authored: string | null }
+            >);
+            for (const col of Object.keys(cols)) {
+              const a = authored.get(`${table} ${col}`);
+              bucket[col] = {
+                secret: a?.secret === 1,
+                description: resolveColumnDescription(table, col, a?.description) ?? null,
+                authored:
+                  typeof a?.description === 'string' && a.description.trim()
+                    ? a.description.trim()
+                    : null,
+              };
+            }
           }
           sendJson(res, out);
           return;
@@ -1644,23 +1682,35 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
             return;
           }
-          // Secret is meaningful only for scalar data columns. System columns
+          const body = (await readJson<unknown>(req)) as {
+            secret?: unknown;
+            description?: unknown;
+          };
+          const hasSecret = Object.prototype.hasOwnProperty.call(body, 'secret');
+          const hasDescription = Object.prototype.hasOwnProperty.call(body, 'description');
+          // Secret is meaningful only for scalar data columns — system columns
           // (id/created_at/updated_at/deleted_at) and links (FK columns) can't
-          // be marked secret — enforce here so the data model stays clean.
-          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
-            sendJson(
-              res,
-              { error: `"${colName}" is a system column and cannot be marked secret` },
-              400,
-            );
-            return;
+          // be marked secret. A description, by contrast, is welcome on ANY
+          // column (you may well want to define what `id` or a link means).
+          if (hasSecret && body.secret === true) {
+            if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+              sendJson(
+                res,
+                { error: `"${colName}" is a system column and cannot be marked secret` },
+                400,
+              );
+              return;
+            }
+            if (columnRefTarget(active.configPath, tableName, colName)) {
+              sendJson(res, { error: 'Link (foreign-key) columns cannot be marked secret' }, 400);
+              return;
+            }
           }
-          if (columnRefTarget(active.configPath, tableName, colName)) {
-            sendJson(res, { error: 'Link (foreign-key) columns cannot be marked secret' }, 400);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as { secret?: unknown };
-          const secret = body.secret === true ? 1 : 0;
+          // An empty/blank description clears the override back to the built-in.
+          const descValue =
+            hasDescription && typeof body.description === 'string' && body.description.trim()
+              ? body.description.trim()
+              : null;
           const existing = (
             (await active.db.query('_lattice_gui_column_meta', {
               filters: [
@@ -1669,17 +1719,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               ],
             })) as { id: string }[]
           )[0];
+          const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+          if (hasSecret) patch.secret = body.secret === true ? 1 : 0;
+          if (hasDescription) patch.description = descValue;
           if (existing) {
-            await active.db.update('_lattice_gui_column_meta', existing.id, {
-              secret,
-              updated_at: new Date().toISOString(),
-            });
+            await active.db.update('_lattice_gui_column_meta', existing.id, patch);
           } else {
             await active.db.insert('_lattice_gui_column_meta', {
               id: crypto.randomUUID(),
               table_name: tableName,
               column_name: colName,
-              secret,
+              secret: hasSecret && body.secret === true ? 1 : 0,
+              description: descValue,
               updated_at: new Date().toISOString(),
             });
           }

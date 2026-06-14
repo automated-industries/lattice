@@ -40,6 +40,19 @@ describe('AI function dispatch', () => {
       render: () => '',
       outputFile: '.lattice-gui/audit.md',
     });
+    // Per-column GUI metadata — the set_column_description tool writes here.
+    db.define('_lattice_gui_column_meta', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        table_name: 'TEXT NOT NULL',
+        column_name: 'TEXT NOT NULL',
+        secret: 'INTEGER NOT NULL DEFAULT 0',
+        description: 'TEXT',
+        updated_at: "TEXT DEFAULT (datetime('now'))",
+      },
+      render: () => '',
+      outputFile: '.lattice-gui/column-meta.md',
+    });
     await db.init();
     feed = new FeedBus();
     ctx = {
@@ -54,6 +67,42 @@ describe('AI function dispatch', () => {
   afterEach(() => {
     db.close();
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('set_column_description persists a definition, trims it, clears it, and rejects unknown columns', async () => {
+    async function descOf(column: string): Promise<string | null | undefined> {
+      const rows = (await db.query('_lattice_gui_column_meta', {
+        filters: [
+          { col: 'table_name', op: 'eq', val: 'people' },
+          { col: 'column_name', op: 'eq', val: column },
+        ],
+      })) as { description: string | null }[];
+      return rows[0]?.description;
+    }
+
+    const r = await executeFunction(ctx, 'set_column_description', {
+      table: 'people',
+      column: 'name',
+      description: '  The full name of the person.  ',
+    });
+    expect(r.ok).toBe(true);
+    expect(await descOf('name')).toBe('The full name of the person.'); // trimmed
+
+    // An empty description clears the override (reverts to the built-in/type).
+    await executeFunction(ctx, 'set_column_description', {
+      table: 'people',
+      column: 'name',
+      description: '',
+    });
+    expect(await descOf('name')).toBeNull();
+
+    // Unknown column is a loud failure, not a silent write.
+    const bad = await executeFunction(ctx, 'set_column_description', {
+      table: 'people',
+      column: 'does_not_exist',
+      description: 'x',
+    });
+    expect(bad.ok).toBe(false);
   });
 
   it('create_row inserts and publishes a feed event tagged source=ai', async () => {

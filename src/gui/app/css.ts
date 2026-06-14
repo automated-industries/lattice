@@ -590,6 +590,9 @@ export const css = `
       white-space: nowrap; cursor: pointer;
     }
     .dm-secret-toggle input[type="checkbox"] { margin: 0; }
+    /* Full-width column-definition editor under each column's controls. */
+    .dm-col-desc { grid-column: 1 / -1; font-size: 12.5px; }
+    .dm-col-desc::placeholder { color: var(--text-muted); opacity: 0.7; }
 
     /* Emoji picker (collapsed by default; click to drop down) */
     .emoji-picker { position: relative; display: inline-block; }

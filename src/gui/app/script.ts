@@ -65,6 +65,30 @@ export const appJs = `
     function fieldLabel(col) {
       return FIELD_DISPLAY[col] || titleCase(col);
     }
+    // The structural definition of a column: its type plus role bits (primary
+    // key / references <table> / secret). Always derivable from the schema.
+    function columnTypeRole(tableName, col) {
+      var t = tableByName(tableName);
+      if (!t) return '';
+      var bits = [];
+      var type = (t.fieldTypes && t.fieldTypes[col]) || (t.columnTypes && t.columnTypes[col]) || '';
+      if (type) bits.push(String(type).toLowerCase());
+      if (col === 'id') bits.push('primary key');
+      var bt = (belongsToColumns(t) || []).find(function (b) { return b.rel.foreignKey === col; });
+      if (bt) bits.push('references ' + bt.rel.table);
+      if (isSecretColumn(tableName, col)) bits.push('secret');
+      return bits.join(' \\u00b7 ');
+    }
+    // Hover definition for a column: its authored/built-in description (resolved
+    // server-side, from /api/gui-meta/columns) combined with the type/role. One
+    // or the other always renders, so every column gets a tooltip.
+    function columnTooltip(tableName, col) {
+      var meta = (state.columnMeta[tableName] || {})[col];
+      var desc = meta && meta.description;
+      var typeRole = columnTypeRole(tableName, col);
+      if (desc && typeRole) return desc + ' (' + typeRole + ')';
+      return desc || typeRole || col;
+    }
 
     function escapeHtml(v) {
       if (v == null) return '';
@@ -1314,10 +1338,19 @@ export const appJs = `
 
       Promise.all(fetches).then(function (results) {
         var rows = results[0];
-        var headers = intrinsic.map(fieldLabel)
-          .concat(belongsTo.map(function (b) { return titleCase(b.relName); }))
-          .concat(junctions.map(function (j) { return titleCase(j.remoteRel.table); }))
-          .map(function (h) { return '<th>' + escapeHtml(h) + '</th>'; }).join('');
+        // Each header carries a title= tooltip: intrinsic columns get their
+        // definition (description + type/role); relation columns get a link hint.
+        var headerCells = [];
+        intrinsic.forEach(function (c) {
+          headerCells.push('<th title="' + escapeHtml(columnTooltip(tableName, c)) + '">' + escapeHtml(fieldLabel(c)) + '</th>');
+        });
+        belongsTo.forEach(function (b) {
+          headerCells.push('<th title="' + escapeHtml('Link to a ' + b.rel.table + ' row (references ' + b.rel.foreignKey + ')') + '">' + escapeHtml(titleCase(b.relName)) + '</th>');
+        });
+        junctions.forEach(function (j) {
+          headerCells.push('<th title="' + escapeHtml('Many-to-many links to ' + j.remoteRel.table) + '">' + escapeHtml(titleCase(j.remoteRel.table)) + '</th>');
+        });
+        var headers = headerCells.join('');
         headers += '<th class="row-actions"></th>';
 
         // Per-row visibility indicator (2.2 row-level permissions). Reads the
@@ -2182,7 +2215,7 @@ export const appJs = `
       var ro = fsIsReadonly(table, col);
       var cls = 'fs-field-val' + (ro ? ' readonly' : ' ce');
       var attr = ro ? '' : ' data-col="' + escapeHtml(col) + '" title="Click to edit"';
-      return '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(fieldLabel(col)) + '</div>' +
+      return '<div class="fs-field"><div class="fs-field-label" title="' + escapeHtml(columnTooltip(table, col)) + '">' + escapeHtml(fieldLabel(col)) + '</div>' +
         '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
     }
 
@@ -3270,12 +3303,20 @@ export const appJs = `
       }).join('');
       var scalarRows = scalarCols.map(function (c) {
         var secret = isSecretColumn(tableName, c);
+        var meta = (state.columnMeta[tableName] || {})[c] || {};
+        var authoredDesc = meta.authored || '';
+        // Placeholder shows the built-in definition (when no override is set), so
+        // the operator sees the default and an empty box means "use built-in".
+        var placeholder = (authoredDesc ? '' : (meta.description || '')) || 'Describe this column…';
         return '<div class="dm-col-row">' +
           '<input class="dm-col-name" data-orig="' + escapeHtml(c) + '" value="' + escapeHtml(c) + '" />' +
           '<span class="dm-col-type">' + escapeHtml(dmShortType(c)) + '</span>' +
           '<label class="dm-secret-toggle" title="Mask values in the GUI">' +
             '<input type="checkbox" class="dm-col-secret" data-orig="' + escapeHtml(c) + '"' +
               ' data-was="' + (secret ? '1' : '0') + '"' + (secret ? ' checked' : '') + ' /> secret</label>' +
+          '<input class="dm-col-desc" data-orig="' + escapeHtml(c) + '" data-was-desc="' + escapeHtml(authoredDesc) + '"' +
+            ' value="' + escapeHtml(authoredDesc) + '" placeholder="' + escapeHtml(placeholder) + '"' +
+            ' title="Definition shown on hover + given to the assistant" />' +
           '</div>';
       }).join('');
       var columnsHtml = sysRows + scalarRows;
@@ -3577,10 +3618,13 @@ export const appJs = `
         panel.querySelectorAll('input.dm-col-secret').forEach(function (cb) {
           if ((cb.checked ? '1' : '0') !== cb.getAttribute('data-was')) dirty = true;
         });
+        panel.querySelectorAll('input.dm-col-desc').forEach(function (inp) {
+          if (inp.value.trim() !== (inp.getAttribute('data-was-desc') || '')) dirty = true;
+        });
         return dirty;
       }
       function refreshColsSaveState() { if (colsSaveBtn) colsSaveBtn.disabled = !colsDirty(); }
-      panel.querySelectorAll('input.dm-col-name, input.dm-col-secret').forEach(function (el) {
+      panel.querySelectorAll('input.dm-col-name, input.dm-col-secret, input.dm-col-desc').forEach(function (el) {
         el.addEventListener('input', refreshColsSaveState);
         el.addEventListener('change', refreshColsSaveState);
       });
@@ -3593,12 +3637,16 @@ export const appJs = `
             var to = inp.value.trim();
             var cb = panel.querySelector('input.dm-col-secret[data-orig="' + orig + '"]');
             var secretChanged = !!cb && (cb.checked ? '1' : '0') !== cb.getAttribute('data-was');
+            var di = panel.querySelector('input.dm-col-desc[data-orig="' + orig + '"]');
+            var descChanged = !!di && di.value.trim() !== (di.getAttribute('data-was-desc') || '');
             ops.push({
               orig: orig,
               to: to,
               rename: !!to && to !== orig,
               secretChanged: secretChanged,
               secret: cb ? !!cb.checked : false,
+              descChanged: descChanged,
+              description: di ? di.value.trim() : '',
             });
           });
           var chain = Promise.resolve();
@@ -3612,13 +3660,16 @@ export const appJs = `
                 body: JSON.stringify({ to: op.to }),
               });
             }).then(function () {
-              if (!op.secretChanged) return;
+              if (!op.secretChanged && !op.descChanged) return;
               var name = op.rename ? op.to : op.orig;
+              var payload = {};
+              if (op.secretChanged) payload.secret = op.secret;
+              if (op.descChanged) payload.description = op.description;
               return fetchJson('/api/gui-meta/columns/' + encodeURIComponent(tableName) +
                 '/' + encodeURIComponent(name), {
                 method: 'PUT',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ secret: op.secret }),
+                body: JSON.stringify(payload),
               });
             });
           });

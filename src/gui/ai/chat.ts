@@ -6,6 +6,7 @@ import {
   type DispatchCtx,
 } from './dispatch.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
+import { resolveColumnDescription } from '../column-descriptions.js';
 import type { ChatStreamEvent } from './sse.js';
 
 /**
@@ -68,6 +69,7 @@ const BASE_SYSTEM_PROMPT = [
   "- Attached files are rows in the `files` table; a file's full text content (CSV, document, etc.) is in its `extracted_text` column. To work from an attached file, read the relevant `files` row(s) and parse `extracted_text` — never guess a file's contents.",
   '- A tool result that contains "error" means the call FAILED. Do NOT claim success or proceed as if it returned data — read the error, correct your arguments, and retry.',
   '- For bulk work, emit several tool calls in one turn instead of one at a time. Every change is recorded in version history and can be undone.',
+  '- When the user tells you what a column means (defines or clarifies it), call set_column_description(table, column, description) to save that definition. It becomes the column-header tooltip in the GUI and is fed back to you as schema context on later turns, so you categorize and extract into that column more accurately. The descriptions in the schema below are exactly this — use them.',
   '- When you change data, briefly confirm what you did. Be concise.',
 ].join('\n');
 
@@ -80,12 +82,29 @@ const BASE_SYSTEM_PROMPT = [
  * marked so link/unlink target the right table. Best-effort: a count failure
  * never aborts the turn.
  */
+const SCHEMA_CTX_SYSTEM_COLS = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+
 async function buildSchemaContext(d: DispatchCtx): Promise<string> {
   const names = [...d.validTables]
     .filter((n) => !n.startsWith('_') && !ASSISTANT_HIDDEN_TABLES.has(n))
     .sort();
   if (names.length === 0) {
     return '(no tables yet — the user must create one before you can add rows)';
+  }
+  // Operator-authored column descriptions (built-in defaults layered on by the
+  // resolver). A described column tells the model what data belongs there, so
+  // describing a column once improves categorization + extraction for it.
+  const authored = new Map<string, string | null>();
+  try {
+    const rows = (await d.db.query('_lattice_gui_column_meta', {})) as {
+      table_name: string;
+      column_name: string;
+      description: string | null;
+    }[];
+    for (const r of rows) authored.set(`${r.table_name} ${r.column_name}`, r.description ?? null);
+  } catch {
+    // The meta table may be absent for a freshly-provisioned scoped cloud
+    // member (no DDL right) — fall back to built-ins only.
   }
   const lines: string[] = [];
   for (const t of names) {
@@ -101,6 +120,13 @@ async function buildSchemaContext(d: DispatchCtx): Promise<string> {
     lines.push(
       `- ${t}${tag} (${colNames.join(', ')}) — ${String(count)} row${count === 1 ? '' : 's'}`,
     );
+    // Definitions for the meaningful (non-system) columns that have one — this
+    // is the payload that makes the model put the right data in the right place.
+    for (const c of colNames) {
+      if (SCHEMA_CTX_SYSTEM_COLS.has(c)) continue;
+      const desc = resolveColumnDescription(t, c, authored.get(`${t} ${c}`));
+      if (desc) lines.push(`    • ${c}: ${desc}`);
+    }
   }
   return lines.join('\n');
 }

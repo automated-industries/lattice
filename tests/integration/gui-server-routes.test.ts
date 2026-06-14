@@ -127,6 +127,52 @@ describe('GUI server — SQLite read routes', () => {
   });
 });
 
+describe('GUI server — column descriptions', () => {
+  it('serves built-in + resolved descriptions and round-trips an authored edit', async () => {
+    const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
+    const h = await boot(cfg);
+
+    const meta0 = await api(h.url, '/api/gui-meta/columns');
+    expect(meta0.status).toBe(200);
+    const tables0 = meta0.body as Record<
+      string,
+      Record<string, { secret: boolean; description: string | null; authored: string | null }>
+    >;
+    // Built-in for a native column, with no authored override yet.
+    expect(tables0.files?.sha256?.description).toContain('SHA-256');
+    expect(tables0.files?.sha256?.authored).toBeNull();
+    // A user column with no built-in resolves to null until described.
+    expect(tables0.items?.name?.description).toBeNull();
+
+    // Author a description.
+    const put = await api(h.url, '/api/gui-meta/columns/items/name', {
+      method: 'PUT',
+      body: { description: 'Display name of the item.' },
+    });
+    expect(put.status).toBe(200);
+
+    const meta1 = await api(h.url, '/api/gui-meta/columns');
+    const tables1 = meta1.body as typeof tables0;
+    expect(tables1.items?.name?.description).toBe('Display name of the item.');
+    expect(tables1.items?.name?.authored).toBe('Display name of the item.');
+
+    // A description is allowed on a SYSTEM column (unlike the secret flag).
+    const sysPut = await api(h.url, '/api/gui-meta/columns/items/id', {
+      method: 'PUT',
+      body: { description: 'The unique id.' },
+    });
+    expect(sysPut.status).toBe(200);
+    expect(
+      ((await api(h.url, '/api/gui-meta/columns')).body as typeof tables0).items?.id?.authored,
+    ).toBe('The unique id.');
+
+    // Clearing reverts to the built-in/null.
+    await api(h.url, '/api/gui-meta/columns/items/name', { method: 'PUT', body: { description: '' } });
+    const meta2 = await api(h.url, '/api/gui-meta/columns');
+    expect((meta2.body as typeof tables0).items?.name?.authored).toBeNull();
+  });
+});
+
 describe('GUI server — filtered row count', () => {
   it('counts by col/val and excludes soft-deleted by default (object-view folder badges)', async () => {
     const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
