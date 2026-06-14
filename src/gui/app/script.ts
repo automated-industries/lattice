@@ -1028,14 +1028,25 @@ export const appJs = `
       wsSwitching = false;
       var btn = document.getElementById('ws-button');
       var iconEl = btn && btn.querySelector('.db-icon');
-      // Restore the 📂 icon; the workspace label is re-applied by the
-      // renderWsSwitcher run inside reloadEverything (now that wsSwitching is
-      // false, that write is no longer guarded out).
       if (iconEl) iconEl.textContent = '📂';
       if (btn) {
         btn.classList.remove('is-switching');
         if (failed) btn.classList.add('is-switch-error');
         else btn.classList.remove('is-switch-error');
+      }
+      // The label writes inside reloadEverything ran while wsSwitching was still
+      // true (guarded out to preserve "Switching…"), and they already completed
+      // BEFORE this call — so nothing else will apply the NEW workspace name. Now
+      // that the switch resolved, re-render the switcher so the real name lands
+      // (otherwise #ws-name stays stuck on "Switching…").
+      if (!failed) {
+        fetchJson('/api/workspaces')
+          .then(function (d) {
+            if (d) renderWsSwitcher(d);
+          })
+          .catch(function () {
+            /* best-effort: the next reload re-renders the switcher anyway */
+          });
       }
     }
 
