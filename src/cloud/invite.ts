@@ -44,6 +44,10 @@ export interface InvitePayload {
   email: string;
   /** ISO-8601 expiry. */
   expires_at: string;
+  /** Human name for the workspace the member will create on join (the owner's
+   *  cloud name). Optional — older tokens omit it; the join falls back to a
+   *  sanitized default. */
+  workspace_name?: string;
 }
 
 /** Lowercase + trim so the email term is stable regardless of entry casing. */
@@ -80,6 +84,9 @@ export interface MintInput {
   role: string;
   email: string;
   expiresAt: Date;
+  /** Human name for the workspace the member creates on join (the owner's cloud
+   *  name); stamped into the payload so the member's new workspace is named. */
+  workspaceName?: string;
 }
 
 /** Mint an email-bound, encrypted invite token. */
@@ -100,6 +107,9 @@ export function mintInviteToken(input: MintInput): string {
     role: input.role,
     email,
     expires_at: input.expiresAt.toISOString(),
+    ...(input.workspaceName && input.workspaceName.trim()
+      ? { workspace_name: input.workspaceName.trim() }
+      : {}),
   };
   const cipher = createCipheriv('aes-256-gcm', key, nonce);
   cipher.setAAD(Buffer.from(email, 'utf8'));

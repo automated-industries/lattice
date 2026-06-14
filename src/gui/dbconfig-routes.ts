@@ -48,6 +48,7 @@ import {
 } from '../framework/cloud-migration.js';
 import { parseConfigFile } from '../config/parser.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
+import { getActiveWorkspace } from '../framework/workspace.js';
 import {
   registerOrUpdateCloudWorkspace,
   renameWorkspaceByConfigPath,
@@ -104,6 +105,14 @@ interface DbConfigContext {
    * the parent server holds the mutable `active` reference.
    */
   swap: () => Promise<void>;
+  /**
+   * Join a cloud as a NEW workspace: save the credential under `key`, scaffold a
+   * new cloud workspace named `displayName` pointing at `${LATTICE_DB:key}`, then
+   * open + activate it. Atomic (rolls back on failure). Returns the new workspace
+   * id. Used by the member join/redeem path so it never repoints (hijacks) the
+   * currently-open workspace.
+   */
+  createCloudWorkspace: (displayName: string, key: string, url: string) => Promise<string>;
 }
 
 /** Build a Postgres URL from form fields. Percent-encodes user + password. */
@@ -299,17 +308,20 @@ async function joinCloudAsMember(
     );
     return;
   }
+  // Create a NEW workspace for the cloud and switch to it — never repoint
+  // (hijack) the currently-open workspace, which previously overwrote the user's
+  // existing local workspace (wrong name, orphaned data, no switcher entry).
   // The credential key + ${LATTICE_DB:…} reference MUST be a sanitized,
-  // space-free label or resolveDbPath rejects it (and the default join label
-  // "Cloud workspace" — with a space — never resolved, which silently dropped
-  // the member onto an empty local DB). Sanitize the key; keep the human label
-  // as the display name.
+  // space-free label or resolveDbPath rejects it (the default "Cloud workspace"
+  // — with a space — never resolved, silently dropping the member on an empty
+  // local DB). Sanitize the key; keep the human label as the display name.
   const key = slugify(label) || 'cloud';
-  saveDbCredential(key, url);
-  rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + key + '}');
-  updateActiveWorkspaceToCloud(ctx.configPath, label, key);
-  await ctx.swap();
-  sendJson(res, { ok: true, label, isCloud: true });
+  try {
+    const workspaceId = await ctx.createCloudWorkspace(label, key, url);
+    sendJson(res, { ok: true, label, isCloud: true, workspaceId });
+  } catch (e) {
+    sendJson(res, { ok: false, error: (e as Error).message }, 500);
+  }
 }
 
 export async function dispatchDbConfigRoute(
@@ -649,7 +661,19 @@ export async function dispatchDbConfigRoute(
       // username (ENOIDENTIFIER). coords.user carries the ref.
       const user = poolerAwareUser(coords.host, role, coords.user);
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      const token = mintInviteToken({ coords, user, password, role, email, expiresAt });
+      // Stamp the owner's cloud (workspace) name so the member's new workspace is
+      // named after the cloud, not a generic default (1.3a).
+      const inviteRoot = findLatticeRoot(dirname(ctx.configPath));
+      const ownerWs = inviteRoot ? getActiveWorkspace(inviteRoot) : null;
+      const token = mintInviteToken({
+        coords,
+        user,
+        password,
+        role,
+        email,
+        expiresAt,
+        ...(ownerWs?.displayName ? { workspaceName: ownerWs.displayName } : {}),
+      });
       // Owner-only audit row. Plaintext email + password are NEVER stored — only a
       // hash of the email and the role name (for later revocation).
       await runAsyncOrSync(
@@ -739,8 +763,13 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { ok: false, error: (e as Error).message }, 400);
         return;
       }
+      // Name the new workspace from the cloud name stamped into the invite
+      // (1.3a), else a client-supplied label, else a sane default (which now
+      // resolves because joinCloudAsMember sanitizes the key).
       const label =
-        typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Cloud workspace';
+        (payload.workspace_name && payload.workspace_name.trim()) ||
+        (typeof body.label === 'string' && body.label.trim() ? body.label.trim() : '') ||
+        'Cloud workspace';
       await joinCloudAsMember(
         ctx,
         res,

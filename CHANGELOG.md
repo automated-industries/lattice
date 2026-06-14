@@ -35,6 +35,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   wire the previously-unreachable `revokeMemberRole`; revocation reassigns/drops
   the member's objects and surfaces failures (Rule 16) instead of swallowing them.
 
+### Fixed — cloud join creates a new workspace + resilient member open (3.2)
+
+- **Joining a cloud now CREATES a new workspace (and switches to it)** instead of
+  repointing — hijacking — the currently-open one (which overwrote the user's
+  existing local workspace: wrong name, orphaned data, no switcher entry). The new
+  workspace is named after the cloud (the owner stamps `workspace_name` into the
+  invite), and the join is **atomic**: if the cloud can't be opened, the
+  half-created workspace + saved credential are rolled back.
+- **Member open is resilient.** Owner-side maintenance that needs schema write
+  grants (native-entity reconcile, legacy-secret cleanup, the identity-mirror
+  upsert) is skipped / best-effort on a cloud-MEMBER open, so a member no longer
+  fails to connect with "permission denied for schema public / __lattice_user_identity".
+- New end-to-end Postgres test boots a real owner GUI + member GUI and asserts the
+  member lands on a new, correctly-named, active cloud workspace (local untouched).
+
 ### Fixed — cloud join path + schema detection (3.2)
 
 - **Join no longer silently lands a member on an empty local DB.** A

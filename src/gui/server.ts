@@ -107,6 +107,7 @@ import {
   getOrCreateMasterKey,
   readIdentity,
   deleteDbCredential,
+  saveDbCredential,
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
@@ -835,17 +836,22 @@ export async function openConfig(
   // every open just upserts the single 'singleton' row.
   await syncUserIdentityRow(db);
 
-  // Reconcile + record native-entity bindings (files, secrets). Labels a
-  // pre-existing files/secrets table as THE native object (merging the native
-  // column superset, non-destructively) rather than duplicating it, and
-  // guarantees the tables exist on freshly created DBs. Safe on every open.
-  await adoptNativeEntities(db);
-
-  // Retire legacy per-workspace preference rows (voice provider + inference
-  // aggressiveness) that older builds stored in `secrets`. They're user
-  // preferences now (machine-local), so this soft-deletes any leftover rows
-  // so they stop appearing in the workspace's Secrets object. Idempotent.
-  await retireLegacyPreferenceSecrets(db);
+  // Owner-side maintenance — SKIP on a cloud MEMBER open. Both write DDL/rows in
+  // the schema (create native tables / soft-delete legacy secrets); a scoped
+  // member has no such grant (the bootstrap REVOKEs CREATE from PUBLIC), so
+  // running them would fail the open with "permission denied for schema public".
+  // The member's tables are already registered via discoverCloudTables above.
+  if (!memberOpen) {
+    // Reconcile + record native-entity bindings (files, secrets). Labels a
+    // pre-existing files/secrets table as THE native object (merging the native
+    // column superset, non-destructively) rather than duplicating it, and
+    // guarantees the tables exist on freshly created DBs.
+    await adoptNativeEntities(db);
+    // Retire legacy per-workspace preference rows (voice provider + inference
+    // aggressiveness) older builds stored in `secrets`. They're machine-local
+    // preferences now, so soft-delete leftovers. Idempotent.
+    await retireLegacyPreferenceSecrets(db);
+  }
 
   // Cloud OWNER open: converge the idempotent cloud bootstrap (RLS objects +
   // settings + observation substrate) so objects ADDED to the bootstrap in a
@@ -1264,24 +1270,32 @@ async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<
  */
 async function syncUserIdentityRow(db: Lattice): Promise<void> {
   const identity = readIdentity();
-  const existing = (await db.get('__lattice_user_identity', 'singleton')) as {
-    id: string;
-    display_name: string;
-    email: string;
-  } | null;
-  if (existing) {
-    await db.update('__lattice_user_identity', 'singleton', {
-      display_name: identity.display_name,
-      email: identity.email,
-      updated_at: new Date().toISOString(),
-    });
-  } else {
-    await db.insert('__lattice_user_identity', {
-      id: 'singleton',
-      display_name: identity.display_name,
-      email: identity.email,
-      updated_at: new Date().toISOString(),
-    });
+  try {
+    const existing = (await db.get('__lattice_user_identity', 'singleton')) as {
+      id: string;
+      display_name: string;
+      email: string;
+    } | null;
+    if (existing) {
+      await db.update('__lattice_user_identity', 'singleton', {
+        display_name: identity.display_name,
+        email: identity.email,
+        updated_at: new Date().toISOString(),
+      });
+    } else {
+      await db.insert('__lattice_user_identity', {
+        id: 'singleton',
+        display_name: identity.display_name,
+        email: identity.email,
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (e) {
+    // Best-effort: a cloud MEMBER has no write grant on the shared singleton
+    // identity row (and shouldn't clobber it anyway) — so a member open must not
+    // fail here. Log it (Rule 16: visible, not silently swallowed) and continue;
+    // the mirror is a convenience, not required to open the workspace.
+    console.warn('[openConfig] skipped user-identity mirror:', (e as Error).message);
   }
 }
 
@@ -3403,6 +3417,42 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               await disposeActive(active);
               active = next;
               startBackgroundRender(active); // re-render the reopened DB's tree off the response path
+            },
+            // Join a cloud as a NEW workspace (never hijack the active one): save
+            // the credential, scaffold a new cloud workspace, open + activate it.
+            // Atomic — on open failure, roll back the half-created workspace +
+            // credential and rethrow (so a failed join leaves nothing behind).
+            createCloudWorkspace: async (displayName: string, key: string, url: string) => {
+              if (!latticeRoot) {
+                throw new Error('No .lattice root — cannot create a cloud workspace');
+              }
+              saveDbCredential(key, url);
+              let created;
+              try {
+                created = addWorkspace(latticeRoot, {
+                  displayName,
+                  db: '${LATTICE_DB:' + key + '}',
+                  makeActive: false,
+                });
+              } catch (e) {
+                deleteDbCredential(key);
+                throw e;
+              }
+              const paths = resolveWorkspacePaths(latticeRoot, created);
+              let next: ActiveDb;
+              try {
+                next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+              } catch (e) {
+                removeWorkspace(latticeRoot, created.id);
+                deleteDbCredential(key);
+                throw e;
+              }
+              setActiveWorkspace(latticeRoot, created.id);
+              await disposeActive(active);
+              active = next;
+              startBackgroundRender(active);
+              currentWorkspaceId = created.id;
+              return created.id;
             },
           });
           if (handled) return;
