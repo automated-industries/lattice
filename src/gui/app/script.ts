@@ -55,9 +55,42 @@ export const appJs = `
     function displayFor(name) {
       var override = state.iconOverrides[name];
       var base = DISPLAY[name];
-      var icon = (override && override.icon) || (base && base.icon) || DEFAULT_ICON;
+      var icon = (override && override.icon) || (base && base.icon) || autoEmojiFor(name) || DEFAULT_ICON;
       var label = (base && base.label) || titleCase(name);
       return { label: label, icon: icon };
+    }
+    // Pick an apt emoji from an entity's NAME when the user hasn't set one and it
+    // isn't in the built-in DISPLAY map. Keyword match against the de-underscored,
+    // lower-cased name; returns null when nothing fits so displayFor falls back to
+    // DEFAULT_ICON ("only if an emoji is apt"). Purely presentational — no persistence.
+    var AUTO_EMOJI = [
+      [/\\b(meetings?|calendar|events?|appointments?|schedule)\\b/, '📅'],
+      [/\\b(people|person|contacts?|users?|members?|staff|teams?|customers?|clients?|leads?|attendees?)\\b/, '👥'],
+      [/\\b(messages?|emails?|mail|inbox|chats?|conversations?|communications?|comms?)\\b/, '✉️'],
+      [/\\b(projects?)\\b/, '🚀'],
+      [/\\b(files?|documents?|docs?|attachments?)\\b/, '📄'],
+      [/\\b(repos?|repositor(?:y|ies)|commits?|branches?)\\b/, '💿'],
+      [/\\b(invoices?|payments?|billing|transactions?|expenses?|orders?|purchases?)\\b/, '🧾'],
+      [/\\b(revenue|budgets?|salar(?:y|ies)|prices?|pricing|costs?|finances?|financial)\\b/, '💰'],
+      [/\\b(companies|company|orgs?|organizations?|accounts?|businesses|business|vendors?|firms?|suppliers?)\\b/, '🏢'],
+      [/\\b(tasks?|todos?|tickets?|issues?|jobs?|bugs?)\\b/, '✅'],
+      [/\\b(policies|policy|insurance|claims?|coverage)\\b/, '🛡️'],
+      [/\\b(secrets?|credentials?|keys?|tokens?|passwords?)\\b/, '🔐'],
+      [/\\b(notes?|memos?)\\b/, '📝'],
+      [/\\b(products?|items?|inventory|skus?)\\b/, '📦'],
+      [/\\b(reports?|analytics|metrics?|stats?|dashboards?)\\b/, '📊'],
+      [/\\b(contracts?|agreements?|legal|ndas?)\\b/, '📜'],
+      [/\\b(certificates?|certs?|licen[cs]es?)\\b/, '🎓'],
+      [/\\b(properties|property|buildings?|estate|addresses|address|locations?|places?)\\b/, '🏠'],
+      [/\\b(agents?|bots?|assistants?)\\b/, '🤖'],
+      [/\\b(aliases|alias|tags?|labels?|categor(?:y|ies)|types?)\\b/, '🏷️'],
+    ];
+    function autoEmojiFor(name) {
+      var s = String(name || '').replace(/_/g, ' ').toLowerCase();
+      for (var i = 0; i < AUTO_EMOJI.length; i++) {
+        if (AUTO_EMOJI[i][0].test(s)) return AUTO_EMOJI[i][1];
+      }
+      return null;
     }
     function titleCase(s) {
       return s.replace(/_/g, ' ').replace(/\\b\\w/g, function (c) { return c.toUpperCase(); });
@@ -654,7 +687,7 @@ export const appJs = `
       var fill = card.querySelector('.card-render-fill');
       if (fill) fill.style.width = clamped + '%';
       var pctEl = card.querySelector('.card-render-pct');
-      if (pctEl) pctEl.textContent = clamped + '%';
+      if (pctEl) pctEl.textContent = 'Rendering ' + clamped + '%...';
     }
     // Clear the overlay for a finished/aborted table.
     function clearCardProgress(table) {
@@ -992,6 +1025,10 @@ export const appJs = `
         state.systemTables = (results[3] && results[3].tables) || [];
         renderWsSwitcher(results[4]);
         renderSidebar();
+        // renderWsSwitcher set cloudMode from the new workspace's kind; re-render
+        // the composer so the Private-mode toggle reflects local vs cloud (it is
+        // forced checked+disabled on local). See #7.
+        renderComposer();
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
         loadedTables = {};
@@ -1175,6 +1212,10 @@ export const appJs = `
       var ul = document.getElementById('object-nav');
       var prefix = advancedMode() ? '#/objects/' : '#/fs/';
       var firstClass = state.entities.tables.filter(function (t) { return !isJunction(t); });
+      // Objects list is ordered alphabetically by display label (case-insensitive).
+      firstClass.sort(function (a, b) {
+        return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
+      });
       ul.innerHTML = firstClass.map(function (t) {
         var d = displayFor(t.name);
         var unseen = unseenByTable[t.name] || 0;
@@ -1316,7 +1357,7 @@ export const appJs = `
           // bottom-edge bar (width = %); the pill is the ⟳ <pct>% corner badge.
           '<div class="card-render" aria-hidden="true">' +
             '<div class="card-render-fill"></div>' +
-            '<span class="card-render-pill"><span class="spinner" aria-hidden="true"></span><span class="card-render-pct">0%</span></span>' +
+            '<span class="card-render-pill"><span class="spinner" aria-hidden="true"></span><span class="card-render-pct">Rendering 0%...</span></span>' +
           '</div>' +
           '</a>';
       }).join('');
@@ -2759,7 +2800,8 @@ export const appJs = `
     function renderHistory(content) {
       var firstClass = state.entities.tables
         .filter(function (t) { return !isJunction(t); })
-        .map(function (t) { return t.name; });
+        .map(function (t) { return t.name; })
+        .sort(function (a, b) { return displayFor(a).label.toLowerCase().localeCompare(displayFor(b).label.toLowerCase()); });
       var options = '<option value="">All entities</option>' +
         firstClass.map(function (n) {
           var sel = n === historyFilterTable ? ' selected' : '';
@@ -3482,6 +3524,8 @@ export const appJs = `
       dmLinks.forEach(function (lk) { linkedTargets[lk.other] = 1; });
       var linkTargets = ((state.entities && state.entities.tables) || []).filter(function (rt) {
         return !isJunction(rt) && rt.name !== tableName && !linkedTargets[rt.name];
+      }).sort(function (a, b) {
+        return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
       });
       var addLinkHtml = linkTargets.length
         ? '<div class="dm-row-inline" style="margin-top:8px">' +
@@ -6095,9 +6139,14 @@ export const appJs = `
             '</div>' +
             // Private mode — when checked, items the assistant adds on this send
             // stay private to me (passed as privateMode in the /api/chat body).
-            '<label class="composer-private">' +
-              '<input type="checkbox" id="chat-private" /> Private mode ' +
-              '<span class="composer-private-hint">New items I add stay private to you</span>' +
+            // Local workspaces are inherently single-user/private, so on local we
+            // force the box checked + disabled as a read-only indicator (cloudMode
+            // is set from the workspace kind before the composer renders).
+            '<label class="composer-private' + (cloudMode ? '' : ' is-disabled') + '">' +
+              '<input type="checkbox" id="chat-private"' + (cloudMode ? '' : ' checked disabled') + ' /> Private mode ' +
+              '<span class="composer-private-hint">' +
+                (cloudMode ? 'New items I add stay private to you' : 'Local workspaces are always private') +
+              '</span>' +
             '</label>' +
             '<input type="file" id="chat-file" multiple style="display:none">';
           var input = document.getElementById('chat-input');

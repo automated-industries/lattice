@@ -8,6 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — GUI polish (3.2)
+
+- **Render progress label.** The per-card background-render indicator reads
+  "Rendering NN%..." instead of a bare "NN%".
+- **Top-bar dropdown stacking.** The top bar now establishes an explicit stacking
+  context, so its `backdrop-filter` no longer traps the workspace-switcher / search
+  dropdowns beneath the dashboard cards.
+- **Objects ordered alphabetically.** The sidebar object list (and the history and
+  add-link pickers) are sorted by display label.
+
+### Added — GUI polish (3.2)
+
+- **Auto-emoji for objects.** An object with no custom icon and no built-in mapping
+  is given an apt emoji derived from its name (falling back to the default icon when
+  nothing fits).
+- **Private-mode indicator on local workspaces.** On a single-user local workspace
+  the assistant "Private mode" toggle renders checked + disabled (local data is
+  always private); it stays interactive on a cloud workspace.
+
 ### Added — email-bound cloud invites + members list (3.1)
 
 - **Email-bound invite tokens.** `POST /api/cloud/invite` takes an invitee email,
