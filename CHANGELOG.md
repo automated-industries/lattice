@@ -8,6 +8,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — data-model sharing controls restored (3.2)
+
+- **Per-object sharing is back in the Data Model panel.** The 3.0 RLS rewrite
+  stopped setting the `ownedByMe` / `shared` fields the client gates the sharing
+  controls and the red/amber/green node border on, so they vanished entirely. The
+  server now sets them for a cloud owner — `ownedByMe = true`, and `shared` maps to
+  the table's rows defaulting to everyone-visible (the 3.1 RLS semantic). The
+  "Share with workspace / Make private" toggle is repointed to the existing
+  default-row-visibility endpoint (the old `/share` endpoint was removed in the
+  rewrite, so the button had been 404ing).
+
 ### Fixed — cloud members + invites (3.2)
 
 - **Members can connect again on Supabase pooler hosts (was breaking).** The

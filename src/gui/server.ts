@@ -320,6 +320,13 @@ async function entitiesWithCounts(
       const policy = policies[t.name];
       t.defaultRowVisibility = policy?.defaultRowVisibility ?? 'private';
       t.neverShare = policy?.neverShare ?? false;
+      // Re-light the Data Model sharing UI (regressed in the 3.0 RLS rewrite,
+      // which stopped setting these). The connecting role is the cloud owner
+      // (canManageRoles above), so it can manage every table's sharing → show the
+      // controls + the share-state border. Under the 3.1 RLS model "shared" maps
+      // to the table's rows defaulting to everyone-visible (vs owner-private).
+      t.ownedByMe = true;
+      t.shared = t.defaultRowVisibility === 'everyone';
     }
   }
 

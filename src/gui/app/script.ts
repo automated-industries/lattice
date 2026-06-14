@@ -3670,11 +3670,17 @@ export const appJs = `
       wireEntityEditPanel(panel, tableName);
       var shareBtn = panel.querySelector('#dm-share-btn');
       if (shareBtn) shareBtn.addEventListener('click', function () {
+        // "Shared" maps to the table's default row visibility = everyone (vs
+        // owner-private) under the 3.1 RLS model, so the toggle drives the
+        // existing default-row-visibility endpoint. (The old /share endpoint was
+        // removed in the RLS rewrite — calling it 404'd, which is why the control
+        // appeared dead.)
+        var nextVis = isShared ? 'private' : 'everyone';
         withBusy(shareBtn, function () {
-          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/share', {
+          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/default-row-visibility', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ share: !isShared }),
+            body: JSON.stringify({ visibility: nextVis }),
           }).then(function () {
             // Rebuild the graph (not just the panel) so the node's share-status
             // colour (gnode-shared/gnode-private) recolours immediately from the
