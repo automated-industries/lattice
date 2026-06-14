@@ -191,6 +191,35 @@ await setRowVisibility(db, 'items', 'item-42', 'everyone');
 Because sharing lives in `__lattice_owners` (out of band), opting a row in or out
 never touches your table's columns.
 
+### Per-table defaults & never-share (v3.1)
+
+The owner can set a table's policy in `__lattice_table_policy` — **stored and
+enforced in Postgres**, so a direct `psql` insert obeys it too:
+
+- **`default_row_visibility`** (`private` | `everyone`) — the visibility NEW rows in
+  that table are stamped with. The per-table insert trigger reads it; default
+  `private` (unchanged behavior). `setTableDefaultVisibility(db, table, vis)`.
+- **`never_share`** — a hard exclusion. `lattice_set_row_visibility` /
+  `lattice_grant_row` / `lattice_grant_cell` RAISE for the table, and its new rows
+  are forced private regardless of the default. `setTableNeverShare(db, table, on)`.
+  `secrets` is seeded never-share by `secureCloud`.
+
+```ts
+import { setTableDefaultVisibility, setTableNeverShare } from 'latticesql';
+await setTableDefaultVisibility(db, 'tickets', 'everyone'); // team-shared by default
+await setTableNeverShare(db, 'secrets', true); // can never be shared, ever
+```
+
+**"Private mode"** in the GUI chat composer is a transient per-request override: when
+on, rows the assistant creates that turn are forced private regardless of the table
+default (it calls `set_row_visibility` after create).
+
+**Secret columns (`owner` audience).** Marking a column secret stores an `owner`
+audience in `__lattice_column_policy`, so Postgres masks it to everyone but the row
+owner via the generated `<table>_v` view — the DB is the boundary (the assistant-side
+redaction is just model-context safety). See _Per-column audiences_ below; the spec
+now lives canonically in the DB and the mask view regenerates from it on change.
+
 ---
 
 ## The three user flows

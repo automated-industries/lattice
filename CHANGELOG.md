@@ -8,6 +8,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — all cloud config stored + enforced in Postgres (3.1)
+
+- **Per-table policy (`__lattice_table_policy`).** A table now carries an
+  owner-controlled `default_row_visibility` (`private` | `everyone`) and a
+  `never_share` flag, both **enforced in Postgres** (the per-table insert trigger
+  stamps new rows with the table default; `never_share` forces them private). So a
+  raw `psql` insert obeys the same defaults as the app. Owner-only setters
+  `setTableDefaultVisibility` / `setTableNeverShare` (SQL: `lattice_set_table_*`,
+  gated on `rolcreaterole`); `getTablePolicy` / `getAllTablePolicies` to read.
+- **Never-share exclusions.** `lattice_set_row_visibility` / `lattice_grant_row` /
+  `lattice_grant_cell` now RAISE for a `never_share` table — Secrets/Messages-class
+  tables can never be shared, at the data-model level (`secrets` is seeded
+  never-share by `secureCloud`). Closes the gap where any table could be elevated.
+- **Column-audience spec moved into Postgres (`__lattice_column_policy`).** The
+  per-column `audience:` spec is now stored canonically in the DB (was on-disk YAML
+  compiled once at init); `setColumnAudience` writes it and **regenerates the mask
+  view from the DB**, so masking is identical across members and re-masks on change
+  without a re-init. YAML specs are seeded into the DB on upgrade.
+- **DB-enforced secret columns (`owner` audience).** New `lattice_is_owner`
+  predicate + an `owner` column audience: a secret column is masked to everyone but
+  the row owner in Postgres (the `<table>_v` view). Marking a column secret in the
+  GUI now also sets this; the assistant-side redaction is rescoped to model-context
+  safety, not the privacy boundary.
+- **Chat "private mode".** A composer toggle that forces rows the assistant creates
+  to stay private regardless of the table default (a transient per-request action
+  via `set_row_visibility`).
+
+### Added — async background render (3.1)
+
+- **Non-blocking workspace open.** `lattice gui` no longer blocks on a full
+  `db.render()` when opening/switching a workspace — it serves immediately and
+  renders in the background, so a cloud workspace with large junction tables opens
+  instantly. Progress-bearing render API (`RenderOptions { onProgress, signal }`,
+  `RenderProgress`, `ProgressThrottle`), `Lattice.renderInBackground` with a shared
+  single-flight guard, `RenderProgressBus`, and `GET /api/render/progress` (SSE) +
+  `GET /api/render/status`. The GUI shows live per-table render progress (bottom bar
+  - pill) on each card; switching aborts the prior render. The `--no-render` flag is
+    removed (fast-open + background render is the single default path).
+- **Workspace-switch spinner restored** on the stable header button (regressed in
+  the 3.0 GUI rewrite).
+
 ## [3.0.0] - 2026-06-11
 
 ### Breaking — clouds are now a shared Postgres DB secured by row-level security
