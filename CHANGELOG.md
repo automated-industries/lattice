@@ -18,6 +18,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `mapWithConcurrency` moved to a package-root module (re-exported from its old
   path) so the render engine can share it without inverting layering.
 
+### Fixed — activity feed grouping (3.2)
+
+- **Relationship-link activity now collapses.** Junction-materialization events
+  ("Linked files ↔ project", "Linked authors ↔ books") arrived as schema ops that
+  matched no grouping rule, so each spammed its own pill in the assistant feed.
+  A run now collapses into one counted "Linked N relationships" bubble.
+
 ### Fixed — GUI polish (3.2)
 
 - **Render progress label.** The per-card background-render indicator reads

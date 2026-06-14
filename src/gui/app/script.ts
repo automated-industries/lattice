@@ -5369,6 +5369,7 @@ export const appJs = `
       'added-link':     ['Added', 'link', 'links'],
       'deleted-link':   ['Deleted', 'link', 'links'],
       'created-link':   ['Created', 'link table', 'link tables'],
+      'linked-rel':     ['Linked', 'relationship', 'relationships'],
     };
     function schemaAction(summary) {
       var s = String(summary || '');
@@ -5380,6 +5381,12 @@ export const appJs = `
       if (/^Renamed a column/.test(s)) return 'renamed-column';
       if (/^Added a link/.test(s)) return 'added-link';
       if (/^Deleted a link/.test(s)) return 'deleted-link';
+      // Junction-materialization summaries ("Linked files ↔ project",
+      // "Linked authors ↔ books") from materializeJunction — these arrive as a
+      // schema op but matched no rule above, so they used to return null and
+      // spam one ungrouped pill per link. Collapse a run into "Linked N
+      // relationships".
+      if (/^Linked .+ ↔ /.test(s)) return 'linked-rel';
       return null; // unknown schema op: keep it ungrouped (stay honest)
     }
     // Group identical-TYPE events into one counted pill regardless of which
