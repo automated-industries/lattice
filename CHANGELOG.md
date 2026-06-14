@@ -8,6 +8,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed — concurrent background render (3.2)
+
+- **Entity-context tables now render concurrently** (bounded fan-out) instead of
+  strictly one-after-another, so several render at once and each card's progress
+  advances at its own rate. The cap keeps in-flight whole-table reads small.
+- **`ProgressThrottle` is now per-table keyed**, so a fast table can't consume the
+  shared throttle window and starve a slow table's progress updates.
+- `mapWithConcurrency` moved to a package-root module (re-exported from its old
+  path) so the render engine can share it without inverting layering.
+
 ### Fixed — GUI polish (3.2)
 
 - **Render progress label.** The per-card background-render indicator reads
