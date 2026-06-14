@@ -1361,6 +1361,16 @@ export const css = `
       border: 1px solid var(--border-strong); border-radius: 8px;
       background: var(--surface-2); color: var(--text-muted); cursor: pointer;
     }
+    /* Paperclip Files/Folder menu — opens upward (composer sits at the rail
+       bottom); reuses .upload-menu-item from the topbar Upload button. */
+    .rail-composer .composer-clip-wrap { position: relative; flex: 0 0 auto; }
+    .composer-clip-menu {
+      position: absolute; bottom: calc(100% + 6px); left: 0; min-width: 160px;
+      background: var(--glass-strong);
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px;
+      box-shadow: var(--shadow-3), var(--hl-top); z-index: 60; padding: 6px;
+    }
     .assistant-rail.dragging-file::after {
       content: 'Drop to ingest'; position: absolute; inset: 0; z-index: 10;
       display: flex; align-items: center; justify-content: center;

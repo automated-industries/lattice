@@ -29,6 +29,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   grouping), server routes `POST /api/dedup/find` + `/api/dedup/merge`, and
   `tableJunctions()` generalizing `fileJunctions()` to any entity.
 
+### Added — folder upload from the composer paperclip
+
+- The assistant composer's **paperclip** now opens a Files / Folder menu (matching
+  the topbar Upload button) so you can attach a whole directory tree, not just
+  individual files. Folder selection uses `webkitdirectory` (a flat, recursive
+  `FileList`), and both entry points feed the same ingest flow — a single file
+  gets a per-file feed row, a batch gets the aggregate upload-progress toast with
+  the "not fully ingested" list.
+
 ### Changed — activity-feed attribution
 
 - The activity feed now attributes **automatic Lattice operations** (the

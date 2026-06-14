@@ -6187,6 +6187,7 @@ export const appJs = `
       }).catch(function () { /* ignore */ });
     }
 
+    var clipMenuOutsideClickBound = false;
     function renderComposer() {
       var host = document.getElementById('rail-composer'); if (!host) return;
       fetchJson('/api/assistant/config').then(function (cfg) {
@@ -6196,19 +6197,51 @@ export const appJs = `
             : '';
           host.innerHTML =
             '<div class="composer-row">' +
-              '<button class="composer-clip" id="chat-clip" title="Attach a file">📎</button>' +
+              '<div class="composer-clip-wrap">' +
+                '<button class="composer-clip" id="chat-clip" title="Attach files or a folder" aria-haspopup="true">📎</button>' +
+                '<div class="composer-clip-menu" id="chat-clip-menu" hidden>' +
+                  '<button class="upload-menu-item" id="chat-clip-files" type="button"><span aria-hidden="true">📄</span> Files…</button>' +
+                  '<button class="upload-menu-item" id="chat-clip-folder" type="button"><span aria-hidden="true">📁</span> Folder…</button>' +
+                '</div>' +
+              '</div>' +
               micHtml +
               '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
             '</div>' +
-            '<input type="file" id="chat-file" multiple style="display:none">';
+            '<input type="file" id="chat-file" multiple style="display:none">' +
+            '<input type="file" id="chat-folder" webkitdirectory multiple style="display:none">';
           var input = document.getElementById('chat-input');
           var sendBtn = document.getElementById('chat-send');
           var clipBtn = document.getElementById('chat-clip');
+          var clipMenu = document.getElementById('chat-clip-menu');
           var fileInput = document.getElementById('chat-file');
-          if (clipBtn && fileInput) {
-            clipBtn.addEventListener('click', function () { fileInput.click(); });
+          var folderInput = document.getElementById('chat-folder');
+          var clipFilesItem = document.getElementById('chat-clip-files');
+          var clipFolderItem = document.getElementById('chat-clip-folder');
+          if (clipBtn && clipMenu && fileInput && folderInput) {
+            // Mirror the topbar Upload button: the paperclip opens a small menu so
+            // you can attach individual files or a whole folder. webkitdirectory
+            // yields a flat, recursive FileList, so a folder containing subfolders
+            // sends everything under it. Both paths feed the same uploadFiles()
+            // flow (single file → feed row, batch → aggregate progress toast).
+            clipBtn.addEventListener('click', function (e) { e.stopPropagation(); clipMenu.hidden = !clipMenu.hidden; });
+            if (clipFilesItem) clipFilesItem.addEventListener('click', function () { clipMenu.hidden = true; fileInput.click(); });
+            if (clipFolderItem) clipFolderItem.addEventListener('click', function () { clipMenu.hidden = true; folderInput.click(); });
             fileInput.addEventListener('change', function () { uploadFiles(fileInput.files); fileInput.value = ''; });
+            folderInput.addEventListener('change', function () { uploadFiles(folderInput.files); folderInput.value = ''; });
+            // Attach the outside-click closer ONCE — renderComposer runs on every
+            // assistant re-render, so binding it each time would leak a listener
+            // per render. Re-fetch the menu/button by id inside the handler so it
+            // never holds a stale closure (the nodes are recreated each render).
+            if (!clipMenuOutsideClickBound) {
+              clipMenuOutsideClickBound = true;
+              document.addEventListener('click', function (e) {
+                var m = document.getElementById('chat-clip-menu');
+                var b = document.getElementById('chat-clip');
+                if (!m || m.hidden) return;
+                if (!m.contains(e.target) && e.target !== b && (!b || !b.contains(e.target))) m.hidden = true;
+              });
+            }
           }
           // Grow the textarea to fit its content (wrapped lines included), capped
           // so it never swallows the feed. Recompute on input AND whenever the

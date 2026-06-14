@@ -50,6 +50,15 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain("'/api/entities'");
   });
 
+  it('lets the composer paperclip attach files or a whole folder (webkitdirectory)', () => {
+    // The paperclip now opens a Files/Folder menu like the topbar Upload button,
+    // backed by a second webkitdirectory input, both feeding uploadFiles().
+    expect(guiAppHtml).toContain('id="chat-clip-menu"');
+    expect(guiAppHtml).toContain('id="chat-clip-files"');
+    expect(guiAppHtml).toContain('id="chat-clip-folder"');
+    expect(guiAppHtml).toContain('id="chat-folder" webkitdirectory');
+  });
+
   it('wires the Check-for-duplicates action: auto-dedupe exact + animated removal + review modal', () => {
     expect(guiAppHtml).toContain('id="check-dupes"');
     // Auto-removes exact dups and animates the rows dissolving out of the table.
