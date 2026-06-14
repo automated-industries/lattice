@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { resolveDbPath, parseDbRef, isDbRefShaped } from '../../src/config/parser.js';
 
 /**
@@ -47,7 +47,9 @@ describe('#1.1/#1.2 ${LATTICE_DB:…} reference resolution', () => {
   });
 
   it('resolves a plain relative path against the config dir', () => {
-    expect(resolveDbPath('./Data/x.db', '/tmp/cfg')).toBe('/tmp/cfg/Data/x.db');
+    // Assert against the SAME path.resolve the resolver uses, so this holds on
+    // Windows too (where it becomes e.g. D:\tmp\cfg\Data\x.db, not a POSIX path).
+    expect(resolveDbPath('./Data/x.db', '/tmp/cfg')).toBe(resolve('/tmp/cfg', './Data/x.db'));
   });
 
   it('parseDbRef/isDbRefShaped: a sanitized label is valid; a spaced one is shaped-but-invalid', () => {
