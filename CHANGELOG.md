@@ -8,6 +8,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — GUI activity feed + data-model sharing (3.2)
+
+- **No feed pills for internal plumbing tables.** Writes to the assistant's own
+  `chat_threads`/`chat_messages` storage (and any `_lattice*` bookkeeping) no
+  longer surface as activity-feed pills — only real user-data activity does.
+- **"Added column(s)" events group instead of duplicating.** The auto-create
+  emitter produces "Added columns a, b to X", which the feed's grouping regex
+  didn't match (`/^Added a column/`), so a bulk ingest spammed an identical pill
+  per file. They now collapse into one counted pill.
+- **No "Share with workspace" button on never-share tables.** A never-share table
+  (e.g. `secrets`) is a hard-private floor, so its data-model panel shows a static
+  "never shared" note instead of a share toggle.
+
 ### Fixed — members panel + kick (3.2)
 
 - **Kicking a member works on managed Postgres.** `revokeMemberRole` did

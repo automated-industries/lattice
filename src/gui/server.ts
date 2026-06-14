@@ -1694,7 +1694,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // Postgres NOTIFY echo of them below (avoids double feed entries on
           // cloud DBs); genuine other-client changes still come through.
           const recentSelf = new Map<string, number>();
+          // Internal plumbing tables (the assistant's own chat_threads/chat_messages
+          // storage + every `_lattice*` bookkeeping table) are NOT user activity —
+          // never surface them as feed pills. files/secrets/notes etc. stay visible.
+          const isFeedHiddenTable = (t: string): boolean =>
+            t.startsWith('_lattice') || t.startsWith('__lattice') || isInternalNativeEntity(t);
           const offFeed = active.feed.subscribe((e) => {
+            if (e.table && isFeedHiddenTable(e.table)) return;
             recentSelf.set(`${e.table ?? ''}:${e.rowId ?? ''}:${e.op}`, Date.now());
             writeFeed(e);
           });
@@ -1705,7 +1711,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // INSERT/UPDATE/DELETE; matching the old uppercase forms dropped EVERY
             // remote change, so another client's edits never reached the feed.
             const op = feedOpForChange(p.op);
-            if (!op || !p.table_name || p.table_name.startsWith('_lattice')) return;
+            if (!op || !p.table_name || isFeedHiddenTable(p.table_name)) return;
             const tableName = p.table_name; // non-null past the guard (kept across the async cb)
             const key = `${tableName}:${p.pk ?? ''}:${op}`;
             const seen = recentSelf.get(key);

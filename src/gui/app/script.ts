@@ -3593,22 +3593,30 @@ export const appJs = `
       // tables, show no sharing control.
       var canShare = !!(t && t.ownedByMe === true);
       var isShared = !!(t && t.shared);
-      var shareRow = canShare
-        ? '<label>Cloud sharing</label>' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-            '<button class="btn' + (isShared ? '' : ' primary') + '" id="dm-share-btn">' +
-              (isShared ? 'Make private' : 'Share with workspace') +
-            '</button>' +
-            '<span style="font-size:12px;color:var(--text-muted)">' +
-              (isShared ? 'Visible to everyone on this cloud workspace.' : 'Private to you. Share to make it visible to everyone on this cloud workspace.') +
-            '</span>' +
-          '</div>'
-        : '';
+      var neverShare = !!(t && t.neverShare);
+      // A never-share table (e.g. secrets) can NEVER be shared — its rows are a
+      // hard-private floor — so the "Share with workspace" button must not exist
+      // for it; show a static note instead.
+      var shareRow = !canShare
+        ? ''
+        : neverShare
+          ? '<label>Cloud sharing</label>' +
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+              '<span style="font-size:12px;color:var(--text-muted)">🔒 Private to you — this table is never shared.</span>' +
+            '</div>'
+          : '<label>Cloud sharing</label>' +
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+              '<button class="btn' + (isShared ? '' : ' primary') + '" id="dm-share-btn">' +
+                (isShared ? 'Make private' : 'Share with workspace') +
+              '</button>' +
+              '<span style="font-size:12px;color:var(--text-muted)">' +
+                (isShared ? 'Visible to everyone on this cloud workspace.' : 'Private to you. Share to make it visible to everyone on this cloud workspace.') +
+              '</span>' +
+            '</div>';
       // Owner-only "new rows default to" control, shown for a shared table.
       // A never-share table's rows are always private, so the default-visibility
       // select is disabled while never-share is on.
       var defaultVis = (t && t.defaultRowVisibility) || 'private';
-      var neverShare = !!(t && t.neverShare);
       var defaultVisRow = canShare && isShared
         ? '<label>New rows default to</label>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
@@ -5479,7 +5487,9 @@ export const appJs = `
       if (/^Created table/.test(s)) return 'created-table';
       if (/^Deleted table/.test(s)) return 'deleted-table';
       if (/^Renamed table/.test(s)) return 'renamed-table';
-      if (/^Added a column/.test(s)) return 'added-column';
+      // Two emitters: the generic "Added a column to X" and the specific
+      // "Added column(s) a, b to X" (ingest auto-creates columns). Both group.
+      if (/^Added (a )?column/.test(s)) return 'added-column';
       if (/^Renamed a column/.test(s)) return 'renamed-column';
       if (/^Added a link/.test(s)) return 'added-link';
       if (/^Deleted a link/.test(s)) return 'deleted-link';

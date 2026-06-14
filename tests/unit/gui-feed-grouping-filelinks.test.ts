@@ -117,3 +117,29 @@ describe('#5 feed grouping — junction "Linked X ↔ Y" events collapse', () =>
     expect(link).not.toBe(create);
   });
 });
+
+describe('#I feed grouping — "Added column(s)" auto-create events collapse', () => {
+  it('schemaAction maps BOTH the generic and the specific add-column summary', () => {
+    // The bug: ingest auto-create emits "Added columns a, b to files" (plural,
+    // with names) which the old /^Added a column/ regex missed → each spammed an
+    // ungrouped pill. Both the generic and the specific form must group now.
+    expect(api.schemaAction('Added a column to files')).toBe('added-column');
+    expect(api.schemaAction('Added column slug to files')).toBe('added-column');
+    expect(api.schemaAction('Added columns slug, name, title to files')).toBe('added-column');
+  });
+
+  it('repeated identical add-column events share one group key', () => {
+    const a = api.feedGroupKey({
+      op: 'schema.add_column',
+      summary: 'Added columns slug, name, title to files',
+      source: 'ai',
+    });
+    const b = api.feedGroupKey({
+      op: 'schema.add_column',
+      summary: 'Added columns slug, name, title to files',
+      source: 'ai',
+    });
+    expect(a).not.toBeNull(); // was null → duplicate pills
+    expect(a).toBe(b);
+  });
+});
