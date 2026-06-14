@@ -12,6 +12,13 @@ import { createRequire } from 'node:module';
  */
 
 export const DEFAULT_MODEL = 'claude-haiku-4-5';
+/**
+ * Cheapest capable model, pinned for high-volume background passes (e.g. the
+ * enrichment fold) where the customer bears the token cost. Kept distinct from
+ * {@link DEFAULT_MODEL} so a future default upgrade to a larger model never
+ * silently makes the bulk passes expensive.
+ */
+export const CHEAPEST_MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 2048;
 
 /** A content block in the Anthropic message format used here. */

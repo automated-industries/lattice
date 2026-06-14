@@ -18,49 +18,38 @@ afterEach(() => {
 });
 
 describe('probeCloud()', () => {
-  it('returns reachable: true + teamEnabled: false for a fresh empty target', async () => {
+  it('returns reachable: true + isCloud: false for a fresh SQLite target', async () => {
     const root = tempDir();
     const dbPath = join(root, 'fresh.db');
     const url = `file:${dbPath}`;
     const result = await probeCloud(url);
     expect(result.reachable).toBe(true);
-    expect(result.teamEnabled).toBe(false);
+    expect(result.isCloud).toBe(false);
     expect(result.dialect).toBe('sqlite');
   });
 
-  it('returns reachable: true + teamEnabled: true when the target has a team identity row', async () => {
+  it('a SQLite file is never a cloud, even with user tables present', async () => {
+    // v3: a cloud is Postgres-with-RLS only. SQLite is always a private local
+    // store, so probeCloud short-circuits it to isCloud:false without opening.
+    // (Postgres isCloud:true detection — __lattice_owners present — is covered by
+    // the PG-gated cloud-rls-postgres acceptance test.)
     const root = tempDir();
-    const dbPath = join(root, 'team.db');
+    const dbPath = join(root, 'local.db');
     const url = `file:${dbPath}`;
-
-    // Seed: create a Lattice, register the team_identity table, insert the singleton row.
     const seedDb = new Lattice(url);
-    seedDb.define('__lattice_team_identity', {
-      columns: {
-        id: 'TEXT PRIMARY KEY',
-        team_id: 'TEXT NOT NULL',
-        team_name: 'TEXT NOT NULL',
-        creator_email: 'TEXT NOT NULL',
-        created_at: 'TEXT NOT NULL',
-      },
+    seedDb.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT' },
       primaryKey: 'id',
       render: () => '',
-      outputFile: '.lattice-teams/team-identity.md',
+      outputFile: 'notes.md',
     });
     await seedDb.init();
-    await seedDb.insert('__lattice_team_identity', {
-      id: 'singleton',
-      team_id: 'team-abc',
-      team_name: 'Atlas',
-      creator_email: 'alice@example.com',
-      created_at: new Date().toISOString(),
-    });
+    await seedDb.insert('notes', { id: 'n1', body: 'hi' });
     seedDb.close();
 
     const result = await probeCloud(url);
     expect(result.reachable).toBe(true);
-    expect(result.teamEnabled).toBe(true);
-    expect(result.teamName).toBe('Atlas');
+    expect(result.isCloud).toBe(false);
     expect(result.dialect).toBe('sqlite');
   });
 

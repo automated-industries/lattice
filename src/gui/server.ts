@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import {
   existsSync,
@@ -46,37 +46,12 @@ import {
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
-import {
-  CLOUD_INTERNAL_TABLE_DEFS,
-  installCloudInternalTriggers,
-  installRowPermsSchema,
-} from '../teams/internal-tables.js';
-import {
-  addRowGrant,
-  canAccessRow,
-  listVisibleRows,
-  removeRowGrant,
-  rowAccessSummaries,
-  rowGrantees,
-  setRowVisibility,
-  setTableDefaultVisibility,
-  visibleRowEdits,
-} from '../teams/row-access.js';
-import { recordObjectOwner, resolveUserIdByEmail } from '../teams/direct-ops.js';
-import {
-  type TeamContext,
-  isVisibleInTeam,
-  resolveTeamContext,
-  shareEntityWithTeam,
-  applySharingToContext,
-  listTeamUsers,
-} from './team-context.js';
 import { RealtimeBroker } from './realtime.js';
-import { isPostgresUrl } from '../teams/register-direct.js';
+import { isPostgresUrl } from '../cloud/url.js';
+import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+import { discoverCloudTables } from '../cloud/discover.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
-import { filterSearchGroupsByAcl } from './search-acl.js';
-import { appendChangeEnvelope, findEnvelopeByEditId } from '../teams/team-core.js';
 import {
   createRow,
   updateRow,
@@ -106,10 +81,6 @@ import {
   aiDeleteEntity,
   type DeleteResolution,
 } from './schema-ops.js';
-import { authenticate, type AuthContext } from '../teams/server/auth.js';
-import { dispatchTeamRoute, UNAUTHENTICATED_TEAM_PATHS } from '../teams/server/routes.js';
-import { TeamsClient } from '../teams/client.js';
-import { dispatchTeamsGuiRoute } from './teams-routes.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
@@ -144,23 +115,14 @@ export interface StartGuiServerOptions {
   openBrowser?: boolean;
   /**
    * Bind address. Defaults to `127.0.0.1`. Use `0.0.0.0` (or a specific
-   * interface) to expose the server outside localhost — only meaningful in
-   * combination with `teamCloud: true`, which adds the auth layer.
+   * interface) to expose the server outside localhost.
    */
   host?: string;
-  /**
-   * Enable team-cloud server mode: registers the Lattice Teams internal
-   * tables via `defineLate()` after init, and requires a valid bearer
-   * token on every API request. The DB-switcher endpoints are disabled
-   * (they assume single-user filesystem trust).
-   */
-  teamCloud?: boolean;
   /**
    * Workspace mode: derive canonical entity contexts for tables without one
    * and keep the rendered Context/ tree synced via auto-render on every write.
    * Set by `lattice gui` when opening a `.lattice` workspace. Off for a plain
-   * `--config` GUI (which serves only externally-rendered context) and for
-   * team-cloud serve.
+   * `--config` GUI (which serves only externally-rendered context).
    */
   autoRender?: boolean;
 }
@@ -257,7 +219,6 @@ async function entitiesWithCounts(
   db: Lattice,
   configPath: string,
   outputDir: string,
-  teamContext: TeamContext | null,
 ): Promise<GuiEntitiesPayload> {
   const payload = getGuiEntities(configPath, outputDir);
 
@@ -266,72 +227,15 @@ async function entitiesWithCounts(
   // conversation storage — they're real tables but must never surface in the
   // Objects list / dashboard cards. Drop them from the display payload here
   // (they stay registered + queryable for the chat route).
-  let allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)].filter(
+  const allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)].filter(
     (t) => !isInternalNativeEntity(t.name),
   );
 
-  // Team-cloud visibility: a member sees only their own tables plus
-  // tables shared to the team. This is what hides the creator's
-  // private files/secrets (and other members' private tables) from
-  // members, and other members' private tables from the creator.
-  if (teamContext) {
-    allTables = allTables.filter((t) => isVisibleInTeam(t.name, teamContext));
-  }
-
-  // Per-table default row visibility (batched, one query for the whole shared-
-  // object set) for the Data Model "new rows default to" select — and, below,
-  // for resolving each table's no-ACL visibility for the visible-count pass.
-  const rowVisDefaults = new Map<string, 'private' | 'everyone'>();
-  const sharedCreatedBy = new Map<string, string>();
-  if (teamContext) {
-    const sharedObjs = await db.query('__lattice_shared_objects', {
-      filters: [
-        { col: 'team_id', op: 'eq', val: teamContext.teamId },
-        { col: 'deleted_at', op: 'isNull' },
-      ],
-    });
-    for (const r of sharedObjs) {
-      rowVisDefaults.set(
-        String(r.table_name),
-        r.default_row_visibility === 'everyone' ? 'everyone' : 'private',
-      );
-      if (typeof r.created_by_user_id === 'string') {
-        sharedCreatedBy.set(String(r.table_name), r.created_by_user_id);
-      }
-    }
-  }
-
-  // Team-cloud counts: a physical row count would reveal the existence and
-  // volume of rows this member can't see (a tile reading 47 while the rows
-  // view lists 12 leaks 35 hidden rows — and a denied read is supposed to be
-  // indistinguishable from a missing one). Count through the same visibility
-  // predicate the rows view uses, aggregated into ONE round-trip — the
-  // pool-safety constraint the batched paths below exist for. Each table's
-  // no-ACL fallback mirrors listVisibleRows: visible when the table default
-  // is 'everyone' or the operator owns the table (object owner, falling back
-  // to the shared object's creator).
-  let visibleCounts = new Map<string, number>();
-  if (teamContext) {
-    const tc = teamContext;
-    const specs = allTables.map((t) => {
-      const def = rowVisDefaults.get(t.name) ?? 'private';
-      const owner = tc.owners.get(t.name) ?? sharedCreatedBy.get(t.name) ?? '';
-      return {
-        table: t.name,
-        noAclVisible: def === 'everyone' || (tc.myUserId !== '' && owner === tc.myUserId),
-      };
-    });
-    visibleCounts = await db.countVisibleMany(specs, {
-      teamId: tc.teamId,
-      userId: tc.myUserId,
-    });
-  }
-
-  // Postgres (no team context): collapse the per-table COUNT(*) fan-out to
-  // one query against pg_class. The naive Promise.all path below issues N
-  // parallel COUNTs through the connection pool; on a session pooler with a
-  // small slot budget (e.g. Supabase's 15-slot session pooler), N > slots
-  // locks up the pool the moment two clients refresh at once.
+  // Postgres: collapse the per-table COUNT(*) fan-out to one query against
+  // pg_class. The naive Promise.all path below issues N parallel COUNTs through
+  // the connection pool; on a session pooler with a small slot budget (e.g.
+  // Supabase's 15-slot session pooler), N > slots locks up the pool the moment
+  // two clients refresh at once.
   //
   // `reltuples` is approximate (maintained by ANALYZE / autovacuum). For
   // the entity-list view that's the right tradeoff — operators are
@@ -339,8 +243,7 @@ async function entitiesWithCounts(
   // that tables with a `deleted_at` column now include soft-deleted rows
   // in this number; per-table drill-in still shows the filtered count.
   const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
-  const useBatched =
-    !teamContext && adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
+  const useBatched = adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
   const approxCounts = useBatched
     ? await countManyPostgres(
         adapter,
@@ -368,12 +271,7 @@ async function entitiesWithCounts(
   const enrichedTables = await Promise.all(
     allTables.map(async (t): Promise<GuiTableSummary> => {
       let rowCount: number | null;
-      if (teamContext) {
-        // Team cloud: only the rows this member may see (computed in one
-        // aggregated round-trip above). `null` past the per-pass cap so the
-        // SPA renders "—" rather than a leaked physical count.
-        rowCount = visibleCounts.get(t.name) ?? null;
-      } else if (useBatched) {
+      if (useBatched) {
         // Postgres: prefer an exact count for the suspicious subset (computed
         // in one extra round-trip above); otherwise the fast approximate stat.
         // Still `null` when neither is available so the SPA renders "—".
@@ -393,14 +291,6 @@ async function entitiesWithCounts(
       // over the lossy SQL spec above. Absent for code-defined tables.
       const fieldTypes = db.getRegisteredFieldTypes(t.name);
       if (fieldTypes) base.fieldTypes = fieldTypes;
-      if (teamContext) {
-        base.shared = teamContext.shared.has(t.name);
-        base.ownedByMe = teamContext.owners.get(t.name) === teamContext.myUserId;
-        const ver = teamContext.sharedVersions.get(t.name);
-        if (ver !== undefined) base.schemaVersion = ver;
-        const dv = rowVisDefaults.get(t.name);
-        if (dv) base.defaultRowVisibility = dv;
-      }
       return base;
     }),
   );
@@ -409,32 +299,6 @@ async function entitiesWithCounts(
 
 const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
 const DASHBOARD_STALE_DAYS = 14;
-
-/**
- * Gate a row-permission route on an active team context. Sends the 400 and
- * returns null when the workspace isn't a team cloud — callers bail with
- * `if (!ctx) return;`. Shared by the four row-permission endpoints
- * (visibility, grants add/remove, table default).
- */
-function requireTeamContext(active: ActiveDb, res: ServerResponse): TeamContext | null {
-  const ctx = active.teamContext;
-  if (!ctx) {
-    sendJson(res, { error: 'Row permissions require a team cloud' }, 400);
-    return null;
-  }
-  return ctx;
-}
-
-/**
- * Whether the operator may edit `table`'s schema (rename, columns,
- * relationships). On a local / single-user DB (no team context) there's no
- * ownership, so always true. On a team cloud, only the table's owner may edit
- * it — the same gate the share toggle already uses.
- */
-function operatorOwnsTable(teamContext: TeamContext | null, table: string): boolean {
-  if (!teamContext) return true;
-  return teamContext.owners.get(table) === teamContext.myUserId;
-}
 
 // Structural columns Lattice manages — never renamable, retypable, deletable,
 // or maskable from the GUI. `id` is the uuid primary key; the timestamps +
@@ -506,9 +370,8 @@ async function dashboardPayload(
   db: Lattice,
   configPath: string,
   outputDir: string,
-  teamContext: TeamContext | null,
 ): Promise<DashboardPayload> {
-  const entityList = await entitiesWithCounts(db, configPath, outputDir, teamContext);
+  const entityList = await entitiesWithCounts(db, configPath, outputDir);
   // First-class entities only (skip junctions + system tables) — same set the
   // dashboard cards show.
   const firstClass = entityList.tables.filter(
@@ -677,24 +540,6 @@ export interface ActiveDb {
   outputDir: string;
   db: Lattice;
   validTables: Set<string>;
-  /** Team-cloud ownership context, or null for local / non-team DBs. */
-  teamContext: TeamContext | null;
-  /**
-   * True when this process is the auth-gated cloud server (`lattice serve
-   * --team-cloud`) — the sole legitimate holder of a cloud's direct database
-   * connection. A regular GUI has this false, and is refused a direct cloud
-   * open (see {@link ActiveDb.cloudReconnectRequired}). Rides on ActiveDb so
-   * same-config reopens propagate it without re-threading every call site.
-   */
-  teamCloud: boolean;
-  /**
-   * True when the workspace is a cloud (team) reached via a raw `postgres://`
-   * connection in a regular GUI — the deprecated, insecure path. The cloud is
-   * NOT opened: no team context, no tables served. The GUI must reconnect
-   * through a user-authenticated server. Always false for the server process,
-   * for solo (non-team) databases, and for server-mode workspaces.
-   */
-  cloudReconnectRequired: boolean;
   junctionTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
@@ -712,14 +557,6 @@ export interface ActiveDb {
    */
   manifest: LatticeManifest | null;
   softDeletable: Set<string>;
-  /**
-   * Cached `TeamsClient` so sync write-hooks registered via
-   * `attachWriteHooks` persist across requests. Reuses the same Lattice
-   * instance the GUI's CRUD endpoints write through, so a row update
-   * via the GUI dashboard fires the same outbox-capture hook as a
-   * write from outside.
-   */
-  teamsClient: TeamsClient;
   /**
    * Active LISTEN/NOTIFY broker when the underlying Lattice is backed
    * by Postgres. Null for SQLite (no realtime). Owned by the active
@@ -769,7 +606,6 @@ export async function openConfig(
   configPath: string,
   outputDir: string,
   autoRender = false,
-  teamCloud = false,
 ): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
@@ -878,7 +714,43 @@ export async function openConfig(
       if (!existingContexts.has(table)) db.defineEntityContext(table, definition);
     }
   }
-  await db.init();
+
+  // Member-open vs owner-open for a cloud (Postgres). A scoped member connects
+  // as a non-superuser role with no CREATE/ALTER privilege, so a normal init()
+  // (which applies the schema) would fail against an already-provisioned cloud.
+  // Peek with a throwaway introspect-only connection: if the target is a cloud
+  // (RLS installed) AND this role can't create roles (i.e. it's a member, not the
+  // owner/DBA), open `introspectOnly` (no DDL) and register the physical tables
+  // the role can see — the member's local config may declare none. The owner /
+  // DBA path keeps the full init (idempotent CREATE IF NOT EXISTS on an existing
+  // cloud). SQLite and fresh Postgres fall through to the normal init.
+  let memberOpen = false;
+  if (db.getDialect() === 'postgres') {
+    const peek = new Lattice({ config: configPath }, { encryptionKey });
+    try {
+      await peek.init({ introspectOnly: true });
+      if (await cloudRlsInstalled(peek)) {
+        memberOpen = !(await canManageRoles(peek));
+        if (memberOpen) {
+          const declared = new Set(db.getRegisteredTableNames());
+          for (const t of await discoverCloudTables(peek)) {
+            if (declared.has(t.name)) continue;
+            db.define(t.name, {
+              columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
+              ...(t.pk.length > 0 ? { primaryKey: t.pk.length === 1 ? t.pk[0] : t.pk } : {}),
+              render: () => '',
+              outputFile: `${t.name}/.lattice/${t.name}.md`,
+            });
+          }
+        }
+      }
+    } catch {
+      // Unreachable, not a cloud, or a fresh DB — use the normal init() below.
+    } finally {
+      peek.close();
+    }
+  }
+  await db.init(memberOpen ? { introspectOnly: true } : {});
 
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
   // active Lattice has a current view of who the operator is. Idempotent:
@@ -932,55 +804,12 @@ export async function openConfig(
     const cols = db.getRegisteredColumns(name);
     if (cols && 'deleted_at' in cols) softDeletable.add(name);
   }
-  const teamsClient = new TeamsClient(db);
-  // Re-arm sync write-hooks for any tables that already have local
-  // links (i.e. the user is part of teams + linked rows in a prior
-  // session). Idempotent — safe to call on every openConfig.
-  await teamsClient.attachWriteHooks();
-
-  // Auto-discover shared-table schemas for every team this lattice has
-  // joined. Without this, a fresh `lattice gui` against a joined-team
-  // cloud config opens to "No entities yet. Define entities in your
-  // lattice.config.yml or register them via db.define()..." because
-  // the YAML `entities: {}` block carries no schema and the cloud's
-  // `__lattice_shared_objects` rows haven't been replayed into the
-  // local Lattice's in-memory schema. Each `applyCloudSchemaLocally`
-  // calls `defineLate` under the hood — idempotent on re-open.
-  //
-  // Failures here are isolated per-team: a single dead cloud must not
-  // block the GUI from booting. Discovery errors are logged but
-  // swallowed; the user sees a less-populated dropdown rather than
-  // a 500.
-  try {
-    const connections = await teamsClient.listConnections();
-    for (const conn of connections) {
-      try {
-        const result = await teamsClient.syncSharedSchemas(conn);
-        for (const obj of result.applied) {
-          validTables.add(obj.table);
-        }
-        if (result.conflicts.length > 0) {
-          console.warn(
-            `[openConfig] schema conflicts on team ${conn.team_name}:`,
-            result.conflicts.map((c) => `${c.table}: ${c.reason}`).join('; '),
-          );
-        }
-      } catch (e) {
-        console.warn(
-          `[openConfig] could not auto-sync shared schemas for team ${conn.team_name}:`,
-          (e as Error).message,
-        );
-      }
-    }
-  } catch (e) {
-    console.warn('[openConfig] could not enumerate team connections:', (e as Error).message);
-  }
-
-  // The team schema auto-sync above defineLate's shared tables onto the live
-  // Lattice. `validTables` + `softDeletable` were built BEFORE that ran (and a
-  // shared table that already physically exists is registered without a schema
-  // "change"), so re-capture the live registered set now. Without this, a member
-  // who opens a cloud workspace never sees the tables the owner shared.
+  // The cloud's shared tables are defined by the config `entities:` block and
+  // registered on the live Lattice at init. `validTables` + `softDeletable`
+  // were built from the manifest above; re-capture the live registered set now
+  // so every physically-present, RLS-governed table is queryable here. Row
+  // visibility is enforced by Postgres RLS at the database — the app layer no
+  // longer filters the visible set.
   for (const name of db.getRegisteredTableNames()) {
     if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
     validTables.add(name);
@@ -990,97 +819,12 @@ export async function openConfig(
     }
   }
 
-  // ── Team-cloud ownership context ──────────────────────────────────
-  // When the active DB is a team-enabled Postgres cloud, every member
-  // shares the same physical Postgres — so every table physically
-  // exists for everyone. Register the internal tables on this handle
-  // (so direct team ops like kick know composite PKs), resolve who the
-  // operator is + per-table ownership, then restrict the visible /
-  // queryable table set to (tables I own) ∪ (tables shared to the
-  // team). Native files/secrets, owned by the creator, vanish for
-  // members unless explicitly shared.
-  let teamContext: TeamContext | null = null;
-  let cloudReconnectRequired = false;
-  if (db.getDialect() === 'postgres') {
-    let teamEnabled = false;
-    try {
-      teamEnabled = (await db.get('__lattice_team_identity', 'singleton')) != null;
-    } catch {
-      teamEnabled = false;
-    }
-    // 2.2.3 — a cloud is reachable ONLY through a user-authenticated server.
-    // A regular GUI (not the server process) pointed straight at a cloud's
-    // `postgres://` connection is the deprecated, insecure path: anyone with
-    // that string would read every table and row, since the database itself
-    // can't tell members apart. So in GUI mode (`!teamCloud`) a direct
-    // `postgres://` connection is NEVER used as a cloud:
-    //   - if it already hosts a team → refuse: serve no team context and no
-    //     tables, and signal the GUI to reconnect through a server;
-    //   - if it is a plain (non-team) Postgres → open it as a solo private
-    //     backend, but do NOT auto-initialize it into a cloud (clouds are made
-    //     by running a server, not by pointing the GUI at a connection string).
-    // The server process (`teamCloud`) is the sole legitimate direct holder of
-    // the connection string and keeps the full init + team-context flow.
-    const directGuiPostgres = !teamCloud && isPostgresUrl(parsed.dbPath);
-    if (directGuiPostgres) {
-      if (teamEnabled) {
-        cloudReconnectRequired = true;
-        teamEnabled = false; // do not resolve team context or expose tables
-        validTables.clear(); // expose nothing from the direct cloud connection
-      }
-      // else: solo private backend — fall through, no team auto-init.
-    } else if (!teamEnabled) {
-      // Server process opening a not-yet-initialized cloud: set up the
-      // member/share machinery (the opener becomes owner). Best-effort +
-      // race-safe (no-op when already a workspace). Gated on a labeled db: line
-      // + the operator having an identity email.
-      try {
-        const rawDb = parseDocument(readFileSync(configPath, 'utf8')).get('db');
-        const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
-        const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(dbLine);
-        const label = labelMatch?.[1];
-        const identity = readIdentity();
-        if (label && identity.email) {
-          await teamsClient.ensureCloudWorkspaceIdentity({
-            label,
-            cloudUrl: parsed.dbPath,
-            workspaceName: label,
-            email: identity.email,
-            displayName: identity.display_name,
-          });
-          teamEnabled = (await db.get('__lattice_team_identity', 'singleton')) != null;
-        }
-      } catch (e) {
-        console.warn(
-          '[openConfig] could not auto-initialize cloud workspace:',
-          (e as Error).message,
-        );
-      }
-    }
-    if (teamEnabled) {
-      await registerTeamCloudTables(db);
-      try {
-        teamContext = await resolveTeamContext(db, teamsClient, parsed.dbPath, [...validTables]);
-      } catch (e) {
-        console.warn(
-          '[openConfig] could not resolve team ownership context:',
-          (e as Error).message,
-        );
-      }
-    }
-  }
-  if (teamContext) {
-    for (const name of [...validTables]) {
-      if (!isVisibleInTeam(name, teamContext)) validTables.delete(name);
-    }
-  }
-
   // Realtime broker — only meaningful when the active DB is Postgres.
   // The broker connects on creation; status/payload events stream out
   // via the SSE endpoint. SQLite configs leave this as null and the
   // status pill reports the local-mode (yellow) state.
   let realtime: RealtimeBroker | null = null;
-  if (db.getDialect() === 'postgres' && !cloudReconnectRequired) {
+  if (db.getDialect() === 'postgres') {
     try {
       realtime = new RealtimeBroker(parsed.dbPath);
       await realtime.start();
@@ -1088,20 +832,6 @@ export async function openConfig(
       console.warn('[openConfig] realtime broker init failed:', (e as Error).message);
       realtime = null;
     }
-  }
-
-  // Keep this server's team-visibility set live when ANOTHER client shares
-  // or unshares a table: the share/unshare envelope arrives over NOTIFY, so
-  // we update `teamContext.shared` + `validTables` in place — no DB re-open,
-  // and the browser's existing `change`-driven refetch then sees the new
-  // visibility. `op:'schema'` ⇒ (re)shared, `op:'unshare'` ⇒ unshared.
-  if (realtime && teamContext) {
-    const tc = teamContext;
-    realtime.subscribePayload((p) => {
-      if (p.op !== 'schema' && p.op !== 'unshare') return;
-      if (!p.table_name) return;
-      applySharingToContext(tc, validTables, p.table_name, p.op === 'schema');
-    });
   }
 
   // Workspace opens only: keep the rendered Context/ tree synced with the DB at
@@ -1132,11 +862,7 @@ export async function openConfig(
     configPath,
     outputDir,
     db,
-    teamsClient,
     validTables,
-    teamContext,
-    teamCloud,
-    cloudReconnectRequired,
     junctionTables,
     entityContextByTable,
     manifest,
@@ -1312,41 +1038,9 @@ async function disposeActive(active: ActiveDb): Promise<void> {
 async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<ActiveDb> {
   const feed = active.feed;
   await disposeActive(active);
-  const next = await openConfig(active.configPath, active.outputDir, autoRender, active.teamCloud);
+  const next = await openConfig(active.configPath, active.outputDir, autoRender);
   next.feed = feed;
   return next;
-}
-
-async function registerTeamCloudTables(db: Lattice): Promise<void> {
-  for (const [name, def] of Object.entries(CLOUD_INTERNAL_TABLE_DEFS)) {
-    await db.defineLate(name, def);
-  }
-  await installCloudInternalTriggers(db);
-  await installRowPermsSchema(db);
-}
-
-/**
- * Emit a change-log envelope for a single row so other team clients get a
- * NOTIFY and refetch through the visibility-filtered read path. Used by the
- * row-permission endpoints after an ACL change. The NOTIFY payload carries no
- * row bytes (see CLOUD_NOTIFY_CHANGE_LOG_SQL), so it never hands a row to a
- * recipient who just lost access — access is always re-evaluated on refetch.
- */
-async function emitRowChangeSignal(
-  db: Lattice,
-  team: TeamContext,
-  table: string,
-  pk: string,
-): Promise<void> {
-  const row = await db.get(table, pk);
-  await appendChangeEnvelope(db, {
-    team_id: team.teamId,
-    table_name: table,
-    pk,
-    op: 'upsert',
-    payload_json: row ? JSON.stringify(row) : null,
-    owner_user_id: team.myUserId,
-  });
 }
 
 /**
@@ -1378,8 +1072,6 @@ async function syncUserIdentityRow(db: Lattice): Promise<void> {
     });
   }
 }
-
-type RequestWithAuth = IncomingMessage & { authContext?: AuthContext };
 
 // ── Schema history (tracking + soft-delete revert) ────────────────────────
 // Schema/data-model changes are logged to the same `_lattice_gui_audit`
@@ -1509,7 +1201,7 @@ async function applySchemaConfig(
   for (const sql of ddl) await execSql(active.db, sql);
   saveConfigDoc(active.configPath, doc);
   await disposeActive(active);
-  return openConfig(active.configPath, active.outputDir, autoRender, active.teamCloud);
+  return openConfig(active.configPath, active.outputDir, autoRender);
 }
 
 /** Human one-liner for an undo/redo/revert of a schema entry (activity feed). */
@@ -1523,7 +1215,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const outputDir = resolve(options.outputDir);
   const startPort = options.port ?? 4317;
   const host = options.host ?? '127.0.0.1';
-  const teamCloud = options.teamCloud ?? false;
   const autoRender = options.autoRender ?? false;
   // One id per GUI server process. Stamped on every audit entry so the header
   // undo/redo stack is scoped to THIS session's own actions (you undo what you
@@ -1531,7 +1222,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const sessionId = crypto.randomUUID();
 
   // Mutable reference: switching DBs replaces this wholesale.
-  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender, teamCloud);
+  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender);
   // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
   // GUI was opened on a plain config; the switcher stays hidden.
@@ -1556,9 +1247,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       currentWorkspaceId = getActiveWorkspace(latticeRoot)?.id ?? null;
     }
   }
-  if (teamCloud) {
-    await registerTeamCloudTables(active.db);
-  }
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -1566,34 +1254,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
-
-        // ── Team-cloud auth gate ──────────────────────────────────────────
-        // Most routes require a valid bearer token. A small allowlist of
-        // bootstrap/redemption endpoints (defined in routes.ts) is exempt
-        // so a new operator can register and invitees can redeem invites
-        // before they have a token.
-        let authContext: AuthContext | null = null;
-        if (teamCloud) {
-          if (!UNAUTHENTICATED_TEAM_PATHS.has(pathname)) {
-            authContext = await authenticate(req, active.db);
-            if (!authContext) {
-              sendJson(res, { error: 'Unauthorized' }, 401);
-              return;
-            }
-            (req as RequestWithAuth).authContext = authContext;
-          }
-        }
-
-        // ── Team-cloud route dispatch ─────────────────────────────────────
-        if (teamCloud) {
-          const handled = await dispatchTeamRoute(req, res, {
-            db: active.db,
-            authContext,
-            pathname,
-            method,
-          });
-          if (handled) return;
-        }
 
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {
@@ -1728,33 +1388,17 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'GET' && pathname === '/api/entities') {
-          sendJson(
-            res,
-            await entitiesWithCounts(
-              active.db,
-              active.configPath,
-              active.outputDir,
-              active.teamContext,
-            ),
-          );
+          sendJson(res, await entitiesWithCounts(active.db, active.configPath, active.outputDir));
           return;
         }
         if (method === 'GET' && pathname === '/api/dashboard') {
-          sendJson(
-            res,
-            await dashboardPayload(
-              active.db,
-              active.configPath,
-              active.outputDir,
-              active.teamContext,
-            ),
-          );
+          sendJson(res, await dashboardPayload(active.db, active.configPath, active.outputDir));
           return;
         }
-        // ── Full-text search across visible tables ────────────────────────
+        // ── Full-text search across tables ────────────────────────────────
         // GET /api/search?q=&tables=&limit= — LIKE fallback + indexed (FTS5 /
-        // tsvector) per the engine in src/search/fts.ts. Scoped to validTables
-        // (team-visibility-filtered when in cloud mode).
+        // tsvector) per the engine in src/search/fts.ts. Scoped to validTables;
+        // row visibility is enforced by Postgres RLS at the database.
         if (method === 'GET' && pathname === '/api/search') {
           const q = (url.searchParams.get('q') ?? '').trim();
           if (!q) {
@@ -1776,40 +1420,27 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             tables = tables.filter((t) => want.has(t));
           }
-          let result = await fullTextSearch(active.db.adapter, tables, {
+          const result = await fullTextSearch(active.db.adapter, tables, {
             query: q,
             limitPerTable: limit,
           });
-          // Full-text search joins straight to the physical tables, bypassing
-          // the row ACL — post-filter every hit so a member never sees a row
-          // they can't read (same filter the assistant's search tool applies).
-          if (active.teamContext) {
-            result = await filterSearchGroupsByAcl(
-              active.db,
-              active.teamContext.teamId,
-              active.teamContext.myUserId,
-              result,
-            );
-          }
           sendJson(res, result);
           return;
         }
         // ── Team members (for "last edited by" name resolution) ───────────
-        // GET /api/team/users → { users: [{id,email,name}] }. Empty on local.
+        // GET /api/team/users → { users: [{id,email,name}] }. Empty — member
+        // directory is rebuilt on RLS later.
         if (method === 'GET' && pathname === '/api/team/users') {
-          const users = active.teamContext ? await listTeamUsers(active.db) : [];
-          sendJson(res, { users });
+          sendJson(res, { users: [] });
           return;
         }
         if (method === 'GET' && pathname === '/api/graph') {
           const yamlNames = new Set(
             getGuiEntities(active.configPath, active.outputDir).tables.map((t) => t.name),
           );
-          const ctx = active.teamContext;
           const graphOpts: import('./data.js').BuildGuiGraphOptions = {
             extraTables: registeredExtraTables(active.db, yamlNames),
           };
-          if (ctx) graphOpts.visibleFilter = (name) => isVisibleInTeam(name, ctx);
           sendJson(res, buildGuiGraph(active.configPath, active.outputDir, graphOpts));
           return;
         }
@@ -1840,10 +1471,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           // Delegate to the same no-reopen primitive the chat/ingest paths use
           // (one source of truth for table DDL + canonical-context + audit).
-          // `normalize:false` preserves the user's typed name. Because it does
-          // NOT reopen, the icon + team-owner writes are simple post-create
-          // steps — the old pre-reopen owner-recording ordering (to beat the
-          // reopen's reconcile) is no longer needed.
+          // `normalize:false` preserves the user's typed name. Object ownership
+          // is recorded by a Postgres RLS trigger at the database.
           const created = await createUserEntity(active, entityName, [], sessionId, {
             normalize: false,
           });
@@ -1857,14 +1486,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               icon: body.icon.trim(),
               updated_at: new Date().toISOString(),
             });
-          }
-          if (active.teamContext?.myUserId) {
-            await recordObjectOwner(
-              active.db,
-              active.teamContext.teamId,
-              created,
-              active.teamContext.myUserId,
-            );
           }
           sendJson(res, { ok: true, name: created });
           return;
@@ -1887,13 +1508,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           if (active.junctionTables.has(left) || active.junctionTables.has(right)) {
             sendJson(res, { error: 'Cannot link a junction table' }, 400);
-            return;
-          }
-          if (
-            !operatorOwnsTable(active.teamContext, left) ||
-            !operatorOwnsTable(active.teamContext, right)
-          ) {
-            sendJson(res, { error: 'You can only relate tables you own' }, 403);
             return;
           }
           // One many-to-many link per pair (either direction): refuse if a
@@ -1941,8 +1555,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // Self-referential m2m needs two distinct column names.
           const leftCol = `${left}_id`;
           const rightCol = left === right ? `${right}_id_2` : `${right}_id`;
-          // Same no-reopen materialization the chat path uses; owner-record is a
-          // post-create step (no reopen ⇒ no reconcile race).
+          // Same no-reopen materialization the chat path uses. Object ownership
+          // is recorded by a Postgres RLS trigger at the database.
           await materializeJunction(
             active,
             jName,
@@ -1953,14 +1567,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             `Linked ${left} ↔ ${right}`,
             sessionId,
           );
-          if (active.teamContext?.myUserId) {
-            await recordObjectOwner(
-              active.db,
-              active.teamContext.teamId,
-              jName,
-              active.teamContext.myUserId,
-            );
-          }
           sendJson(res, { ok: true, name: jName });
           return;
         }
@@ -1982,10 +1588,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           if (isNativeEntity(name)) {
             sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
-            return;
-          }
-          if (!operatorOwnsTable(active.teamContext, name)) {
-            sendJson(res, { error: 'Only the table owner can delete this table' }, 403);
             return;
           }
           // Inbound-FK guard: refuse if another table links to this one.
@@ -2018,117 +1620,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Share / unshare an entity with the team (owner-only) ─────────
-        // The Data Model dialog calls this to toggle team visibility of a
-        // table the operator owns. Only the owner may share/unshare; the
-        // team creator can't reach into another member's private tables.
-        if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/share$/.test(pathname)) {
-          const table = decodeURIComponent(pathname.split('/')[4] ?? '');
-          const ctx = active.teamContext;
-          if (!ctx) {
-            sendJson(res, { error: 'Sharing is only available on team cloud databases' }, 400);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as { share?: unknown };
-          const wantShare = body.share === true;
-          const result = await shareEntityWithTeam(
-            active.db,
-            active.dbPath,
-            ctx,
-            active.validTables,
-            table,
-            wantShare,
-          );
-          if (result.status === 200) {
-            // Update visibility in place instead of re-opening the DB — keeps
-            // the realtime broker connection alive (no LISTEN reconnect) and
-            // lets the client reflect the change with a light /api/entities
-            // refetch. Other clients converge via the broker subscription
-            // wired in openConfig.
-            applySharingToContext(ctx, active.validTables, table, wantShare);
-          }
-          sendJson(res, result.body, result.status);
-          return;
-        }
-
-        // ── Row-level permissions (2.2, team cloud only) ─────────────────
-        // Anchored regexes that must be tested BEFORE ROWS_PATH below — that
-        // pattern's `(.+)` id group would otherwise swallow `…/rows/:id/visibility`
-        // as id="…/visibility". Owner gating + 404/403 mapping live in the row-
-        // access helpers + the central catch.
-        {
-          const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/visibility$/.exec(pathname);
-          if (method === 'POST' && m) {
-            const ctx = requireTeamContext(active, res);
-            if (!ctx) return;
-            const table = decodeURIComponent(m[1] ?? '');
-            const rowId = decodeURIComponent(m[2] ?? '');
-            const body = (await readJson<unknown>(req)) as { visibility?: unknown };
-            const vis = body.visibility;
-            if (vis !== 'private' && vis !== 'everyone' && vis !== 'custom') {
-              sendJson(res, { error: 'visibility must be private, everyone, or custom' }, 400);
-              return;
-            }
-            await setRowVisibility(active.db, ctx.teamId, table, rowId, ctx.myUserId, vis);
-            await emitRowChangeSignal(active.db, ctx, table, rowId);
-            sendJson(res, { ok: true });
-            return;
-          }
-        }
-        {
-          const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/grants$/.exec(pathname);
-          if (method === 'POST' && m) {
-            const ctx = requireTeamContext(active, res);
-            if (!ctx) return;
-            const table = decodeURIComponent(m[1] ?? '');
-            const rowId = decodeURIComponent(m[2] ?? '');
-            const body = (await readJson<unknown>(req)) as { user_id?: unknown; email?: unknown };
-            let granteeId = typeof body.user_id === 'string' ? body.user_id : '';
-            if (!granteeId && typeof body.email === 'string') {
-              granteeId = (await resolveUserIdByEmail(active.db, body.email)) ?? '';
-            }
-            if (!granteeId) {
-              sendJson(res, { error: 'user_id or a resolvable email is required' }, 400);
-              return;
-            }
-            await addRowGrant(active.db, ctx.teamId, table, rowId, granteeId, ctx.myUserId);
-            await emitRowChangeSignal(active.db, ctx, table, rowId);
-            sendJson(res, { ok: true });
-            return;
-          }
-        }
-        {
-          const m = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/grants\/([^/]+)$/.exec(pathname);
-          if (method === 'DELETE' && m) {
-            const ctx = requireTeamContext(active, res);
-            if (!ctx) return;
-            const table = decodeURIComponent(m[1] ?? '');
-            const rowId = decodeURIComponent(m[2] ?? '');
-            const granteeId = decodeURIComponent(m[3] ?? '');
-            await removeRowGrant(active.db, ctx.teamId, table, rowId, granteeId, ctx.myUserId);
-            await emitRowChangeSignal(active.db, ctx, table, rowId);
-            sendJson(res, { ok: true });
-            return;
-          }
-        }
-        {
-          const m = /^\/api\/schema\/entities\/([^/]+)\/default-row-visibility$/.exec(pathname);
-          if (method === 'POST' && m) {
-            const ctx = requireTeamContext(active, res);
-            if (!ctx) return;
-            const table = decodeURIComponent(m[1] ?? '');
-            const body = (await readJson<unknown>(req)) as { visibility?: unknown };
-            const vis = body.visibility;
-            if (vis !== 'private' && vis !== 'everyone') {
-              sendJson(res, { error: 'visibility must be private or everyone' }, 400);
-              return;
-            }
-            await setTableDefaultVisibility(active.db, ctx.teamId, table, ctx.myUserId, vis);
-            sendJson(res, { ok: true });
-            return;
-          }
-        }
-
         // ── GUI column metadata (per-column secret flag) ─────────────────
         if (method === 'GET' && pathname === '/api/gui-meta/columns') {
           const rows = (await active.db.query('_lattice_gui_column_meta', {})) as {
@@ -2150,10 +1641,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const colName = decodeURIComponent(parts[5] ?? '');
           if (!active.validTables.has(tableName)) {
             sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
-            return;
-          }
-          if (!operatorOwnsTable(active.teamContext, tableName)) {
-            sendJson(res, { error: 'Only the table owner can edit this column' }, 403);
             return;
           }
           // Secret is meaningful only for scalar data columns. System columns
@@ -2217,10 +1704,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
-          if (!operatorOwnsTable(active.teamContext, oldName)) {
-            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
-            return;
-          }
           const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newName = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(newName)) {
@@ -2268,10 +1751,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               { error: `"${entityName}" is a built-in entity and cannot be modified` },
               400,
             );
-            return;
-          }
-          if (!operatorOwnsTable(active.teamContext, entityName)) {
-            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
             return;
           }
           const body = (await readJson<unknown>(req)) as {
@@ -2365,10 +1844,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
-          if (!operatorOwnsTable(active.teamContext, entityName)) {
-            sendJson(res, { error: 'Only the table owner can edit this entity' }, 403);
-            return;
-          }
           const body = (await readJson<unknown>(req)) as { to?: unknown };
           const newCol = typeof body.to === 'string' ? body.to.trim() : '';
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newCol)) {
@@ -2444,10 +1919,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
-          if (!operatorOwnsTable(active.teamContext, entityName)) {
-            sendJson(res, { error: 'Only the table owner can add a link' }, 403);
-            return;
-          }
           const body = (await readJson<unknown>(req)) as { target?: unknown };
           const target = typeof body.target === 'string' ? body.target.trim() : '';
           if (!active.validTables.has(target)) {
@@ -2521,10 +1992,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
             return;
           }
-          if (!operatorOwnsTable(active.teamContext, entityName)) {
-            sendJson(res, { error: 'Only the table owner can remove a link' }, 403);
-            return;
-          }
           const target = columnRefTarget(active.configPath, entityName, colName);
           if (!target) {
             sendJson(res, { error: `Not a link column: ${colName}` }, 400);
@@ -2569,10 +2036,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const column = typeof body.column === 'string' ? body.column.trim() : '';
           if (!name) {
             sendJson(res, { error: 'name is required' }, 400);
-            return;
-          }
-          if (!operatorOwnsTable(active.teamContext, name)) {
-            sendJson(res, { error: 'Only the table owner can purge' }, 403);
             return;
           }
           if (type === 'table') {
@@ -2875,8 +2338,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           //
           // The pre-1.13.4 implementation listed tables via `sqlite_master`
           // and columns via `PRAGMA table_info` — both SQLite-only. On a
-          // Postgres-backed Lattice (migrated cloud, team cloud) those
-          // queries threw and the System sidebar silently rendered empty.
+          // Postgres-backed Lattice (a migrated cloud) those queries threw
+          // and the System sidebar silently rendered empty.
           // We dispatch on adapter.dialect for the listing query and
           // delegate column enumeration to `Lattice.introspectColumns()`,
           // which is already dialect-portable.
@@ -2945,17 +2408,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Database switcher ─────────────────────────────────────────────
-        // Disabled in team-cloud mode — switching the active DB out from
-        // under other members would corrupt their session view and bypass
-        // the team's auth + share contract.
         // ── Workspaces (header switcher) ──────────────────────────────────
         // Additive: when the GUI was not opened inside a `.lattice` root,
         // these return empty and the header switcher stays hidden.
         if (method === 'GET' && pathname === '/api/workspaces') {
-          if (teamCloud || !latticeRoot) {
-            // Disabled in team-cloud mode (switching the active DB out from
-            // under members would bypass the auth + share contract).
+          if (!latticeRoot) {
             sendJson(res, { current: null, workspaces: [] });
             return;
           }
@@ -2975,10 +2432,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/workspaces/switch') {
-          if (teamCloud) {
-            sendJson(res, { error: 'Workspace switching is disabled in team-cloud mode' }, 403);
-            return;
-          }
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
@@ -2996,7 +2449,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const paths = resolveWorkspacePaths(latticeRoot, ws);
           let next: ActiveDb;
           try {
-            next = await openConfig(paths.configPath, paths.contextDir, autoRender, teamCloud);
+            next = await openConfig(paths.configPath, paths.contextDir, autoRender);
           } catch (e) {
             const err = e as Error;
             sendJson(
@@ -3014,10 +2467,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/workspaces/create') {
-          if (teamCloud) {
-            sendJson(res, { error: 'Workspace creation is disabled in team-cloud mode' }, 403);
-            return;
-          }
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
@@ -3039,12 +2488,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const newPaths = resolveWorkspacePaths(latticeRoot, created);
           let newActive: ActiveDb;
           try {
-            newActive = await openConfig(
-              newPaths.configPath,
-              newPaths.contextDir,
-              autoRender,
-              teamCloud,
-            );
+            newActive = await openConfig(newPaths.configPath, newPaths.contextDir, autoRender);
           } catch (e) {
             sendJson(
               res,
@@ -3063,10 +2507,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/workspaces/delete') {
-          if (teamCloud) {
-            sendJson(res, { error: 'Workspace deletion is disabled in team-cloud mode' }, 403);
-            return;
-          }
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
             return;
@@ -3083,15 +2523,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           const wsPaths = resolveWorkspacePaths(latticeRoot, ws);
           const isActive = resolve(active.configPath) === resolve(wsPaths.configPath);
-          // Deleting a CLOUD workspace is owner-only — only the team owner may
-          // delete a cloud Lattice DB workspace. A member who wants to drop their
-          // copy uses "Leave workspace" (danger zone) instead. (Ownership is
-          // resolved from the active team context, so this gate applies when the
-          // workspace being deleted is the active one — the case the UI hits.)
-          if (isActive && active.teamContext && !active.teamContext.isCreator) {
-            sendJson(res, { error: 'Only the team owner can delete this cloud workspace' }, 403);
-            return;
-          }
           // Switch away from the active workspace first so file handles release
           // and the server keeps a live DB.
           let switchedTo: string | null = null;
@@ -3111,12 +2542,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             const fbPaths = resolveWorkspacePaths(latticeRoot, fallback);
             let next: ActiveDb;
             try {
-              next = await openConfig(
-                fbPaths.configPath,
-                fbPaths.contextDir,
-                autoRender,
-                teamCloud,
-              );
+              next = await openConfig(fbPaths.configPath, fbPaths.contextDir, autoRender);
             } catch (e) {
               const err = e as Error & { code?: string };
               const codePrefix = err.code ? `[${err.code}] ` : '';
@@ -3176,28 +2602,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        if (teamCloud && pathname.startsWith('/api/databases')) {
-          sendJson(res, { error: 'Database switching is disabled in team-cloud mode' }, 403);
-          return;
-        }
         if (method === 'GET' && pathname === '/api/databases') {
           const parsedActive = parseConfigFile(active.configPath);
-          // For cloud DBs, the friendly name lives on
-          // __lattice_team_identity.team_name. Fall back to the YAML's
-          // optional name: key (used by local DBs), then the basename.
-          let activeLabel: string | undefined;
-          try {
-            const row = (await active.db.get('__lattice_team_identity', 'singleton')) as {
-              team_name?: string;
-            } | null;
-            if (row && typeof row.team_name === 'string' && row.team_name.trim()) {
-              activeLabel = row.team_name.trim();
-            }
-          } catch {
-            // Table absent or unreachable — leave undefined.
-          }
-          const friendlyLabel =
-            activeLabel ?? friendlyConfigName(parsedActive.name, active.configPath);
+          // Friendly name comes from the YAML's optional `name:` key, falling
+          // back to the config basename.
+          const friendlyLabel = friendlyConfigName(parsedActive.name, active.configPath);
           const kind: 'local' | 'cloud' = active.realtime ? 'cloud' : 'local';
           sendJson(res, {
             current: {
@@ -3232,12 +2641,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // own directory), not the launch-wide outputDir. Reusing one
             // outputDir across every DB switch is what bled one DB's rendered
             // "files" view into another DB that had none of its own.
-            next = await openConfig(
-              newPath,
-              resolveOutputDirForConfig(newPath),
-              autoRender,
-              teamCloud,
-            );
+            next = await openConfig(newPath, resolveOutputDirForConfig(newPath), autoRender);
           } catch (e) {
             const err = e as Error & { code?: string };
             console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
@@ -3265,7 +2669,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             newConfigPath,
             resolveOutputDirForConfig(newConfigPath),
             autoRender,
-            teamCloud,
           );
           await disposeActive(active);
           active = next;
@@ -3273,13 +2676,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/databases/delete') {
-          // Only the database owner may delete a database. On a team cloud
-          // that's the team creator; on a local/single-user DB the operator is
-          // the owner, so it's always allowed.
-          if (active.teamContext && !active.teamContext.isCreator) {
-            sendJson(res, { error: 'Only the database owner can delete a database' }, 403);
-            return;
-          }
           const body = (await readJson<unknown>(req)) as { path?: unknown };
           if (typeof body.path !== 'string' || !body.path.trim()) {
             sendJson(res, { error: 'path must be a non-empty string' }, 400);
@@ -3317,7 +2713,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 fallback.path,
                 resolveOutputDirForConfig(fallback.path),
                 autoRender,
-                teamCloud,
               );
             } catch (e) {
               const err = e as Error & { code?: string };
@@ -3447,83 +2842,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Per-row version history (team cloud): the recoverable trail of
-        // every edit to one row, newest first, from __lattice_change_log.
+        // ── Per-row version history (cloud): the recoverable trail of every
+        // edit to one row, newest first.
         // GET /api/tables/:table/rows/:id/history. Empty on local SQLite.
         const rowHistMatch = ROW_HISTORY_PATH.exec(pathname);
         if (rowHistMatch && method === 'GET') {
-          const table = decodeURIComponent(rowHistMatch[1] ?? '');
-          const rowId = decodeURIComponent(rowHistMatch[2] ?? '');
-          const tctx = active.teamContext;
-          if (!tctx) {
-            sendJson(res, { history: [] });
-            return;
-          }
-          if (!active.validTables.has(table)) {
-            sendJson(res, { error: `Unknown table: ${table}` }, 400);
-            return;
-          }
-          // Row-level security: a row's history carries its full payloads, so
-          // only the owner / permitted members may read it. Denied → 404 (hide
-          // existence), mirroring the GET-single CRUD path.
-          if (!(await canAccessRow(active.db, tctx.teamId, table, rowId, tctx.myUserId))) {
-            sendJson(res, { error: 'Row not found' }, 404);
-            return;
-          }
-          const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? '50')));
-          const rows = (await active.db.query('__lattice_change_log', {
-            filters: [
-              { col: 'team_id', op: 'eq', val: tctx.teamId },
-              { col: 'table_name', op: 'eq', val: table },
-              { col: 'pk', op: 'eq', val: rowId },
-            ],
-            orderBy: 'seq',
-            orderDir: 'desc',
-            limit,
-          })) as unknown as {
-            seq: number;
-            op: string;
-            owner_user_id: string | null;
-            created_at: string;
-            client_ts: string | null;
-            payload_json: string | null;
-          }[];
-          sendJson(res, {
-            history: rows.map((r) => ({
-              seq: r.seq,
-              op: r.op,
-              ownerUserId: r.owner_user_id,
-              at: r.client_ts ?? r.created_at,
-              payload: r.payload_json ? (JSON.parse(r.payload_json) as unknown) : null,
-            })),
-          });
+          // Per-row history is rebuilt on the RLS change-feed (__lattice_changes)
+          // in a follow-up; empty for now.
+          sendJson(res, { history: [] });
           return;
         }
 
-        // ── Last-edited-by, per row, for one table (team cloud) ───────────
+        // ── Last-edited-by, per row, for one table ────────────────────────
         // GET /api/tables/:table/last-edited → { edits: { <pk>: {ownerUserId,
-        // at} } } from the change-log (latest seq per pk). Seeds the client's
-        // "last edited by" map for rows touched before this session. Empty on
-        // local SQLite.
+        // at} } }. Now empty — the "last edited by" map is rebuilt on the RLS
+        // model later.
         const lastEditedMatch = LAST_EDITED_PATH.exec(pathname);
         if (lastEditedMatch && method === 'GET') {
-          const table = decodeURIComponent(lastEditedMatch[1] ?? '');
-          const tctx = active.teamContext;
-          if (!tctx) {
-            sendJson(res, { edits: {} });
-            return;
-          }
-          if (!active.validTables.has(table)) {
-            sendJson(res, { error: `Unknown table: ${table}` }, 400);
-            return;
-          }
-          // Row-level security: the map is restricted to rows this member can
-          // see (the latest change-log entry per pk, intersected with the
-          // visible set), so it never leaks the existence + last editor of a
-          // private row. The ACL filter lives in visibleRowEdits so it stays
-          // unit-testable (see tests/integration/row-perms-endpoints.test.ts).
-          const edits = await visibleRowEdits(active.db, tctx.teamId, table, tctx.myUserId);
-          sendJson(res, { edits });
+          sendJson(res, { edits: {} });
           return;
         }
 
@@ -3534,80 +2870,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const table = decodeURIComponent(rawTable ?? '');
           const id = rawId ? decodeURIComponent(rawId) : null;
           if (!active.validTables.has(table)) {
-            // In team mode, a table that physically exists but isn't visible
-            // was unshared (or never shared to you) — return a distinct 409 so
-            // the client can toast "this was unshared" and refetch, rather than
-            // treating it as a generic unknown table. Owners always retain
-            // visibility, so this only bites non-owners after a de-share.
-            if (active.teamContext && active.db.getRegisteredTableNames().includes(table)) {
-              sendJson(res, { error: 'entity_unshared', table }, 409);
-              return;
-            }
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
-          const clientTsHeader = req.headers['x-lattice-client-ts'];
-          const editIdHeader = req.headers['x-lattice-edit-id'];
-          const editId = typeof editIdHeader === 'string' ? editIdHeader : undefined;
           const mctx: MutationCtx = {
             db: active.db,
             feed: active.feed,
             softDeletable: active.softDeletable,
             source: 'gui',
             sessionId,
-            team: active.teamContext
-              ? { teamId: active.teamContext.teamId, myUserId: active.teamContext.myUserId }
-              : null,
-            clientTs: typeof clientTsHeader === 'string' ? clientTsHeader : undefined,
-            editId,
           };
-
-          // Idempotent offline replay: if this edit_id was already applied for
-          // the team, the queued edit is being re-sent after a reconnect — no-op
-          // and echo back the row it targeted, rather than writing a duplicate.
-          if (editId && active.teamContext && method !== 'GET') {
-            const prior = await findEnvelopeByEditId(active.db, active.teamContext.teamId, editId);
-            if (prior) {
-              sendJson(res, { ok: true, idempotent: true, id: prior.pk });
-              return;
-            }
-          }
 
           if (id === null) {
             if (method === 'GET') {
               const limit = Number(url.searchParams.get('limit') ?? '500');
               const offset = Number(url.searchParams.get('offset') ?? '0');
               const deletedMode = url.searchParams.get('deleted');
-              let rows: Row[];
-              if (active.teamContext) {
-                const tc = active.teamContext;
-                // Row-level security: only the rows this member may see, filtered
-                // in SQL. The table-visibility gate (validTables) already ran.
-                rows = await listVisibleRows(active.db, tc.teamId, table, tc.myUserId, {
-                  limit,
-                  offset,
-                  deleted:
-                    deletedMode === 'any' ? 'any' : deletedMode === 'only' ? 'only' : 'exclude',
-                });
-                // Attach a minimal per-row access summary (batched, no N+1) so the
-                // GUI can render each row's eye icon. Never includes grantees.
-                const summaries = await rowAccessSummaries(
-                  active.db,
-                  tc.teamId,
-                  table,
-                  tc.myUserId,
-                  rows.map((r) => String(r.id)),
-                );
-                rows = rows.map((r) => ({ ...r, _access: summaries.get(String(r.id)) ?? null }));
-              } else {
-                const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
-                if (active.softDeletable.has(table) && deletedMode !== 'any') {
-                  queryOpts.filters = [
-                    { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
-                  ];
-                }
-                rows = await active.db.query(table, queryOpts);
+              // Row visibility is enforced by Postgres RLS at the database.
+              const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
+              if (active.softDeletable.has(table) && deletedMode !== 'any') {
+                queryOpts.filters = [
+                  { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
+                ];
               }
+              const rows = await active.db.query(table, queryOpts);
               sendJson(res, { rows });
               return;
             }
@@ -3624,24 +2910,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 sendJson(res, { error: 'Row not found' }, 404);
                 return;
               }
-              if (active.teamContext) {
-                const tc = active.teamContext;
-                // Row-level security: a denied read is indistinguishable from missing.
-                if (!(await canAccessRow(active.db, tc.teamId, table, id, tc.myUserId))) {
-                  sendJson(res, { error: 'Row not found' }, 404);
-                  return;
-                }
-                const summary =
-                  (await rowAccessSummaries(active.db, tc.teamId, table, tc.myUserId, [id])).get(
-                    id,
-                  ) ?? null;
-                // The grantee list is owner-only — never leak it to a non-owner.
-                const access = summary?.ownedByMe
-                  ? { ...summary, grantees: await rowGrantees(active.db, tc.teamId, table, id) }
-                  : summary;
-                sendJson(res, { ...row, _access: access });
-                return;
-              }
+              // A row the operator can't read already returns null from db.get
+              // (RLS-filtered), so reaching here means the row is visible.
               sendJson(res, row);
               return;
             }
@@ -3692,39 +2962,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Teams GUI routes ──────────────────────────────────────────────
-        // Dev-tool surface that wraps the user's TeamsClient. Available
-        // only in local GUI mode — team-cloud mode disables these (the
-        // cloud is the server, not the client).
-        if (!teamCloud && pathname.startsWith('/api/teams-gui/')) {
-          const handled = await dispatchTeamsGuiRoute(req, res, {
-            db: active.db,
-            client: active.teamsClient,
-            configPath: active.configPath,
-            pathname,
-            method,
-            validTables: active.validTables,
-            // When the active DB IS the team cloud (direct-Postgres mode),
-            // there's no local connection row — team ops fall back to
-            // this resolved context (cloud url + my identity + role).
-            cloudUrl: active.db.getDialect() === 'postgres' ? active.dbPath : null,
-            teamContext: active.teamContext
-              ? {
-                  teamId: active.teamContext.teamId,
-                  myUserId: active.teamContext.myUserId,
-                  isCreator: active.teamContext.isCreator,
-                  isMember: active.teamContext.isMember,
-                }
-              : null,
-          });
-          if (handled) return;
-        }
-
         // ── User Config routes ───────────────────────────────────────────
         // Reads + writes machine-local user identity and the saved
-        // cloud-DB credential catalog. Same auth model as the other
-        // GUI dev-tool routes — localhost trust, team-cloud disables.
-        if (!teamCloud && pathname.startsWith('/api/userconfig/')) {
+        // cloud-DB credential catalog. Localhost-trust dev-tool routes.
+        if (pathname.startsWith('/api/userconfig/')) {
           const handled = await dispatchUserConfigRoute(req, res, {
             db: active.db,
             configPath: active.configPath,
@@ -3735,9 +2976,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── AI assistant: credentials, OAuth, voice transcription ─────────
-        // Local-only (gated !teamCloud): the assistant rail is a single-user
-        // dev tool. Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
-        if (!teamCloud && pathname.startsWith('/api/assistant/')) {
+        // Local-only: the assistant rail is a single-user dev tool.
+        // Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
+        if (pathname.startsWith('/api/assistant/')) {
           const handled = await dispatchAssistantRoute(req, res, {
             db: active.db,
             pathname,
@@ -3749,16 +2990,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Chat route ────────────────────────────────────────────────────
         // POST /api/chat — assistant tool loop, streamed as SSE. Executes
         // tool calls against the active DB via the shared mutation chokepoint.
-        if (!teamCloud && pathname.startsWith('/api/chat')) {
+        if (pathname.startsWith('/api/chat')) {
           const handled = await dispatchChatRoute(req, res, {
             db: active.db,
             feed: active.feed,
             validTables: active.validTables,
             junctionTables: active.junctionTables,
             softDeletable: active.softDeletable,
-            team: active.teamContext
-              ? { teamId: active.teamContext.teamId, myUserId: active.teamContext.myUserId }
-              : null,
             // The assistant can create tables + relationships on request — same
             // audited, no-reopen primitives the Context Constructor uses.
             createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
@@ -3776,7 +3014,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Ingest routes ─────────────────────────────────────────────────
         // Reference a local file / pasted text as a native `files` row and
         // summarize it. Writes via the shared mutation chokepoint (source=ingest).
-        if (!teamCloud && pathname.startsWith('/api/ingest/')) {
+        if (pathname.startsWith('/api/ingest/')) {
           const handled = await dispatchIngestRoute(req, res, {
             db: active.db,
             feed: active.feed,
@@ -3788,6 +3026,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             aggressiveness: getAggressiveness(),
 
             latticeRoot: dirname(active.configPath),
+            configPath: active.configPath,
             pathname,
             method,
           });
@@ -3795,10 +3034,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
 
         // ── Files: blob serving + open-in-finder ──────────────────────────
-        if (!teamCloud && pathname.startsWith('/api/files/')) {
+        if (pathname.startsWith('/api/files/')) {
           const handled = await dispatchFilesRoute(req, res, {
             db: active.db,
             latticeRoot: dirname(active.configPath),
+            configPath: active.configPath,
             pathname,
             method,
           });
@@ -3809,28 +3049,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Project Config "Database" panel — read / save / connect / test.
         // The `swap` callback re-opens the active configPath so the
         // YAML rewrite written by `/save` takes effect.
-        if (!teamCloud && pathname.startsWith('/api/dbconfig')) {
+        if (pathname.startsWith('/api/dbconfig') || pathname.startsWith('/api/cloud')) {
           const handled = await dispatchDbConfigRoute(req, res, {
             db: active.db,
             configPath: active.configPath,
             pathname,
             method,
-            teamMembership: active.teamContext
-              ? {
-                  joined: active.teamContext.isMember,
-                  isCreator: active.teamContext.isCreator,
-                  teamId: active.teamContext.teamId,
-                  myUserId: active.teamContext.myUserId,
-                }
-              : null,
-            cloudReconnectRequired: active.cloudReconnectRequired,
             swap: async () => {
-              const next = await openConfig(
-                active.configPath,
-                active.outputDir,
-                autoRender,
-                active.teamCloud,
-              );
+              const next = await openConfig(active.configPath, active.outputDir, autoRender);
               await disposeActive(active);
               active = next;
             },
@@ -3848,7 +3074,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const e = err as Error & { code?: string };
         // Row-level permission denials are expected control flow, not server
         // faults: map them to 404 (hide existence) / 403 (owner-only) by the
-        // stable `code` from src/teams/row-access.ts, rather than a 500.
+        // stable `code`, rather than a 500.
         if (e.code === 'row_access_denied') {
           sendJson(res, { error: 'Row not found' }, 404);
           return;

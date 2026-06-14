@@ -77,8 +77,18 @@ describe('enrichKnowledge', () => {
     const r = await enrichKnowledge(db, { client: fakeClient(longBody) });
     expect(r.skipped).toBe(false);
     expect(r.enriched).toContain(note);
-    const updated = await db.get('notes', note);
-    expect(String(updated?.body).length).toBeGreaterThan(100);
+    // Enrichment is a per-viewer OBSERVATION, not a canonical write: the shared
+    // row stays ground truth (the original stub), so it never leaks the derived
+    // value (or its existence) to a viewer who can't see the sources.
+    const canonical = await db.get('notes', note);
+    expect(canonical?.body).toBe('stub');
+    // The enriched value is read by folding in the derived observation. Locally
+    // (single-user) you can see every source, so the fold shows the long body.
+    const folded = await db.foldForViewer('notes', note);
+    expect(String(folded?.body).length).toBeGreaterThan(100);
+    // A viewer who can reach NONE of the sources sees only ground truth.
+    const blind = await db.foldForViewer('notes', note, { visibleSources: [] });
+    expect(blind?.body).toBe('stub');
     db.close();
   });
 

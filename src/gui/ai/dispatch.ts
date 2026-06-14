@@ -16,8 +16,6 @@ import {
   parseAudit,
   type MutationCtx,
 } from '../mutations.js';
-import { canAccessRow, listVisibleRows } from '../../teams/row-access.js';
-import { filterSearchGroupsByAcl } from '../search-acl.js';
 
 /**
  * Executes a registry function on behalf of the AI tool loop. Writes flow
@@ -131,13 +129,6 @@ export interface DispatchCtx {
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
   /**
-   * Team-cloud context for row-level permission enforcement. When set, the
-   * assistant's reads are visibility-filtered and its writes carry the team so
-   * the mutation layer gates them. Null/undefined outside team mode — without
-   * this, the assistant would bypass row-level security entirely.
-   */
-  team?: { teamId: string; myUserId: string } | null;
-  /**
    * Create a new entity (table) with inferred columns — audited + reversible,
    * no DB reopen (defineLate). Supplied by the server when schema creation is
    * allowed; absent → `create_entity` reports it's unavailable. Returns the
@@ -196,9 +187,6 @@ export async function executeFunction(
     feed: ctx.feed,
     softDeletable: ctx.softDeletable,
     source: 'ai',
-    // Thread the team through so create/update/delete enforce the row ACL for
-    // the assistant exactly as they do for the HTTP API.
-    team: ctx.team ?? null,
   };
 
   try {
@@ -229,37 +217,22 @@ export async function executeFunction(
         const cols = ctx.db.getRegisteredColumns(table);
         const orderBy =
           cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
-        let rows: Row[];
-        if (ctx.team) {
-          // Row-level security: return only the rows this member may see.
-          rows = await listVisibleRows(ctx.db, ctx.team.teamId, table, ctx.team.myUserId, {
-            limit: 200,
-            orderBy,
-            orderDir: 'asc',
-            deleted: ctx.softDeletable.has(table) && includeDeleted ? 'any' : 'exclude',
-          });
-        } else {
-          const opts: Parameters<typeof ctx.db.query>[1] = { limit: 200, orderBy, orderDir: 'asc' };
-          if (ctx.softDeletable.has(table) && !includeDeleted) {
-            opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
-          }
-          rows = await ctx.db.query(table, opts);
+        // On a cloud, Postgres RLS filters reads to the rows this member may see.
+        const opts: Parameters<typeof ctx.db.query>[1] = { limit: 200, orderBy, orderDir: 'asc' };
+        if (ctx.softDeletable.has(table) && !includeDeleted) {
+          opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
         }
+        const rows: Row[] = await ctx.db.query(table, opts);
         const secretCols = await secretColumnsFor(ctx.db, table);
         return { ok: true, result: rows.map((r) => redactRow(r, secretCols)) };
       }
       case 'get_row': {
         const table = requireTable(args.table, ctx.validTables);
         const id = requireString(args.id, 'id');
+        // RLS filters the read: get() returns null for a row this member can't
+        // see, so a denied read is already indistinguishable from a missing one.
         const row = await ctx.db.get(table, id);
         if (row === null) return { ok: false, error: 'Row not found' };
-        // Row-level security: a denied read is indistinguishable from missing.
-        if (
-          ctx.team &&
-          !(await canAccessRow(ctx.db, ctx.team.teamId, table, id, ctx.team.myUserId))
-        ) {
-          return { ok: false, error: 'Row not found' };
-        }
         return { ok: true, result: redactRow(row, await secretColumnsFor(ctx.db, table)) };
       }
       case 'search': {
@@ -274,22 +247,13 @@ export async function executeFunction(
           tables = tables.filter((t) => want.has(t));
         }
         const limit = typeof args.limit === 'number' ? args.limit : 8;
-        let result = await fullTextSearch(ctx.db.adapter, tables, {
+        // On a cloud, search runs as the member's scoped role: the LIKE search on
+        // the base table (the fallback when a member can't read the FTS index) is
+        // filtered by Postgres RLS, so hits never include another member's rows.
+        const result = await fullTextSearch(ctx.db.adapter, tables, {
           query,
           limitPerTable: limit,
         });
-        // Full-text search bypasses the row ACL — post-filter every hit so the
-        // assistant never surfaces a row this member can't see (the subtlest
-        // leak: FTS joins straight to the physical table). Shared with the
-        // REST /api/search route so the two paths can't drift.
-        if (ctx.team) {
-          result = await filterSearchGroupsByAcl(
-            ctx.db,
-            ctx.team.teamId,
-            ctx.team.myUserId,
-            result,
-          );
-        }
         return { ok: true, result };
       }
       case 'create_row': {

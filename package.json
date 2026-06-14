@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "2.3.0",
+  "version": "3.0.0",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -62,6 +62,7 @@
     "better-sqlite3": ">=11 <13"
   },
   "optionalDependencies": {
+    "@aws-sdk/client-s3": "^3.1067.0",
     "pg": "^8.11.0",
     "playwright": "^1.48.0",
     "sharp": "^0.33.5"

@@ -325,7 +325,21 @@ export async function fullTextSearch(
         }
       }
     } catch {
-      group = null;
+      // The indexed search failed. Most importantly, a scoped cloud member has no
+      // access to the internal FTS index table — so fall back to a LIKE search on
+      // the base table, which is filtered by Postgres RLS (the member only ever
+      // matches rows it can see). This keeps search working for members without
+      // granting them the FTS index (whose text would otherwise leak via psql),
+      // and never returns another member's rows.
+      try {
+        const searchCols = searchableColumns(cols, opts.textColumns?.[table]);
+        group =
+          searchCols.length > 0
+            ? await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt)
+            : null;
+      } catch {
+        group = null;
+      }
     }
     if (group) groups.push(group);
   }
