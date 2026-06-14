@@ -97,6 +97,14 @@ migrations against the cloud Postgres.
   - `lattice_grant_row(table, pk, grantee)` / `lattice_revoke_row(table, pk, grantee)`
     — owner-only; manage the `custom` grant list.
 
+  Every cloud `SECURITY DEFINER` function pins `search_path = "<schema>", pg_temp`
+  (the cloud schema first, `pg_temp` **last**). Without the pin, a definer function
+  resolves unqualified table names via the _caller's_ `pg_temp` first, so a member
+  could `CREATE TEMP TABLE __lattice_owners(...)` to shadow the bookkeeping and make
+  the visibility check return whatever they like — a full RLS bypass. The pin forces
+  every unqualified name to resolve against the real schema; the installer also
+  revokes schema `CREATE` from `PUBLIC` as defense-in-depth.
+
 ### 2. Per-table RLS
 
 `enableRlsForTable(db, table, pkCols)` secures one shared table:
@@ -202,7 +210,10 @@ enforced in Postgres**, so a direct `psql` insert obeys it too:
 - **`never_share`** — a hard exclusion. `lattice_set_row_visibility` /
   `lattice_grant_row` / `lattice_grant_cell` RAISE for the table, and its new rows
   are forced private regardless of the default. `setTableNeverShare(db, table, on)`.
-  `secrets` is seeded never-share by `secureCloud`.
+  Turning it **on is retroactive**: any already-shared row is reset to private and
+  every row/cell grant on the table is dropped, so flagging an existing table
+  never-share never leaves previously-shared rows visible. `secrets` is seeded
+  never-share by `secureCloud`.
 
 ```ts
 import { setTableDefaultVisibility, setTableNeverShare } from 'latticesql';
@@ -210,9 +221,12 @@ await setTableDefaultVisibility(db, 'tickets', 'everyone'); // team-shared by de
 await setTableNeverShare(db, 'secrets', true); // can never be shared, ever
 ```
 
-**"Private mode"** in the GUI chat composer is a transient per-request override: when
-on, rows the assistant creates that turn are forced private regardless of the table
-default (it calls `set_row_visibility` after create).
+**"Private mode"** in the GUI chat composer is a per-request override: when on, rows
+the assistant creates that turn are forced private regardless of the table default.
+The row is stamped private **atomically at insert** (`insertForcingVisibility` sets a
+transaction-local GUC the insert trigger reads), so it is never momentarily visible
+at the table default and the change-feed `NOTIFY` only fires once it is already
+private — there is no create-then-demote window.
 
 **Secret columns (`owner` audience).** Marking a column secret stores an `owner`
 audience in `__lattice_column_policy`, so Postgres masks it to everyone but the row
@@ -634,6 +648,15 @@ sees its derived value, and **un-sharing the source reverts the value with no
 residue** (revocation is structural, not a cleanup job). Run it on the member's
 local replica over already-gated observations, cached with `FoldCache` and
 re-rendered only when an observation changes — egress is paid once at pull.
+
+**Change-log visibility.** The observation substrate (`__lattice_changelog`) is RLS-
+protected with two cases. A **derived** observation is visible only to a member who
+can reach every source it was derived from (the source-visibility predicate above) —
+existence-hiding is structural. A **ground-truth / audit** entry is **owner-only**
+(`lattice_is_owner`): it carries the full row in cleartext, including columns the
+`<table>_v` mask hides from a non-owner, so the row's raw history is an owner artifact
+— a member who can merely see a shared row reads it through the masked view, never its
+change-log.
 
 **3. Forgetting a source — crypto-shred.** For a legally sensitive source, seal
 its derived values under a per-source key (`sealUnderSource`) and call

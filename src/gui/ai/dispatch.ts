@@ -16,7 +16,6 @@ import {
   parseAudit,
   type MutationCtx,
 } from '../mutations.js';
-import { setRowVisibility } from '../../cloud/members.js';
 
 /**
  * Executes a registry function on behalf of the AI tool loop. Writes flow
@@ -276,21 +275,16 @@ export async function executeFunction(
         if (!args.values || typeof args.values !== 'object') {
           throw new Error('values object is required');
         }
-        const { id } = await createRow(mctx, table, args.values as Row);
-        // Private mode: force the new row private regardless of the table default.
-        // The creator owns the row, so the owner-gated function succeeds; a failure
-        // would mean the row may be visible against the user's intent, so surface it
-        // loudly (Rule 16) rather than silently leaving it shared.
-        if (ctx.privateMode && ctx.db.getDialect() === 'postgres') {
-          try {
-            await setRowVisibility(ctx.db, table, id, 'private');
-          } catch (e) {
-            console.error(
-              `[chat] private mode: could not force ${table}/${id} private:`,
-              (e as Error).message,
-            );
-          }
-        }
+        // Private mode: force the new row private atomically at insert (the trigger
+        // stamps it private regardless of the table default — no create-then-demote
+        // window). Any failure propagates out of createRow and is reported as a
+        // failed action rather than silently leaving the row at the table default.
+        const { id } = await createRow(
+          mctx,
+          table,
+          args.values as Row,
+          ctx.privateMode ? 'private' : undefined,
+        );
         return { ok: true, result: { id } };
       }
       case 'update_row': {

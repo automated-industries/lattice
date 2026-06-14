@@ -823,12 +823,73 @@ export class Lattice {
   async insert(table: string, row: Row, provenance?: ChangeProvenance): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
-    this._assertIdent(table);
+    const { sql, values, pkValue, rowWithPk } = this._prepareInsert(table, row);
+    await runAsyncOrSync(this._adapter, sql, values);
+    await this._afterInsert(table, pkValue, rowWithPk, provenance);
+    return pkValue;
+  }
 
+  /**
+   * Insert a row while atomically forcing its cloud row-visibility, regardless of
+   * the table's `default_row_visibility`. The per-table insert trigger reads a
+   * transaction-local GUC (`lattice.force_row_visibility`); we set it and run the
+   * INSERT inside a single transaction, so the row is stamped at `visibility` the
+   * instant it exists — it is never momentarily visible at the table default, and
+   * the change-feed `NOTIFY` (delivered only at COMMIT) fires when the row already
+   * carries this visibility. This closes the create-then-demote window that a
+   * plain `insert()` + `setRowVisibility()` would leave open.
+   *
+   * Postgres-only: SQLite is single-user (no cross-viewer leak) and has no trigger
+   * to read the GUC, so it degrades to a plain {@link insert}. A `never_share`
+   * table still wins — its rows are forced private even if `visibility` is
+   * `'everyone'` (the trigger enforces that precedence).
+   *
+   * @since 3.1.0
+   */
+  async insertForcingVisibility(
+    table: string,
+    row: Row,
+    visibility: 'private' | 'everyone',
+    provenance?: ChangeProvenance,
+  ): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+    // Defensive against untyped JS callers — the value is parameterized into
+    // set_config below, so a bad one can't inject, but reject it explicitly.
+    const vis: string = visibility;
+    if (vis !== 'private' && vis !== 'everyone') {
+      throw new Error(`lattice: invalid forced visibility "${vis}"`);
+    }
+    const withClient = this._adapter.withClient?.bind(this._adapter);
+    if (this.getDialect() !== 'postgres' || !withClient) {
+      return this.insert(table, row, provenance);
+    }
+    const { sql, values, pkValue, rowWithPk } = this._prepareInsert(table, row);
+    await withClient(async (tx) => {
+      // Transaction-local (third arg = is_local) so it never leaks to another
+      // statement on this pooled connection; the trigger that fires for the very
+      // next INSERT reads it via current_setting('…', true).
+      await tx.run(`SELECT set_config('lattice.force_row_visibility', ?, true)`, [visibility]);
+      await tx.run(sql, values);
+    });
+    await this._afterInsert(table, pkValue, rowWithPk, provenance);
+    return pkValue;
+  }
+
+  /**
+   * Build the INSERT statement + canonical pk for a row (sanitize → schema-filter →
+   * auto-pk → encrypt). Shared by {@link insert} and {@link insertForcingVisibility}
+   * so both produce byte-identical writes; the latter only differs in running it
+   * inside a GUC-scoped transaction.
+   */
+  private _prepareInsert(
+    table: string,
+    row: Row,
+  ): { sql: string; values: unknown[]; pkValue: string; rowWithPk: Row } {
+    this._assertIdent(table);
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
-
     // Auto-generate UUID only for the default 'id' PK when the field is absent.
     let rowWithPk: Row;
     if (isDefaultPk) {
@@ -837,9 +898,7 @@ export class Lattice {
     } else {
       rowWithPk = sanitized;
     }
-
     const encrypted = this._encryptRow(table, rowWithPk);
-
     const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
       .join(', ');
@@ -847,17 +906,26 @@ export class Lattice {
       .map(() => '?')
       .join(', ');
     const values = Object.values(encrypted);
-
-    await runAsyncOrSync(
-      this._adapter,
-      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`,
-      values,
-    );
-
-    // Canonical pk: the full (possibly composite) primary key, so the
-    // change-log + row ACL key the row unambiguously. Single-column keys
-    // serialize to the bare value (unchanged from prior behaviour).
+    // Canonical pk: the full (possibly composite) primary key, so the change-log +
+    // row ACL key the row unambiguously. Single-column keys serialize to the bare
+    // value (unchanged from prior behaviour).
     const pkValue = this._serializeRowPk(table, rowWithPk);
+    return {
+      sql: `INSERT INTO "${table}" (${cols}) VALUES (${placeholders})`,
+      values,
+      pkValue,
+      rowWithPk,
+    };
+  }
+
+  /** Post-insert side effects (changelog, audit, write hooks, embedding sync),
+   *  identical for the plain and force-visibility insert paths. */
+  private async _afterInsert(
+    table: string,
+    pkValue: string,
+    rowWithPk: Row,
+    provenance?: ChangeProvenance,
+  ): Promise<void> {
     await this._appendChangelog(
       table,
       pkValue,
@@ -871,7 +939,6 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
-    return pkValue;
   }
 
   /**

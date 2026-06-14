@@ -32,8 +32,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   GUI now also sets this; the assistant-side redaction is rescoped to model-context
   safety, not the privacy boundary.
 - **Chat "private mode".** A composer toggle that forces rows the assistant creates
-  to stay private regardless of the table default (a transient per-request action
-  via `set_row_visibility`).
+  to stay private regardless of the table default. The row is stamped private
+  **atomically at insert** (`Lattice.insertForcingVisibility` sets a transaction-local
+  GUC the insert trigger reads), so it is never momentarily visible at the table
+  default and the change-feed `NOTIFY` (deferred to COMMIT) fires only once it is
+  already private — no create-then-demote window.
+
+### Security — cloud-config review hardening (3.1)
+
+- **Pinned `search_path` on every cloud `SECURITY DEFINER` function.** A definer
+  function with an unpinned `search_path` resolves unqualified relation names via
+  the caller's `pg_temp` first, so a member could `CREATE TEMP TABLE
+__lattice_owners(...)` to shadow the ownership bookkeeping and bypass row RLS.
+  All cloud definer helpers (bootstrap, per-table trigger, workspace settings) now
+  pin `search_path = "<schema>", pg_temp` (pg_temp **last**), and the installer
+  revokes schema `CREATE` from `PUBLIC` as defense-in-depth. Bootstrap, per-table,
+  and settings install versions bumped so existing clouds re-install on upgrade.
+- **Change-log history is owner-only.** A `__lattice_changelog` ground-truth/audit
+  entry carries every column in cleartext, including ones the `<table>_v` mask hides
+  from a non-owner. The read policy now requires `lattice_is_owner` for those
+  entries (was "row is visible"), so a member who can see a shared row can no longer
+  read its full history and unmask columns. Per-viewer **derived** observations are
+  unaffected (still source-visibility gated).
+- **`never_share` is retroactive.** Turning on a table's never-share flag now resets
+  any already-shared row to private and drops every row/cell grant on the table, so
+  flagging an existing table never-share doesn't leave previously-shared rows
+  visible.
+- **One-time column-policy seed.** The YAML→DB audience seed runs exactly once per
+  table (marker-gated), so a later `secureCloud` can't silently re-mask a column the
+  owner has since cleared.
+- **Render abort is checked per file**, not only per row, so a workspace switch tears
+  down an in-flight render promptly instead of finishing the current entity's files.
 
 ### Added — async background render (3.1)
 

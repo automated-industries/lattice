@@ -408,6 +408,10 @@ export class RenderEngine {
           protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
 
         for (const [filename, spec] of Object.entries(def.files)) {
+          // Bail before each file's source query: an entity with many files would
+          // otherwise keep issuing DB queries for the whole row after an abort
+          // (e.g. a workspace switch), delaying teardown and wasting egress.
+          if (signal?.aborted) return null;
           const mergeDefaults =
             def.sourceDefaults &&
             spec.source.type !== 'self' &&

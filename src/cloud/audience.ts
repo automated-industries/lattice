@@ -1,7 +1,7 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { MEMBER_GROUP, pkSqlExpr } from './rls.js';
-import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Per-column audience → a generated cell-masking view (Stage 2 of the per-viewer
@@ -213,15 +213,27 @@ export async function loadColumnPolicy(
   return out;
 }
 
-/** Seed a table's YAML-declared audiences into __lattice_column_policy, filling ONLY
- *  columns that have no policy row yet (ON CONFLICT DO NOTHING) — so a one-time
- *  migration from YAML never clobbers a later owner edit made through the DB. */
+/** Seed a table's YAML-declared audiences into __lattice_column_policy — ONE TIME
+ *  per table, the migration from the legacy on-disk spec to the DB-canonical store.
+ *  A marker in __lattice_migrations gates it: after the first run we never seed from
+ *  YAML again, because a later secureCloud would otherwise re-insert a policy row
+ *  for a column the owner has since CLEARED through the DB (a cleared column has no
+ *  row, so ON CONFLICT DO NOTHING would NOT protect it) — silently re-masking a
+ *  column the owner deliberately un-masked. Once seeded, the DB is canonical and
+ *  the only path to change a column's audience is setColumnAudience. */
 export async function seedColumnPolicyFromYaml(
   db: Lattice,
   table: string,
   yamlAudience: Record<string, string>,
 ): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
+  const marker = `internal:cloud-column-seed:${table}:v1`;
+  const already = await getAsyncOrSync(
+    db.adapter,
+    `SELECT 1 AS one FROM "__lattice_migrations" WHERE "version" = ?`,
+    [marker],
+  );
+  if (already) return;
   for (const [col, aud] of Object.entries(yamlAudience)) {
     if (isRowAudience(aud)) continue; // a default/everyone column needs no policy row
     await runAsyncOrSync(
@@ -231,6 +243,12 @@ export async function seedColumnPolicyFromYaml(
       [table, col, aud],
     );
   }
+  await runAsyncOrSync(
+    db.adapter,
+    `INSERT INTO "__lattice_migrations" ("version","applied_at") VALUES (?, ?)
+       ON CONFLICT ("version") DO NOTHING`,
+    [marker, new Date().toISOString()],
+  );
 }
 
 /** Regenerate a table's cell-masking view FROM the DB column-policy (not YAML). If

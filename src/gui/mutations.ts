@@ -233,8 +233,19 @@ export async function createRow(
   ctx: MutationCtx,
   table: string,
   values: Row,
+  forceVisibility?: 'private' | 'everyone',
 ): Promise<{ id: string; row: Row | null }> {
-  const id = await ctx.db.insert(table, values);
+  // When the caller demands a specific cloud visibility for this row (e.g. chat
+  // "private mode"), stamp it atomically at insert via insertForcingVisibility —
+  // never create-then-demote, which would leave the row briefly visible at the
+  // table default and broadcast its existence before the demote lands. On SQLite
+  // / non-cloud this degrades to a plain insert. A failure propagates (no swallow)
+  // so a row that could not be forced to the requested visibility is reported, not
+  // silently left shared (Rule: no silent failures).
+  const id =
+    forceVisibility !== undefined
+      ? await ctx.db.insertForcingVisibility(table, values, forceVisibility)
+      : await ctx.db.insert(table, values);
   const row = await ctx.db.get(table, id);
   // On a cloud, row ownership + the change feed are recorded by Postgres
   // triggers; no app-layer ACL or change-envelope write is needed.

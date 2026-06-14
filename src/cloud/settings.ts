@@ -1,6 +1,7 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { cloudSchema, pinDefinerSearchPath } from './rls.js';
 
 /**
  * Workspace-level settings for a cloud — cloud-wide values the OWNER controls and
@@ -69,9 +70,12 @@ END $fn$;
  */
 export async function installCloudSettings(db: Lattice): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
+  const schema = await cloudSchema(db);
   const migration: Migration = {
-    version: 'internal:cloud-settings:v1',
-    sql: CLOUD_SETTINGS_BOOTSTRAP_SQL,
+    // v2 pins search_path on the two SECURITY DEFINER helpers (closes the
+    // pg_temp-shadow class of bypass on the settings getter/setter).
+    version: 'internal:cloud-settings:v2',
+    sql: pinDefinerSearchPath(CLOUD_SETTINGS_BOOTSTRAP_SQL, schema),
   };
   await db.migrate([migration]);
 }
