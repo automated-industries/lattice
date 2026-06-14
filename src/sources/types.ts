@@ -6,7 +6,7 @@
  */
 
 export type RefKind = 'blob' | 'local_ref' | 'cloud_ref';
-export type RefProvider = 'fs' | 'web' | 'gdrive';
+export type RefProvider = 'fs' | 'web' | 'gdrive' | 's3';
 
 /** The subset of a `files` row the resolver reads. */
 export interface FilesRow {

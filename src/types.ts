@@ -47,6 +47,32 @@ export interface ChangelogOptions {
 }
 
 /**
+ * Provenance for a change — the per-viewer observation model's audit metadata.
+ * Every field is optional and additive: a plain edit carries none of it and
+ * behaves exactly as before. A *derived* value (e.g. an AI enrichment computed
+ * from source files) carries the `sourceRef` set that informed it, so the
+ * change-log records which authority produced the value rather than discarding
+ * it (the confused-deputy guard). Stage-0 persists this as audit metadata;
+ * later stages read it to fold per-viewer entities and cascade revocation.
+ */
+export interface ChangeProvenance {
+  /** Source row/file id(s) that informed this value. Persisted as a JSON array
+   *  in `__lattice_changelog.source_ref`. NOT a foreign key — purely an audit
+   *  trail; a source may be deleted without violating anything. */
+  sourceRef?: string[] | string;
+  /** `ground_truth` — a direct edit; `derived` — computed from sources. */
+  changeKind?: 'ground_truth' | 'derived';
+  /** Reserved per-value audience. Omitted ⇒ the row's audience (no change). */
+  audience?: string;
+  /** Marks the source(s) sensitive (a future crypto-shred candidate). */
+  sourceSensitive?: boolean;
+  /** A prior changelog id this entry supersedes. */
+  supersededBy?: string;
+  /** Free-text reason (mirrors the legacy `reason` field). */
+  reason?: string;
+}
+
+/**
  * A single entry in the change log returned by `history()` and
  * `recentChanges()`.
  */
@@ -69,6 +95,11 @@ export interface ChangeEntry {
   reason: string | null;
   /** ISO timestamp of when the change was recorded. */
   createdAt: string;
+  /** Source-set that informed a derived value (deserialized from `source_ref`).
+   *  Null for plain edits + rows written before 3.0. */
+  sourceRef?: string[] | null;
+  /** `ground_truth` | `derived` provenance tag (null when unrecorded). */
+  changeKind?: 'ground_truth' | 'derived' | null;
 }
 
 export interface SecurityOptions {
@@ -258,6 +289,15 @@ export interface TableDefinition {
    * directly in code via `define()`.
    */
   fieldTypes?: Record<string, string>;
+  /**
+   * Column name → audience identifier (Stage-0 per-viewer enrichment
+   * scaffolding). A column absent from this map has `row-audience` — visible to
+   * whoever can see the row, i.e. today's behavior. Populated from YAML field
+   * `audience:` specs (or a future code-level option). Recorded by the schema
+   * manager so a later stage can generate a per-column cell-masking view from
+   * it; unused in Stage-0, so it never changes behavior.
+   */
+  columnAudience?: Record<string, string>;
   /**
    * Optional human description of what this entity represents. Surfaced in the
    * GUI and given to the assistant's ingest classifier so it can decide which
@@ -621,6 +661,16 @@ export interface CountOptions {
 
 export interface InitOptions {
   migrations?: Migration[];
+  /**
+   * Open an already-provisioned database WITHOUT issuing any DDL — no
+   * `CREATE TABLE`, no migrations, no FTS/changelog/embeddings setup. Used to
+   * connect as a scoped, non-superuser cloud member: every table, migration,
+   * and policy was installed by the cloud owner, and the member's role has no
+   * CREATE/ALTER privilege, so applying the schema would fail. Declared tables
+   * are introspected (best-effort) to populate the column cache; tables the
+   * member can't see are skipped.
+   */
+  introspectOnly?: boolean;
 }
 
 export interface Migration {

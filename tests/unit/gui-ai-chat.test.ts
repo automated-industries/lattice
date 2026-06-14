@@ -186,6 +186,43 @@ describe('chat tool loop', () => {
     expect(capturedSystem.toLowerCase()).toContain('error');
   });
 
+  it("injects the cloud owner's workspace system prompt when provided", async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(
+      runChat({
+        client,
+        dispatch,
+        userMessage: 'hi',
+        cloudSystemPrompt: 'Always answer in a formal tone. Our fiscal year starts in July.',
+      }),
+    );
+    expect(capturedSystem).toContain('# Workspace instructions');
+    expect(capturedSystem).toContain(
+      'Always answer in a formal tone. Our fiscal year starts in July.',
+    );
+  });
+
+  it('adds no workspace section when there is no cloud system prompt (local / unset)', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'hi' }));
+    expect(capturedSystem).not.toContain('# Workspace instructions');
+    // A blank/whitespace prompt is also treated as "none".
+    await collect(runChat({ client, dispatch, userMessage: 'hi', cloudSystemPrompt: '   ' }));
+    expect(capturedSystem).not.toContain('# Workspace instructions');
+  });
+
   it('puts the operator name in the system prompt so the assistant never asks for it (2.2.2)', async () => {
     let capturedSystem = '';
     const client: LlmClient = {

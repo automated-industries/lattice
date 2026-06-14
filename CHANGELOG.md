@@ -8,6 +8,154 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-06-11
+
+### Breaking — clouds are now a shared Postgres DB secured by row-level security
+
+A "cloud" is now a **shared Postgres database that every user connects to
+directly as their own scoped, non-superuser role**, with real Postgres
+Row-Level Security as the only security boundary. The server/replica model is
+**deleted**. A cloud and a "team" are the same thing — one concept.
+
+**Removed (breaking):**
+
+- **`lattice serve` and the entire HTTP/bearer server.** There is no Lattice
+  server process in front of Postgres anymore — no `serve --team-cloud`, no
+  bearer-token auth, no `__lattice_api_tokens`, no team-server routes.
+- **The replica / sync client** (`TeamsClient`, the outbox/DLQ, and the
+  `__lattice_team_*` tables: `_identity`, `_connections`, `_outbox`, `_dlq`,
+  `_members`). Members read and write the shared database live over their own
+  scoped connection.
+- **App-layer row ACLs as the security boundary.** Row visibility is enforced by
+  Postgres RLS policies, not by application `WHERE`-injection.
+- **The direct-cloud reconnect banner** and the "hosted Lattice Teams URL"
+  affordance.
+
+**Added:**
+
+- **RLS installer (plain idempotent SQL).** `installCloudRls` + `enableRlsForTable`
+  install `FORCE ROW LEVEL SECURITY` and per-table policies keyed on
+  `session_user`, plus ownership/grant bookkeeping (`__lattice_owners`,
+  `__lattice_row_grants`) and a `__lattice_changes` change feed (drives realtime
+  via `pg_notify`). Rows are **private by default**; the owner shares a row with
+  `lattice_set_row_visibility(table, pk, 'everyone' | 'private')` or grants a
+  specific member with `lattice_grant_row` (owner-only `SECURITY DEFINER`
+  functions). SQLite is a no-op — it stays a single-user local store.
+- **Scoped member provisioning.** `provisionMemberRole` creates a `NOSUPERUSER
+NOCREATEROLE` LOGIN role in the `lattice_members` group; `generateMemberPassword`
+  / `memberRoleName` / `revokeMemberRole` / `setRowVisibility` round it out. The
+  credential a member holds is a dead end for privilege escalation.
+- **`Lattice.init({ introspectOnly })`** — open an already-provisioned database
+  issuing NO DDL. This is how a scoped member (no CREATE/ALTER privilege) opens a
+  cloud: the GUI discovers the member's privileged tables from `information_schema`
+  and registers them, then opens introspect-only.
+- **`probeCloud(url)`** now reports `{ reachable, dialect, isCloud }` — `isCloud`
+  detects an established cloud (Postgres with `__lattice_owners` installed) via
+  `to_regclass`, so even a member denied SELECT on the bookkeeping gets a truthful
+  answer. `canManageRoles` / `cloudRlsInstalled` are exported helpers.
+- **Three GUI flows on the new model:** migrate a local Lattice into a cloud
+  (you become the owner, RLS installed, you own the migrated rows), join an
+  existing cloud with the scoped credentials the owner issued (the invite IS the
+  credentials — there is no token redemption), and invite a member (an owner with
+  `CREATEROLE` provisions a scoped role and hands over the connection blob).
+- **Offline editing is preserved** as the client-side local edit queue, decoupled
+  from any server.
+
+**Per-column audiences & per-viewer values (experimental, off by default).** Two
+primitives take RLS from whole-row to the cell and to per-viewer values; a column
+with no `audience` behaves exactly as before:
+
+- **Per-column masking** — declare `audience:` on a column and Lattice generates a
+  cell-masking view (`<table>_v`): the column compiles to a `CASE` mask over
+  `session_user`-keyed `SECURITY DEFINER` helpers (`lattice_has_role` /
+  `lattice_is_subject` / `lattice_source_visible`), members read the view (base
+  `SELECT` revoked), and a masked cell reads `NULL`. Owner-managed app roles
+  (`__lattice_member_roles` + `lattice_assign_role`); members can't self-promote.
+  (`enableAudienceView`, `audiencePredicate`.)
+- **Per-viewer values** — an enrichment is recorded as a per-viewer OBSERVATION,
+  not written into the shared row: `Lattice.observe()` appends a derived
+  observation (no canonical mutation, so the row's `updated_at` doesn't move and a
+  viewer who can't see the source can't even tell an enrichment exists), and
+  `Lattice.foldForViewer()` folds the observations a viewer may reach onto the
+  ground-truth row (latest-visible-per-attribute wins). A value derived from a
+  source a member can't reach never appears for them; un-sharing the source reverts
+  it with no residue. On a cloud the substrate is sealed by RLS
+  (`enableChangelogRls`) so a member only ever reads observations whose sources it
+  can see. Deterministic; cache with `FoldCache`.
+- **Crypto-shred** — `sealUnderSource` / `shredSource` cryptographically erase a
+  sensitive source's derived values (destroy the per-source key → unrecoverable,
+  backups included); `observe()` seals sensitive observations and `foldForViewer()`
+  reverts them once the key is gone.
+- **Per-card overrides** — a row owner can grant one member one masked cell with
+  `grantCell()` / `POST /api/cloud/cell-share`, without changing the column's
+  schema-level audience; the generated mask view ORs it in.
+- **Cutover in place** — `secureCloud()` / `POST /api/cloud/secure` turns an
+  already-populated Postgres into a secured cloud (install RLS + own the existing
+  rows), not only migrate-from-SQLite.
+- The change-log is reconciled to one table (`__lattice_changelog`, Postgres-valid
+  with a monotonic `seq`) and gains provenance columns (`source_ref`,
+  `change_kind`, …); all of `insert`/`update`/`delete` accept provenance, and an
+  AI enrichment stamps the source-set it was derived from instead of discarding it.
+  The enrichment pass pins the cheapest model. See `docs/cloud.md`.
+
+**Owner-set chat system prompt per workspace.** A cloud owner can set a chat
+system prompt (in workspace settings) that's bundled into every member's assistant
+chat for that cloud — injected into each member's system message alongside the live
+schema. Owner-only to view and edit: it's stored in `__lattice_cloud_settings`
+(reached via `SECURITY DEFINER` `lattice_get_cloud_setting` / `lattice_set_cloud_setting`,
+the setter gated on `rolcreaterole`), the member group has no grant on the table, and
+`GET /api/cloud/system-prompt` returns the text only to an owner. Secrecy is
+**app-mediated** (hidden from the UI + API, not cryptographic — a member's own chat
+must inject it, so a member who digs can read it); documented in `docs/cloud.md`. New
+exports: `installCloudSettings`, `getCloudSetting`, `setCloudSetting`,
+`CLOUD_SETTING_SYSTEM_PROMPT`. Postgres-only; no-op on local SQLite.
+
+**S3-backed file bytes for cloud workspaces (opt-in, off by default).** When a
+cloud enables S3, an uploaded file's bytes go to S3 in addition to the uploader's
+local disk, so any member who can SELECT the `files` row can pull the bytes down
+in the viewer. Previously the metadata row was shared via RLS but the bytes lived
+only on the uploader's machine.
+
+- **No new access machinery — it rides the `files`-row RLS.** The serve route's
+  `db.get('files', id)` runs as the member's scoped role; a member only ever
+  learns an object's (content-addressed) key for a row RLS lets them SELECT. IAM
+  is `GetObject`+`PutObject` only — **no `ListBucket`, no `Delete`** — so the key
+  is the only handle, and the RLS row is the only place it appears.
+- **Per-member, machine-local credentials.** S3 config is stored AES-GCM-encrypted
+  on each member's machine (the `db-credentials.enc` store), never in the shared
+  DB; env-var fallback (`LATTICE_S3_BUCKET`/`_REGION`/`_PREFIX`/`_ENDPOINT` + the
+  standard `AWS_*` chain) for headless/CI. Owner-only `GET`/`POST
+/api/cloud/s3-config` (secret redacted on read).
+- **Hybrid copy.** The uploader keeps the local blob (instant local preview); every
+  other member streams from S3. Content-addressed key `<prefix>/<sha256>`;
+  idempotent put. Reuses the existing reference model (`ref_kind='cloud_ref'`,
+  `ref_provider='s3'`, `ref_uri='s3://<bucket>/<key>'`, `source_json`) — **no schema
+  migration**.
+- `@aws-sdk/client-s3` is an **optional dependency, lazy-imported** like `sharp`:
+  absent SDK throws a typed `S3UnavailableError` and uploads fall back to local-only
+  (never 500). `forcePathStyle` when a custom `endpoint` is set (R2 / MinIO /
+  LocalStack). New exports: `createS3Store`, `s3Key`, `S3UnavailableError`,
+  `RemoteBlobStore`, `S3StoreConfig`, `resolveActiveS3Config`, `activeWorkspaceLabel`,
+  `S3Config`, `mergeS3ConfigForSave`.
+- **The local-only fallback is never silent.** A failed S3 PUT on an enabled cloud
+  still succeeds locally but the upload response carries `s3: { status: 'failed',
+error }` (a clean push returns `status: 'stored'`), so the uploader knows the bytes
+  didn't reach the shared bucket and won't share a file other members would 404 on.
+- **Serve hardening.** `/api/files/:id/blob` sends `X-Content-Type-Options: nosniff`
+  and a no-allowances `Content-Security-Policy: sandbox`, since both the bytes and the
+  row's `mime` are member-writable — without them a member could stage `text/html` in
+  the shared bucket and have it execute in another member's GUI origin.
+- **Security ceiling is documented, not hidden:** byte-access is app-mediated (not
+  S3-enforced), revoking row visibility doesn't retract bytes a member already
+  fetched, the shared credential is a single point of compromise, and there's no
+  per-member S3 audit. See the S3 section + caveats in `docs/cloud.md`.
+
+**Migration:** a direct `postgres://` connection string is no longer a Lattice
+cloud connection — each user needs their own scoped role. Stand the cloud up by
+migrating a local Lattice into a fresh Postgres (installs RLS + makes you owner),
+then invite members; each member connects with their issued credentials. See
+`docs/cloud.md`.
+
 ## [2.3.0] - 2026-06-11
 
 ### Fixed

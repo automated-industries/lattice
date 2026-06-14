@@ -162,6 +162,10 @@ export {
 export type { AdoptNativeOptions, AdoptResult } from './framework/native-entities.js';
 export { attachBlob, hashFile } from './framework/blob-store.js';
 export type { BlobMetadata } from './framework/blob-store.js';
+export { createS3Store, s3Key, S3UnavailableError } from './framework/s3-store.js';
+export type { RemoteBlobStore, S3StoreConfig } from './framework/s3-store.js';
+export { resolveActiveS3Config, activeWorkspaceLabel } from './framework/s3-config.js';
+export type { S3Config } from './framework/s3-config.js';
 export {
   configDir,
   getOrCreateMasterKey,
@@ -250,16 +254,6 @@ export type {
 export { referenceLocalFile, referenceUrl } from './framework/reference-store.js';
 export type { ReferenceMetadata } from './framework/reference-store.js';
 
-export { TeamsClient, TeamsHttpError } from './teams/client.js';
-export type {
-  TeamSummary,
-  RegisterResponse,
-  RedeemResponse,
-  MemberSummary,
-  InviteResponse,
-  TeamConnection,
-} from './teams/client.js';
-
 // v1.13 additions — local-to-cloud migration + cloud-connect probe.
 export {
   migrateLatticeData,
@@ -271,12 +265,57 @@ export type {
   MigrationResult,
   MigrationOptions,
 } from './framework/cloud-migration.js';
-export { probeCloud } from './framework/cloud-connect.js';
+export { probeCloud, cloudRlsInstalled, canManageRoles } from './framework/cloud-connect.js';
 export type { CloudProbeResult } from './framework/cloud-connect.js';
 
-// eslint-disable-next-line @typescript-eslint/no-deprecated -- registerDirectViaPostgres stays exported for the grandfathered direct-connection path until 3.0
-export { registerDirectViaPostgres, isPostgresUrl } from './teams/register-direct.js';
-export type { DirectRegisterResult } from './teams/register-direct.js';
+export { isPostgresUrl } from './cloud/url.js';
+
+// v3.0 — shared-cloud Row-Level Security. A cloud is a Postgres DB each user
+// connects to directly as their own scoped role; these install RLS + provision
+// members + share rows with plain SQL. No-ops / throws on SQLite (local only).
+export {
+  installCloudRls,
+  enableRlsForTable,
+  enableChangelogRls,
+  backfillOwnership,
+  MEMBER_GROUP,
+} from './cloud/rls.js';
+export {
+  provisionMemberRole,
+  revokeMemberRole,
+  generateMemberPassword,
+  memberRoleName,
+  setRowVisibility,
+  grantCell,
+  revokeCell,
+} from './cloud/members.js';
+export { discoverCloudTables } from './cloud/discover.js';
+export type { DiscoveredTable } from './cloud/discover.js';
+export {
+  audiencePredicate,
+  audienceViewSql,
+  enableAudienceView,
+  tableNeedsAudienceView,
+  isRowAudience,
+} from './cloud/audience.js';
+export { foldEntity, observationVisible, observationsFromChange } from './cloud/fold.js';
+export type { Observation, Viewer } from './cloud/fold.js';
+export {
+  InMemorySourceKeyStore,
+  SourceShreddedError,
+  sealUnderSource,
+  openUnderSource,
+  shredSource,
+} from './cloud/shred.js';
+export type { SourceKeyStore } from './cloud/shred.js';
+export { FoldCache } from './cloud/fold-cache.js';
+export { secureCloud } from './cloud/setup.js';
+export {
+  installCloudSettings,
+  getCloudSetting,
+  setCloudSetting,
+  CLOUD_SETTING_SYSTEM_PROMPT,
+} from './cloud/settings.js';
 
 // v2.0 — AI library surface: the context organizer (summarize + classify a
 // source into the user's own schema, creating new objects only when nothing

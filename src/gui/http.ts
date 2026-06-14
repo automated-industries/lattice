@@ -4,10 +4,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  * Shared HTTP helpers for the GUI route modules. These were copy-pasted across
  * eight `*-routes.ts` files (and the server) with drifting body-size caps and
  * error messages; this is the single source of truth.
- *
- * The cloud Team server (`src/teams/server/routes.ts`) intentionally keeps its
- * own copies — it is a separate deployment surface and must not depend on the
- * GUI layer.
  */
 
 /** Write a JSON response with no-store caching. */
