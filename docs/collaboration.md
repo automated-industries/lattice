@@ -7,31 +7,33 @@ writer and behaves exactly as before.
 
 ## How it works
 
-Each person runs their own local GUI server, all pointed at one cloud Postgres.
-Two channels carry change:
+Each person runs their own local GUI server, all pointed at one cloud Postgres —
+each connecting as their **own scoped, non-superuser Postgres role** (see
+[cloud.md](cloud.md)). Postgres Row-Level Security confines every read and write to
+the rows that role may see, so collaboration is naturally scoped: you only ever see
+and flash on changes to rows shared with you. Two channels carry change:
 
 - **`RealtimeBroker`** holds a dedicated `pg.Client` running
   `LISTEN lattice_changes` and forwards every `NOTIFY` to the browser over SSE
   (`GET /api/realtime/stream`). Use a **session-mode** connection (e.g. the
   Supabase pooler on port 5432) — transaction-mode poolers silently drop
   `LISTEN`.
-- The **`__lattice_change_log`** table records every change with a per-team
-  monotonic `seq`, `owner_user_id`, `created_at` (server receipt), `client_ts`
-  (true edit time), and `edit_id` (client idempotency key). An `AFTER INSERT`
-  trigger emits the NOTIFY (the large `payload_json` is _not_ in the NOTIFY —
-  clients re-fetch; this keeps the payload under Postgres's 8000-byte cap).
-
-GUI row writes append a change envelope (`op` `upsert`/`delete`, post-image as
-`payload_json`), so the broker broadcasts data edits to everyone.
+- The **`__lattice_changes`** table is the append-only change feed: each row carries
+  a monotonic `seq`, the `table_name`, the `pk`, the `op` (`upsert`/`delete`), the
+  `owner_role`, and `created_at`. The per-table RLS trigger writes one entry per
+  insert/update/delete; an `AFTER INSERT` trigger emits the NOTIFY carrying only that
+  metadata — **never row content** — so clients re-fetch the affected row _through
+  RLS_ (which keeps the payload tiny and never broadcasts another member's data).
 
 ## What you see
 
-- **Live share / de-share** — toggling a table's team visibility updates the
-  visible set in place; no page reload, and other clients update from the
-  broadcast.
-- **Last edited by** — the row detail shows `Last edited by <user> · <time ago>`,
-  resolved from the change-log + the team roster (`GET /api/team/users`,
-  `GET /api/tables/:t/last-edited`).
+- **Live share / un-share** — when a row's owner changes its visibility
+  (`private` ↔ `everyone`, via `/api/cloud/share`), the row appears or disappears in
+  every other member's view on the next broadcast; no page reload. Sharing is
+  per-**row** under RLS, not per-table.
+- **Last edited by** — the row detail shows `Last edited by <role> · <time ago>`,
+  resolved from the change feed's `owner_role` + `created_at`
+  (`GET /api/tables/:t/last-edited`).
 - **Flash + counts** — a row visible in the current view flashes when another
   editor changes it (honoring `prefers-reduced-motion`); changes to other
   tables bump a per-table unseen-change badge in the sidebar.
@@ -55,23 +57,25 @@ edit-timestamp (`client_ts`) order**, each carrying its `X-Lattice-Edit-Id` and
 
 **Row edits — last-write-wins by edit timestamp, every version recoverable.**
 Concurrent edits to the same row are applied in arrival order; the live row
-reflects the last write, and _every_ prior version is retained in
-`__lattice_change_log` and readable via
+reflects the last write, and _every_ prior version is retained in the
+`__lattice_changes` feed and readable via
 `GET /api/tables/:table/rows/:id/history` (newest first). Nothing is silently
 destroyed — an overwritten value is always recoverable.
 
-**A row in a table that was de-shared under you** returns `409 entity_unshared`
-on write, so the client refetches + toasts rather than failing opaquely. Only
-non-owners hit this; an owner always retains visibility.
+**A row that was made private out from under you** simply stops being returned —
+Postgres RLS excludes it, so a subsequent read returns nothing and a write affects
+zero rows. Only the row's owner may change its visibility; the owner always retains
+access to their own rows.
 
-**Sharing races** (two owners share/unshare concurrently) resolve last-write-wins
-on `__lattice_shared_objects.updated_at` + the soft-delete flag; both envelopes
-are retained, so all clients converge and the toggle history is recoverable.
+**Sharing changes** go through the owner-only `lattice_set_row_visibility` SQL
+function, which updates `__lattice_owners.visibility` for a single row. Because each
+change is one row's visibility flip recorded in the change feed, clients converge on
+the latest state and the history is recoverable.
 
-**Data-model edits** use `schema_version` as an optimistic-concurrency token.
-Each shared table's `schemaVersion` is surfaced on `/api/entities`; a client
-edit carries its base version so a stale edit can be rejected and the client
-re-fetch + re-issue against the current schema. (Re-shares bump the version.)
+**Data-model edits** use `schema_version` as an optimistic-concurrency token. Each
+table's `schemaVersion` is surfaced on `/api/entities`; a client edit carries its
+base version so a stale edit can be rejected and the client re-fetch + re-issue
+against the current schema.
 
 ## Ordering & clock skew
 

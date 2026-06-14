@@ -9,7 +9,6 @@ import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { startGuiServer } from './gui/server.js';
 import { ensureRootForGui } from './framework/gui-bootstrap.js';
-import { runTeamsCommand } from './teams/cli-commands.js';
 import { ensureLatticeRoot, findLatticeRoot, rootConfigDir } from './framework/lattice-root.js';
 import {
   addWorkspace,
@@ -28,7 +27,7 @@ import { analyticsEnabled } from './framework/user-config.js';
 interface ParsedArgs {
   command?: string | undefined;
   subcommand?: string | undefined;
-  /** Third positional for two-level subcommands, e.g. `teams dlq list`. */
+  /** Third positional for two-level subcommands, e.g. `workspace use <id>`. */
   action?: string | undefined;
   /** --root <dir> — the `.lattice` root for `init` / `workspace` commands. */
   root?: string | undefined;
@@ -54,24 +53,8 @@ interface ParsedArgs {
   port: number;
   noOpen: boolean;
   host: string;
-  teamCloud: boolean;
-  // Teams subcommand options (parsed only when command === 'teams')
-  cloud?: string | undefined;
-  token?: string | undefined;
-  email?: string | undefined;
-  inviteeEmail?: string | undefined;
-  /** --name <display> — user display name (register / join). */
+  /** --name <display> — workspace / user display name (workspace create, gui). */
   displayName?: string | undefined;
-  /** --team-name <name> — the team being created (register). */
-  teamName?: string | undefined;
-  team?: string | undefined;
-  teamId?: string | undefined;
-  expires?: number | undefined;
-  userId?: string | undefined;
-  table?: string | undefined;
-  pk?: string | undefined;
-  /** --id <uuid> — a specific DLQ entry (teams dlq retry / purge). */
-  id?: string | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -93,37 +76,20 @@ function parseArgs(argv: string[]): ParsedArgs {
   let port = 4317;
   let noOpen = false;
   let host = '127.0.0.1';
-  let teamCloud = false;
   let subcommand: string | undefined;
-  let cloud: string | undefined;
-  let token: string | undefined;
-  let email: string | undefined;
-  let inviteeEmail: string | undefined;
   let displayName: string | undefined;
-  let teamName: string | undefined;
-  let team: string | undefined;
-  let teamId: string | undefined;
-  let expires: number | undefined;
-  let userId: string | undefined;
-  let table: string | undefined;
-  let pk: string | undefined;
-  let id: string | undefined;
   let root: string | undefined;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
     command = argv[0];
     i = 1;
-    // `lattice teams|workspace <subcommand>` — pick up the second positional.
-    if (
-      (command === 'teams' || command === 'workspace') &&
-      argv[1] !== undefined &&
-      !argv[1].startsWith('-')
-    ) {
+    // `lattice workspace <subcommand>` — pick up the second positional.
+    if (command === 'workspace' && argv[1] !== undefined && !argv[1].startsWith('-')) {
       subcommand = argv[1];
       i = 2;
-      // `lattice teams <subcommand> <action>` — third positional for
-      // two-level subcommands like `teams dlq list|retry|purge`.
+      // `lattice workspace <subcommand> <action>` — third positional for
+      // two-level subcommands like `workspace use <id>`.
       if (argv[2] !== undefined && !argv[2].startsWith('-')) {
         action = argv[2];
         i = 3;
@@ -174,48 +140,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--host' && i + 1 < argv.length) {
       i++;
       host = argv[i] ?? host;
-    } else if (arg === '--team-cloud') {
-      teamCloud = true;
-    } else if (arg === '--cloud' && i + 1 < argv.length) {
-      i++;
-      cloud = argv[i];
-    } else if (arg === '--token' && i + 1 < argv.length) {
-      i++;
-      token = argv[i];
-    } else if (arg === '--email' && i + 1 < argv.length) {
-      i++;
-      email = argv[i];
-    } else if (arg === '--invitee-email' && i + 1 < argv.length) {
-      i++;
-      inviteeEmail = argv[i];
     } else if (arg === '--name' && i + 1 < argv.length) {
       i++;
       displayName = argv[i];
-    } else if (arg === '--team-name' && i + 1 < argv.length) {
-      i++;
-      teamName = argv[i];
-    } else if (arg === '--team' && i + 1 < argv.length) {
-      i++;
-      team = argv[i];
-    } else if (arg === '--team-id' && i + 1 < argv.length) {
-      i++;
-      teamId = argv[i];
-    } else if (arg === '--expires' && i + 1 < argv.length) {
-      i++;
-      const parsed = parseInt(argv[i] ?? '', 10);
-      if (!isNaN(parsed)) expires = parsed;
-    } else if (arg === '--user-id' && i + 1 < argv.length) {
-      i++;
-      userId = argv[i];
-    } else if (arg === '--table' && i + 1 < argv.length) {
-      i++;
-      table = argv[i];
-    } else if (arg === '--pk' && i + 1 < argv.length) {
-      i++;
-      pk = argv[i];
-    } else if (arg === '--id' && i + 1 < argv.length) {
-      i++;
-      id = argv[i];
     } else if (arg === '--root' && i + 1 < argv.length) {
       i++;
       root = argv[i];
@@ -243,20 +170,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     port,
     noOpen,
     host,
-    teamCloud,
-    cloud,
-    token,
-    email,
-    inviteeEmail,
     displayName,
-    teamName,
-    team,
-    teamId,
-    expires,
-    userId,
-    table,
-    pk,
-    id,
     root,
   };
 }
@@ -282,8 +196,6 @@ function printHelp(): void {
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
       '  gui         Start a local browser GUI for exploring Lattice context',
-      '  serve       Start a server-mode lattice (add --team-cloud to host a shared cloud for remote members)',
-      '  teams       Manage Lattice Teams (run `lattice teams help` for subcommands)',
       '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
@@ -321,17 +233,6 @@ function printHelp(): void {
       '  --output <dir>         Output directory for rendered context (default: ./context)',
       '  --port <number>        Localhost port (default: 4317; auto-increments if busy)',
       '  --no-open              Do not open the browser automatically',
-      '',
-      'Options (serve):',
-      '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
-      '  --output <dir>         Output directory for rendered context (default: ./context)',
-      '  --host <addr>          Bind address (default: 127.0.0.1; use 0.0.0.0 to expose)',
-      '  --port <number>        Port (default: 4317; auto-increments if busy)',
-      '  --team-cloud           Host this cloud as a shared server for remote members (bearer auth).',
-      '                         A cloud already IS a workspace with members; this only adds the',
-      '                         auth-gated HTTP surface so other people can connect. Omit it to',
-      '                         open the cloud yourself (you connect directly; eye-icon row',
-      '                         permissions are active).',
       '',
       'Options (init / workspace):',
       '  --root <dir>           The .lattice root location (default: discovered or ./.lattice)',
@@ -615,32 +516,6 @@ async function runGui(args: ParsedArgs): Promise<void> {
   }
 }
 
-async function runServe(args: ParsedArgs): Promise<void> {
-  try {
-    const handle = await startGuiServer({
-      configPath: resolve(args.config),
-      outputDir: resolve(args.output),
-      host: args.host,
-      port: args.port,
-      openBrowser: false,
-      teamCloud: args.teamCloud,
-    });
-    const label = args.teamCloud ? 'Lattice shared cloud server' : 'Lattice server';
-    console.log(`${label} listening on ${args.host}:${String(handle.port)} (${handle.url})`);
-    console.log('Press Ctrl+C to stop.');
-
-    const shutdown = (): void => {
-      void handle.close().finally(() => process.exit(0));
-    };
-
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-  } catch (e) {
-    console.error(`Error: ${(e as Error).message}`);
-    process.exit(1);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // init / workspace
 // ---------------------------------------------------------------------------
@@ -777,29 +652,6 @@ function main(): void {
       break;
     case 'gui':
       void runGui(args);
-      break;
-    case 'serve':
-      void runServe(args);
-      break;
-    case 'teams':
-      void runTeamsCommand({
-        subcommand: args.subcommand,
-        action: args.action,
-        config: args.config,
-        cloud: args.cloud,
-        token: args.token,
-        email: args.email,
-        inviteeEmail: args.inviteeEmail,
-        name: args.displayName,
-        teamName: args.teamName,
-        team: args.team,
-        teamId: args.teamId,
-        expires: args.expires,
-        userId: args.userId,
-        table: args.table,
-        pk: args.pk,
-        id: args.id,
-      });
       break;
     case 'init':
       void runInit(args);

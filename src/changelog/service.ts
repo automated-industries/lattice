@@ -16,6 +16,19 @@ import type { Row, ChangeEntry } from '../types.js';
 /** Structural shape of `Lattice`'s `PkLookup` (avoids a circular import). */
 type PkLookup = string | Record<string, unknown>;
 
+/** Deserialize the `source_ref` column (a JSON array of source ids) back to a
+ *  string[]. NULL (plain edits + pre-3.0 rows) and any malformed value → null,
+ *  so a bad row never throws on read. */
+function parseSourceRef(raw: unknown): string[] | null {
+  if (raw == null || typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.map((v) => String(v)) : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface ChangelogServiceDeps {
   adapter: StorageAdapter;
   pkWhere: (table: string, id: PkLookup) => { clause: string; params: unknown[] };
@@ -55,7 +68,16 @@ export class ChangelogService {
       source: row.source != null ? (row.source as string) : null,
       reason: row.reason != null ? (row.reason as string) : null,
       createdAt: row.created_at as string,
+      sourceRef: parseSourceRef(row.source_ref),
+      changeKind: row.change_kind != null ? (row.change_kind as 'ground_truth' | 'derived') : null,
     };
+  }
+
+  /** Insertion-order expression, newest first. SQLite has the `rowid`
+   *  pseudo-column; Postgres has the monotonic `seq` identity column (see
+   *  Lattice._ensureChangelogTable) — both give a strict, tie-free order. */
+  private get _orderDesc(): string {
+    return this.adapter.dialect === 'postgres' ? 'seq DESC' : 'rowid DESC';
   }
 
   /** Get change history for a specific row, newest first. */
@@ -63,9 +85,9 @@ export class ChangelogService {
     const limit = opts?.limit ?? 100;
     const rows = await allAsyncOrSync(
       this.adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog
+      `SELECT * FROM __lattice_changelog
        WHERE table_name = ? AND row_id = ?
-       ORDER BY rowid DESC
+       ORDER BY ${this._orderDesc}
        LIMIT ?`,
       [table, id, limit],
     );
@@ -95,8 +117,8 @@ export class ChangelogService {
 
     const rows = await allAsyncOrSync(
       this.adapter,
-      `SELECT *, rowid AS _rowid FROM __lattice_changelog ${where}
-       ORDER BY rowid DESC
+      `SELECT * FROM __lattice_changelog ${where}
+       ORDER BY ${this._orderDesc}
        LIMIT ?`,
       [...params, limit],
     );
@@ -214,23 +236,25 @@ export class ChangelogService {
    * all operations up to and including that entry.
    */
   async snapshot(table: string, id: string, changeId: string): Promise<Record<string, unknown>> {
-    // Get the target entry's rowid for reliable ordering
+    const pg = this.adapter.dialect === 'postgres';
+    // Replay up to + including the target entry, in insertion order. SQLite keys
+    // that order on `rowid`; Postgres on the monotonic `seq` identity column.
+    const seqCol = pg ? 'seq' : 'rowid';
     const target = await getAsyncOrSync(
       this.adapter,
-      `SELECT rowid FROM __lattice_changelog WHERE id = ?`,
+      `SELECT ${seqCol} FROM __lattice_changelog WHERE id = ?`,
       [changeId],
     );
     if (!target) {
       throw new Error(`Lattice: changelog entry "${changeId}" not found`);
     }
 
-    // Get all entries for this row up to and including the target, in insertion order
     const entries = await allAsyncOrSync(
       this.adapter,
       `SELECT * FROM __lattice_changelog
-       WHERE table_name = ? AND row_id = ? AND rowid <= ?
-       ORDER BY rowid ASC`,
-      [table, id, target.rowid],
+       WHERE table_name = ? AND row_id = ? AND ${seqCol} <= ?
+       ORDER BY ${seqCol} ASC`,
+      [table, id, target[seqCol]],
     );
 
     // Replay to build state

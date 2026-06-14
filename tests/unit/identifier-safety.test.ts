@@ -5,25 +5,17 @@ import {
   assertExternalIdentifier,
   isSafeIdentifier,
 } from '../../src/schema/identifier.js';
-import {
-  validateExternalSchemaSpec,
-  applySchemaSpec,
-  type SchemaSpec,
-} from '../../src/teams/schema-spec.js';
 
 /**
- * Security regression: a Team object-share request supplies `table` + a
- * `schema_spec` (column names, types, defaults, constraints) that are rendered
- * VERBATIM into DDL by `applySchemaSpec` → `_ensureTable`/`addColumn`. Because
- * some DDL runs with an empty params array (Postgres simple-query protocol), a
- * `;` in any of those fields stacks a second statement — e.g.
- * `CREATE TABLE …); DROP TABLE __lattice_users; --`. Any authenticated team
- * member could trigger it across the multi-tenant cloud boundary.
+ * Security regression: externally-supplied identifiers (table + column names)
+ * are rendered VERBATIM into DDL by `_ensureTable`/`addColumn`. Because some
+ * DDL runs with an empty params array (Postgres simple-query protocol), a `;`
+ * in any of those fields stacks a second statement — e.g.
+ * `CREATE TABLE …); DROP TABLE __lattice_users; --`.
  *
  * Fix: `assertSafeIdentifier` / `assertExternalIdentifier` (src/schema/identifier.ts)
- * as a universal DDL backstop, plus `validateExternalSchemaSpec` at the
- * `applySchemaSpec` trust boundary validating identifiers + types + defaults +
- * constraints before any DDL is built.
+ * as a universal DDL backstop, enforced inside `Lattice.addColumn` and the CRUD
+ * table/column creation paths before any DDL is built.
  */
 describe('SQL identifier safety', () => {
   describe('assertSafeIdentifier', () => {
@@ -63,114 +55,6 @@ describe('SQL identifier safety', () => {
       expect(() => assertExternalIdentifier('__LATTICE_users', 'table')).toThrow(/Reserved/);
       // A normal externally-supplied name still passes.
       expect(() => assertExternalIdentifier('tasks', 'table')).not.toThrow();
-    });
-  });
-
-  describe('validateExternalSchemaSpec', () => {
-    const okSpec: SchemaSpec = {
-      columns: {
-        id: { type: 'TEXT', pk: true },
-        title: { type: 'TEXT', notNull: true },
-        status: { type: 'TEXT', default: "'open'" },
-        score: { type: 'INTEGER', default: '0' },
-      },
-      primaryKey: 'id',
-      schemaVersion: 1,
-    };
-
-    const check = (table: string, spec: SchemaSpec) => () => {
-      validateExternalSchemaSpec(table, spec);
-    };
-
-    it('accepts a legitimate spec', () => {
-      expect(check('tasks', okSpec)).not.toThrow();
-    });
-
-    it('rejects a malicious table name', () => {
-      expect(check('tasks"); DROP TABLE __lattice_users; --', okSpec)).toThrow();
-    });
-
-    it('rejects a malicious column name', () => {
-      const spec: SchemaSpec = {
-        ...okSpec,
-        columns: { ...okSpec.columns, ['x"); DROP TABLE y; --']: { type: 'TEXT' } },
-      };
-      expect(check('tasks', spec)).toThrow();
-    });
-
-    it('rejects an unknown column type injected via JSON', () => {
-      const spec = {
-        columns: { id: { type: 'TEXT); DROP TABLE z; --' } },
-        primaryKey: 'id',
-        schemaVersion: 1,
-      } as unknown as SchemaSpec;
-      expect(check('tasks', spec)).toThrow(/Invalid column type/);
-    });
-
-    it('rejects an unsafe column default (statement stacking)', () => {
-      const spec: SchemaSpec = {
-        ...okSpec,
-        columns: { ...okSpec.columns, status: { type: 'TEXT', default: "'a'); DROP TABLE q; --" } },
-      };
-      expect(check('tasks', spec)).toThrow(/Unsafe column default/);
-    });
-
-    it('accepts conventional defaults (NULL, numbers, quoted strings, datetime())', () => {
-      for (const d of ['NULL', '0', '-3.14', "'draft'", 'CURRENT_TIMESTAMP', "(datetime('now'))"]) {
-        const spec: SchemaSpec = {
-          ...okSpec,
-          columns: { ...okSpec.columns, status: { type: 'TEXT', default: d } },
-        };
-        expect(check('tasks', spec)).not.toThrow();
-      }
-    });
-
-    it('rejects an unsafe table constraint', () => {
-      const spec: SchemaSpec = {
-        ...okSpec,
-        tableConstraints: ['UNIQUE ("id")); DROP TABLE r; --'],
-      };
-      expect(check('tasks', spec)).toThrow(/Unsafe table constraint/);
-    });
-
-    it('accepts a conventional UNIQUE constraint', () => {
-      const spec: SchemaSpec = { ...okSpec, tableConstraints: ['UNIQUE ("title")'] };
-      expect(check('tasks', spec)).not.toThrow();
-    });
-  });
-
-  describe('applySchemaSpec end-to-end (the choke point)', () => {
-    let db: Lattice | undefined;
-    afterEach(() => {
-      db?.close();
-      db = undefined;
-    });
-
-    it('throws on a malicious spec BEFORE creating any table', async () => {
-      db = new Lattice(':memory:');
-      await db.init();
-      const evil = {
-        columns: { id: { type: 'TEXT', pk: true } },
-        primaryKey: 'id',
-        schemaVersion: 1,
-      } as SchemaSpec;
-      await expect(
-        applySchemaSpec(db, 'evil"); DROP TABLE __lattice_users; --', evil),
-      ).rejects.toThrow();
-    });
-
-    it('still applies a legitimate spec', async () => {
-      db = new Lattice(':memory:');
-      await db.init();
-      const spec: SchemaSpec = {
-        columns: { id: { type: 'TEXT', pk: true }, name: { type: 'TEXT' } },
-        primaryKey: 'id',
-        schemaVersion: 1,
-      };
-      await expect(applySchemaSpec(db, 'widgets', spec)).resolves.toBe(true);
-      const cols = await db.introspectColumns('widgets');
-      expect(cols).toContain('id');
-      expect(cols).toContain('name');
     });
   });
 
