@@ -8,6 +8,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — cloud members + invites (3.2)
+
+- **Members can connect again on Supabase pooler hosts (was breaking).** The
+  minted member username now derives the pooler tenant ref from the owner's
+  connection-string username (`postgres.<ref>`), not `session_user` (which is the
+  bare role on the pooler) — so the member username keeps its `.<ref>` suffix.
+- **Re-inviting an existing member no longer errors on Supabase.** The role-exists
+  ALTER branch sets only `LOGIN PASSWORD`, not the `NOSUPERUSER`-class attributes
+  (restating them tripped supautils 42501 since the owner isn't a true superuser).
+- **Members list shows real people, not the Postgres role.** It now lists each
+  member's name + email (owner from the workspace identity; members from the
+  stored invitee email) with an Owner/Member status, and no longer double-counts
+  the owner. A new owner-only `POST /api/cloud/remove-member` + a "Kick" control
+  wire the previously-unreachable `revokeMemberRole`; revocation reassigns/drops
+  the member's objects and surfaces failures (Rule 16) instead of swallowing them.
+
 ### Fixed — cloud bootstrap converges on owner open (3.2)
 
 - **The cloud object bootstrap now converges.** `installCloudRls` /

@@ -34,6 +34,7 @@ import {
   grantCell,
   revokeCell,
   assertScopedMemberRole,
+  revokeMemberRole,
 } from '../cloud/members.js';
 import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../cloud/invite.js';
 import { MEMBER_GROUP } from '../cloud/rls.js';
@@ -544,24 +545,53 @@ export async function dispatchDbConfigRoute(
       const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
         | { u?: string }
         | undefined;
-      const owner = me?.u ?? '';
+      const ownerRole = me?.u ?? '';
+      // The operator's own identity (mirrored into __lattice_user_identity on open)
+      // — so the owner row shows a real name/email, not the bare Postgres role.
+      const idRow = (await getAsyncOrSync(
+        ctx.db.adapter,
+        `SELECT display_name, email FROM "__lattice_user_identity" WHERE id = 'singleton'`,
+      ).catch(() => undefined)) as { display_name?: string; email?: string } | undefined;
+      const ownerName = (idRow?.display_name && idRow.display_name.trim()) || ownerRole;
+      const ownerEmail = idRow?.email ?? '';
+
       // Only an owner can enumerate roles; a scoped member just sees itself.
       if (!(await canManageRoles(ctx.db))) {
-        sendJson(res, { members: owner ? [{ role: owner, isOwner: false, isYou: true }] : [] });
+        sendJson(res, {
+          members: ownerRole
+            ? [{ role: ownerRole, name: ownerName, email: ownerEmail, status: 'member', isYou: true }]
+            : [],
+        });
         return;
       }
+      // Member-group roles — EXCLUDING the owner (it was double-counted: prepended
+      // AND listed again from the group).
       const rows = (await allAsyncOrSync(
         ctx.db.adapter,
         `SELECT m.rolname AS role
            FROM pg_auth_members am
            JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = ?
            JOIN pg_roles m ON m.oid = am.member
+          WHERE m.rolname <> ?
           ORDER BY m.rolname`,
-        [MEMBER_GROUP],
+        [MEMBER_GROUP, ownerRole],
       )) as { role: string }[];
+      // role → its latest non-revoked invite email, for human-readable display.
+      const invites = (await allAsyncOrSync(
+        ctx.db.adapter,
+        `SELECT DISTINCT ON ("role") "role", "email"
+           FROM "__lattice_member_invites"
+          WHERE "revoked_at" IS NULL
+          ORDER BY "role", "created_at" DESC`,
+      ).catch(() => [])) as { role: string; email?: string }[];
+      const emailByRole = new Map(invites.map((r) => [r.role, r.email ?? '']));
       const members = [
-        ...(owner ? [{ role: owner, isOwner: true, isYou: true }] : []),
-        ...rows.map((r) => ({ role: r.role, isOwner: false, isYou: r.role === owner })),
+        { role: ownerRole, name: ownerName, email: ownerEmail, status: 'owner', isYou: true },
+        ...rows.map((r) => {
+          const email = emailByRole.get(r.role) ?? '';
+          const name = email ? (email.split('@')[0] ?? r.role) : r.role;
+          return { role: r.role, name, email, status: 'member', isYou: false };
+        }),
       ];
       sendJson(res, { members });
     });
@@ -601,28 +631,74 @@ export async function dispatchDbConfigRoute(
       const password = generateMemberPassword();
       await provisionMemberRole(ctx.db, role, password);
       await assertScopedMemberRole(ctx.db, role);
-      // Bake the pooler-correct user from the owner's own connection role so the
-      // invitee never has to type/know the username.
-      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
-        | { u?: string }
-        | undefined;
-      const user = poolerAwareUser(coords.host, role, me?.u ?? '');
+      // Bake the pooler-correct user from the owner's CONNECTION-STRING username
+      // (postgres.<ref>), NOT session_user — on the Supabase pooler session_user
+      // is the bare role with no tenant ref, which yields an unconnectable member
+      // username (ENOIDENTIFIER). coords.user carries the ref.
+      const user = poolerAwareUser(coords.host, role, coords.user);
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       const token = mintInviteToken({ coords, user, password, role, email, expiresAt });
       // Owner-only audit row. Plaintext email + password are NEVER stored — only a
       // hash of the email and the role name (for later revocation).
       await runAsyncOrSync(
         ctx.db.adapter,
-        `INSERT INTO "__lattice_member_invites" ("id","role","email_hash","expires_at")
-           VALUES (?, ?, ?, ?)`,
+        `INSERT INTO "__lattice_member_invites" ("id","role","email_hash","email","expires_at")
+           VALUES (?, ?, ?, ?, ?)`,
         [
           randomUUID(),
           role,
           createHash('sha256').update(email.trim().toLowerCase()).digest('hex'),
+          // Plaintext email stored ONLY in this owner-only table so the owner's
+          // Members list can show who each member is (the hash above stays for
+          // tamper-evident audit; the password is still never stored anywhere).
+          email.trim().toLowerCase(),
           expiresAt.toISOString(),
         ],
       );
       sendJson(res, { ok: true, token, role, email });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/remove-member — owner-only: revoke a member's scoped role
+  // (the GUI "Kick" control). Wires the previously-unreachable revokeMemberRole.
+  if (pathname === '/api/cloud/remove-member' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can remove members' }, 403);
+        return;
+      }
+      const body = await readJson(req);
+      const role = typeof body.role === 'string' ? body.role : '';
+      if (!role) {
+        sendJson(res, { error: 'A member role is required' }, 400);
+        return;
+      }
+      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
+        | { u?: string }
+        | undefined;
+      if (role === (me?.u ?? '')) {
+        sendJson(res, { error: 'You cannot remove yourself (the owner)' }, 400);
+        return;
+      }
+      // revokeMemberRole reassigns/drops the member's objects then the role and
+      // SURFACES failures (Rule 16) — e.g. Supabase "permission denied to drop
+      // objects" — instead of swallowing them; tryHandler turns a throw into a
+      // 500 the GUI shows. If it succeeds, mark the audit invites revoked.
+      await revokeMemberRole(ctx.db, role);
+      await runAsyncOrSync(
+        ctx.db.adapter,
+        `UPDATE "__lattice_member_invites" SET "revoked_at" = now() WHERE "role" = ? AND "revoked_at" IS NULL`,
+        [role],
+      ).catch((e: unknown) => {
+        // Best-effort audit only — the role IS already revoked; log, don't fail.
+        console.error('[cloud] mark invite revoked failed:', (e as Error).message);
+      });
+      sendJson(res, { ok: true, role });
     });
     return true;
   }
@@ -899,7 +975,7 @@ export async function dispatchDbConfigRoute(
  *  Postgres URL. */
 function activeCloudCoords(
   configPath: string,
-): { host: string; port: number; dbname: string } | null {
+): { host: string; port: number; dbname: string; user: string } | null {
   const doc = parseDocument(readFileSync(configPath, 'utf8'));
   const rawDb = doc.get('db');
   const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
@@ -907,7 +983,13 @@ function activeCloudCoords(
   const url = labelMatch ? getDbCredential(labelMatch[1] ?? '') : dbLine;
   if (!url) return null;
   const parsed = parsePostgresUrl(url);
-  return parsed ? { host: parsed.host, port: parsed.port, dbname: parsed.dbname } : null;
+  // Keep `user` too: on the Supabase pooler the tenant ref lives ONLY in the
+  // connection-string username (`postgres.<ref>`), never in session_user (which
+  // returns the bare role). poolerAwareUser needs it to mint a connectable
+  // member username.
+  return parsed
+    ? { host: parsed.host, port: parsed.port, dbname: parsed.dbname, user: parsed.user }
+    : null;
 }
 
 // Re-export for tests that want to construct URLs without going through HTTP.

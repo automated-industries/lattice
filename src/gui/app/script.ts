@@ -5098,12 +5098,34 @@ export const appJs = `
         if (info.state === 'cloud-member') {
           membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
         } else {
-          membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading members…</div>';
-          fetchJson('/api/cloud/members').then(function (data) {
-            membersHost.innerHTML = renderMembersList((data && data.members) || []);
-          }).catch(function (e) {
-            membersHost.innerHTML = '<div style="font-size:12px;color:var(--warn)">Could not load members: ' + escapeHtml(e.message) + '</div>';
-          });
+          var loadMembers = function () {
+            membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading members…</div>';
+            fetchJson('/api/cloud/members').then(function (data) {
+              membersHost.innerHTML = renderMembersList((data && data.members) || [], isOwner);
+              membersHost.querySelectorAll('[data-kick]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                  var role = btn.getAttribute('data-kick');
+                  if (!role) return;
+                  if (!window.confirm('Remove this member? They lose access immediately.')) return;
+                  withBusy(btn, function () {
+                    return fetchJson('/api/cloud/remove-member', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ role: role }),
+                    }).then(function () {
+                      showToast('Member removed', {});
+                      loadMembers();
+                    }).catch(function (e) {
+                      showToast('Could not remove member: ' + (e && e.message ? e.message : e), {});
+                    });
+                  });
+                });
+              });
+            }).catch(function (e) {
+              membersHost.innerHTML = '<div style="font-size:12px;color:var(--warn)">Could not load members: ' + escapeHtml(e.message) + '</div>';
+            });
+          };
+          loadMembers();
         }
       }
       void isOwner;
@@ -5111,18 +5133,27 @@ export const appJs = `
 
     /** Members list (owner + member roles), recovered from latticesql 1.14.0
      *  (commit 2862959), adapted to the RLS-cloud member model. */
-    function renderMembersList(members) {
+    function renderMembersList(members, canManage) {
       if (!members.length) {
         return '<div class="members-list"><h4>Members</h4>' +
           '<div style="font-size:12px;color:var(--text-muted)">Just you.</div></div>';
       }
       var rows = members.map(function (m) {
-        var pill = m.isOwner ? 'Owner' : 'Member';
+        var isOwner = m.status === 'owner';
+        var pill = isOwner ? 'Owner' : (m.status === 'invited' ? 'Invited' : 'Member');
+        // Show a human name (display name, else the email's local part, else the
+        // role) + the email — NOT the bare Postgres role as the primary label.
+        var label = (m.name && String(m.name).trim()) || m.role;
+        var kick = canManage && !m.isYou && !isOwner
+          ? '<button class="btn destructive" data-kick="' + escapeHtml(m.role) + '">Kick</button>'
+          : '';
         return '<div class="member-row" data-role="' + escapeHtml(m.role) + '">' +
-          '<span><code>' + escapeHtml(m.role) + '</code>' +
+          '<span>' + escapeHtml(label) +
             (m.isYou ? ' <span style="color:var(--accent);font-size:11px">(you)</span>' : '') +
-            ' <span class="role-tag' + (m.isOwner ? '' : ' role-member') + '">' + pill + '</span>' +
+            (m.email ? ' <span style="color:var(--text-muted);font-size:11px">' + escapeHtml(m.email) + '</span>' : '') +
+            ' <span class="role-tag' + (isOwner ? '' : ' role-member') + '">' + pill + '</span>' +
           '</span>' +
+          kick +
         '</div>';
       }).join('');
       return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';

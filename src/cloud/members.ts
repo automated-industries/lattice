@@ -76,7 +76,12 @@ export async function provisionMemberRole(
        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN
          CREATE ROLE "${role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${password}';
        ELSE
-         ALTER ROLE "${role}" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${password}';
+         -- Re-invite of an EXISTING role: set ONLY what changed (login + password).
+         -- Restating NOSUPERUSER/superuser-class attrs trips Supabase supautils
+         -- ("only superuser may alter the SUPERUSER attribute", 42501) since the
+         -- owner 'postgres' isn't a true superuser. The role was already created
+         -- NOSUPERUSER NOCREATEDB NOCREATEROLE, so there is nothing to restate.
+         ALTER ROLE "${role}" WITH LOGIN PASSWORD '${password}';
        END IF;
      END $LATTICE$`,
   );
@@ -243,6 +248,13 @@ export async function revokeCell(
 export async function revokeMemberRole(db: Lattice, role: string): Promise<void> {
   assertPg(db);
   if (!ROLE_RE.test(role)) throw new Error(`lattice: invalid member role name "${role}"`);
-  await runAsyncOrSync(db.adapter, `DROP OWNED BY "${role}"`).catch(() => undefined);
+  // Handle the member's owned objects EXPLICITLY (don't swallow — Rule 16). A
+  // role can't be dropped while it owns objects or holds grants. First reassign
+  // any objects it owns to the current owner, then drop its remaining
+  // privileges/grants/defaults, then the role. A bare `DROP OWNED BY ... .catch()`
+  // used to hide Supabase's "permission denied to drop objects" (42501) for a
+  // restricted-superuser owner, leaving stale roles to pile up; surface it now.
+  await runAsyncOrSync(db.adapter, `REASSIGN OWNED BY "${role}" TO CURRENT_USER`);
+  await runAsyncOrSync(db.adapter, `DROP OWNED BY "${role}"`);
   await runAsyncOrSync(db.adapter, `DROP ROLE IF EXISTS "${role}"`);
 }

@@ -245,12 +245,18 @@ CREATE TABLE IF NOT EXISTS "__lattice_member_invites" (
   "id"          text PRIMARY KEY,
   "role"        text NOT NULL,
   "email_hash"  text NOT NULL,
+  "email"       text,
   "created_by"  text NOT NULL DEFAULT session_user,
   "created_at"  timestamptz NOT NULL DEFAULT now(),
   "expires_at"  timestamptz NOT NULL,
   "redeemed_at" timestamptz,
   "revoked_at"  timestamptz
 );
+-- Plaintext invitee email (owner-only table; members have no grant) so the
+-- owner's Members list can show who each member is. Added via ALTER so clouds
+-- created before this column converge to it on the owner's next open (the
+-- bootstrap is now run directly + idempotently, not version-gated).
+ALTER TABLE "__lattice_member_invites" ADD COLUMN IF NOT EXISTS "email" text;
 
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
