@@ -2683,6 +2683,7 @@ export const appJs = `
       var body = document.getElementById('drawer-body');
       if (!body) return;
       if (tab === 'database') renderDatabaseSettings(body);
+      else if (tab === 'chat') renderChatSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);
     }
@@ -5185,40 +5186,58 @@ export const appJs = `
       });
     }
 
-    function showSystemPromptModal() {
-      // Owner-only editor for the cloud chat system prompt. Load the current value
-      // first (the GET returns the text ONLY to an owner), then open the editor.
+    // Chat settings (drawer tab): the cloud chat system prompt, edited INLINE
+    // with a Save button — no overlay. Owner-only (the GET returns the text only
+    // to an owner); members / local workspaces see a short note instead.
+    function renderChatSettings(content) {
+      content.innerHTML =
+        '<div class="teams-page">' +
+          '<h2>Chat</h2>' +
+          '<div id="chat-settings-host"><div class="placeholder" style="padding:18px">Loading…</div></div>' +
+        '</div>';
+      var host = document.getElementById('chat-settings-host');
       fetchJson('/api/cloud/system-prompt').then(function (cfg) {
+        var panelOpen =
+          '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 8px">Chat system prompt</h3>';
         if (!cfg || cfg.canEdit !== true) {
-          showToast('Only a cloud owner can edit the chat system prompt');
+          host.innerHTML = panelOpen +
+            '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+            'The chat system prompt is owner-only and applies to a cloud workspace. ' +
+            'Nothing to edit here for this workspace.</p></div>';
           return;
         }
         var current = typeof cfg.prompt === 'string' ? cfg.prompt : '';
-        var bodyHtml =
-          '<p style="margin-top:0;font-size:13px;color:var(--text-muted)">' +
-          'Added to every member chat in this cloud. Members cannot see or edit it — only you, the owner, can.' +
-          '</p>' +
-          '<div class="field"><label>Chat system prompt</label>' +
-          '<textarea name="system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
-          'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
-          escapeHtml(current) +
-          '</textarea></div>';
-        showModal('Chat system prompt', bodyHtml, {
-          primaryLabel: 'Save',
-          onSubmit: function (scope) {
-            var ta = scope.querySelector('textarea[name="system-prompt"]');
-            var value = ta ? ta.value : '';
-            return fetchJson('/api/cloud/system-prompt', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ prompt: value }),
-            }).then(function () {
-              showToast('Chat system prompt saved');
-            });
-          },
+        host.innerHTML = panelOpen +
+          '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+            'Added to every member chat in this cloud. Members cannot see or edit it — only you, the owner, can.</p>' +
+          '<textarea id="chat-system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
+            'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
+            escapeHtml(current) + '</textarea>' +
+          '<div style="margin-top:10px;display:flex;align-items:center;gap:10px">' +
+            '<button class="btn primary" id="chat-prompt-save">Save</button>' +
+            '<span id="chat-prompt-msg" style="font-size:12px;color:var(--text-muted)"></span>' +
+          '</div>' +
+        '</div>';
+        var saveBtn = document.getElementById('chat-prompt-save');
+        var msg = document.getElementById('chat-prompt-msg');
+        if (saveBtn) saveBtn.addEventListener('click', function () {
+          var ta = document.getElementById('chat-system-prompt');
+          var value = ta ? ta.value : '';
+          if (msg) msg.textContent = 'Saving…';
+          fetchJson('/api/cloud/system-prompt', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ prompt: value }),
+          }).then(function () {
+            if (msg) msg.textContent = 'Saved.';
+          }).catch(function (e) {
+            if (msg) msg.textContent = 'Failed: ' + (e && e.message ? e.message : String(e));
+          });
         });
       }).catch(function (err) {
-        showToast('Failed to load: ' + (err && err.message ? err.message : String(err)));
+        host.innerHTML = '<div class="placeholder">Could not load: ' +
+          escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
       });
     }
 
