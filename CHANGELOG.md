@@ -35,6 +35,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   wire the previously-unreachable `revokeMemberRole`; revocation reassigns/drops
   the member's objects and surfaces failures (Rule 16) instead of swallowing them.
 
+### Fixed — cloud RLS hardening (3.2)
+
+- **Runtime-created cloud tables are now secured.** A table made from the
+  data-model panel / assistant / ingest on a secured cloud is RLS-enabled +
+  ownership-stamped + member-granted (via a `secureNewCloudTable` helper factored
+  from `secureCloud`), instead of being left wide open.
+- **Changelog visibility fails closed on an empty source set.** A derived
+  observation with an empty `source_ref` was visible to every member (the
+  `NOT EXISTS` over an empty array was vacuously true); it now requires a
+  non-empty source array (mirrors `fold.ts`). The changelog policy runs directly
+  (converges on owner open) like the rest of the bootstrap.
+
 ### Fixed — cloud join creates a new workspace + resilient member open (3.2)
 
 - **Joining a cloud now CREATES a new workspace (and switches to it)** instead of

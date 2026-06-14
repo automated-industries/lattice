@@ -651,12 +651,15 @@ export async function installCloudRls(db: Lattice): Promise<void> {
  */
 export async function enableChangelogRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
-  const migration: Migration = {
-    // v2: ground-truth/audit entries are owner-only (was lattice_row_visible),
-    // closing the masked-column-via-history leak. Bump re-installs the policy on
-    // existing clouds.
-    version: 'internal:cloud-rls:changelog:v2',
-    sql: `
+  // v3: a derived observation with an EMPTY source_ref array must FAIL CLOSED
+  // (not visible). v2's `NOT EXISTS` over an empty array was vacuously true, so a
+  // derived row with no sources leaked to every member — mirror fold.ts
+  // observationVisible, which requires a non-empty source set. Run DIRECTLY
+  // (idempotent DROP/CREATE POLICY) — not version-gated — so it CONVERGES on
+  // every owner open, the same as the rest of the bootstrap.
+  await runCloudBootstrapSql(
+    db,
+    `
 ALTER TABLE "__lattice_changelog" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "__lattice_changelog" FORCE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT ON "__lattice_changelog" TO ${MEMBER_GROUP};
@@ -666,6 +669,7 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
   CASE
     WHEN "change_kind" = 'derived' THEN
       "source_ref" IS NOT NULL
+      AND jsonb_array_length("source_ref"::jsonb) > 0
       AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements_text("source_ref"::jsonb) AS src(sid)
          WHERE NOT lattice_source_visible(src.sid)
@@ -676,8 +680,7 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
 DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
 CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH CHECK (true);
 `,
-  };
-  await db.migrate([migration]);
+  );
 }
 
 /**

@@ -50,7 +50,7 @@ import { RealtimeBroker } from './realtime.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
-import { installCloudRls } from '../cloud/rls.js';
+import { installCloudRls, enableChangelogRls } from '../cloud/rls.js';
 import { installCloudSettings } from '../cloud/settings.js';
 import { rowAccessSummaries } from '../cloud/members.js';
 import { FeedBus } from './feed.js';
@@ -866,6 +866,7 @@ export async function openConfig(
         await installCloudRls(db);
         await installCloudSettings(db);
         await db.ensureObservationSubstrate();
+        await enableChangelogRls(db); // converges the v3 fail-closed changelog policy
       }
     } catch (e) {
       // Rule 16: never silently swallow. A converge failure must be visible, but

@@ -5,6 +5,26 @@ import { recordSchemaAudit, createRow, deleteRow, type MutationCtx } from './mut
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { getGuiEntities, type FileJunction } from './data.js';
 import type { ActiveDb } from './server.js';
+import { secureNewCloudTable } from '../cloud/setup.js';
+import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+
+/**
+ * Secure a table created at RUNTIME (data-model panel / assistant / ingest) the
+ * same way `secureCloud` secures declared tables — otherwise a table made on a
+ * secured cloud has RLS OFF (wide open), no ownership trigger, and no member
+ * grant. No-op off a secured cloud / when the role can't manage it. Rule 16: a
+ * failure surfaces (a silently-unsecured table is a data-exposure bug).
+ */
+async function secureRuntimeTableIfCloud(
+  active: ActiveDb,
+  name: string,
+  pk: string[],
+): Promise<void> {
+  const db = active.db;
+  if (db.getDialect() !== 'postgres') return;
+  if (!((await cloudRlsInstalled(db)) && (await canManageRoles(db)))) return;
+  await secureNewCloudTable(db, name, pk);
+}
 
 /**
  * Runtime schema-mutation primitives — the shared core behind the GUI's
@@ -176,6 +196,8 @@ export async function materializeJunction(
   active.validTables.add(jName);
   active.junctionTables.add(jName);
   syncCanonicalContexts(active);
+  // Secure the just-created junction on a cloud (RLS + ownership + grant).
+  await secureRuntimeTableIfCloud(active, jName, ['id']);
   await recordSchemaOp(
     active,
     'schema.create_junction',
@@ -362,6 +384,9 @@ export async function createUserEntity(
   // Same step as creation: register the canonical context so the new table
   // renders without a reopen (the subsequent row inserts' auto-render writes it).
   syncCanonicalContexts(active);
+  // Secure the just-created table on a cloud (RLS + ownership + mask view + grant)
+  // so a runtime-created table isn't left wide open.
+  await secureRuntimeTableIfCloud(active, entity, ['id']);
   await recordSchemaOp(
     active,
     'schema.create_entity',
