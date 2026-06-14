@@ -6,10 +6,9 @@ describe('guiAppHtml', () => {
     // Sidebar / content mount points
     expect(guiAppHtml).toContain('id="object-nav"');
     expect(guiAppHtml).toContain('id="content"');
-    // The sidebar carries the Advanced-mode toggle at its top (the old
-    // collapse control was removed); the static settings nav moved into the
-    // gear-triggered drawer.
-    expect(guiAppHtml).toContain('class="sidebar-advanced');
+    // The Advanced-mode toggle moved out of the sidebar into Settings → Lattice
+    // (the old collapse control + static settings nav were already removed).
+    expect(guiAppHtml).not.toContain('class="sidebar-advanced');
     expect(guiAppHtml).not.toContain('id="sidebar-collapse"');
     expect(guiAppHtml).not.toContain('id="settings-nav"');
 
@@ -143,10 +142,11 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('renderTeamCard');
     expect(guiAppHtml).not.toContain('renderTeamsForProjectConfig');
     expect(guiAppHtml).not.toContain('wireTeamCardActions');
-    // v3: there is no server-side member registry / members list. The owner
-    // invites by provisioning a scoped role (/api/cloud/invite); the panel
-    // surfaces that as an "Invite a member" affordance.
-    expect(guiAppHtml).not.toContain('renderMembersList');
+    // The members list (recovered from 1.14.0) lives in Database Settings,
+    // backed by /api/cloud/members (the lattice_members group) — not a legacy
+    // project-config team card. The owner invites via an email-bound token.
+    expect(guiAppHtml).toContain('renderMembersList');
+    expect(guiAppHtml).toContain('db-members-host');
     expect(guiAppHtml).toContain('showInviteMemberModal');
     // Exit action: a single neutral "Forget this cloud" that switches the
     // client back to a local workspace (no disconnect/leave registry calls).

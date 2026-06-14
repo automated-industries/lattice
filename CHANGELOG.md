@@ -8,6 +8,112 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — email-bound cloud invites + members list (3.1)
+
+- **Email-bound invite tokens.** `POST /api/cloud/invite` takes an invitee email,
+  provisions a fresh scoped `lm_*` role (asserted non-privileged — never a
+  superuser / `CREATEROLE` / `BYPASSRLS` / owner role), and returns ONE opaque,
+  email-bound token. AES-256-GCM; the key is `HKDF(random token secret)` salted by
+  `scrypt(email)` with the email as AAD, so a token decrypts only with the matching
+  email. The member redeems it with their email in "Join a cloud"
+  (`POST /api/cloud/redeem-invite`) — the member UI never handles a `postgres://`
+  string. The pooler-correct user is baked in for Supabase hosts. Owner-only audit
+  in `__lattice_member_invites` (email hashed; password never stored). New
+  `src/cloud/invite.ts`; threat model documented in `docs/cloud.md`.
+- **Members list.** `GET /api/cloud/members` lists the owner plus every role in the
+  member group; the owner Database-Connection panel renders it.
+- **`__lattice_user_identity` granted to the member group** in `secureCloud`, so a
+  member can drive the GUI (previously hit `permission denied`, blocking every
+  member on connect).
+- **Chat system prompt** now edits inline in its own "Chat" settings section
+  (replacing the modal).
+
+### Fixed (3.1)
+
+- **Cloud sharing UI restored.** Row reads re-attach the per-row `_access` summary
+  (`rowAccessSummaries` over `__lattice_owners` + `__lattice_row_grants`) that the
+  3.0 RLS rewrite dropped without a replacement, so the per-row sharing affordance
+  renders again. Bounded to one query per page; no-op off a secured cloud.
+- **Assistant writes are no longer silently dropped.** The GUI mutation layer
+  auto-creates columns the table lacks (instead of filtering them away while
+  reporting success), persists the value, regenerates the cloud audience view, and
+  records the schema change to the activity feed. `update()` also no-ops a
+  fully-filtered `SET` instead of emitting invalid SQL.
+- **GUI settings.** The Advanced View toggle moved from the sidebar into
+  Settings → Lattice; the active workspace row is highlighted and clicking another
+  switches it AND closes the drawer; the voice provider gains a "No Voice" option
+  that disables voice; error toasts render above modal overlays instead of behind.
+
+### Added — all cloud config stored + enforced in Postgres (3.1)
+
+- **Per-table policy (`__lattice_table_policy`).** A table now carries an
+  owner-controlled `default_row_visibility` (`private` | `everyone`) and a
+  `never_share` flag, both **enforced in Postgres** (the per-table insert trigger
+  stamps new rows with the table default; `never_share` forces them private). So a
+  raw `psql` insert obeys the same defaults as the app. Owner-only setters
+  `setTableDefaultVisibility` / `setTableNeverShare` (SQL: `lattice_set_table_*`,
+  gated on `rolcreaterole`); `getTablePolicy` / `getAllTablePolicies` to read.
+- **Never-share exclusions.** `lattice_set_row_visibility` / `lattice_grant_row` /
+  `lattice_grant_cell` now RAISE for a `never_share` table — Secrets/Messages-class
+  tables can never be shared, at the data-model level (`secrets` is seeded
+  never-share by `secureCloud`). Closes the gap where any table could be elevated.
+- **Column-audience spec moved into Postgres (`__lattice_column_policy`).** The
+  per-column `audience:` spec is now stored canonically in the DB (was on-disk YAML
+  compiled once at init); `setColumnAudience` writes it and **regenerates the mask
+  view from the DB**, so masking is identical across members and re-masks on change
+  without a re-init. YAML specs are seeded into the DB on upgrade.
+- **DB-enforced secret columns (`owner` audience).** New `lattice_is_owner`
+  predicate + an `owner` column audience: a secret column is masked to everyone but
+  the row owner in Postgres (the `<table>_v` view). Marking a column secret in the
+  GUI now also sets this; the assistant-side redaction is rescoped to model-context
+  safety, not the privacy boundary.
+- **Chat "private mode".** A composer toggle that forces rows the assistant creates
+  to stay private regardless of the table default. The row is stamped private
+  **atomically at insert** (`Lattice.insertForcingVisibility` sets a transaction-local
+  GUC the insert trigger reads), so it is never momentarily visible at the table
+  default and the change-feed `NOTIFY` (deferred to COMMIT) fires only once it is
+  already private — no create-then-demote window.
+
+### Security — cloud-config review hardening (3.1)
+
+- **Pinned `search_path` on every cloud `SECURITY DEFINER` function.** A definer
+  function with an unpinned `search_path` resolves unqualified relation names via
+  the caller's `pg_temp` first, so a member could `CREATE TEMP TABLE
+__lattice_owners(...)` to shadow the ownership bookkeeping and bypass row RLS.
+  All cloud definer helpers (bootstrap, per-table trigger, workspace settings) now
+  pin `search_path = "<schema>", pg_temp` (pg_temp **last**), and the installer
+  revokes schema `CREATE` from `PUBLIC` as defense-in-depth. Bootstrap, per-table,
+  and settings install versions bumped so existing clouds re-install on upgrade.
+- **Change-log history is owner-only.** A `__lattice_changelog` ground-truth/audit
+  entry carries every column in cleartext, including ones the `<table>_v` mask hides
+  from a non-owner. The read policy now requires `lattice_is_owner` for those
+  entries (was "row is visible"), so a member who can see a shared row can no longer
+  read its full history and unmask columns. Per-viewer **derived** observations are
+  unaffected (still source-visibility gated).
+- **`never_share` is retroactive.** Turning on a table's never-share flag now resets
+  any already-shared row to private and drops every row/cell grant on the table, so
+  flagging an existing table never-share doesn't leave previously-shared rows
+  visible.
+- **One-time column-policy seed.** The YAML→DB audience seed runs exactly once per
+  table (marker-gated), so a later `secureCloud` can't silently re-mask a column the
+  owner has since cleared.
+- **Render abort is checked per file**, not only per row, so a workspace switch tears
+  down an in-flight render promptly instead of finishing the current entity's files.
+
+### Added — async background render (3.1)
+
+- **Non-blocking workspace open.** `lattice gui` no longer blocks on a full
+  `db.render()` when opening/switching a workspace — it serves immediately and
+  renders in the background, so a cloud workspace with large junction tables opens
+  instantly. Progress-bearing render API (`RenderOptions { onProgress, signal }`,
+  `RenderProgress`, `ProgressThrottle`), `Lattice.renderInBackground` with a shared
+  single-flight guard, `RenderProgressBus`, and `GET /api/render/progress` (SSE) +
+  `GET /api/render/status`. The GUI shows live per-table render progress (bottom bar
+  - pill) on each card; switching aborts the prior render. The `--no-render` flag is
+    removed (fast-open + background render is the single default path).
+- **Workspace-switch spinner restored** on the stable header button (regressed in
+  the 3.0 GUI rewrite).
+
 ## [3.0.0] - 2026-06-11
 
 ### Breaking — clouds are now a shared Postgres DB secured by row-level security
