@@ -91,6 +91,7 @@ import {
 } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
+import { dispatchDedupRoute } from './dedup-routes.js';
 import {
   registerNativeEntities,
   adoptNativeEntities,
@@ -2960,6 +2961,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           sendJson(res, { ok: true });
           return;
+        }
+
+        // ── De-duplication routes ─────────────────────────────────────────
+        // Find + merge duplicate rows in any table (files default to content
+        // matching). Merge re-points links via the shared chokepoints and
+        // soft-deletes the duplicates — fully audited.
+        if (pathname.startsWith('/api/dedup/')) {
+          const handled = await dispatchDedupRoute(req, res, {
+            db: active.db,
+            feed: active.feed,
+            softDeletable: active.softDeletable,
+            validTables: active.validTables,
+            junctionTables: active.junctionTables,
+            configPath: active.configPath,
+            outputDir: active.outputDir,
+            sessionId,
+            pathname,
+            method,
+          });
+          if (handled) return;
         }
 
         // ── User Config routes ───────────────────────────────────────────

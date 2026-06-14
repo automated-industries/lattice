@@ -238,6 +238,12 @@ export const appJs = `
     // Boot
     // ────────────────────────────────────────────────────────────
     function init() {
+      // Load the local user's display name so manual (gui) edits are attributed
+      // to them in the activity feed rather than a generic "you". Fire-and-forget;
+      // feedActorLabel falls back to "you" until it resolves.
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        if (id && id.display_name) state.displayName = id.display_name;
+      }).catch(function () {});
       Promise.all([
         fetchJson('/api/entities'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
@@ -267,6 +273,7 @@ export const appJs = `
         initRailResize();
         initRailDrawer();
         initRailDragDrop();
+        initUploadButton();
         startFeed();
         renderComposer();
         initThreadControls();
@@ -1397,10 +1404,16 @@ export const appJs = `
         createCells.push('<td class="row-actions"><button class="btn primary" id="inline-create" title="Create">+</button></td>');
         var createRow = '<tr class="create-row">' + createCells.join('') + '</tr>';
 
-        var trashToggle = supportsSoftDelete
-          ? '<div class="actions"><button class="btn ghost" id="toggle-trash">' +
+        var dedupBtn = advancedMode()
+          ? '<button class="btn ghost" id="check-dupes" title="Remove exact duplicate rows; review near-matches">Check for duplicates</button>'
+          : '';
+        var trashBtn = supportsSoftDelete
+          ? '<button class="btn ghost" id="toggle-trash">' +
               (viewMode === 'trash' ? '← Back to live' : 'Show trash') +
-            '</button></div>'
+            '</button>'
+          : '';
+        var headerActions = (dedupBtn || trashBtn)
+          ? '<div class="actions">' + dedupBtn + trashBtn + '</div>'
           : '';
 
         content.innerHTML =
@@ -1408,7 +1421,7 @@ export const appJs = `
             '<span class="entity-icon">' + d.icon + '</span>' +
             '<h1>' + escapeHtml(d.label) + (viewMode === 'trash' ? ' · Trash' : '') + '</h1>' +
             '<span class="count">' + rows.length + ' row' + (rows.length === 1 ? '' : 's') + '</span>' +
-            trashToggle +
+            headerActions +
           '</div>' +
           '<table>' +
             '<thead><tr>' + headers + '</tr></thead>' +
@@ -1421,6 +1434,10 @@ export const appJs = `
             renderTable(content, tableName);
           });
         }
+        var checkDupesBtn = document.getElementById('check-dupes');
+        if (checkDupesBtn) checkDupesBtn.addEventListener('click', function () {
+          autoDedupeExact(tableName, content, d.label);
+        });
 
         if (viewMode === 'live') document.getElementById('inline-create').addEventListener('click', function () {
           var values = collectFormValues(content.querySelector('tr.create-row'));
@@ -2463,6 +2480,20 @@ export const appJs = `
       drawer.classList.remove('open');
       backdrop.classList.remove('open');
       window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 220);
+      // The drawer can be opened by navigating to a #/settings/* hash (e.g. the
+      // "User Settings → Assistant" link → renderRoute → openSettingsDrawer).
+      // Closing it doesn't touch the hash, so clicking the SAME link again is a
+      // no-op: the hash is unchanged, no hashchange fires, and renderRoute never
+      // re-opens the drawer. Reset the hash to #/ on close so the link works on
+      // re-click. The content under these drawer routes is already the dashboard
+      // (renderRoute renders it before opening), so #/ stays consistent.
+      // replaceState (not location.hash) avoids firing hashchange — no re-render
+      // on close. Version history (#/settings/history) is a full page, not a
+      // drawer, so leave its hash alone.
+      var h = location.hash;
+      if (h.indexOf('#/settings/') === 0 && h !== '#/settings/history') {
+        history.replaceState(null, '', '#/');
+      }
     }
     function selectDrawerTab(tab) {
       drawerTab = tab;
@@ -3753,6 +3784,230 @@ export const appJs = `
     function refreshSettingsRoute() {
       if (location.hash === '#/settings/project-config') renderProjectConfig(document.getElementById('content'));
       else if (location.hash === '#/settings/user-config') renderUserConfig(document.getElementById('content'));
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Row de-duplication: Find duplicates → review → merge/delete.
+    // Opens a modal, asks the server for duplicate groups (files default to
+    // content matching — sha256 then extracted-text — so renamed re-downloads
+    // collapse), lets the user pick a survivor per group and merge. Merge
+    // re-points links onto the survivor and soft-deletes the rest (Undo restores
+    // them). Generic + deterministic — no model calls.
+    // ────────────────────────────────────────────────────────────
+    function dedupPost(path, payload) {
+      return fetchJson(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+    // Primary "Check for duplicates" action: auto-remove EXACT duplicates (keep the
+    // oldest of each group), animating the removed rows dissolving out of the table
+    // so the dedupe is visible. Near-matches are never auto-removed — when there are
+    // no exact dups left, the review modal opens for them instead.
+    function autoDedupeExact(table, content, label) {
+      var btn = content.querySelector('#check-dupes');
+      var orig = btn ? btn.textContent : '';
+      function reset() { if (btn) { btn.disabled = false; btn.textContent = orig; } }
+      if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+      dedupPost('/api/dedup/find', { table: table }).then(function (data) {
+        var groups = data.groups || [];
+        var exact = groups.filter(function (g) { return g.kind === 'exact'; });
+        var near = groups.filter(function (g) { return g.kind === 'near'; });
+        if (!exact.length) {
+          reset();
+          if (near.length) showDedupModal(table, label); // nothing exact to auto-remove → review near-matches
+          else showToast('No duplicates found.', {});
+          return;
+        }
+        // Keep candidates[0] (oldest) of each exact group, remove the rest.
+        var plan = exact.map(function (g) {
+          var ids = g.candidates.map(function (c) { return c.id; });
+          return { survivorId: ids[0], sourceIds: ids.slice(1) };
+        });
+        var allSources = plan.reduce(function (a, p) { return a.concat(p.sourceIds); }, []);
+        if (btn) btn.textContent = 'Removing ' + allSources.length + '…';
+        Promise.all(plan.map(function (p) { return dedupMerge(table, p.survivorId, p.sourceIds); }))
+          .then(function () {
+            animateDedupeRemoval(content, allSources, function () {
+              reset();
+              var msg = 'Removed ' + allSources.length + ' exact duplicate' + (allSources.length === 1 ? '' : 's');
+              if (near.length) msg += ' · ' + near.length + ' near-match group' + (near.length === 1 ? '' : 's') + ' left — click again to review';
+              showToast(msg, { undo: function () { dedupRestore(table, allSources); } });
+            });
+          })
+          .catch(function (err) { reset(); showToast('Dedupe failed: ' + err.message, {}); });
+      }).catch(function (err) { reset(); showToast('Check failed: ' + err.message, {}); });
+    }
+    // Dissolve the given row ids out of the rendered table one by one (amber flash
+    // → fade → remove), ticking the header row count down so the user sees it work.
+    function animateDedupeRemoval(content, ids, done) {
+      var countEl = content.querySelector('.view-header .count');
+      var i = 0;
+      // Tighten the stagger when there are many rows so a big batch doesn't crawl.
+      var stepMs = Math.max(60, Math.min(200, Math.round(2400 / Math.max(1, ids.length))));
+      function next() {
+        if (i >= ids.length) { if (done) done(); return; }
+        var id = ids[i]; i++;
+        var tr = content.querySelector('tr[data-id="' + id + '"]');
+        if (!tr) { next(); return; }
+        tr.classList.add('row-dissolving');
+        if (countEl) {
+          var m = /(\d+)/.exec(countEl.textContent || '');
+          if (m) { var n = Math.max(0, parseInt(m[1], 10) - 1); countEl.textContent = n + ' row' + (n === 1 ? '' : 's'); }
+        }
+        setTimeout(function () { if (tr.parentNode) tr.parentNode.removeChild(tr); next(); }, stepMs);
+      }
+      next();
+    }
+    function showDedupModal(table, label) {
+      var body =
+        '<div class="dedup">' +
+          '<div class="dedup-controls" id="dedup-controls"></div>' +
+          '<div class="dedup-results" id="dedup-results">' +
+            '<div class="muted dedup-scanning">Scanning for duplicates…</div>' +
+          '</div>' +
+        '</div>';
+      showModal('Find duplicates · ' + label, body, {
+        primaryLabel: 'Done',
+        onBody: function (backdrop) {
+          runDedupFind({ table: table, label: label, fuzzy: false, keyColumns: null, backdrop: backdrop });
+        },
+        onSubmit: function () {},
+      });
+    }
+    function runDedupFind(state) {
+      var results = state.backdrop.querySelector('#dedup-results');
+      results.innerHTML = '<div class="muted dedup-scanning">Scanning for duplicates…</div>';
+      var payload = { table: state.table, fuzzy: state.fuzzy };
+      if (state.keyColumns) payload.keyColumns = state.keyColumns;
+      dedupPost('/api/dedup/find', payload).then(function (data) {
+        state.data = data;
+        renderDedupControls(state);
+        renderDedupResults(state);
+      }).catch(function (err) {
+        results.innerHTML = '<div class="dedup-error">Failed: ' + escapeHtml(err.message) + '</div>';
+      });
+    }
+    function renderDedupControls(state) {
+      var d = state.data;
+      var host = state.backdrop.querySelector('#dedup-controls');
+      var byText = d.mode === 'content'
+        ? 'file content (exact copies, ignoring filename)'
+        : ((d.keyColumns || []).join(' + ') || '—');
+      var html = '<div class="dedup-by">Grouped by <b>' + escapeHtml(byText) + '</b></div>';
+      if (d.mode !== 'content') {
+        html += '<label class="dedup-fuzzy"><input type="checkbox" id="dedup-fuzzy"' +
+          (state.fuzzy ? ' checked' : '') + '> include near-matches</label>';
+        var cols = d.columns || [];
+        if (cols.length) {
+          html += '<details class="dedup-cols"><summary>Match on…</summary><div class="dedup-col-list">' +
+            cols.map(function (c) {
+              var on = (d.keyColumns || []).indexOf(c) >= 0;
+              return '<label><input type="checkbox" class="dedup-col" value="' + escapeHtml(c) + '"' +
+                (on ? ' checked' : '') + '> ' + escapeHtml(c) + '</label>';
+            }).join('') +
+            '</div><button class="btn ghost" id="dedup-apply" type="button">Apply</button></details>';
+        }
+      }
+      host.innerHTML = html;
+      var fuzzy = host.querySelector('#dedup-fuzzy');
+      if (fuzzy) fuzzy.addEventListener('change', function () { state.fuzzy = fuzzy.checked; runDedupFind(state); });
+      var apply = host.querySelector('#dedup-apply');
+      if (apply) apply.addEventListener('click', function () {
+        var picked = Array.prototype.slice.call(host.querySelectorAll('.dedup-col:checked'))
+          .map(function (cb) { return cb.value; });
+        if (!picked.length) { showToast('Pick at least one column', {}); return; }
+        state.keyColumns = picked;
+        runDedupFind(state);
+      });
+    }
+    function renderDedupResults(state) {
+      var d = state.data;
+      var host = state.backdrop.querySelector('#dedup-results');
+      var groups = d.groups || [];
+      if (!groups.length) {
+        host.innerHTML = '<div class="dedup-empty">No duplicates found' +
+          (d.truncated ? ' in the first 5,000 rows' : '') + '.</div>';
+        return;
+      }
+      var isFiles = state.table === 'files';
+      var html = groups.map(function (g, gi) {
+        var cands = g.candidates || [];
+        var kindLabel = g.kind === 'near'
+          ? 'Possible match' + (g.score ? ' · ' + Math.round(g.score * 100) + '%' : '')
+          : 'Exact duplicates';
+        var rows = cands.map(function (c, ci) {
+          return '<label class="dedup-cand">' +
+            '<input type="radio" name="dedup-keep-' + gi + '" value="' + escapeHtml(c.id) + '"' +
+              (ci === 0 ? ' checked' : '') + '>' +
+            '<span class="dedup-cand-label" title="' + escapeHtml(c.label) + '">' + escapeHtml(c.label) + '</span>' +
+            (c.sub ? '<span class="dedup-cand-sub">' + escapeHtml(c.sub) + '</span>' : '') +
+            '<span class="dedup-cand-links">' + c.linkCount + ' link' + (c.linkCount === 1 ? '' : 's') + '</span>' +
+          '</label>';
+        }).join('');
+        return '<div class="dedup-group ' + g.kind + '" data-gi="' + gi + '">' +
+          '<div class="dedup-group-head">' +
+            '<span class="dedup-kind">' + escapeHtml(kindLabel) + '</span>' +
+            '<span class="dedup-count">' + cands.length + ' rows</span>' +
+            '<button class="btn primary dedup-merge" type="button" data-gi="' + gi + '">' +
+              (isFiles ? 'Keep one, delete rest' : 'Merge') + '</button>' +
+          '</div>' +
+          '<div class="dedup-cands">' + rows + '</div>' +
+        '</div>';
+      }).join('');
+      var headNote = '<div class="dedup-resulthead">' + groups.length + ' group' +
+        (groups.length === 1 ? '' : 's') + ' of duplicates — pick the one to keep, then merge.</div>';
+      host.innerHTML = headNote + html;
+      Array.prototype.slice.call(host.querySelectorAll('.dedup-merge')).forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var gi = Number(btn.getAttribute('data-gi'));
+          var group = groups[gi];
+          var checked = host.querySelector('input[name="dedup-keep-' + gi + '"]:checked');
+          if (!checked || !group) { showToast('Pick which row to keep', {}); return; }
+          var survivorId = checked.value;
+          var survivor = (group.candidates || []).filter(function (c) { return c.id === survivorId; })[0];
+          var sourceIds = (group.candidates || [])
+            .map(function (c) { return c.id; })
+            .filter(function (id) { return id !== survivorId; });
+          if (!sourceIds.length) return;
+          btn.disabled = true;
+          dedupMerge(state.table, survivorId, sourceIds).then(function () {
+            var node = host.querySelector('.dedup-group[data-gi="' + gi + '"]');
+            if (node && node.parentNode) node.parentNode.removeChild(node);
+            if (!host.querySelector('.dedup-group')) {
+              host.innerHTML = '<div class="dedup-empty">All duplicates resolved.</div>';
+            }
+            var survLabel = survivor ? survivor.label : 'the kept row';
+            showToast('Merged ' + sourceIds.length + ' duplicate' + (sourceIds.length === 1 ? '' : 's') +
+              ' into "' + survLabel + '"', { undo: function () { dedupRestore(state.table, sourceIds); } });
+            refreshDedupTable(state.table);
+          }).catch(function (err) {
+            btn.disabled = false;
+            showToast('Merge failed: ' + err.message, {});
+          });
+        });
+      });
+    }
+    function dedupMerge(table, survivorId, sourceIds) {
+      return dedupPost('/api/dedup/merge', { table: table, survivorId: survivorId, sourceIds: sourceIds });
+    }
+    function dedupRestore(table, ids) {
+      var calls = ids.map(function (id) {
+        return fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ deleted_at: null }),
+        });
+      });
+      Promise.all(calls).then(function () {
+        showToast('Restored ' + ids.length + ' row' + (ids.length === 1 ? '' : 's'), {});
+        refreshDedupTable(table);
+      }).catch(function (err) { showToast('Restore failed: ' + err.message, {}); });
+    }
+    function refreshDedupTable(table) {
+      var content = document.getElementById('content');
+      if (content) renderTable(content, table);
     }
 
     // ────────────────────────────────────────────────────────────
@@ -5082,6 +5337,16 @@ export const appJs = `
       var msg = typing && typing.closest ? typing.closest('.chat-msg') : null;
       return (msg && msg.parentNode === feedEl) ? msg : null;
     }
+    // Attribution shown on an activity card. Automatic Lattice operations —
+    // system de-duplication, file ingest, the assistant — read "Lattice". A
+    // manual GUI edit reads the local user's display name (the person who made
+    // it), falling back to "you" until the identity loads. (Per-event actor for
+    // OTHER users in a team cloud is a separate, server-side follow-up.)
+    function feedActorLabel(source) {
+      if (source === 'system' || source === 'ingest' || source === 'ai') return 'Lattice';
+      if (source === 'gui') return state.displayName || 'you';
+      return String(source || '');
+    }
     // Build one activity card (the shared full-width pill shape). Used by BOTH
     // the live feed and the per-thread replay so they look identical. Returns the
     // element plus the summary/time nodes a group mutates in place.
@@ -5100,7 +5365,7 @@ export const appJs = `
       meta.className = 'feed-meta';
       var src = document.createElement('span');
       src.className = 'feed-source';
-      src.textContent = ev.source === 'gui' ? 'you' : String(ev.source || '');
+      src.textContent = feedActorLabel(ev.source);
       meta.appendChild(src);
       body.appendChild(summary);
       body.appendChild(meta);
@@ -5709,8 +5974,12 @@ export const appJs = `
         if (item.parentNode) item.parentNode.removeChild(item);
       };
     }
-    function uploadFile(file) {
-      var done = pendingIngestItem(file.name || 'file');
+    function uploadFile(file, opts) {
+      opts = opts || {};
+      // A batch upload tracks progress in the aggregate toast and suppresses the
+      // per-file "Analyzing…" feed row (N spinners would flood the rail).
+      var done = opts.silentFeed ? function () {} : pendingIngestItem(file.name || 'file');
+      var fname = file.name || 'file';
       return fetch('/api/ingest/upload', {
         method: 'POST',
         // Percent-encode the filename: HTTP header values must be ISO-8859-1,
@@ -5721,12 +5990,136 @@ export const appJs = `
         body: file,
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); })
+        .then(
+          function (j) {
+            // The server returns 200 even when it couldn't pull text — a 'skipped'
+            // (archive, image, >100-page PDF) or 'enrichment_failed' file got a row
+            // but no content.
+            var status = (j && j.extraction_status) || 'extracted';
+            if (opts.batch) { tickUploadBatch({ name: fname, mime: file.type, status: status }); return; }
+            // 'existing' = content-deduped against a file already in the workspace
+            // (a success, not an issue). Otherwise surface a skip the same way the
+            // batch toast does — a one-off notification naming the file + reason.
+            if (status === 'existing') {
+              showToast('"' + fname + '" is already in your workspace', {});
+            } else if (status !== 'extracted') {
+              showToast('"' + fname + '" not fully ingested: ' + uploadIssueReason({ name: fname, mime: file.type, status: status }), {});
+            }
+          },
+          function (e) {
+            // Hard failure (HTTP/network) — no row was created at all.
+            if (opts.batch) tickUploadBatch({ name: fname, mime: file.type, status: 'failed', reason: e.message });
+            else showToast('Ingest failed: ' + e.message, {});
+          }
+        )
         .finally(function () { done(); });
     }
     function uploadFiles(files) {
       if (!files) return;
-      for (var i = 0; i < files.length; i++) uploadFile(files[i]);
+      var list = Array.prototype.slice.call(files);
+      if (!list.length) return;
+      // A single file keeps the lightweight per-file feed row. A batch (folder
+      // pick / multi-select) shows an aggregate progress toast instead.
+      if (list.length === 1) { uploadFile(list[0]); return; }
+      var batch = enqueueUploadBatch(list.length);
+      list.forEach(function (file) { uploadFile(file, { silentFeed: true, batch: batch }); });
+    }
+    // ── Aggregate upload-progress toast (bottom-right) ──────────────
+    // One persistent card with a progress bar for a whole batch, instead of one
+    // transient pill per file. Reuses an in-flight batch so a second folder
+    // dropped mid-upload extends the same bar.
+    var uploadBatch = null;
+    function uploadProgressEl() {
+      var el = document.getElementById('upload-progress-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'upload-progress-toast';
+        el.className = 'upload-progress';
+        el.innerHTML =
+          '<div class="up-head"><span class="up-title">Uploading files</span>' +
+          '<span class="up-count"></span></div>' +
+          '<div class="up-bar"><div class="up-bar-fill"></div></div>';
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+    function renderUploadBatch() {
+      var b = uploadBatch; if (!b) return;
+      var pct = b.total ? Math.round((b.done / b.total) * 100) : 0;
+      b.el.querySelector('.up-bar-fill').style.width = pct + '%';
+      b.el.querySelector('.up-count').textContent = b.done + ' / ' + b.total;
+    }
+    function enqueueUploadBatch(n) {
+      if (!uploadBatch || uploadBatch.done >= uploadBatch.total) {
+        var el = uploadProgressEl();
+        if (uploadBatch && uploadBatch.timer) clearTimeout(uploadBatch.timer);
+        el.classList.remove('done', 'has-error');
+        var oldIssues = el.querySelector('.up-issues'); if (oldIssues) oldIssues.remove();
+        el.querySelector('.up-title').textContent = 'Uploading files';
+        uploadBatch = { total: 0, done: 0, ok: 0, deduped: 0, issues: [], el: el, timer: null };
+      }
+      uploadBatch.total += n;
+      renderUploadBatch();
+      return uploadBatch;
+    }
+    function tickUploadBatch(result) {
+      var b = uploadBatch; if (!b) return;
+      b.done++;
+      var status = result && result.status;
+      if (status === 'extracted') b.ok++;
+      else if (status === 'existing') { b.ok++; b.deduped++; } // already in workspace (deduped) — a success
+      else b.issues.push(result || { name: 'file', status: 'failed' });
+      renderUploadBatch();
+      if (b.done >= b.total) finishUploadBatch();
+    }
+    // Human-readable reason a file didn't get its text ingested.
+    function uploadIssueReason(it) {
+      if (it.status === 'failed') return 'upload failed' + (it.reason ? ': ' + it.reason : '');
+      if (it.status === 'enrichment_failed') return 'saved, but the AI step failed';
+      var m = (it.mime || '').toLowerCase();
+      if (/zip|compressed|x-7z|x-rar|x-tar|gzip|tar/.test(m)) return 'archive — contents not extracted';
+      if (m.indexOf('image/') === 0) return 'image — no text to extract';
+      if (m.indexOf('pdf') >= 0) return 'PDF not read (may exceed the 100-page limit)';
+      return 'no text could be extracted';
+    }
+    function renderUploadIssues(b) {
+      var old = b.el.querySelector('.up-issues'); if (old) old.remove();
+      var n = b.issues.length;
+      var box = document.createElement('div');
+      box.className = 'up-issues';
+      var items = b.issues.map(function (it) {
+        return '<div class="up-issue">' +
+          '<span class="up-issue-name" title="' + escapeHtml(it.name) + '">' + escapeHtml(it.name) + '</span>' +
+          '<span class="up-issue-reason">' + escapeHtml(uploadIssueReason(it)) + '</span>' +
+        '</div>';
+      }).join('');
+      box.innerHTML =
+        '<div class="up-issues-head">' + n + ' file' + (n === 1 ? '' : 's') + ' not fully ingested</div>' +
+        '<div class="up-issue-list">' + items + '</div>' +
+        '<button class="up-dismiss" type="button">Dismiss</button>';
+      b.el.appendChild(box);
+      box.querySelector('.up-dismiss').addEventListener('click', function () {
+        if (b.el.parentNode) b.el.parentNode.removeChild(b.el);
+        if (uploadBatch === b) uploadBatch = null;
+      });
+    }
+    function finishUploadBatch() {
+      var b = uploadBatch; if (!b) return;
+      var title = 'Ingested ' + b.ok + ' of ' + b.total + ' file' + (b.total === 1 ? '' : 's');
+      if (b.deduped) title += ' · ' + b.deduped + ' already in workspace';
+      b.el.querySelector('.up-title').textContent = title;
+      if (b.issues.length) {
+        // Keep the toast up (no auto-dismiss) so the user can read the list of
+        // files that weren't fully ingested and dismiss it themselves.
+        b.el.classList.add('has-error');
+        renderUploadIssues(b);
+      } else {
+        b.el.classList.add('done');
+        b.timer = setTimeout(function () {
+          if (b.el.parentNode) b.el.parentNode.removeChild(b.el);
+          if (uploadBatch === b) uploadBatch = null;
+        }, 5000);
+      }
     }
     // Mobile: tapping the handle expands/collapses the bottom drawer.
     function initRailDrawer() {
@@ -5742,6 +6135,31 @@ export const appJs = `
         e.preventDefault();
         rail.classList.remove('dragging-file');
         if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+      });
+    }
+    // Topbar upload button — a discoverable entry point for the same ingest
+    // flow as the composer paperclip and rail drag-drop. Clicking opens a small
+    // menu: "Files…" picks individual files; "Folder…" picks a whole directory
+    // tree (webkitdirectory yields a flat, recursive FileList, so a folder that
+    // contains subfolders uploads everything under it). Both hand the resulting
+    // files to uploadFiles().
+    function initUploadButton() {
+      var btn = document.getElementById('upload-btn');
+      var menu = document.getElementById('upload-menu');
+      var fileInput = document.getElementById('upload-input');
+      var folderInput = document.getElementById('upload-folder-input');
+      var filesItem = document.getElementById('upload-files-item');
+      var folderItem = document.getElementById('upload-folder-item');
+      if (!btn || !menu || !fileInput || !folderInput) return;
+      btn.addEventListener('click', function (e) { e.stopPropagation(); menu.hidden = !menu.hidden; });
+      if (filesItem) filesItem.addEventListener('click', function () { menu.hidden = true; fileInput.click(); });
+      if (folderItem) folderItem.addEventListener('click', function () { menu.hidden = true; folderInput.click(); });
+      fileInput.addEventListener('change', function () { uploadFiles(fileInput.files); fileInput.value = ''; });
+      folderInput.addEventListener('change', function () { uploadFiles(folderInput.files); folderInput.value = ''; });
+      // Close the menu on an outside click. Bound once (init runs once on load).
+      document.addEventListener('click', function (e) {
+        if (menu.hidden) return;
+        if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) menu.hidden = true;
       });
     }
 

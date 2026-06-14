@@ -23,6 +23,14 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('data-tab="user"');
     expect(guiAppHtml).toContain('id="advanced-toggle"');
 
+    // Topbar upload button + Files/Folder menu, wired to the ingest flow.
+    expect(guiAppHtml).toContain('id="upload-btn"');
+    expect(guiAppHtml).toContain('id="upload-menu"');
+    expect(guiAppHtml).toContain('id="upload-input"');
+    expect(guiAppHtml).toContain('id="upload-folder-input"');
+    expect(guiAppHtml).toContain('webkitdirectory');
+    expect(guiAppHtml).toContain('initUploadButton');
+
     // Data Model still lives inside Database Settings (renderDataModelInto),
     // now rendered into the drawer body rather than a full page.
     expect(guiAppHtml).not.toContain('href="#/settings/data-model"');
@@ -40,6 +48,29 @@ describe('guiAppHtml', () => {
 
   it('boots from /api/entities on load', () => {
     expect(guiAppHtml).toContain("'/api/entities'");
+  });
+
+  it('wires the Check-for-duplicates action: auto-dedupe exact + animated removal + review modal', () => {
+    expect(guiAppHtml).toContain('id="check-dupes"');
+    // Auto-removes exact dups and animates the rows dissolving out of the table.
+    expect(guiAppHtml).toContain('function autoDedupeExact');
+    expect(guiAppHtml).toContain('function animateDedupeRemoval');
+    expect(guiAppHtml).toContain('row-dissolving');
+    // Near-matches still go through the manual review modal + merge.
+    expect(guiAppHtml).toContain('function showDedupModal');
+    expect(guiAppHtml).toContain("'/api/dedup/find'");
+    expect(guiAppHtml).toContain("'/api/dedup/merge'");
+    expect(guiAppHtml).toContain('function dedupMerge');
+    // Undo path restores the soft-deleted duplicates.
+    expect(guiAppHtml).toContain('function dedupRestore');
+  });
+
+  it('attributes automatic ops to Lattice and manual edits to the user (not "you")', () => {
+    expect(guiAppHtml).toContain('function feedActorLabel');
+    expect(guiAppHtml).toContain("return 'Lattice'");
+    // Manual gui edits read the loaded display name, falling back to "you".
+    expect(guiAppHtml).toContain('state.displayName');
+    expect(guiAppHtml).toContain("'/api/userconfig/identity'");
   });
 
   it('disables autocapitalize/autocorrect/spellcheck on Postgres wizard text inputs', () => {
@@ -153,5 +184,49 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('db-forget-btn');
     expect(guiAppHtml).not.toContain('db-disconnect-btn');
     expect(guiAppHtml).not.toContain('db-leave-btn');
+  });
+
+  it('resets a #/settings/* hash when closing the drawer so the link re-opens on re-click', () => {
+    // Regression: the drawer opens via a #/settings/* hash (e.g. the
+    // "User Settings → Assistant" link). closeSettingsDrawer left that hash in
+    // place, so clicking the same link again fired no hashchange and the drawer
+    // never re-opened. The fix resets the hash to #/ via replaceState on close.
+    expect(guiAppHtml).toContain('function closeSettingsDrawer');
+    expect(guiAppHtml).toContain("history.replaceState(null, '', '#/')");
+    // Guarded so it only fires for drawer routes, not the history page or a
+    // gear-opened drawer over a non-settings route.
+    expect(guiAppHtml).toContain("h.indexOf('#/settings/') === 0 && h !== '#/settings/history'");
+  });
+
+  it('shows an aggregate progress toast for multi-file/folder uploads', () => {
+    // A folder pick / multi-select fans out to one ingest POST per file. Instead
+    // of one transient pill per file, a single persistent progress card tracks
+    // the whole batch (done / total + a bar), reusing an in-flight batch.
+    // The toast element is built via DOM properties (el.id / el.className), so
+    // the bundle carries the bare string literals, not HTML attributes.
+    expect(guiAppHtml).toContain("'upload-progress-toast'");
+    expect(guiAppHtml).toContain("className = 'upload-progress'");
+    expect(guiAppHtml).toContain('up-bar-fill');
+    expect(guiAppHtml).toContain('function enqueueUploadBatch');
+    expect(guiAppHtml).toContain('function tickUploadBatch');
+    // Batch uploads suppress the per-file feed spinner (silentFeed) to avoid
+    // flooding the rail with one "Analyzing…" row per file.
+    expect(guiAppHtml).toContain('silentFeed');
+  });
+
+  it('lists files that were not fully ingested (skipped / failed) in the toast', () => {
+    // A 200-OK 'skipped' file (archive, image, >100-page PDF) got a row but no
+    // text — it must be surfaced, not counted as a silent success. The toast
+    // shows a per-file list with a human-readable reason, kept open until the
+    // user dismisses it.
+    expect(guiAppHtml).toContain('function renderUploadIssues');
+    expect(guiAppHtml).toContain('function uploadIssueReason');
+    expect(guiAppHtml).toContain('not fully ingested');
+    expect(guiAppHtml).toContain('up-issue-list');
+    // Reads the real per-file outcome off the response, not just HTTP status.
+    expect(guiAppHtml).toContain('extraction_status');
+    // A single skipped file (no batch toast) is surfaced as a one-off toast
+    // naming the file + reason, reusing uploadIssueReason.
+    expect(guiAppHtml).toContain('not fully ingested: ');
   });
 });

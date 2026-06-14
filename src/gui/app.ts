@@ -51,6 +51,21 @@ export const guiAppHtml = `<!doctype html>
       <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
     </div>
     <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
+    <div class="upload-switcher" id="upload-switcher">
+      <button id="upload-btn" title="Upload" aria-label="Upload" aria-haspopup="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </button>
+      <div class="upload-menu" id="upload-menu" hidden>
+        <button class="upload-menu-item" id="upload-files-item" type="button"><span aria-hidden="true">📄</span> Files…</button>
+        <button class="upload-menu-item" id="upload-folder-item" type="button"><span aria-hidden="true">📁</span> Folder…</button>
+      </div>
+    </div>
+    <input type="file" id="upload-input" multiple style="display:none" />
+    <input type="file" id="upload-folder-input" webkitdirectory multiple style="display:none" />
     <button id="settings-gear" title="Settings" aria-label="Open settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3"/>

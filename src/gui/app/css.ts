@@ -105,6 +105,14 @@ export const css = `
       box-shadow: var(--shadow-1), var(--hl-top);
       color: var(--text);
       flex-wrap: wrap;
+      /* The header's backdrop-filter makes it a stacking context with z-index
+         auto, so it paints in tree order — BEHIND the assistant rail, which is
+         a later z-auto stacking context (also via backdrop-filter). Header
+         dropdowns that open over the rail (e.g. the upload Files/Folder menu)
+         would be hidden by it. Lift the header above the rail (z 0/50) but keep
+         it below the settings backdrop (120), drawer (130), toast (200), and
+         modals (1000). */
+      position: relative; z-index: 90;
     }
     .brand {
       display: inline-flex; align-items: center;
@@ -656,6 +664,109 @@ export const css = `
     }
     .toast .toast-dismiss:hover { color: white; }
 
+    /* ── Upload progress toast (aggregate, multi-file) ──── */
+    .upload-progress {
+      position: fixed; right: 24px; bottom: 24px; z-index: 200;
+      width: 280px; max-width: calc(100vw - 48px);
+      background: #1f2328; color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px; padding: 12px 14px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      animation: toast-in 0.18s ease;
+    }
+    .upload-progress .up-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; margin-bottom: 8px;
+    }
+    .upload-progress .up-title { font-size: 13px; font-weight: 600; }
+    .upload-progress .up-count {
+      font-size: 12px; color: rgba(255, 255, 255, 0.7);
+      font-variant-numeric: tabular-nums; flex-shrink: 0;
+    }
+    .upload-progress .up-bar {
+      height: 6px; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12); overflow: hidden;
+    }
+    .upload-progress .up-bar-fill {
+      height: 100%; width: 0%; border-radius: 999px;
+      background: var(--accent); transition: width 0.2s ease;
+    }
+    .upload-progress.has-error .up-bar-fill { background: var(--warn); }
+    .upload-progress .up-issues {
+      margin-top: 10px; padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .upload-progress .up-issues-head {
+      font-size: 12px; font-weight: 600; color: var(--warn); margin-bottom: 6px;
+    }
+    .upload-progress .up-issue-list {
+      max-height: 160px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .upload-progress .up-issue { display: flex; flex-direction: column; line-height: 1.3; }
+    .upload-progress .up-issue-name {
+      font-size: 12px; color: #fff;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .upload-progress .up-issue-reason { font-size: 11px; color: rgba(255, 255, 255, 0.55); }
+    .upload-progress .up-dismiss {
+      margin-top: 10px; width: 100%; padding: 6px;
+      background: rgba(255, 255, 255, 0.08); border: 0; border-radius: 6px;
+      color: #fff; font: inherit; font-size: 12px; cursor: pointer;
+    }
+    .upload-progress .up-dismiss:hover { background: rgba(255, 255, 255, 0.14); }
+
+    /* ── De-duplication modal ───────────────────────────── */
+    .dedup-controls {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+      margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
+    }
+    .dedup-by { font-size: 13px; color: var(--text-muted); }
+    .dedup-by b { color: var(--text); font-weight: 600; }
+    .dedup-fuzzy {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 13px; color: var(--text-muted); cursor: pointer;
+    }
+    .dedup-cols { font-size: 13px; }
+    .dedup-cols summary { cursor: pointer; color: var(--accent); }
+    .dedup-col-list { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; }
+    .dedup-col-list label {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 12.5px; color: var(--text);
+    }
+    .dedup-results { max-height: 56vh; overflow-y: auto; }
+    .dedup-scanning, .dedup-empty { padding: 18px 2px; color: var(--text-muted); font-size: 13.5px; }
+    .dedup-error { padding: 14px; color: var(--warn); }
+    .dedup-resulthead { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
+    .dedup-group {
+      border: 1px solid var(--border); border-radius: 8px;
+      margin-bottom: 10px; overflow: hidden;
+    }
+    .dedup-group.near { border-color: rgba(251, 146, 60, 0.4); }
+    .dedup-group-head {
+      display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+      background: var(--surface-2); border-bottom: 1px solid var(--border);
+    }
+    .dedup-kind { font-size: 12.5px; font-weight: 600; }
+    .dedup-group.near .dedup-kind { color: var(--warn); }
+    .dedup-count { font-size: 12px; color: var(--text-muted); margin-right: auto; }
+    .dedup-cands { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .dedup-cand {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 8px; border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .dedup-cand:hover { background: var(--row-hover); }
+    .dedup-cand input { flex: 0 0 auto; }
+    .dedup-cand-label {
+      flex: 1 1 auto; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .dedup-cand-sub { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; }
+    .dedup-cand-links { flex: 0 0 auto; color: var(--text-muted); font-size: 11.5px; }
+    /* Auto-dedupe: a duplicate row flashes amber, then fades out as it's removed. */
+    tr.row-dissolving { opacity: 0; transition: opacity 0.22s ease; }
+    tr.row-dissolving td { background: rgba(251, 146, 60, 0.18); transition: background 0.22s ease; }
+
     /* ── Buttons ──────────────────────────────────────── */
     .btn {
       display: inline-flex; align-items: center; gap: 6px;
@@ -887,13 +998,39 @@ export const css = `
     .modal .copy-token:hover { background: var(--row-hover); }
 
     /* ── Header settings gear (top-right) ───────────────── */
+    /* The upload switcher carries margin-left:auto, so it + the gear cluster
+       together at the right edge. The gear must NOT also have an auto margin —
+       two auto margins split the free space and open a gap between them. */
     #settings-gear {
-      margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+      display: inline-flex; align-items: center; justify-content: center;
       width: 32px; height: 32px; background: transparent; border: 1px solid #2a2f36;
       border-radius: 6px; cursor: pointer; color: #e6e8eb; flex-shrink: 0;
     }
     #settings-gear:hover { background: rgba(255, 255, 255, 0.06); }
     #settings-gear svg { width: 18px; height: 18px; display: block; }
+
+    /* ── Header upload button + Files/Folder menu (left of the gear) ── */
+    .upload-switcher { position: relative; margin-left: auto; display: inline-flex; flex-shrink: 0; }
+    #upload-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; background: transparent; border: 1px solid #2a2f36;
+      border-radius: 6px; cursor: pointer; color: #e6e8eb;
+    }
+    #upload-btn:hover { background: rgba(255, 255, 255, 0.06); }
+    #upload-btn svg { width: 18px; height: 18px; display: block; }
+    .upload-menu {
+      position: absolute; top: 38px; right: 0; min-width: 160px;
+      background: var(--glass-strong);
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px;
+      box-shadow: var(--shadow-3), var(--hl-top); z-index: 60; padding: 6px;
+    }
+    .upload-menu-item {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 8px 10px; background: transparent; border: 0; border-radius: 6px;
+      color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+    }
+    .upload-menu-item:hover { background: rgba(255, 255, 255, 0.06); }
 
     /* ── Slim / collapsible left sidebar ────────────────── */
     /* Advanced-mode toggle at the top of the sidebar. */

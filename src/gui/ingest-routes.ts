@@ -674,6 +674,35 @@ export async function dispatchIngestRoute(
       sendJson(res, { error: 'empty upload' }, 400);
       return true;
     }
+    // Content-addressed dedup: if a byte-identical file (same sha256) is already
+    // in the workspace, return it instead of creating a duplicate row — and skip
+    // the (expensive) extraction + LLM enrichment entirely. This is what stops a
+    // re-downloaded "file (1).pdf" / "file (2).pdf" from piling up. Guarded on the
+    // column existing so a customized `files` schema without sha256 still uploads.
+    const contentSha = createHash('sha256').update(buf).digest('hex');
+    const filesCols = ctx.db.getRegisteredColumns('files');
+    if (filesCols && 'sha256' in filesCols) {
+      const existing = await ctx.db.query('files', {
+        filters: [
+          { col: 'sha256', op: 'eq', val: contentSha },
+          { col: 'deleted_at', op: 'isNull' },
+        ],
+        limit: 1,
+      });
+      if (existing.length > 0) {
+        sendJson(
+          res,
+          {
+            id: (existing[0] as { id: string }).id,
+            extraction_status: 'existing',
+            deduped: true,
+            suggestedLinks: [],
+          },
+          200,
+        );
+        return true;
+      }
+    }
     const tmp = join(tmpdir(), `lattice-ingest-${crypto.randomUUID()}${extname(name)}`);
     let result;
     let blob: { blob_path: string; sha256: string } | null = null;
@@ -758,6 +787,10 @@ export async function dispatchIngestRoute(
       original_name: name,
       mime,
       size_bytes: buf.length,
+      // Always record the content hash (not just for blob/S3 paths) so duplicate
+      // detection works for every file type, including text-only docs. The
+      // ref_kind/blob spreads below may re-set the same value harmlessly.
+      sha256: contentSha,
       extracted_text: result.text,
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
@@ -770,11 +803,10 @@ export async function dispatchIngestRoute(
             ref_provider: 's3',
             ref_uri: s3Ref.ref_uri,
             source_json: s3Ref.source_json,
-            sha256: s3Ref.sha256,
             ...(blob ? { blob_path: blob.blob_path } : {}),
           }
         : blob
-          ? { ref_kind: 'blob', blob_path: blob.blob_path, sha256: blob.sha256 }
+          ? { ref_kind: 'blob', blob_path: blob.blob_path }
           : {}),
     };
     const { id } = await createRow(mctx, 'files', {

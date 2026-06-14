@@ -8,6 +8,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added — row de-duplication & data cleansing (GUI)
+
+- **File-ingest content dedup.** Uploading a byte-identical file (same `sha256`)
+  now returns the existing `files` row instead of creating a duplicate, and skips
+  the extraction + enrichment work entirely. `sha256` is recorded on every file
+  (not just images/PDFs) so content matching works for all types. The uploader
+  surfaces a deduped file as `extraction_status: 'existing'`.
+- **"Find duplicates" table action (Advanced View).** Any table gets a
+  non-destructive find → review → merge flow. Detection normalizes text
+  (lowercase/trim/collapse-whitespace) and groups exact matches, with an optional
+  fuzzy pass (Sørensen–Dice over character bigrams, default threshold 0.82) for
+  near-duplicates. The `files` entity defaults to **content** matching — group by
+  `sha256`, then by a hash of normalized `extracted_text` — so renamed
+  re-downloads (`file (1)`, `file (2)`) collapse regardless of filename.
+- **Merge** picks a survivor, re-points many-to-many links onto it (union, via the
+  shared audited link/unlink chokepoints — no dangling references), and
+  soft-deletes the duplicates (recoverable from Trash; an Undo restores them).
+- New generic, dependency-free module `src/dedup/` (`normalize`, `match`,
+  grouping), server routes `POST /api/dedup/find` + `/api/dedup/merge`, and
+  `tableJunctions()` generalizing `fileJunctions()` to any entity.
+
+### Changed — activity-feed attribution
+
+- The activity feed now attributes **automatic Lattice operations** (the
+  de-duplication pass, file ingest, the assistant) to **"Lattice"** rather than
+  the person who triggered them, and **manual edits** to the user's display name
+  (from `/api/userconfig/identity`) instead of a generic "you". New `system`
+  `FeedSource`; the auto-dedupe merge publishes under it. (Per-event actor for
+  *other* members in a team cloud remains a follow-up.)
+
 ## [3.0.0] - 2026-06-11
 
 ### Breaking — clouds are now a shared Postgres DB secured by row-level security

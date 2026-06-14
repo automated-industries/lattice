@@ -572,3 +572,49 @@ export function fileJunctions(configPath: string, outputDir: string): FileJuncti
   }
   return out;
 }
+
+/** A junction edge as seen from one specific table's side. */
+export interface TableJunction {
+  /** The junction table name. */
+  junction: string;
+  /** FK column on the junction pointing at the table we asked about. */
+  selfFk: string;
+  /** The entity on the other side of the junction. */
+  otherTable: string;
+  /** FK column on the junction pointing at `otherTable`. */
+  otherFk: string;
+}
+
+/**
+ * Discover the junction tables that reference `table`, with the FK column that
+ * points back at it and the FK/entity on the other side. Generalizes
+ * fileJunctions() to any entity — used by row de-duplication to re-point a merged
+ * row's many-to-many links onto the survivor. A self-referential junction (both
+ * sides point at `table`) yields one entry per FK so both ends get re-pointed.
+ */
+export function tableJunctions(
+  table: string,
+  configPath: string,
+  outputDir: string,
+): TableJunction[] {
+  const out: TableJunction[] = [];
+  for (const t of getGuiEntities(configPath, outputDir).tables) {
+    if (!isJunctionTable(t)) continue;
+    const belongsTo = Object.values(t.relations).filter(
+      (r): r is BelongsToRelation => r.type === 'belongsTo',
+    );
+    const selfRels = belongsTo.filter((r) => r.table === table);
+    if (selfRels.length === 0) continue;
+    for (const selfRel of selfRels) {
+      const otherRel = belongsTo.find((r) => r.foreignKey !== selfRel.foreignKey);
+      if (!otherRel) continue;
+      out.push({
+        junction: t.name,
+        selfFk: selfRel.foreignKey,
+        otherTable: otherRel.table,
+        otherFk: otherRel.foreignKey,
+      });
+    }
+  }
+  return out;
+}
