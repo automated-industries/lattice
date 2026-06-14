@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import type pg from 'pg';
-import { isPostgresUrl } from '../teams/register-direct.js';
+import { isPostgresUrl } from '../cloud/url.js';
 
 // Lazy-load `pg` via createRequire so the static graph the bundler sees
 // does NOT pull pg into dist/cli.js. v1.13.8 shipped with a top-level
@@ -47,8 +47,9 @@ function loadPg(): PgModule {
  * every `NOTIFY lattice_changes` payload to subscribers via an
  * EventEmitter, so multiple browser tabs can share one upstream channel.
  *
- * The trigger that emits the NOTIFY is installed by
- * `installCloudInternalTriggers` in `src/teams/internal-tables.ts`.
+ * The trigger that emits the NOTIFY is installed by the cloud RLS layer
+ * (`installCloudRls` in `src/cloud/rls.ts`), which fires `pg_notify` on
+ * every insert into `__lattice_changes`.
  *
  * Lifecycle:
  *   - `start()` opens the pg client, runs LISTEN, attaches handlers.

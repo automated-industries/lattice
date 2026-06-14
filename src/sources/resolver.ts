@@ -27,7 +27,7 @@ export function resolveSource(
     case 'local_ref':
       return fsHandle(row);
     case 'cloud_ref':
-      return urlHandle(row, opts);
+      return row.ref_provider === 's3' ? s3Handle(row, latticeRoot) : urlHandle(row, opts);
     default:
       return blobHandle(row, latticeRoot);
   }
@@ -87,6 +87,32 @@ function fsHandle(row: FilesRow): SourceHandle {
     },
     async getMetadata(): Promise<SourceMetadata> {
       return statMeta(path, row);
+    },
+  };
+}
+
+function s3Handle(row: FilesRow, latticeRoot: string): SourceHandle {
+  // An S3-backed cloud blob. If the uploader's local copy is still here (hybrid),
+  // read it directly. Otherwise this generic resolver can't fetch the bytes — S3
+  // access needs the workspace's S3 config + the files-row RLS gate, which live
+  // in the files-serve route — so report unavailable rather than mis-fetching the
+  // `s3://` URL over HTTP.
+  if (row.blob_path) return blobHandle(row, latticeRoot);
+  const loc = row.ref_uri ?? 's3:?';
+  return {
+    kind: 'cloud_ref',
+    provider: 's3',
+    location: loc,
+    readContent(): Promise<Buffer> {
+      return Promise.reject(
+        new ReferenceUnavailableError(
+          loc,
+          'S3-backed blob: fetch through the files API (GET /api/files/:id/blob), not the generic resolver',
+        ),
+      );
+    },
+    getMetadata(): Promise<SourceMetadata> {
+      return Promise.resolve(meta(false, { extra: { provider: 's3' } }));
     },
   };
 }

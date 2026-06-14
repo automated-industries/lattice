@@ -137,19 +137,21 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toMatch(/u\.password = '••+'/);
   });
 
-  it('team member admin lives in Database Settings, not a legacy team card', () => {
+  it('cloud member admin lives in Database Settings, not a legacy team card', () => {
     // The legacy project-config team-card UI (renderTeamCard /
-    // renderTeamsForProjectConfig / wireTeamCardActions) was removed —
-    // team member admin now lives inline in Database Settings via the
-    // members list. Guard against the dead code creeping back.
+    // renderTeamsForProjectConfig / wireTeamCardActions) was removed.
     expect(guiAppHtml).not.toContain('renderTeamCard');
     expect(guiAppHtml).not.toContain('renderTeamsForProjectConfig');
     expect(guiAppHtml).not.toContain('wireTeamCardActions');
-    // The live members-list path marks the current operator + per-row Kick.
-    expect(guiAppHtml).toContain('renderMembersList');
-    // Exit actions moved to a dedicated Danger Zone in 1.16.2: Disconnect
-    // (owner, kicks all) / Leave (member, self only) — not a member-row button.
-    expect(guiAppHtml).toContain('db-disconnect-btn');
-    expect(guiAppHtml).toContain('db-leave-btn');
+    // v3: there is no server-side member registry / members list. The owner
+    // invites by provisioning a scoped role (/api/cloud/invite); the panel
+    // surfaces that as an "Invite a member" affordance.
+    expect(guiAppHtml).not.toContain('renderMembersList');
+    expect(guiAppHtml).toContain('showInviteMemberModal');
+    // Exit action: a single neutral "Forget this cloud" that switches the
+    // client back to a local workspace (no disconnect/leave registry calls).
+    expect(guiAppHtml).toContain('db-forget-btn');
+    expect(guiAppHtml).not.toContain('db-disconnect-btn');
+    expect(guiAppHtml).not.toContain('db-leave-btn');
   });
 });

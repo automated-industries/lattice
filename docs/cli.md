@@ -14,7 +14,6 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice status`](#lattice-status)
   - [`lattice watch`](#lattice-watch)
   - [`lattice gui`](#lattice-gui)
-  - [`lattice teams`](#lattice-teams)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -327,76 +326,38 @@ shows the data already in your database.
 
 ---
 
-### `lattice teams`
+## Cloud
 
-Multi-user shared Lattice databases. See [docs/teams.md](./teams.md) for the full architecture; this section is the CLI summary.
-
-```sh
-lattice teams <subcommand> [options]
-```
-
-| Subcommand | Description                                                                                |
-| ---------- | ------------------------------------------------------------------------------------------ |
-| `register` | Bootstrap a fresh cloud: atomic user + team creation. `--cloud --email --name --team-name` |
-| `join`     | Redeem an invitation. `--cloud --token --email --name`                                     |
-| `list`     | List your local team connections                                                           |
-| `members`  | List members of the team (`--team`)                                                        |
-| `invite`   | Generate an invitation (creator-only). `--team --invitee-email`                            |
-| `leave`    | Leave the team (`--team`)                                                                  |
-| `destroy`  | Destroy the team (creator-only). `--team`                                                  |
-| `share`    | Share a local table with the team (`--team --table`)                                       |
-| `unshare`  | Stop sharing a table (`--team --table`)                                                    |
-| `shared`   | List shared objects on the team (`--team`)                                                 |
-| `sync`     | Apply cloud-shared schemas locally (`--team`)                                              |
-| `link`     | Link a local row to the team (`--team --table --pk`)                                       |
-| `unlink`   | Unlink a row (`--team --table --pk`)                                                       |
-| `pull`     | Pull change envelopes from the cloud + apply locally (`--team`)                            |
-| `push`     | Drain the local outbox to the cloud (`--team`)                                             |
-| `status`   | Show sync stats (outbox depth, DLQ depth, last seq) (`--team`)                             |
-| `dlq`      | Inspect the dead-letter queue: `dlq list\|retry\|purge` (`--team [--id <id>]`) (v1.15+)    |
-
-**Dead-letter queue (v1.15+).** Pulled envelopes that fail to apply — e.g. one that arrived before the table/row it depends on — land in `__lattice_team_dlq` (alongside non-owner-overwrite divergence notices) instead of being lost behind the advancing pull cursor:
-
-```sh
-lattice teams dlq list  --team Atlas               # show entries (op, target, error)
-lattice teams dlq retry --team Atlas [--id <id>]   # replay through the normal apply path
-lattice teams dlq purge --team Atlas [--id <id>]   # discard without applying
-```
-
-`retry` re-applies the envelope, so a once-failing change applies cleanly once its dependency lands.
-
-**Bootstrap example**:
-
-```sh
-lattice teams register \
-  --cloud http://localhost:4317 \
-  --email alice@example.com \
-  --name "Alice" \
-  --team-name "Atlas"
-```
-
-Single atomic call — creates the bootstrap user, the team, the creator membership, and the bearer token in one HTTP round-trip. The token is printed once; save it before clearing your terminal.
-
-**Email-bound invitations**: every `invite` call carries an `--invitee-email`; the cloud rejects a `join` whose `--email` doesn't match (case-insensitive). Invite tokens are therefore safe to share over an unauthenticated channel.
-
-**`--name` vs `--team-name`**: `--name` is the operator's display name (for `register` and `join`); `--team-name` is the team being created (for `register`). The two flags used to be overloaded as a single `--name` — that was clarified in v1.12.
-
-**Hosting a cloud for remote members**: a cloud already IS a workspace with members — opening it yourself (no flag) connects you directly and activates the eye-icon row permissions. To let _other_ people connect, host the cloud as a shared server with `lattice serve --team-cloud`, which adds the bearer-gated team API + sync routes on the configured Postgres and disables the dev-tool surface. The flag is the deployment role (a shared, auth-gated server), not a separate "team mode" you convert into.
-
-**Local → Cloud progression (v1.13+)**: the GUI's Database panel drives a two-state lifecycle (`local` → cloud). As of v1.16.3 there is no intermediate `cloud-connected` state and no "upgrade to team" step — migrating or connecting to Postgres initializes the workspace's owner + member/share machinery automatically (the opener becomes owner). The transitions are GUI-only — there are no CLI subcommands for migrate / connect-existing. Library consumers can drive the same flows directly via the public API:
+There are **no `lattice teams` (or `lattice serve`) subcommands**. A Lattice cloud
+is a shared Postgres database secured by Postgres Row-Level Security — there is no
+server process to run and nothing to bootstrap from the CLI. The three cloud flows
+(migrate a local Lattice in, join an existing cloud with the scoped credentials the
+owner gave you, invite a member) are driven from `lattice gui` or directly from the
+library API:
 
 ```ts
 import {
   Lattice,
-  migrateLatticeData,
-  archiveLocalSqlite,
+  // migrate
   openTargetLatticeForMigration,
+  migrateLatticeData,
+  installCloudRls,
+  backfillOwnership,
+  enableRlsForTable,
+  archiveLocalSqlite,
+  // invite / membership
+  memberRoleName,
+  generateMemberPassword,
+  provisionMemberRole,
+  revokeMemberRole,
+  // sharing + probe
+  setRowVisibility,
   probeCloud,
-  TeamsClient,
 } from 'latticesql';
 ```
 
-See [docs/teams.md](./teams.md#local--cloud--team-cloud-progression-v113) for the full progression model + HTTP route table.
+See [docs/cloud.md](./cloud.md) for the full architecture, the three flows, the
+RLS / role model, and how sharing works.
 
 ---
 

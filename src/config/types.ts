@@ -60,6 +60,15 @@ export interface LatticeFieldDef {
    * (e.g. `assignee_id: { ref: user }` → relation name `assignee`).
    */
   ref?: string;
+  /**
+   * Per-column audience (Stage-0 scaffolding for the per-viewer enrichment
+   * model). Names who may see this column's value in a cloud. Omitted ⇒
+   * `row-audience` — the value is visible to exactly whoever can see the row,
+   * which is today's behavior, so leaving it unset changes nothing. Later
+   * stages parse a richer grammar (e.g. `subject+role:hr`) and generate a
+   * cell-masking view from it; Stage-0 only records the metadata.
+   */
+  audience?: string;
 }
 
 /**

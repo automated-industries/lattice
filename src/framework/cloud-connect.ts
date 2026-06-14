@@ -1,83 +1,99 @@
 import { Lattice } from '../lattice.js';
+import { getAsyncOrSync } from '../db/adapter.js';
 
 /**
- * Cloud-connect probe — non-destructive inspection of a candidate
- * target Lattice (typically a BYO Postgres URL the user wants to
- * connect to). Used by the GUI's "Migrate to cloud" and "Connect to
- * existing cloud" wizards to surface team-membership requirements
- * before the user commits, but exported as a public API so library
- * consumers can pre-flight the same check.
+ * Cloud-connect probe — non-destructive inspection of a candidate target
+ * Lattice (a Postgres URL the user wants to migrate to or join). Used by the
+ * GUI's "Migrate to cloud" and "Join a cloud" flows to tell, before the user
+ * commits, whether a URL points at a fresh database or an already-secured
+ * Lattice cloud. Exported as public API so library consumers can pre-flight the
+ * same check.
  *
- * The function opens a short-lived Lattice against the URL, reads
- * the singleton `__lattice_team_identity` row (if any), then closes.
- * It does NOT mutate the target — `init()` does run, which applies
- * the base schema, but no rows are inserted and no GUI/native
- * registration happens here.
+ * A "cloud" in v3 is a shared Postgres database with Lattice RLS installed —
+ * its tell is the bookkeeping table `__lattice_owners` (created by
+ * `installCloudRls`). The probe opens the URL with `introspectOnly` (NO DDL, so
+ * it works even when the caller holds a scoped, non-superuser member role), asks
+ * Postgres whether that table exists, and closes. It never mutates the target.
  */
 
 export interface CloudProbeResult {
-  /** True iff a Lattice could be opened + init()'d successfully against the URL. */
+  /** True iff the URL could be opened (connected + authenticated). */
   reachable: boolean;
-  /** Adapter dialect of the probed URL. Useful for the GUI to label cards. */
+  /** Adapter dialect of the probed URL. */
   dialect: 'sqlite' | 'postgres';
-  /** True iff the probed Lattice has a populated `__lattice_team_identity` row. */
-  teamEnabled: boolean;
-  /** Team name from `__lattice_team_identity.team_name`, if `teamEnabled`. */
-  teamName?: string;
+  /**
+   * True iff the target is an established Lattice cloud — Postgres with RLS
+   * bookkeeping (`__lattice_owners`) present. A fresh Postgres (no Lattice
+   * schema yet) and any SQLite file are `false`: the former is a migration
+   * target, the latter is a private local store.
+   */
+  isCloud: boolean;
   /** Underlying error message when `reachable: false`. */
   error?: string;
 }
 
+/** Detect the RLS bookkeeping table without assuming SELECT privilege on it.
+ *  `to_regclass` returns the table's OID name when it exists and NULL when it
+ *  doesn't — and, unlike `SELECT FROM __lattice_owners`, it does not require any
+ *  privilege on the table, so a scoped member (who is denied SELECT on the
+ *  bookkeeping tables) still gets a truthful answer. */
+export async function cloudRlsInstalled(probe: Lattice): Promise<boolean> {
+  const row = (await getAsyncOrSync(
+    probe.adapter,
+    `SELECT to_regclass('public.__lattice_owners') AS reg`,
+  )) as { reg?: string | null } | undefined;
+  return !!row && row.reg != null;
+}
+
 /**
- * Probe a candidate Lattice URL for reachability + team status.
+ * Whether the connected role may create other roles — the capability that
+ * separates a cloud OWNER (ran the migration, owns the rows, can invite members)
+ * from a scoped MEMBER (provisioned `NOCREATEROLE`). Read from
+ * `pg_roles.rolcreaterole` for the live role. SQLite or any error → false.
+ */
+export async function canManageRoles(db: Lattice): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return false;
+  try {
+    const row = (await getAsyncOrSync(
+      db.adapter,
+      `SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`,
+    )) as { rolcreaterole?: boolean } | undefined;
+    return !!row?.rolcreaterole;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Probe a candidate Lattice URL for reachability + cloud status.
  *
- * Implementation note: this opens a real Lattice with no schema
- * registered beyond what `init()` applies internally, then queries
- * a single row. The `__lattice_team_identity` table doesn't exist on
- * untouched DBs — the query falls through to a "table not found"
- * which we treat as `teamEnabled: false`. On a Lattice that's been
- * through `lattice gui` (which registers the team-identity table
- * during openConfig), the table exists but may be empty, also
- * `teamEnabled: false`.
- *
- * Never throws. Errors are returned in the result's `error` field
- * with `reachable: false`.
+ * Never throws. Errors are returned in the result's `error` field with
+ * `reachable: false`.
  */
 export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
   const dialect: 'sqlite' | 'postgres' = /^postgres(ql)?:\/\//i.test(targetUrl)
     ? 'postgres'
     : 'sqlite';
 
+  // SQLite is never a shared cloud — skip the open entirely.
+  if (dialect === 'sqlite') {
+    return { reachable: true, dialect, isCloud: false };
+  }
+
   let probe: Lattice | null = null;
   try {
     probe = new Lattice(targetUrl);
-    await probe.init();
-
-    // Try to read the singleton team identity. If the table doesn't
-    // exist (untouched DB), .get throws — treat as not a team.
-    let teamEnabled = false;
-    let teamName: string | undefined;
-    try {
-      const row = (await probe.get('__lattice_team_identity', 'singleton')) as {
-        team_name?: string;
-      } | null;
-      if (row && typeof row.team_name === 'string') {
-        teamEnabled = true;
-        teamName = row.team_name;
-      }
-    } catch {
-      // Table not present — not a team DB.
-    }
-
-    return teamName !== undefined
-      ? { reachable: true, dialect, teamEnabled, teamName }
-      : { reachable: true, dialect, teamEnabled };
+    // introspectOnly: open + authenticate, issue NO DDL. A scoped member role
+    // has no CREATE privilege, so a normal init() (which applies the schema)
+    // would fail against an established cloud; the probe must not depend on it.
+    await probe.init({ introspectOnly: true });
+    const isCloud = await cloudRlsInstalled(probe);
+    return { reachable: true, dialect, isCloud };
   } catch (e) {
-    // Surface as much underlying detail as the driver gave us so the GUI
-    // can show something more actionable than "Unreachable: unknown".
-    // Postgres errors from `pg` carry `.code` (SQLSTATE) + `.routine` +
-    // `.severity` properties — include them when present so callers can
-    // tell e.g. SCRAM auth failure (28P01) from a network error.
+    // Surface as much underlying detail as the driver gave us so the GUI can
+    // show something more actionable than "Unreachable: unknown". Postgres
+    // errors from `pg` carry `.code` (SQLSTATE) + `.routine` — include them so
+    // callers can tell e.g. SCRAM auth failure (28P01) from a network error.
     const err = e as Error & { code?: string; routine?: string; severity?: string };
     const parts: string[] = [];
     if (err.code) parts.push(`[${err.code}]`);
@@ -88,7 +104,7 @@ export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
     return {
       reachable: false,
       dialect,
-      teamEnabled: false,
+      isCloud: false,
       error: parts.join(' ') || 'unknown',
     };
   } finally {
