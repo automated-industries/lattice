@@ -78,7 +78,7 @@ describe('background render — concurrent entity tables (#1)', () => {
     // Correctness: every table fully rendered, one table-done each, one terminal done.
     for (const t of tables) expect(dirCount(out, t)).toBe(8);
     const entityDones = events.filter(
-      (e) => e.kind === 'table-done' && (e.tableCount ?? 0) > 0 && tables.includes(e.table as string),
+      (e) => e.kind === 'table-done' && (e.tableCount ?? 0) > 0 && tables.includes(e.table!),
     );
     expect(entityDones).toHaveLength(tables.length);
     expect(events.filter((e) => e.kind === 'done')).toHaveLength(1);

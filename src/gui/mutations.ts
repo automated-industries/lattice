@@ -124,6 +124,7 @@ export async function appendAudit(
   after: unknown,
   source: FeedSource = 'gui',
   sessionId?: string,
+  editTs?: string,
 ): Promise<void> {
   // Purge THIS session's redo stack (a new edit invalidates pending redos).
   const undone = (await db.query('_lattice_gui_audit', {
@@ -134,9 +135,10 @@ export async function appendAudit(
     id: crypto.randomUUID(),
     // Set ts explicitly (don't rely on the column DEFAULT — it uses the
     // SQLite-only `strftime(...)`, which doesn't yield a parseable ISO string
-    // on Postgres, so cloud history rendered "Invalid Date"). Mirrors the
-    // explicit `client_ts` below; adapter-agnostic.
-    ts: new Date().toISOString(),
+    // on Postgres, so cloud history rendered "Invalid Date"). #4.6 — honor the
+    // originating client's validated edit time when present (an offline edit
+    // replayed later records when it was MADE, not when it synced), else now().
+    ts: sanitizeEditTs(editTs) ?? new Date().toISOString(),
     table_name: table,
     row_id: rowId,
     operation: op,
@@ -230,6 +232,40 @@ export interface MutationCtx {
    */
   applySchemaInverse?: (entry: AuditEntry) => Promise<void>;
   applySchemaForward?: (entry: AuditEntry) => Promise<void>;
+  /**
+   * The originating client's true edit time (`x-lattice-client-ts`), honored for
+   * the audit/history timestamp so an OFFLINE edit replayed later shows when it
+   * was actually made, not when it finally synced (#4.6). Validated by
+   * {@link sanitizeEditTs}; ignored if absent/implausible.
+   */
+  clientTs?: string | undefined;
+}
+
+/**
+ * Accept a client-supplied edit timestamp ONLY when it's a parseable ISO instant
+ * that isn't in the future (beyond a small clock-skew margin). An offline edit
+ * is legitimately in the PAST (it synced late), so old values are fine; a future
+ * value (clock skew or a client trying to sort its edit ahead of everyone) is
+ * rejected so it can't jump the audit order. Returns the validated ISO string or
+ * null (caller falls back to server now()). #4.6
+ */
+export function sanitizeEditTs(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) return null;
+  if (t > Date.now() + 5 * 60 * 1000) return null; // > 5 min in the future — reject
+  return new Date(t).toISOString();
+}
+
+/**
+ * An error a queued OFFLINE edit can never replay successfully: the target row is
+ * gone / invisible under RLS, or the write didn't land. Tagged with a stable
+ * `code` so the HTTP layer maps it to 409 and the client routes the edit to its
+ * dead-letter queue (marks it failed + surfaces it) instead of retrying forever
+ * (#4.5 — previously these threw a generic 500 the drain loop retried endlessly).
+ */
+export function writeConflict(message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code: 'row_write_conflict' });
 }
 
 /** Infer a column type for an auto-created column from its first written value. */
@@ -322,8 +358,12 @@ export async function createRow(
   const isDefaultPk = pk.length === 1 && pk[0] === 'id';
   let toInsert = values;
   if (editId && isDefaultPk) {
-    const targetId = values.id != null ? String(values.id) : deriveRowIdFromEditId(editId);
-    if (values.id == null) toInsert = { ...values, id: targetId };
+    const provided = values.id;
+    // A usable caller-supplied id is a primitive; anything else (or absent) → derive
+    // deterministically from the edit-id (also satisfies no-base-to-string).
+    const hasId = typeof provided === 'string' || typeof provided === 'number';
+    const targetId = hasId ? String(provided) : deriveRowIdFromEditId(editId);
+    if (!hasId) toInsert = { ...values, id: targetId };
     const existing = await ctx.db.get(table, targetId);
     if (existing !== null) return { id: targetId, row: existing, idempotent: true };
   }
@@ -344,7 +384,18 @@ export async function createRow(
   const row = await ctx.db.get(table, id);
   // On a cloud, row ownership + the change feed are recorded by Postgres
   // triggers; no app-layer ACL or change-envelope write is needed.
-  await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source, ctx.sessionId);
+  await appendAudit(
+    ctx.db,
+    ctx.feed,
+    table,
+    id,
+    'insert',
+    null,
+    row,
+    ctx.source,
+    ctx.sessionId,
+    ctx.clientTs,
+  );
   return { id, row, idempotent: false };
 }
 
@@ -383,7 +434,7 @@ export async function updateRow(
   // the no-op UPDATE would otherwise record a bogus audit/feed entry whose
   // row link 404s on click. Fail loudly so the caller can correct.
   if (before === null) {
-    throw new Error(`Cannot update "${table}": no row with id "${id}"`);
+    throw writeConflict(`Cannot update "${table}": no row with id "${id}"`);
   }
   // Persist fields the schema lacks by creating the columns first (no silent drop).
   const addedCols = await ensureColumns(ctx.db, table, values as Row);
@@ -402,7 +453,7 @@ export async function updateRow(
       (k) => !storedValueMatches(before[k], (values as Row)[k]),
     );
     if (wantedChange && rowsEqual(before, after)) {
-      throw new Error('Row update did not persist — the data source may be read-only');
+      throw writeConflict('Row update did not persist — the data source may be read-only');
     }
   }
   await appendAudit(
@@ -415,6 +466,7 @@ export async function updateRow(
     after,
     ctx.source,
     ctx.sessionId,
+    ctx.clientTs,
   );
   return { row: after };
 }
@@ -429,7 +481,7 @@ export async function deleteRow(
   // Deleting a non-existent row is a no-op that would still record a
   // bogus audit/feed entry. Surface the bad id instead of faking success.
   if (before === null) {
-    throw new Error(`Cannot delete from "${table}": no row with id "${id}"`);
+    throw writeConflict(`Cannot delete from "${table}": no row with id "${id}"`);
   }
   // RLS confines a member to the rows it may delete (no app-layer gate).
   if (!hard && ctx.softDeletable.has(table)) {
@@ -445,6 +497,7 @@ export async function deleteRow(
       after,
       ctx.source,
       ctx.sessionId,
+      ctx.clientTs,
     );
   } else {
     await ctx.db.delete(table, id);
@@ -458,6 +511,7 @@ export async function deleteRow(
       null,
       ctx.source,
       ctx.sessionId,
+      ctx.clientTs,
     );
   }
 }

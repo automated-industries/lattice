@@ -17,7 +17,9 @@ export async function runCloudBootstrapSql(db: Lattice, sql: string): Promise<vo
   const adapter = db.adapter;
   if (adapter.withClient) {
     await adapter.withClient(async (tx) => {
-      await tx.run('SELECT pg_advisory_xact_lock($1::bigint)', [LATTICE_MIGRATION_LOCK_ID.toString()]);
+      await tx.run('SELECT pg_advisory_xact_lock($1::bigint)', [
+        LATTICE_MIGRATION_LOCK_ID.toString(),
+      ]);
       await tx.run(sql);
     });
   } else {
@@ -563,6 +565,30 @@ END $fn$;
 DROP TRIGGER IF EXISTS "lattice_notify_change_trg" ON "__lattice_changes";
 CREATE TRIGGER "lattice_notify_change_trg" AFTER INSERT ON "__lattice_changes"
   FOR EACH ROW EXECUTE FUNCTION lattice_notify_change();
+
+-- #4.4 — seq-based catch-up after a realtime gap. NOTIFY is fire-and-forget, so a
+-- broker that drops its LISTEN (network blip, laptop sleep) misses every change
+-- during the gap. The broker tracks the highest seq it delivered and, on
+-- reconnect, replays what it missed via this function. Members have NO direct
+-- grant on __lattice_changes (reading it raw would leak every change on the
+-- cloud), so this SECURITY DEFINER function is the only path and it returns ONLY
+-- the rows the CALLING role can see: keyed on session_user via lattice_row_visible
+-- (same gate as live fan-out, #4.3). Deletes are excluded — the ownership record
+-- is gone post-delete so visibility can't be verified, and replaying them would
+-- leak deleted-row pks (the client reconciles deletes on its reconnect refetch).
+-- Bounded (LIMIT clamped ≤ 1000) so a long gap can't stream the whole table (Rule:
+-- bounded reads on a hot path).
+CREATE OR REPLACE FUNCTION lattice_changes_since(p_seq bigint, p_limit int)
+RETURNS TABLE(seq bigint, table_name text, pk text, op text, owner_role text, created_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT c."seq", c."table_name", c."pk", c."op", c."owner_role", c."created_at"
+    FROM "__lattice_changes" c
+   WHERE c."seq" > p_seq
+     AND c."op" = 'upsert'
+     AND lattice_row_visible(c."table_name", c."pk")
+   ORDER BY c."seq" ASC
+   LIMIT GREATEST(0, LEAST(COALESCE(p_limit, 500), 1000));
+$fn$;
 `;
 
 /**

@@ -8,6 +8,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed — realtime, egress + misc cloud hardening (3.2)
+
+- **Realtime actually delivers other clients' changes.** The change feed's op
+  domain is `upsert`/`delete`, but the SSE merge matched `INSERT`/`UPDATE`/`DELETE`
+  — so every remote change mapped to null and was dropped. And the payload parser
+  read `team_id`/`owner_user_id`/`client_ts` (never emitted) while dropping
+  `owner_role` (the editor), so "last edited by" never resolved. Both now mirror
+  the NOTIFY trigger exactly.
+- **Realtime fan-out is filtered per recipient.** The NOTIFY stream is global; a
+  member's stream now forwards only changes for rows it may actually read (probed
+  through the same RLS visibility function), so the pk / existence / editor of an
+  unreadable row no longer leaks. Deletes (unprobeable post-trigger) are still
+  forwarded so a shown row drops, but with the editor stripped.
+- **Realtime catches up after a gap.** A broker that drops its `LISTEN` (sleep,
+  network blip) replays the changes it missed on reconnect, via a bounded
+  `SECURITY DEFINER lattice_changes_since(seq, limit)` that returns only the
+  caller-visible upserts — so a brief disconnect no longer silently loses updates.
+- **Offline edits that can't replay are surfaced, not retried forever.** A write
+  that can never apply (row gone / RLS-invisible) now returns 409, and the client
+  marks the queued edit failed + surfaces it (dead-letter) instead of looping on
+  it. Any 4xx during replay is treated as terminal; only 5xx/network retries.
+- **Edit time is honored.** A row write may carry `x-lattice-client-ts`; the
+  audit/history timestamp now records when the edit was MADE (so an offline edit
+  replayed later isn't stamped at sync time). A future timestamp is rejected.
+- **Bounded row pages.** `GET /api/tables/:table/rows` validates `limit`/`offset`
+  (400 on non-numeric, was `LIMIT NaN`) and clamps `limit` to ≤ 1000 — an
+  unbounded page was a full-table egress on a cloud hot path.
+- **Salted invite-audit email hash.** The invitee-email hash in the audit table is
+  peppered with a per-cloud salt instead of a bare SHA-256.
+- **Generic 500s are logged.** The shared request wrapper now logs the failing
+  error (message + stack) server-side before returning a 500, so a swallowed
+  cloud-op failure is no longer invisible.
+
 ### Fixed — cloud role lifecycle + offline integrity (3.2)
 
 - **Offline edits replay idempotently.** The GUI stamps every row write with a
@@ -79,7 +112,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Member open is resilient.** Owner-side maintenance that needs schema write
   grants (native-entity reconcile, legacy-secret cleanup, the identity-mirror
   upsert) is skipped / best-effort on a cloud-MEMBER open, so a member no longer
-  fails to connect with "permission denied for schema public / __lattice_user_identity".
+  fails to connect with "permission denied for schema public / \_\_lattice_user_identity".
 - New end-to-end Postgres test boots a real owner GUI + member GUI and asserts the
   member lands on a new, correctly-named, active cloud workspace (local untouched).
 
@@ -155,7 +188,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   anonymous analytics" preference (and `DO_NOT_TRACK` / `SCARF_ANALYTICS` env):
   gtag.js is loaded lazily only after consent, so there is zero network contact
   while opted out. Configured with `send_page_view:false`, `allow_google_signals:
-  false`, `allow_ad_personalization_signals:false`, `anonymize_ip:true`.
+false`, `allow_ad_personalization_signals:false`, `anonymize_ip:true`.
 - **Strict anonymization.** Event params are whitelisted to booleans / finite
   numbers / short enum tokens — table and column names, row ids/content, file
   names, queries, chat text, display name, email, paths, and the port are never

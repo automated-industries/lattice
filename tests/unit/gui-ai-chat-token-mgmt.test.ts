@@ -17,7 +17,8 @@ async function collect(gen: AsyncGenerator<ChatStreamEvent>): Promise<ChatStream
   for await (const e of gen) out.push(e);
   return out;
 }
-const TOO_LONG = '400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 211074 tokens > 200000 maximum"}}';
+const TOO_LONG =
+  '400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 211074 tokens > 200000 maximum"}}';
 
 describe('#10 assistant token management', () => {
   let tmpDir: string;
@@ -65,7 +66,10 @@ describe('#10 assistant token management', () => {
       content: [{ type: 'tool_result', tool_use_id: 'h1', content: 'X'.repeat(5000) }],
     };
     const history: LlmMessage[] = [
-      { role: 'assistant', content: [{ type: 'tool_use', id: 'h1', name: 'list_rows', input: {} }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'h1', name: 'list_rows', input: {} }],
+      },
       toolResultMsg,
     ];
 
@@ -91,7 +95,9 @@ describe('#10 assistant token management', () => {
     };
     // No trimmable tool result in history → recovery can't help → friendly error.
     const events = await collect(runChat({ client, dispatch, userMessage: 'go' }));
-    const err = events.find((e) => e.type === 'error') as { type: 'error'; message: string } | undefined;
+    const err = events.find((e) => e.type === 'error') as
+      | { type: 'error'; message: string }
+      | undefined;
 
     expect(err).toBeDefined();
     expect(err!.message).toMatch(/too large/i);

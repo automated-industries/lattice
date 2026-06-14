@@ -107,9 +107,7 @@ export function mintInviteToken(input: MintInput): string {
     role: input.role,
     email,
     expires_at: input.expiresAt.toISOString(),
-    ...(input.workspaceName && input.workspaceName.trim()
-      ? { workspace_name: input.workspaceName.trim() }
-      : {}),
+    ...(input.workspaceName?.trim() ? { workspace_name: input.workspaceName.trim() } : {}),
   };
   const cipher = createCipheriv('aes-256-gcm', key, nonce);
   cipher.setAAD(Buffer.from(email, 'utf8'));

@@ -46,7 +46,8 @@ import {
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
-import { RealtimeBroker } from './realtime.js';
+import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
+import { getAsyncOrSync } from '../db/adapter.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
@@ -452,6 +453,26 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
   const v = Array.isArray(raw) ? raw[0] : raw;
   const trimmed = typeof v === 'string' ? v.trim() : '';
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Max rows a single `/rows` page may request — caps cloud egress on a hot path
+ *  (Rule: bounded reads). A caller wanting more pages with limit+offset. */
+const MAX_ROWS_PAGE = 1000;
+const DEFAULT_ROWS_PAGE = 500;
+
+/**
+ * Parse + validate a `limit`/`offset` query param (#4.9). Returns the numeric
+ * value, or `'invalid'` for a non-numeric / negative / non-integer string (the
+ * caller returns 400 instead of letting `Number('abc')` become `LIMIT NaN`).
+ * `limit` is clamped to `[1, MAX_ROWS_PAGE]`; `offset` floored at 0.
+ */
+function parsePageParam(raw: string | null, kind: 'limit' | 'offset'): number | 'invalid' {
+  if (raw === null) return kind === 'limit' ? DEFAULT_ROWS_PAGE : 0;
+  if (!/^\d+$/.test(raw.trim())) return 'invalid';
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 'invalid';
+  if (kind === 'limit') return Math.min(Math.max(1, n), MAX_ROWS_PAGE);
+  return Math.max(0, n);
 }
 
 interface ContextFile {
@@ -1214,6 +1235,44 @@ function startBackgroundRender(active: ActiveDb): void {
  * off a secured cloud. Each row's key is its canonical pk string (single = bare
  * value, composite = TAB-joined), matching `__lattice_owners.pk`.
  */
+/**
+ * #4.3 — should a realtime change envelope be forwarded to the role THIS server
+ * is connected as? The NOTIFY fan-out is global (every change on the whole cloud),
+ * so without this gate a member's realtime/feed stream would leak the pk +
+ * existence + editor (`owner_role`) of rows the member cannot read. For an
+ * `upsert` we probe the row's visibility through the SAME SECURITY-DEFINER
+ * function RLS uses (keyed on `session_user` = this connection's role), so the
+ * filter is inherently per-recipient. A `delete` can't be probed (the ownership
+ * record is removed by the delete trigger) — those are still forwarded so a client
+ * drops a row it may be showing, but the caller STRIPS `owner_role` from the
+ * forwarded delete so the editor of an unreadable row is never disclosed. No-op
+ * (always visible) on a non-cloud single-user SQLite DB. Fails CLOSED (don't
+ * forward) on a probe error, logging it.
+ */
+export async function changeVisibleToActiveRole(
+  db: Lattice,
+  payload: RealtimePayload,
+): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return true; // single-user local — nothing to gate
+  if (payload.op === 'delete' || payload.op === 'DELETE') return true; // can't probe; owner_role stripped by caller
+  if (!payload.table_name || !payload.pk) return false;
+  try {
+    const row = (await getAsyncOrSync(db.adapter, `SELECT lattice_row_visible(?, ?) AS v`, [
+      payload.table_name,
+      payload.pk,
+    ])) as { v?: unknown } | undefined;
+    return row?.v === true || row?.v === 't' || row?.v === 1;
+  } catch (e) {
+    console.warn('[realtime] visibility probe failed (dropping change):', (e as Error).message);
+    return false;
+  }
+}
+
+/** True for a delete op (which can't be visibility-probed post-hoc). */
+function isDeleteOp(op: string): boolean {
+  return op === 'delete' || op === 'DELETE';
+}
+
 async function attachRowAccess(db: Lattice, table: string, rows: Row[]): Promise<void> {
   if (rows.length === 0) return;
   const pkCols = db.getPrimaryKey(table);
@@ -1546,7 +1605,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             writeEvent('state', { mode: 'cloud', state });
           });
           const offPayload = broker?.subscribePayload((payload) => {
-            writeEvent('change', payload);
+            // #4.3 — only forward a change the connected role may actually read;
+            // strip the editor (owner_role) from deletes (unprobeable post-hoc).
+            void changeVisibleToActiveRole(active.db, payload).then((visible) => {
+              if (!visible) return;
+              const out = isDeleteOp(payload.op) ? { ...payload, owner_role: null } : payload;
+              writeEvent('change', out);
+            });
           });
           const cleanup = (): void => {
             clearInterval(keepalive);
@@ -1596,26 +1661,29 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // Merge the Postgres realtime broker so changes made by OTHER clients
           // on a shared cloud DB also appear in the feed (SQLite has no broker).
           const offBroker = active.realtime?.subscribePayload((p) => {
-            const op =
-              p.op === 'INSERT'
-                ? 'insert'
-                : p.op === 'UPDATE'
-                  ? 'update'
-                  : p.op === 'DELETE'
-                    ? 'delete'
-                    : null;
+            // #4.1 — the change feed's op domain is `upsert` | `delete`, NOT
+            // INSERT/UPDATE/DELETE; matching the old uppercase forms dropped EVERY
+            // remote change, so another client's edits never reached the feed.
+            const op = feedOpForChange(p.op);
             if (!op || !p.table_name || p.table_name.startsWith('_lattice')) return;
-            const key = `${p.table_name}:${p.pk ?? ''}:${op}`;
+            const tableName = p.table_name; // non-null past the guard (kept across the async cb)
+            const key = `${tableName}:${p.pk ?? ''}:${op}`;
             const seen = recentSelf.get(key);
             if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
-            writeFeed({
-              seq: p.seq,
-              table: p.table_name,
-              op,
-              rowId: p.pk,
-              source: 'cli',
-              ts: p.created_at || new Date().toISOString(),
-              summary: `${op} on ${p.table_name} (another client)`,
+            // #4.3 — gate on the connected role's visibility (don't surface another
+            // member's unreadable rows in the feed); strip the editor on deletes.
+            void changeVisibleToActiveRole(active.db, p).then((visible) => {
+              if (!visible) return;
+              writeFeed({
+                seq: p.seq,
+                table: tableName,
+                op,
+                rowId: p.pk,
+                source: 'cli',
+                actor: isDeleteOp(p.op) ? undefined : (p.owner_role ?? undefined),
+                ts: p.created_at || new Date().toISOString(),
+                summary: `${op} on ${tableName} (another client)`,
+              });
             });
           });
           const cleanup = (): void => {
@@ -3248,12 +3316,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             softDeletable: active.softDeletable,
             source: 'gui',
             sessionId,
+            // #4.6 — the originating client's true edit time, honored for the
+            // audit timestamp so an offline edit shows when it was made.
+            clientTs: headerValue(req, 'x-lattice-client-ts'),
           };
 
           if (id === null) {
             if (method === 'GET') {
-              const limit = Number(url.searchParams.get('limit') ?? '500');
-              const offset = Number(url.searchParams.get('offset') ?? '0');
+              // #4.9 — bound + validate the page params: an unbounded `limit` is a
+              // full-table egress on a cloud hot path, and `Number('abc')` was
+              // becoming `LIMIT NaN`. Reject non-numeric; clamp limit ≤ MAX.
+              const limit = parsePageParam(url.searchParams.get('limit'), 'limit');
+              const offset = parsePageParam(url.searchParams.get('offset'), 'offset');
+              if (limit === 'invalid' || offset === 'invalid') {
+                sendJson(res, { error: 'limit and offset must be non-negative integers' }, 400);
+                return;
+              }
               const deletedMode = url.searchParams.get('deleted');
               // Row visibility is enforced by Postgres RLS at the database.
               const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
@@ -3494,6 +3572,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (e.code === 'row_owner_only') {
           sendJson(res, { error: e.message }, 403);
+          return;
+        }
+        // #4.5 — an offline edit that can never replay (row gone / RLS-invisible /
+        // write didn't land) is a 409 conflict, not a server fault, so the client
+        // marks it failed + surfaces it instead of retrying it forever.
+        if (e.code === 'row_write_conflict') {
+          sendJson(res, { error: e.message }, 409);
           return;
         }
         console.error(

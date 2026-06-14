@@ -415,9 +415,12 @@ export const appJs = `
     // current view (no badge) so we don't bother suppressing the self-echo.
     function onRealtimeChange(p) {
       if (!p || !p.table_name || !p.pk) return;
+      // The NOTIFY envelope carries owner_role (the editor's login role) +
+      // created_at — NOT owner_user_id / client_ts (which were never emitted, so
+      // "last edited by" always showed nothing). #4.2
       lastEditedByPk[leKey(p.table_name, p.pk)] = {
-        userId: p.owner_user_id || null,
-        at: p.client_ts || p.created_at || '',
+        userId: p.owner_role || null,
+        at: p.created_at || '',
       };
       if (!isRowDataOp(p.op)) return;
       if (p.table_name === currentViewTable()) flashRow(p.pk);
@@ -598,15 +601,19 @@ export const appJs = `
             body: it.body != null ? JSON.stringify(it.body) : undefined,
           }).then(function (r) {
             if (r.ok) return idbDelete(it.editId);
-            if (r.status === 409) {
-              // Unshared / stale schema — can't replay; mark failed (kept for
-              // inspection, surfaced) rather than silently dropped.
+            // #4.5 — ANY 4xx is permanent for a replay: 409 (unshared / stale
+            // schema / row gone), 403 (RLS owner-only), 404 (row not visible),
+            // 400 (bad edit). Mark the edit failed + surface it (dead-letter)
+            // instead of retrying it forever; only 5xx / network errors are
+            // transient and left pending for the next drain. Previously only 409
+            // was caught, so an RLS-rejected edit retried endlessly, unseen.
+            if (r.status >= 400 && r.status < 500) {
               it.status = 'failed';
               return idbPut(it).then(function () {
-                showToast('An offline edit could not sync (the object changed). See pending edits.', {});
+                showToast('An offline edit could not sync (the object changed or you lack access). See pending edits.', {});
               });
             }
-            // Other server error — leave pending, retry on the next drain.
+            // Transient server error (5xx) — leave pending, retry on the next drain.
             return Promise.resolve();
           }).then(function () { return step(i + 1); },
           function () { return Promise.resolve(); /* network error — stop draining */ });

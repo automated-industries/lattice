@@ -24,6 +24,8 @@ import {
   installCloudSettings,
   getCloudSettingStrict,
   setCloudSetting,
+  getOrCreateInviteSalt,
+  hashInviteEmail,
   CLOUD_SETTING_SYSTEM_PROMPT,
 } from '../cloud/settings.js';
 
@@ -45,7 +47,7 @@ import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../cloud/in
 import { slugify } from '../render/markdown.js';
 import { MEMBER_GROUP } from '../cloud/rls.js';
 import { getAsyncOrSync, runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   archiveLocalSqlite,
   migrateLatticeData,
@@ -640,14 +642,24 @@ export async function dispatchDbConfigRoute(
         ctx.db.adapter,
         `SELECT display_name, email FROM "__lattice_user_identity" WHERE id = 'singleton'`,
       ).catch(() => undefined)) as { display_name?: string; email?: string } | undefined;
-      const ownerName = (idRow?.display_name && idRow.display_name.trim()) || ownerRole;
+      // An EMPTY trimmed name must fall back to the role (not just a null one).
+      const trimmedOwnerName = idRow?.display_name?.trim() ?? '';
+      const ownerName = trimmedOwnerName.length > 0 ? trimmedOwnerName : ownerRole;
       const ownerEmail = idRow?.email ?? '';
 
       // Only an owner can enumerate roles; a scoped member just sees itself.
       if (!(await canManageRoles(ctx.db))) {
         sendJson(res, {
           members: ownerRole
-            ? [{ role: ownerRole, name: ownerName, email: ownerEmail, status: 'member', isYou: true }]
+            ? [
+                {
+                  role: ownerRole,
+                  name: ownerName,
+                  email: ownerEmail,
+                  status: 'member',
+                  isYou: true,
+                },
+              ]
             : [],
         });
         return;
@@ -712,7 +724,10 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { error: 'Could not resolve the cloud connection coordinates' }, 500);
         return;
       }
-      const emailHash = createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
+      // #4.10 — salt the audit email hash with a stable per-cloud salt (a bare
+      // SHA-256 is rainbow-tableable). The salt is generated once + persisted, so
+      // the hash stays a stable lookup key for re-invite / orphan cleanup.
+      const emailHash = hashInviteEmail(await getOrCreateInviteSalt(ctx.db), email);
       // #3.4 — before minting a fresh role, revoke any prior PENDING invite for
       // this email (a re-invite would otherwise orphan the previous role + leave
       // its token live) and sweep any expired-but-unredeemed orphans. Runs as the
@@ -836,10 +851,11 @@ export async function dispatchDbConfigRoute(
       // Name the new workspace from the cloud name stamped into the invite
       // (1.3a), else a client-supplied label, else a sane default (which now
       // resolves because joinCloudAsMember sanitizes the key).
+      // Each candidate falls back when EMPTY, not just when null.
+      const fromCloud = payload.workspace_name?.trim() ?? '';
+      const fromBody = typeof body.label === 'string' ? body.label.trim() : '';
       const label =
-        (payload.workspace_name && payload.workspace_name.trim()) ||
-        (typeof body.label === 'string' && body.label.trim() ? body.label.trim() : '') ||
-        'Cloud workspace';
+        fromCloud.length > 0 ? fromCloud : fromBody.length > 0 ? fromBody : 'Cloud workspace';
       await joinCloudAsMember(
         ctx,
         res,

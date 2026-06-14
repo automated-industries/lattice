@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { cloudSchema, pinDefinerSearchPath, runCloudBootstrapSql } from './rls.js';
@@ -24,6 +25,33 @@ import { cloudSchema, pinDefinerSearchPath, runCloudBootstrapSql } from './rls.j
 
 /** Setting key for the chat system prompt an owner bundles into every member's chat. */
 export const CLOUD_SETTING_SYSTEM_PROMPT = 'chat_system_prompt';
+
+/** Setting key for the per-cloud salt that peppers the invite-audit email hash. */
+export const CLOUD_SETTING_INVITE_SALT = 'invite_email_salt';
+
+/**
+ * The per-cloud salt used to hash invitee emails in `__lattice_member_invites`
+ * (#4.10). A bare unsalted SHA-256 is trivially rainbow-tableable; a stable
+ * per-cloud random salt defeats that while keeping the hash a stable lookup key
+ * (re-invite + orphan cleanup match by it). Read-or-create: generated once on the
+ * first invite and persisted in the owner-only settings table. Owner-only path
+ * (the setter raises for a non-owner) — only the invite route (owner-gated) calls
+ * it. Throws on a genuine DB error rather than silently using an empty salt.
+ */
+export async function getOrCreateInviteSalt(db: Lattice): Promise<string> {
+  const existing = await getCloudSettingStrict(db, CLOUD_SETTING_INVITE_SALT);
+  if (existing) return existing;
+  const salt = randomBytes(16).toString('hex');
+  await setCloudSetting(db, CLOUD_SETTING_INVITE_SALT, salt);
+  return salt;
+}
+
+/** Salted hash of an invitee email for the audit table (#4.10). Lowercased +
+ *  trimmed (so the same address always maps to the same hash) then peppered with
+ *  the per-cloud salt. */
+export function hashInviteEmail(salt: string, email: string): string {
+  return createHash('sha256').update(`${salt}\n${email.trim().toLowerCase()}`).digest('hex');
+}
 
 const CLOUD_SETTINGS_BOOTSTRAP_SQL = `
 -- Owner-controlled, cloud-wide key/value settings. No grant to the member group,

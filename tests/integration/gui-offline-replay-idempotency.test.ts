@@ -55,11 +55,7 @@ async function boot(): Promise<GuiServerHandle> {
   return s;
 }
 
-function postRow(
-  s: GuiServerHandle,
-  body: unknown,
-  editId?: string,
-): Promise<Response> {
+function postRow(s: GuiServerHandle, body: unknown, editId?: string): Promise<Response> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (editId) headers['x-lattice-edit-id'] = editId;
   return fetch(`${s.url}/api/tables/tasks/rows`, {

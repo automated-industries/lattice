@@ -22,13 +22,15 @@ interface GA {
 
 function bootAnalytics(): GA {
   const w = window as unknown as Record<string, unknown>;
-  document.head.querySelectorAll('script').forEach((s) => s.remove());
+  document.head.querySelectorAll('script').forEach((s) => {
+    s.remove();
+  });
   w.dataLayer = undefined;
   w.LatticeGA = undefined;
-  delete w[DISABLE_FLAG];
+  w[DISABLE_FLAG] = undefined; // falsy reset (no-dynamic-delete); GA treats it as "not disabled"
   // The shipped module is an IIFE that attaches window.LatticeGA. Execute it in
   // this jsdom global (it needs a real document/window/navigator).
-  // eslint-disable-next-line no-eval
+
   (0, eval)(analyticsJs);
   return w.LatticeGA as GA;
 }

@@ -62,7 +62,7 @@ describe.skipIf(!PG_URL)('#13 data-model sharing — everyone-default = shared',
 
     const policies = await getAllTablePolicies(owner);
     // The server maps: t.shared = (defaultRowVisibility === 'everyone').
-    expect(policies['shared_t']?.defaultRowVisibility).toBe('everyone'); // → shared: true
-    expect(policies['private_t']?.defaultRowVisibility ?? 'private').toBe('private'); // → shared: false
+    expect(policies.shared_t?.defaultRowVisibility).toBe('everyone'); // → shared: true
+    expect(policies.private_t?.defaultRowVisibility ?? 'private').toBe('private'); // → shared: false
   });
 });

@@ -35,7 +35,11 @@ function extractDecl(src: string, name: string): string {
 }
 
 const code = ['AUTO_EMOJI', 'autoEmojiFor'].map((n) => extractDecl(guiAppHtml, n)).join('\n');
-const api = runInNewContext(code + '\n({ autoEmojiFor });', {}, { filename: 'gui-client-script.js' }) as {
+const api = runInNewContext(
+  code + '\n({ autoEmojiFor });',
+  {},
+  { filename: 'gui-client-script.js' },
+) as {
   autoEmojiFor: (name: string) => string | null;
 };
 

@@ -82,7 +82,8 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         includeDeleted: { type: 'boolean', description: 'Include soft-deleted rows.' },
         limit: {
           type: 'number',
-          description: 'Max rows to return (1–200, default 200). Use a smaller page for big tables.',
+          description:
+            'Max rows to return (1–200, default 200). Use a smaller page for big tables.',
         },
         offset: {
           type: 'number',

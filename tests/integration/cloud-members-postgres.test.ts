@@ -12,7 +12,11 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { installCloudRls, MEMBER_GROUP } from '../../src/cloud/rls.js';
-import { provisionMemberRole, revokeMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
+import {
+  provisionMemberRole,
+  revokeMemberRole,
+  generateMemberPassword,
+} from '../../src/cloud/members.js';
 import { getAsyncOrSync, allAsyncOrSync, runAsyncOrSync } from '../../src/db/adapter.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
