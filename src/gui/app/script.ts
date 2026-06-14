@@ -5988,6 +5988,9 @@ export const appJs = `
         // point". The server decodeURIComponent()s it back.
         headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'file') },
         body: file,
+        // Present for batch uploads so the toast's Cancel can abort in-flight
+        // requests; undefined (no-op) for a single-file upload.
+        signal: opts.signal,
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
         .then(
@@ -6031,12 +6034,13 @@ export const appJs = `
       var batch = enqueueUploadBatch(list.length);
       // Worker-pool drain: each of N workers pulls the next file when its current
       // upload settles. uploadFile never rejects (errors tick the batch toast),
-      // so the same next() handler covers both the resolve and reject arms.
+      // so the same next() handler covers both the resolve and reject arms. A
+      // worker stops pulling once the batch is cancelled (the toast's × button).
       var i = 0;
       function next() {
-        if (i >= list.length) return;
+        if (i >= list.length || batch.cancelled) return;
         var file = list[i++];
-        uploadFile(file, { silentFeed: true, batch: batch }).then(next, next);
+        uploadFile(file, { silentFeed: true, batch: batch, signal: batch.abort && batch.abort.signal }).then(next, next);
       }
       for (var w = 0; w < Math.min(UPLOAD_CONCURRENCY, list.length); w++) next();
     }
@@ -6053,11 +6057,20 @@ export const appJs = `
         el.className = 'upload-progress';
         el.innerHTML =
           '<div class="up-head"><span class="up-title">Uploading files</span>' +
-          '<span class="up-count"></span></div>' +
+          '<span class="up-right"><span class="up-count"></span>' +
+          '<button class="up-cancel" type="button" title="Cancel upload" aria-label="Cancel upload">×</button>' +
+          '</span></div>' +
           '<div class="up-bar"><div class="up-bar-fill"></div></div>';
         document.body.appendChild(el);
+        // Bound once (the element is reused across batches); acts on whatever the
+        // current uploadBatch is at click time.
+        el.querySelector('.up-cancel').addEventListener('click', function () { cancelUploadBatch(uploadBatch); });
       }
       return el;
+    }
+    function showUploadCancel(b, show) {
+      var c = b && b.el && b.el.querySelector('.up-cancel');
+      if (c) c.hidden = !show;
     }
     function renderUploadBatch() {
       var b = uploadBatch; if (!b) return;
@@ -6066,20 +6079,48 @@ export const appJs = `
       b.el.querySelector('.up-count').textContent = b.done + ' / ' + b.total;
     }
     function enqueueUploadBatch(n) {
-      if (!uploadBatch || uploadBatch.done >= uploadBatch.total) {
+      // Start a fresh batch unless one is still actively running — a cancelled or
+      // finished batch must not be extended (its workers have stopped).
+      if (!uploadBatch || uploadBatch.done >= uploadBatch.total || uploadBatch.cancelled) {
         var el = uploadProgressEl();
         if (uploadBatch && uploadBatch.timer) clearTimeout(uploadBatch.timer);
         el.classList.remove('done', 'has-error');
         var oldIssues = el.querySelector('.up-issues'); if (oldIssues) oldIssues.remove();
         el.querySelector('.up-title').textContent = 'Uploading files';
-        uploadBatch = { total: 0, done: 0, ok: 0, deduped: 0, issues: [], el: el, timer: null };
+        uploadBatch = {
+          total: 0, done: 0, ok: 0, deduped: 0, issues: [], el: el, timer: null,
+          cancelled: false,
+          abort: (typeof AbortController !== 'undefined') ? new AbortController() : null,
+        };
+        showUploadCancel(uploadBatch, true);
       }
       uploadBatch.total += n;
       renderUploadBatch();
       return uploadBatch;
     }
+    // Cancel an in-progress batch: abort the in-flight requests, stop the queued
+    // workers (they check batch.cancelled), and finalize the toast.
+    function cancelUploadBatch(b) {
+      if (!b || b.cancelled) return;
+      b.cancelled = true;
+      try { if (b.abort) b.abort.abort(); } catch (_) { /* ignore */ }
+      showUploadCancel(b, false);
+      var title = 'Upload cancelled — ' + b.ok + ' of ' + b.total + ' uploaded';
+      if (b.deduped) title += ' · ' + b.deduped + ' already in workspace';
+      b.el.querySelector('.up-title').textContent = title;
+      // Surface any genuine issues recorded before the cancel; otherwise let the
+      // cancelled toast auto-dismiss.
+      if (b.issues.length) { b.el.classList.add('has-error'); renderUploadIssues(b); }
+      else {
+        b.el.classList.add('done');
+        b.timer = setTimeout(function () {
+          if (b.el.parentNode) b.el.parentNode.removeChild(b.el);
+          if (uploadBatch === b) uploadBatch = null;
+        }, 4000);
+      }
+    }
     function tickUploadBatch(result) {
-      var b = uploadBatch; if (!b) return;
+      var b = uploadBatch; if (!b || b.cancelled) return; // trailing aborts after cancel are ignored
       b.done++;
       var status = result && result.status;
       if (status === 'extracted') b.ok++;
@@ -6121,6 +6162,7 @@ export const appJs = `
     }
     function finishUploadBatch() {
       var b = uploadBatch; if (!b) return;
+      showUploadCancel(b, false); // batch is done — nothing left to cancel
       var title = 'Ingested ' + b.ok + ' of ' + b.total + ' file' + (b.total === 1 ? '' : 's');
       if (b.deduped) title += ' · ' + b.deduped + ' already in workspace';
       b.el.querySelector('.up-title').textContent = title;

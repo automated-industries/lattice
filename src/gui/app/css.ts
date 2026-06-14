@@ -683,6 +683,15 @@ export const css = `
       font-size: 12px; color: rgba(255, 255, 255, 0.7);
       font-variant-numeric: tabular-nums; flex-shrink: 0;
     }
+    .upload-progress .up-right { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .upload-progress .up-cancel {
+      flex-shrink: 0; width: 20px; height: 20px; padding: 0; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: none; border-radius: 6px; cursor: pointer; font-size: 15px;
+      background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.7);
+    }
+    .upload-progress .up-cancel:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+    .upload-progress .up-cancel[hidden] { display: none; }
     .upload-progress .up-bar {
       height: 6px; border-radius: 999px;
       background: rgba(255, 255, 255, 0.12); overflow: hidden;

@@ -81,3 +81,38 @@ test('a multi-file upload bounds concurrency (worker pool) and ingests every fil
   expect(maxInFlight).toBeLessThanOrEqual(4); // capped (would be 6+ if unbounded)
   expect(maxInFlight).toBeGreaterThan(1); // but it does parallelize
 });
+
+test('the progress toast can cancel an in-progress upload', async ({ page }) => {
+  // Hold each upload open so the batch is still running when we click cancel.
+  let served = 0;
+  await page.route('**/api/ingest/upload', async (route) => {
+    served += 1;
+    await new Promise((r) => setTimeout(r, 400));
+    await route
+      .fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ extraction_status: 'extracted' }),
+      })
+      .catch(() => {}); // request may already be aborted by cancel
+  });
+
+  await page.goto(gui.url);
+  const N = 30;
+  const files = Array.from({ length: N }, (_, i) => ({
+    name: `x${i}.txt`,
+    mimeType: 'text/plain',
+    buffer: Buffer.from(`content ${i}`),
+  }));
+  await page.setInputFiles('#upload-input', files);
+
+  const toast = page.locator('#upload-progress-toast');
+  await expect(toast.locator('.up-cancel')).toBeVisible();
+  await toast.locator('.up-cancel').click();
+
+  // Toast reports the cancel, and the worker pool stops pulling new files — so
+  // far fewer than N requests ever reach the server.
+  await expect(toast.locator('.up-title')).toContainText('cancelled');
+  await page.waitForTimeout(700);
+  expect(served).toBeLessThan(N);
+});

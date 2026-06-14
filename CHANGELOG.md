@@ -44,6 +44,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   live-refresh `/api/entities` poll — so the dashboard counts stayed frozen until
   the whole upload drained. With the pool, connection slots stay free and the
   counts climb live while the upload runs.
+- **Cancel an in-progress upload.** The progress toast has a **×** button that
+  aborts the in-flight requests (via `AbortController`), stops the worker pool from
+  starting any more files, and reports "Upload cancelled — N of M uploaded".
+  Already-ingested files are kept.
 
 ### Changed — activity-feed attribution
 
