@@ -59,8 +59,17 @@ export async function secureCloud(db: Lattice): Promise<void> {
   // NOTE: it is a single `id='singleton'` row mirroring the connecting user, so
   // concurrent members currently clobber it — a follow-up should re-key it per
   // role (id = current_user) with own-row RLS. The grant is the blocker fix.
+  //
+  // The GUI creates `__lattice_user_identity` at workspace-open, which runs
+  // BEFORE the owner triggers secureCloud — so in the app path it exists here. A
+  // library-only cutover (no GUI) has no such table, so grant only when present;
+  // the cutover stays a single idempotent call either way.
   await runAsyncOrSync(
     db.adapter,
-    `GRANT SELECT, INSERT, UPDATE ON "__lattice_user_identity" TO ${MEMBER_GROUP}`,
+    `DO $LATTICE$ BEGIN
+       IF to_regclass('__lattice_user_identity') IS NOT NULL THEN
+         EXECUTE 'GRANT SELECT, INSERT, UPDATE ON "__lattice_user_identity" TO ${MEMBER_GROUP}';
+       END IF;
+     END $LATTICE$`,
   );
 }

@@ -185,10 +185,13 @@ test('Advanced mode toggle restores the classic row/table editor', async ({ page
   const card = page.locator('.card').first();
   await expect(card).toHaveAttribute('href', /#\/fs\//);
 
-  // Flip Advanced mode on via the sidebar toggle. The checkbox is visually
-  // hidden behind a styled track; click the track the way a user would.
-  await page.locator('.sidebar-advanced .toggle-track').click();
+  // Advanced View now lives in Settings → Lattice (moved out of the sidebar).
+  // Open the gear → Lattice tab, then click the toggle track the way a user would.
+  await page.locator('#settings-gear').click();
+  await page.locator('.drawer-tab[data-tab="lattice"]').click();
+  await page.locator('#drawer-body .toggle-track').click();
   await expect(page.locator('#advanced-toggle')).toBeChecked();
+  await page.keyboard.press('Escape'); // close the drawer to reach the sidebar
 
   // Object navigation now targets the classic #/objects route …
   await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/objects\//);
