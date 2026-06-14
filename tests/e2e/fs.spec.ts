@@ -195,10 +195,13 @@ test('Advanced mode toggle restores the classic row/table editor', async ({ page
 
   // Object navigation now targets the classic #/objects route …
   await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/objects\//);
-  // … which renders the row table with its inline create row.
+  // … which renders the row table with its inline create row. Scope to the main
+  // content region: the settings drawer we just opened retains its rendered
+  // Lattice panel (which has its own workspace-list <table>), so an unscoped
+  // `table` locator is ambiguous after a hash-only navigation.
   await page.goto(`${gui.url}#/objects/authors`);
-  await expect(page.locator('table')).toBeVisible();
-  await expect(page.locator('tr.create-row')).toBeVisible();
+  await expect(page.locator('#content table')).toBeVisible();
+  await expect(page.locator('#content tr.create-row')).toBeVisible();
 });
 
 test('the gear opens a settings drawer with Database / Lattice / User tabs', async ({ page }) => {
