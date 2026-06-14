@@ -4,6 +4,7 @@ import {
   enableChangelogRls,
   enableRlsForTable,
   backfillOwnership,
+  MEMBER_GROUP,
 } from './rls.js';
 import { installCloudSettings } from './settings.js';
 import { seedColumnPolicyFromYaml, regenerateAudienceViewFromDb } from './audience.js';
@@ -49,4 +50,17 @@ export async function secureCloud(db: Lattice): Promise<void> {
   if (registered.includes('secrets')) {
     await runAsyncOrSync(db.adapter, `SELECT lattice_set_table_never_share('secrets', true)`);
   }
+  // GUI-direct system table grant. The per-table loop above skips every
+  // `__lattice_*` table, but `__lattice_user_identity` is the one such table a
+  // member reads/writes DIRECTLY on connect (gui/server.ts + userconfig-routes.ts)
+  // to record "who is sitting here". Without this grant a member hits
+  // "permission denied for table __lattice_user_identity" and cannot drive the
+  // GUI at all. Idempotent; re-securing an existing cloud retro-applies it.
+  // NOTE: it is a single `id='singleton'` row mirroring the connecting user, so
+  // concurrent members currently clobber it — a follow-up should re-key it per
+  // role (id = current_user) with own-row RLS. The grant is the blocker fix.
+  await runAsyncOrSync(
+    db.adapter,
+    `GRANT SELECT, INSERT, UPDATE ON "__lattice_user_identity" TO ${MEMBER_GROUP}`,
+  );
 }
