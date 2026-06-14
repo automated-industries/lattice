@@ -9,15 +9,36 @@ import {
   saveDbCredential,
   listDbCredentials,
   getOrCreateMasterKey,
-  readIdentity,
+  getS3ConfigRaw,
+  saveS3ConfigRaw,
 } from '../framework/user-config.js';
-import { probeCloud } from '../framework/cloud-connect.js';
+import { activeWorkspaceLabel, mergeS3ConfigForSave } from '../framework/s3-config.js';
+import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+import { secureCloud } from '../cloud/setup.js';
+import {
+  installCloudSettings,
+  getCloudSettingStrict,
+  setCloudSetting,
+  CLOUD_SETTING_SYSTEM_PROMPT,
+} from '../cloud/settings.js';
+
+/** Generous upper bound on the stored chat system prompt — well past any real
+ *  house-style/domain preamble, but it stops an accidental multi-MB paste from
+ *  bloating every member's turn (and the model context). Owner-only input. */
+const MAX_SYSTEM_PROMPT_CHARS = 100_000;
+import {
+  provisionMemberRole,
+  generateMemberPassword,
+  memberRoleName,
+  setRowVisibility,
+  grantCell,
+  revokeCell,
+} from '../cloud/members.js';
 import {
   archiveLocalSqlite,
   migrateLatticeData,
   openTargetLatticeForMigration,
 } from '../framework/cloud-migration.js';
-import { TeamsClient } from '../teams/client.js';
 import { parseConfigFile } from '../config/parser.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
 import {
@@ -67,21 +88,6 @@ interface DbConfigContext {
   configPath: string;
   pathname: string;
   method: string;
-  /**
-   * Resolved team membership for the active DB (null for non-team DBs).
-   * `joined` is true once the operator's identity resolves to a cloud
-   * member — this is the authoritative "am I in the team?" signal,
-   * replacing the fragile token-file probe that made already-joined
-   * members render the "paste invite token" state. `isCreator` gates
-   * owner-only actions like renaming the cloud DB.
-   */
-  teamMembership: { joined: boolean; isCreator: boolean; teamId: string; myUserId: string } | null;
-  /**
-   * True when the workspace is a cloud reached via a raw `postgres://`
-   * connection in a regular GUI — refused as of 2.2.3. The SPA shows a
-   * "reconnect through a server" prompt instead of cloud data.
-   */
-  cloudReconnectRequired: boolean;
   /**
    * Re-open the same configPath after the YAML has been updated.
    * Closes the current Lattice and replaces it. Caller-owned because
@@ -133,8 +139,11 @@ function parsePostgresUrl(url: string): {
 // A connected cloud Postgres workspace is, by definition, one you created (owner)
 // or were invited into (member) — you cannot reach a team cloud without an
 // invitation — so there is no "needs invite" settings state. Joining via an
-// invite token lives only in the Join Workspace flow.
-export type DbConfigState = 'local' | 'team-cloud-creator' | 'team-cloud-member';
+// v3 cloud states. A "cloud" is a shared Postgres DB with Lattice RLS installed.
+// You are the OWNER if your role can create other roles (CREATEROLE → you can
+// invite members and you own the migrated rows); otherwise you're a scoped
+// MEMBER. SQLite is always a private local store.
+export type DbConfigState = 'local' | 'cloud-owner' | 'cloud-member';
 
 interface DbInfo {
   type: 'sqlite' | 'postgres';
@@ -145,163 +154,60 @@ interface DbInfo {
   port?: number;
   dbname?: string;
   user?: string;
-  teamEnabled: boolean;
-  teamName?: string;
+  /** True iff the active DB is an established cloud (Postgres with RLS installed). */
+  isCloud: boolean;
 }
 
-/**
- * Read `__lattice_team_identity.creator_email` if the singleton is
- * present. Returns null when the table doesn't exist or the row is
- * absent — used to decide creator-vs-member when computing state.
- */
-async function getCreatorEmail(db: Lattice): Promise<string | null> {
-  try {
-    const row = (await db.get('__lattice_team_identity', 'singleton')) as {
-      creator_email?: string;
-    } | null;
-    return row?.creator_email ?? null;
-  } catch {
-    return null;
-  }
+/** Derive the cloud state from the live DB: local (sqlite) vs owner/member. */
+async function computeState(db: Lattice): Promise<DbConfigState> {
+  if (db.getDialect() !== 'postgres') return 'local';
+  return (await canManageRoles(db)) ? 'cloud-owner' : 'cloud-member';
 }
 
-/**
- * Compute the panel's state from the DB shape: SQLite → local; Postgres → a
- * cloud workspace you're a member of (owner when our identity matches the team's
- * `creator_email`, else member).
- */
-function computeState(type: 'sqlite' | 'postgres', creatorEmail: string | null): DbConfigState {
-  if (type === 'sqlite') return 'local';
-  // Every cloud Postgres DB is an auto-initialized team-cloud workspace, and the
-  // only ways to be connected to one are creating it (owner) or joining via an
-  // invite (member) — so a connected cloud DB is ALWAYS a member workspace, never
-  // "needs invite". Owner vs member is decided by whether our identity matches the
-  // team's recorded creator_email; when we can't tell (raw URL, missing identity),
-  // default to member rather than gating behind a bogus re-join prompt.
-  const identity = readIdentity();
-  if (
-    creatorEmail !== null &&
-    identity.email.length > 0 &&
-    creatorEmail.toLowerCase() === identity.email.toLowerCase()
-  ) {
-    return 'team-cloud-creator';
-  }
-  return 'team-cloud-member';
-}
-
-/**
- * Override the YAML-derived state with the operator's resolved team membership
- * (the authoritative owner-vs-member signal). A connected cloud workspace is
- * always a member workspace, so this only refines owner vs member — it never
- * produces a "needs invite" state. Non-postgres DBs keep their original state.
- *
- * Exported for unit testing — the live override needs a Postgres team cloud,
- * which CI can't spin up; this keeps the decision pure + covered.
- */
-export function applyTeamMembershipState(
-  info: { type?: string; teamEnabled?: boolean; state?: DbConfigState },
-  membership: { joined: boolean; isCreator: boolean } | null,
-): DbConfigState | undefined {
-  if (info.type !== 'postgres') return info.state;
-  // A connected cloud workspace is always a member workspace (created or invited).
-  // The resolved membership decides owner vs member; when it's unresolved, keep
-  // computeState's result (also creator-or-member — "needs invite" no longer
-  // exists, so a failed membership probe never downgrades you to a re-join form).
-  if (membership) return membership.isCreator ? 'team-cloud-creator' : 'team-cloud-member';
-  return info.state;
-}
-
-/** Inspect the YAML's `db:` line + the active Lattice for the team-status flag. */
+/** Inspect the YAML's `db:` line + the active Lattice to describe the active DB. */
 async function describeCurrent(configPath: string, db: Lattice): Promise<DbInfo> {
   const rawYaml = readFileSync(configPath, 'utf8');
   const doc = parseDocument(rawYaml);
   const rawDb = doc.get('db');
   const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
-  const teamEnabled = await detectTeamEnabled(db);
-  const creatorEmail = teamEnabled ? await getCreatorEmail(db) : null;
   const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(dbLine);
 
-  let identityRow: { team_name?: string } | null = null;
-  if (teamEnabled) {
-    try {
-      identityRow = (await db.get('__lattice_team_identity', 'singleton')) as {
-        team_name?: string;
-      } | null;
-    } catch {
-      identityRow = null;
-    }
-  }
-  const teamName = identityRow?.team_name;
-
-  if (labelMatch) {
-    const label = labelMatch[1] ?? '';
-    const url = getDbCredential(label);
-    const state = computeState('postgres', creatorEmail);
-    if (url) {
-      const parsed = parsePostgresUrl(url);
-      if (parsed) {
-        return {
-          type: 'postgres',
-          state,
-          label,
-          host: parsed.host,
-          port: parsed.port,
-          dbname: parsed.dbname,
-          user: parsed.user,
-          teamEnabled,
-          ...(teamName !== undefined ? { teamName } : {}),
-        };
+  if (db.getDialect() === 'postgres') {
+    const isCloud = await cloudRlsInstalled(db);
+    const state = await computeState(db);
+    const fields = (() => {
+      if (labelMatch) {
+        const label = labelMatch[1] ?? '';
+        const url = getDbCredential(label);
+        const parsed = url ? parsePostgresUrl(url) : null;
+        return { label, parsed };
       }
-    }
+      if (/^postgres(ql)?:\/\//i.test(dbLine)) {
+        return { label: undefined, parsed: parsePostgresUrl(dbLine) };
+      }
+      return { label: undefined, parsed: null };
+    })();
     return {
       type: 'postgres',
       state,
-      label,
-      teamEnabled,
-      ...(teamName !== undefined ? { teamName } : {}),
+      isCloud,
+      ...(fields.label !== undefined ? { label: fields.label } : {}),
+      ...(fields.parsed
+        ? {
+            host: fields.parsed.host,
+            port: fields.parsed.port,
+            dbname: fields.parsed.dbname,
+            user: fields.parsed.user,
+          }
+        : {}),
     };
-  }
-  if (/^postgres(ql)?:\/\//i.test(dbLine)) {
-    const parsed = parsePostgresUrl(dbLine);
-    const state = computeState('postgres', creatorEmail);
-    return parsed
-      ? {
-          type: 'postgres',
-          state,
-          host: parsed.host,
-          port: parsed.port,
-          dbname: parsed.dbname,
-          user: parsed.user,
-          teamEnabled,
-          ...(teamName !== undefined ? { teamName } : {}),
-        }
-      : {
-          type: 'postgres',
-          state,
-          teamEnabled,
-          ...(teamName !== undefined ? { teamName } : {}),
-        };
   }
   return {
     type: 'sqlite',
     state: 'local',
     dbFile: basename(dbLine),
-    teamEnabled,
+    isCloud: false,
   };
-}
-
-/**
- * Probe the active Lattice for a populated `__lattice_team_identity`
- * row. Treats any error as "not enabled" rather than throwing — older
- * Lattices may not have the table at all.
- */
-async function detectTeamEnabled(db: Lattice): Promise<boolean> {
-  try {
-    const row = await db.get('__lattice_team_identity', 'singleton');
-    return row != null;
-  } catch {
-    return false;
-  }
 }
 
 /** Replace the `db:` line in a YAML config while preserving comments + order. */
@@ -362,25 +268,10 @@ export async function dispatchDbConfigRoute(
   if (pathname === '/api/dbconfig' && method === 'GET') {
     await tryHandler(res, async () => {
       const info = await describeCurrent(ctx.configPath, ctx.db);
-      // The resolved membership is authoritative for the team-cloud
-      // state — it reflects whether the operator's identity actually
-      // resolves to a team member, not whether a token key-file happens
-      // to be on disk. This is what stops an already-joined member from
-      // rendering the "paste invite token to join" panel.
-      info.state = applyTeamMembershipState(info, ctx.teamMembership) ?? info.state;
-      sendJson(res, {
-        ...info,
-        isCreator: ctx.teamMembership?.isCreator ?? false,
-        // Expose the resolved team identity so the SPA can drive member
-        // admin / invite / leave directly off the active cloud DB,
-        // without a local `__lattice_team_connections` row (which doesn't
-        // exist when the team cloud itself is the active database).
-        teamId: ctx.teamMembership?.teamId ?? null,
-        myUserId: ctx.teamMembership?.myUserId ?? null,
-        // 2.2.3: a direct postgres:// cloud connection is refused — the SPA
-        // shows a "reconnect through a server" prompt instead of cloud data.
-        cloudReconnectRequired: ctx.cloudReconnectRequired,
-      });
+      // `isOwner` drives the SPA's owner-only affordances (invite a member,
+      // rename). It's derived live from the connected role's CREATEROLE
+      // capability — there is no team-identity row to consult.
+      sendJson(res, { ...info, isOwner: info.state === 'cloud-owner' });
     });
     return true;
   }
@@ -507,18 +398,20 @@ export async function dispatchDbConfigRoute(
         user: parsed.user,
         password: parsed.password,
       });
-      // Probe first — refuse if unreachable or target already has a team.
+      // Probe first — refuse if unreachable or the target is already a
+      // secured cloud (migrating into it would mix two owners' data).
       const probe = await probeCloud(url);
       if (!probe.reachable) {
         sendJson(res, { ok: false, error: probe.error ?? 'Cloud DB unreachable' }, 502);
         return;
       }
-      if (probe.teamEnabled) {
+      if (probe.isCloud) {
         sendJson(
           res,
           {
             ok: false,
-            error: 'Target cloud DB already has a team — migration aborts to avoid mixing data',
+            error:
+              'Target is already a Lattice cloud — migration aborts to avoid mixing data. Join it instead.',
           },
           409,
         );
@@ -530,29 +423,17 @@ export async function dispatchDbConfigRoute(
       const target = await openTargetLatticeForMigration(ctx.configPath, url, encryptionKey);
       try {
         const result = await migrateLatticeData(ctx.db, target);
+        // Owner-side cloud setup: the migrator's connection owns the cloud, so it
+        // installs RLS + the observation substrate and stamps itself as owner of
+        // every just-migrated row. Each member later sees only its own rows
+        // (private by default) until the owner shares them; chat / secrets /
+        // history are isolated the same way; per-viewer enrichment observations
+        // are gated by source visibility.
+        await secureCloud(target);
         target.close();
         const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;
         const backupPath = archiveLocalSqlite(sourceDbPath);
         saveDbCredential(parsed.label, url);
-        // 1.16.3: a cloud workspace IS a cloud DB with members — there is no
-        // separate "team" to upgrade to. Auto-initialize the member/share
-        // machinery now so sharing works immediately; the migrator becomes the
-        // owner. Best-effort: a failure leaves a usable plain cloud DB (the
-        // operator can set their email and reopen to initialize it).
-        try {
-          const identity = readIdentity();
-          if (identity.email) {
-            await new TeamsClient(ctx.db).ensureCloudWorkspaceIdentity({
-              label: parsed.label,
-              cloudUrl: url,
-              workspaceName: parsed.label,
-              email: identity.email,
-              displayName: identity.display_name,
-            });
-          }
-        } catch {
-          // leave as a plain cloud DB; lazy-init on next open will retry
-        }
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
         await ctx.swap();
@@ -584,10 +465,6 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
         return;
       }
-      const inviteToken =
-        typeof body.invite_token === 'string' && body.invite_token.trim()
-          ? body.invite_token.trim()
-          : undefined;
       const url = buildPostgresUrl({
         host: parsed.host,
         port: Number(parsed.port),
@@ -595,43 +472,35 @@ export async function dispatchDbConfigRoute(
         user: parsed.user,
         password: parsed.password,
       });
-      const identity = readIdentity();
-      const client = new TeamsClient(ctx.db);
       try {
-        const result = await client.connectToExistingCloud({
-          label: parsed.label,
-          cloudUrl: url,
-          ...(inviteToken !== undefined ? { invite_token: inviteToken } : {}),
-          ...(identity.email ? { email: identity.email } : {}),
-          ...(identity.display_name ? { name: identity.display_name } : {}),
-        });
-        // 1.16.3: connecting to a raw cloud DB that isn't a workspace yet
-        // initializes it (the connector becomes owner) — no "upgrade" step.
-        // Joining an existing workspace via invite is handled inside
-        // connectToExistingCloud (teamEnabled branch) and is left untouched.
-        if (!result.probe.teamEnabled && identity.email) {
-          try {
-            await client.ensureCloudWorkspaceIdentity({
-              label: parsed.label,
-              cloudUrl: url,
-              workspaceName: parsed.label,
-              email: identity.email,
-              displayName: identity.display_name,
-            });
-          } catch {
-            // leave as a plain cloud DB; lazy-init on next open will retry
-          }
+        // Join = connect DIRECTLY with the scoped credentials the owner issued
+        // (the "invite" is those credentials). The probe authenticates the role
+        // and confirms the target is actually a Lattice cloud (RLS installed) —
+        // there's nothing to provision here, the owner already created the role
+        // and RLS confines it. openConfig opens it `introspectOnly` because the
+        // member role can't (and needn't) run DDL.
+        const probe = await probeCloud(url);
+        if (!probe.reachable) {
+          sendJson(res, { ok: false, error: probe.error ?? 'Cloud DB unreachable' }, 502);
+          return;
         }
+        if (!probe.isCloud) {
+          sendJson(
+            res,
+            {
+              ok: false,
+              error:
+                'That Postgres database is not a Lattice cloud yet. The owner must migrate a local Lattice into it first.',
+            },
+            409,
+          );
+          return;
+        }
+        saveDbCredential(parsed.label, url);
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
         await ctx.swap();
-        sendJson(res, {
-          ok: true,
-          label: parsed.label,
-          teamEnabled: result.probe.teamEnabled,
-          ...(result.probe.teamName !== undefined ? { teamName: result.probe.teamName } : {}),
-          ...(result.joinedAsMember !== undefined ? { joinedAsMember: result.joinedAsMember } : {}),
-        });
+        sendJson(res, { ok: true, label: parsed.label, isCloud: true });
       } catch (e) {
         const status = (e as { status?: number }).status ?? 500;
         sendJson(res, { ok: false, error: (e as Error).message }, status);
@@ -640,12 +509,240 @@ export async function dispatchDbConfigRoute(
     return true;
   }
 
+  // POST /api/cloud/invite — owner provisions a scoped member role and returns
+  // the connection details the new member pastes into "Join a cloud". The invite
+  // IS those credentials (there is no server, no token redemption). Requires the
+  // connected role to hold CREATEROLE (a cloud owner); members get a 403.
+  if (pathname === '/api/cloud/invite' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can invite members' }, 403);
+        return;
+      }
+      const body = await readJson(req);
+      const label =
+        typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'member';
+      const role = memberRoleName(label);
+      const password = generateMemberPassword();
+      await provisionMemberRole(ctx.db, role, password);
+      // Surface the connection coordinates of the active cloud so the owner can
+      // hand the member a complete invite. Read from the saved credential of the
+      // active label when present, else from the raw `db:` URL.
+      const coords = activeCloudCoords(ctx.configPath);
+      sendJson(res, {
+        ok: true,
+        invite: {
+          host: coords?.host ?? null,
+          port: coords?.port ?? null,
+          dbname: coords?.dbname ?? null,
+          user: role,
+          password,
+        },
+      });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/secure — the existing-cloud cutover. Secure an
+  // already-populated Postgres in place: install RLS + the observation substrate
+  // and make the connecting role the owner of every existing row. Idempotent.
+  // Owner-only (needs CREATEROLE + table ownership). Use this when you already
+  // have data in a Postgres database and want to turn it INTO a Lattice cloud
+  // without migrating from a local SQLite store first.
+  if (pathname === '/api/cloud/secure' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres') {
+        sendJson(res, { error: 'Only a Postgres database can be secured as a cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(
+          res,
+          { error: 'Securing a cloud requires a connection that can create roles' },
+          403,
+        );
+        return;
+      }
+      const alreadyCloud = await cloudRlsInstalled(ctx.db);
+      await secureCloud(ctx.db);
+      await ctx.swap();
+      sendJson(res, { ok: true, alreadyCloud, secured: true });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/share — set a row's visibility (private | everyone) via the
+  // owner-only RLS function. Only the row's owner may change its sharing; the
+  // database raises for anyone else, which surfaces as a 403-ish error here.
+  if (pathname === '/api/cloud/share' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const table = typeof body.table === 'string' ? body.table : '';
+      const pk = typeof body.pk === 'string' ? body.pk : '';
+      const visibility = typeof body.visibility === 'string' ? body.visibility : '';
+      if (!table || !pk || !visibility) {
+        sendJson(res, { error: 'table, pk and visibility are required' }, 400);
+        return;
+      }
+      if (ctx.db.getDialect() !== 'postgres') {
+        sendJson(res, { error: 'Sharing requires a cloud (Postgres) database' }, 400);
+        return;
+      }
+      await setRowVisibility(ctx.db, table, pk, visibility);
+      sendJson(res, { ok: true, table, pk, visibility });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/cell-share — per-card audience override. The row owner grants
+  // (or revokes) one member access to one masked cell (table + pk + column),
+  // without changing the column's schema-level audience. Owner-only.
+  if (pathname === '/api/cloud/cell-share' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const table = typeof body.table === 'string' ? body.table : '';
+      const pk = typeof body.pk === 'string' ? body.pk : '';
+      const column = typeof body.column === 'string' ? body.column : '';
+      const grantee = typeof body.grantee === 'string' ? body.grantee : '';
+      const revoke = body.revoke === true;
+      if (!table || !pk || !column || !grantee) {
+        sendJson(res, { error: 'table, pk, column and grantee are required' }, 400);
+        return;
+      }
+      if (ctx.db.getDialect() !== 'postgres') {
+        sendJson(res, { error: 'Per-cell sharing requires a cloud (Postgres) database' }, 400);
+        return;
+      }
+      if (revoke) await revokeCell(ctx.db, table, pk, column, grantee);
+      else await grantCell(ctx.db, table, pk, column, grantee);
+      sendJson(res, { ok: true, table, pk, column, grantee, revoked: revoke });
+    });
+    return true;
+  }
+
+  // GET/POST /api/cloud/s3-config — enable S3 file storage for this cloud
+  // workspace. When on, uploaded file bytes go to S3 so other members can pull
+  // them (access still gated by the files-row RLS at the serve route). Config is
+  // stored per-member + machine-local (encrypted), NOT in the shared DB. Setting
+  // it is owner-only; the secret is redacted on read.
+  if (pathname === '/api/cloud/s3-config' && method === 'GET') {
+    // Reads this member's machine-local config only (no DB/network), so the
+    // handler is synchronous; return a resolved promise for tryHandler's signature.
+    await tryHandler(res, () => {
+      const label = activeWorkspaceLabel(ctx.configPath);
+      const raw = label ? getS3ConfigRaw(label) : null;
+      sendJson(res, {
+        enabled: raw?.enabled === true,
+        bucket: typeof raw?.bucket === 'string' ? raw.bucket : null,
+        region: typeof raw?.region === 'string' ? raw.region : null,
+        prefix: typeof raw?.prefix === 'string' ? raw.prefix : null,
+        endpoint: typeof raw?.endpoint === 'string' ? raw.endpoint : null,
+        // Never return the secret; just whether one is stored.
+        accessKeyId: typeof raw?.accessKeyId === 'string' ? raw.accessKeyId : null,
+        hasSecret: typeof raw?.secretAccessKey === 'string' && raw.secretAccessKey.length > 0,
+      });
+      return Promise.resolve();
+    });
+    return true;
+  }
+  if (pathname === '/api/cloud/s3-config' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can configure S3 file storage' }, 403);
+        return;
+      }
+      const label = activeWorkspaceLabel(ctx.configPath);
+      if (!label) {
+        sendJson(res, { error: 'The active workspace is not a labelled cloud connection' }, 400);
+        return;
+      }
+      const body = await readJson(req);
+      // Merge over the existing stored config so a PARTIAL update (toggling
+      // `enabled`, changing `prefix`) doesn't silently drop the stored secret — the
+      // GET handler redacts secretAccessKey, so a UI round-trip never carries it
+      // back. (See mergeS3ConfigForSave.)
+      const toSave = mergeS3ConfigForSave(getS3ConfigRaw(label) ?? {}, body);
+      if (toSave.enabled && (!toSave.bucket || !toSave.region)) {
+        sendJson(res, { error: 'bucket and region are required to enable S3' }, 400);
+        return;
+      }
+      saveS3ConfigRaw(label, toSave);
+      sendJson(res, { ok: true, enabled: toSave.enabled, bucket: toSave.bucket || null });
+    });
+    return true;
+  }
+
+  // GET/POST /api/cloud/system-prompt — the workspace chat system prompt the cloud
+  // OWNER bundles into every member's chat. Owner-only to VIEW and to EDIT: the GET
+  // returns the text ONLY to an owner (a member gets canEdit:false and NO text), so
+  // the prompt never crosses the product API to a member. Secrecy is app-mediated
+  // (see src/cloud/settings.ts) — it's hidden from the UI + API, not cryptographic.
+  if (pathname === '/api/cloud/system-prompt' && method === 'GET') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        // Not a cloud — no shared/secret prompt concept. Report unsupported so the
+        // UI hides the control rather than showing an empty editor.
+        sendJson(res, { supported: false, canEdit: false });
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        // A member: never return the prompt text through the product API.
+        sendJson(res, { supported: true, canEdit: false });
+        return;
+      }
+      // Owner: ensure the store exists (covers clouds secured before this feature),
+      // then return the current prompt for editing. Use the STRICT reader: a real
+      // read failure must surface (tryHandler → 500, the modal shows a load error)
+      // rather than swallow to '' — a deceptive empty editor would invite a blind
+      // overwrite of the live prompt (Rule 16). '' means genuinely unset.
+      await installCloudSettings(ctx.db);
+      const prompt = await getCloudSettingStrict(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT);
+      sendJson(res, { supported: true, canEdit: true, prompt: prompt ?? '' });
+    });
+    return true;
+  }
+  if (pathname === '/api/cloud/system-prompt' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can edit the chat system prompt' }, 403);
+        return;
+      }
+      const body = await readJson(req);
+      const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+      if (prompt.length > MAX_SYSTEM_PROMPT_CHARS) {
+        sendJson(
+          res,
+          { error: `prompt is too long (max ${String(MAX_SYSTEM_PROMPT_CHARS)} characters)` },
+          400,
+        );
+        return;
+      }
+      await installCloudSettings(ctx.db);
+      // The setter is owner-guarded inside Postgres too (RAISEs for a non-owner) —
+      // the API gate above is defense in depth + a clean error.
+      await setCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT, prompt);
+      sendJson(res, { ok: true, length: prompt.length });
+    });
+    return true;
+  }
+
   // POST /api/dbconfig/rename — set the friendly database name.
   //
-  // Cloud: UPDATE __lattice_team_identity.team_name. The realtime
-  // subscription notifies other members; their dropdowns refresh.
-  // Local: write a top-level `name:` key into the active YAML. The
-  // config parser already accepts it; future opens read it back.
+  // The cloud has no shared name in v3 (no team-identity row); the name is the
+  // operator's own workspace label. So rename always writes the local YAML
+  // `name:` key + the workspace registry, for both local and cloud configs.
   if (pathname === '/api/dbconfig/rename' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -658,69 +755,37 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { error: 'name must be 200 characters or fewer' }, 400);
         return;
       }
-      const info = await describeCurrent(ctx.configPath, ctx.db);
-      if (info.type === 'postgres' && info.teamEnabled) {
-        // Renaming a team cloud broadcasts to every member, so only the
-        // team creator may do it. Members get a 403.
-        if (ctx.teamMembership && !ctx.teamMembership.isCreator) {
-          sendJson(res, { error: 'Only the team owner can rename this database' }, 403);
-          return;
-        }
-        const updatedAt = new Date().toISOString();
-        const existing = (await ctx.db.get('__lattice_team_identity', 'singleton')) as {
-          id: string;
-        } | null;
-        if (!existing) {
-          sendJson(res, { error: '__lattice_team_identity row missing — cannot rename' }, 500);
-          return;
-        }
-        await ctx.db.update('__lattice_team_identity', 'singleton', {
-          team_name: name,
-          updated_at: updatedAt,
-        });
-        // Mirror the rename into the workspace registry (the header switcher's source).
-        {
-          const root = findLatticeRoot(dirname(ctx.configPath));
-          if (root) renameWorkspaceByConfigPath(root, ctx.configPath, name);
-        }
-        // Also update __lattice_team for the multi-team table — same
-        // friendly name, mirrored so the cloud's per-team row is current.
-        try {
-          const teams = (await ctx.db.query('__lattice_team', { limit: 1 })) as {
-            id: string;
-          }[];
-          if (teams[0]) {
-            await ctx.db.update('__lattice_team', teams[0].id, {
-              name,
-              updated_at: updatedAt,
-            });
-          }
-        } catch {
-          // Older clouds may not have __lattice_team; tolerate.
-        }
-        sendJson(res, { ok: true, kind: 'cloud', name });
-        return;
-      }
-      // Local YAML — write top-level name: key.
+      // The cloud carries no shared name (no team-identity row); a workspace name
+      // is the operator's own label. Write the local YAML `name:` key + mirror it
+      // into the workspace registry (the header switcher's source) for every DB.
       const doc = parseDocument(readFileSync(ctx.configPath, 'utf8'));
       doc.set('name', name);
       writeFileSync(ctx.configPath, doc.toString(), 'utf8');
-      // Mirror the rename into the workspace registry (the header switcher's source).
-      {
-        const root = findLatticeRoot(dirname(ctx.configPath));
-        if (root) renameWorkspaceByConfigPath(root, ctx.configPath, name);
-      }
-      sendJson(res, { ok: true, kind: 'local', name });
+      const root = findLatticeRoot(dirname(ctx.configPath));
+      if (root) renameWorkspaceByConfigPath(root, ctx.configPath, name);
+      const info = await describeCurrent(ctx.configPath, ctx.db);
+      sendJson(res, { ok: true, kind: info.isCloud ? 'cloud' : 'local', name });
     });
     return true;
   }
 
-  // (Removed in 1.16.3) /api/dbconfig/upgrade-to-team — the "team" concept was
-  // deprecated; a cloud workspace's member/share machinery is now initialized
-  // automatically at migrate-to-cloud / connect-existing / open time via
-  // TeamsClient.ensureCloudWorkspaceIdentity. There is no explicit upgrade step.
-
   return false;
+}
+
+/** Host/port/dbname of the active cloud connection, read from the saved
+ *  credential (label form) or the raw `db:` URL. null when the active DB isn't a
+ *  Postgres URL. */
+function activeCloudCoords(
+  configPath: string,
+): { host: string; port: number; dbname: string } | null {
+  const doc = parseDocument(readFileSync(configPath, 'utf8'));
+  const rawDb = doc.get('db');
+  const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
+  const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(dbLine);
+  const url = labelMatch ? getDbCredential(labelMatch[1] ?? '') : dbLine;
+  if (!url) return null;
+  const parsed = parsePostgresUrl(url);
+  return parsed ? { host: parsed.host, port: parsed.port, dbname: parsed.dbname } : null;
 }
 
 // Re-export for tests that want to construct URLs without going through HTTP.

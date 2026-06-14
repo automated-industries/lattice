@@ -345,6 +345,65 @@ export function saveDbCredential(label: string, url: string): void {
   saveCredentials(creds);
 }
 
+// ---------------------------------------------------------------------------
+// Saved S3 configs — `~/.lattice/s3-config.enc`
+// AES-GCM-encrypted JSON object: { [label]: S3Config }. Per-member + machine
+// local (NOT in the shared DB), the same trust model as db-credentials.enc —
+// each member configures their own S3 access for a cloud workspace.
+// ---------------------------------------------------------------------------
+
+const S3_CONFIG_FILENAME = 's3-config.enc';
+
+function loadS3Configs(): Record<string, Record<string, unknown>> {
+  const dir = ensureConfigDir();
+  const path = join(dir, S3_CONFIG_FILENAME);
+  if (!existsSync(path)) return {};
+  const key = deriveKey(getOrCreateMasterKey());
+  try {
+    const parsed = JSON.parse(decrypt(readFileSync(path, 'utf8').trim(), key)) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, Record<string, unknown>>;
+    }
+    return {};
+  } catch (e) {
+    // The file EXISTS but won't decrypt/parse — a corrupt store or a wrong master
+    // key, NOT "no config". Returning {} would silently present a configured
+    // workspace as "S3 off" (Rule 16). Surface it loudly; degrade to no-config so
+    // a corrupt local file can't crash every upload/serve, but make it observable.
+    console.warn(
+      `[s3-config] ${S3_CONFIG_FILENAME} exists but could not be read (corrupt store or wrong key); treating as no S3 config: ${(e as Error).message}`,
+    );
+    return {};
+  }
+}
+
+function saveS3Configs(cfgs: Record<string, Record<string, unknown>>): void {
+  const dir = ensureConfigDir();
+  const path = join(dir, S3_CONFIG_FILENAME);
+  const key = deriveKey(getOrCreateMasterKey());
+  writeFileSync(path, encrypt(JSON.stringify(cfgs), key) + '\n', 'utf8');
+  if (platform() !== 'win32') {
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+/** Raw S3 config object stored under `label`, or null. (Typed access is via
+ *  `resolveActiveS3Config` in s3-config.ts.) */
+export function getS3ConfigRaw(label: string): Record<string, unknown> | null {
+  return loadS3Configs()[label] ?? null;
+}
+
+/** Persist (or overwrite) the S3 config stored under `label`. */
+export function saveS3ConfigRaw(label: string, cfg: Record<string, unknown>): void {
+  const all = loadS3Configs();
+  all[label] = cfg;
+  saveS3Configs(all);
+}
+
 /**
  * Sanitize an arbitrary team name into a label safe to use as a
  * filesystem-ish credential key. Same character set as the labels

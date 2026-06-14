@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
-import { applyTeamMembershipState } from '../../src/gui/dbconfig-routes.js';
 import {
   getDbCredential,
   saveDbCredential,
@@ -115,8 +114,9 @@ describe('GET /api/dbconfig returns state field', () => {
     expect(r.status).toBe(200);
     expect(r.body.state).toBe('local');
     expect(r.body.type).toBe('sqlite');
-    // Non-team DBs are never "owned" by anyone.
-    expect(r.body.isCreator).toBe(false);
+    // A local SQLite store has no cloud owner.
+    expect(r.body.isOwner).toBe(false);
+    expect(r.body.isCloud).toBe(false);
   });
 });
 
@@ -140,45 +140,8 @@ describe('GET /api/databases reports per-row kind', () => {
   });
 });
 
-describe('applyTeamMembershipState', () => {
-  const teamInfo = {
-    type: 'postgres',
-    teamEnabled: true,
-    state: 'team-cloud-member' as const,
-  };
-
-  it('reports a member as team-cloud-member', () => {
-    expect(applyTeamMembershipState(teamInfo, { joined: true, isCreator: false })).toBe(
-      'team-cloud-member',
-    );
-  });
-
-  it('reports a creator as team-cloud-creator', () => {
-    expect(applyTeamMembershipState(teamInfo, { joined: true, isCreator: true })).toBe(
-      'team-cloud-creator',
-    );
-  });
-
-  it('a connected cloud workspace is a member even if the probe says not-joined (never needs-invite)', () => {
-    // Connection ⟹ membership: you can't reach a team cloud without an invite.
-    expect(applyTeamMembershipState(teamInfo, { joined: false, isCreator: false })).toBe(
-      'team-cloud-member',
-    );
-  });
-
-  it('with unresolved membership, keeps the computed creator/member state', () => {
-    expect(applyTeamMembershipState({ type: 'postgres', state: 'team-cloud-creator' }, null)).toBe(
-      'team-cloud-creator',
-    );
-  });
-
-  it('leaves non-postgres DBs untouched', () => {
-    expect(applyTeamMembershipState({ type: 'sqlite', state: 'local' }, null)).toBe('local');
-  });
-});
-
 describe('POST /api/dbconfig/probe', () => {
-  it('reports reachable + teamEnabled:false against a fresh empty target', async () => {
+  it('reports reachable + isCloud:false against a fresh empty target', async () => {
     const { handle, root } = await startGui();
     const targetPath = join(root, 'data', 'probe-target.db');
     const r = await api(handle.url, '/api/dbconfig/probe', {
@@ -199,7 +162,7 @@ describe('POST /api/dbconfig/probe', () => {
     // returns a shape, not specifically reachability against SQLite.
     expect(r.status).toBe(200);
     expect(typeof r.body.reachable).toBe('boolean');
-    expect(typeof r.body.teamEnabled).toBe('boolean');
+    expect(typeof r.body.isCloud).toBe('boolean');
     expect(['sqlite', 'postgres']).toContain(r.body.dialect);
   });
 });

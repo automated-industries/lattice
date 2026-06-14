@@ -1,6 +1,5 @@
 import { parseConfigFile } from '../config/parser.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
-import { appendChangeEnvelope } from '../teams/team-core.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import { recordSchemaAudit, createRow, deleteRow, type MutationCtx } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
@@ -57,18 +56,15 @@ export async function physicalColumnExists(
   }
 }
 
-/** Cloud-only: append a `ddl` change envelope so peers refetch + converge. */
-export async function emitDdlEnvelope(active: ActiveDb, table: string | null): Promise<void> {
-  const tc = active.teamContext;
-  if (!tc) return;
-  await appendChangeEnvelope(active.db, {
-    team_id: tc.teamId,
-    table_name: table,
-    pk: null,
-    op: 'ddl',
-    payload_json: null,
-    owner_user_id: tc.myUserId || null,
-  });
+/**
+ * No-op DDL-envelope hook. Peer convergence after a schema change is now driven
+ * by Postgres RLS + the database's own change-log; the app layer no longer
+ * appends a `ddl` envelope. Retained as a stable call site for the schema-op
+ * paths in case envelope emission is rebuilt on the RLS model.
+ */
+export function emitDdlEnvelope(_active: ActiveDb, _table: string | null): Promise<void> {
+  // intentionally empty
+  return Promise.resolve();
 }
 
 /** Record a schema op to the unified history + activity feed + emit a ddl envelope. */
@@ -451,10 +447,6 @@ export async function aiDeleteEntity(
   if (!active.validTables.has(name)) return { ok: false, error: `Unknown table: ${name}` };
   if (isNativeEntity(name)) {
     return { ok: false, error: `"${name}" is a built-in table and cannot be deleted.` };
-  }
-  const tc = active.teamContext;
-  if (tc && tc.owners.get(name) !== tc.myUserId) {
-    return { ok: false, error: `Only the table's owner can delete "${name}".` };
   }
   const inbound: string[] = [];
   for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {

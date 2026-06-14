@@ -184,6 +184,7 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
 
   const columns: Record<string, string> = {};
   const fieldTypes: Record<string, string> = {};
+  const columnAudience: Record<string, string> = {};
   const relations: Record<string, BelongsToRelation> = {};
   let pkFromField: string | undefined;
 
@@ -192,6 +193,13 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     // Retain the canonical field type so the GUI can display it instead of the
     // lossy SQL spec (e.g. show `datetime`, not `TEXT NOT NULL DEFAULT …`).
     fieldTypes[fieldName] = field.type;
+
+    // Per-column audience (Stage-0 scaffolding). Only record an explicit value;
+    // an omitted audience means "row-audience" (today's behavior) and is left
+    // out of the map so it stays empty for every existing schema.
+    if (typeof field.audience === 'string' && field.audience.trim()) {
+      columnAudience[fieldName] = field.audience.trim();
+    }
 
     if (field.primaryKey) {
       pkFromField = fieldName;
@@ -230,6 +238,7 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     render,
     outputFile,
     ...(Object.keys(fieldTypes).length > 0 ? { fieldTypes } : {}),
+    ...(Object.keys(columnAudience).length > 0 ? { columnAudience } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(primaryKey !== undefined ? { primaryKey } : {}),
     ...(Object.keys(relations).length > 0 ? { relations } : {}),

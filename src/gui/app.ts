@@ -58,7 +58,6 @@ export const guiAppHtml = `<!doctype html>
       </svg>
     </button>
   </header>
-  <div class="cloud-reconnect" id="cloud-reconnect" hidden></div>
   <div class="layout">
     <nav class="sidebar">
       <label class="sidebar-advanced toggle" title="Advanced mode — row/table editor instead of the file workspace">
