@@ -50,10 +50,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   (owner-only, enforced in the database), alongside the existing
   private ↔ everyone toggle.
 - **Privacy indicators everywhere.** Each object shows a small faint lock (private
-  to you) or eye (shared) marker — in the sidebar object list and on the entity
-  page next to its visibility line — so a row's sharing is visible at a glance.
-  The per-row sharing controls now also appear in the simple object view, not
-  only the advanced data view.
+  to you) or eye (shared) marker — in the sidebar object list, on the entity page
+  next to its visibility line, and in the corner of every folder/collection card
+  tile — so a row's sharing is visible at a glance. Every indicator has a hover
+  tooltip explaining what the lock/eye means (state- and ownership-aware), driven
+  by one shared component. The per-row sharing controls now also appear in the
+  simple object view, not only the advanced data view.
 - **`set_visibility` assistant tool.** The assistant can change the sharing of a
   row or a whole table (private ↔ everyone) on request, limited to what the
   asking user is allowed to change. Assistant-initiated sharing changes are
@@ -67,6 +69,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   cloud, or join-by-invite). The last workspace can now be deleted.
 - **Boot loading screen.** A brief full-screen "Loading…" interstitial masks the
   half-rendered shell during startup and fades out once the app is ready.
+- **Connect your assistant during onboarding.** After the name/email step, the
+  wizard offers an optional "Connect with Claude" step (reusing the same
+  subscription-OAuth flow as Settings) so a new workspace can have a working
+  assistant from the start. It's fully skippable — "Skip for now" continues to
+  create/join, and an already-connected account is detected and shown as such.
 
 ### Added — connect a Claude subscription
 

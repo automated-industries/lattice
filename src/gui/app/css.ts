@@ -756,6 +756,9 @@ export const css = `
        one on the entity detail header. */
     .nav-vis { display: inline-flex; align-items: center; margin-left: 5px; color: var(--text-muted); opacity: 0.45; }
     .nav-vis svg { width: 12px; height: 12px; }
+    /* Shared lock/eye indicator (sidebar/detail/cards) — see visIndicator(). */
+    .vis-indicator { display: inline-flex; align-items: center; color: var(--text-muted); }
+    .vis-indicator svg { width: 14px; height: 14px; }
     .detail-vis-icon { display: inline-flex; align-items: center; color: var(--text-muted); }
     .detail-vis-icon svg { width: 14px; height: 14px; }
     button.is-busy { opacity: 0.75; cursor: progress; }
@@ -1037,12 +1040,17 @@ export const css = `
       gap: 14px; max-width: 1100px;
     }
     .fs-tile {
+      position: relative;
       display: flex; flex-direction: column; align-items: center; gap: 8px;
       padding: 18px 12px 14px; text-align: center;
       background: var(--sheen), var(--surface); border: 1px solid var(--border);
       border-radius: 12px; box-shadow: var(--shadow-2), var(--hl-top); cursor: pointer;
       transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     }
+    /* Per-row privacy indicator in a card-tile corner (lock = private, eye =
+       shared). Reuses the shared .vis-indicator component. */
+    .fs-tile-vis { position: absolute; top: 8px; right: 8px; opacity: 0.55; }
+    .fs-tile-vis svg { width: 13px; height: 13px; }
     .fs-tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-3), var(--glow-accent-soft); }
     .fs-tile-create { border-style: dashed; background: transparent; }
     .fs-tile-create .fs-tile-icon { color: var(--accent); }

@@ -2181,9 +2181,9 @@ export const appJs = `
       var vis = a.visibility;
       var labelMap = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
       // Clear visual indicator: a lock when private, an eye when shared (everyone
-      // or specific people). Wrapped so .detail-vis-icon can tint it.
-      var visIcon = '<span class="detail-vis-icon' + (vis === 'private' ? ' is-private' : '') + '">' +
-        (vis === 'private' ? LOCK_SVG : EYE_SVG) + '</span>';
+      // or specific people), with a hover tooltip. The shared helper keeps the
+      // .detail-vis-icon class (existing tint) and adds the title tooltip.
+      var visIcon = visIndicator(a, 'detail-vis-icon');
       if (!a.ownedByMe) {
         var seen = vis === 'custom' ? 'Shared with you' : (labelMap[vis] || '');
         return '<div class="detail-vis muted" style="display:flex;align-items:center;gap:6px;margin:6px 0;font-size:13px">' +
@@ -2750,7 +2750,11 @@ export const appJs = `
           var rowTiles = rows.length
             ? rows.map(function (r) {
                 var icon = (table === 'files') ? fileEmoji(r) : '📁';
+                // Per-row privacy indicator in the tile corner (lock = private, eye
+                // = shared); '' on a local workspace (no _access). Same component +
+                // tooltip as the entity-detail header.
                 return '<a class="fs-tile" href="' + base + '/' + encodeURIComponent(r.id) + '">' +
+                  visIndicator(r._access, 'fs-tile-vis') +
                   '<div class="fs-tile-icon">' + icon + '</div>' +
                   '<div class="fs-tile-label">' + escapeHtml(fsDisplayName(r)) + '</div>' +
                 '</a>';
@@ -4394,6 +4398,23 @@ export const appJs = `
     var EYE_SVG =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+    // Shared per-row lock/eye indicator, reused on the entity-detail header and the
+    // fs card tiles so the meaning is consistent. The access arg is the server-
+    // attached row._access (visibility + ownedByMe); returns empty when absent (a
+    // local / non-cloud workspace has no sharing), so callers append it freely.
+    // A hover tooltip spells out what the lock/eye means (state + ownership aware).
+    function visIndicator(access, extraClass) {
+      if (!access || !access.visibility) return '';
+      var vis = access.visibility;
+      var tip = vis === 'private'
+        ? 'Private — only you can see this'
+        : vis === 'custom'
+          ? (access.ownedByMe ? 'Shared with specific people' : 'Shared with you')
+          : 'Shared — visible to everyone';
+      return '<span class="vis-indicator' + (vis === 'private' ? ' is-private' : '') +
+        (extraClass ? ' ' + extraClass : '') + '" title="' + escapeHtml(tip) + '">' +
+        (vis === 'private' ? LOCK_SVG : EYE_SVG) + '</span>';
+    }
     // Sidebar object-list indicator: lock when the table's new rows default to
     // private, eye when shared with everyone. Only the cloud owner gets the
     // per-table policy (server gates it), so on local/member it renders nothing.
@@ -4431,18 +4452,26 @@ export const appJs = `
     // server has switched into the new workspace, so a reload re-runs init() into
     // the normal layout.
     function showOnboardingWizard(mode) {
-      var st = { step: 'identity', name: '', email: '', wsName: '', kind: 'local' };
+      var st = { step: 'identity', name: '', email: '', wsName: '', kind: 'local', connected: false };
       var backdrop = document.createElement('div');
       backdrop.className = 'modal-backdrop';
       document.body.appendChild(backdrop);
       function close() { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); }
 
-      fetchJson('/api/userconfig/identity').then(function (id) {
+      // Prefill identity + current assistant-connection state, so the Connect
+      // step can show "already connected" and let the user pass straight through.
+      Promise.all([
+        fetchJson('/api/userconfig/identity').catch(function () { return null; }),
+        fetchJson('/api/assistant/config').catch(function () { return null; }),
+      ]).then(function (res) {
+        var id = res[0];
+        var cfg = res[1];
         st.name = (id && id.display_name) || '';
         st.email = (id && id.email) || '';
+        st.connected = !!(cfg && (cfg.claudeAuthKind === 'oauth' || cfg.hasAnthropicKey));
         if (!st.wsName && st.name) st.wsName = st.name + "'s Workspace";
         render();
-      }).catch(function () { render(); });
+      });
 
       function field(label, id, type, value, placeholder) {
         return '<div style="margin-bottom:10px"><label class="field-label">' + escapeHtml(label) + '</label>' +
@@ -4453,6 +4482,7 @@ export const appJs = `
 
       function render() {
         var title = mode === 'join' ? 'Join a workspace' : 'Create a workspace';
+        if (st.step === 'connect') title = 'Connect your assistant';
         var body = '';
         var primary = 'Next';
         var showBack = st.step !== 'identity';
@@ -4460,6 +4490,28 @@ export const appJs = `
           body = '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">First, who are you? This labels your edits and is reused if you join a team.</p>' +
             field('Your name', 'ob-name', 'text', st.name, 'Ada Lovelace') +
             field('Email', 'ob-email', 'email', st.email, 'you@example.com');
+        } else if (st.step === 'connect') {
+          // Optional: connect a Claude subscription (or paste an API key later).
+          // The footer primary advances either way — "Skip for now" / "Continue".
+          if (st.connected) {
+            body = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
+                '<span class="feed-source" style="background:var(--accent-soft);color:var(--accent)">Connected with Claude</span>' +
+              '</div>' +
+              '<p style="margin:0;font-size:13px;color:var(--text-muted)">Your assistant is ready. You can change this anytime in Settings.</p>';
+            primary = 'Continue';
+          } else {
+            body = '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">Connect your Claude subscription so the assistant can help — Pro / Max / Enterprise, no API key needed. Optional: you can skip and add it later in Settings.</p>' +
+              '<a href="/api/assistant/oauth/start" target="_blank" rel="noopener" class="connect-claude-btn" id="ob-connect-btn">' +
+                CLAUDE_LOGO_SVG + '<span>Connect with Claude</span>' +
+              '</a>' +
+              '<p style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">After you approve in the new tab, paste the code it shows here:</p>' +
+              '<div style="display:flex;gap:8px;margin-top:6px">' +
+                '<input id="ob-connect-code" type="text" placeholder="paste code here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;background:var(--surface-2)">' +
+                '<button class="btn" id="ob-connect-finish">Connect</button>' +
+              '</div>' +
+              '<div id="ob-connect-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>';
+            primary = 'Skip for now';
+          }
         } else if (st.step === 'kind') {
           body = '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">A local workspace lives on this machine. A cloud workspace is a shared Postgres your team can join.</p>' +
             '<div style="display:flex;gap:8px;margin-bottom:12px">' +
@@ -4491,15 +4543,40 @@ export const appJs = `
         if (backBtn) backBtn.addEventListener('click', onBack);
         var cancelBtn = backdrop.querySelector('[data-act="cancel"]');
         if (cancelBtn) cancelBtn.addEventListener('click', close);
+        var obConnectFinish = backdrop.querySelector('#ob-connect-finish');
+        if (obConnectFinish) obConnectFinish.addEventListener('click', onConnectFinish);
       }
 
       function onBack() {
-        if (st.step === 'kind' || st.step === 'join') st.step = 'identity';
+        if (st.step === 'connect') st.step = 'identity';
+        else if (st.step === 'kind' || st.step === 'join') st.step = 'connect';
         else if (st.step === 'cloud') st.step = 'kind';
         render();
       }
 
       function setMsg(t) { var m = backdrop.querySelector('#ob-msg'); if (m) m.textContent = t; }
+
+      // Exchange the pasted OAuth code for a Claude subscription token, reusing
+      // the same /api/assistant/oauth/exchange flow as the Settings panel. On
+      // success we flip st.connected and re-render (chip + Continue).
+      function onConnectFinish() {
+        var btn = backdrop.querySelector('#ob-connect-finish');
+        var codeEl = backdrop.querySelector('#ob-connect-code');
+        var cmsg = backdrop.querySelector('#ob-connect-msg');
+        var code = (codeEl && codeEl.value ? codeEl.value : '').trim();
+        if (!code) { if (cmsg) cmsg.textContent = 'Paste the code from the Claude tab first.'; return; }
+        withBusy(btn, function () {
+          if (cmsg) cmsg.textContent = 'Connecting…';
+          return fetch('/api/assistant/oauth/exchange', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ code: code }),
+          }).then(function (r) { return r.json(); }).then(function (d) {
+            if (!d.ok) { if (cmsg) cmsg.textContent = 'Failed: ' + (d.error || 'could not connect'); return; }
+            st.connected = true;
+            render();
+          }).catch(function (e) { if (cmsg) cmsg.textContent = 'Failed: ' + e.message; });
+        });
+      }
 
       function onNext() {
         var okBtn = backdrop.querySelector('[data-act="ok"]');
@@ -4513,10 +4590,17 @@ export const appJs = `
               method: 'POST', headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ display_name: st.name, email: st.email }),
             }).then(function () {
-              st.step = mode === 'join' ? 'join' : 'kind';
+              st.step = 'connect';
               render();
             }).catch(function (e) { setMsg('Failed: ' + e.message); });
           });
+          return;
+        }
+        if (st.step === 'connect') {
+          // Connecting is optional and handled by the in-step Connect button;
+          // the footer primary (Skip for now / Continue) just advances.
+          st.step = mode === 'join' ? 'join' : 'kind';
+          render();
           return;
         }
         if (st.step === 'kind') {
