@@ -2314,6 +2314,10 @@ the library API is unchanged and fully backwards-compatible.
   revertible via the version history.
 - **Inference Aggressiveness** slider tunes how much the assistant extrapolates
   (temperature + link liberality + auto-junction/auto-create gating).
+- **Context-aware.** The chat knows the record you're viewing, so "delete this
+  file" / "summarize this" resolve to it; and it can answer questions about Lattice
+  itself (e.g. "what is private mode?") via a `lattice_help` tool that searches
+  these docs.
 - Runs on local SQLite and on any `postgres://` connection, including a Lattice
   cloud — where it connects as your own scoped role, so its reads and writes are
   RLS-confined to the rows you may see, exactly like the rest of the GUI.

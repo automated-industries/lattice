@@ -37,7 +37,35 @@ export const appJs = `
       columnMeta: {},
       systemTables: [],
       preferences: { show_system_tables: false, analytics: true },
+      // Server-resolved analytics consent (stored pref AND env opt-outs). Drives
+      // window.LatticeGA. False until loaded → no tracking before consent is known.
+      analyticsEffective: false,
+      // Whether the GUI may "Open in Finder" (LATTICE_LOCAL_OPEN, default on).
+      localOpen: true,
     };
+
+    // Anonymous analytics passthrough — a no-op unless window.LatticeGA exists and
+    // consent is on. Params are sanitized to coarse enums/bools/numbers by
+    // LatticeGA.track (never table names, ids, queries, or PII).
+    function gaTrack(name, params) {
+      if (window.LatticeGA) window.LatticeGA.track(name, params || {});
+    }
+    // Coarse route TYPE from the hash — the prefix segment(s) ONLY, never the
+    // table / row-id / db segments that follow (those would be identifying).
+    // Fed to LatticeGA.pageView (which itself never sends the raw hash).
+    function routeType(hash) {
+      var h = String(hash || '#/');
+      if (h === '#/' || h === '') return 'dashboard';
+      var parts = h.replace(/^#/, '').split('/').filter(Boolean);
+      var top = (parts[0] || 'other').toLowerCase();
+      if (!/^[a-z0-9_-]+$/.test(top)) return 'other';
+      if (top === 'settings') {
+        var sub = (parts[1] || 'root').toLowerCase();
+        return /^[a-z0-9_-]+$/.test(sub) ? 'settings_' + sub : 'settings_root';
+      }
+      if (top === 'fs' || top === 'objects' || top === 'system') return top;
+      return 'other';
+    }
 
     function isSecretColumn(tableName, colName) {
       var t = state.columnMeta[tableName];
@@ -55,9 +83,42 @@ export const appJs = `
     function displayFor(name) {
       var override = state.iconOverrides[name];
       var base = DISPLAY[name];
-      var icon = (override && override.icon) || (base && base.icon) || DEFAULT_ICON;
+      var icon = (override && override.icon) || (base && base.icon) || autoEmojiFor(name) || DEFAULT_ICON;
       var label = (base && base.label) || titleCase(name);
       return { label: label, icon: icon };
+    }
+    // Pick an apt emoji from an entity's NAME when the user hasn't set one and it
+    // isn't in the built-in DISPLAY map. Keyword match against the de-underscored,
+    // lower-cased name; returns null when nothing fits so displayFor falls back to
+    // DEFAULT_ICON ("only if an emoji is apt"). Purely presentational — no persistence.
+    var AUTO_EMOJI = [
+      [/\\b(meetings?|calendar|events?|appointments?|schedule)\\b/, '📅'],
+      [/\\b(people|person|contacts?|users?|members?|staff|teams?|customers?|clients?|leads?|attendees?)\\b/, '👥'],
+      [/\\b(messages?|emails?|mail|inbox|chats?|conversations?|communications?|comms?)\\b/, '✉️'],
+      [/\\b(projects?)\\b/, '🚀'],
+      [/\\b(files?|documents?|docs?|attachments?)\\b/, '📄'],
+      [/\\b(repos?|repositor(?:y|ies)|commits?|branches?)\\b/, '💿'],
+      [/\\b(invoices?|payments?|billing|transactions?|expenses?|orders?|purchases?)\\b/, '🧾'],
+      [/\\b(revenue|budgets?|salar(?:y|ies)|prices?|pricing|costs?|finances?|financial)\\b/, '💰'],
+      [/\\b(companies|company|orgs?|organizations?|accounts?|businesses|business|vendors?|firms?|suppliers?)\\b/, '🏢'],
+      [/\\b(tasks?|todos?|tickets?|issues?|jobs?|bugs?)\\b/, '✅'],
+      [/\\b(policies|policy|insurance|claims?|coverage)\\b/, '🛡️'],
+      [/\\b(secrets?|credentials?|keys?|tokens?|passwords?)\\b/, '🔐'],
+      [/\\b(notes?|memos?)\\b/, '📝'],
+      [/\\b(products?|items?|inventory|skus?)\\b/, '📦'],
+      [/\\b(reports?|analytics|metrics?|stats?|dashboards?)\\b/, '📊'],
+      [/\\b(contracts?|agreements?|legal|ndas?)\\b/, '📜'],
+      [/\\b(certificates?|certs?|licen[cs]es?)\\b/, '🎓'],
+      [/\\b(properties|property|buildings?|estate|addresses|address|locations?|places?)\\b/, '🏠'],
+      [/\\b(agents?|bots?|assistants?)\\b/, '🤖'],
+      [/\\b(aliases|alias|tags?|labels?|categor(?:y|ies)|types?)\\b/, '🏷️'],
+    ];
+    function autoEmojiFor(name) {
+      var s = String(name || '').replace(/_/g, ' ').toLowerCase();
+      for (var i = 0; i < AUTO_EMOJI.length; i++) {
+        if (AUTO_EMOJI[i][0].test(s)) return AUTO_EMOJI[i][1];
+      }
+      return null;
     }
     function titleCase(s) {
       return s.replace(/_/g, ' ').replace(/\\b\\w/g, function (c) { return c.toUpperCase(); });
@@ -251,6 +312,14 @@ export const appJs = `
         state.columnMeta = results[2] || {};
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
+        state.analyticsEffective = !!(results[4] && results[4].analytics_effective);
+        // local_open defaults true (the server defaults it on) — drives whether the
+        // file view offers "Open in Finder". Treat a missing field as enabled.
+        state.localOpen = !results[4] || results[4].local_open !== false;
+        // Boot analytics with the resolved consent (no network contact when off),
+        // then record the session open. advanced_mode is a boolean — safe to send.
+        if (window.LatticeGA) window.LatticeGA.init(state.analyticsEffective);
+        gaTrack('app_open', { advanced_mode: advancedMode() });
         document.body.classList.toggle('advanced-mode', advancedMode());
         wireSettingsDrawer();
         renderWsSwitcher(results[5]);
@@ -302,6 +371,21 @@ export const appJs = `
       var m = /^#\\/objects\\/([^/]+)/.exec(hash);
       return m ? m[1] : null;
     }
+    // The record the user is currently viewing — the deepest table/id pair in the
+    // route (a file/row detail). Returned to the chat as activeContext so "this
+    // file"/"this row" resolves to it. null when just browsing a list / dashboard.
+    function activeElement() {
+      var hash = location.hash || '#/';
+      var segs = (typeof fsParse === 'function') ? fsParse(hash) : null;
+      if (segs && segs.length >= 2) {
+        // segments alternate table,id,table,id… — take the last complete pair.
+        var lastId = (segs.length % 2 === 0) ? segs.length - 1 : segs.length - 2;
+        if (lastId >= 1) return { table: segs[lastId - 1], id: segs[lastId] };
+      }
+      var m = /^#\\/objects\\/([^/]+)\\/([^/]+)/.exec(hash);
+      if (m) return { table: decodeURIComponent(m[1]), id: decodeURIComponent(m[2]) };
+      return null;
+    }
     // Briefly highlight a row that just changed (data-id === pk) in the view.
     function flashRow(pk) {
       var content = document.getElementById('content');
@@ -351,9 +435,12 @@ export const appJs = `
     // current view (no badge) so we don't bother suppressing the self-echo.
     function onRealtimeChange(p) {
       if (!p || !p.table_name || !p.pk) return;
+      // The NOTIFY envelope carries owner_role (the editor's login role) +
+      // created_at — NOT owner_user_id / client_ts (which were never emitted, so
+      // "last edited by" always showed nothing). #4.2
       lastEditedByPk[leKey(p.table_name, p.pk)] = {
-        userId: p.owner_user_id || null,
-        at: p.client_ts || p.created_at || '',
+        userId: p.owner_role || null,
+        at: p.created_at || '',
       };
       if (!isRowDataOp(p.op)) return;
       if (p.table_name === currentViewTable()) flashRow(p.pk);
@@ -470,6 +557,10 @@ export const appJs = `
      * IndexedDB and replayed on reconnect; returns { queued: true }.
      */
     function rowWrite(method, path, body) {
+      // Coarse, anonymized analytics — the verb only, never the path/table/ids.
+      var gaEvent =
+        method === 'POST' ? 'row_create' : method === 'PUT' ? 'row_update' : method === 'DELETE' ? 'row_delete' : '';
+      if (gaEvent) gaTrack(gaEvent, {});
       var editId = newEditId();
       var clientTs = new Date().toISOString();
       var item = { editId: editId, method: method, path: path, body: body || null, clientTs: clientTs, status: 'pending', attempts: 0 };
@@ -530,15 +621,19 @@ export const appJs = `
             body: it.body != null ? JSON.stringify(it.body) : undefined,
           }).then(function (r) {
             if (r.ok) return idbDelete(it.editId);
-            if (r.status === 409) {
-              // Unshared / stale schema — can't replay; mark failed (kept for
-              // inspection, surfaced) rather than silently dropped.
+            // #4.5 — ANY 4xx is permanent for a replay: 409 (unshared / stale
+            // schema / row gone), 403 (RLS owner-only), 404 (row not visible),
+            // 400 (bad edit). Mark the edit failed + surface it (dead-letter)
+            // instead of retrying it forever; only 5xx / network errors are
+            // transient and left pending for the next drain. Previously only 409
+            // was caught, so an RLS-rejected edit retried endlessly, unseen.
+            if (r.status >= 400 && r.status < 500) {
               it.status = 'failed';
               return idbPut(it).then(function () {
-                showToast('An offline edit could not sync (the object changed). See pending edits.', {});
+                showToast('An offline edit could not sync (the object changed or you lack access). See pending edits.', {});
               });
             }
-            // Other server error — leave pending, retry on the next drain.
+            // Transient server error (5xx) — leave pending, retry on the next drain.
             return Promise.resolve();
           }).then(function () { return step(i + 1); },
           function () { return Promise.resolve(); /* network error — stop draining */ });
@@ -654,7 +749,7 @@ export const appJs = `
       var fill = card.querySelector('.card-render-fill');
       if (fill) fill.style.width = clamped + '%';
       var pctEl = card.querySelector('.card-render-pct');
-      if (pctEl) pctEl.textContent = clamped + '%';
+      if (pctEl) pctEl.textContent = 'Rendering ' + clamped + '%...';
     }
     // Clear the overlay for a finished/aborted table.
     function clearCardProgress(table) {
@@ -843,7 +938,7 @@ export const appJs = `
         else if (e.key === 'Enter') {
           e.preventDefault();
           var q = input.value.trim();
-          if (q) askAssistant(q);
+          if (q) { gaTrack('search', {}); askAssistant(q); } // event only — never the query text
         }
       });
     }
@@ -929,6 +1024,7 @@ export const appJs = `
 
     /** Standard undo: hit /api/history/undo and refresh views. */
     function undoLast() {
+      gaTrack('history_action', { action: 'undo' });
       return fetchJson('/api/history/undo', { method: 'POST' })
         .then(afterMutation)
         .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
@@ -939,12 +1035,14 @@ export const appJs = `
     // ────────────────────────────────────────────────────────────
     function wireHistoryControls() {
       document.getElementById('undo-btn').addEventListener('click', function () {
+        gaTrack('history_action', { action: 'undo' });
         fetchJson('/api/history/undo', { method: 'POST' })
           .then(function () { return afterMutation(); })
           .then(function () { showToast('Last change undone', {}); })
           .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
       });
       document.getElementById('redo-btn').addEventListener('click', function () {
+        gaTrack('history_action', { action: 'redo' });
         fetchJson('/api/history/redo', { method: 'POST' })
           .then(function () { return afterMutation(); })
           .then(function () { showToast('Redone', {}); })
@@ -992,6 +1090,18 @@ export const appJs = `
         state.systemTables = (results[3] && results[3].tables) || [];
         renderWsSwitcher(results[4]);
         renderSidebar();
+        // renderWsSwitcher set cloudMode from the new workspace's kind; re-render
+        // the composer so the Private-mode toggle reflects local vs cloud (it is
+        // forced checked+disabled on local). See #7.
+        renderComposer();
+        // #G — the chat rail is per-workspace (chat_threads/chat_messages live in
+        // the workspace DB), so a switch/create must reset it to the NEW
+        // workspace's conversation instead of stranding the previous one on screen.
+        // (Reset inline rather than via newChat() so it doesn't fire the
+        // assistant_thread_new analytics event on every switch.)
+        currentThreadId = null;
+        clearChat();
+        refreshThreadList(true);
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
         loadedTables = {};
@@ -1095,6 +1205,7 @@ export const appJs = `
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-id');
             if (id === currentId) { menu.hidden = true; return; }
+            gaTrack('workspace_switch', {}); // event only — never the workspace id/name
             // Surface "switching" on the stable header button for the WHOLE
             // switch (POST + reloadEverything), independent of the ephemeral
             // menu-item withBusy spinner — the menu can close/rebuild mid-switch.
@@ -1175,6 +1286,10 @@ export const appJs = `
       var ul = document.getElementById('object-nav');
       var prefix = advancedMode() ? '#/objects/' : '#/fs/';
       var firstClass = state.entities.tables.filter(function (t) { return !isJunction(t); });
+      // Objects list is ordered alphabetically by display label (case-insensitive).
+      firstClass.sort(function (a, b) {
+        return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
+      });
       ul.innerHTML = firstClass.map(function (t) {
         var d = displayFor(t.name);
         var unseen = unseenByTable[t.name] || 0;
@@ -1219,6 +1334,7 @@ export const appJs = `
       highlightActive();
       var content = document.getElementById('content');
       var hash = location.hash || '#/';
+      if (window.LatticeGA) window.LatticeGA.pageView(routeType(hash));
 
       if (hash === '#/' || hash === '') { renderDashboard(content); return; }
 
@@ -1316,7 +1432,7 @@ export const appJs = `
           // bottom-edge bar (width = %); the pill is the ⟳ <pct>% corner badge.
           '<div class="card-render" aria-hidden="true">' +
             '<div class="card-render-fill"></div>' +
-            '<span class="card-render-pill"><span class="spinner" aria-hidden="true"></span><span class="card-render-pct">0%</span></span>' +
+            '<span class="card-render-pill"><span class="spinner" aria-hidden="true"></span><span class="card-render-pct">Rendering 0%...</span></span>' +
           '</div>' +
           '</a>';
       }).join('');
@@ -1804,19 +1920,42 @@ export const appJs = `
     // Bytes are viewable when there's a local copy OR an S3-backed cloud_ref — the
     // /blob route resolves local-or-S3 transparently, so the browser just hits it.
     function hasViewableFile(row) {
-      return hasLocalFile(row) ||
-        (row.ref_kind === 'cloud_ref' && row.ref_provider === 's3' && (row.ref_uri || row.blob_path));
+      return hasLocalFile(row) || isS3File(row);
+    }
+    // The file's bytes live in S3 (cloud). Download (not Open in Finder) applies.
+    function isS3File(row) {
+      return row.ref_kind === 'cloud_ref' && row.ref_provider === 's3' && !!(row.ref_uri || row.blob_path);
+    }
+    // True when the row's bytes are reachable on THIS machine's disk (so "Open in
+    // Finder" is meaningful). Mirrors the server's localPathOf: a legacy path, a
+    // local_ref, or a blob/cloud_ref whose blob_path was kept locally.
+    function hasLocalBytes(row) {
+      return !!(
+        row.path ||
+        (row.ref_kind === 'local_ref' && row.ref_uri) ||
+        ((row.ref_kind === 'blob' || row.ref_kind === 'cloud_ref') && row.blob_path)
+      );
+    }
+    var IMAGE_EXTS = ['png','jpg','jpeg','gif','webp','bmp','svg','avif','heic','heif','ico','tif','tiff'];
+    function isImageFile(row) {
+      // Detect by mime, FALLING BACK to the filename extension — an upload that
+      // didn't record a mime still previews (the inline image was silently missing).
+      if (String(row.mime || '').indexOf('image/') === 0) return true;
+      var name = String(row.original_name || '').toLowerCase();
+      var dot = name.lastIndexOf('.');
+      return dot >= 0 && IMAGE_EXTS.indexOf(name.slice(dot + 1)) >= 0;
     }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
       var mime = row.mime || '';
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
+      var viewable = hasViewableFile(row);
       var html = '';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
-      if (mime.indexOf('image/') === 0 && hasViewableFile(row)) {
+      if (isImageFile(row) && viewable) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
-      } else if (mime === 'application/pdf' && hasViewableFile(row)) {
+      } else if (mime === 'application/pdf' && viewable) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
       } else if (row.extracted_text && MD_MIMES.indexOf(mime) >= 0) {
         html += '<div class="md-body">' + mdToHtml(String(row.extracted_text).slice(0, 40000)) + '</div>';
@@ -1826,10 +1965,15 @@ export const appJs = `
         html += '<div class="file-unsupported">No inline preview for this file type' +
           (mime ? ' (' + escapeHtml(mime) + ')' : '') + '.</div>';
       }
-      if (hasViewableFile(row)) {
+      // Open in Finder vs Download are MUTUALLY EXCLUSIVE: a file on this machine's
+      // disk opens locally (when LATTICE_LOCAL_OPEN is on); a cloud (S3) file with
+      // no local copy is downloaded. Never both — there's only ever one source.
+      var canOpen = hasLocalBytes(row) && state.localOpen;
+      var canDownload = isS3File(row) && !hasLocalBytes(row);
+      if (canOpen || canDownload) {
         html += '<div class="file-actions">' +
-          (hasLocalFile(row) ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
-          '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' +
+          (canOpen ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
+          (canDownload ? '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' : '') +
         '</div>';
       }
       host.innerHTML = html;
@@ -2181,6 +2325,7 @@ export const appJs = `
       return window.localStorage.getItem(FS_KEYS.advanced) === '1';
     }
     function setAdvancedMode(on) {
+      gaTrack('setting_change', { setting: 'advanced_mode', value: !!on }); // coarse enum + bool
       window.localStorage.setItem(FS_KEYS.advanced, on ? '1' : '0');
       document.body.classList.toggle('advanced-mode', on);
       // Preserve context: map the current location between the file-system
@@ -2683,7 +2828,6 @@ export const appJs = `
       var body = document.getElementById('drawer-body');
       if (!body) return;
       if (tab === 'database') renderDatabaseSettings(body);
-      else if (tab === 'chat') renderChatSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);
     }
@@ -2759,7 +2903,8 @@ export const appJs = `
     function renderHistory(content) {
       var firstClass = state.entities.tables
         .filter(function (t) { return !isJunction(t); })
-        .map(function (t) { return t.name; });
+        .map(function (t) { return t.name; })
+        .sort(function (a, b) { return displayFor(a).label.toLowerCase().localeCompare(displayFor(b).label.toLowerCase()); });
       var options = '<option value="">All entities</option>' +
         firstClass.map(function (n) {
           var sel = n === historyFilterTable ? ' selected' : '';
@@ -2799,6 +2944,7 @@ export const appJs = `
         mount.querySelectorAll('button.history-revert').forEach(function (btn) {
           btn.addEventListener('click', function () {
             var id = btn.getAttribute('data-id');
+            gaTrack('history_action', { action: 'revert' });
             fetchJson('/api/history/revert/' + encodeURIComponent(id), { method: 'POST' })
               .then(afterMutation)
               .then(function () {
@@ -3364,6 +3510,7 @@ export const appJs = `
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ name: name, icon: icon || undefined }),
             }).then(function () {
+              gaTrack('table_create', {}); // event only — never the table name
               // New node not in the current graph → rebuild it (in place, no
               // route change so the drawer scroll is preserved).
               return dmRefreshPanel(name, true);
@@ -3482,6 +3629,8 @@ export const appJs = `
       dmLinks.forEach(function (lk) { linkedTargets[lk.other] = 1; });
       var linkTargets = ((state.entities && state.entities.tables) || []).filter(function (rt) {
         return !isJunction(rt) && rt.name !== tableName && !linkedTargets[rt.name];
+      }).sort(function (a, b) {
+        return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
       });
       var addLinkHtml = linkTargets.length
         ? '<div class="dm-row-inline" style="margin-top:8px">' +
@@ -3500,22 +3649,30 @@ export const appJs = `
       // tables, show no sharing control.
       var canShare = !!(t && t.ownedByMe === true);
       var isShared = !!(t && t.shared);
-      var shareRow = canShare
-        ? '<label>Cloud sharing</label>' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-            '<button class="btn' + (isShared ? '' : ' primary') + '" id="dm-share-btn">' +
-              (isShared ? 'Make private' : 'Share with workspace') +
-            '</button>' +
-            '<span style="font-size:12px;color:var(--text-muted)">' +
-              (isShared ? 'Visible to everyone on this cloud workspace.' : 'Private to you. Share to make it visible to everyone on this cloud workspace.') +
-            '</span>' +
-          '</div>'
-        : '';
+      var neverShare = !!(t && t.neverShare);
+      // A never-share table (e.g. secrets) can NEVER be shared — its rows are a
+      // hard-private floor — so the "Share with workspace" button must not exist
+      // for it; show a static note instead.
+      var shareRow = !canShare
+        ? ''
+        : neverShare
+          ? '<label>Cloud sharing</label>' +
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+              '<span style="font-size:12px;color:var(--text-muted)">🔒 Private to you — this table is never shared.</span>' +
+            '</div>'
+          : '<label>Cloud sharing</label>' +
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+              '<button class="btn' + (isShared ? '' : ' primary') + '" id="dm-share-btn">' +
+                (isShared ? 'Make private' : 'Share with workspace') +
+              '</button>' +
+              '<span style="font-size:12px;color:var(--text-muted)">' +
+                (isShared ? 'Visible to everyone on this cloud workspace.' : 'Private to you. Share to make it visible to everyone on this cloud workspace.') +
+              '</span>' +
+            '</div>';
       // Owner-only "new rows default to" control, shown for a shared table.
       // A never-share table's rows are always private, so the default-visibility
       // select is disabled while never-share is on.
       var defaultVis = (t && t.defaultRowVisibility) || 'private';
-      var neverShare = !!(t && t.neverShare);
       var defaultVisRow = canShare && isShared
         ? '<label>New rows default to</label>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
@@ -3591,11 +3748,18 @@ export const appJs = `
       wireEntityEditPanel(panel, tableName);
       var shareBtn = panel.querySelector('#dm-share-btn');
       if (shareBtn) shareBtn.addEventListener('click', function () {
+        // "Shared" maps to the table's default row visibility = everyone (vs
+        // owner-private) under the 3.1 RLS model, so the toggle drives the
+        // existing default-row-visibility endpoint. (The old /share endpoint was
+        // removed in the RLS rewrite — calling it 404'd, which is why the control
+        // appeared dead.)
+        var nextVis = isShared ? 'private' : 'everyone';
+        gaTrack('data_model_share', { visibility: nextVis }); // coarse enum only, no table name
         withBusy(shareBtn, function () {
-          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/share', {
+          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/default-row-visibility', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ share: !isShared }),
+            body: JSON.stringify({ visibility: nextVis }),
           }).then(function () {
             // Rebuild the graph (not just the panel) so the node's share-status
             // colour (gnode-shared/gnode-private) recolours immediately from the
@@ -3927,6 +4091,7 @@ export const appJs = `
             return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName), {
               method: 'DELETE',
             }).then(function () {
+              gaTrack('table_delete', {}); // event only — never the table name
               return dmRefreshPanel(null, true);
             }).then(function () {
               showToast('Table "' + tableName + '" deleted', {});
@@ -4258,6 +4423,7 @@ export const appJs = `
         }
 
         function submitLocal() {
+          gaTrack('workspace_create', { kind: 'local' }); // coarse enum only, no name
           // Create + activate a new local workspace in the registry (the single
           // source of truth). The friendly name is the workspace display name —
           // no separate slug/config-file/rename dance.
@@ -4278,6 +4444,7 @@ export const appJs = `
           // is no per-table sharing at creation time.
           var fields = parsePostgresUrl(wizState.cloudUrl.trim(), wizState.name.trim());
           if (!fields) return Promise.reject(new Error('Cloud URL must be a valid postgres:// connection string.'));
+          gaTrack('workspace_create', { kind: 'cloud' }); // coarse enum only, no name/URL
           return fetchJson('/api/workspaces/create', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -4541,8 +4708,11 @@ export const appJs = `
             '<span>Send anonymous analytics</span>' +
           '</label>' +
           '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
-            'Anonymous analytics will be shared with Lattice using ' +
-            '<a href="https://scarf.sh" target="_blank" rel="noopener">Scarf</a>.' +
+            'Anonymous usage analytics — via ' +
+            '<a href="https://scarf.sh" target="_blank" rel="noopener">Scarf</a> for installs and ' +
+            'Google Analytics inside the app — help us improve Lattice. No table or column names, ' +
+            'row data, queries, file names, or personal info are ever sent: only coarse, anonymized ' +
+            'events. Respects Do-Not-Track.' +
           '</p>' +
           '<div id="pref-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
         '</div>';
@@ -4563,7 +4733,18 @@ export const appJs = `
           .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
       }
       host.querySelector('#pref-analytics').addEventListener('change', function (e) {
-        savePref({ analytics: !!e.target.checked });
+        var on = !!e.target.checked;
+        // Apply browser-analytics consent immediately. Record the opt-in AFTER
+        // enabling (track needs consent) and the opt-out BEFORE disabling.
+        if (on) {
+          if (window.LatticeGA) window.LatticeGA.setConsent(true);
+          gaTrack('analytics_opt_in', {});
+        } else {
+          gaTrack('analytics_opt_out', {});
+          if (window.LatticeGA) window.LatticeGA.setConsent(false);
+        }
+        state.analyticsEffective = on;
+        savePref({ analytics: on });
       });
     }
 
@@ -4618,11 +4799,15 @@ export const appJs = `
           '<h2>Workspace Settings</h2>' +
           '<div id="db-name-host"><div class="placeholder" style="padding:14px">Loading workspace name…</div></div>' +
           '<div id="dbconfig-host"><div class="placeholder" style="padding:18px">Loading database configuration…</div></div>' +
+          // System Prompt subsection — directly beneath Database connection,
+          // owner-only (the panel renders nothing for members / local).
+          '<div id="system-prompt-host"></div>' +
           '<div id="data-model-host"><div class="placeholder" style="padding:18px">Loading data model…</div></div>' +
           '<div id="db-danger-host"></div>' +
         '</div>';
       renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
+      renderSystemPromptPanel(document.getElementById('system-prompt-host'));
       renderDataModelInto(document.getElementById('data-model-host'));
       renderDatabaseDangerZone(document.getElementById('db-danger-host'));
     }
@@ -4864,6 +5049,7 @@ export const appJs = `
         host.querySelectorAll('tr.ws-row[data-switch-id]').forEach(function (row) {
           row.addEventListener('click', function () {
             var id = row.getAttribute('data-switch-id');
+            gaTrack('workspace_switch', {}); // event only — never the workspace id/name
             // Switch the workspace AND close the settings drawer at the same time —
             // close immediately (concurrent with the switch) so it isn't left open.
             closeSettingsDrawer();
@@ -5001,12 +5187,34 @@ export const appJs = `
         if (info.state === 'cloud-member') {
           membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
         } else {
-          membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading members…</div>';
-          fetchJson('/api/cloud/members').then(function (data) {
-            membersHost.innerHTML = renderMembersList((data && data.members) || []);
-          }).catch(function (e) {
-            membersHost.innerHTML = '<div style="font-size:12px;color:var(--warn)">Could not load members: ' + escapeHtml(e.message) + '</div>';
-          });
+          var loadMembers = function () {
+            membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading members…</div>';
+            fetchJson('/api/cloud/members').then(function (data) {
+              membersHost.innerHTML = renderMembersList((data && data.members) || [], isOwner);
+              membersHost.querySelectorAll('[data-kick]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                  var role = btn.getAttribute('data-kick');
+                  if (!role) return;
+                  if (!window.confirm('Remove this member? They lose access immediately.')) return;
+                  withBusy(btn, function () {
+                    return fetchJson('/api/cloud/remove-member', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ role: role }),
+                    }).then(function () {
+                      showToast('Member removed', {});
+                      loadMembers();
+                    }).catch(function (e) {
+                      showToast('Could not remove member: ' + (e && e.message ? e.message : e), {});
+                    });
+                  });
+                });
+              });
+            }).catch(function (e) {
+              membersHost.innerHTML = '<div style="font-size:12px;color:var(--warn)">Could not load members: ' + escapeHtml(e.message) + '</div>';
+            });
+          };
+          loadMembers();
         }
       }
       void isOwner;
@@ -5014,18 +5222,27 @@ export const appJs = `
 
     /** Members list (owner + member roles), recovered from latticesql 1.14.0
      *  (commit 2862959), adapted to the RLS-cloud member model. */
-    function renderMembersList(members) {
+    function renderMembersList(members, canManage) {
       if (!members.length) {
         return '<div class="members-list"><h4>Members</h4>' +
           '<div style="font-size:12px;color:var(--text-muted)">Just you.</div></div>';
       }
       var rows = members.map(function (m) {
-        var pill = m.isOwner ? 'Owner' : 'Member';
+        var isOwner = m.status === 'owner';
+        var pill = isOwner ? 'Owner' : (m.status === 'invited' ? 'Invited' : 'Member');
+        // Show a human name (display name, else the email's local part, else the
+        // role) + the email — NOT the bare Postgres role as the primary label.
+        var label = (m.name && String(m.name).trim()) || m.role;
+        var kick = canManage && !m.isYou && !isOwner
+          ? '<button class="btn destructive" data-kick="' + escapeHtml(m.role) + '">Kick</button>'
+          : '';
         return '<div class="member-row" data-role="' + escapeHtml(m.role) + '">' +
-          '<span><code>' + escapeHtml(m.role) + '</code>' +
+          '<span>' + escapeHtml(label) +
             (m.isYou ? ' <span style="color:var(--accent);font-size:11px">(you)</span>' : '') +
-            ' <span class="role-tag' + (m.isOwner ? '' : ' role-member') + '">' + pill + '</span>' +
+            (m.email ? ' <span style="color:var(--text-muted);font-size:11px">' + escapeHtml(m.email) + '</span>' : '') +
+            ' <span class="role-tag' + (isOwner ? '' : ' role-member') + '">' + pill + '</span>' +
           '</span>' +
+          kick +
         '</div>';
       }).join('');
       return '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
@@ -5189,36 +5406,29 @@ export const appJs = `
     // Chat settings (drawer tab): the cloud chat system prompt, edited INLINE
     // with a Save button — no overlay. Owner-only (the GET returns the text only
     // to an owner); members / local workspaces see a short note instead.
-    function renderChatSettings(content) {
-      content.innerHTML =
-        '<div class="teams-page">' +
-          '<h2>Chat</h2>' +
-          '<div id="chat-settings-host"><div class="placeholder" style="padding:18px">Loading…</div></div>' +
-        '</div>';
-      var host = document.getElementById('chat-settings-host');
+    // The cloud chat System Prompt editor — a subsection of Settings → Workspace,
+    // beneath Database connection. Owner-only: renders nothing for a member or a
+    // local workspace (the GET reports supported=false / canEdit=false there), so
+    // the subsection simply doesn't appear for them.
+    function renderSystemPromptPanel(host) {
+      if (!host) return;
+      host.innerHTML = '';
       fetchJson('/api/cloud/system-prompt').then(function (cfg) {
-        var panelOpen =
-          '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 8px">Chat system prompt</h3>';
-        if (!cfg || cfg.canEdit !== true) {
-          host.innerHTML = panelOpen +
-            '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
-            'The chat system prompt is owner-only and applies to a cloud workspace. ' +
-            'Nothing to edit here for this workspace.</p></div>';
-          return;
-        }
+        if (!cfg || cfg.supported !== true || cfg.canEdit !== true) return; // owner+cloud only
         var current = typeof cfg.prompt === 'string' ? cfg.prompt : '';
-        host.innerHTML = panelOpen +
-          '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
-            'Added to every member chat in this cloud. Members cannot see or edit it — only you, the owner, can.</p>' +
-          '<textarea id="chat-system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
-            'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
-            escapeHtml(current) + '</textarea>' +
-          '<div style="margin-top:10px;display:flex;align-items:center;gap:10px">' +
-            '<button class="btn primary" id="chat-prompt-save">Save</button>' +
-            '<span id="chat-prompt-msg" style="font-size:12px;color:var(--text-muted)"></span>' +
-          '</div>' +
-        '</div>';
+        host.innerHTML =
+          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+            '<h3 style="margin:0 0 8px">System Prompt</h3>' +
+            '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+              'Added to every member chat in this cloud workspace. Members cannot see or edit it — only you, the owner, can.</p>' +
+            '<textarea id="chat-system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
+              'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
+              escapeHtml(current) + '</textarea>' +
+            '<div style="margin-top:10px;display:flex;align-items:center;gap:10px">' +
+              '<button class="btn primary" id="chat-prompt-save">Save</button>' +
+              '<span id="chat-prompt-msg" style="font-size:12px;color:var(--text-muted)"></span>' +
+            '</div>' +
+          '</div>';
         var saveBtn = document.getElementById('chat-prompt-save');
         var msg = document.getElementById('chat-prompt-msg');
         if (saveBtn) saveBtn.addEventListener('click', function () {
@@ -5235,9 +5445,8 @@ export const appJs = `
             if (msg) msg.textContent = 'Failed: ' + (e && e.message ? e.message : String(e));
           });
         });
-      }).catch(function (err) {
-        host.innerHTML = '<div class="placeholder">Could not load: ' +
-          escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+      }).catch(function () {
+        // Not a cloud / not the owner / probe failed — leave the subsection empty.
       });
     }
 
@@ -5264,6 +5473,7 @@ export const appJs = `
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ email: data.email }),
           }).then(function (res) {
+            gaTrack('member_invite', {}); // event only — never the invitee email
             showInviteTokenModal(res || {});
           });
         },
@@ -5325,6 +5535,7 @@ export const appJs = `
       'added-link':     ['Added', 'link', 'links'],
       'deleted-link':   ['Deleted', 'link', 'links'],
       'created-link':   ['Created', 'link table', 'link tables'],
+      'linked-rel':     ['Linked', 'relationship', 'relationships'],
     };
     function schemaAction(summary) {
       var s = String(summary || '');
@@ -5332,10 +5543,18 @@ export const appJs = `
       if (/^Created table/.test(s)) return 'created-table';
       if (/^Deleted table/.test(s)) return 'deleted-table';
       if (/^Renamed table/.test(s)) return 'renamed-table';
-      if (/^Added a column/.test(s)) return 'added-column';
+      // Two emitters: the generic "Added a column to X" and the specific
+      // "Added column(s) a, b to X" (ingest auto-creates columns). Both group.
+      if (/^Added (a )?column/.test(s)) return 'added-column';
       if (/^Renamed a column/.test(s)) return 'renamed-column';
       if (/^Added a link/.test(s)) return 'added-link';
       if (/^Deleted a link/.test(s)) return 'deleted-link';
+      // Junction-materialization summaries ("Linked files ↔ project",
+      // "Linked authors ↔ books") from materializeJunction — these arrive as a
+      // schema op but matched no rule above, so they used to return null and
+      // spam one ungrouped pill per link. Collapse a run into "Linked N
+      // relationships".
+      if (/^Linked .+ ↔ /.test(s)) return 'linked-rel';
       return null; // unknown schema op: keep it ungrouped (stay honest)
     }
     // Group identical-TYPE events into one counted pill regardless of which
@@ -5643,6 +5862,7 @@ export const appJs = `
       feedGroups = {};
     }
     function newChat() {
+      gaTrack('assistant_thread_new', {});
       currentThreadId = null;
       clearChat();
       var sel = document.getElementById('rail-threads');
@@ -5806,6 +6026,8 @@ export const appJs = `
     function sendChat(text) {
       if (chatBusy || !text) return;
       chatBusy = true;
+      gaTrack('assistant_message', {}); // no message text — just the event
+
       // Open a fresh turn scope: this turn's activity cards group together (no
       // window expiry) and their timers measure from now.
       feedTurnId += 1;
@@ -5827,7 +6049,8 @@ export const appJs = `
       var privateMode = !!(privEl && privEl.checked);
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode })
+        // activeContext: the record on screen, so "this file"/"this row" resolves.
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement() })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
@@ -6036,6 +6259,7 @@ export const appJs = `
     }
     function uploadFiles(files) {
       if (!files) return;
+      gaTrack('file_ingest', { count: files.length }); // count only — never file names
       for (var i = 0; i < files.length; i++) uploadFile(files[i]);
     }
     // Mobile: tapping the handle expands/collapses the bottom drawer.
@@ -6095,9 +6319,14 @@ export const appJs = `
             '</div>' +
             // Private mode — when checked, items the assistant adds on this send
             // stay private to me (passed as privateMode in the /api/chat body).
-            '<label class="composer-private">' +
-              '<input type="checkbox" id="chat-private" /> Private mode ' +
-              '<span class="composer-private-hint">New items I add stay private to you</span>' +
+            // Local workspaces are inherently single-user/private, so on local we
+            // force the box checked + disabled as a read-only indicator (cloudMode
+            // is set from the workspace kind before the composer renders).
+            '<label class="composer-private' + (cloudMode ? '' : ' is-disabled') + '">' +
+              '<input type="checkbox" id="chat-private"' + (cloudMode ? '' : ' checked disabled') + ' /> Private mode ' +
+              '<span class="composer-private-hint">' +
+                (cloudMode ? 'New items I add stay private to you' : 'Local workspaces are always private') +
+              '</span>' +
             '</label>' +
             '<input type="file" id="chat-file" multiple style="display:none">';
           var input = document.getElementById('chat-input');

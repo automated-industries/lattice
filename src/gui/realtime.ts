@@ -66,16 +66,22 @@ function loadPg(): PgModule {
 
 export type RealtimeState = 'connecting' | 'connected' | 'disconnected' | 'stopped';
 
+/**
+ * One change envelope, mirroring EXACTLY the `json_build_object` the
+ * `lattice_notify_change` trigger emits (see `src/cloud/rls.ts`):
+ * `{ seq, table_name, pk, op, owner_role, created_at }`. The pre-3.2 shape read
+ * `team_id` / `owner_user_id` / `client_ts` — none of which the trigger emits —
+ * and dropped `owner_role`, which it DOES, so "last edited by" never resolved.
+ * `op` is `'upsert' | 'delete'` (the `__lattice_changes.op` CHECK domain).
+ */
 export interface RealtimePayload {
   seq: number;
-  team_id: string;
   table_name: string | null;
   pk: string | null;
   op: string;
-  owner_user_id: string | null;
+  /** The Postgres login role that made the change (the editor). */
+  owner_role: string | null;
   created_at: string;
-  /** True edit time recorded by the originating client (null on legacy rows). */
-  client_ts: string | null;
 }
 
 export type RealtimeStateHandler = (state: RealtimeState) => void;
@@ -83,6 +89,9 @@ export type RealtimePayloadHandler = (payload: RealtimePayload) => void;
 
 const CHANNEL = 'lattice_changes';
 const BACKOFF_MS = [1000, 2000, 5000, 10000];
+/** Max missed changes replayed on reconnect (#4.4). Bounded so a long gap can't
+ *  stream the whole change table; a larger gap is reconciled by a client refetch. */
+const CATCHUP_LIMIT = 500;
 
 export class RealtimeBroker {
   private readonly url: string;
@@ -92,6 +101,11 @@ export class RealtimeBroker {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private stopped = false;
+  /** Highest change seq delivered so far — the catch-up cursor (#4.4). */
+  private lastSeq = 0;
+  /** True once an initial connection has succeeded, so a later open is a RECONNECT
+   *  (and should catch up the gap) rather than the first connect (REST seeds it). */
+  private hasConnected = false;
 
   constructor(connectionUrl: string) {
     if (!isPostgresUrl(connectionUrl)) {
@@ -130,7 +144,7 @@ export class RealtimeBroker {
     client.on('notification', (msg) => {
       if (msg.channel !== CHANNEL) return;
       const payload = parsePayload(msg.payload);
-      if (payload) this.emitter.emit('payload', payload);
+      if (payload) this.deliver(payload);
     });
     try {
       await client.connect();
@@ -138,6 +152,12 @@ export class RealtimeBroker {
       this.client = client;
       this.reconnectAttempt = 0;
       this.setState('connected');
+      // #4.4 — on a RECONNECT (not the first connect, which the REST load already
+      // seeds), replay the changes missed while the LISTEN was down. Best-effort:
+      // a failure (old cloud without the function, transient error) is logged and
+      // skipped — the live stream resumes regardless.
+      if (this.hasConnected) await this.catchUp(client);
+      this.hasConnected = true;
     } catch (err) {
       // Initial connect failed — schedule a retry. Don't surface the
       // raw URL in the log (it carries credentials).
@@ -148,6 +168,49 @@ export class RealtimeBroker {
         // ignore
       }
       this.scheduleReconnect();
+    }
+  }
+
+  /** Emit a payload to subscribers and advance the catch-up cursor (#4.4). */
+  private deliver(payload: RealtimePayload): void {
+    if (payload.seq > this.lastSeq) this.lastSeq = payload.seq;
+    this.emitter.emit('payload', payload);
+  }
+
+  /**
+   * Replay the changes missed during a LISTEN gap (#4.4). Reads them through the
+   * SECURITY DEFINER `lattice_changes_since(cursor, limit)`, which returns ONLY
+   * the rows the connecting role may see (same visibility gate as live fan-out)
+   * and is bounded. Each replayed change is delivered like a live one (advancing
+   * the cursor). Best-effort: any error is logged + skipped (never throws into the
+   * connect path). No-op until we've seen at least one change (cursor at 0 means
+   * the REST load already has the current state — nothing to catch up to).
+   */
+  private async catchUp(client: pg.Client): Promise<void> {
+    if (this.lastSeq <= 0) return;
+    try {
+      const r = await client.query(
+        `SELECT seq, table_name, pk, op, owner_role, created_at FROM lattice_changes_since($1, $2)`,
+        [this.lastSeq, CATCHUP_LIMIT],
+      );
+      for (const row of r.rows as Record<string, unknown>[]) {
+        const created = row.created_at;
+        this.deliver({
+          seq: Number(row.seq),
+          table_name: typeof row.table_name === 'string' ? row.table_name : null,
+          pk: typeof row.pk === 'string' ? row.pk : null,
+          op: typeof row.op === 'string' ? row.op : 'upsert',
+          owner_role: typeof row.owner_role === 'string' ? row.owner_role : null,
+          created_at:
+            created instanceof Date
+              ? created.toISOString()
+              : typeof created === 'string'
+                ? created
+                : '',
+        });
+      }
+    } catch (e) {
+      console.warn('[realtime] catch-up replay failed (skipping):', (e as Error).message);
     }
   }
 
@@ -216,20 +279,32 @@ export class RealtimeBroker {
   }
 }
 
-function parsePayload(raw: string | undefined): RealtimePayload | null {
+/**
+ * Map a change-feed op to the activity-feed verb. The change feed's op domain is
+ * `upsert` | `delete` (the `__lattice_changes` CHECK + the NOTIFY trigger), so
+ * `upsert` collapses insert+update into a generic "update" (the feed doesn't
+ * distinguish them). Legacy uppercase `INSERT`/`UPDATE`/`DELETE` are still
+ * accepted for forward-compat. Anything else → null (skip). #4.1 — matching only
+ * the uppercase forms here dropped EVERY remote change.
+ */
+export function feedOpForChange(op: string): 'update' | 'delete' | null {
+  if (op === 'upsert' || op === 'INSERT' || op === 'UPDATE') return 'update';
+  if (op === 'delete' || op === 'DELETE') return 'delete';
+  return null;
+}
+
+export function parsePayload(raw: string | undefined): RealtimePayload | null {
   if (!raw) return null;
   try {
     const obj = JSON.parse(raw) as Record<string, unknown>;
     if (typeof obj.seq !== 'number' || typeof obj.op !== 'string') return null;
     return {
       seq: obj.seq,
-      team_id: typeof obj.team_id === 'string' ? obj.team_id : '',
       table_name: typeof obj.table_name === 'string' ? obj.table_name : null,
       pk: typeof obj.pk === 'string' ? obj.pk : null,
       op: obj.op,
-      owner_user_id: typeof obj.owner_user_id === 'string' ? obj.owner_user_id : null,
+      owner_role: typeof obj.owner_role === 'string' ? obj.owner_role : null,
       created_at: typeof obj.created_at === 'string' ? obj.created_at : '',
-      client_ts: typeof obj.client_ts === 'string' ? obj.client_ts : null,
     };
   } catch {
     return null;
