@@ -1322,7 +1322,13 @@ export const appJs = `
       var hash = location.hash || '#/';
       document.querySelectorAll('nav a').forEach(function (a) {
         var route = a.getAttribute('data-route') || a.getAttribute('href');
-        a.classList.toggle('active', route && hash.indexOf(route) === 0);
+        // Match the route exactly or as a full path segment (route + '/...'),
+        // never as a bare string prefix — otherwise '#/fs/files' would also
+        // light up '#/fs/files_projects' (any sibling whose name starts with
+        // the same word). The '/' boundary stops the prefix bleed while still
+        // keeping a parent active on its own detail routes.
+        var on = !!route && (hash === route || hash.indexOf(route + '/') === 0);
+        a.classList.toggle('active', on);
       });
     }
 
