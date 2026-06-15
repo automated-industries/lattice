@@ -102,7 +102,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   and the preview 500'd; the header is now RFC 5987 encoded (ASCII fallback +
   `filename*=UTF-8''…`), so the image loads.
 - **"Open in file manager" reveals the file** in the OS file browser (Finder /
-  Explorer / the desktop file manager) instead of opening it in an editor.
+  Explorer / the desktop file manager) instead of opening it in an editor — and
+  for a content-addressed blob (stored as `data/blobs/<hash>`, no name/extension)
+  it now reveals a **named copy** carrying the original filename + extension, so
+  you see your actual "Screenshot ….png" rather than a hash-named "Document".
+- **A too-large upload now reports a real error instead of "Failed to fetch".**
+  When a request body exceeded the size cap, the server reset the socket, which
+  the browser surfaced as an opaque "Failed to fetch" (e.g. saving a large
+  workspace logo). It now returns a clear `413` with the reason, and the logo
+  uploader reaches its precise "max 64 KB" validation message.
+- **"Share with specific people" works.** Switching a row to per-person sharing
+  failed with `invalid visibility "custom"` — the visibility setter rejected the
+  `custom` mode the underlying row-level-security function accepts. It now accepts
+  `custom`, so the member checklist loads and you can grant individual people.
 - **Assistant-driven changes are undoable.** A change the assistant makes on your
   behalf is now recorded under the active session, so it shows up in the header
   undo stack just like a manual edit.

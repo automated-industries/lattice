@@ -1278,7 +1278,10 @@ export async function dispatchDbConfigRoute(
         return;
       }
       await installCloudSettings(ctx.db);
-      const body = await readJson(req);
+      // Allow up to ~2 MB of request body so a too-big logo reaches the precise
+      // 64 KB validation message below (a smaller cap would 413 with only a
+      // generic "body too large"). parseAndValidateLogo enforces the real limit.
+      const body = await readJson(req, { maxBytes: 2_000_000 });
       const raw = typeof body.logo === 'string' ? body.logo.trim() : '';
       if (!raw) {
         // Remove: clear both keys (readers map '' → null → default logo).
