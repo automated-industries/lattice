@@ -8,6 +8,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-06-14
+
+### Fixed — cloud member access converges on every owner open
+
+- **Internal chat tables are always per-owner private.** The assistant's
+  conversation storage (`chat_threads` / `chat_messages`) is now forced
+  `never_share` on every secure / owner open, so a member can never read another
+  member's chat — even if a bulk "share everything" or a restore left those
+  tables stamped `everyone`. Row-Level Security enforces it at the database, so
+  it can't be bypassed by the share path or a route bug.
+- **Member grants self-heal after a privilege-dropping restore.** The per-table
+  member `GRANT` is re-issued on every cloud owner open (ungated, no row scans),
+  so a table that shows as shared is always actually readable. Previously the
+  grant lived only inside a version-gated per-table migration, so a restore that
+  kept the RLS policy but dropped privileges (e.g. a `pg_dump --no-privileges`
+  round-trip) left members unable to read shared tables. Granting is limited to
+  RLS-secured tables, so it can never widen an unsecured table.
+
+### Fixed — GUI
+
+- **A cloud member no longer sees a broken entity for a table it can't read.**
+  Tables the member has no column access to (privilege-filtered to zero columns)
+  are skipped at open instead of being registered as an empty-schema entity that
+  failed every read with `unknown column "deleted_at"`.
+- **Sidebar nav highlight matches on a path-segment boundary.** Clicking an
+  object no longer also highlights siblings whose name starts with the same word
+  (e.g. selecting "Files" lit up "Files Project" / "Files Projects").
+
 ## [3.2.0] - 2026-06-14
 
 ### Added — ask the assistant about Lattice itself (3.2)
