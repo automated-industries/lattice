@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
@@ -123,6 +124,7 @@ export async function appendAudit(
   after: unknown,
   source: FeedSource = 'gui',
   sessionId?: string,
+  editTs?: string,
 ): Promise<void> {
   // Purge THIS session's redo stack (a new edit invalidates pending redos).
   const undone = (await db.query('_lattice_gui_audit', {
@@ -133,9 +135,10 @@ export async function appendAudit(
     id: crypto.randomUUID(),
     // Set ts explicitly (don't rely on the column DEFAULT — it uses the
     // SQLite-only `strftime(...)`, which doesn't yield a parseable ISO string
-    // on Postgres, so cloud history rendered "Invalid Date"). Mirrors the
-    // explicit `client_ts` below; adapter-agnostic.
-    ts: new Date().toISOString(),
+    // on Postgres, so cloud history rendered "Invalid Date"). #4.6 — honor the
+    // originating client's validated edit time when present (an offline edit
+    // replayed later records when it was MADE, not when it synced), else now().
+    ts: sanitizeEditTs(editTs) ?? new Date().toISOString(),
     table_name: table,
     row_id: rowId,
     operation: op,
@@ -229,6 +232,40 @@ export interface MutationCtx {
    */
   applySchemaInverse?: (entry: AuditEntry) => Promise<void>;
   applySchemaForward?: (entry: AuditEntry) => Promise<void>;
+  /**
+   * The originating client's true edit time (`x-lattice-client-ts`), honored for
+   * the audit/history timestamp so an OFFLINE edit replayed later shows when it
+   * was actually made, not when it finally synced (#4.6). Validated by
+   * {@link sanitizeEditTs}; ignored if absent/implausible.
+   */
+  clientTs?: string | undefined;
+}
+
+/**
+ * Accept a client-supplied edit timestamp ONLY when it's a parseable ISO instant
+ * that isn't in the future (beyond a small clock-skew margin). An offline edit
+ * is legitimately in the PAST (it synced late), so old values are fine; a future
+ * value (clock skew or a client trying to sort its edit ahead of everyone) is
+ * rejected so it can't jump the audit order. Returns the validated ISO string or
+ * null (caller falls back to server now()). #4.6
+ */
+export function sanitizeEditTs(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) return null;
+  if (t > Date.now() + 5 * 60 * 1000) return null; // > 5 min in the future — reject
+  return new Date(t).toISOString();
+}
+
+/**
+ * An error a queued OFFLINE edit can never replay successfully: the target row is
+ * gone / invisible under RLS, or the write didn't land. Tagged with a stable
+ * `code` so the HTTP layer maps it to 409 and the client routes the edit to its
+ * dead-letter queue (marks it failed + surfaces it) instead of retrying forever
+ * (#4.5 — previously these threw a generic 500 the drain loop retried endlessly).
+ */
+export function writeConflict(message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code: 'row_write_conflict' });
 }
 
 /** Infer a column type for an auto-created column from its first written value. */
@@ -287,14 +324,51 @@ async function announceAddedColumns(
   );
 }
 
+/**
+ * Derive a STABLE row id from a client edit-id (#3.6 offline-replay idempotency).
+ * The GUI stamps every logical row write with an `x-lattice-edit-id` (a per-edit
+ * UUID, persisted in its offline IndexedDB queue) and may REPLAY the same POST
+ * after a reconnect — or when the original response was lost after the row had
+ * already been committed. Deriving the new row's id deterministically from that
+ * edit-id means a replay targets the SAME id, so {@link createRow} can detect the
+ * row already exists and no-op instead of inserting a duplicate. Hashing (rather
+ * than using the header verbatim) bounds the id length and normalizes the charset
+ * regardless of what the client sent. The 128-bit slice is collision-resistant.
+ */
+export function deriveRowIdFromEditId(editId: string): string {
+  return createHash('sha256').update(editId).digest('hex').slice(0, 32);
+}
+
 export async function createRow(
   ctx: MutationCtx,
   table: string,
   values: Row,
   forceVisibility?: 'private' | 'everyone',
-): Promise<{ id: string; row: Row | null }> {
+  editId?: string,
+): Promise<{ id: string; row: Row | null; idempotent: boolean }> {
+  // #3.6 — offline-replay idempotency. Scoped to callers that carry an edit-id
+  // (the GUI row-write path; the assistant/ingest paths pass none and keep their
+  // prior behaviour untouched). When the table uses the default single-column
+  // `id` PK, derive a deterministic id from the edit-id (unless the caller pinned
+  // one) so a replayed POST resolves to the SAME id; if that row already exists,
+  // it's a true no-op — no duplicate row, no duplicate audit entry, no duplicate
+  // feed event. Composite/custom-PK tables (e.g. junctions) keep normal id
+  // assignment and are never deduped here.
+  const pk = ctx.db.getPrimaryKey(table);
+  const isDefaultPk = pk.length === 1 && pk[0] === 'id';
+  let toInsert = values;
+  if (editId && isDefaultPk) {
+    const provided = values.id;
+    // A usable caller-supplied id is a primitive; anything else (or absent) → derive
+    // deterministically from the edit-id (also satisfies no-base-to-string).
+    const hasId = typeof provided === 'string' || typeof provided === 'number';
+    const targetId = hasId ? String(provided) : deriveRowIdFromEditId(editId);
+    if (!hasId) toInsert = { ...values, id: targetId };
+    const existing = await ctx.db.get(table, targetId);
+    if (existing !== null) return { id: targetId, row: existing, idempotent: true };
+  }
   // Persist fields the schema lacks by creating the columns first (no silent drop).
-  const addedCols = await ensureColumns(ctx.db, table, values);
+  const addedCols = await ensureColumns(ctx.db, table, toInsert);
   await announceAddedColumns(ctx, table, addedCols);
   // When the caller demands a specific cloud visibility for this row (e.g. chat
   // "private mode"), stamp it atomically at insert via insertForcingVisibility —
@@ -305,13 +379,24 @@ export async function createRow(
   // silently left shared (Rule: no silent failures).
   const id =
     forceVisibility !== undefined
-      ? await ctx.db.insertForcingVisibility(table, values, forceVisibility)
-      : await ctx.db.insert(table, values);
+      ? await ctx.db.insertForcingVisibility(table, toInsert, forceVisibility)
+      : await ctx.db.insert(table, toInsert);
   const row = await ctx.db.get(table, id);
   // On a cloud, row ownership + the change feed are recorded by Postgres
   // triggers; no app-layer ACL or change-envelope write is needed.
-  await appendAudit(ctx.db, ctx.feed, table, id, 'insert', null, row, ctx.source, ctx.sessionId);
-  return { id, row };
+  await appendAudit(
+    ctx.db,
+    ctx.feed,
+    table,
+    id,
+    'insert',
+    null,
+    row,
+    ctx.source,
+    ctx.sessionId,
+    ctx.clientTs,
+  );
+  return { id, row, idempotent: false };
 }
 
 /**
@@ -349,7 +434,7 @@ export async function updateRow(
   // the no-op UPDATE would otherwise record a bogus audit/feed entry whose
   // row link 404s on click. Fail loudly so the caller can correct.
   if (before === null) {
-    throw new Error(`Cannot update "${table}": no row with id "${id}"`);
+    throw writeConflict(`Cannot update "${table}": no row with id "${id}"`);
   }
   // Persist fields the schema lacks by creating the columns first (no silent drop).
   const addedCols = await ensureColumns(ctx.db, table, values as Row);
@@ -368,7 +453,7 @@ export async function updateRow(
       (k) => !storedValueMatches(before[k], (values as Row)[k]),
     );
     if (wantedChange && rowsEqual(before, after)) {
-      throw new Error('Row update did not persist — the data source may be read-only');
+      throw writeConflict('Row update did not persist — the data source may be read-only');
     }
   }
   await appendAudit(
@@ -381,6 +466,7 @@ export async function updateRow(
     after,
     ctx.source,
     ctx.sessionId,
+    ctx.clientTs,
   );
   return { row: after };
 }
@@ -395,7 +481,7 @@ export async function deleteRow(
   // Deleting a non-existent row is a no-op that would still record a
   // bogus audit/feed entry. Surface the bad id instead of faking success.
   if (before === null) {
-    throw new Error(`Cannot delete from "${table}": no row with id "${id}"`);
+    throw writeConflict(`Cannot delete from "${table}": no row with id "${id}"`);
   }
   // RLS confines a member to the rows it may delete (no app-layer gate).
   if (!hard && ctx.softDeletable.has(table)) {
@@ -411,6 +497,7 @@ export async function deleteRow(
       after,
       ctx.source,
       ctx.sessionId,
+      ctx.clientTs,
     );
   } else {
     await ctx.db.delete(table, id);
@@ -424,6 +511,7 @@ export async function deleteRow(
       null,
       ctx.source,
       ctx.sessionId,
+      ctx.clientTs,
     );
   }
 }

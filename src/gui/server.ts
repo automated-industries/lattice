@@ -1,4 +1,4 @@
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import {
   existsSync,
@@ -46,10 +46,13 @@ import {
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
-import { RealtimeBroker } from './realtime.js';
+import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
+import { getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
+import { installCloudRls, enableChangelogRls } from '../cloud/rls.js';
+import { installCloudSettings } from '../cloud/settings.js';
 import { rowAccessSummaries } from '../cloud/members.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
@@ -105,6 +108,7 @@ import {
   getOrCreateMasterKey,
   readIdentity,
   deleteDbCredential,
+  saveDbCredential,
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
@@ -318,6 +322,13 @@ async function entitiesWithCounts(
       const policy = policies[t.name];
       t.defaultRowVisibility = policy?.defaultRowVisibility ?? 'private';
       t.neverShare = policy?.neverShare ?? false;
+      // Re-light the Data Model sharing UI (regressed in the 3.0 RLS rewrite,
+      // which stopped setting these). The connecting role is the cloud owner
+      // (canManageRoles above), so it can manage every table's sharing → show the
+      // controls + the share-state border. Under the 3.1 RLS model "shared" maps
+      // to the table's rows defaulting to everyone-visible (vs owner-private).
+      t.ownedByMe = true;
+      t.shared = t.defaultRowVisibility === 'everyone';
     }
   }
 
@@ -430,6 +441,39 @@ const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 const ROW_HISTORY_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/history$/;
 const LAST_EDITED_PATH = /^\/api\/tables\/([^/]+)\/last-edited$/;
 const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
+
+/**
+ * Read one request header as a trimmed string (Node lowercases header names and
+ * may hand back an array for repeated headers — collapse to the first value).
+ * Returns undefined when absent or blank so callers can treat "no header" and
+ * "empty header" identically.
+ */
+function headerValue(req: IncomingMessage, name: string): string | undefined {
+  const raw = req.headers[name.toLowerCase()];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  const trimmed = typeof v === 'string' ? v.trim() : '';
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Max rows a single `/rows` page may request — caps cloud egress on a hot path
+ *  (Rule: bounded reads). A caller wanting more pages with limit+offset. */
+const MAX_ROWS_PAGE = 1000;
+const DEFAULT_ROWS_PAGE = 500;
+
+/**
+ * Parse + validate a `limit`/`offset` query param (#4.9). Returns the numeric
+ * value, or `'invalid'` for a non-numeric / negative / non-integer string (the
+ * caller returns 400 instead of letting `Number('abc')` become `LIMIT NaN`).
+ * `limit` is clamped to `[1, MAX_ROWS_PAGE]`; `offset` floored at 0.
+ */
+function parsePageParam(raw: string | null, kind: 'limit' | 'offset'): number | 'invalid' {
+  if (raw === null) return kind === 'limit' ? DEFAULT_ROWS_PAGE : 0;
+  if (!/^\d+$/.test(raw.trim())) return 'invalid';
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 'invalid';
+  if (kind === 'limit') return Math.min(Math.max(1, n), MAX_ROWS_PAGE);
+  return Math.max(0, n);
+}
 
 interface ContextFile {
   name: string;
@@ -648,6 +692,15 @@ export interface ActiveDb {
   renderAbort: AbortController;
   /** Folded snapshot of {@link renderProgress}, served over `/api/render/status`. */
   renderState: RenderStatusSnapshot;
+  /**
+   * #2.1 — base table → its audience-masking view (`<table>_v`) for the rows a
+   * MEMBER must read through. A secured cloud REVOKEs base SELECT from members
+   * for any table with a column audience and grants only the masking view, so a
+   * member's base read would be `permission denied`; the read path routes those
+   * SELECTs to the view (writes still target the base under RLS). Empty for an
+   * owner open and for local/SQLite (no masking, base SELECT intact).
+   */
+  maskedReadViews: Map<string, string>;
 }
 
 /**
@@ -794,6 +847,9 @@ export async function openConfig(
   // DBA path keeps the full init (idempotent CREATE IF NOT EXISTS on an existing
   // cloud). SQLite and fresh Postgres fall through to the normal init.
   let memberOpen = false;
+  // #2.1 — base table → masking view (`<table>_v`) for member reads. Populated on a
+  // cloud member open for tables whose base SELECT was revoked in favor of the view.
+  const maskedReadViews = new Map<string, string>();
   if (db.getDialect() === 'postgres') {
     const peek = new Lattice({ config: configPath }, { encryptionKey });
     try {
@@ -802,7 +858,9 @@ export async function openConfig(
         memberOpen = !(await canManageRoles(peek));
         if (memberOpen) {
           const declared = new Set(db.getRegisteredTableNames());
-          for (const t of await discoverCloudTables(peek)) {
+          const discovered = await discoverCloudTables(peek);
+          const knownTables = new Set<string>([...declared, ...discovered.map((t) => t.name)]);
+          for (const t of discovered) {
             if (declared.has(t.name)) continue;
             db.define(t.name, {
               columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
@@ -810,6 +868,19 @@ export async function openConfig(
               render: () => '',
               outputFile: `${t.name}/.lattice/${t.name}.md`,
             });
+          }
+          // A member only SEES `<base>_v` views it was granted SELECT on (the
+          // audience-masking view for a table whose base SELECT was revoked).
+          // `information_schema.views` is privilege-filtered, so this is exactly
+          // the set of base tables whose reads must route to the view.
+          const views = (await allAsyncOrSync(
+            peek.adapter,
+            `SELECT table_name AS name FROM information_schema.views
+               WHERE table_schema = current_schema() AND table_name LIKE '%\\_v' ESCAPE '\\'`,
+          )) as { name: string }[];
+          for (const { name } of views) {
+            const base = name.slice(0, -2); // strip the "_v" suffix
+            if (knownTables.has(base)) maskedReadViews.set(base, name);
           }
         }
       }
@@ -826,17 +897,44 @@ export async function openConfig(
   // every open just upserts the single 'singleton' row.
   await syncUserIdentityRow(db);
 
-  // Reconcile + record native-entity bindings (files, secrets). Labels a
-  // pre-existing files/secrets table as THE native object (merging the native
-  // column superset, non-destructively) rather than duplicating it, and
-  // guarantees the tables exist on freshly created DBs. Safe on every open.
-  await adoptNativeEntities(db);
+  // Owner-side maintenance — SKIP on a cloud MEMBER open. Both write DDL/rows in
+  // the schema (create native tables / soft-delete legacy secrets); a scoped
+  // member has no such grant (the bootstrap REVOKEs CREATE from PUBLIC), so
+  // running them would fail the open with "permission denied for schema public".
+  // The member's tables are already registered via discoverCloudTables above.
+  if (!memberOpen) {
+    // Reconcile + record native-entity bindings (files, secrets). Labels a
+    // pre-existing files/secrets table as THE native object (merging the native
+    // column superset, non-destructively) rather than duplicating it, and
+    // guarantees the tables exist on freshly created DBs.
+    await adoptNativeEntities(db);
+    // Retire legacy per-workspace preference rows (voice provider + inference
+    // aggressiveness) older builds stored in `secrets`. They're machine-local
+    // preferences now, so soft-delete leftovers. Idempotent.
+    await retireLegacyPreferenceSecrets(db);
+  }
 
-  // Retire legacy per-workspace preference rows (voice provider + inference
-  // aggressiveness) that older builds stored in `secrets`. They're user
-  // preferences now (machine-local), so this soft-deletes any leftover rows
-  // so they stop appearing in the workspace's Secrets object. Idempotent.
-  await retireLegacyPreferenceSecrets(db);
+  // Cloud OWNER open: converge the idempotent cloud bootstrap (RLS objects +
+  // settings + observation substrate) so objects ADDED to the bootstrap in a
+  // later release reach clouds already stamped at an earlier version — the class
+  // of bug where __lattice_member_invites never reached existing clouds and a
+  // version-gated `secure` no-op'd. Pure CREATE … IF NOT EXISTS / CREATE OR
+  // REPLACE — cheap, no row scans. The EXPENSIVE per-table ownership/RLS backfill
+  // stays gated in secureCloud (internal guideline — no whole-table scans on open).
+  if (db.getDialect() === 'postgres' && !memberOpen) {
+    try {
+      if ((await cloudRlsInstalled(db)) && (await canManageRoles(db))) {
+        await installCloudRls(db);
+        await installCloudSettings(db);
+        await db.ensureObservationSubstrate();
+        await enableChangelogRls(db); // converges the v3 fail-closed changelog policy
+      }
+    } catch (e) {
+      // internal guideline: never silently swallow. A converge failure must be visible, but
+      // shouldn't crash the GUI — the owner can still work; `secure` re-runs it.
+      console.error('[openConfig] cloud bootstrap converge failed:', (e as Error).message);
+    }
+  }
 
   // Queryable tables = YAML-declared tables PLUS every table registered on the
   // live Lattice that isn't internal bookkeeping. This includes native
@@ -943,6 +1041,7 @@ export async function openConfig(
     renderProgress: new RenderProgressBus(),
     renderAbort: new AbortController(),
     renderState: { phase: 'idle', tables: {} },
+    maskedReadViews,
   };
 }
 
@@ -1164,6 +1263,56 @@ function startBackgroundRender(active: ActiveDb): void {
  * off a secured cloud. Each row's key is its canonical pk string (single = bare
  * value, composite = TAB-joined), matching `__lattice_owners.pk`.
  */
+/**
+ * #4.3 — should a realtime change envelope be forwarded to the role THIS server
+ * is connected as? The NOTIFY fan-out is global (every change on the whole cloud),
+ * so without this gate a member's realtime/feed stream would leak the pk +
+ * existence + editor (`owner_role`) of rows the member cannot read. For an
+ * `upsert` we probe the row's visibility through the SAME SECURITY-DEFINER
+ * function RLS uses (keyed on `session_user` = this connection's role), so the
+ * filter is inherently per-recipient. A `delete` can't be probed (the ownership
+ * record is removed by the delete trigger) — those are still forwarded so a client
+ * drops a row it may be showing, but the caller STRIPS `owner_role` from the
+ * forwarded delete so the editor of an unreadable row is never disclosed. No-op
+ * (always visible) on a non-cloud single-user SQLite DB. Fails CLOSED (don't
+ * forward) on a probe error, logging it.
+ */
+export async function changeVisibleToActiveRole(
+  db: Lattice,
+  payload: RealtimePayload,
+): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return true; // single-user local — nothing to gate
+  if (payload.op === 'delete' || payload.op === 'DELETE') return true; // can't probe; owner_role stripped by caller
+  if (!payload.table_name || !payload.pk) return false;
+  try {
+    const row = (await getAsyncOrSync(db.adapter, `SELECT lattice_row_visible(?, ?) AS v`, [
+      payload.table_name,
+      payload.pk,
+    ])) as { v?: unknown } | undefined;
+    return row?.v === true || row?.v === 't' || row?.v === 1;
+  } catch (e) {
+    console.warn('[realtime] visibility probe failed (dropping change):', (e as Error).message);
+    return false;
+  }
+}
+
+/** True for a delete op (which can't be visibility-probed post-hoc). */
+function isDeleteOp(op: string): boolean {
+  return op === 'delete' || op === 'DELETE';
+}
+
+/**
+ * #2.1 — the relation a SELECT for `table` should target: the audience-masking
+ * view (`<table>_v`) when this (member) connection lost base SELECT, else the base
+ * table itself. Passing `<table>_v` to `db.query`/`db.get`-style SELECTs is safe —
+ * the view is unregistered (column validation passes through) so it never appears
+ * as a sidebar entity, and the view re-applies row visibility + cell masking. Only
+ * reads route here; writes always target the base table under RLS.
+ */
+function readRelationFor(active: ActiveDb, table: string): string {
+  return active.maskedReadViews.get(table) ?? table;
+}
+
 async function attachRowAccess(db: Lattice, table: string, rows: Row[]): Promise<void> {
   if (rows.length === 0) return;
   const pkCols = db.getPrimaryKey(table);
@@ -1234,24 +1383,32 @@ async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<
  */
 async function syncUserIdentityRow(db: Lattice): Promise<void> {
   const identity = readIdentity();
-  const existing = (await db.get('__lattice_user_identity', 'singleton')) as {
-    id: string;
-    display_name: string;
-    email: string;
-  } | null;
-  if (existing) {
-    await db.update('__lattice_user_identity', 'singleton', {
-      display_name: identity.display_name,
-      email: identity.email,
-      updated_at: new Date().toISOString(),
-    });
-  } else {
-    await db.insert('__lattice_user_identity', {
-      id: 'singleton',
-      display_name: identity.display_name,
-      email: identity.email,
-      updated_at: new Date().toISOString(),
-    });
+  try {
+    const existing = (await db.get('__lattice_user_identity', 'singleton')) as {
+      id: string;
+      display_name: string;
+      email: string;
+    } | null;
+    if (existing) {
+      await db.update('__lattice_user_identity', 'singleton', {
+        display_name: identity.display_name,
+        email: identity.email,
+        updated_at: new Date().toISOString(),
+      });
+    } else {
+      await db.insert('__lattice_user_identity', {
+        id: 'singleton',
+        display_name: identity.display_name,
+        email: identity.email,
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (e) {
+    // Best-effort: a cloud MEMBER has no write grant on the shared singleton
+    // identity row (and shouldn't clobber it anyway) — so a member open must not
+    // fail here. Log it (internal guideline: visible, not silently swallowed) and continue;
+    // the mirror is a convenience, not required to open the workspace.
+    console.warn('[openConfig] skipped user-identity mirror:', (e as Error).message);
   }
 }
 
@@ -1488,7 +1645,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             writeEvent('state', { mode: 'cloud', state });
           });
           const offPayload = broker?.subscribePayload((payload) => {
-            writeEvent('change', payload);
+            // #4.3 — only forward a change the connected role may actually read;
+            // strip the editor (owner_role) from deletes (unprobeable post-hoc).
+            void changeVisibleToActiveRole(active.db, payload).then((visible) => {
+              if (!visible) return;
+              const out = isDeleteOp(payload.op) ? { ...payload, owner_role: null } : payload;
+              writeEvent('change', out);
+            });
           });
           const cleanup = (): void => {
             clearInterval(keepalive);
@@ -1531,33 +1694,42 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // Postgres NOTIFY echo of them below (avoids double feed entries on
           // cloud DBs); genuine other-client changes still come through.
           const recentSelf = new Map<string, number>();
+          // Internal plumbing tables (the assistant's own chat_threads/chat_messages
+          // storage + every `_lattice*` bookkeeping table) are NOT user activity —
+          // never surface them as feed pills. files/secrets/notes etc. stay visible.
+          const isFeedHiddenTable = (t: string): boolean =>
+            t.startsWith('_lattice') || t.startsWith('__lattice') || isInternalNativeEntity(t);
           const offFeed = active.feed.subscribe((e) => {
+            if (e.table && isFeedHiddenTable(e.table)) return;
             recentSelf.set(`${e.table ?? ''}:${e.rowId ?? ''}:${e.op}`, Date.now());
             writeFeed(e);
           });
           // Merge the Postgres realtime broker so changes made by OTHER clients
           // on a shared cloud DB also appear in the feed (SQLite has no broker).
           const offBroker = active.realtime?.subscribePayload((p) => {
-            const op =
-              p.op === 'INSERT'
-                ? 'insert'
-                : p.op === 'UPDATE'
-                  ? 'update'
-                  : p.op === 'DELETE'
-                    ? 'delete'
-                    : null;
-            if (!op || !p.table_name || p.table_name.startsWith('_lattice')) return;
-            const key = `${p.table_name}:${p.pk ?? ''}:${op}`;
+            // #4.1 — the change feed's op domain is `upsert` | `delete`, NOT
+            // INSERT/UPDATE/DELETE; matching the old uppercase forms dropped EVERY
+            // remote change, so another client's edits never reached the feed.
+            const op = feedOpForChange(p.op);
+            if (!op || !p.table_name || isFeedHiddenTable(p.table_name)) return;
+            const tableName = p.table_name; // non-null past the guard (kept across the async cb)
+            const key = `${tableName}:${p.pk ?? ''}:${op}`;
             const seen = recentSelf.get(key);
             if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
-            writeFeed({
-              seq: p.seq,
-              table: p.table_name,
-              op,
-              rowId: p.pk,
-              source: 'cli',
-              ts: p.created_at || new Date().toISOString(),
-              summary: `${op} on ${p.table_name} (another client)`,
+            // #4.3 — gate on the connected role's visibility (don't surface another
+            // member's unreadable rows in the feed); strip the editor on deletes.
+            void changeVisibleToActiveRole(active.db, p).then((visible) => {
+              if (!visible) return;
+              writeFeed({
+                seq: p.seq,
+                table: tableName,
+                op,
+                rowId: p.pk,
+                source: 'cli',
+                actor: isDeleteOp(p.op) ? undefined : (p.owner_role ?? undefined),
+                ts: p.created_at || new Date().toISOString(),
+                summary: `${op} on ${tableName} (another client)`,
+              });
             });
           });
           const cleanup = (): void => {
@@ -3190,12 +3362,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             softDeletable: active.softDeletable,
             source: 'gui',
             sessionId,
+            // #4.6 — the originating client's true edit time, honored for the
+            // audit timestamp so an offline edit shows when it was made.
+            clientTs: headerValue(req, 'x-lattice-client-ts'),
           };
 
           if (id === null) {
             if (method === 'GET') {
-              const limit = Number(url.searchParams.get('limit') ?? '500');
-              const offset = Number(url.searchParams.get('offset') ?? '0');
+              // #4.9 — bound + validate the page params: an unbounded `limit` is a
+              // full-table egress on a cloud hot path, and `Number('abc')` was
+              // becoming `LIMIT NaN`. Reject non-numeric; clamp limit ≤ MAX.
+              const limit = parsePageParam(url.searchParams.get('limit'), 'limit');
+              const offset = parsePageParam(url.searchParams.get('offset'), 'offset');
+              if (limit === 'invalid' || offset === 'invalid') {
+                sendJson(res, { error: 'limit and offset must be non-negative integers' }, 400);
+                return;
+              }
               const deletedMode = url.searchParams.get('deleted');
               // Row visibility is enforced by Postgres RLS at the database.
               const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
@@ -3204,26 +3386,47 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                   { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
                 ];
               }
-              const rows = await active.db.query(table, queryOpts);
+              // #2.1 — a member reads an audience-masked table through its
+              // `<table>_v` view (base SELECT was revoked); the base name is used
+              // everywhere else (validTables, ownership lookups, writes).
+              const rows = await active.db.query(readRelationFor(active, table), queryOpts);
               await attachRowAccess(active.db, table, rows);
               sendJson(res, { rows });
               return;
             }
             if (method === 'POST') {
               const body = (await readJson<unknown>(req)) as Row;
-              const { id: newId } = await createRow(mctx, table, body);
-              sendJson(res, { id: newId }, 201);
+              // #3.6 — pass the client edit-id through so a replayed offline POST
+              // resolves to the same row (idempotent no-op) instead of a duplicate.
+              const editId = headerValue(req, 'x-lattice-edit-id');
+              const created = await createRow(mctx, table, body, undefined, editId);
+              // A replayed POST (the row already existed) is reported as 200, not
+              // 201, so the client can tell a fresh insert from an idempotent no-op.
+              sendJson(res, { id: created.id }, created.idempotent ? 200 : 201);
               return;
             }
           } else {
             if (method === 'GET') {
-              const row = await active.db.get(table, id);
+              // #2.1 — route a masked table's single-row read through `<table>_v`
+              // too (base SELECT revoked for members). Build the pk filter from the
+              // BASE table's registered key; the view exposes the same columns.
+              const readRel = readRelationFor(active, table);
+              let row: Row | null;
+              if (readRel === table) {
+                row = await active.db.get(table, id);
+              } else {
+                // Masked tables use a single `id` PK in practice; filter the view
+                // on the first PK column (fallback `id`) — the view exposes it.
+                const pkCol = active.db.getPrimaryKey(table)[0] ?? 'id';
+                const found = await active.db.query(readRel, { where: { [pkCol]: id }, limit: 1 });
+                row = found[0] ?? null;
+              }
               if (row === null) {
                 sendJson(res, { error: 'Row not found' }, 404);
                 return;
               }
-              // A row the operator can't read already returns null from db.get
-              // (RLS-filtered), so reaching here means the row is visible.
+              // A row the operator can't read already returns null (RLS-filtered /
+              // not in the view), so reaching here means the row is visible.
               await attachRowAccess(active.db, table, [row]);
               sendJson(res, row);
               return;
@@ -3374,6 +3577,42 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               active = next;
               startBackgroundRender(active); // re-render the reopened DB's tree off the response path
             },
+            // Join a cloud as a NEW workspace (never hijack the active one): save
+            // the credential, scaffold a new cloud workspace, open + activate it.
+            // Atomic — on open failure, roll back the half-created workspace +
+            // credential and rethrow (so a failed join leaves nothing behind).
+            createCloudWorkspace: async (displayName: string, key: string, url: string) => {
+              if (!latticeRoot) {
+                throw new Error('No .lattice root — cannot create a cloud workspace');
+              }
+              saveDbCredential(key, url);
+              let created;
+              try {
+                created = addWorkspace(latticeRoot, {
+                  displayName,
+                  db: '${LATTICE_DB:' + key + '}',
+                  makeActive: false,
+                });
+              } catch (e) {
+                deleteDbCredential(key);
+                throw e;
+              }
+              const paths = resolveWorkspacePaths(latticeRoot, created);
+              let next: ActiveDb;
+              try {
+                next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+              } catch (e) {
+                removeWorkspace(latticeRoot, created.id);
+                deleteDbCredential(key);
+                throw e;
+              }
+              setActiveWorkspace(latticeRoot, created.id);
+              await disposeActive(active);
+              active = next;
+              startBackgroundRender(active);
+              currentWorkspaceId = created.id;
+              return created.id;
+            },
           });
           if (handled) return;
         }
@@ -3395,6 +3634,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         }
         if (e.code === 'row_owner_only') {
           sendJson(res, { error: e.message }, 403);
+          return;
+        }
+        // #4.5 — an offline edit that can never replay (row gone / RLS-invisible /
+        // write didn't land) is a 409 conflict, not a server fault, so the client
+        // marks it failed + surfaces it instead of retrying it forever.
+        if (e.code === 'row_write_conflict') {
+          sendJson(res, { error: e.message }, 409);
           return;
         }
         console.error(

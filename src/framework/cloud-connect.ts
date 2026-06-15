@@ -38,9 +38,12 @@ export interface CloudProbeResult {
  *  privilege on the table, so a scoped member (who is denied SELECT on the
  *  bookkeeping tables) still gets a truthful answer. */
 export async function cloudRlsInstalled(probe: Lattice): Promise<boolean> {
+  // Resolve via the search_path (current schema), NOT a hardcoded `public.` — the
+  // cloud bootstrap installs into the connection's schema (cloudSchema), so a
+  // cloud in a non-public schema was mis-detected as "not a cloud".
   const row = (await getAsyncOrSync(
     probe.adapter,
-    `SELECT to_regclass('public.__lattice_owners') AS reg`,
+    `SELECT to_regclass('__lattice_owners') AS reg`,
   )) as { reg?: string | null } | undefined;
   return !!row && row.reg != null;
 }
@@ -111,6 +114,43 @@ export async function probeCloud(targetUrl: string): Promise<CloudProbeResult> {
     if (probe) {
       try {
         probe.close();
+      } catch {
+        // best-effort
+      }
+    }
+  }
+}
+
+/**
+ * Atomically CLAIM a pending member invite as the connecting (member) role
+ * (#3.1 one-time-use + revocation). Opens the cloud with the member credential
+ * and calls the SECURITY DEFINER `lattice_claim_invite()`, which stamps
+ * `redeemed_at` and returns true ONLY when an un-redeemed, un-revoked, un-expired
+ * invite exists for `session_user`. A second redeem (a replayed/leaked token), a
+ * revoked invite, or an expired one returns `claimed: false`. Any connection or
+ * SQL failure also yields `claimed: false` with the message — the join path FAILS
+ * CLOSED and surfaces it (internal guideline: never a silent success). Runs only on the
+ * email-bound redeem flow; the manual connect-existing flow (no invite row) does
+ * not call it.
+ */
+export async function claimMemberInvite(
+  targetUrl: string,
+): Promise<{ claimed: boolean; error?: string }> {
+  let conn: Lattice | null = null;
+  try {
+    conn = new Lattice(targetUrl);
+    await conn.init({ introspectOnly: true });
+    const row = (await getAsyncOrSync(conn.adapter, `SELECT lattice_claim_invite() AS ok`)) as
+      | { ok?: unknown }
+      | undefined;
+    const ok = row?.ok;
+    return { claimed: ok === true || ok === 't' || ok === 1 };
+  } catch (e) {
+    return { claimed: false, error: (e as Error).message };
+  } finally {
+    if (conn) {
+      try {
+        conn.close();
       } catch {
         // best-effort
       }

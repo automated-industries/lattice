@@ -1,6 +1,31 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
+
+/**
+ * Run idempotent cloud-bootstrap DDL directly, serialized by the SAME
+ * transaction-scoped advisory lock the migration path uses. Going direct (rather
+ * than a one-shot version-gated migration) is what makes the bootstrap CONVERGE
+ * on every owner open; the advisory lock is what keeps two concurrent runners (a
+ * second owner open, or an open racing `secure`) from colliding on catalog
+ * updates ("tuple concurrently updated"). The DDL is all CREATE … IF NOT EXISTS /
+ * CREATE OR REPLACE, so re-running is cheap + safe. No-op-safe on adapters
+ * without `withClient` (falls back to a plain run).
+ */
+export async function runCloudBootstrapSql(db: Lattice, sql: string): Promise<void> {
+  const adapter = db.adapter;
+  if (adapter.withClient) {
+    await adapter.withClient(async (tx) => {
+      await tx.run('SELECT pg_advisory_xact_lock($1::bigint)', [
+        LATTICE_MIGRATION_LOCK_ID.toString(),
+      ]);
+      await tx.run(sql);
+    });
+  } else {
+    await runAsyncOrSync(adapter, sql);
+  }
+}
 
 /**
  * Database-enforced row-level security for a shared cloud Postgres.
@@ -222,12 +247,42 @@ CREATE TABLE IF NOT EXISTS "__lattice_member_invites" (
   "id"          text PRIMARY KEY,
   "role"        text NOT NULL,
   "email_hash"  text NOT NULL,
+  "email"       text,
   "created_by"  text NOT NULL DEFAULT session_user,
   "created_at"  timestamptz NOT NULL DEFAULT now(),
   "expires_at"  timestamptz NOT NULL,
   "redeemed_at" timestamptz,
   "revoked_at"  timestamptz
 );
+-- Plaintext invitee email (owner-only table; members have no grant) so the
+-- owner's Members list can show who each member is. Added via ALTER so clouds
+-- created before this column converge to it on the owner's next open (the
+-- bootstrap is now run directly + idempotently, not version-gated).
+ALTER TABLE "__lattice_member_invites" ADD COLUMN IF NOT EXISTS "email" text;
+
+-- #3.1 — one-time-use + revocation enforcement. After a member authenticates to
+-- the cloud with their minted credential, the join path calls this to CLAIM the
+-- invite. The single atomic UPDATE stamps redeemed_at and returns true ONLY when
+-- an invite for the CALLING role (session_user) is still pending: not already
+-- redeemed (one-time-use), not revoked, and not expired. A replayed redeem of a
+-- leaked token, a revoked invite, or an expired one returns false, so the caller
+-- rejects the join. Members have no direct grant on the owner-only
+-- __lattice_member_invites table — this SECURITY DEFINER function is the only
+-- path, and it can claim ONLY the caller's own invite (keyed on session_user,
+-- never a caller-supplied parameter, so one member can't burn another's invite).
+CREATE OR REPLACE FUNCTION lattice_claim_invite()
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+DECLARE v_ok boolean;
+BEGIN
+  UPDATE "__lattice_member_invites"
+     SET "redeemed_at" = now()
+   WHERE "role" = session_user
+     AND "redeemed_at" IS NULL
+     AND "revoked_at" IS NULL
+     AND "expires_at" > now()
+  RETURNING true INTO v_ok;
+  RETURN COALESCE(v_ok, false);
+END $fn$;
 
 -- Visibility check. SECURITY DEFINER so it reads bookkeeping the member can't;
 -- keyed on session_user (the member's login role). A row with no ownership record
@@ -510,6 +565,62 @@ END $fn$;
 DROP TRIGGER IF EXISTS "lattice_notify_change_trg" ON "__lattice_changes";
 CREATE TRIGGER "lattice_notify_change_trg" AFTER INSERT ON "__lattice_changes"
   FOR EACH ROW EXECUTE FUNCTION lattice_notify_change();
+
+-- #4.4 — seq-based catch-up after a realtime gap. NOTIFY is fire-and-forget, so a
+-- broker that drops its LISTEN (network blip, laptop sleep) misses every change
+-- during the gap. The broker tracks the highest seq it delivered and, on
+-- reconnect, replays what it missed via this function. Members have NO direct
+-- grant on __lattice_changes (reading it raw would leak every change on the
+-- cloud), so this SECURITY DEFINER function is the only path and it returns ONLY
+-- the rows the CALLING role can see: keyed on session_user via lattice_row_visible
+-- (same gate as live fan-out, #4.3). Deletes are excluded — the ownership record
+-- is gone post-delete so visibility can't be verified, and replaying them would
+-- leak deleted-row pks (the client reconciles deletes on its reconnect refetch).
+-- Bounded (LIMIT clamped ≤ 1000) so a long gap can't stream the whole table (Rule:
+-- bounded reads on a hot path).
+CREATE OR REPLACE FUNCTION lattice_changes_since(p_seq bigint, p_limit int)
+RETURNS TABLE(seq bigint, table_name text, pk text, op text, owner_role text, created_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT c."seq", c."table_name", c."pk", c."op", c."owner_role", c."created_at"
+    FROM "__lattice_changes" c
+   WHERE c."seq" > p_seq
+     AND c."op" = 'upsert'
+     AND lattice_row_visible(c."table_name", c."pk")
+   ORDER BY c."seq" ASC
+   LIMIT GREATEST(0, LEAST(COALESCE(p_limit, 500), 1000));
+$fn$;
+
+-- #2.1 — per-row access summary for the connecting role. The GUI attaches this as
+-- each row's _access so the sharing affordance renders, but __lattice_owners is
+-- owner-only bookkeeping (members have no grant), so a member reading it directly
+-- got "permission denied". This SECURITY DEFINER function returns visibility +
+-- whether the CALLER owns the row, ONLY for the rows the caller can actually see
+-- (lattice_row_visible, keyed on session_user) — so a member learns nothing about
+-- rows hidden from it. Member-callable; the owner gets the same view of its rows.
+CREATE OR REPLACE FUNCTION lattice_rows_access(p_table text, p_pks text[])
+RETURNS TABLE(pk text, visibility text, owned boolean)
+LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT o."pk", o."visibility", (o."owner_role" = session_user) AS owned
+    FROM "__lattice_owners" o
+   WHERE o."table_name" = p_table
+     AND o."pk" = ANY(p_pks)
+     AND lattice_row_visible(o."table_name", o."pk");
+$fn$;
+
+-- #2.1 — grantees of a CALLER-OWNED custom-shared row (who you shared YOUR row
+-- with). Only the row owner sees this (the WHERE pins owner_role = session_user),
+-- so a member can't enumerate another owner's grants. __lattice_row_grants is
+-- member-ungranted, so this SECURITY DEFINER function is the member-safe path.
+CREATE OR REPLACE FUNCTION lattice_row_grantees(p_table text, p_pks text[])
+RETURNS TABLE(pk text, grantee_role text)
+LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT g."pk", g."grantee_role"
+    FROM "__lattice_row_grants" g
+    JOIN "__lattice_owners" o ON o."table_name" = g."table_name" AND o."pk" = g."pk"
+   WHERE g."table_name" = p_table
+     AND g."pk" = ANY(p_pks)
+     AND o."owner_role" = session_user;
+$fn$;
 `;
 
 /**
@@ -587,19 +698,15 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const schema = await cloudSchema(db);
-  const migration: Migration = {
-    // v3 added the audience helpers; v4 the role model; v5 the per-card override
-    // model (__lattice_cell_grants + lattice_cell_visible / lattice_grant_cell);
-    // v6 added per-table policy (__lattice_table_policy: default_row_visibility +
-    // never_share, enforced in the insert trigger + share/grant guards), the
-    // canonical column-audience store (__lattice_column_policy), lattice_is_owner,
-    // and the owner-only setters; v7 pins search_path on every SECURITY DEFINER
-    // helper (closes the pg_temp-shadow RLS bypass) + revokes schema CREATE from
-    // PUBLIC. The bootstrap is fully idempotent.
-    version: 'internal:cloud-rls:bootstrap:v7',
-    sql: pinDefinerSearchPath(CLOUD_RLS_BOOTSTRAP_SQL, schema) + revokeSchemaCreateSql(schema),
-  };
-  await db.migrate([migration]);
+  // Run the bootstrap DIRECTLY — NOT via a version-gated migration. Every object
+  // here is CREATE … IF NOT EXISTS / CREATE OR REPLACE / DROP POLICY IF EXISTS +
+  // CREATE POLICY / REVOKE, so re-running is cheap and, crucially, CONVERGES.
+  // A version gate (once a version is recorded it never re-runs) meant objects
+  // ADDED to the bootstrap in a later release — e.g. __lattice_member_invites —
+  // never reached clouds already stamped at that version, and `secure` no-op'd.
+  // Running it directly on every owner open (see openConfig) closes that gap.
+  const sql = pinDefinerSearchPath(CLOUD_RLS_BOOTSTRAP_SQL, schema) + revokeSchemaCreateSql(schema);
+  await runCloudBootstrapSql(db, sql);
 }
 
 /**
@@ -626,12 +733,15 @@ export async function installCloudRls(db: Lattice): Promise<void> {
  */
 export async function enableChangelogRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
-  const migration: Migration = {
-    // v2: ground-truth/audit entries are owner-only (was lattice_row_visible),
-    // closing the masked-column-via-history leak. Bump re-installs the policy on
-    // existing clouds.
-    version: 'internal:cloud-rls:changelog:v2',
-    sql: `
+  // v3: a derived observation with an EMPTY source_ref array must FAIL CLOSED
+  // (not visible). v2's `NOT EXISTS` over an empty array was vacuously true, so a
+  // derived row with no sources leaked to every member — mirror fold.ts
+  // observationVisible, which requires a non-empty source set. Run DIRECTLY
+  // (idempotent DROP/CREATE POLICY) — not version-gated — so it CONVERGES on
+  // every owner open, the same as the rest of the bootstrap.
+  await runCloudBootstrapSql(
+    db,
+    `
 ALTER TABLE "__lattice_changelog" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "__lattice_changelog" FORCE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT ON "__lattice_changelog" TO ${MEMBER_GROUP};
@@ -641,6 +751,7 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
   CASE
     WHEN "change_kind" = 'derived' THEN
       "source_ref" IS NOT NULL
+      AND jsonb_array_length("source_ref"::jsonb) > 0
       AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements_text("source_ref"::jsonb) AS src(sid)
          WHERE NOT lattice_source_visible(src.sid)
@@ -651,8 +762,7 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
 DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
 CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH CHECK (true);
 `,
-  };
-  await db.migrate([migration]);
+  );
 }
 
 /**

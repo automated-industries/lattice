@@ -15,8 +15,11 @@ function pgDb(owners: unknown[], grants: unknown[], rlsInstalled = true) {
     getDialect: () => 'postgres',
     adapter: {
       getAsync: () => Promise.resolve(rlsInstalled ? { reg: '__lattice_owners' } : { reg: null }),
+      // #2.1 — reads now go through SECURITY DEFINER functions (members have no
+      // direct grant on the bookkeeping tables): lattice_rows_access /
+      // lattice_row_grantees.
       allAsync: (sql: string) =>
-        Promise.resolve(sql.includes('__lattice_row_grants') ? grants : owners),
+        Promise.resolve(sql.includes('lattice_row_grantees') ? grants : owners),
     },
   } as never;
 }

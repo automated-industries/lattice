@@ -76,7 +76,12 @@ export async function provisionMemberRole(
        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN
          CREATE ROLE "${role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${password}';
        ELSE
-         ALTER ROLE "${role}" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${password}';
+         -- Re-invite of an EXISTING role: set ONLY what changed (login + password).
+         -- Restating NOSUPERUSER/superuser-class attrs trips Supabase supautils
+         -- ("only superuser may alter the SUPERUSER attribute", 42501) since the
+         -- owner 'postgres' isn't a true superuser. The role was already created
+         -- NOSUPERUSER NOCREATEDB NOCREATEROLE, so there is nothing to restate.
+         ALTER ROLE "${role}" WITH LOGIN PASSWORD '${password}';
        END IF;
      END $LATTICE$`,
   );
@@ -137,13 +142,14 @@ export async function rowAccessSummaries(
   const out = new Map<string, RowAccess>();
   if (db.getDialect() !== 'postgres' || pks.length === 0) return out;
   if (!(await cloudRlsInstalled(db))) return out;
-  const placeholders = pks.map(() => '?').join(', ');
+  // #2.1 — go through the SECURITY DEFINER summary function, NOT a direct read of
+  // __lattice_owners: members have no grant on that bookkeeping table, so the
+  // direct read 500'd every member row fetch. The function returns only the rows
+  // the caller can see (lattice_row_visible) + whether the caller owns each.
   const owners = (await allAsyncOrSync(
     db.adapter,
-    `SELECT "pk", "visibility", ("owner_role" = session_user) AS owned
-       FROM "__lattice_owners"
-      WHERE "table_name" = ? AND "pk" IN (${placeholders})`,
-    [table, ...pks],
+    `SELECT "pk", "visibility", "owned" FROM lattice_rows_access(?, ?)`,
+    [table, [...pks]],
   )) as { pk: string; visibility: string | null; owned: unknown }[];
   for (const o of owners) {
     out.set(o.pk, {
@@ -153,12 +159,11 @@ export async function rowAccessSummaries(
   }
   const customPks = owners.filter((o) => o.visibility === 'custom').map((o) => o.pk);
   if (customPks.length > 0) {
-    const cph = customPks.map(() => '?').join(', ');
+    // Grantees of the caller's OWN custom-shared rows (member-safe DEFINER fn).
     const grants = (await allAsyncOrSync(
       db.adapter,
-      `SELECT "pk", "grantee_role" FROM "__lattice_row_grants"
-         WHERE "table_name" = ? AND "pk" IN (${cph})`,
-      [table, ...customPks],
+      `SELECT "pk", "grantee_role" FROM lattice_row_grantees(?, ?)`,
+      [table, customPks],
     )) as { pk: string; grantee_role: string }[];
     for (const g of grants) {
       const a = out.get(g.pk);
@@ -243,6 +248,45 @@ export async function revokeCell(
 export async function revokeMemberRole(db: Lattice, role: string): Promise<void> {
   assertPg(db);
   if (!ROLE_RE.test(role)) throw new Error(`lattice: invalid member role name "${role}"`);
-  await runAsyncOrSync(db.adapter, `DROP OWNED BY "${role}"`).catch(() => undefined);
+  // Idempotent on a role that's already gone: REASSIGN/DROP OWNED raise "role
+  // does not exist", so short-circuit when the role is absent. This lets the
+  // re-invite + orphan sweep (#3.4) call revoke on a possibly-already-dropped
+  // role without a spurious failure. (DROP ROLE IF EXISTS would tolerate it, but
+  // the two OWNED statements before it would not.)
+  const exists = (await getAsyncOrSync(
+    db.adapter,
+    `SELECT 1 AS x FROM pg_roles WHERE rolname = ?`,
+    [role],
+  )) as { x?: number } | undefined;
+  if (!exists) return;
+  // Clean up the member's owned objects + grants before dropping the role. On a
+  // real-superuser cloud this REASSIGNs/DROPs whatever the role owns. But a scoped
+  // member is NOSUPERUSER + has no CREATE on the schema, so it owns NO persistent
+  // objects — and on managed Postgres (Supabase) the owner ISN'T a true superuser
+  // and is NOT a member of the scoped role, so `REASSIGN OWNED` / `DROP OWNED`
+  // raise "permission denied to reassign/drop objects" (42501). That error is
+  // benign HERE (there is nothing to reassign), so tolerate ONLY the
+  // insufficient-privilege code and let the DROP ROLE below be the source of
+  // truth. Any OTHER error still propagates (Rule: surface real failures). The
+  // DROP ROLE itself is NOT swallowed — if it fails, the kick fails loudly.
+  for (const stmt of [`REASSIGN OWNED BY "${role}" TO CURRENT_USER`, `DROP OWNED BY "${role}"`]) {
+    try {
+      await runAsyncOrSync(db.adapter, stmt);
+    } catch (e) {
+      if (!isInsufficientPrivilege(e)) throw e;
+      console.warn(
+        `[cloud] "${stmt.split(' ').slice(0, 2).join(' ')} …" skipped (insufficient privilege; ` +
+          `a scoped member owns no objects): ${(e as Error).message}`,
+      );
+    }
+  }
   await runAsyncOrSync(db.adapter, `DROP ROLE IF EXISTS "${role}"`);
+}
+
+/** True for a Postgres "permission denied" / insufficient-privilege error
+ *  (SQLSTATE 42501) — the class a restricted-superuser owner hits on
+ *  REASSIGN/DROP OWNED for a role it isn't a member of. */
+function isInsufficientPrivilege(e: unknown): boolean {
+  const err = (e ?? {}) as { code?: string; message?: string };
+  return err.code === '42501' || /permission denied/i.test(err.message ?? '');
 }

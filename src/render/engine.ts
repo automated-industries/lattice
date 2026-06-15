@@ -18,6 +18,7 @@ import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
 import type { RenderOptions } from './progress.js';
 import { ProgressThrottle } from './progress.js';
+import { mapWithConcurrency } from '../concurrency.js';
 
 /**
  * Yield back to the event loop every this-many entities during the per-entity
@@ -26,6 +27,15 @@ import { ProgressThrottle } from './progress.js';
  * and freeze the GUI. The yield is cheap and only happens a handful of times.
  */
 const YIELD_EVERY_ENTITIES = 200;
+
+/**
+ * How many entity-context tables to render at once. Bounded on purpose: each
+ * table loads its whole row set, so an unbounded fan-out would multiply peak
+ * memory + DB egress. A small cap lets several tables progress simultaneously
+ * (each card advancing at its own rate) without a thundering herd of full-table
+ * reads.
+ */
+const RENDER_TABLE_CONCURRENCY = 4;
 
 /**
  * Sentinel render function assigned to tables registered without a `render`
@@ -271,8 +281,6 @@ export class RenderEngine {
     throttle: ProgressThrottle,
     signal: AbortSignal | undefined,
   ): Promise<Record<string, EntityContextManifestEntry> | null> {
-    const manifestData: Record<string, EntityContextManifestEntry> = {};
-
     // Build set of protected table names for source filtering
     const protectedTables = new Set<string>();
     for (const [t, d] of this._schema.getEntityContexts()) {
@@ -281,230 +289,247 @@ export class RenderEngine {
 
     const entityTables = [...this._schema.getEntityContexts()];
     const tableCount = entityTables.length;
+    if (signal?.aborted) return null;
 
-    for (let tableIndex = 0; tableIndex < tableCount; tableIndex++) {
-      // Bail at the top of each entity-context table if aborted.
-      if (signal?.aborted) return null;
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      const [table, def] = entityTables[tableIndex]!;
-      const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
-      const allRows = await this._schema.queryTable(this._adapter, table);
-      const directoryRoot = def.directoryRoot ?? table;
-
-      // `entitiesTotal` is the free denominator already read above — no
-      // pre-count pass. Per-table % is exact: entitiesRendered / entitiesTotal.
-      const entitiesTotal = allRows.length;
-      throttle.force({
-        kind: 'table-start',
-        table,
-        entitiesRendered: 0,
-        entitiesTotal,
-        tableIndex,
-        tableCount,
-        pct: 0,
-      });
-
-      const manifestEntry: EntityContextManifestEntry = {
-        directoryRoot,
-        ...(def.index ? { indexFile: def.index.outputFile } : {}),
-        declaredFiles: Object.keys(def.files),
-        protectedFiles: def.protectedFiles ?? [],
-        entities: {},
-      };
-
-      // --- index file ---
-      if (def.index) {
-        const indexPath = join(outputDir, def.index.outputFile);
-        if (atomicWrite(indexPath, def.index.render(allRows))) {
-          filesWritten.push(indexPath);
-        } else {
-          counters.skipped++;
-        }
-      }
-
-      // --- per-entity files ---
-      for (let i = 0; i < allRows.length; i++) {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        const entityRow = allRows[i]!;
-
-        // Bail mid-table if aborted, before doing any more work for this row.
+    // Render tables CONCURRENTLY (bounded) so several advance at once, each at
+    // its own rate, instead of strictly one-after-another. The per-table
+    // ProgressThrottle keeps every card's % flowing independently; the cap keeps
+    // the number of in-flight whole-table reads small (peak memory + DB egress).
+    const renderedEntries = await mapWithConcurrency(
+      entityTables,
+      RENDER_TABLE_CONCURRENCY,
+      async ([table, def], tableIndex): Promise<EntityContextManifestEntry | null> => {
+        // Bail at the top of each entity-context table if aborted.
         if (signal?.aborted) return null;
+        const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
+        const allRows = await this._schema.queryTable(this._adapter, table);
+        const directoryRoot = def.directoryRoot ?? table;
 
-        // Yield to the event loop periodically. SQLite queries resolve
-        // synchronously, so without this a large render starves the HTTP
-        // server (delaying abort) and freezes the GUI. Cheap and infrequent.
-        if (i > 0 && i % YIELD_EVERY_ENTITIES === 0) {
-          await new Promise((r) => setImmediate(r));
-        }
+        // `entitiesTotal` is the free denominator already read above — no
+        // pre-count pass. Per-table % is exact: entitiesRendered / entitiesTotal.
+        const entitiesTotal = allRows.length;
+        throttle.force({
+          kind: 'table-start',
+          table,
+          entitiesRendered: 0,
+          entitiesTotal,
+          tableIndex,
+          tableCount,
+          pct: 0,
+        });
 
-        // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
-        // U+202F in screenshot filenames) with regular space, strip control characters.
-        const rawSlug = def.slug(entityRow);
-        const slug = rawSlug
-          .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
-          // eslint-disable-next-line no-control-regex
-          .replace(/[\u0000-\u001F\u007F]/g, '');
+        const manifestEntry: EntityContextManifestEntry = {
+          directoryRoot,
+          ...(def.index ? { indexFile: def.index.outputFile } : {}),
+          declaredFiles: Object.keys(def.files),
+          protectedFiles: def.protectedFiles ?? [],
+          entities: {},
+        };
 
-        // Validate slug against path traversal
-        if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~[\]]/.test(slug)) {
-          throw new Error(`Invalid slug "${slug}": contains characters outside the allowed set`);
-        }
-
-        const entityDir = def.directory
-          ? join(outputDir, def.directory(entityRow))
-          : join(outputDir, directoryRoot, slug);
-
-        // Verify the resolved path stays within outputDir
-        const resolvedDir = resolve(entityDir);
-        const resolvedBase = resolve(outputDir);
-        if (!resolvedDir.startsWith(resolvedBase + sep) && resolvedDir !== resolvedBase) {
-          throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
-        }
-
-        mkdirSync(entityDir, { recursive: true });
-
-        // Attach the file referenced by attachFileColumn into the entity dir.
-        // Default mode copies the bytes (v0.18.3+); 'reference' mode indexes
-        // the file in place by writing a small pointer instead of copying.
-        if (def.attachFileColumn) {
-          const filePath = entityRow[def.attachFileColumn] as string | undefined;
-          if (filePath && typeof filePath === 'string' && filePath.length > 0) {
-            if (def.attachFileMode === 'reference') {
-              // No copy: write `<name>.ref.md` pointing at the durable location
-              // (works for local paths and cloud URLs alike).
-              const refPath = join(entityDir, `${basename(filePath)}.ref.md`);
-              try {
-                atomicWrite(refPath, `# Reference\n\n- **location:** ${filePath}\n`);
-                filesWritten.push(refPath);
-              } catch {
-                // Silently skip write failures (permission, disk space, etc.)
-              }
-            } else {
-              const absPath = isAbsolute(filePath) ? filePath : resolve(outputDir, filePath);
-              if (existsSync(absPath)) {
-                const destPath = join(entityDir, basename(absPath));
-                if (!existsSync(destPath)) {
-                  try {
-                    copyFileSync(absPath, destPath);
-                    filesWritten.push(destPath);
-                  } catch {
-                    // Silently skip copy failures (permission, disk space, etc.)
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        // Track rendered content strings in definition order.
-        // Used for combined file assembly without disk re-reads.
-        // Only entries for files that were not omitted are present.
-        const renderedFiles = new Map<string, string>();
-
-        // v2 manifest: track per-file hashes
-        const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
-
-        const protection: ProtectionContext | undefined =
-          protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
-
-        for (const [filename, spec] of Object.entries(def.files)) {
-          // Bail before each file's source query: an entity with many files would
-          // otherwise keep issuing DB queries for the whole row after an abort
-          // (e.g. a workspace switch), delaying teardown and wasting egress.
-          if (signal?.aborted) return null;
-          const mergeDefaults =
-            def.sourceDefaults &&
-            spec.source.type !== 'self' &&
-            spec.source.type !== 'custom' &&
-            spec.source.type !== 'enriched';
-          const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
-          const rows = await resolveEntitySource(
-            source,
-            entityRow,
-            entityPk,
-            this._adapter,
-            protection,
-          );
-
-          if (spec.omitIfEmpty && rows.length === 0) continue;
-
-          const renderFn = compileEntityRender(spec.render);
-          const content = truncateContent(renderFn(rows), spec.budget);
-          renderedFiles.set(filename, content);
-          entityFileHashes[filename] = { hash: contentHash(content) };
-
-          const filePath = join(entityDir, filename);
-          if (atomicWrite(filePath, content)) {
-            filesWritten.push(filePath);
+        // --- index file ---
+        if (def.index) {
+          const indexPath = join(outputDir, def.index.outputFile);
+          if (atomicWrite(indexPath, def.index.render(allRows))) {
+            filesWritten.push(indexPath);
           } else {
             counters.skipped++;
           }
         }
 
-        // --- combined file ---
-        // Default behavior: when an entity has multiple rendered files, the first
-        // declared file (e.g., PROJECT.md, AGENT.md) becomes the combined output
-        // containing all connected context. This can be overridden or disabled
-        // via explicit `combined` config.
-        const fileKeys = Object.keys(def.files);
-        const effectiveCombined =
-          def.combined ??
-          (fileKeys.length > 1 && renderedFiles.size > 1
-            ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-              { outputFile: fileKeys[0]! }
-            : undefined);
-        if (effectiveCombined && renderedFiles.size > 0) {
-          const excluded = new Set(effectiveCombined.exclude ?? []);
-          const parts: string[] = [];
+        // --- per-entity files ---
+        for (let i = 0; i < allRows.length; i++) {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          const entityRow = allRows[i]!;
 
-          for (const filename of Object.keys(def.files)) {
-            if (!excluded.has(filename) && renderedFiles.has(filename)) {
-              parts.push(renderedFiles.get(filename) ?? '');
+          // Bail mid-table if aborted, before doing any more work for this row.
+          if (signal?.aborted) return null;
+
+          // Yield to the event loop periodically. SQLite queries resolve
+          // synchronously, so without this a large render starves the HTTP
+          // server (delaying abort) and freezes the GUI. Cheap and infrequent.
+          if (i > 0 && i % YIELD_EVERY_ENTITIES === 0) {
+            await new Promise((r) => setImmediate(r));
+          }
+
+          // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
+          // U+202F in screenshot filenames) with regular space, strip control characters.
+          const rawSlug = def.slug(entityRow);
+          const slug = rawSlug
+            .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+            // eslint-disable-next-line no-control-regex
+            .replace(/[\u0000-\u001F\u007F]/g, '');
+
+          // Validate slug against path traversal
+          if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~[\]]/.test(slug)) {
+            throw new Error(`Invalid slug "${slug}": contains characters outside the allowed set`);
+          }
+
+          const entityDir = def.directory
+            ? join(outputDir, def.directory(entityRow))
+            : join(outputDir, directoryRoot, slug);
+
+          // Verify the resolved path stays within outputDir
+          const resolvedDir = resolve(entityDir);
+          const resolvedBase = resolve(outputDir);
+          if (!resolvedDir.startsWith(resolvedBase + sep) && resolvedDir !== resolvedBase) {
+            throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
+          }
+
+          mkdirSync(entityDir, { recursive: true });
+
+          // Attach the file referenced by attachFileColumn into the entity dir.
+          // Default mode copies the bytes (v0.18.3+); 'reference' mode indexes
+          // the file in place by writing a small pointer instead of copying.
+          if (def.attachFileColumn) {
+            const filePath = entityRow[def.attachFileColumn] as string | undefined;
+            if (filePath && typeof filePath === 'string' && filePath.length > 0) {
+              if (def.attachFileMode === 'reference') {
+                // No copy: write `<name>.ref.md` pointing at the durable location
+                // (works for local paths and cloud URLs alike).
+                const refPath = join(entityDir, `${basename(filePath)}.ref.md`);
+                try {
+                  atomicWrite(refPath, `# Reference\n\n- **location:** ${filePath}\n`);
+                  filesWritten.push(refPath);
+                } catch {
+                  // Silently skip write failures (permission, disk space, etc.)
+                }
+              } else {
+                const absPath = isAbsolute(filePath) ? filePath : resolve(outputDir, filePath);
+                if (existsSync(absPath)) {
+                  const destPath = join(entityDir, basename(absPath));
+                  if (!existsSync(destPath)) {
+                    try {
+                      copyFileSync(absPath, destPath);
+                      filesWritten.push(destPath);
+                    } catch {
+                      // Silently skip copy failures (permission, disk space, etc.)
+                    }
+                  }
+                }
+              }
             }
           }
 
-          if (parts.length > 0) {
-            const combinedContent = parts.join('\n\n---\n\n');
-            const combinedPath = join(entityDir, effectiveCombined.outputFile);
-            if (atomicWrite(combinedPath, combinedContent)) {
-              filesWritten.push(combinedPath);
+          // Track rendered content strings in definition order.
+          // Used for combined file assembly without disk re-reads.
+          // Only entries for files that were not omitted are present.
+          const renderedFiles = new Map<string, string>();
+
+          // v2 manifest: track per-file hashes
+          const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
+
+          const protection: ProtectionContext | undefined =
+            protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
+
+          for (const [filename, spec] of Object.entries(def.files)) {
+            // Bail before each file's source query: an entity with many files would
+            // otherwise keep issuing DB queries for the whole row after an abort
+            // (e.g. a workspace switch), delaying teardown and wasting egress.
+            if (signal?.aborted) return null;
+            const mergeDefaults =
+              def.sourceDefaults &&
+              spec.source.type !== 'self' &&
+              spec.source.type !== 'custom' &&
+              spec.source.type !== 'enriched';
+            const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
+            const rows = await resolveEntitySource(
+              source,
+              entityRow,
+              entityPk,
+              this._adapter,
+              protection,
+            );
+
+            if (spec.omitIfEmpty && rows.length === 0) continue;
+
+            const renderFn = compileEntityRender(spec.render);
+            const content = truncateContent(renderFn(rows), spec.budget);
+            renderedFiles.set(filename, content);
+            entityFileHashes[filename] = { hash: contentHash(content) };
+
+            const filePath = join(entityDir, filename);
+            if (atomicWrite(filePath, content)) {
+              filesWritten.push(filePath);
             } else {
               counters.skipped++;
             }
-            renderedFiles.set(effectiveCombined.outputFile, combinedContent);
-            entityFileHashes[effectiveCombined.outputFile] = { hash: contentHash(combinedContent) };
           }
+
+          // --- combined file ---
+          // Default behavior: when an entity has multiple rendered files, the first
+          // declared file (e.g., PROJECT.md, AGENT.md) becomes the combined output
+          // containing all connected context. This can be overridden or disabled
+          // via explicit `combined` config.
+          const fileKeys = Object.keys(def.files);
+          const effectiveCombined =
+            def.combined ??
+            (fileKeys.length > 1 && renderedFiles.size > 1
+              ? // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                { outputFile: fileKeys[0]! }
+              : undefined);
+          if (effectiveCombined && renderedFiles.size > 0) {
+            const excluded = new Set(effectiveCombined.exclude ?? []);
+            const parts: string[] = [];
+
+            for (const filename of Object.keys(def.files)) {
+              if (!excluded.has(filename) && renderedFiles.has(filename)) {
+                parts.push(renderedFiles.get(filename) ?? '');
+              }
+            }
+
+            if (parts.length > 0) {
+              const combinedContent = parts.join('\n\n---\n\n');
+              const combinedPath = join(entityDir, effectiveCombined.outputFile);
+              if (atomicWrite(combinedPath, combinedContent)) {
+                filesWritten.push(combinedPath);
+              } else {
+                counters.skipped++;
+              }
+              renderedFiles.set(effectiveCombined.outputFile, combinedContent);
+              entityFileHashes[effectiveCombined.outputFile] = {
+                hash: contentHash(combinedContent),
+              };
+            }
+          }
+
+          // Track what was written for this entity in the manifest (v2: with hashes)
+          manifestEntry.entities[slug] = entityFileHashes;
+
+          // Per-entity progress, coalesced by the throttle to ≤ ~5/sec per table.
+          const entitiesRendered = i + 1;
+          throttle.tick({
+            kind: 'table-progress',
+            table,
+            entitiesRendered,
+            entitiesTotal,
+            tableIndex,
+            tableCount,
+            pct: entitiesTotal > 0 ? (entitiesRendered / entitiesTotal) * 100 : 100,
+          });
         }
 
-        // Track what was written for this entity in the manifest (v2: with hashes)
-        manifestEntry.entities[slug] = entityFileHashes;
-
-        // Per-entity progress, coalesced by the throttle to ≤ ~5/sec per table.
-        const entitiesRendered = i + 1;
-        throttle.tick({
-          kind: 'table-progress',
+        throttle.force({
+          kind: 'table-done',
           table,
-          entitiesRendered,
+          entitiesRendered: entitiesTotal,
           entitiesTotal,
           tableIndex,
           tableCount,
-          pct: entitiesTotal > 0 ? (entitiesRendered / entitiesTotal) * 100 : 100,
+          pct: 100,
         });
-      }
+        return manifestEntry;
+      },
+    );
 
-      manifestData[table] = manifestEntry;
-
-      throttle.force({
-        kind: 'table-done',
-        table,
-        entitiesRendered: entitiesTotal,
-        entitiesTotal,
-        tableIndex,
-        tableCount,
-        pct: 100,
-      });
+    // A mid-flight abort leaves some entries null — discard the whole partial tree.
+    if (signal?.aborted) return null;
+    const manifestData: Record<string, EntityContextManifestEntry> = {};
+    for (let i = 0; i < renderedEntries.length; i++) {
+      const entry = renderedEntries[i];
+      if (entry == null) return null;
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      manifestData[entityTables[i]![0]] = entry;
     }
-
     return manifestData;
   }
 }
