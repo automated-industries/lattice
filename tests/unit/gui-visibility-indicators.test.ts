@@ -32,10 +32,7 @@ describe('gui visibility indicators', () => {
  * local / non-cloud workspace shows no indicator).
  */
 function loadVisIndicator(): (access: unknown, extraClass?: string) => string {
-  const eh = appJs.slice(
-    appJs.indexOf('function escapeHtml'),
-    appJs.indexOf('// Redact the userinfo'),
-  );
+  const eh = appJs.slice(appJs.indexOf('function escapeHtml'), appJs.indexOf('function truncate'));
   const blockStart = appJs.indexOf('var LOCK_SVG');
   const fnStart = appJs.indexOf('function visIndicator', blockStart);
   const blockEnd = appJs.indexOf('}', fnStart) + 1; // visIndicator has no inner braces

@@ -37,7 +37,7 @@ describe('gui artifact UI', () => {
  */
 function loadMdRender(): (s: string) => string {
   const start = appJs.indexOf('function escapeHtml');
-  const end = appJs.indexOf('// Redact the userinfo');
+  const end = appJs.indexOf('function truncate');
   if (start < 0 || end < 0 || end <= start) throw new Error('could not locate renderer in appJs');
   const slice = appJs.slice(start, end);
   // eslint-disable-next-line @typescript-eslint/no-implied-eval

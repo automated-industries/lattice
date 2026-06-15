@@ -93,6 +93,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   column-by-column data view, so the readable content is what you see first.
 - The assistant explains things in plain language and does what you ask through
   its tools, rather than describing database internals or API calls.
+- **One cloud-connection form everywhere.** Creating or migrating to a cloud now
+  uses a single structured connection form (Host / Port / Database / User /
+  Password) across the onboarding wizard, the "New workspace" wizard, and "Migrate
+  to cloud" — all routing through the same `migrate-to-cloud` setup (which installs
+  row-level security and makes you the owner). The separate `postgres://`
+  connection-string input has been retired, so there's one way to connect, not two.
 
 ### Fixed
 
@@ -127,6 +133,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   helper functions are now created by the owner before the security cutover
   revokes schema-create from members, so a member's first connection no longer
   hits a permission error trying to create them.
+- **Migrating to a cloud no longer needs a manual refresh.** After the switch to
+  the cloud, the app re-fetches and re-renders immediately (entities, per-row
+  sharing indicators, realtime) — previously only the settings panel updated and
+  the rest of the UI showed stale pre-migrate data until you reloaded.
 
 ## [3.2.1] - 2026-06-14
 

@@ -253,56 +253,10 @@ export const appJs = `
       return html;
     }
 
-    // Redact the userinfo portion of a connection URL so the password
-    // never reaches the rendered DOM. Used wherever the GUI displays a
-    // postgres:// connection string (e.g. the create-cloud wizard review).
-    // Defensive fallback returns the input as-is when it doesn't parse
-    // as a URL — better to render a non-credential string verbatim than
-    // to silently swallow the value.
-    function redactUrlCredentials(url) {
-      if (url == null) return '';
-      var s = String(url);
-      try {
-        var u = new URL(s);
-        if (u.password) {
-          // Preserve the username (often useful for identification —
-          // e.g. tenant prefixes like postgres.<ref>) but mask the
-          // password portion. ASCII mask avoids URL.toString()
-          // percent-encoding non-ASCII characters in userinfo.
-          u.password = '****';
-          return u.toString();
-        }
-        return s;
-      } catch (_) {
-        return s;
-      }
-    }
-
     function truncate(s, n) {
       if (s == null) return '';
       s = String(s);
       return s.length > n ? s.slice(0, n) + '…' : s;
-    }
-
-    // Parse a postgres:// connection string into the discrete fields the v3
-    // dbconfig endpoints expect (host/port/dbname/user/password). Returns null
-    // when the string isn't a parseable postgres URL.
-    function parsePostgresUrl(url, label) {
-      try {
-        var u = new URL(String(url || ''));
-        if (!/^postgres(ql)?:$/i.test(u.protocol)) return null;
-        return {
-          type: 'postgres',
-          label: label || '',
-          host: decodeURIComponent(u.hostname || ''),
-          port: Number(u.port || 5432),
-          dbname: decodeURIComponent((u.pathname || '').replace(/^\\//, '')),
-          user: decodeURIComponent(u.username || ''),
-          password: decodeURIComponent(u.password || ''),
-        };
-      } catch (_) {
-        return null;
-      }
     }
 
     // Lockstep mirror of isJunctionTable in src/gui/data.ts: a junction joins
@@ -4690,18 +4644,15 @@ export const appJs = `
         step: 1,
         name: '',
         kind: 'local',
-        cloudUrl: '',
-        email: '',
-        displayName: '',
+        // Canonical cloud connection input: the SAME structured Postgres fields
+        // (postgresFormHtml) used by onboarding + "Migrate to cloud". Captured as
+        // they are typed so they survive the step→review re-renders. The retired
+        // postgres:// URL input was the only divergent cloud-create methodology;
+        // every cloud-create path now shares this form + the migrate-to-cloud API.
+        pg: { label: '', host: '', port: 5432, dbname: '', user: '', password: '' },
         entities: [], // { name: string, share: boolean }
       };
-      // Prefill identity for the cloud path so the operator doesn't
-      // re-type their email + display name on every wizard run.
-      fetchJson('/api/userconfig/identity').then(function (id) {
-        wizState.email = id.email || '';
-        wizState.displayName = id.display_name || '';
-        openWizard();
-      }).catch(openWizard);
+      openWizard();
 
       function openWizard() {
         var backdrop = document.createElement('div');
@@ -4749,18 +4700,22 @@ export const appJs = `
             '</div>';
           var cloudBlock = '';
           if (kind === 'cloud') {
+            // The SAME structured connection form used by onboarding + Migrate to
+            // cloud. Lattice creates the workspace, installs row-level security,
+            // and makes you the owner. (Password is never echoed back on a
+            // re-render; it is retained in wizState.pg as you type.)
             cloudBlock =
-              '<div class="field"><label>Cloud URL</label>' +
-                '<input id="wiz-cloud-url" type="text" value="' + escapeHtml(wizState.cloudUrl) +
-                '" placeholder="postgres://postgres.&lt;ref&gt;:password@aws-x-region.pooler.supabase.com:5432/postgres" autocapitalize="off" autocorrect="off" spellcheck="false" />' +
-                '<p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">Use a session-mode Postgres URL. Supabase users: see the pooler docs for the right host.</p>' +
-              '</div>' +
-              '<div class="field"><label>Your email</label>' +
-                '<input id="wiz-email" type="email" value="' + escapeHtml(wizState.email) + '" autocapitalize="off" />' +
-              '</div>' +
-              '<div class="field"><label>Your display name</label>' +
-                '<input id="wiz-display-name" type="text" value="' + escapeHtml(wizState.displayName) + '" />' +
-              '</div>';
+              '<p style="font-size:11px;color:var(--text-muted);margin:8px 0 6px">' +
+                'Enter a <strong>fresh, empty</strong> Postgres database. Lattice creates the ' +
+                'workspace, installs row-level security, and makes you the owner.' +
+              '</p>' +
+              postgresFormHtml({
+                label: wizState.pg.label || slugifyName(wizState.name),
+                host: wizState.pg.host,
+                port: wizState.pg.port,
+                dbname: wizState.pg.dbname,
+                user: wizState.pg.user,
+              });
           } else if (kind === 'join') {
             cloudBlock = '<p style="font-size:12px;color:var(--text-muted);margin:4px 0 0">Click Next to paste your cloud URL and invite token.</p>';
           }
@@ -4825,8 +4780,10 @@ export const appJs = `
                 }).join('') +
               '</ul>';
           var cloudBlock = wizState.kind === 'cloud'
-            ? '<div><strong>Cloud URL</strong>: <code>' + escapeHtml(redactUrlCredentials(wizState.cloudUrl)) + '</code></div>' +
-              '<div><strong>Email</strong>: ' + escapeHtml(wizState.email) + '</div>'
+            ? '<div><strong>Cloud DB</strong>:</div><div><code>' +
+                escapeHtml(wizState.pg.user) + '@' + escapeHtml(wizState.pg.host) + ':' +
+                escapeHtml(String(wizState.pg.port)) + '/' + escapeHtml(wizState.pg.dbname) +
+              '</code></div>'
             : '';
           return '<p class="lead" style="margin:0 0 10px">Review and create.</p>' +
             '<div style="display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:13.5px">' +
@@ -4848,9 +4805,26 @@ export const appJs = `
                 render(); // re-render to show/hide cloud fields
               });
             });
-            var cu = scope.querySelector('#wiz-cloud-url'); if (cu) cu.addEventListener('input', function (e) { wizState.cloudUrl = e.target.value; });
-            var em = scope.querySelector('#wiz-email'); if (em) em.addEventListener('input', function (e) { wizState.email = e.target.value; });
-            var dn = scope.querySelector('#wiz-display-name'); if (dn) dn.addEventListener('input', function (e) { wizState.displayName = e.target.value; });
+            // Capture the structured Postgres fields as they're typed, so they
+            // survive the step→review re-renders (the form DOM is replaced each
+            // step) and are available at submit — including the password, which
+            // postgresFormHtml never echoes back into the input on a re-render.
+            var pgIds = {
+              'w-label': 'label',
+              'w-host': 'host',
+              'w-port': 'port',
+              'w-dbname': 'dbname',
+              'w-user': 'user',
+              'w-password': 'password',
+            };
+            Object.keys(pgIds).forEach(function (id) {
+              var el = scope.querySelector('#' + id);
+              if (!el) return;
+              el.addEventListener('input', function () {
+                var key = pgIds[id];
+                wizState.pg[key] = key === 'port' ? Number(el.value) || 5432 : el.value;
+              });
+            });
           } else if (wizState.step === 2) {
             scope.querySelector('#wiz-add-entity').addEventListener('click', function () {
               wizState.entities.push({ name: '', share: wizState.kind === 'cloud' });
@@ -4893,10 +4867,13 @@ export const appJs = `
             // (toSafeDirName) — so the only constraint here is a sane length.
             if (wizState.name.trim().length > 200) { showToast('Workspace name must be 200 characters or fewer'); return; }
             if (wizState.kind === 'cloud') {
-              // v3 creates a cloud by migrating this new workspace into the
-              // Postgres URL — only the connection string is needed (no email
-              // / display-name identity binding).
-              if (!/^postgres(ql)?:\\/\\//i.test(wizState.cloudUrl.trim())) { showToast('Cloud URL must start with postgres://'); return; }
+              // A cloud is created by migrating this new workspace into a fresh
+              // Postgres DB described by the structured connection fields.
+              var pg = wizState.pg;
+              if (!pg.host.trim() || !pg.dbname.trim() || !pg.user.trim() || !pg.password) {
+                showToast('Host, database name, user, and password are required for a cloud workspace');
+                return;
+              }
             }
             wizState.step = 2;
             render();
@@ -4948,14 +4925,24 @@ export const appJs = `
         }
 
         function submitCloud() {
-          // v3: "create a cloud" = create a fresh local workspace, add its
-          // starter entities, then migrate that workspace into the Postgres
-          // cloud (installs row-level security, you become owner). Rows are
-          // private-by-default and shared per-row via the eye toggle — there
-          // is no per-table sharing at creation time.
-          var fields = parsePostgresUrl(wizState.cloudUrl.trim(), wizState.name.trim());
-          if (!fields) return Promise.reject(new Error('Cloud URL must be a valid postgres:// connection string.'));
-          gaTrack('workspace_create', { kind: 'cloud' }); // coarse enum only, no name/URL
+          // "Create a cloud" = create a fresh local workspace, add its starter
+          // entities, then migrate that workspace into the Postgres database
+          // (installs row-level security, you become owner). Rows are
+          // private-by-default and shared per-row via the eye toggle. Uses the
+          // SAME structured connection fields + /api/dbconfig/migrate-to-cloud
+          // path as onboarding and "Migrate to cloud" — one methodology, no
+          // postgres:// URL parsing.
+          var pg = wizState.pg;
+          var fields = {
+            type: 'postgres',
+            label: (pg.label || slugifyName(wizState.name) || 'cloud').trim(),
+            host: pg.host.trim(),
+            port: Number(pg.port) || 5432,
+            dbname: pg.dbname.trim(),
+            user: pg.user.trim(),
+            password: pg.password,
+          };
+          gaTrack('workspace_create', { kind: 'cloud' }); // coarse enum only, no creds
           return fetchJson('/api/workspaces/create', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -6045,7 +6032,14 @@ export const appJs = `
               .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
               .then(function (r) {
                 if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
-                if (onClose) onClose();
+                // The active DB just swapped to the cloud server-side. Re-fetch +
+                // re-render EVERYTHING (entities, rows with per-row _access sharing,
+                // realtime) so the new state shows immediately — no manual refresh.
+                // A panel-only rerender (the caller's onClose) left the rest of the
+                // app showing stale pre-migrate data until the user reloaded.
+                return reloadEverything().then(function () {
+                  if (onClose) onClose();
+                });
               });
           });
         },

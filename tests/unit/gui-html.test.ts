@@ -86,16 +86,17 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('probeBeforeCredentialSave');
   });
 
-  it('renders cloud URLs via redactUrlCredentials (no plaintext passwords in DOM)', () => {
-    // The team cards used to render `escapeHtml(conn.cloud_url)` directly —
-    // when conn.cloud_url is a postgres://user:password@host/db URL the
-    // password ended up as plaintext in the GUI. v1.13.4 routes every
-    // cloud_url through redactUrlCredentials.
-    expect(guiAppHtml).toContain('redactUrlCredentials');
-    // Direct un-redacted patterns are the regression — must NOT appear
-    // anywhere in the bundle.
+  it('never renders a cloud connection URL with a plaintext password', () => {
+    // The retired postgres:// URL methodology rendered/parsed a connection string
+    // and redacted it via redactUrlCredentials. Cloud connection input is now the
+    // structured form everywhere: the password is a masked type="password" input
+    // (never echoed) and no postgres:// URL is rendered, so a plaintext password
+    // cannot reach the DOM. The old un-redacted regression patterns must still be
+    // absent, and the retired URL-redaction helper is gone.
     expect(guiAppHtml).not.toMatch(/escapeHtml\(conn\.cloud_url\)/);
     expect(guiAppHtml).not.toMatch(/escapeHtml\(c\.cloud_url\)/);
+    expect(guiAppHtml).toMatch(/<input type="password" id="w-password"/);
+    expect(guiAppHtml).not.toContain('redactUrlCredentials');
   });
 
   it('removes the team-card Sync button + outbox/DLQ/last-seq stats (realtime against canonical store)', () => {
@@ -126,14 +127,6 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toMatch(
       /\.modal \.field input, \.modal \.field textarea \{[\s\S]*?background: var\(--surface\);[\s\S]*?color: var\(--text\);/,
     );
-  });
-
-  it('redactUrlCredentials uses an ASCII mask so URL.toString() does not percent-encode it', () => {
-    // v1.13.7 set u.password to a bullet glyph; URL.toString() then
-    // percent-encoded the non-ASCII userinfo character and rendered
-    // "%E2%80%A2" in the GUI. v1.13.8 uses '****' which is ASCII-only.
-    expect(guiAppHtml).toMatch(/u\.password = '\*+'/);
-    expect(guiAppHtml).not.toMatch(/u\.password = '••+'/);
   });
 
   it('cloud member admin lives in Database Settings, not a legacy team card', () => {
