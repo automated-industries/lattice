@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-06-14
+
 ### Added — ask the assistant about Lattice itself (3.2)
 
 - **`lattice_help` tool.** The chat assistant can now answer questions about
@@ -300,6 +302,8 @@ false`, `allow_ad_personalization_signals:false`, `anonymize_ip:true`.
 - **Private-mode indicator on local workspaces.** On a single-user local workspace
   the assistant "Private mode" toggle renders checked + disabled (local data is
   always private); it stays interactive on a cloud workspace.
+
+## [3.1.0] - 2026-06-14
 
 ### Added — email-bound cloud invites + members list (3.1)
 
