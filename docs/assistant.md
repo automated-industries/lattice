@@ -61,6 +61,18 @@ guessing one. Replay is bounded to the recent turns within a size budget and is
 secret-redacted; set `LATTICE_CHAT_REHYDRATE=false` to disable it. Reads are also
 deterministically ordered, so listing the same table twice returns the same rows.
 
+The assistant **knows the record you're looking at.** When a file or row detail is
+open, the chat passes that record (table + id) as context, so "delete this file",
+"summarize this", or "share this row" act on it directly instead of asking which
+one. It's a hint only — every action still goes through the same permission-gated
+tools, so it can't reach a record you couldn't otherwise touch.
+
+The assistant can also **answer questions about Lattice itself.** Ask "what is
+private mode?" or "how do I invite a member?" and it calls the `lattice_help` tool,
+which searches Lattice's own documentation (these `docs/*.md` files — the single
+canonical source, shipped in the npm package) and answers from it rather than
+guessing or searching your data.
+
 ## The Context Constructor (file & text ingest)
 
 Drag files onto the rail, click the paperclip, or paste text (or a URL). For each

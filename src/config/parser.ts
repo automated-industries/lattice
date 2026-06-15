@@ -144,20 +144,52 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
  * `db:` line with the label reference, so VCS-tracked configs don't
  * leak secrets.
  */
+/** Loose detector: does this value even look like a `${LATTICE_DB:…}` reference?
+ *  Used so a SHAPED-but-malformed reference is rejected loudly instead of being
+ *  silently treated as a filesystem path (the empty-local-DB class of bug). */
+export function isDbRefShaped(raw: string): boolean {
+  return /^\s*\$\{LATTICE_DB:/.test(raw);
+}
+/** Strict parse of a `${LATTICE_DB:<label>}` reference (the single source of the
+ *  label charset). Returns null when not strictly valid. */
+export function parseDbRef(raw: string): { label: string } | null {
+  const m = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(raw.trim());
+  return m ? { label: m[1] ?? '' } : null;
+}
+
 export function resolveDbPath(raw: string, configDir: string): string {
-  const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(raw.trim());
-  if (labelMatch) {
-    const label = labelMatch[1] ?? '';
-    const url = getDbCredential(label);
+  if (isDbRefShaped(raw)) {
+    const ref = parseDbRef(raw);
+    if (!ref) {
+      // Shaped like a ${LATTICE_DB:…} reference but the label is invalid (e.g. it
+      // contains a space). Throw — do NOT fall through to path resolution, which
+      // would create a literal `${LATTICE_DB:…}` file (and on Windows the `:`
+      // truncates it to a 0-byte file → a silent empty local DB, no error).
+      throw new Error(
+        `Lattice: malformed \${LATTICE_DB:…} reference ${JSON.stringify(
+          raw.trim(),
+        )} — the label may contain only [A-Za-z0-9._-] (no spaces). This usually means a workspace was created with an unsanitized name.`,
+      );
+    }
+    const url = getDbCredential(ref.label);
     if (!url) {
       throw new Error(
-        `Lattice: config references \${LATTICE_DB:${label}} but no credential is saved for "${label}". Save one via the GUI's Database panel or set LATTICE_DB_${label}.`,
+        `Lattice: config references \${LATTICE_DB:${ref.label}} but no credential is saved for "${ref.label}". Save one via the GUI's Database panel or set LATTICE_DB_${ref.label}.`,
       );
     }
     return url;
   }
   if (/^postgres(ql)?:\/\//i.test(raw) || raw.startsWith('file:') || raw === ':memory:') {
     return raw;
+  }
+  // Belt-and-suspenders: an unexpanded `${…}` is never a real path — refuse it
+  // rather than materializing a junk file.
+  if (raw.includes('${')) {
+    throw new Error(
+      `Lattice: refusing to treat ${JSON.stringify(
+        raw.trim(),
+      )} as a database path — it looks like a malformed variable reference, not a file path.`,
+    );
   }
   return resolve(configDir, raw);
 }
