@@ -71,6 +71,23 @@ export const appJs = `
       var t = state.columnMeta[tableName];
       return !!(t && t[colName] && t[colName].secret);
     }
+    // Resolved one-line definition for a column / table (server merges the
+    // operator-authored value with a built-in default). '' when none — callers
+    // omit the tooltip attribute entirely so there's no empty hover box.
+    function colDesc(tableName, colName) {
+      var t = state.columnMeta[tableName];
+      var m = t && t[colName];
+      return (m && m.description) || '';
+    }
+    function tableDesc(tableName) {
+      var m = state.iconOverrides[tableName];
+      return (m && m.description) || '';
+    }
+    // A ready-to-concat title="…" attribute (escaped, leading space) or '' —
+    // for definition tooltips. Empty input yields no attribute (no empty box).
+    function titleAttr(text) {
+      return text ? ' title="' + escapeHtml(text) + '"' : '';
+    }
     var SECRET_MASK = '••••••••'; // ••••••••
     // An encrypted-at-rest value (native secrets etc.) is stored with an "enc:"
     // sentinel prefix (see framework/native-entities decrypt). It is never
@@ -134,32 +151,62 @@ export const appJs = `
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    // Minimal, safe Markdown → HTML for assistant chat bubbles. The input is
-    // HTML-escaped FIRST (in mdToHtml), so every rule below operates on already
-    // neutralized text — no raw HTML can survive. Covers what the assistant
-    // emits: headings, bold/italic, inline + fenced code, ordered/unordered
-    // lists, links (http/https/mailto only), and paragraphs.
+    // Inline span rules (bold/italic, inline code, http/https/mailto links).
+    // The caller HTML-escapes FIRST, so these run on neutralized text — no raw
+    // HTML can survive. Shared by the document renderer (mdRender) below.
     function mdInline(s) {
       var BT = String.fromCharCode(96); // backtick (avoids escaping in this template)
-      var codes = [];
-      var reCode = new RegExp(BT + '([^' + BT + ']+)' + BT, 'g');
-      s = s.replace(reCode, function (_, c) { codes.push(c); return '\\u0001' + (codes.length - 1) + '\\u0001'; });
+      // Strip C0 control chars (keep tab) so input can't collide with the U+0001
+      // placeholder sentinel below — a stray sentinel could otherwise duplicate
+      // or blank a code span — or smuggle a control byte into an emitted href.
+      s = s.replace(/[\\u0000-\\u0008\\u000b-\\u001f]/g, '');
+      var stash = [];
+      function park(html) { stash.push(html); return '\\u0001' + (stash.length - 1) + '\\u0001'; }
+      function emph(x) {
+        return x.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>').replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+      }
+      // Inline code and links are PARKED before the emphasis pass so a '*' inside
+      // a code span or a URL can never be eaten as <em>/<strong> (which used to
+      // corrupt hrefs like ?q=a*b*c). Restored verbatim at the end.
+      s = s.replace(new RegExp(BT + '([^' + BT + ']+)' + BT, 'g'), function (_, c) { return park('<code>' + c + '</code>'); });
       s = s.replace(/\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, function (_, t, u) {
         if (!/^(https?:|mailto:)/i.test(u)) return t;
-        return '<a href="' + u + '" target="_blank" rel="noopener">' + t + '</a>';
+        return park('<a href="' + u + '" target="_blank" rel="noopener">' + emph(t) + '</a>');
       });
-      s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
-      s = s.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
-      s = s.replace(/\\u0001(\\d+)\\u0001/g, function (_, n) { return '<code>' + codes[n] + '</code>'; });
+      s = emph(s);
+      // Restore parked spans. Loop so a code span nested in a link label (parked
+      // inside another parked span) is also resolved; bounded + halts on no progress.
+      while (/\\u0001\\d+\\u0001/.test(s)) {
+        var before = s;
+        s = s.replace(/\\u0001(\\d+)\\u0001/g, function (_, n) { return stash[n] != null ? stash[n] : ''; });
+        if (s === before) break;
+      }
       return s;
     }
-    function mdToHtml(text) {
+    // Markdown → HTML for rendered file/document previews (markdown artifacts +
+    // ingested text). Input is HTML-escaped FIRST, so every rule runs on
+    // neutralized text — no raw HTML survives. Covers the GitHub-flavored subset
+    // an assistant emits in a document: headings, bold/italic, inline + fenced
+    // code, ordered + unordered lists, links, blockquotes, horizontal rules, and
+    // GFM tables. (The chat rail keeps its own lighter renderer, mdToHtml below.)
+    function mdRender(text) {
       var src = escapeHtml(text == null ? '' : String(text));
-      var lines = src.split('\\n');
+      // Normalize CRLF / lone CR so a trailing \\r can't defeat the line-anchored
+      // block rules (CRLF-authored docs degraded headings/lists into paragraphs).
+      var lines = src.replace(/\\r\\n?/g, '\\n').split('\\n');
       var FENCE = String.fromCharCode(96, 96, 96);
       var html = '', i = 0, listType = null;
       function closeList() { if (listType) { html += '</' + listType + '>'; listType = null; } }
       function lstrip(x) { return x.replace(/^\\s+/, ''); }
+      function isHr(x) { return /^\\s*([-*_])\\1\\1+\\s*$/.test(x); }
+      function isTableSep(x) { return /^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)+\\|?\\s*$/.test(x); }
+      function startsTable(idx) { return idx + 1 < lines.length && lines[idx].indexOf('|') >= 0 && isTableSep(lines[idx + 1]); }
+      function cells(row) { return row.trim().replace(/^\\|/, '').replace(/\\|$/, '').split('|').map(function (c) { return mdInline(c.trim()); }); }
+      function blockAt(idx) {
+        var x = lines[idx];
+        return /^\\s*$/.test(x) || lstrip(x).indexOf(FENCE) === 0 || /^(#{1,6})\\s+/.test(x) ||
+          /^\\s*[-*+]\\s+/.test(x) || /^\\s*\\d+\\.\\s+/.test(x) || /^\\s*&gt;\\s?/.test(x) || isHr(x) || startsTable(idx);
+      }
       while (i < lines.length) {
         var line = lines[i];
         if (lstrip(line).indexOf(FENCE) === 0) {
@@ -169,8 +216,29 @@ export const appJs = `
           html += '<pre><code>' + code.join('\\n') + '</code></pre>';
           continue;
         }
+        if (startsTable(i)) {
+          closeList();
+          html += '<table><thead><tr>';
+          cells(line).forEach(function (c) { html += '<th>' + c + '</th>'; });
+          html += '</tr></thead><tbody>';
+          i += 2;
+          while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim() !== '') {
+            html += '<tr>';
+            cells(lines[i]).forEach(function (c) { html += '<td>' + c + '</td>'; });
+            html += '</tr>'; i++;
+          }
+          html += '</tbody></table>';
+          continue;
+        }
         var h = line.match(/^(#{1,6})\\s+(.*)$/);
         if (h) { closeList(); var tag = 'h' + Math.max(3, Math.min(6, h[1].length + 2)); html += '<' + tag + '>' + mdInline(h[2]) + '</' + tag + '>'; i++; continue; }
+        if (isHr(line)) { closeList(); html += '<hr>'; i++; continue; }
+        if (/^\\s*&gt;\\s?/.test(line)) {
+          closeList(); var quote = [];
+          while (i < lines.length && /^\\s*&gt;\\s?/.test(lines[i])) { quote.push(lines[i].replace(/^\\s*&gt;\\s?/, '')); i++; }
+          html += '<blockquote>' + mdInline(quote.join('<br>')) + '</blockquote>';
+          continue;
+        }
         var ul = line.match(/^\\s*[-*+]\\s+(.*)$/);
         if (ul) { if (listType !== 'ul') { closeList(); html += '<ul>'; listType = 'ul'; } html += '<li>' + mdInline(ul[1]) + '</li>'; i++; continue; }
         var ol = line.match(/^\\s*\\d+\\.\\s+(.*)$/);
@@ -178,7 +246,7 @@ export const appJs = `
         if (/^\\s*$/.test(line)) { closeList(); i++; continue; }
         closeList();
         var para = [line]; i++;
-        while (i < lines.length && !/^\\s*$/.test(lines[i]) && !/^\\s*(#{1,6}\\s|[-*+]\\s|\\d+\\.\\s)/.test(lines[i]) && lstrip(lines[i]).indexOf(FENCE) !== 0) { para.push(lines[i]); i++; }
+        while (i < lines.length && !blockAt(i)) { para.push(lines[i]); i++; }
         html += '<p>' + mdInline(para.join('<br>')) + '</p>';
       }
       closeList();
@@ -298,14 +366,60 @@ export const appJs = `
     // ────────────────────────────────────────────────────────────
     // Boot
     // ────────────────────────────────────────────────────────────
+    // Global boot interstitial (Feature C). Idempotent: fades the overlay out,
+    // clears aria-busy, then hides it after the 0.25s fade. Wired to init() ONLY
+    // (every terminal path + a failsafe) — never to a workspace switch.
+    var appLoadingHidden = false;
+    function hideAppLoading() {
+      if (appLoadingHidden) return;
+      appLoadingHidden = true;
+      var el = document.getElementById('app-loading');
+      if (!el) return;
+      el.classList.add('is-hidden');
+      el.removeAttribute('aria-busy');
+      setTimeout(function () { el.hidden = true; }, 250);
+    }
+
     function init() {
-      Promise.all([
+      // Restore the persisted rail width synchronously, before any fetch, so it's
+      // applied on the first paint (no width flash) and isn't gated behind the
+      // async bootstrap. initRailResize re-applies it (idempotent) + wires the
+      // drag handle once the app has booted.
+      var savedRail = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
+      if (!isNaN(savedRail)) applyRailWidth(savedRail);
+      // Failsafe: never leave the overlay up forever if a fetch hangs without
+      // rejecting, or a future early-return (e.g. the virgin-state screen)
+      // bypasses the .then() tail. Idempotent, so a later real hide is a no-op.
+      setTimeout(hideAppLoading, 9000);
+      // Registry first (DB-free): when the server reports virgin:true there is NO
+      // active DB, so the boot data routes would 409 — show the first-run welcome
+      // screen and skip the data bootstrap. Gate on the server's virgin flag, NOT
+      // an empty workspace list: a plain --config GUI has an active DB but no
+      // .lattice registry (empty list) and must still boot normally.
+      fetchJson('/api/workspaces').catch(function () { return null; }).then(function (wsBoot) {
+        if (wsBoot && wsBoot.virgin === true) {
+          renderVirginState();
+          hideAppLoading();
+          return undefined;
+        }
+        return bootWorkspace();
+      }).catch(function (err) {
+        var content = document.getElementById('content');
+        if (content) content.innerHTML =
+          '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+        hideAppLoading();
+      });
+    }
+
+    function bootWorkspace() {
+      return Promise.all([
         fetchJson('/api/entities'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
         fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false, analytics: true }; }),
         fetchJson('/api/workspaces').catch(function () { return null; }),
+        fetchJson('/api/dbconfig').catch(function () { return {}; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
@@ -323,6 +437,9 @@ export const appJs = `
         document.body.classList.toggle('advanced-mode', advancedMode());
         wireSettingsDrawer();
         renderWsSwitcher(results[5]);
+        // Swap the default topbar mark for the cloud owner's logo (if set). Null
+        // logoEtag (local workspace / unset) leaves the default Lattice SVG.
+        applyWorkspaceLogo((results[6] || {}).logoEtag);
         renderSidebar();
         wireHistoryControls();
         refreshHistoryState();
@@ -339,9 +456,14 @@ export const appJs = `
         renderComposer();
         initThreadControls();
         checkNativeSetup();
+        // App is fully populated — reveal it (Feature C).
+        hideAppLoading();
       }).catch(function (err) {
         document.getElementById('content').innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
+        // Reveal the error rather than leaving a permanent spinner (no silent
+        // failure masked behind the interstitial).
+        hideAppLoading();
       });
     }
 
@@ -1158,6 +1280,43 @@ export const appJs = `
       }
     }
 
+    // The default topbar mark (the inline Lattice SVG), captured the first time
+    // applyWorkspaceLogo runs so "remove logo" can restore it without a reload.
+    var defaultBrandMark = null;
+    // Swap the topbar brand-logo node for the cloud owner's logo (an <img> served
+    // by /api/cloud/workspace-logo, cache-busted by the content etag). A null/empty
+    // etag restores the default mark. Fail-safe: any error leaves the default.
+    function applyWorkspaceLogo(logoEtag) {
+      try {
+        var brand = document.querySelector('.brand');
+        if (!brand) return;
+        var cur = brand.querySelector('.brand-logo');
+        if (!cur) return;
+        if (!defaultBrandMark && cur.tagName.toLowerCase() === 'svg') {
+          defaultBrandMark = cur.cloneNode(true);
+        }
+        if (!logoEtag) {
+          // Remove → restore the default mark (skip if it's already the SVG).
+          if (defaultBrandMark && cur.tagName.toLowerCase() !== 'svg') {
+            cur.replaceWith(defaultBrandMark.cloneNode(true));
+          }
+          return;
+        }
+        var img = document.createElement('img');
+        img.className = 'brand-logo';
+        img.alt = 'Workspace logo';
+        img.src = '/api/cloud/workspace-logo?v=' + encodeURIComponent(logoEtag);
+        img.onerror = function () {
+          if (defaultBrandMark && img.parentNode) {
+            img.parentNode.replaceChild(defaultBrandMark.cloneNode(true), img);
+          }
+        };
+        cur.replaceWith(img);
+      } catch (e) {
+        /* any failure → the default mark stays */
+      }
+    }
+
     var wsOutsideClickBound = false;
     function renderWsSwitcher(data) {
       var wrap = document.getElementById('ws-switcher');
@@ -1298,7 +1457,7 @@ export const appJs = `
             ' from another editor">' + (unseen > 99 ? '99+' : unseen) + '</span>'
           : '';
         return '<li><a data-route="' + prefix + t.name + '" href="' + prefix + t.name +
-          '"><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + badge + '</a></li>';
+          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + badge + '</a></li>';
       }).join('');
 
       var section = document.getElementById('system-section');
@@ -1428,7 +1587,7 @@ export const appJs = `
           ? '<div class="card-fresh" title="Last updated ' +
               escapeHtml(String(e.lastUpdatedAt)) + '">' + relTime(e.lastUpdatedAt) + '</div>'
           : '';
-        return '<a class="card" data-table="' + escapeHtml(e.name) + '" href="' + cardPrefix + e.name + '">' +
+        return '<a class="card" data-table="' + escapeHtml(e.name) + '" href="' + cardPrefix + e.name + '"' + titleAttr(tableDesc(e.name)) + '>' +
           '<div class="card-icon">' + disp.icon + '</div>' +
           '<div class="card-label">' + escapeHtml(disp.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +
@@ -1649,10 +1808,16 @@ export const appJs = `
 
       Promise.all(fetches).then(function (results) {
         var rows = results[0];
-        var headers = intrinsic.map(fieldLabel)
-          .concat(belongsTo.map(function (b) { return titleCase(b.relName); }))
-          .concat(junctions.map(function (j) { return titleCase(j.remoteRel.table); }))
-          .map(function (h) { return '<th>' + escapeHtml(h) + '</th>'; }).join('');
+        var headers = intrinsic.map(function (c) {
+          return '<th' + titleAttr(colDesc(tableName, c)) + '>' + escapeHtml(fieldLabel(c)) + '</th>';
+        })
+          .concat(belongsTo.map(function (b) {
+            return '<th' + titleAttr(tableDesc(b.rel.table)) + '>' + escapeHtml(titleCase(b.relName)) + '</th>';
+          }))
+          .concat(junctions.map(function (j) {
+            return '<th' + titleAttr(tableDesc(j.remoteRel.table)) + '>' + escapeHtml(titleCase(j.remoteRel.table)) + '</th>';
+          }))
+          .join('');
         headers += '<th class="row-actions"></th>';
 
         // Per-row visibility indicator (2.2 row-level permissions). Reads the
@@ -1958,13 +2123,15 @@ export const appJs = `
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
       var viewable = hasViewableFile(row);
       var html = '';
+      // System-created artifact: a small pill above the rendered markdown.
+      if (row.artifact_type) html += '<div class="artifact-badge">✦ Artifact</div>';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
       if (isImageFile(row) && viewable) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
       } else if (mime === 'application/pdf' && viewable) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
       } else if (row.extracted_text && MD_MIMES.indexOf(mime) >= 0) {
-        html += '<div class="md-body">' + mdToHtml(String(row.extracted_text).slice(0, 40000)) + '</div>';
+        html += '<div class="md-body">' + mdRender(String(row.extracted_text).slice(0, 40000)) + '</div>';
       } else if (row.extracted_text) {
         html += '<pre>' + escapeHtml(String(row.extracted_text).slice(0, 20000)) + '</pre>';
       } else {
@@ -2074,7 +2241,7 @@ export const appJs = `
             } else {
               dd = escapeHtml(row[c]);
             }
-            rows.push('<dt>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + dd + '</dd>');
+            rows.push('<dt' + titleAttr(colDesc(tableName, c)) + '>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + dd + '</dd>');
           });
           belongsTo.forEach(function (b) {
             var dd;
@@ -2190,33 +2357,36 @@ export const appJs = `
               : postVisibility('custom').then(function () { access.visibility = 'custom'; });
             withBusy(detailVisManage, function () {
               return ensure.then(function () {
-                return fetchJson('/api/team/users');
+                return fetchJson('/api/cloud/members');
               }).then(function (d) {
-                var users = ((d && d.users) || []).filter(function (u) { return u.id !== access.owner_user_id; });
+                // The grant target is a member ROLE: lattice_grant_row keys on the
+                // role, and _access.grantees holds role names. List every member
+                // except the owner (you don't grant the owner their own row).
+                var members = ((d && d.members) || []).filter(function (m) { return !m.isYou && m.status !== 'owner'; });
                 var granted = {};
                 (access.grantees || []).forEach(function (g) { granted[g] = true; });
-                if (users.length === 0) {
+                if (members.length === 0) {
                   panel.innerHTML = '<div class="muted">No other members in this workspace yet.</div>';
                 } else {
-                  panel.innerHTML = '<div class="grants-title">Who can see this</div>' + users.map(function (u) {
-                    var label = u.name || u.email || u.id;
-                    return '<label class="grants-row"><input type="checkbox" data-grant-user="' + escapeHtml(u.id) + '"' +
-                      (granted[u.id] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
+                  panel.innerHTML = '<div class="grants-title">Who can see this</div>' + members.map(function (m) {
+                    var label = m.name || m.email || m.role;
+                    return '<label class="grants-row"><input type="checkbox" data-grant-role="' + escapeHtml(m.role) + '"' +
+                      (granted[m.role] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
                   }).join('');
                 }
                 panel.hidden = false;
-                panel.querySelectorAll('[data-grant-user]').forEach(function (cb) {
+                panel.querySelectorAll('[data-grant-role]').forEach(function (cb) {
                   cb.addEventListener('change', function () {
-                    var uid = cb.getAttribute('data-grant-user');
-                    var base = '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id) + '/grants';
-                    var req = cb.checked
-                      ? fetchJson(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user_id: uid }) })
-                      : fetchJson(base + '/' + encodeURIComponent(uid), { method: 'DELETE' });
+                    var role = cb.getAttribute('data-grant-role');
                     cb.disabled = true;
-                    req.then(function () {
+                    fetchJson('/api/cloud/row-grant', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ table: tableName, pk: id, grantee: role, revoke: !cb.checked }),
+                    }).then(function () {
                       var list = access.grantees || (access.grantees = []);
-                      var at = list.indexOf(uid);
-                      if (cb.checked && at === -1) list.push(uid);
+                      var at = list.indexOf(role);
+                      if (cb.checked && at === -1) list.push(role);
                       if (!cb.checked && at !== -1) list.splice(at, 1);
                       var infoEl = content.querySelector('#detail-vis-info');
                       if (infoEl) infoEl.textContent = 'Shared with specific people (' + list.length + ')';
@@ -2531,7 +2701,7 @@ export const appJs = `
       var ro = fsIsReadonly(table, col);
       var cls = 'fs-field-val' + (ro ? ' readonly' : ' ce');
       var attr = ro ? '' : ' data-col="' + escapeHtml(col) + '" title="Click to edit"';
-      return '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(fieldLabel(col)) + '</div>' +
+      return '<div class="fs-field"><div class="fs-field-label"' + titleAttr(colDesc(table, col)) + '>' + escapeHtml(fieldLabel(col)) + '</div>' +
         '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
     }
 
@@ -4174,6 +4344,210 @@ export const appJs = `
     }
 
     // ────────────────────────────────────────────────────────────
+    // Zero-workspace "virgin" state + onboarding wizard (Feature B).
+    // Shown on first launch and after deleting the last workspace. A
+    // full-screen welcome over the (empty) app chrome, with Create / Join
+    // entry points that drive the existing workspace + onboarding APIs.
+    // ────────────────────────────────────────────────────────────
+    var BRAND_SVG =
+      '<svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+        '<rect width="24" height="24" rx="4" fill="#0b0d10"/>' +
+        '<circle cx="6" cy="6" r="1.5" fill="#bef264"/><circle cx="12" cy="6" r="1.5" fill="#bef264"/><circle cx="18" cy="6" r="1.5" fill="#bef264"/>' +
+        '<circle cx="6" cy="12" r="1.5" fill="#bef264"/><circle cx="12" cy="12" r="2" fill="#bef264"/><circle cx="18" cy="12" r="1.5" fill="#bef264"/>' +
+        '<circle cx="6" cy="18" r="1.5" fill="#bef264"/><circle cx="12" cy="18" r="1.5" fill="#bef264"/><circle cx="18" cy="18" r="1.5" fill="#bef264"/>' +
+      '</svg>';
+
+    function renderVirginState() {
+      var existing = document.getElementById('virgin-state');
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var el = document.createElement('div');
+      el.id = 'virgin-state';
+      el.className = 'virgin-state';
+      el.innerHTML =
+        '<div class="virgin-card">' +
+          BRAND_SVG +
+          '<h1>Welcome to Lattice</h1>' +
+          '<p>Create a workspace to get started, or join one you were invited to.</p>' +
+          '<div class="virgin-actions">' +
+            '<button class="btn primary" id="virgin-create">Create a workspace</button>' +
+            '<button class="btn" id="virgin-join">Join via invite</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(el);
+      el.querySelector('#virgin-create').addEventListener('click', function () { showOnboardingWizard('create'); });
+      el.querySelector('#virgin-join').addEventListener('click', function () { showOnboardingWizard('join'); });
+    }
+
+    // Multi-step onboarding modal. mode 'create' | 'join'. Identity-first, with
+    // Back navigation. Drives the existing APIs: identity → create-local /
+    // create-local-then-migrate (cloud) / redeem-invite (join). On success the
+    // server has switched into the new workspace, so a reload re-runs init() into
+    // the normal layout.
+    function showOnboardingWizard(mode) {
+      var st = { step: 'identity', name: '', email: '', wsName: '', kind: 'local' };
+      var backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      document.body.appendChild(backdrop);
+      function close() { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); }
+
+      fetchJson('/api/userconfig/identity').then(function (id) {
+        st.name = (id && id.display_name) || '';
+        st.email = (id && id.email) || '';
+        if (!st.wsName && st.name) st.wsName = st.name + "'s Workspace";
+        render();
+      }).catch(function () { render(); });
+
+      function field(label, id, type, value, placeholder) {
+        return '<div style="margin-bottom:10px"><label class="field-label">' + escapeHtml(label) + '</label>' +
+          '<input type="' + type + '" id="' + id + '" value="' + escapeHtml(value || '') + '"' +
+          (placeholder ? ' placeholder="' + escapeHtml(placeholder) + '"' : '') +
+          ' autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%"></div>';
+      }
+
+      function render() {
+        var title = mode === 'join' ? 'Join a workspace' : 'Create a workspace';
+        var body = '';
+        var primary = 'Next';
+        var showBack = st.step !== 'identity';
+        if (st.step === 'identity') {
+          body = '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">First, who are you? This labels your edits and is reused if you join a team.</p>' +
+            field('Your name', 'ob-name', 'text', st.name, 'Ada Lovelace') +
+            field('Email', 'ob-email', 'email', st.email, 'you@example.com');
+        } else if (st.step === 'kind') {
+          body = '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">A local workspace lives on this machine. A cloud workspace is a shared Postgres your team can join.</p>' +
+            '<div style="display:flex;gap:8px;margin-bottom:12px">' +
+              '<label class="ob-kind"><input type="radio" name="ob-kind" value="local"' + (st.kind === 'local' ? ' checked' : '') + '> Local</label>' +
+              '<label class="ob-kind"><input type="radio" name="ob-kind" value="cloud"' + (st.kind === 'cloud' ? ' checked' : '') + '> Cloud</label>' +
+            '</div>' +
+            field('Workspace name', 'ob-wsname', 'text', st.wsName, 'My Workspace');
+          primary = st.kind === 'cloud' ? 'Next' : 'Create';
+        } else if (st.step === 'cloud') {
+          body = '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">Enter a <strong>fresh, empty</strong> Postgres database. Lattice creates the workspace, installs row-level security, and makes you the owner.</p>' +
+            postgresFormHtml({ label: slugifyName(st.wsName) });
+          primary = 'Create cloud →';
+        } else if (st.step === 'join') {
+          body = '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">Paste the invite token the workspace owner sent to <strong>' + escapeHtml(st.email || 'your email') + '</strong>.</p>' +
+            field('Invite token', 'ob-token', 'text', '', 'paste token here');
+          primary = 'Join';
+        }
+        backdrop.innerHTML =
+          '<div class="modal">' +
+            '<div class="modal-head">' + escapeHtml(title) + '</div>' +
+            '<div class="modal-body">' + body + '<div id="ob-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div></div>' +
+            '<div class="modal-foot">' +
+              (showBack ? '<button class="btn" data-act="back">Back</button>' : '<button class="btn" data-act="cancel">Cancel</button>') +
+              '<button class="btn primary" data-act="ok">' + escapeHtml(primary) + '</button>' +
+            '</div>' +
+          '</div>';
+        backdrop.querySelector('[data-act="ok"]').addEventListener('click', onNext);
+        var backBtn = backdrop.querySelector('[data-act="back"]');
+        if (backBtn) backBtn.addEventListener('click', onBack);
+        var cancelBtn = backdrop.querySelector('[data-act="cancel"]');
+        if (cancelBtn) cancelBtn.addEventListener('click', close);
+      }
+
+      function onBack() {
+        if (st.step === 'kind' || st.step === 'join') st.step = 'identity';
+        else if (st.step === 'cloud') st.step = 'kind';
+        render();
+      }
+
+      function setMsg(t) { var m = backdrop.querySelector('#ob-msg'); if (m) m.textContent = t; }
+
+      function onNext() {
+        var okBtn = backdrop.querySelector('[data-act="ok"]');
+        if (st.step === 'identity') {
+          st.name = (backdrop.querySelector('#ob-name').value || '').trim();
+          st.email = (backdrop.querySelector('#ob-email').value || '').trim();
+          if (!st.name) { setMsg('Please enter your name.'); return; }
+          if (!st.wsName) st.wsName = st.name + "'s Workspace";
+          withBusy(okBtn, function () {
+            return fetch('/api/userconfig/identity', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ display_name: st.name, email: st.email }),
+            }).then(function () {
+              st.step = mode === 'join' ? 'join' : 'kind';
+              render();
+            }).catch(function (e) { setMsg('Failed: ' + e.message); });
+          });
+          return;
+        }
+        if (st.step === 'kind') {
+          st.kind = (backdrop.querySelector('input[name="ob-kind"]:checked') || {}).value || 'local';
+          st.wsName = (backdrop.querySelector('#ob-wsname').value || '').trim() || st.wsName;
+          if (!st.wsName) { setMsg('Please name the workspace.'); return; }
+          if (st.kind === 'cloud') { st.step = 'cloud'; render(); return; }
+          // Local: create + reload into the new workspace.
+          withBusy(okBtn, function () {
+            setMsg('Creating…');
+            return createWorkspaceAndReload(st.wsName);
+          });
+          return;
+        }
+        if (st.step === 'cloud') {
+          var pg = readPostgresWizardForm();
+          withBusy(okBtn, function () {
+            setMsg('Creating local workspace…');
+            // Create a local workspace first (gives the server an active DB), then
+            // migrate it into the fresh cloud — the existing migrate path.
+            return fetch('/api/workspaces/create', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ name: st.wsName }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+              if (d.error) throw new Error(d.error);
+              setMsg('Migrating to cloud… (this may take a moment)');
+              return fetch('/api/dbconfig/migrate-to-cloud', {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pg),
+              }).then(function (r2) { return r2.json().then(function (b) { return { status: r2.status, body: b }; }); });
+            }).then(function (r) {
+              if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              finishOnboarding();
+            }).catch(function (e) { setMsg('Failed: ' + e.message); });
+          });
+          return;
+        }
+        if (st.step === 'join') {
+          var token = (backdrop.querySelector('#ob-token').value || '').trim();
+          if (!token) { setMsg('Paste the invite token.'); return; }
+          withBusy(okBtn, function () {
+            setMsg('Joining…');
+            return fetch('/api/cloud/redeem-invite', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ email: st.email, token: token }),
+            }).then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
+              .then(function (r) {
+                if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                finishOnboarding();
+              }).catch(function (e) { setMsg('Failed: ' + e.message); });
+          });
+          return;
+        }
+      }
+
+      function createWorkspaceAndReload(name) {
+        return fetch('/api/workspaces/create', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: name }),
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          if (d.error) throw new Error(d.error);
+          finishOnboarding();
+        }).catch(function (e) { setMsg('Failed: ' + e.message); });
+      }
+
+      function finishOnboarding() {
+        // The server has switched into the new workspace; reload re-runs init()
+        // into the normal layout (the virgin overlay + this modal go with it).
+        close();
+        location.reload();
+      }
+    }
+
+    // Lowercase, space→dash slug for a default cloud credential label.
+    function slugifyName(s) {
+      return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    }
+
+    // ────────────────────────────────────────────────────────────
     // Three-step Create Database wizard. Used from the header dropdown
     // "+ New database" button and from Lattice Settings → Add new DB.
     // Step 1: name + kind (+ cloud credentials if cloud)
@@ -4586,12 +4960,25 @@ export const appJs = `
             '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
               'Keys are stored encrypted in the <code>secrets</code> table.' +
             '</p>' +
-            rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
-            (cfg.oauthEnabled
-              ? '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
-                  'Or <a href="/api/assistant/oauth/start" style="color:var(--accent)">connect your Claude subscription</a>.' +
+            // Connect-with-Claude is the primary path (use your subscription, no
+            // API key). A pasted API key is demoted to an "Advanced" disclosure.
+            (cfg.claudeAuthKind === 'oauth'
+              ? '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
+                  '<span class="feed-source" style="background:var(--accent-soft);color:var(--accent)">Connected with Claude</span>' +
+                  '<button id="asst-oauth-disconnect" class="btn">Disconnect</button>' +
                 '</div>'
-              : '') +
+              : '<div style="margin-bottom:10px">' +
+                  '<a href="/api/assistant/oauth/start" class="btn primary" style="display:inline-block;text-decoration:none">Connect with Claude</a>' +
+                  '<p class="lead" style="margin:6px 0 0;font-size:12px;color:var(--text-muted)">' +
+                    'Use your Claude Pro / Max / Enterprise subscription — no API key needed.' +
+                  '</p>' +
+                '</div>') +
+            '<details style="margin-bottom:12px"' + (cfg.claudeAuthKind === 'key' ? ' open' : '') + '>' +
+              '<summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Advanced — use an API key instead</summary>' +
+              '<div style="margin-top:8px">' +
+                rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
+              '</div>' +
+            '</details>' +
             '<div style="margin:6px 0 12px">' +
               '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
                 '<strong style="font-size:13px">Inference aggressiveness</strong>' +
@@ -4647,6 +5034,14 @@ export const appJs = `
           });
         }
         wire('asst-anthropic', 'anthropic');
+        var disconnectBtn = host.querySelector('#asst-oauth-disconnect');
+        if (disconnectBtn) disconnectBtn.addEventListener('click', function () {
+          msg.textContent = 'Disconnecting…';
+          fetch('/api/assistant/oauth', { method: 'DELETE' })
+            .then(function (r) { if (!r.ok) throw new Error('disconnect failed (' + r.status + ')'); return r.json(); })
+            .then(function () { renderAssistantPanel(host); renderComposer(); })
+            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+        });
         var sttSel = host.querySelector('#asst-stt');
         var voiceKeyHost = host.querySelector('#asst-voice-key');
         function wireVoiceKey(provider) {
@@ -4955,9 +5350,40 @@ export const appJs = `
         var kind = isCloud ? 'Cloud' : 'Local';
         // Members (cloud, non-owner) can't rename. Locals + owners can.
         var canRename = !isCloud || cfg.isOwner === true;
+        // Logo subsection — cloud only (a local single-user workspace has no team to
+        // brand for, and the cloud-settings store is a no-op on SQLite). Owner gets
+        // upload + remove; a member sees the current logo read-only.
+        function logoPreviewInner(etag) {
+          return etag
+            ? '<img src="/api/cloud/workspace-logo?v=' + encodeURIComponent(etag) + '" alt="Workspace logo" style="width:100%;height:100%;object-fit:contain">'
+            : '<span style="font-size:10px;color:var(--text-muted);text-align:center;line-height:1.15">Default<br>mark</span>';
+        }
+        var logoSection = isCloud
+          ? ('<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">' +
+              '<div style="font-weight:600;margin-bottom:8px">Logo</div>' +
+              '<div style="display:flex;align-items:center;gap:14px">' +
+                '<div id="db-logo-preview" style="width:48px;height:48px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;overflow:hidden">' +
+                  logoPreviewInner(cfg.logoEtag) +
+                '</div>' +
+                (cfg.isOwner
+                  ? ('<div style="display:flex;flex-direction:column;gap:6px">' +
+                      '<input type="file" id="db-logo-file" accept="image/png,image/jpeg" style="font-size:12px">' +
+                      '<div style="display:flex;gap:8px">' +
+                        '<button class="btn primary" id="db-logo-save">Save</button>' +
+                        '<button class="btn" id="db-logo-remove"' + (cfg.logoEtag ? '' : ' disabled') + '>Remove</button>' +
+                      '</div>' +
+                    '</div>')
+                  : '<span style="font-size:12px;color:var(--text-muted)">Set by the workspace owner.</span>') +
+              '</div>' +
+              '<div id="db-logo-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+              (cfg.isOwner
+                ? '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">Square PNG or JPEG, up to 64 KB. Replaces the Lattice mark in the topbar for every member.</p>'
+                : '') +
+            '</div>')
+          : '';
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 10px">Name</h3>' +
+            '<h3 style="margin:0 0 10px">Display</h3>' +
             '<div style="display:flex;align-items:center;gap:8px">' +
               '<input id="db-name-input" type="text" value="' + escapeHtml(name) + '" maxlength="200" style="flex:1"' + (canRename ? '' : ' disabled') + ' />' +
               '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' +
@@ -4975,7 +5401,63 @@ export const appJs = `
                 : 'Only the workspace owner can rename this cloud workspace.') +
             '</p>' +
             '<div id="db-name-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
+            logoSection +
           '</div>';
+        // Logo upload / remove wiring (owner only; the controls don't render
+        // otherwise). FileReader → data: URI → POST; the server validates square
+        // PNG/JPEG and returns the new etag, which we use to refresh the preview
+        // and swap the live topbar mark.
+        var logoFileEl = host.querySelector('#db-logo-file');
+        var logoSaveBtn = host.querySelector('#db-logo-save');
+        var logoRemoveBtn = host.querySelector('#db-logo-remove');
+        var logoMsg = host.querySelector('#db-logo-msg');
+        var logoPreview = host.querySelector('#db-logo-preview');
+        if (logoSaveBtn) logoSaveBtn.addEventListener('click', function () {
+          var f = logoFileEl && logoFileEl.files && logoFileEl.files[0];
+          if (!f) { logoMsg.textContent = 'Choose a PNG or JPEG first.'; return; }
+          var reader = new FileReader();
+          reader.onerror = function () { logoMsg.textContent = 'Could not read the file.'; };
+          reader.onload = function () {
+            withBusy(logoSaveBtn, function () {
+              logoMsg.textContent = 'Uploading…';
+              return fetch('/api/cloud/workspace-logo', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ logo: reader.result }),
+              })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                  if (d.error) { logoMsg.textContent = 'Failed: ' + d.error; return; }
+                  logoMsg.textContent = 'Saved.';
+                  if (logoPreview) logoPreview.innerHTML = logoPreviewInner(d.logoEtag);
+                  if (logoRemoveBtn) logoRemoveBtn.disabled = false;
+                  applyWorkspaceLogo(d.logoEtag);
+                })
+                .catch(function (e) { logoMsg.textContent = 'Failed: ' + e.message; });
+            });
+          };
+          reader.readAsDataURL(f);
+        });
+        if (logoRemoveBtn) logoRemoveBtn.addEventListener('click', function () {
+          withBusy(logoRemoveBtn, function () {
+            logoMsg.textContent = 'Removing…';
+            return fetch('/api/cloud/workspace-logo', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ logo: '' }),
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (d) {
+                if (d.error) { logoMsg.textContent = 'Failed: ' + d.error; return; }
+                logoMsg.textContent = 'Removed.';
+                if (logoPreview) logoPreview.innerHTML = logoPreviewInner(null);
+                logoRemoveBtn.disabled = true;
+                if (logoFileEl) logoFileEl.value = '';
+                applyWorkspaceLogo(null);
+              })
+              .catch(function (e) { logoMsg.textContent = 'Failed: ' + e.message; });
+          });
+        });
         var saveBtn = host.querySelector('#db-name-save');
         if (saveBtn) saveBtn.addEventListener('click', function () {
           var v = (host.querySelector('#db-name-input').value || '').trim();
@@ -6048,7 +6530,7 @@ export const appJs = `
       // the reset matches the grow logic instead of leaving a bare 'auto').
       if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
       if (sendBtn) sendBtn.disabled = true;
-      var actx = null; var assembled = '';
+      var actx = null; var assembled = ''; var pendingOpen = null;
       // Private mode: when the composer checkbox is checked, items the assistant
       // adds on this turn stay private to the current user.
       var privEl = document.getElementById('chat-private');
@@ -6076,6 +6558,10 @@ export const appJs = `
               // no card by design (only data changes show).
               else if (ev.type === 'warn') { finalizeBubble(actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); actx = null; }
               else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
+              // A tool (e.g. create_artifact) asked the GUI to open the row it
+              // created. Remember it and navigate once the turn finishes so the
+              // main viewer isn't yanked mid-reply.
+              else if (ev.type === 'open' && ev.table && ev.id) { pendingOpen = { table: String(ev.table), id: String(ev.id) }; }
             });
             return pump();
           });
@@ -6085,6 +6571,10 @@ export const appJs = `
         finalizeBubble(actx); // drop a trailing empty "typing…" bubble
         if (assembled) chatHistory.push({ role: 'assistant', text: assembled });
         refreshThreadList();
+        // Open a just-created artifact in the main viewer (markdown renders via
+        // renderFilePreview). Drop the cached rows first so the detail fetch is
+        // fresh, then navigate (mode-aware).
+        if (pendingOpen) { invalidate(pendingOpen.table); openSearchHit(pendingOpen.table, pendingOpen.id); }
       }).catch(function (e) {
         finalizeBubble(actx);
         var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + e.message);
@@ -6318,7 +6808,13 @@ export const appJs = `
             : '';
           host.innerHTML =
             '<div class="composer-row">' +
-              '<button class="composer-clip" id="chat-clip" title="Attach a file">📎</button>' +
+              '<button class="composer-clip" id="chat-clip" title="Upload files" aria-label="Upload files">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+                  '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
+                  '<polyline points="17 8 12 3 7 8"/>' +
+                  '<line x1="12" y1="3" x2="12" y2="15"/>' +
+                '</svg>' +
+              '</button>' +
               micHtml +
               '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +

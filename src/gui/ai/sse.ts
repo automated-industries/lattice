@@ -13,6 +13,9 @@ export type ChatStreamEvent =
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_use'; id: string; name: string }
   | { type: 'tool_result'; toolUseId: string; isError: boolean }
+  // A tool asked the GUI to open a row it just created (e.g. create_artifact) in
+  // the main viewer. The client navigates to it once the turn finishes streaming.
+  | { type: 'open'; table: string; id: string }
   | { type: 'assistant_message_end' }
   | { type: 'done' }
   // Non-fatal notice (e.g. the tool-step cap was reached with work outstanding).

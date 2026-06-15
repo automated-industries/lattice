@@ -54,6 +54,13 @@ import { discoverCloudTables } from '../cloud/discover.js';
 import { installCloudRls, enableChangelogRls } from '../cloud/rls.js';
 import { installCloudSettings } from '../cloud/settings.js';
 import { reconcileCloudMemberAccess } from '../cloud/setup.js';
+import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
+import {
+  resolveColumnDescription,
+  resolveTableDescription,
+  upsertColumnMeta,
+  upsertTableMeta,
+} from './column-descriptions.js';
 import { rowAccessSummaries } from '../cloud/members.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
@@ -87,7 +94,7 @@ import {
   type DeleteResolution,
 } from './schema-ops.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
-import { dispatchDbConfigRoute } from './dbconfig-routes.js';
+import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import {
   dispatchAssistantRoute,
@@ -108,6 +115,7 @@ import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import {
   getOrCreateMasterKey,
   readIdentity,
+  writeIdentity,
   deleteDbCredential,
   saveDbCredential,
 } from '../framework/user-config.js';
@@ -123,8 +131,22 @@ import {
 import { setColumnAudience } from '../cloud/audience.js';
 
 export interface StartGuiServerOptions {
-  configPath: string;
-  outputDir: string;
+  /**
+   * Active workspace config to open. NULL/empty ⇒ boot into the zero-workspace
+   * "virgin" state (no active DB): the server serves the shell + the
+   * workspace-management & onboarding routes, and every data route 409s until a
+   * workspace is created or joined. `latticeRoot` must be set in that case so the
+   * onboarding routes can register the new workspace.
+   */
+  configPath?: string | null;
+  /** Render output dir for the active workspace. NULL/empty in the virgin state. */
+  outputDir?: string | null;
+  /**
+   * The `.lattice` root. Normally discovered from `configPath`, but MUST be passed
+   * when booting virgin (no config to discover it from) so the management routes
+   * can add the first workspace into the right registry.
+   */
+  latticeRoot?: string | null;
   port?: number;
   openBrowser?: boolean;
   /**
@@ -139,6 +161,15 @@ export interface StartGuiServerOptions {
    * `--config` GUI (which serves only externally-rendered context).
    */
   autoRender?: boolean;
+  /**
+   * Package version string (no leading `v`), stamped into the served GUI shell
+   * at the `<!--LATTICE_VERSION-->` placeholder (shown left of the settings
+   * gear). Passed in by `cli.ts` (`getVersion()`) so the version is resolved in
+   * the ESM entrypoint — server.ts is bundled to both CJS and ESM, and reading
+   * package.json via `import.meta.url` here would break the CJS bundle. Omitted
+   * ⇒ the version chip stays hidden.
+   */
+  version?: string;
 }
 
 export interface GuiServerHandle {
@@ -702,6 +733,14 @@ export interface ActiveDb {
    * owner open and for local/SQLite (no masking, base SELECT intact).
    */
   maskedReadViews: Map<string, string>;
+  /**
+   * Non-blocking, fail-silent hooks (attached by openConfig) that auto-generate
+   * column / table definitions via a cheap model when a user creates them.
+   * `onColumnsAdded` feeds {@link MutationCtx}; `generateTableDescription` is
+   * called by createUserEntity. No-op without Claude auth.
+   */
+  onColumnsAdded?: (table: string, columns: string[]) => void;
+  generateTableDescription?: (table: string, columns: string[]) => void;
 }
 
 /**
@@ -759,6 +798,8 @@ export async function openConfig(
     columns: {
       entity_name: 'TEXT PRIMARY KEY',
       icon: 'TEXT',
+      // Operator-authored or auto-generated table definition.
+      description: 'TEXT',
       updated_at: "TEXT DEFAULT (datetime('now'))",
     },
     primaryKey: 'entity_name',
@@ -773,6 +814,9 @@ export async function openConfig(
       table_name: 'TEXT NOT NULL',
       column_name: 'TEXT NOT NULL',
       secret: 'INTEGER NOT NULL DEFAULT 0',
+      // Operator-authored or auto-generated column definition (boot reconcile
+      // adds it to existing tables; non-destructive).
+      description: 'TEXT',
       updated_at: "TEXT DEFAULT (datetime('now'))",
     },
     render: () => '',
@@ -1054,6 +1098,8 @@ export async function openConfig(
     renderAbort: new AbortController(),
     renderState: { phase: 'idle', tables: {} },
     maskedReadViews,
+    onColumnsAdded: columnDescriptionHook(db),
+    generateTableDescription: tableDescriptionHook(db),
   };
 }
 
@@ -1566,22 +1612,34 @@ function schemaReverseSummary(verb: string, entry: AuditEntry): string {
 }
 
 export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
-  const configPath = resolve(options.configPath);
-  const outputDir = resolve(options.outputDir);
+  // Virgin (zero-workspace) boot ⇒ no config to open. configPath/outputDir are
+  // null until a workspace is created or joined (the onboarding routes set them
+  // via the registry, not from these boot values).
+  const bootConfigPath = options.configPath ? resolve(options.configPath) : null;
+  const bootOutputDir = options.outputDir ? resolve(options.outputDir) : null;
   const startPort = options.port ?? 4317;
   const host = options.host ?? '127.0.0.1';
   const autoRender = options.autoRender ?? false;
+  const guiVersion = options.version ?? '';
   // One id per GUI server process. Stamped on every audit entry so the header
   // undo/redo stack is scoped to THIS session's own actions (you undo what you
   // did, not another cloud user's edit). The per-entry Revert stays global.
   const sessionId = crypto.randomUUID();
 
-  // Mutable reference: switching DBs replaces this wholesale.
-  let active: ActiveDb = await openConfig(configPath, outputDir, autoRender);
+  // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
+  // (zero-workspace) state until the first workspace is created or joined. The
+  // request handler gates every data route behind a non-null check.
+  let activeRef: ActiveDb | null =
+    bootConfigPath && bootOutputDir
+      ? await openConfig(bootConfigPath, bootOutputDir, autoRender)
+      : null;
   // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
-  // GUI was opened on a plain config; the switcher stays hidden.
-  const latticeRoot = findLatticeRoot(dirname(configPath));
+  // GUI was opened on a plain config; the switcher stays hidden. In the virgin
+  // state the root comes from the options (there's no config to discover from).
+  const latticeRoot =
+    (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null) ??
+    (options.latticeRoot ? resolve(options.latticeRoot) : null);
   // Which workspace is ACTUALLY being served (the open `active` DB). The header
   // switcher must reflect THIS, not the registry's stored activeWorkspaceId —
   // the two can drift apart (e.g. a relaunch whose --config points at a
@@ -1589,9 +1647,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // workspace label sitting over a different workspace's data. Match the
   // launched config to its workspace and reconcile the registry to it at boot.
   let currentWorkspaceId: string | null = null;
-  if (latticeRoot) {
+  if (latticeRoot && bootConfigPath) {
     const launched = listWorkspaces(latticeRoot).find(
-      (w) => resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(configPath),
+      (w) => resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(bootConfigPath),
     );
     if (launched) {
       currentWorkspaceId = launched.id;
@@ -1603,6 +1661,159 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     }
   }
 
+  // Centralized active-DB swap: keeps `activeRef` + the served-workspace id in
+  // lockstep and kicks off the background render off the response path. Used by
+  // every create/switch/delete/onboarding transition (and the virgin → first
+  // workspace transition). Passing null enters the virgin state.
+  const setActive = (next: ActiveDb | null, workspaceId: string | null): void => {
+    activeRef = next;
+    currentWorkspaceId = workspaceId;
+    if (next) startBackgroundRender(next);
+  };
+
+  const disposeActiveIfAny = async (): Promise<void> => {
+    if (activeRef) await disposeActive(activeRef);
+  };
+
+  // Open + activate a cloud workspace joined/created via an invite or a migration.
+  // Tolerates the virgin state (no prior active to dispose). Atomic: on open
+  // failure it rolls back the half-created workspace + credential and rethrows.
+  // Shared by the dbconfig dispatcher (redeem/connect) and the virgin onboarding.
+  const createCloudWorkspace = async (
+    displayName: string,
+    key: string,
+    url: string,
+  ): Promise<string> => {
+    if (!latticeRoot) throw new Error('No .lattice root — cannot create a cloud workspace');
+    saveDbCredential(key, url);
+    let created;
+    try {
+      created = addWorkspace(latticeRoot, {
+        displayName,
+        db: '${LATTICE_DB:' + key + '}',
+        makeActive: false,
+      });
+    } catch (e) {
+      deleteDbCredential(key);
+      throw e;
+    }
+    const paths = resolveWorkspacePaths(latticeRoot, created);
+    let next: ActiveDb;
+    try {
+      next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+    } catch (e) {
+      removeWorkspace(latticeRoot, created.id);
+      deleteDbCredential(key);
+      throw e;
+    }
+    setActiveWorkspace(latticeRoot, created.id);
+    await disposeActiveIfAny();
+    setActive(next, created.id);
+    return created.id;
+  };
+
+  // Reopen the currently-served config (after an in-place config edit). The
+  // dbconfig dispatcher's `swap` callback; no-op in the virgin state.
+  const reopenActive = async (): Promise<void> => {
+    if (!activeRef) return;
+    const prev = activeRef;
+    const next = await openConfig(prev.configPath, prev.outputDir, autoRender);
+    setActive(next, currentWorkspaceId);
+    await disposeActive(prev);
+  };
+
+  // Create + activate a brand-new LOCAL workspace (the onboarding "Create →
+  // Local" path; also reachable from the virgin state). No prior active needed.
+  const createLocalWorkspace = async (name: string): Promise<string> => {
+    if (!latticeRoot) throw new Error('No .lattice root — workspaces unavailable');
+    const created = addWorkspace(latticeRoot, { displayName: name, makeActive: false });
+    const paths = resolveWorkspacePaths(latticeRoot, created);
+    let next: ActiveDb;
+    try {
+      next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+    } catch (e) {
+      removeWorkspace(latticeRoot, created.id);
+      throw e;
+    }
+    setActiveWorkspace(latticeRoot, created.id);
+    await disposeActiveIfAny();
+    setActive(next, created.id);
+    return created.id;
+  };
+
+  // Routes that work WITHOUT an active workspace (the zero-workspace "virgin"
+  // state): the shell, realtime status, identity, the registry list, and the
+  // create/join onboarding routes. Returns true when it handled the request.
+  // Everything else 409s (the caller surfaces that). The Cloud-create path is
+  // create-local-then-migrate on the client, so migrate-to-cloud is NOT here.
+  const handleVirginRoute = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string,
+    method: string,
+  ): Promise<boolean> => {
+    if (method === 'GET' && pathname === '/') {
+      sendText(
+        res,
+        guiAppHtml.replace('<!--LATTICE_VERSION-->', guiVersion ? `v${guiVersion}` : ''),
+        200,
+        'text/html; charset=utf-8',
+      );
+      return true;
+    }
+    if (method === 'GET' && pathname === '/api/realtime/status') {
+      sendJson(res, { mode: 'none', connected: false });
+      return true;
+    }
+    if (method === 'GET' && pathname === '/api/workspaces') {
+      // `virgin: true` is the authoritative signal that there is NO active DB
+      // (the welcome screen). The client must gate on THIS, not on an empty
+      // workspace list — a plain `--config` GUI has an active DB but no `.lattice`
+      // registry, so its list is empty yet it is NOT virgin.
+      sendJson(res, {
+        virgin: true,
+        current: latticeRoot ? (getActiveWorkspace(latticeRoot)?.id ?? null) : null,
+        workspaces: latticeRoot ? listWorkspaces(latticeRoot) : [],
+      });
+      return true;
+    }
+    if (method === 'GET' && pathname === '/api/userconfig/identity') {
+      sendJson(res, readIdentity());
+      return true;
+    }
+    if (method === 'POST' && pathname === '/api/userconfig/identity') {
+      const body = (await readJson<unknown>(req)) as { display_name?: unknown; email?: unknown };
+      const next = {
+        display_name: typeof body.display_name === 'string' ? body.display_name : '',
+        email: typeof body.email === 'string' ? body.email : '',
+      };
+      // Machine-local file only — there is no active DB to mirror into yet.
+      writeIdentity(next);
+      sendJson(res, next);
+      return true;
+    }
+    if (method === 'POST' && pathname === '/api/workspaces/create') {
+      const body = (await readJson<unknown>(req)) as { name?: unknown };
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name) {
+        sendJson(res, { error: 'name is required' }, 400);
+        return true;
+      }
+      try {
+        const id = await createLocalWorkspace(name);
+        sendJson(res, { ok: true, id });
+      } catch (e) {
+        sendJson(res, { error: `Failed to create workspace: ${(e as Error).message}` }, 500);
+      }
+      return true;
+    }
+    if (method === 'POST' && pathname === '/api/cloud/redeem-invite') {
+      await redeemInvite(createCloudWorkspace, req, res);
+      return true;
+    }
+    return false;
+  };
+
   const server = createServer((req, res) => {
     void (async () => {
       try {
@@ -1610,9 +1821,27 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
 
+        // Zero-workspace "virgin" state: no active DB. Serve only the shell +
+        // the workspace-management & onboarding routes; everything else 409s
+        // (loud, never a crash). Creating/joining a workspace sets `activeRef`,
+        // so the NEXT request falls through to the normal data routes below.
+        if (!activeRef) {
+          if (await handleVirginRoute(req, res, pathname, method)) return;
+          sendJson(res, { error: 'No active workspace' }, 409);
+          return;
+        }
+        // Non-null for the entire normal handler below. Reassigned in lockstep
+        // with `activeRef` at every swap site so the next request sees the swap.
+        let active: ActiveDb = activeRef;
+
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {
-          sendText(res, guiAppHtml, 200, 'text/html; charset=utf-8');
+          sendText(
+            res,
+            guiAppHtml.replace('<!--LATTICE_VERSION-->', guiVersion ? `v${guiVersion}` : ''),
+            200,
+            'text/html; charset=utf-8',
+          );
           return;
         }
 
@@ -1657,6 +1886,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             writeEvent('state', { mode: 'cloud', state });
           });
           const offPayload = broker?.subscribePayload((payload) => {
+            // This SSE stream is bound to the workspace open at connect time
+            // (`active`). If the server has since switched workspaces or dropped to
+            // the virgin state, `activeRef` no longer points at it — drop the event
+            // rather than probe a disposed/closed DB (the client reconnects on
+            // switch). Guards the stale-closure race after a workspace swap.
+            if (activeRef !== active) return;
             // #4.3 — only forward a change the connected role may actually read;
             // strip the editor (owner_role) from deletes (unprobeable post-hoc).
             void changeVisibleToActiveRole(active.db, payload).then((visible) => {
@@ -1728,6 +1963,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             const key = `${tableName}:${p.pk ?? ''}:${op}`;
             const seen = recentSelf.get(key);
             if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
+            // Stale-stream guard (see /api/realtime/stream): if the server switched
+            // workspaces or went virgin since this stream connected, `activeRef` no
+            // longer matches the bound `active` — drop rather than probe a closed DB.
+            if (activeRef !== active) return;
             // #4.3 — gate on the connected role's visibility (don't surface another
             // member's unreadable rows in the feed); strip the editor on deletes.
             void changeVisibleToActiveRole(active.db, p).then((visible) => {
@@ -2044,11 +2283,42 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             table_name: string;
             column_name: string;
             secret: number;
+            description?: string | null;
           }[];
-          const out: Record<string, Record<string, { secret: boolean }>> = {};
+          // Index the authored (operator/AI/auto-generated) meta by table→column.
+          const authored = new Map<
+            string,
+            Map<string, { secret: number; description: string | null }>
+          >();
           for (const r of rows) {
-            const bucket = out[r.table_name] ?? (out[r.table_name] = {});
-            bucket[r.column_name] = { secret: r.secret === 1 };
+            let bucket = authored.get(r.table_name);
+            if (!bucket) {
+              bucket = new Map<string, { secret: number; description: string | null }>();
+              authored.set(r.table_name, bucket);
+            }
+            bucket.set(r.column_name, { secret: r.secret, description: r.description ?? null });
+          }
+          // Resolve every registered column's effective description (authored wins,
+          // else a built-in default) so the client can tooltip built-in columns
+          // (files.original_name …) without shipping the built-in map to the
+          // browser. Schema-sized + loaded once — not a per-row read (internal guideline ok).
+          const out: Record<
+            string,
+            Record<string, { secret?: boolean; description?: string }>
+          > = {};
+          for (const table of active.validTables) {
+            const cols = Object.keys(active.db.getRegisteredColumns(table) ?? {});
+            const bucket = authored.get(table);
+            const tableOut: Record<string, { secret?: boolean; description?: string }> = {};
+            for (const col of cols) {
+              const meta = bucket?.get(col);
+              const desc = resolveColumnDescription(table, col, meta?.description ?? null);
+              const entry: { secret?: boolean; description?: string } = {};
+              if (meta?.secret === 1) entry.secret = true;
+              if (desc) entry.description = desc;
+              if (entry.secret || entry.description) tableOut[col] = entry;
+            }
+            if (Object.keys(tableOut).length) out[table] = tableOut;
           }
           sendJson(res, out);
           return;
@@ -2061,51 +2331,46 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
             return;
           }
+          const body = (await readJson<unknown>(req)) as {
+            secret?: unknown;
+            description?: unknown;
+          };
+          const settingSecret = 'secret' in body;
+          const settingDescription = 'description' in body;
           // Secret is meaningful only for scalar data columns. System columns
           // (id/created_at/updated_at/deleted_at) and links (FK columns) can't
-          // be marked secret — enforce here so the data model stays clean.
-          if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
-            sendJson(
-              res,
-              { error: `"${colName}" is a system column and cannot be marked secret` },
-              400,
-            );
-            return;
+          // be marked secret — enforce here so the data model stays clean. The
+          // guard applies only when `secret` is being set; a description-only
+          // write is fine on any column.
+          if (settingSecret) {
+            if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
+              sendJson(
+                res,
+                { error: `"${colName}" is a system column and cannot be marked secret` },
+                400,
+              );
+              return;
+            }
+            if (columnRefTarget(active.configPath, tableName, colName)) {
+              sendJson(res, { error: 'Link (foreign-key) columns cannot be marked secret' }, 400);
+              return;
+            }
           }
-          if (columnRefTarget(active.configPath, tableName, colName)) {
-            sendJson(res, { error: 'Link (foreign-key) columns cannot be marked secret' }, 400);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as { secret?: unknown };
-          const secret = body.secret === true ? 1 : 0;
-          const existing = (
-            (await active.db.query('_lattice_gui_column_meta', {
-              filters: [
-                { col: 'table_name', op: 'eq', val: tableName },
-                { col: 'column_name', op: 'eq', val: colName },
-              ],
-            })) as { id: string }[]
-          )[0];
-          if (existing) {
-            await active.db.update('_lattice_gui_column_meta', existing.id, {
-              secret,
-              updated_at: new Date().toISOString(),
-            });
-          } else {
-            await active.db.insert('_lattice_gui_column_meta', {
-              id: crypto.randomUUID(),
-              table_name: tableName,
-              column_name: colName,
-              secret,
-              updated_at: new Date().toISOString(),
-            });
-          }
+          const secret: 0 | 1 = body.secret === true ? 1 : 0;
+          // Consolidated find-or-insert (shared with the set_definition AI tool
+          // and the auto-generators) — applies only the provided fields.
+          await upsertColumnMeta(active.db, tableName, colName, {
+            ...(settingSecret ? { secret } : {}),
+            ...(settingDescription
+              ? { description: typeof body.description === 'string' ? body.description : null }
+              : {}),
+          });
           // The `_lattice_gui_column_meta.secret` write above is the local
           // model-context redaction (the assistant never sees a secret value).
           // On a cloud (Postgres) DB, ALSO enforce it in the database: mask the
           // column to non-owners via the audience view, so a member's connection
           // can't read it at all. SQLite is a no-op inside setColumnAudience.
-          if (active.db.getDialect() === 'postgres') {
+          if (settingSecret && active.db.getDialect() === 'postgres') {
             const columnNames = Object.keys(active.db.getRegisteredColumns(tableName) ?? {});
             const pkCols = active.db.getPrimaryKey(tableName);
             await setColumnAudience(
@@ -2215,7 +2480,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             doc.setIn(['entityContexts', newName], ctx);
           }
           saveConfigDoc(active.configPath, doc);
-          active = await reopenSameConfig(active, autoRender);
+          active = activeRef = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.rename_entity',
@@ -2301,7 +2566,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           if (body.required === true) fieldDef.required = true;
           doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
           saveConfigDoc(active.configPath, doc);
-          active = await reopenSameConfig(active, autoRender);
+          active = activeRef = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.add_column',
@@ -2384,7 +2649,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           doc.setIn(['entities', entityName, 'fields'], renamedFields);
           saveConfigDoc(active.configPath, doc);
-          active = await reopenSameConfig(active, autoRender);
+          active = activeRef = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.rename_column',
@@ -2450,7 +2715,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const doc = loadConfigDoc(active.configPath);
           doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
           saveConfigDoc(active.configPath, doc);
-          active = await reopenSameConfig(active, autoRender);
+          active = activeRef = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.add_link',
@@ -2495,7 +2760,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           ).entities?.[entityName]?.fields?.[colName];
           doc.deleteIn(['entities', entityName, 'fields', colName]);
           saveConfigDoc(active.configPath, doc);
-          active = await reopenSameConfig(active, autoRender);
+          active = activeRef = await reopenSameConfig(active, autoRender);
           await recordSchemaOp(
             active,
             'schema.delete_link',
@@ -2690,7 +2955,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const target = live.sort((a, b) => b.ts.localeCompare(a.ts))[0];
           if (target && isSchemaOp(target.operation)) {
             try {
-              active = await applySchemaConfig(active, target, 'inverse', autoRender);
+              active = activeRef = await applySchemaConfig(active, target, 'inverse', autoRender);
             } catch (err) {
               sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
               return;
@@ -2733,7 +2998,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const target = undone.sort((a, b) => a.ts.localeCompare(b.ts))[0];
           if (target && isSchemaOp(target.operation)) {
             try {
-              active = await applySchemaConfig(active, target, 'forward', autoRender);
+              active = activeRef = await applySchemaConfig(active, target, 'forward', autoRender);
             } catch (err) {
               sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
               return;
@@ -2777,7 +3042,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return;
             }
             try {
-              active = await applySchemaConfig(active, target, 'inverse', autoRender);
+              active = activeRef = await applySchemaConfig(active, target, 'inverse', autoRender);
             } catch (err) {
               sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
               return;
@@ -2950,7 +3215,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           setActiveWorkspace(latticeRoot, ws.id);
           await disposeActive(active);
-          active = next;
+          active = activeRef = next;
           startBackgroundRender(active); // render the new workspace's tree off the response path
           currentWorkspaceId = ws.id; // header now tracks the just-switched DB
           sendJson(res, { ok: true, id: ws.id });
@@ -2991,7 +3256,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           setActiveWorkspace(latticeRoot, created.id);
           await disposeActive(active);
-          active = newActive;
+          active = activeRef = newActive;
           startBackgroundRender(active); // render the new workspace's tree off the response path
           currentWorkspaceId = created.id; // header tracks the new, now-served DB
           sendJson(res, { ok: true, id: created.id });
@@ -3019,39 +3284,39 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           let switchedTo: string | null = null;
           if (isActive) {
             const fallback = listWorkspaces(latticeRoot).find((w) => w.id !== ws.id);
-            if (!fallback) {
-              sendJson(
-                res,
-                {
-                  error:
-                    'Cannot delete the only workspace. Create or add another workspace first, then delete this one.',
-                },
-                400,
-              );
-              return;
+            if (fallback) {
+              // Switch to a sibling first so the deleted DB's handle releases.
+              const fbPaths = resolveWorkspacePaths(latticeRoot, fallback);
+              let next: ActiveDb;
+              try {
+                next = await openConfig(fbPaths.configPath, fbPaths.contextDir, autoRender);
+              } catch (e) {
+                const err = e as Error & { code?: string };
+                const codePrefix = err.code ? `[${err.code}] ` : '';
+                sendJson(
+                  res,
+                  {
+                    error: `Cannot delete: failed to switch to ${fallback.displayName} first: ${codePrefix}${err.message}`,
+                  },
+                  500,
+                );
+                return;
+              }
+              setActiveWorkspace(latticeRoot, fallback.id);
+              await disposeActive(active);
+              active = activeRef = next;
+              startBackgroundRender(active); // render the fallback workspace's tree off the response path
+              switchedTo = fallback.id;
+              currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
+            } else {
+              // Deleting the LAST workspace → enter the virgin (zero-workspace)
+              // state. Release the DB and leave the server with no active DB; the
+              // client renders the welcome screen on the next /api/workspaces poll.
+              await disposeActive(active);
+              setActive(null, null);
+              // `active` (the per-request local) is now stale, but the handler
+              // returns immediately below — no further use this request.
             }
-            const fbPaths = resolveWorkspacePaths(latticeRoot, fallback);
-            let next: ActiveDb;
-            try {
-              next = await openConfig(fbPaths.configPath, fbPaths.contextDir, autoRender);
-            } catch (e) {
-              const err = e as Error & { code?: string };
-              const codePrefix = err.code ? `[${err.code}] ` : '';
-              sendJson(
-                res,
-                {
-                  error: `Cannot delete: failed to switch to ${fallback.displayName} first: ${codePrefix}${err.message}`,
-                },
-                500,
-              );
-              return;
-            }
-            setActiveWorkspace(latticeRoot, fallback.id);
-            await disposeActive(active);
-            active = next;
-            startBackgroundRender(active); // render the fallback workspace's tree off the response path
-            switchedTo = fallback.id;
-            currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
           }
           // Drop the registry record, then clean up files (loud on failure).
           removeWorkspace(latticeRoot, ws.id);
@@ -3146,7 +3411,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           await disposeActive(active);
-          active = next;
+          active = activeRef = next;
           startBackgroundRender(active); // render the switched-to DB's tree off the response path
           sendJson(res, { ok: true, path: active.configPath });
           return;
@@ -3164,7 +3429,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             autoRender,
           );
           await disposeActive(active);
-          active = next;
+          active = activeRef = next;
           startBackgroundRender(active); // render the newly-created DB's tree off the response path
           sendJson(res, { ok: true, path: active.configPath });
           return;
@@ -3221,7 +3486,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return;
             }
             await disposeActive(active);
-            active = next;
+            active = activeRef = next;
             startBackgroundRender(active); // render the fallback DB's tree off the response path
             switchedTo = active.configPath;
           }
@@ -3260,10 +3525,23 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           const rows = (await active.db.query('_lattice_gui_meta', {})) as {
             entity_name: string;
             icon: string | null;
+            description?: string | null;
           }[];
-          const out: Record<string, { icon: string }> = {};
+          const authored = new Map<string, { icon: string | null; description: string | null }>();
           for (const r of rows) {
-            if (r.icon) out[r.entity_name] = { icon: r.icon };
+            authored.set(r.entity_name, { icon: r.icon, description: r.description ?? null });
+          }
+          // Surface the resolved table description (authored wins, else built-in)
+          // for every valid table so native-entity descriptions show without an
+          // authored meta row. Icon stays authored-only (no built-in icons here).
+          const out: Record<string, { icon?: string; description?: string }> = {};
+          for (const table of active.validTables) {
+            const meta = authored.get(table);
+            const desc = resolveTableDescription(table, meta?.description ?? null);
+            const entry: { icon?: string; description?: string } = {};
+            if (meta?.icon) entry.icon = meta.icon;
+            if (desc) entry.description = desc;
+            if (entry.icon || entry.description) out[table] = entry;
           }
           sendJson(res, out);
           return;
@@ -3274,24 +3552,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
             return;
           }
-          const body = (await readJson<unknown>(req)) as { icon?: unknown };
-          if (typeof body.icon !== 'string') {
+          const body = (await readJson<unknown>(req)) as { icon?: unknown; description?: unknown };
+          const settingIcon = 'icon' in body;
+          const settingDescription = 'description' in body;
+          if (settingIcon && typeof body.icon !== 'string') {
             sendJson(res, { error: 'icon must be a string' }, 400);
             return;
           }
-          const existing = await active.db.get('_lattice_gui_meta', entityName);
-          if (existing) {
-            await active.db.update('_lattice_gui_meta', entityName, {
-              icon: body.icon,
-              updated_at: new Date().toISOString(),
-            });
-          } else {
-            await active.db.insert('_lattice_gui_meta', {
-              entity_name: entityName,
-              icon: body.icon,
-              updated_at: new Date().toISOString(),
-            });
+          if (!settingIcon && !settingDescription) {
+            sendJson(res, { error: 'nothing to update (expected icon or description)' }, 400);
+            return;
           }
+          // Consolidated find-or-insert, shared with the set_definition AI tool.
+          await upsertTableMeta(active.db, entityName, {
+            ...(settingIcon ? { icon: body.icon as string } : {}),
+            ...(settingDescription
+              ? { description: typeof body.description === 'string' ? body.description : null }
+              : {}),
+          });
           sendJson(res, { ok: true });
           return;
         }
@@ -3374,6 +3652,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             softDeletable: active.softDeletable,
             source: 'gui',
             sessionId,
+            ...(active.onColumnsAdded ? { onColumnsAdded: active.onColumnsAdded } : {}),
             // #4.6 — the originating client's true edit time, honored for the
             // audit timestamp so an offline edit shows when it was made.
             clientTs: headerValue(req, 'x-lattice-client-ts'),
@@ -3533,6 +3812,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // non-empty ones come back as `needsResolution` so the assistant asks.
             deleteEntity: (name: string, resolution?: DeleteResolution) =>
               aiDeleteEntity(active, name, resolution, sessionId),
+            configPath: active.configPath,
+            outputDir: active.outputDir,
             pathname,
             method,
           });
@@ -3555,6 +3836,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
             latticeRoot: dirname(active.configPath),
             configPath: active.configPath,
+            outputDir: active.outputDir,
+            sessionId,
             pathname,
             method,
           });
@@ -3583,48 +3866,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             configPath: active.configPath,
             pathname,
             method,
-            swap: async () => {
-              const next = await openConfig(active.configPath, active.outputDir, autoRender);
-              await disposeActive(active);
-              active = next;
-              startBackgroundRender(active); // re-render the reopened DB's tree off the response path
-            },
-            // Join a cloud as a NEW workspace (never hijack the active one): save
-            // the credential, scaffold a new cloud workspace, open + activate it.
-            // Atomic — on open failure, roll back the half-created workspace +
-            // credential and rethrow (so a failed join leaves nothing behind).
-            createCloudWorkspace: async (displayName: string, key: string, url: string) => {
-              if (!latticeRoot) {
-                throw new Error('No .lattice root — cannot create a cloud workspace');
-              }
-              saveDbCredential(key, url);
-              let created;
-              try {
-                created = addWorkspace(latticeRoot, {
-                  displayName,
-                  db: '${LATTICE_DB:' + key + '}',
-                  makeActive: false,
-                });
-              } catch (e) {
-                deleteDbCredential(key);
-                throw e;
-              }
-              const paths = resolveWorkspacePaths(latticeRoot, created);
-              let next: ActiveDb;
-              try {
-                next = await openConfig(paths.configPath, paths.contextDir, autoRender);
-              } catch (e) {
-                removeWorkspace(latticeRoot, created.id);
-                deleteDbCredential(key);
-                throw e;
-              }
-              setActiveWorkspace(latticeRoot, created.id);
-              await disposeActive(active);
-              active = next;
-              startBackgroundRender(active);
-              currentWorkspaceId = created.id;
-              return created.id;
-            },
+            // Reopen the active config after an in-place edit; join a cloud as a
+            // NEW workspace. Both go through the shared closures so the swap is
+            // reflected in `activeRef` for the next request (not just the local
+            // `active`), and so the same logic serves the virgin onboarding path.
+            swap: reopenActive,
+            createCloudWorkspace,
           });
           if (handled) return;
         }
@@ -3667,8 +3914,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // Now that the server is accepting connections, render the initial workspace's
   // context tree in the background — `/` and `/api/entities` answer instantly
   // while it churns, and a render that finishes before any tab connects is
-  // covered by the snapshot replay on `/api/render/progress`.
-  startBackgroundRender(active);
+  // covered by the snapshot replay on `/api/render/progress`. No-op when virgin
+  // (no workspace open yet — the welcome screen is showing).
+  if (activeRef) startBackgroundRender(activeRef);
   // For 0.0.0.0 bindings, advertise via 127.0.0.1 so the printed URL is
   // actually clickable; real external access uses the operator's known
   // hostname/IP, not the bind wildcard.
@@ -3687,7 +3935,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             reject(err);
             return;
           }
-          void disposeActive(active).then(() => {
+          void disposeActiveIfAny().then(() => {
             resolveClose();
           });
         });

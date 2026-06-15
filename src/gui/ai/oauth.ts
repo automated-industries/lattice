@@ -2,12 +2,12 @@ import { createHash, randomBytes } from 'node:crypto';
 
 /**
  * Standard OAuth 2.0 Authorization-Code + PKCE helpers for connecting a Claude
- * subscription (as an alternative to a pasted API token). The flow is generic
- * and config-driven: the authorize/token endpoints, client id, and redirect
- * URI come from environment variables, because the concrete Anthropic OAuth
- * values must be sourced from Anthropic's OAuth documentation — they are not
- * hardcoded here. Until those env vars are set, {@link oauthConfigured} is
- * false and the GUI surfaces "configure to enable" instead of a Connect button.
+ * subscription (as an alternative to a pasted API token). Lattice is an OSS tool
+ * the user runs against their OWN Claude account — the same model as the Claude
+ * Code CLI — so it uses the public PKCE client below by default. Every value is
+ * overridable via `ANTHROPIC_OAUTH_*` env vars (so a future endpoint/client
+ * change needs no republish), and the redirect URI is derived per-request from
+ * the GUI's own origin (loopback), not baked in.
  *
  * The PKCE primitives + state round-trip + token parsing are provider-agnostic
  * and fully unit-tested.
@@ -17,24 +17,54 @@ export interface OAuthConfig {
   authorizeUrl: string;
   tokenUrl: string;
   clientId: string;
+  /** Empty when it should be derived per-request from the GUI origin (loopback). */
   redirectUri: string;
   scopes: string[];
 }
 
-/** Read the OAuth config from env, or null when not fully configured. */
-export function readOAuthConfig(env: NodeJS.ProcessEnv = process.env): OAuthConfig | null {
-  const authorizeUrl = env.ANTHROPIC_OAUTH_AUTHORIZE_URL;
-  const tokenUrl = env.ANTHROPIC_OAUTH_TOKEN_URL;
-  const clientId = env.ANTHROPIC_OAUTH_CLIENT_ID;
-  const redirectUri = env.ANTHROPIC_OAUTH_REDIRECT_URI;
-  if (!authorizeUrl || !tokenUrl || !clientId || !redirectUri) return null;
-  const scopes = (env.ANTHROPIC_OAUTH_SCOPES ?? '').split(/\s+/).filter(Boolean);
-  return { authorizeUrl, tokenUrl, clientId, redirectUri, scopes };
+/**
+ * Built-in defaults for connecting a Claude subscription — the public OAuth
+ * client used by the Claude CLI ecosystem. Public PKCE client (no secret), so
+ * shipping it in OSS is fine. Override any field with the matching
+ * `ANTHROPIC_OAUTH_*` env var if these ever change.
+ */
+const DEFAULT_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
+const DEFAULT_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
+const DEFAULT_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const DEFAULT_SCOPES = ['org:create_api_key', 'user:profile', 'user:inference'];
+
+/**
+ * Resolve the OAuth config: env overrides win, otherwise the built-in public
+ * client defaults. Never null now (the defaults are always present); the
+ * `redirectUri` is left empty when not set via env, to be filled per-request
+ * from the GUI's own origin (see the assistant route).
+ */
+export function readOAuthConfig(env: NodeJS.ProcessEnv = process.env): OAuthConfig {
+  const scopes = env.ANTHROPIC_OAUTH_SCOPES
+    ? env.ANTHROPIC_OAUTH_SCOPES.split(/\s+/).filter(Boolean)
+    : DEFAULT_SCOPES.slice();
+  // `||` (not `??`) on purpose: an EMPTY env override should fall back to the
+  // default, not pin an empty endpoint/client.
+  return {
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    authorizeUrl: env.ANTHROPIC_OAUTH_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    tokenUrl: env.ANTHROPIC_OAUTH_TOKEN_URL || DEFAULT_TOKEN_URL,
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    clientId: env.ANTHROPIC_OAUTH_CLIENT_ID || DEFAULT_CLIENT_ID,
+    redirectUri: env.ANTHROPIC_OAUTH_REDIRECT_URI ?? '',
+    scopes,
+  };
 }
 
-/** True when the OAuth subscription flow is fully configured via env. */
-export function oauthConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return readOAuthConfig(env) !== null;
+/**
+ * Whether the subscription-OAuth connect affordance should be offered. Always
+ * true now that the client defaults are built in — kept as a function so the GUI
+ * + tests have a stable name and an operator could gate it off in the future.
+ */
+export function oauthConfigured(_env: NodeJS.ProcessEnv = process.env): boolean {
+  void _env;
+  return true;
 }
 
 /** PKCE code verifier — 48 random bytes, base64url (RFC 7636). */

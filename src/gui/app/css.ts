@@ -119,6 +119,9 @@ export const css = `
     .brand:hover { background: rgba(255, 255, 255, 0.06); }
     .brand-logo {
       width: 32px; height: 32px; display: block;
+      /* object-fit keeps an owner's custom <img> logo from distorting when it
+         isn't a perfect 32px square (the default inline SVG ignores this). */
+      object-fit: contain; border-radius: 4px;
       filter: drop-shadow(0 0 6px rgba(190, 242, 100, 0.35));
       transition: filter 0.18s ease;
     }
@@ -279,6 +282,7 @@ export const css = `
       tr.lattice-flash > td { animation: none; }
       .feed-item, .chat-msg { animation: none; }
       .assistant-rail .rail-title { animation: none !important; }
+      .app-loading-spinner { animation: none; }
       *, *::before, *::after { transition-duration: 0.01ms !important; }
     }
     /* Pending offline-edit indicator in the top bar. */
@@ -287,6 +291,8 @@ export const css = `
       background: rgba(251, 146, 60, 0.16); color: var(--warn);
       font-size: 11px; font-weight: 600; white-space: nowrap;
     }
+    .app-version { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+    .app-version:empty { display: none; }
     /* Unseen-change count next to a sidebar entity. */
     .nav-badge {
       display: inline-block; min-width: 16px; text-align: center;
@@ -339,6 +345,11 @@ export const css = `
       margin: 0 0 10px; padding: 10px 12px; font-size: 13.5px; color: var(--text);
       background: var(--accent-soft); border-radius: 8px; border: 1px solid var(--border);
     }
+    .file-preview .artifact-badge {
+      display: inline-block; margin: 0 0 10px; padding: 2px 9px; font-size: 11.5px; font-weight: 600;
+      letter-spacing: 0.02em; color: var(--accent); background: var(--accent-soft);
+      border: 1px solid var(--border); border-radius: 999px;
+    }
     .file-preview img { max-width: 100%; max-height: 60vh; border: 1px solid var(--border); border-radius: 8px; display: block; }
     .file-preview iframe { width: 100%; height: 60vh; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
     .file-preview pre {
@@ -354,6 +365,12 @@ export const css = `
     .file-preview .md-body pre { background: var(--surface-2); padding: 10px; border-radius: 8px; overflow: auto; }
     .file-preview .md-body pre code { background: none; padding: 0; }
     .file-preview .md-body a { color: var(--accent); }
+    .file-preview .md-body ol { margin: 6px 0; padding-left: 22px; }
+    .file-preview .md-body blockquote { margin: 8px 0; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--text-muted); }
+    .file-preview .md-body hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+    .file-preview .md-body table { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
+    .file-preview .md-body th, .file-preview .md-body td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+    .file-preview .md-body th { background: var(--surface-2); font-weight: 600; }
     .file-preview .file-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
 
     /* ── Dashboard ────────────────────────────────────── */
@@ -683,6 +700,46 @@ export const css = `
       display: inline-block; width: 12px; height: 12px; margin-right: 6px;
       vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent;
       border-radius: 50%; animation: lattice-spin 0.6s linear infinite;
+    }
+    /* Global boot interstitial — paints from the static shell on frame 1, masking
+       the half-rendered shell (incl. the placeholder "workspace" label) until
+       init() populates the app, then fades out. z-index 1500: above all chrome
+       (topbar 100, drawers 120/130, modals 1000) but below toasts (2000) so a
+       boot-error toast can still surface. Boot-only — never re-shown on a switch. */
+    .app-loading {
+      position: fixed; inset: 0; z-index: 1500;
+      background: var(--bg);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+      opacity: 1; transition: opacity 0.25s ease;
+    }
+    .app-loading.is-hidden { opacity: 0; pointer-events: none; }
+    .app-loading-text { color: var(--text-muted); font-size: 13px; letter-spacing: 0.02em; }
+    .app-loading-spinner {
+      width: 22px; height: 22px; border: 2px solid var(--border-strong);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: lattice-spin 0.7s linear infinite;
+    }
+    .app-loading .brand-logo { width: 40px; height: 40px; }
+    /* Zero-workspace welcome (Feature B). Full-screen, opaque, above the app
+       chrome (topbar 100) but below modals (1000) so the onboarding wizard sits
+       on top. The onboarding modal reuses .modal-backdrop. */
+    .virgin-state {
+      position: fixed; inset: 0; z-index: 200;
+      background: var(--bg);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .virgin-state .virgin-card {
+      max-width: 420px; width: 100%; text-align: center;
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+    }
+    .virgin-state .brand-logo { width: 56px; height: 56px; }
+    .virgin-state h1 { margin: 4px 0 0; font-size: 22px; }
+    .virgin-state p { margin: 0; color: var(--text-muted); font-size: 14px; }
+    .virgin-state .virgin-actions { display: flex; gap: 10px; margin-top: 8px; }
+    .modal .ob-kind {
+      flex: 1; display: flex; align-items: center; gap: 8px; cursor: pointer;
+      padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px;
+      background: var(--surface-2);
     }
     button.is-busy { opacity: 0.75; cursor: progress; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -1276,10 +1333,13 @@ export const css = `
        disabled buttons suppress the tooltip. */
     .rail-composer .composer-mic.composer-mic-unavailable { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
     .rail-composer .composer-clip {
-      flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;
+      flex: 0 0 auto; height: 38px; width: 38px;
+      display: inline-flex; align-items: center; justify-content: center;
       border: 1px solid var(--border-strong); border-radius: 8px;
       background: var(--surface-2); color: var(--text-muted); cursor: pointer;
     }
+    .rail-composer .composer-clip:hover { color: var(--text); border-color: var(--accent); }
+    .rail-composer .composer-clip svg { width: 17px; height: 17px; display: block; }
     .assistant-rail.dragging-file::after {
       content: 'Drop to ingest'; position: absolute; inset: 0; z-index: 10;
       display: flex; align-items: center; justify-content: center;

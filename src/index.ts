@@ -327,6 +327,8 @@ export {
   getCloudSetting,
   setCloudSetting,
   CLOUD_SETTING_SYSTEM_PROMPT,
+  CLOUD_SETTING_WORKSPACE_LOGO,
+  CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from './cloud/settings.js';
 // v3.1 — progress-bearing render API (background render + live per-table %)
 export { ProgressThrottle } from './render/progress.js';

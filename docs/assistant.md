@@ -5,15 +5,22 @@ until you configure a credential — the `latticesql` library API is unchanged.
 
 ## Connect Claude
 
-Open **Settings → User → Assistant** and paste an Anthropic API key, or set
-`ANTHROPIC_API_KEY` in the environment. Keys are stored encrypted in the native
-`secrets` entity; the env var is a fallback. That's all the chat and the
-Context Constructor need.
+Open **Settings → User → Assistant**. The primary action is **Connect with
+Claude** — an Authorization-Code + PKCE flow that links your Claude
+Pro / Max / Enterprise **subscription**, so the assistant runs on your own
+account with no API key to paste or rotate. It works out of the box (the public
+OAuth client is built in); the panel shows **Connected with Claude** once linked,
+with a **Disconnect** button. The redirect is a loopback callback derived from
+the GUI's own origin — only a loopback `Host` is trusted, so a forged/proxied
+host can't redirect the authorization code elsewhere.
 
-A **"Connect your Claude subscription"** link (Authorization-Code + PKCE) appears
-only when all four `ANTHROPIC_OAUTH_*` values are configured (see
-[`.env.example`](../.env.example)); otherwise the panel shows a dormant hint.
-Use a fixed GUI port so the redirect URI is stable: `lattice gui --port 4317`.
+Prefer a raw key? Expand **Advanced — use an API key instead** and paste an
+Anthropic API key (or set `ANTHROPIC_API_KEY` in the environment). Keys are
+stored encrypted in the native `secrets` entity; the env var is a fallback.
+
+Every `ANTHROPIC_OAUTH_*` value (authorize/token URL, client id, scopes,
+redirect) can be overridden via the environment for a non-default deployment —
+see [`.env.example`](../.env.example).
 
 ## Chat
 
@@ -75,8 +82,8 @@ guessing or searching your data.
 
 ## The Context Constructor (file & text ingest)
 
-Drag files onto the rail, click the paperclip, or paste text (or a URL). For each
-source:
+Drag files onto the rail, click the upload button, or paste text (or a URL). For
+each source:
 
 1. **Referenced, not copied.** The source becomes a native `files` row that
    points at the original; bytes are not moved into Lattice.
@@ -108,6 +115,37 @@ client): `organizeSource`, `describeImage`, `crawlUrl`, `enrichKnowledge`, and t
 
 A transient **"Analyzing…"** row shows while ingest runs; the add/enrich/link
 events stream into the feed as the server materializes them.
+
+## Artifacts
+
+Ask the assistant to "write a doc / note / summary / write-up" and it calls the
+`create_artifact` tool: the Markdown is saved as a native `files` row (flagged
+`artifact_type='markdown'`, content inline in `extracted_text`), auto-opens in the
+viewer rendered as formatted Markdown, and shows an **✦ Artifact** badge. An
+artifact is an ordinary file, so it follows the **same sharing rules** — created
+in private mode it's owner-only; otherwise it follows the files-table default —
+enforced by cloud Row-Level Security.
+
+## Schema definitions
+
+New columns and tables get a concise one-line **definition** generated
+automatically by a cheap, non-blocking, fail-silent model pass at creation time
+(it never blocks the write and never overwrites an authored value). Definitions
+show as hover tooltips on table headers, field labels, the sidebar, and dashboard
+cards; built-ins ship for the native entities. They're injected into the
+assistant's schema context (so a good definition improves categorization), and the
+assistant can author or correct one with the **`set_definition`** tool
+(`{ table, column?, description }` — column present ⇒ column definition, absent ⇒
+table definition).
+
+## De-duplication
+
+Uploading a **byte-identical** file is de-duplicated automatically: the copy is
+merged onto the original (its many-to-many links re-pointed to the survivor, then
+soft-deleted — recoverable from Trash / Undo), attributed to "Lattice" in the
+feed. No modal, no prompt. The assistant can also de-duplicate any table on
+request with the **`dedup`** tool (`{ table, fuzzy? }`); fuzzy-merge liberalness
+follows the [aggressiveness slider](#inference-aggressiveness).
 
 ## Inference Aggressiveness
 

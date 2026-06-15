@@ -180,6 +180,57 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'create_artifact',
+    description:
+      'Create a markdown document and save it as a file artifact. Use this whenever the user asks you to create, write, draft, or make a document, note, write-up, summary, report, or file — you author the content as GitHub-flavored markdown and it is saved in the files entity as a markdown artifact, then opened in the viewer for them. Prefer this over create_row on files for any document the user wants to keep. It follows the same sharing rules as any file (private mode → private).',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        title: str('Short human-readable title for the document (no file extension needed).'),
+        content: str('The full document body, as GitHub-flavored markdown.'),
+      },
+      ['title', 'content'],
+    ),
+  },
+  {
+    name: 'set_definition',
+    description:
+      'Set the one-line definition of a TABLE or a COLUMN — what it holds / means. ' +
+      'Provide `column` to define a column, or omit it to define the whole table. ' +
+      'These definitions show as hover tooltips and feed your own schema context. ' +
+      'Use it to record meaning you infer, or to correct an auto-generated definition.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        table: str('Table name.'),
+        column: str('Column name. Omit to define the table itself.'),
+        description: str('The one-line definition.'),
+      },
+      ['table', 'description'],
+    ),
+  },
+  {
+    name: 'dedup',
+    description:
+      'Find and merge duplicate rows in a table. Exact duplicates are always ' +
+      'collapsed; set `fuzzy` to also merge near-duplicates (similar — not ' +
+      'identical — content, liberality follows the workspace aggressiveness). ' +
+      'Each duplicate group is merged onto its oldest row: links are re-pointed ' +
+      'and the redundant rows are soft-deleted (recoverable). Use for files ' +
+      '(byte/text duplicates) or any table.',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        table: str('Table to de-duplicate.'),
+        fuzzy: { type: 'boolean', description: 'Also merge near-duplicates, not just exact ones.' },
+      },
+      ['table'],
+    ),
+  },
+  {
     name: 'update_row',
     description: 'Update columns on an existing row.',
     mutates: true,

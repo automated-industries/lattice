@@ -11,6 +11,7 @@ import {
   refreshAccessToken,
   type OAuthConfig,
 } from '../../src/gui/ai/oauth.js';
+import { isLoopbackHost } from '../../src/gui/assistant-routes.js';
 
 const cfg: OAuthConfig = {
   authorizeUrl: 'https://example.test/oauth/authorize',
@@ -33,6 +34,20 @@ describe('oauth helpers', () => {
 
   it('generates distinct state tokens', () => {
     expect(generateState()).not.toBe(generateState());
+  });
+
+  it('isLoopbackHost trusts only loopback hosts (redirect-URI host-injection guard)', () => {
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('127.0.0.1:4317')).toBe(true);
+    expect(isLoopbackHost('localhost')).toBe(true);
+    expect(isLoopbackHost('localhost:8080')).toBe(true);
+    expect(isLoopbackHost('[::1]:4317')).toBe(true);
+    expect(isLoopbackHost('127.5.5.5')).toBe(true);
+    // Attacker-controlled / non-loopback hosts must NOT be trusted.
+    expect(isLoopbackHost('evil.com')).toBe(false);
+    expect(isLoopbackHost('evil.com:4317')).toBe(false);
+    expect(isLoopbackHost('127.0.0.1.evil.com')).toBe(false);
+    expect(isLoopbackHost('192.168.1.10')).toBe(false);
   });
 
   it('builds an authorize URL with PKCE + state params', () => {
@@ -61,9 +76,20 @@ describe('oauth helpers', () => {
     expect(() => parseTokenResponse({ refresh_token: 'rt' })).toThrow(/access_token/);
   });
 
-  it('readOAuthConfig returns null until all env vars are set, then a config', () => {
-    expect(readOAuthConfig({})).toBeNull();
-    expect(oauthConfigured({})).toBe(false);
+  it('readOAuthConfig returns built-in defaults when env is unset (3.3)', () => {
+    // 3.3: the public subscription-OAuth client is built in, so connect works
+    // out of the box (no env required). redirectUri is empty — filled per-request
+    // from the GUI origin.
+    const cfg = readOAuthConfig({});
+    expect(cfg.authorizeUrl).toMatch(/^https:\/\//);
+    expect(cfg.tokenUrl).toMatch(/^https:\/\//);
+    expect(cfg.clientId).toBeTruthy();
+    expect(cfg.scopes.length).toBeGreaterThan(0);
+    expect(cfg.redirectUri).toBe('');
+    expect(oauthConfigured({})).toBe(true);
+  });
+
+  it('env values override every default', () => {
     const env = {
       ANTHROPIC_OAUTH_AUTHORIZE_URL: 'https://a/au',
       ANTHROPIC_OAUTH_TOKEN_URL: 'https://a/tok',
@@ -72,8 +98,10 @@ describe('oauth helpers', () => {
       ANTHROPIC_OAUTH_SCOPES: 'one two',
     } as NodeJS.ProcessEnv;
     const parsed = readOAuthConfig(env);
-    expect(parsed?.clientId).toBe('cid');
-    expect(parsed?.scopes).toEqual(['one', 'two']);
+    expect(parsed.authorizeUrl).toBe('https://a/au');
+    expect(parsed.clientId).toBe('cid');
+    expect(parsed.redirectUri).toBe('http://localhost/cb');
+    expect(parsed.scopes).toEqual(['one', 'two']);
     expect(oauthConfigured(env)).toBe(true);
   });
 });

@@ -239,6 +239,34 @@ export async function revokeCell(
 }
 
 /**
+ * Per-row "share with specific people": grant (or revoke) one member access to
+ * ONE row — a specific (table, pk) — flipping the row to `custom` visibility.
+ * Owner-only (the SECURITY DEFINER function raises for a non-owner, and for a
+ * `never_share` table). `pk` is the row's canonical primary-key string. Mirrors
+ * `grantCell`/`revokeCell` but at row granularity over `lattice_grant_row` /
+ * `lattice_revoke_row` (`__lattice_row_grants`).
+ */
+export async function grantRow(
+  db: Lattice,
+  table: string,
+  pk: string,
+  grantee: string,
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_grant_row(?, ?, ?)`, [table, pk, grantee]);
+}
+
+export async function revokeRow(
+  db: Lattice,
+  table: string,
+  pk: string,
+  grantee: string,
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_revoke_row(?, ?, ?)`, [table, pk, grantee]);
+}
+
+/**
  * Remove a member: clear its privileges and drop the role. NOTE: rows the member
  * owned remain in their tables but become unreachable (their `owner_role` no
  * longer matches any login role, and RLS shows a row only to its owner / grantees

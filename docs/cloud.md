@@ -417,19 +417,26 @@ side channel; the database does all the gatekeeping.
 `lattice gui` drives all three flows from the browser. The relevant endpoints (all
 localhost-only, same model as the rest of the GUI):
 
-| Method | Route                            | Does                                                                 |
-| ------ | -------------------------------- | -------------------------------------------------------------------- |
-| POST   | `/api/dbconfig/migrate-to-cloud` | Migrate the active local Lattice into a fresh cloud (you = owner)    |
-| POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)           |
-| POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob   |
-| POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)              |
-| GET    | `/api/cloud/s3-config`           | Read this member's S3 config (secret redacted)                       |
-| POST   | `/api/cloud/s3-config`           | Owner sets S3 for the cloud (see **S3-backed file bytes** below)     |
-| GET    | `/api/cloud/system-prompt`       | Owner reads the chat system prompt (members get no text)             |
-| POST   | `/api/cloud/system-prompt`       | Owner sets the chat system prompt (see **Chat system prompt** below) |
+| Method | Route                            | Does                                                                  |
+| ------ | -------------------------------- | --------------------------------------------------------------------- |
+| POST   | `/api/dbconfig/migrate-to-cloud` | Migrate the active local Lattice into a fresh cloud (you = owner)     |
+| POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)            |
+| POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob    |
+| POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)               |
+| POST   | `/api/cloud/row-grant`           | Owner grants/revokes one member access to one row ("specific people") |
+| GET    | `/api/cloud/s3-config`           | Read this member's S3 config (secret redacted)                        |
+| POST   | `/api/cloud/s3-config`           | Owner sets S3 for the cloud (see **S3-backed file bytes** below)      |
+| GET    | `/api/cloud/system-prompt`       | Owner reads the chat system prompt (members get no text)              |
+| POST   | `/api/cloud/system-prompt`       | Owner sets the chat system prompt (see **Chat system prompt** below)  |
+| GET    | `/api/cloud/workspace-logo`      | The workspace logo bytes (member-readable; 404 when unset; ETag/304)  |
+| POST   | `/api/cloud/workspace-logo`      | Owner sets/removes the workspace logo (see **Workspace logo** below)  |
 
 `POST /api/cloud/share` body is `{ table, pk, visibility }` and calls
 `setRowVisibility` under the hood; Postgres raises if you aren't the row's owner.
+`POST /api/cloud/row-grant` body is `{ table, pk, grantee, revoke? }` (grantee =
+a member role) and calls `grantRow`/`revokeRow` (`lattice_grant_row` /
+`lattice_revoke_row`) — owner-only, enforced in Postgres. It backs the detail
+view's **"Share with specific people"** checklist (the per-row `custom` share).
 
 The probe used throughout is `probeCloud(url)`, returning
 `{ reachable, dialect, isCloud }` — `isCloud` is `true` when the target Postgres
@@ -479,6 +486,30 @@ returns the text **only to an owner** (a member gets `canEdit: false` and no tex
 
 On a local SQLite workspace there are no members and nothing to keep secret, so the
 editor is hidden (`GET` reports `supported: false`).
+
+---
+
+## Workspace logo (owner-set branding)
+
+A cloud **owner** can upload a square **PNG or JPEG** logo that replaces the
+default Lattice mark in the topbar **for every member** of that cloud — set it in
+**Settings → Workspace → Display**. It's stored in `__lattice_cloud_settings` (key
+`workspace_logo`, a `data:` URI; plus `workspace_logo_etag`, the sha256 of the
+bytes) using the same owner-write / member-read helpers as the chat system prompt,
+so the write is owner-only (`lattice_set_cloud_setting` raises otherwise) while
+`GET /api/cloud/workspace-logo` is member-readable.
+
+- **Validated, square, ≤ 64 KB.** The upload is checked by both its declared MIME
+  **and** its magic bytes, and its pixel dimensions must be square (no silent
+  cropping). **SVG is rejected** — it can carry script and would execute in every
+  member's GUI (stored XSS).
+- **Cheap on the hot path.** `GET /api/dbconfig` returns a `logoEtag`; the GUI
+  fetches the blob once per version (the URL is cache-busted by `?v=<etag>` and
+  served `immutable` with `nosniff` + a sandbox CSP), and answers
+  `If-None-Match` with a `304` before touching the bytes.
+- **Local / SQLite** workspaces keep the default mark (no team to brand for); the
+  GET is a `404` and the POST a `400` there. Remove the logo by POSTing an empty
+  body (both keys clear → the default mark returns).
 
 ---
 

@@ -154,4 +154,83 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('db-disconnect-btn');
     expect(guiAppHtml).not.toContain('db-leave-btn');
   });
+
+  it('3.3: stamps the package version left of the settings gear', () => {
+    // The shell carries a placeholder that startGuiServer() replaces with the
+    // real `v<version>` at serve time (so the static bundle stays version-free).
+    expect(guiAppHtml).toContain('id="app-version"');
+    expect(guiAppHtml).toContain('<!--LATTICE_VERSION-->');
+    // The version chip sits before the gear in source order.
+    expect(guiAppHtml.indexOf('id="app-version"')).toBeLessThan(
+      guiAppHtml.indexOf('id="settings-gear"'),
+    );
+  });
+
+  it('3.3: composer attach control is an upload icon, not the paperclip glyph', () => {
+    expect(guiAppHtml).toContain('id="chat-clip"');
+    // Native multi-select picker stays the whole feature.
+    expect(guiAppHtml).toContain('id="chat-file" multiple');
+    // The clip button now renders an inline upload-tray SVG; the 📎 glyph is gone.
+    expect(guiAppHtml).toContain('title="Upload files"');
+    expect(guiAppHtml).not.toContain('>📎</button>');
+  });
+
+  it('3.3: definition tooltips are wired (colDesc/tableDesc/titleAttr helpers)', () => {
+    expect(guiAppHtml).toContain('function colDesc(');
+    expect(guiAppHtml).toContain('function tableDesc(');
+    expect(guiAppHtml).toContain('function titleAttr(');
+  });
+
+  it('3.3: "Specific people" grants use /api/cloud/row-grant keyed on member role', () => {
+    // Recovered per-row custom-share: the checklist lists member ROLES (the grant
+    // target the RLS function keys on) and writes through the new owner-only route.
+    expect(guiAppHtml).toContain("'/api/cloud/row-grant'");
+    expect(guiAppHtml).toContain('data-grant-role');
+    // The dead ad-hoc per-row grants endpoint (no server route existed) is gone.
+    expect(guiAppHtml).not.toContain("/rows/' + encodeURIComponent(id) + '/grants");
+  });
+
+  it('3.3: workspace-logo Display panel + topbar swap are wired', () => {
+    // The "Name" subsection is renamed "Display" and gains a logo control.
+    expect(guiAppHtml).toContain('>Display</h3>');
+    expect(guiAppHtml).toContain('function applyWorkspaceLogo(');
+    expect(guiAppHtml).toContain('/api/cloud/workspace-logo');
+    // The default topbar mark is still the inline SVG fallback.
+    expect(guiAppHtml).toContain('class="brand-logo"');
+  });
+
+  it('3.3: boot loading interstitial ships in the static shell and masks the shell', () => {
+    expect(guiAppHtml).toContain('id="app-loading"');
+    // It must come BEFORE the app script + the placeholder "workspace" label so
+    // it paints first and (at z-index 1500) covers them.
+    expect(guiAppHtml.indexOf('id="app-loading"')).toBeLessThan(guiAppHtml.indexOf('id="ws-name"'));
+    // a11y + hide hook + opaque (not a translucent scrim) background.
+    expect(guiAppHtml).toContain('aria-busy');
+    expect(guiAppHtml).toContain('aria-live');
+    expect(guiAppHtml).toContain('function hideAppLoading(');
+    expect(guiAppHtml).toContain('is-hidden');
+    expect(guiAppHtml).toMatch(/\.app-loading\s*\{[\s\S]*?background:\s*var\(--bg\)/);
+    // reduced-motion neutralizes the boot spinner.
+    expect(guiAppHtml).toContain('app-loading-spinner');
+  });
+
+  it('3.3: virgin (zero-workspace) state + onboarding wizard are wired', () => {
+    expect(guiAppHtml).toContain('function renderVirginState(');
+    expect(guiAppHtml).toContain('function showOnboardingWizard(');
+    expect(guiAppHtml).toContain('Welcome to Lattice');
+    // The onboarding wizard drives the existing create/join/migrate APIs.
+    expect(guiAppHtml).toContain("'/api/workspaces/create'");
+    expect(guiAppHtml).toContain("'/api/cloud/redeem-invite'");
+    expect(guiAppHtml).toContain("'/api/dbconfig/migrate-to-cloud'");
+  });
+
+  it('3.3: Connect-with-Claude is the primary assistant auth, API key behind Advanced', () => {
+    expect(guiAppHtml).toContain('Connect with Claude');
+    expect(guiAppHtml).toContain('/api/assistant/oauth/start');
+    // API-key paste is demoted into an Advanced disclosure.
+    expect(guiAppHtml).toContain('Advanced — use an API key instead');
+    // Connected state + disconnect.
+    expect(guiAppHtml).toContain('Connected with Claude');
+    expect(guiAppHtml).toContain('asst-oauth-disconnect');
+  });
 });

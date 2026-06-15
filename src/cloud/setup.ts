@@ -70,7 +70,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
     const q = `"${table.replace(/"/g, '""')}"`;
-    const masked = tableNeedsAudienceView(db.getColumnAudience(table) ?? {});
+    const masked = tableNeedsAudienceView(db.getColumnAudience(table));
     if (masked) {
       // Member reads the cell-masking view; base SELECT stays revoked.
       const v = `"${`${table}_v`.replace(/"/g, '""')}"`;

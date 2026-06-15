@@ -11,6 +11,7 @@ import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
+import { columnDescriptionHook } from './meta-gen.js';
 import {
   ASSISTANT_HIDDEN_TABLES,
   type AssistantJunction,
@@ -36,6 +37,9 @@ interface ChatContext {
   createEntity?: (name: string, columns: string[]) => Promise<string | null>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   deleteEntity?: DispatchCtx['deleteEntity'];
+  /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
+  configPath?: string;
+  outputDir?: string;
   pathname: string;
   method: string;
 }
@@ -504,6 +508,10 @@ export async function dispatchChatRoute(
     validTables: new Set([...ctx.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     junctionTables: new Set([...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
     softDeletable: ctx.softDeletable,
+    onColumnsAdded: columnDescriptionHook(ctx.db),
+    aggressiveness: getAggressiveness(),
+    ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),
+    ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),

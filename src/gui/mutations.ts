@@ -223,6 +223,14 @@ export interface MutationCtx {
    */
   sessionId?: string | undefined;
   /**
+   * Fired (un-awaited) by {@link announceAddedColumns} whenever a write
+   * auto-adds columns — the single chokepoint for manual, ingest, and AI
+   * writes. The server attaches a fail-silent closure that generates column
+   * definitions via a cheap model. Kept off `mutations` itself so this module
+   * stays AI-free; absent ⇒ no auto-generation.
+   */
+  onColumnsAdded?: (table: string, columns: string[]) => void;
+  /**
    * Schema-op revert hooks. Row inverse/forward is pure-DB (applyInverse/
    * applyForward below), but reverting a SCHEMA op needs config-doc + openConfig
    * access that lives in the server. The server supplies these closures (over
@@ -322,6 +330,9 @@ async function announceAddedColumns(
     ctx.source,
     ctx.sessionId,
   );
+  // Auto-generate definitions for the new columns (non-blocking, fail-silent).
+  // Runs AFTER the audit so the schema change is recorded regardless.
+  ctx.onColumnsAdded?.(table, added);
 }
 
 /**

@@ -284,12 +284,7 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
     try {
       let tokens = JSON.parse(oauthRaw) as StoredOAuthTokens;
       const cfg = readOAuthConfig();
-      if (
-        cfg &&
-        tokens.refresh_token &&
-        tokens.expires_at &&
-        Date.now() > tokens.expires_at - 60_000
-      ) {
+      if (tokens.refresh_token && tokens.expires_at && Date.now() > tokens.expires_at - 60_000) {
         const refreshed = await refreshAccessToken(cfg, tokens.refresh_token);
         tokens = {
           access_token: refreshed.access_token,
@@ -320,6 +315,44 @@ export async function hasClaudeAuth(db: Lattice): Promise<boolean> {
   );
 }
 
+/**
+ * Which kind of Claude auth is active — so the GUI can show "Connected with
+ * Claude" vs "API key set". A connected subscription wins (it's what
+ * resolveClaudeAuth prefers).
+ */
+export async function claudeAuthKind(db: Lattice): Promise<'oauth' | 'key' | null> {
+  if (await readMachineCredential(db, CLAUDE_OAUTH_KIND)) return 'oauth';
+  if (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY')) return 'key';
+  return null;
+}
+
+/** True for a loopback Host header (optionally with a port). Exported for tests. */
+export function isLoopbackHost(host: string): boolean {
+  const h = host
+    .replace(/:\d+$/, '')
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase();
+  return h === 'localhost' || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/**
+ * The OAuth callback URL for THIS GUI origin. Derived per-request because the GUI
+ * runs on whatever local port was free. SECURITY: only a LOOPBACK Host header is
+ * trusted — the GUI binds to 127.0.0.1, so a non-loopback Host (a forged header,
+ * or an exposed/proxied deployment the docs warn against) must NOT shape the
+ * OAuth redirect, or a forged Host could route the authorization code to another
+ * origin. A non-loopback Host falls back to a bare loopback (the flow then simply
+ * won't complete — the safe failure). `ANTHROPIC_OAUTH_REDIRECT_URI` overrides
+ * everything for a deliberately-configured non-default deployment.
+ */
+function oauthRedirectUri(req: IncomingMessage): string {
+  const rawHost = req.headers.host ?? '127.0.0.1';
+  const host = isLoopbackHost(rawHost) ? rawHost : '127.0.0.1';
+  // Loopback is always plain http (the GUI serves http on 127.0.0.1); we don't
+  // honor x-forwarded-proto here since a proxied/non-loopback host isn't trusted.
+  return `http://${host}/api/assistant/oauth/callback`;
+}
+
 export async function dispatchAssistantRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -340,6 +373,7 @@ export async function dispatchAssistantRoute(
       hasOpenaiKey,
       hasElevenlabsKey,
       hasClaudeAuth: await hasClaudeAuth(db),
+      claudeAuthKind: await claudeAuthKind(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       sttPreference: readPreferences().voice_provider,
@@ -480,10 +514,8 @@ export async function dispatchAssistantRoute(
   // GET /api/assistant/oauth/start — begin the PKCE subscription flow.
   if (method === 'GET' && pathname === '/api/assistant/oauth/start') {
     const cfg = readOAuthConfig();
-    if (!cfg) {
-      sendJson(res, { error: 'oauth_not_configured' }, 503);
-      return true;
-    }
+    // Derive the loopback redirect from THIS request's origin unless pinned by env.
+    if (!cfg.redirectUri) cfg.redirectUri = oauthRedirectUri(req);
     const verifier = generatePkceVerifier();
     const state = generateState();
     const cookieOpts = 'HttpOnly; Path=/; Max-Age=300; SameSite=Lax';
@@ -501,6 +533,9 @@ export async function dispatchAssistantRoute(
   // GET /api/assistant/oauth/callback — exchange the code, store the token.
   if (method === 'GET' && pathname === '/api/assistant/oauth/callback') {
     const cfg = readOAuthConfig();
+    // Must MATCH the redirect_uri used at /start (OAuth binds them) — derived
+    // from the same origin, so the same value unless pinned by env.
+    if (!cfg.redirectUri) cfg.redirectUri = oauthRedirectUri(req);
     const url = new URL(req.url ?? '', 'http://localhost');
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
@@ -517,7 +552,7 @@ export async function dispatchAssistantRoute(
       });
       res.end();
     };
-    if (!cfg || !code || !state || !verifier || state !== cookies.lat_oauth_state) {
+    if (!code || !state || !verifier || state !== cookies.lat_oauth_state) {
       redirect('error');
       return true;
     }
@@ -532,6 +567,15 @@ export async function dispatchAssistantRoute(
     } catch {
       redirect('error');
     }
+    return true;
+  }
+
+  // DELETE /api/assistant/oauth — disconnect the linked Claude subscription.
+  // (The OAuth token isn't a named API-key credential, so it's cleared here
+  // rather than via /api/assistant/key.)
+  if (method === 'DELETE' && pathname === '/api/assistant/oauth') {
+    deleteAssistantCredential(CLAUDE_OAUTH_KIND);
+    sendJson(res, { ok: true });
     return true;
   }
 

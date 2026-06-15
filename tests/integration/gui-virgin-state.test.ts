@@ -1,0 +1,173 @@
+/**
+ * Zero-workspace "virgin" state (Feature B): the GUI server boots with NO active
+ * DB, serves the shell + workspace-management/onboarding routes, 409s every data
+ * route, and transitions into a normal workspace once one is created.
+ */
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ensureRootForGui } from '../../src/framework/gui-bootstrap.js';
+import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+
+const dirs: string[] = [];
+const servers: GuiServerHandle[] = [];
+
+afterEach(async () => {
+  for (const s of servers.splice(0)) await s.close();
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+async function bootVirgin(): Promise<GuiServerHandle> {
+  const base = mkdtempSync(join(tmpdir(), 'lattice-virgin-'));
+  dirs.push(base);
+  const boot = ensureRootForGui({
+    startDir: base,
+    configPath: join(base, 'lattice.config.yml'),
+    explicitConfig: false,
+  });
+  expect(boot.workspaceId).toBeNull(); // confirm we're actually virgin
+  const server = await startGuiServer({
+    configPath: boot.configPath,
+    outputDir: boot.contextDir,
+    latticeRoot: boot.root,
+    port: 0,
+    openBrowser: false,
+    autoRender: true,
+  });
+  servers.push(server);
+  return server;
+}
+
+describe('GUI virgin (zero-workspace) state', () => {
+  it('serves the shell, an empty workspace list, and identity — but 409s data routes', async () => {
+    const s = await bootVirgin();
+
+    // The shell loads (so the SPA can render the welcome screen).
+    const html = await fetch(`${s.url}/`);
+    expect(html.status).toBe(200);
+
+    // `virgin: true` is the authoritative no-active-DB signal the client gates on.
+    const ws = (await fetch(`${s.url}/api/workspaces`).then((r) => r.json())) as {
+      virgin?: boolean;
+      current: string | null;
+      workspaces: unknown[];
+    };
+    expect(ws.virgin).toBe(true);
+    expect(ws.current).toBeNull();
+    expect(ws.workspaces).toHaveLength(0);
+
+    // Identity works (the wizard needs it) without a DB.
+    expect((await fetch(`${s.url}/api/userconfig/identity`)).status).toBe(200);
+
+    // Realtime status reports "none", not a crash.
+    const rt = (await fetch(`${s.url}/api/realtime/status`).then((r) => r.json())) as {
+      mode: string;
+    };
+    expect(rt.mode).toBe('none');
+
+    // A data route has no DB → 409 (loud, not a 500/crash).
+    expect((await fetch(`${s.url}/api/entities`)).status).toBe(409);
+    expect((await fetch(`${s.url}/api/dashboard`)).status).toBe(409);
+  });
+
+  it('a plain --config GUI (active DB, no .lattice registry) is NOT virgin', async () => {
+    // Regression: a plain `--config` boot has an active DB but an EMPTY workspace
+    // registry. The client must boot it normally, NOT show the welcome screen —
+    // so /api/workspaces must NOT report virgin, and data routes must work.
+    const base = mkdtempSync(join(tmpdir(), 'lattice-plaincfg-'));
+    dirs.push(base);
+    mkdirSync(join(base, 'data'), { recursive: true });
+    const configPath = join(base, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  notes:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '    outputFile: notes.md',
+        '',
+      ].join('\n'),
+    );
+    const server = await startGuiServer({
+      configPath,
+      outputDir: join(base, 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+    const ws = (await fetch(`${server.url}/api/workspaces`).then((r) => r.json())) as {
+      virgin?: boolean;
+      workspaces: unknown[];
+    };
+    expect(ws.virgin).not.toBe(true); // active DB → not the welcome screen
+    expect(ws.workspaces).toHaveLength(0); // …even though the registry is empty
+    expect((await fetch(`${server.url}/api/entities`)).status).toBe(200); // data routes live
+  });
+
+  it('creating a local workspace transitions out of the virgin state', async () => {
+    const s = await bootVirgin();
+
+    const create = await fetch(`${s.url}/api/workspaces/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'My First Workspace' }),
+    });
+    expect(create.status).toBe(200);
+
+    // Now there is a workspace, and the data routes work.
+    const ws = (await fetch(`${s.url}/api/workspaces`).then((r) => r.json())) as {
+      current: string | null;
+      workspaces: { label: string }[];
+    };
+    expect(ws.workspaces).toHaveLength(1);
+    expect(ws.current).not.toBeNull();
+    expect(ws.workspaces[0]?.label).toBe('My First Workspace');
+
+    const entities = await fetch(`${s.url}/api/entities`);
+    expect(entities.status).toBe(200);
+  });
+
+  it('rejects a nameless create from the virgin state', async () => {
+    const s = await bootVirgin();
+    const r = await fetch(`${s.url}/api/workspaces/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '   ' }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('deleting the LAST workspace returns to the virgin state (no "only workspace" refusal)', async () => {
+    const s = await bootVirgin();
+    const created = (await fetch(`${s.url}/api/workspaces/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Solo' }),
+    }).then((r) => r.json())) as { id: string };
+    expect((await fetch(`${s.url}/api/entities`)).status).toBe(200);
+
+    // Delete the only workspace → no refusal; server drops to virgin.
+    const del = await fetch(`${s.url}/api/workspaces/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: created.id }),
+    });
+    expect(del.status).toBe(200);
+    expect((await del.json()) as { switchedTo: string | null }).toEqual({
+      ok: true,
+      switchedTo: null,
+    });
+
+    // Back to virgin: empty registry + data routes 409 again.
+    const ws = (await fetch(`${s.url}/api/workspaces`).then((r) => r.json())) as {
+      workspaces: unknown[];
+    };
+    expect(ws.workspaces).toHaveLength(0);
+    expect((await fetch(`${s.url}/api/entities`)).status).toBe(409);
+  });
+});

@@ -17,6 +17,14 @@ import {
   parseAudit,
   type MutationCtx,
 } from '../mutations.js';
+import { artifactFileRow } from '../file-row.js';
+import { upsertColumnMeta, upsertTableMeta } from '../column-descriptions.js';
+import {
+  findTableDuplicates,
+  mergeDuplicates,
+  aggressivenessToThreshold,
+  type DedupServiceCtx,
+} from '../dedup-service.js';
 
 /**
  * Executes a registry function on behalf of the AI tool loop. Writes flow
@@ -47,6 +55,9 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'lattice_help',
   'get_history',
   'create_row',
+  'create_artifact',
+  'set_definition',
+  'dedup',
   'update_row',
   'delete_row',
   'link',
@@ -145,6 +156,16 @@ export interface DispatchCtx {
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
   /**
+   * Fired (un-awaited) when an AI write auto-adds columns, so new columns get a
+   * generated definition. Supplied by the chat route; absent → no generation.
+   */
+  onColumnsAdded?: (table: string, columns: string[]) => void;
+  /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
+  configPath?: string;
+  outputDir?: string;
+  /** Inference aggressiveness 0..1 — sets how liberal the `dedup` tool's fuzzy matching is. */
+  aggressiveness?: number;
+  /**
    * Create a new entity (table) with inferred columns — audited + reversible,
    * no DB reopen (defineLate). Supplied by the server when schema creation is
    * allowed; absent → `create_entity` reports it's unavailable. Returns the
@@ -203,6 +224,7 @@ export async function executeFunction(
     feed: ctx.feed,
     softDeletable: ctx.softDeletable,
     source: 'ai',
+    ...(ctx.onColumnsAdded ? { onColumnsAdded: ctx.onColumnsAdded } : {}),
   };
 
   try {
@@ -303,6 +325,55 @@ export async function executeFunction(
           ctx.privateMode ? 'private' : undefined,
         );
         return { ok: true, result: { id } };
+      }
+      case 'create_artifact': {
+        // Save an assistant-authored markdown document as a `files` row (flagged
+        // artifact_type='markdown', content inline in extracted_text — see
+        // artifactFileRow). It goes through the same createRow path as create_row,
+        // so private mode forces it private atomically and otherwise it follows
+        // the files table default — identical sharing to any other file. The
+        // result carries open:true so the chat route tells the GUI to open it in
+        // the main viewer.
+        const table = requireTable('files', ctx.validTables);
+        const title = requireString(args.title, 'title');
+        const content = requireString(args.content, 'content');
+        const { row } = await artifactFileRow(ctx.db, title, content);
+        const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
+        return { ok: true, result: { id, table: 'files', open: true } };
+      }
+      case 'set_definition': {
+        const table = requireTable(args.table, ctx.validTables);
+        const description = requireString(args.description, 'description');
+        const column = typeof args.column === 'string' && args.column ? args.column : undefined;
+        if (column) await upsertColumnMeta(ctx.db, table, column, { description });
+        else await upsertTableMeta(ctx.db, table, { description });
+        return { ok: true, result: { ok: true, table, ...(column ? { column } : {}) } };
+      }
+      case 'dedup': {
+        const table = requireTable(args.table, ctx.validTables);
+        const fuzzy = args.fuzzy === true;
+        const svc: DedupServiceCtx = {
+          db: ctx.db,
+          feed: ctx.feed,
+          softDeletable: ctx.softDeletable,
+          configPath: ctx.configPath ?? '',
+          outputDir: ctx.outputDir ?? '',
+        };
+        const threshold = fuzzy ? aggressivenessToThreshold(ctx.aggressiveness ?? 0) : undefined;
+        const groups = await findTableDuplicates(svc, table, {
+          fuzzy,
+          ...(threshold !== undefined ? { threshold } : {}),
+        });
+        let merged = 0;
+        let groupsMerged = 0;
+        for (const g of groups) {
+          const survivor = g.ids[0]; // oldest first → keep the oldest
+          if (!survivor || g.ids.length < 2) continue;
+          const r = await mergeDuplicates(svc, table, survivor, g.ids.slice(1));
+          merged += r.merged;
+          groupsMerged += 1;
+        }
+        return { ok: true, result: { table, duplicateGroups: groupsMerged, rowsMerged: merged } };
       }
       case 'update_row': {
         const table = requireTable(args.table, ctx.validTables);

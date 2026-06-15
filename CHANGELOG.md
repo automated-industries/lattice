@@ -8,6 +8,72 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-06-15
+
+### Added — assistant artifacts
+
+- **Markdown artifacts.** Ask the assistant to "write a doc / note / summary" and
+  it creates a Markdown **artifact** — saved as a `files` row (flagged
+  `artifact_type='markdown'`, content inline), shown with an "✦ Artifact" badge,
+  rendered as formatted Markdown, and auto-opened in the viewer. Artifacts follow
+  the exact same sharing rules as any file (private mode → private; otherwise the
+  files-table default), enforced by cloud Row-Level Security.
+
+### Added — self-describing schema
+
+- **Column + table definitions.** New columns and tables get a concise one-line
+  definition generated automatically (a cheap, non-blocking, fail-silent model
+  pass) and shown as hover tooltips on table headers, field labels, the sidebar,
+  and dashboard cards. Built-in definitions ship for the native entities. The
+  assistant can author or correct one with the `set_definition` tool, and the
+  definitions are injected into its schema context so it categorizes better.
+
+### Added — seamless de-duplication
+
+- **Automatic file de-duplication.** Uploading a byte-identical file now merges
+  it onto the original automatically (the copy is soft-deleted, recoverable from
+  Trash / Undo) — no modal, no prompt. The assistant can also de-duplicate any
+  table on request (`dedup` tool); fuzzy-merge liberalness follows the
+  inference-aggressiveness slider.
+
+### Added — workspace branding (cloud)
+
+- **Workspace logo.** A cloud owner can upload a square PNG/JPEG logo that
+  replaces the default Lattice mark in the topbar for every member (Settings →
+  Workspace → Display). Owner-only to set; member-readable; cached by content
+  hash so it's fetched once per version. SVG is rejected (it can carry script).
+
+### Added — per-row sharing
+
+- **"Share with specific people".** Restored the per-row custom-share checklist:
+  a row owner can grant/revoke individual members access to a single cloud row
+  (owner-only, enforced in the database), alongside the existing
+  private ↔ everyone toggle.
+
+### Added — first run + onboarding
+
+- **Zero-workspace welcome.** Lattice no longer force-creates a default
+  workspace. On first launch (and after deleting your last workspace) it shows a
+  "Welcome to Lattice" screen with Create / Join wizards (identity-first; local,
+  cloud, or join-by-invite). The last workspace can now be deleted.
+- **Boot loading screen.** A brief full-screen "Loading…" interstitial masks the
+  half-rendered shell during startup and fades out once the app is ready.
+
+### Added — connect a Claude subscription
+
+- **Connect with Claude.** The assistant can now authenticate with your Claude
+  Pro / Max / Enterprise **subscription** via OAuth (PKCE) instead of a pasted
+  API key — "Connect with Claude" is the primary action; the API-key field moves
+  under an "Advanced" disclosure. Endpoints/client are overridable via
+  `ANTHROPIC_OAUTH_*` env vars; the loopback redirect is derived per session.
+
+### Changed
+
+- The composer attach control is now an upload icon (the native multi-file
+  picker is the whole flow).
+- The activity feed attributes automatic, system-initiated changes to "Lattice".
+- The top bar shows the running Lattice version next to the settings gear.
+
 ## [3.2.1] - 2026-06-14
 
 ### Fixed — cloud member access converges on every owner open
