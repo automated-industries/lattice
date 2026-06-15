@@ -71,6 +71,28 @@ describe('GUI virgin (zero-workspace) state', () => {
     expect((await fetch(`${s.url}/api/dashboard`)).status).toBe(409);
   });
 
+  it('lets you Connect with Claude from the virgin state (assistant creds are machine-level)', async () => {
+    // Regression: "Connect with Claude" runs in the onboarding wizard BEFORE a
+    // workspace exists, but the virgin guard 409'd every /api/assistant/* route
+    // ("No active workspace"), so oauth/start failed. Assistant credentials live
+    // in the machine-local store, not a workspace, so these must work with no DB.
+    const s = await bootVirgin();
+
+    // config reports presence flags (not a 409) — the wizard reads it to know if
+    // an account is already connected.
+    const cfgRes = await fetch(`${s.url}/api/assistant/config`);
+    expect(cfgRes.status).toBe(200);
+    const cfg = (await cfgRes.json()) as { claudeAuthKind?: string | null };
+    expect('claudeAuthKind' in cfg).toBe(true);
+
+    // oauth/start begins the PKCE flow: a 302 to the authorize URL + a verifier
+    // cookie — NOT a 409 "No active workspace".
+    const start = await fetch(`${s.url}/api/assistant/oauth/start`, { redirect: 'manual' });
+    expect(start.status).toBe(302);
+    expect(start.headers.get('location') ?? '').toMatch(/^https?:\/\//);
+    expect(start.headers.get('set-cookie') ?? '').toContain('lat_oauth_verifier=');
+  });
+
   it('a plain --config GUI (active DB, no .lattice registry) is NOT virgin', async () => {
     // Regression: a plain `--config` boot has an active DB but an EMPTY workspace
     // registry. The client must boot it normally, NOT show the welcome screen —

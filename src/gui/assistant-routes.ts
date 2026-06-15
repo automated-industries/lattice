@@ -43,7 +43,12 @@ type CredentialName = keyof typeof CREDENTIALS;
 export const ANTHROPIC_KEY_KIND = CREDENTIALS.anthropic.kind;
 
 interface AssistantContext {
-  db: Lattice;
+  // Null in the virgin (no-workspace) state. Assistant credentials live in the
+  // machine-local store, not a workspace, so config / key / OAuth all work with
+  // no active DB — only the SQLite back-compat secrets lookup needs `db`, and it
+  // is skipped when `db` is null. This is what lets "Connect with Claude" run
+  // from first-run onboarding before any workspace exists.
+  db: Lattice | null;
   pathname: string;
   method: string;
 }
@@ -122,7 +127,8 @@ async function liveSecretsOfKind(db: Lattice, kind: string): Promise<SecretRow[]
 }
 
 /** Decrypted value of the first live secret row of a kind (framework decrypts on read). */
-async function secretValue(db: Lattice, kind: string): Promise<string | null> {
+async function secretValue(db: Lattice | null, kind: string): Promise<string | null> {
+  if (!db) return null; // no workspace (virgin state) → machine store only
   const rows = await liveSecretsOfKind(db, kind);
   return rows.find((r) => typeof r.value === 'string' && r.value.length > 0)?.value ?? null;
 }
@@ -153,10 +159,12 @@ async function secretValue(db: Lattice, kind: string): Promise<string | null> {
  * store. So on Postgres we use only the machine store + the caller's env-var
  * fallback.
  */
-async function readMachineCredential(db: Lattice, kind: string): Promise<string | null> {
+async function readMachineCredential(db: Lattice | null, kind: string): Promise<string | null> {
   const fromMachine = getAssistantCredential(kind);
   if (fromMachine) return fromMachine;
-  if (db.getDialect() !== 'sqlite') return null;
+  // No workspace (virgin, db null), or a non-SQLite (shared) DB → machine store
+  // only. db?.getDialect() is undefined when db is null, so this returns early.
+  if (db?.getDialect() !== 'sqlite') return null;
   const fromDb = await secretValue(db, kind);
   if (fromDb) {
     try {
@@ -174,7 +182,7 @@ async function readMachineCredential(db: Lattice, kind: string): Promise<string 
  * (persists across workspaces), then the workspace `secrets` row (back-compat),
  * then the `ANTHROPIC_API_KEY` env var. Server-side only.
  */
-export async function getAnthropicApiKey(db: Lattice): Promise<string | null> {
+export async function getAnthropicApiKey(db: Lattice | null): Promise<string | null> {
   return (
     (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
     process.env.ANTHROPIC_API_KEY ??
@@ -239,7 +247,7 @@ export function aggressivenessToTemperature(aggressiveness: number): number {
   return Math.min(1, Math.max(0, aggressiveness));
 }
 
-export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential | null> {
+export async function getVoiceCredential(db: Lattice | null): Promise<VoiceCredential | null> {
   const openai =
     (await readMachineCredential(db, CREDENTIALS.openai.kind)) ??
     process.env.OPENAI_API_KEY ??
@@ -257,7 +265,11 @@ export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential |
   return null;
 }
 
-async function hasCredential(db: Lattice, name: CredentialName, envVar: string): Promise<boolean> {
+async function hasCredential(
+  db: Lattice | null,
+  name: CredentialName,
+  envVar: string,
+): Promise<boolean> {
   return (
     Boolean(await readMachineCredential(db, CREDENTIALS[name].kind)) || Boolean(process.env[envVar])
   );
@@ -275,7 +287,7 @@ interface StoredOAuthTokens {
  * near expiry) and falls back to a raw API key (secret row or env). Returns
  * null when nothing is configured.
  */
-export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null> {
+export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth | null> {
   // Treat an empty env var the same as unset, so `||` (not `??`) is correct here.
   // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
   const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
@@ -308,7 +320,7 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
 }
 
 /** Whether any Claude auth (subscription OR API key) is configured. */
-export async function hasClaudeAuth(db: Lattice): Promise<boolean> {
+export async function hasClaudeAuth(db: Lattice | null): Promise<boolean> {
   return (
     Boolean(await readMachineCredential(db, CLAUDE_OAUTH_KIND)) ||
     (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY'))
@@ -320,7 +332,7 @@ export async function hasClaudeAuth(db: Lattice): Promise<boolean> {
  * Claude" vs "API key set". A connected subscription wins (it's what
  * resolveClaudeAuth prefers).
  */
-export async function claudeAuthKind(db: Lattice): Promise<'oauth' | 'key' | null> {
+export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | 'key' | null> {
   if (await readMachineCredential(db, CLAUDE_OAUTH_KIND)) return 'oauth';
   if (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY')) return 'key';
   return null;
@@ -449,8 +461,12 @@ export async function dispatchAssistantRoute(
     // table (pre-machine installs stored it there); the machine store is now
     // the source of truth.
     setAssistantCredential(cred.kind, key);
-    for (const row of await liveSecretsOfKind(db, cred.kind)) {
-      await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+    // Retire any leftover pre-machine copy in the active workspace's secrets.
+    // Nothing to retire in the virgin (no-workspace) state — db is null there.
+    if (db) {
+      for (const row of await liveSecretsOfKind(db, cred.kind)) {
+        await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+      }
     }
     sendJson(res, { ok: true });
     return true;
@@ -467,8 +483,10 @@ export async function dispatchAssistantRoute(
     // Clear the machine-level store AND any leftover copy in the active
     // workspace's secrets table.
     deleteAssistantCredential(CREDENTIALS[name].kind);
-    for (const row of await liveSecretsOfKind(db, CREDENTIALS[name].kind)) {
-      await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+    if (db) {
+      for (const row of await liveSecretsOfKind(db, CREDENTIALS[name].kind)) {
+        await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+      }
     }
     sendJson(res, { ok: true });
     return true;

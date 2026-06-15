@@ -1816,6 +1816,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       await redeemInvite(createCloudWorkspace, req, res);
       return true;
     }
+    // Assistant credentials (API key + Claude subscription OAuth) live in the
+    // machine-local store, not a workspace — config / key / OAuth all work with no
+    // active DB. This is what lets "Connect with Claude" run from first-run
+    // onboarding, before any workspace exists (the connect step precedes create).
+    if (pathname.startsWith('/api/assistant/')) {
+      return dispatchAssistantRoute(req, res, { db: null, pathname, method });
+    }
     return false;
   };
 

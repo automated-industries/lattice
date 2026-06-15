@@ -115,6 +115,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   failed with `invalid visibility "custom"` — the visibility setter rejected the
   `custom` mode the underlying row-level-security function accepts. It now accepts
   `custom`, so the member checklist loads and you can grant individual people.
+- **"Connect with Claude" works during first-run onboarding.** The optional
+  Connect step runs before any workspace exists, but the zero-workspace guard
+  rejected every assistant route with "No active workspace". Assistant
+  credentials are machine-level (not stored in a workspace), so configuration,
+  API-key, and subscription-OAuth endpoints now work with no active workspace.
 - **Assistant-driven changes are undoable.** A change the assistant makes on your
   behalf is now recorded under the active session, so it shows up in the header
   undo stack just like a manual edit.
