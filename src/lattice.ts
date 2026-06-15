@@ -652,11 +652,12 @@ export class Lattice {
    * PK skip, etc.) and refreshes the column cache so subsequent
    * `query`/`insert`/`update` calls are aware of the new column.
    *
-   * Does NOT update the SchemaManager's stored TableDefinition. The
-   * runtime column cache is what insert/update/query consult; the def
-   * is only consulted by `applySchema` (which is only re-run at init).
-   * Callers who care about def-level fidelity (most don't) should
-   * re-`defineLate` the table on the next session start.
+   * Also mirrors the new column into the SchemaManager's stored
+   * TableDefinition, so `getRegisteredColumns()` reflects the post-ALTER
+   * schema. This matters because the Teams `share` flow serializes that def
+   * to propagate the schema to teammates — without the mirror, a
+   * runtime-added column was silently dropped from the shared spec. The
+   * runtime column cache remains what insert/update/query consult.
    *
    * Idempotent: if the column already exists on the table, this is a
    * no-op (introspect-first; skip the ALTER).
@@ -675,6 +676,11 @@ export class Lattice {
     }
     const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
     this._columnCache.set(table, new Set(cols));
+    // Mirror the new column into the registered def so getRegisteredColumns()
+    // (which the Teams `share` serialization reads) reflects the post-ALTER
+    // state. No-op for an unregistered table (def stays null).
+    const def = this._schema.getTables().get(table);
+    if (def && !(column in def.columns)) def.columns[column] = typeSpec;
   }
 
   // -------------------------------------------------------------------------
@@ -996,7 +1002,11 @@ export class Lattice {
     // Canonical pk (full composite key); single-column keys are the bare value.
     const pkValue = this._serializeRowPk(table, rowWithPk);
     this._sanitizer.emitAudit(table, 'update', pkValue);
-    this._scheduleAutoRender();
+    // Fire write hooks so sync / outbox / cache-invalidation subscribers see the
+    // upsert (it previously only scheduled an auto-render and silently skipped
+    // them). _fireWriteHooks self-schedules the auto-render, so this replaces the
+    // explicit call above rather than adding to it.
+    await this._fireWriteHooks(table, 'update', rowWithPk, pkValue, Object.keys(sanitized));
     return pkValue;
   }
 

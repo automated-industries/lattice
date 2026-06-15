@@ -628,6 +628,50 @@ owner-run admin follow-up.
 
 ---
 
+## Deploying on managed Postgres (AWS RDS / RDS Proxy)
+
+Lattice Cloud is just Postgres, so any managed Postgres works — Amazon RDS,
+Google Cloud SQL, Neon, Supabase. A few deployment notes, framed with AWS RDS as
+the example (the same ideas apply to the others):
+
+- **Realtime needs a session-mode / direct endpoint.** You can route ordinary
+  query/CRUD traffic through a connection proxy (e.g. RDS Proxy) if you like, but
+  the persistent `LISTEN lattice_changes` connection must reach a **session-mode**
+  path — the RDS **instance endpoint** directly, _not_ a transaction-mode RDS
+  Proxy. A transaction-mode pooler multiplexes statements across backends and
+  drops session state like `LISTEN`, so live updates silently stop. Lattice ships
+  a **backstop poll** (it periodically re-runs the bounded, visibility-gated
+  catch-up query, so a silently-dropped `LISTEN` still delivers missed changes),
+  but the direct/session endpoint is still the correct configuration. See the
+  realtime note in `collaboration.md`.
+- **Identity survives a pooler.** RLS keys on `session_user` / `current_user`, so
+  ownership and per-row visibility stay correct behind RDS Proxy (it preserves the
+  authenticated role). This is the same property described under
+  [The role & privilege model](#the-role--privilege-model).
+- **You do _not_ need to pin `search_path`.** Lattice issues **no** session-level
+  `SET search_path`. The only `search_path` it sets is the pin baked _inside_ its
+  `SECURITY DEFINER` functions (a function attribute, see [Bootstrap](#1-bootstrap-once-per-cloud)),
+  which does not affect ordinary connections and does not trigger proxy session
+  pinning. So you do not need a parameter-group / role-level `search_path` for
+  Lattice.
+- **Recommended custom parameter group** (starting points, not mandates — create a
+  _custom_ parameter group, don't edit the default):
+  - `rds.force_ssl = 1` — require TLS.
+  - `row_security = on` — **never disable**; RLS is the whole security model.
+  - `idle_in_transaction_session_timeout` — reap abandoned transactions.
+  - `statement_timeout` — bound runaway queries.
+  - `log_connections` / `log_disconnections` / `log_min_duration_statement` — audit + slow-query visibility.
+  - `work_mem` / `maintenance_work_mem` / `max_connections` — size to your workload.
+- **TLS / certificates.** Use the provider's CA bundle and `sslmode=require` (or
+  stricter) in the connection string. The owner's connection string is stored
+  encrypted by Lattice (`${LATTICE_DB:<label>}`); never hand a member the raw
+  owner URL — they get a scoped role via an invite.
+
+**See also:** the realtime/session-mode note in `collaboration.md`, and the
+[S3-backed file bytes](#s3-backed-file-bytes-opt-in) section for object storage.
+
+---
+
 ## Limits & notes
 
 - **Cloud is Postgres-only.** SQLite has no roles or RLS; a local SQLite Lattice is

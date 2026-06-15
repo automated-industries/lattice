@@ -137,6 +137,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   the cloud, the app re-fetches and re-renders immediately (entities, per-row
   sharing indicators, realtime) — previously only the settings panel updated and
   the rest of the UI showed stale pre-migrate data until you reloaded.
+- **`upsert()` fires write hooks.** It previously only scheduled an auto-render,
+  so sync / outbox / cache-invalidation subscribers silently missed every upsert;
+  it now fires the same write hooks as `insert`/`update`/`delete`.
+- **`addColumn()` mirrors the registered table definition.** A runtime-added
+  column now shows up in `getRegisteredColumns()`, so the Teams `share` schema
+  serialization propagates it to teammates instead of silently dropping it.
+- **Realtime survives a silent `LISTEN` drop.** A transaction-mode pooler /
+  managed-Postgres proxy can drop the `LISTEN` registration without closing the
+  socket, leaving the stream silently dead. A periodic backstop poll now re-runs
+  the bounded, visibility-gated catch-up query and delivers any missed changes
+  (configurable via `startGuiServer`'s `realtimeWatchdogMs`; `keepAlive` is also
+  enabled on the realtime socket). See the new managed-Postgres / AWS RDS notes
+  in the docs.
+
+### Added
+
+- **`startGuiServer` is exported** (with `StartGuiServerOptions` /
+  `GuiServerHandle`), so a library consumer can embed the GUI server without
+  shelling out to the CLI.
+- **Managed-Postgres deployment guide** (AWS RDS / RDS Proxy, Cloud SQL, Neon):
+  use a session-mode/direct endpoint for the realtime `LISTEN`, identity survives
+  a pooler, no `search_path` pinning is needed, and a recommended parameter group.
 
 ## [3.2.1] - 2026-06-14
 

@@ -378,3 +378,7 @@ export type {
   TurnResult,
   LlmMessage,
 } from './ai/index.js';
+
+// Embed the GUI server from a library consumer (no CLI shell-out needed).
+export { startGuiServer } from './gui/server.js';
+export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';

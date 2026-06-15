@@ -171,6 +171,13 @@ export interface StartGuiServerOptions {
    * ⇒ the version chip stays hidden.
    */
   version?: string;
+  /**
+   * Realtime backstop liveness-poll interval (ms) for the RealtimeBroker. A
+   * managed-Postgres proxy (e.g. AWS RDS Proxy) can silently drop the LISTEN
+   * without closing the socket; the poll re-delivers missed changes regardless.
+   * Omitted ⇒ the broker's default (20s). 0 disables it.
+   */
+  realtimeWatchdogMs?: number;
 }
 
 export interface GuiServerHandle {
@@ -769,6 +776,7 @@ export async function openConfig(
   configPath: string,
   outputDir: string,
   autoRender = false,
+  realtimeWatchdogMs?: number,
 ): Promise<ActiveDb> {
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
@@ -1054,7 +1062,10 @@ export async function openConfig(
   let realtime: RealtimeBroker | null = null;
   if (db.getDialect() === 'postgres') {
     try {
-      realtime = new RealtimeBroker(parsed.dbPath);
+      realtime = new RealtimeBroker(
+        parsed.dbPath,
+        realtimeWatchdogMs !== undefined ? { watchdogIntervalMs: realtimeWatchdogMs } : {},
+      );
       await realtime.start();
     } catch (e) {
       console.warn('[openConfig] realtime broker init failed:', (e as Error).message);
@@ -1636,7 +1647,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // request handler gates every data route behind a non-null check.
   let activeRef: ActiveDb | null =
     bootConfigPath && bootOutputDir
-      ? await openConfig(bootConfigPath, bootOutputDir, autoRender)
+      ? await openConfig(bootConfigPath, bootOutputDir, autoRender, options.realtimeWatchdogMs)
       : null;
   // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
   // the header workspace switcher can list + switch workspaces. `null` ⇒ the
