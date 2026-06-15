@@ -101,6 +101,25 @@ describe('set_definition + dedup assistant tools', () => {
     expect(dd?.mutates).toBe(true);
     expect(dd?.category).toBe('row');
     expect(DISPATCHABLE.has('dedup')).toBe(true);
+
+    const sv = getFunction('set_visibility');
+    expect(sv?.mutates).toBe(true);
+    expect(sv?.args.required).toEqual(expect.arrayContaining(['table', 'visibility']));
+    expect(DISPATCHABLE.has('set_visibility')).toBe(true);
+  });
+
+  it('set_visibility rejects a bad visibility, and reports cloud-only on local SQLite', async () => {
+    expect(
+      (await executeFunction(ctx, 'set_visibility', { table: 'widgets', visibility: 'nope' })).ok,
+    ).toBe(false);
+    // On a local (SQLite) workspace sharing doesn't apply — a clean, non-technical
+    // error, not a thrown DB exception.
+    const res = await executeFunction(ctx, 'set_visibility', {
+      table: 'widgets',
+      visibility: 'private',
+    });
+    expect(res.ok).toBe(false);
+    expect(String(res.error)).toMatch(/cloud/i);
   });
 
   it('set_definition writes a COLUMN definition when column is present', async () => {

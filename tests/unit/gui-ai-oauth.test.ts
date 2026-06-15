@@ -9,6 +9,7 @@ import {
   oauthConfigured,
   exchangeCodeForTokens,
   refreshAccessToken,
+  isManualPasteRedirect,
   type OAuthConfig,
 } from '../../src/gui/ai/oauth.js';
 import { isLoopbackHost } from '../../src/gui/assistant-routes.js';
@@ -76,17 +77,32 @@ describe('oauth helpers', () => {
     expect(() => parseTokenResponse({ refresh_token: 'rt' })).toThrow(/access_token/);
   });
 
-  it('readOAuthConfig returns built-in defaults when env is unset (3.3)', () => {
-    // 3.3: the public subscription-OAuth client is built in, so connect works
-    // out of the box (no env required). redirectUri is empty — filled per-request
-    // from the GUI origin.
+  it('readOAuthConfig returns built-in defaults (manual code-paste flow) when env is unset (3.3)', () => {
+    // 3.3: the public subscription-OAuth client is built in, so connect works out
+    // of the box. The client only allows ITS registered redirect, so the default
+    // is the manual code-paste flow (console code callback), not a loopback.
     const cfg = readOAuthConfig({});
     expect(cfg.authorizeUrl).toMatch(/^https:\/\//);
     expect(cfg.tokenUrl).toMatch(/^https:\/\//);
     expect(cfg.clientId).toBeTruthy();
     expect(cfg.scopes.length).toBeGreaterThan(0);
-    expect(cfg.redirectUri).toBe('');
+    expect(cfg.redirectUri).toMatch(/\/oauth\/code\/callback$/);
+    expect(isManualPasteRedirect(cfg.redirectUri)).toBe(true);
     expect(oauthConfigured({})).toBe(true);
+  });
+
+  it('the manual-flow authorize URL carries code=true; a custom loopback redirect does not', () => {
+    const manual = new URL(buildAuthorizeUrl(readOAuthConfig({}), 'st', 'ch'));
+    expect(manual.searchParams.get('code')).toBe('true');
+    const loopback = new URL(
+      buildAuthorizeUrl(
+        { ...cfg, redirectUri: 'http://127.0.0.1:4317/api/assistant/oauth/callback' },
+        'st',
+        'ch',
+      ),
+    );
+    expect(loopback.searchParams.get('code')).toBeNull();
+    expect(isManualPasteRedirect('http://127.0.0.1:4317/api/assistant/oauth/callback')).toBe(false);
   });
 
   it('env values override every default', () => {

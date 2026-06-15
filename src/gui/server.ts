@@ -47,7 +47,8 @@ import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
-import { getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
+import { getAsyncOrSync, allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { registerPostgresPolyfills } from '../db/postgres.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
@@ -975,6 +976,10 @@ export async function openConfig(
   if (db.getDialect() === 'postgres' && !memberOpen) {
     try {
       if ((await cloudRlsInstalled(db)) && (await canManageRoles(db))) {
+        // Ensure the SQLite-compat polyfills exist, created by the OWNER (who has
+        // CREATE) — so an already-secured cloud whose revoke ran before they were
+        // ever created gets them now, before any member connects. Idempotent.
+        await registerPostgresPolyfills((sql) => runAsyncOrSync(db.adapter, sql));
         await installCloudRls(db);
         await installCloudSettings(db);
         await db.ensureObservationSubstrate();
@@ -3814,6 +3819,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               aiDeleteEntity(active, name, resolution, sessionId),
             configPath: active.configPath,
             outputDir: active.outputDir,
+            // Stamp this GUI session so the assistant's writes share the user's
+            // undo/redo stack (the user can undo what they asked it to do).
+            sessionId,
             pathname,
             method,
           });

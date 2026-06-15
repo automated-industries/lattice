@@ -212,6 +212,31 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'set_visibility',
+    description:
+      'Change who can see a record or a whole table. Provide `id` to set ONE ' +
+      "record's visibility, or omit `id` to set the default for the whole table " +
+      '(applies to new records). `visibility` is "private" (only the user) or ' +
+      '"everyone" (all workspace members). Use this whenever the user wants to ' +
+      'make something private or shared — do it directly, do not hand them SQL or ' +
+      'tell them to ask an admin. Only works on a shared cloud workspace, and only ' +
+      'for things the user owns (the database enforces this).',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        table: str('Table name.'),
+        id: str('Record id. Omit to set the whole table default.'),
+        visibility: {
+          type: 'string',
+          enum: ['private', 'everyone'],
+          description: 'Who can see it: private (owner only) or everyone (all members).',
+        },
+      },
+      ['table', 'visibility'],
+    ),
+  },
+  {
     name: 'dedup',
     description:
       'Find and merge duplicate rows in a table. Exact duplicates are always ' +

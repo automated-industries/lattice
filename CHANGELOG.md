@@ -49,6 +49,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   a row owner can grant/revoke individual members access to a single cloud row
   (owner-only, enforced in the database), alongside the existing
   private ↔ everyone toggle.
+- **Privacy indicators everywhere.** Each object shows a small faint lock (private
+  to you) or eye (shared) marker — in the sidebar object list and on the entity
+  page next to its visibility line — so a row's sharing is visible at a glance.
+  The per-row sharing controls now also appear in the simple object view, not
+  only the advanced data view.
+- **`set_visibility` assistant tool.** The assistant can change the sharing of a
+  row or a whole table (private ↔ everyone) on request, limited to what the
+  asking user is allowed to change. Assistant-initiated sharing changes are
+  undoable like any other change.
 
 ### Added — first run + onboarding
 
@@ -73,6 +82,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   picker is the whole flow).
 - The activity feed attributes automatic, system-initiated changes to "Lattice".
 - The top bar shows the running Lattice version next to the settings gear.
+- A file entity page now renders its formatted Markdown document above the
+  column-by-column data view, so the readable content is what you see first.
+- The assistant explains things in plain language and does what you ask through
+  its tools, rather than describing database internals or API calls.
+
+### Fixed
+
+- **Image previews no longer fail for files with non-ASCII names.** A filename
+  carrying a character outside Latin-1 (e.g. the narrow no-break space in a macOS
+  screenshot name) made the blob response's `content-disposition` header invalid
+  and the preview 500'd; the header is now RFC 5987 encoded (ASCII fallback +
+  `filename*=UTF-8''…`), so the image loads.
+- **"Open in file manager" reveals the file** in the OS file browser (Finder /
+  Explorer / the desktop file manager) instead of opening it in an editor.
+- **Assistant-driven changes are undoable.** A change the assistant makes on your
+  behalf is now recorded under the active session, so it shows up in the header
+  undo stack just like a manual edit.
+- **Scoped members can connect to a freshly secured cloud.** The SQLite-compat
+  helper functions are now created by the owner before the security cutover
+  revokes schema-create from members, so a member's first connection no longer
+  hits a permission error trying to create them.
 
 ## [3.2.1] - 2026-06-14
 

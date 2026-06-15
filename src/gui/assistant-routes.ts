@@ -511,14 +511,20 @@ export async function dispatchAssistantRoute(
     return true;
   }
 
-  // GET /api/assistant/oauth/start — begin the PKCE subscription flow.
+  // GET /api/assistant/oauth/start — begin the PKCE subscription flow. Opened in
+  // a new tab by the GUI; the default (manual) flow shows a code on the provider
+  // page that the user pastes back via /oauth/exchange. A loopback callback is
+  // only used when an env-pinned client allowlists one.
   if (method === 'GET' && pathname === '/api/assistant/oauth/start') {
     const cfg = readOAuthConfig();
-    // Derive the loopback redirect from THIS request's origin unless pinned by env.
+    // Only fill a loopback redirect if none is configured (the default is the
+    // provider's registered console redirect, i.e. the manual code-paste flow).
     if (!cfg.redirectUri) cfg.redirectUri = oauthRedirectUri(req);
     const verifier = generatePkceVerifier();
     const state = generateState();
-    const cookieOpts = 'HttpOnly; Path=/; Max-Age=300; SameSite=Lax';
+    // 10 min: the manual flow has the user authorize, copy a code, and paste it
+    // back, so the verifier/state must outlive a short window.
+    const cookieOpts = 'HttpOnly; Path=/; Max-Age=600; SameSite=Lax';
     res.writeHead(302, {
       Location: buildAuthorizeUrl(cfg, state, pkceChallengeFor(verifier)),
       'Set-Cookie': [
@@ -557,7 +563,7 @@ export async function dispatchAssistantRoute(
       return true;
     }
     try {
-      const tokens = await exchangeCodeForTokens(cfg, code, verifier);
+      const tokens = await exchangeCodeForTokens(cfg, code, verifier, state);
       // Machine-level, like the API-key PUT + the refresh path — so a connected
       // subscription persists across every workspace, not just the one that was
       // active when the user linked it (otherwise the OAuth-connect path would
@@ -566,6 +572,65 @@ export async function dispatchAssistantRoute(
       redirect('connected');
     } catch {
       redirect('error');
+    }
+    return true;
+  }
+
+  // POST /api/assistant/oauth/exchange — the MANUAL code-paste flow. After the
+  // user authorizes in the popped tab, the provider shows a code (often
+  // `<code>#<state>`); they paste it here. We verify the state against the cookie
+  // set at /start, exchange it for tokens, and store them. Body: { code }.
+  if (method === 'POST' && pathname === '/api/assistant/oauth/exchange') {
+    const cfg = readOAuthConfig();
+    const cookies = parseCookies(req);
+    const verifier = cookies.lat_oauth_verifier;
+    const clear = [
+      'lat_oauth_verifier=; HttpOnly; Path=/; Max-Age=0',
+      'lat_oauth_state=; HttpOnly; Path=/; Max-Age=0',
+    ];
+    try {
+      const body = await readJson(req);
+      const raw = typeof body.code === 'string' ? body.code.trim() : '';
+      // The pasted value may be `<code>#<state>`; split off the state.
+      const hash = raw.indexOf('#');
+      const code = hash >= 0 ? raw.slice(0, hash) : raw;
+      const pastedState = hash >= 0 ? raw.slice(hash + 1) : '';
+      if (!code || !verifier) {
+        sendJson(
+          res,
+          { ok: false, error: 'Paste the full code from the Claude authorization page.' },
+          400,
+        );
+        return true;
+      }
+      // CSRF: if the paste carried a state, it must match the one we issued.
+      if (pastedState && cookies.lat_oauth_state && pastedState !== cookies.lat_oauth_state) {
+        sendJson(
+          res,
+          {
+            ok: false,
+            error: 'That code does not match this connection attempt — try Connect again.',
+          },
+          400,
+        );
+        return true;
+      }
+      // `||` (not `??`): an EMPTY pasted state should fall through to the cookie.
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+      const state = pastedState || cookies.lat_oauth_state || undefined;
+      const tokens = await exchangeCodeForTokens(cfg, code, verifier, state);
+      setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'Set-Cookie': clear,
+      });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(400, {
+        'content-type': 'application/json; charset=utf-8',
+        'Set-Cookie': clear,
+      });
+      res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
     }
     return true;
   }

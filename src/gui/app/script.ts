@@ -1457,7 +1457,7 @@ export const appJs = `
             ' from another editor">' + (unseen > 99 ? '99+' : unseen) + '</span>'
           : '';
         return '<li><a data-route="' + prefix + t.name + '" href="' + prefix + t.name +
-          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + badge + '</a></li>';
+          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + navVisIcon(t) + badge + '</a></li>';
       }).join('');
 
       var section = document.getElementById('system-section');
@@ -2180,9 +2180,14 @@ export const appJs = `
       if (!a) return '';
       var vis = a.visibility;
       var labelMap = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
+      // Clear visual indicator: a lock when private, an eye when shared (everyone
+      // or specific people). Wrapped so .detail-vis-icon can tint it.
+      var visIcon = '<span class="detail-vis-icon' + (vis === 'private' ? ' is-private' : '') + '">' +
+        (vis === 'private' ? LOCK_SVG : EYE_SVG) + '</span>';
       if (!a.ownedByMe) {
         var seen = vis === 'custom' ? 'Shared with you' : (labelMap[vis] || '');
-        return '<div class="detail-vis muted" style="margin:6px 0;font-size:13px">' + escapeHtml(seen) + '</div>';
+        return '<div class="detail-vis muted" style="display:flex;align-items:center;gap:6px;margin:6px 0;font-size:13px">' +
+          visIcon + '<span>' + escapeHtml(seen) + '</span></div>';
       }
       var info = labelMap[vis] || '';
       if (vis === 'custom' && a.grantees) info += ' (' + a.grantees.length + ')';
@@ -2200,9 +2205,98 @@ export const appJs = `
           '<button class="btn" id="detail-vis-manage">Specific people…</button>';
       }
       return '<div class="detail-vis" style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;flex-wrap:wrap">' +
+        visIcon +
         '<span class="muted" id="detail-vis-info">' + escapeHtml(info) + '</span>' + buttons +
         '</div>' +
         '<div class="grants-panel" id="grants-panel" hidden></div>';
+    }
+
+    // Wire the per-row sharing controls produced by detailVisLineEl. Shared by the
+    // advanced detail view AND the simple fs-item view, so per-object sharing is
+    // reachable in both. reRender re-paints the caller's view after a toggle.
+    function wireRowSharing(content, tableName, id, row, reRender) {
+      function postVisibility(next) {
+        return fetchJson('/api/cloud/share', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ table: tableName, pk: id, visibility: next }),
+        });
+      }
+      var detailVisBtn = content.querySelector('#detail-vis-toggle');
+      if (detailVisBtn) detailVisBtn.addEventListener('click', function () {
+        var cur = detailVisBtn.getAttribute('data-vis-cur');
+        var next = detailVisBtn.getAttribute('data-vis-next') || (cur === 'everyone' ? 'private' : 'everyone');
+        if (cur === 'custom') {
+          var cnt = (row._access && row._access.grantees ? row._access.grantees.length : 0);
+          var who = cnt === 1 ? '1 specific person' : cnt + ' specific people';
+          if (!confirm('This row is shared with ' + who + '. The custom list will stop applying (it is kept and reapplies if you return to specific people). Continue?')) return;
+        }
+        withBusy(detailVisBtn, function () {
+          return postVisibility(next).then(function () {
+            invalidate(tableName);
+            reRender();
+            showToast(next === 'everyone' ? 'Shared with everyone' : 'Made private', {});
+          }).catch(function (e) { showToast('Visibility update failed: ' + e.message, {}); });
+        });
+      });
+      var detailVisManage = content.querySelector('#detail-vis-manage');
+      if (detailVisManage) detailVisManage.addEventListener('click', function () {
+        var panel = content.querySelector('#grants-panel');
+        if (!panel) return;
+        if (!panel.hidden) { panel.hidden = true; return; }
+        var access = row._access || {};
+        var ensure = access.visibility === 'custom'
+          ? Promise.resolve()
+          : postVisibility('custom').then(function () { access.visibility = 'custom'; });
+        withBusy(detailVisManage, function () {
+          return ensure.then(function () {
+            return fetchJson('/api/cloud/members');
+          }).then(function (d) {
+            // The grant target is a member ROLE: lattice_grant_row keys on the
+            // role, and _access.grantees holds role names. List every member
+            // except the owner (you don't grant the owner their own row).
+            var members = ((d && d.members) || []).filter(function (m) { return !m.isYou && m.status !== 'owner'; });
+            var granted = {};
+            (access.grantees || []).forEach(function (g) { granted[g] = true; });
+            if (members.length === 0) {
+              panel.innerHTML = '<div class="muted">No other members in this workspace yet.</div>';
+            } else {
+              panel.innerHTML = '<div class="grants-title">Who can see this</div>' + members.map(function (m) {
+                var label = m.name || m.email || m.role;
+                return '<label class="grants-row"><input type="checkbox" data-grant-role="' + escapeHtml(m.role) + '"' +
+                  (granted[m.role] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
+              }).join('');
+            }
+            panel.hidden = false;
+            panel.querySelectorAll('[data-grant-role]').forEach(function (cb) {
+              cb.addEventListener('change', function () {
+                var role = cb.getAttribute('data-grant-role');
+                cb.disabled = true;
+                fetchJson('/api/cloud/row-grant', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ table: tableName, pk: id, grantee: role, revoke: !cb.checked }),
+                }).then(function () {
+                  var list = access.grantees || (access.grantees = []);
+                  var at = list.indexOf(role);
+                  if (cb.checked && at === -1) list.push(role);
+                  if (!cb.checked && at !== -1) list.splice(at, 1);
+                  var infoEl = content.querySelector('#detail-vis-info');
+                  if (infoEl) infoEl.textContent = 'Shared with specific people (' + list.length + ')';
+                  invalidate(tableName);
+                }).catch(function (e) {
+                  cb.checked = !cb.checked; // revert the failed change
+                  showToast('Access update failed: ' + e.message, {});
+                }).then(function () { cb.disabled = false; });
+              });
+            });
+            if (access.visibility === 'custom') {
+              var infoEl = content.querySelector('#detail-vis-info');
+              if (infoEl) infoEl.textContent = 'Shared with specific people (' + (access.grantees || []).length + ')';
+            }
+          }).catch(function (e) { showToast('Could not load members: ' + e.message, {}); });
+        });
+      });
     }
     function renderDetail(content, tableName, id) {
       var t = tableByName(tableName);
@@ -2315,94 +2409,9 @@ export const appJs = `
           if (!editing) loadRowContext(tableName, id);
           if (!editing && tableName === 'files') renderFilePreview(row);
 
-          function postVisibility(next) {
-            return fetchJson('/api/cloud/share', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ table: tableName, pk: id, visibility: next }),
-            });
-          }
-          var detailVisBtn = content.querySelector('#detail-vis-toggle');
-          if (detailVisBtn) detailVisBtn.addEventListener('click', function () {
-            var cur = detailVisBtn.getAttribute('data-vis-cur');
-            var next = detailVisBtn.getAttribute('data-vis-next') || (cur === 'everyone' ? 'private' : 'everyone');
-            if (cur === 'custom') {
-              // Non-destructive guard: the grant rows survive server-side, but
-              // the custom list stops applying the moment visibility changes.
-              var cnt = (row._access && row._access.grantees ? row._access.grantees.length : 0);
-              var who = cnt === 1 ? '1 specific person' : cnt + ' specific people';
-              if (!confirm('This row is shared with ' + who + '. The custom list will stop applying (it is kept and reapplies if you return to specific people). Continue?')) return;
-            }
-            withBusy(detailVisBtn, function () {
-              return postVisibility(next).then(function () {
-                invalidate(tableName);
-                renderDetail(content, tableName, id);
-                showToast(next === 'everyone' ? 'Shared with everyone' : 'Made private', {});
-              }).catch(function (e) { showToast('Visibility update failed: ' + e.message, {}); });
-            });
-          });
-
-          // Grants checklist ("Specific people…" / "Manage access"): member
-          // checkboxes wired to the row-grant endpoints. Opening it on a
-          // non-custom row first narrows visibility to custom so an empty
-          // checklist is a coherent state (owner-only until people are added).
-          var detailVisManage = content.querySelector('#detail-vis-manage');
-          if (detailVisManage) detailVisManage.addEventListener('click', function () {
-            var panel = content.querySelector('#grants-panel');
-            if (!panel) return;
-            if (!panel.hidden) { panel.hidden = true; return; }
-            var access = row._access || {};
-            var ensure = access.visibility === 'custom'
-              ? Promise.resolve()
-              : postVisibility('custom').then(function () { access.visibility = 'custom'; });
-            withBusy(detailVisManage, function () {
-              return ensure.then(function () {
-                return fetchJson('/api/cloud/members');
-              }).then(function (d) {
-                // The grant target is a member ROLE: lattice_grant_row keys on the
-                // role, and _access.grantees holds role names. List every member
-                // except the owner (you don't grant the owner their own row).
-                var members = ((d && d.members) || []).filter(function (m) { return !m.isYou && m.status !== 'owner'; });
-                var granted = {};
-                (access.grantees || []).forEach(function (g) { granted[g] = true; });
-                if (members.length === 0) {
-                  panel.innerHTML = '<div class="muted">No other members in this workspace yet.</div>';
-                } else {
-                  panel.innerHTML = '<div class="grants-title">Who can see this</div>' + members.map(function (m) {
-                    var label = m.name || m.email || m.role;
-                    return '<label class="grants-row"><input type="checkbox" data-grant-role="' + escapeHtml(m.role) + '"' +
-                      (granted[m.role] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
-                  }).join('');
-                }
-                panel.hidden = false;
-                panel.querySelectorAll('[data-grant-role]').forEach(function (cb) {
-                  cb.addEventListener('change', function () {
-                    var role = cb.getAttribute('data-grant-role');
-                    cb.disabled = true;
-                    fetchJson('/api/cloud/row-grant', {
-                      method: 'POST',
-                      headers: { 'content-type': 'application/json' },
-                      body: JSON.stringify({ table: tableName, pk: id, grantee: role, revoke: !cb.checked }),
-                    }).then(function () {
-                      var list = access.grantees || (access.grantees = []);
-                      var at = list.indexOf(role);
-                      if (cb.checked && at === -1) list.push(role);
-                      if (!cb.checked && at !== -1) list.splice(at, 1);
-                      var infoEl = content.querySelector('#detail-vis-info');
-                      if (infoEl) infoEl.textContent = 'Shared with specific people (' + list.length + ')';
-                      invalidate(tableName);
-                    }).catch(function (e) {
-                      cb.checked = !cb.checked; // revert the failed change
-                      showToast('Access update failed: ' + e.message, {});
-                    }).then(function () { cb.disabled = false; });
-                  });
-                });
-                if (access.visibility === 'custom') {
-                  var infoEl = content.querySelector('#detail-vis-info');
-                  if (infoEl) infoEl.textContent = 'Shared with specific people (' + (access.grantees || []).length + ')';
-                }
-              }).catch(function (e) { showToast('Could not load members: ' + e.message, {}); });
-            });
+          // Per-row sharing controls (shared with the simple fs-item view).
+          wireRowSharing(content, tableName, id, row, function () {
+            renderDetail(content, tableName, id);
           });
 
           // Junction link/unlink handlers (active in both read and edit modes).
@@ -2908,13 +2917,18 @@ export const appJs = `
               '<span class="entity-icon">' + (table === 'files' ? fileEmoji(row) : d.icon) + '</span>' +
               '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
             '</div>' +
+            detailVisLineEl(row) +
             (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
-            '<div class="fs-doc">' + fields.join('') + '</div>' +
+            // Formatted markdown (rendered context) sits ABOVE the column-by-column
+            // data view; the raw fields follow underneath.
             '<div class="fs-context" id="fs-context"></div>' +
+            '<div class="fs-doc">' + fields.join('') + '</div>' +
             (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
           if (table === 'files') renderFilePreview(row);
           loadFsContext(table, id);
           wireFsEdit(content, table, id, t, row);
+          // Per-row sharing controls — same affordance as the advanced detail view.
+          wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs); });
           rels.forEach(function (rel) {
             fsRelatedRows(table, row, rel).then(function (rs) {
               var el = content.querySelector('[data-count-for="' + rel.token + '"]');
@@ -4357,6 +4371,39 @@ export const appJs = `
         '<circle cx="6" cy="18" r="1.5" fill="#bef264"/><circle cx="12" cy="18" r="1.5" fill="#bef264"/><circle cx="18" cy="18" r="1.5" fill="#bef264"/>' +
       '</svg>';
 
+    // The Claude "sunburst" mark — radiating spokes from the center. Drawn with
+    // currentColor so it inherits the button's text color (white on black here).
+    var CLAUDE_LOGO_SVG = (function () {
+      var rays = '';
+      for (var a = 0; a < 360; a += 30) {
+        var r = (a * Math.PI) / 180;
+        var x = (12 + 8.5 * Math.cos(r)).toFixed(2);
+        var y = (12 + 8.5 * Math.sin(r)).toFixed(2);
+        rays += '<line x1="12" y1="12" x2="' + x + '" y2="' + y + '"/>';
+      }
+      return '<svg class="claude-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.6" stroke-linecap="round" aria-hidden="true">' + rays + '</svg>';
+    })();
+
+    // Privacy indicators (lock = private, eye = shared) reused across the sidebar
+    // object list and the entity detail header. Stroke currentColor so the caller
+    // controls the tint (faint gray in the sidebar, inline in the detail line).
+    var LOCK_SVG =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+    var EYE_SVG =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+    // Sidebar object-list indicator: lock when the table's new rows default to
+    // private, eye when shared with everyone. Only the cloud owner gets the
+    // per-table policy (server gates it), so on local/member it renders nothing.
+    function navVisIcon(t) {
+      if (!t || t.defaultRowVisibility === undefined) return '';
+      return t.shared
+        ? '<span class="nav-vis" title="Shared with everyone">' + EYE_SVG + '</span>'
+        : '<span class="nav-vis" title="Private by default">' + LOCK_SVG + '</span>';
+    }
+
     function renderVirginState() {
       var existing = document.getElementById('virgin-state');
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
@@ -4968,10 +5015,21 @@ export const appJs = `
                   '<button id="asst-oauth-disconnect" class="btn">Disconnect</button>' +
                 '</div>'
               : '<div style="margin-bottom:10px">' +
-                  '<a href="/api/assistant/oauth/start" class="btn primary" style="display:inline-block;text-decoration:none">Connect with Claude</a>' +
-                  '<p class="lead" style="margin:6px 0 0;font-size:12px;color:var(--text-muted)">' +
-                    'Use your Claude Pro / Max / Enterprise subscription — no API key needed.' +
+                  // Opens in a new tab; the user approves there, copies the code
+                  // shown, and pastes it below (the client only allows its own
+                  // registered redirect, so it's a manual code-paste flow).
+                  '<a href="/api/assistant/oauth/start" target="_blank" rel="noopener" class="connect-claude-btn" id="connect-claude-btn">' +
+                    CLAUDE_LOGO_SVG + '<span>Connect with Claude</span>' +
+                  '</a>' +
+                  '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
+                    'Use your Claude Pro / Max / Enterprise subscription — no API key needed. ' +
+                    'After you approve in the new tab, paste the code it shows here:' +
                   '</p>' +
+                  '<div style="display:flex;gap:8px;margin-top:6px">' +
+                    '<input id="connect-claude-code" type="text" placeholder="paste code here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;background:var(--surface-2)">' +
+                    '<button class="btn" id="connect-claude-finish">Finish</button>' +
+                  '</div>' +
+                  '<div id="connect-claude-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
                 '</div>') +
             '<details style="margin-bottom:12px"' + (cfg.claudeAuthKind === 'key' ? ' open' : '') + '>' +
               '<summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Advanced — use an API key instead</summary>' +
@@ -5041,6 +5099,25 @@ export const appJs = `
             .then(function (r) { if (!r.ok) throw new Error('disconnect failed (' + r.status + ')'); return r.json(); })
             .then(function () { renderAssistantPanel(host); renderComposer(); })
             .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
+        });
+        // Manual code-paste: after approving in the popped tab, the user pastes
+        // the code here → exchange it for a token.
+        var finishBtn = host.querySelector('#connect-claude-finish');
+        if (finishBtn) finishBtn.addEventListener('click', function () {
+          var codeEl = host.querySelector('#connect-claude-code');
+          var cmsg = host.querySelector('#connect-claude-msg');
+          var code = (codeEl && codeEl.value ? codeEl.value : '').trim();
+          if (!code) { if (cmsg) cmsg.textContent = 'Paste the code from the Claude tab first.'; return; }
+          withBusy(finishBtn, function () {
+            if (cmsg) cmsg.textContent = 'Connecting…';
+            return fetch('/api/assistant/oauth/exchange', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ code: code }),
+            }).then(function (r) { return r.json(); }).then(function (d) {
+              if (!d.ok) { if (cmsg) cmsg.textContent = 'Failed: ' + (d.error || 'could not connect'); return; }
+              renderAssistantPanel(host); renderComposer();
+            }).catch(function (e) { if (cmsg) cmsg.textContent = 'Failed: ' + e.message; });
+          });
         });
         var sttSel = host.querySelector('#asst-stt');
         var voiceKeyHost = host.querySelector('#asst-voice-key');

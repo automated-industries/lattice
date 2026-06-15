@@ -741,6 +741,23 @@ export const css = `
       padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px;
       background: var(--surface-2);
     }
+    /* Connect-with-Claude: a black, centered button carrying the Claude mark. */
+    .connect-claude-btn {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; box-sizing: border-box; padding: 9px 14px; border-radius: 8px;
+      background: #0b0d10; color: #fff; border: 1px solid var(--border-strong);
+      font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer;
+    }
+    .connect-claude-btn:hover { background: #16191d; border-color: var(--accent); }
+    .connect-claude-btn .claude-logo {
+      width: 18px; height: 18px; flex: 0 0 auto; color: #d97757; /* Claude orange */
+    }
+    /* Privacy indicators: faint lock/eye in the sidebar object list + a clearer
+       one on the entity detail header. */
+    .nav-vis { display: inline-flex; align-items: center; margin-left: 5px; color: var(--text-muted); opacity: 0.45; }
+    .nav-vis svg { width: 12px; height: 12px; }
+    .detail-vis-icon { display: inline-flex; align-items: center; color: var(--text-muted); }
+    .detail-vis-icon svg { width: 14px; height: 14px; }
     button.is-busy { opacity: 0.75; cursor: progress; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     .toast .undo-link {

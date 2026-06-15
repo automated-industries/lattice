@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createReadStream, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Lattice } from '../lattice.js';
 import { sendJson } from './http.js';
@@ -126,10 +126,23 @@ function sanitizeFilename(name: string): string {
  * script/form/same-origin if an HTML blob is opened directly — while still
  * letting the GUI embed an image/PDF as a subresource for preview.
  */
+/**
+ * `content-disposition` for a filename that may contain non-ASCII characters.
+ * HTTP header values are ISO-8859-1, so a non-Latin-1 char — e.g. the U+202F
+ * narrow no-break space macOS puts before AM/PM in screenshot names — makes
+ * `res.writeHead` throw `ERR_INVALID_CHAR` and the blob serve 500s (the image
+ * never loads). Emit an ASCII-only `filename=` fallback PLUS an RFC 5987
+ * `filename*=UTF-8''…` with the real name (RFC 6266).
+ */
+export function contentDispositionInline(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
 function blobResponseHeaders(contentType: string, name: string): Record<string, string> {
   return {
     'content-type': contentType,
-    'content-disposition': `inline; filename="${name}"`,
+    'content-disposition': contentDispositionInline(name),
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'content-security-policy': "default-src 'none'; sandbox",
@@ -208,14 +221,18 @@ export async function dispatchFilesRoute(
       sendJson(res, { error: 'file has no local path' }, 404);
       return true;
     }
-    const opener =
+    // "Open in Finder" REVEALS the file (selects it in the OS file browser) — it
+    // does NOT open it in an app. An owned blob is stored extensionless
+    // (data/blobs/<sha256>), so `open <path>` launched TextEdit on raw bytes;
+    // reveal-and-select is both the correct intent and avoids that.
+    const reveal: { cmd: string; args: string[] } =
       process.platform === 'darwin'
-        ? 'open'
+        ? { cmd: 'open', args: ['-R', loc] }
         : process.platform === 'win32'
-          ? 'explorer'
-          : 'xdg-open';
+          ? { cmd: 'explorer', args: [`/select,${loc}`] }
+          : { cmd: 'xdg-open', args: [dirname(loc)] }; // no portable file-select on Linux
     try {
-      const child = spawn(opener, [loc], { detached: true, stdio: 'ignore' });
+      const child = spawn(reveal.cmd, reveal.args, { detached: true, stdio: 'ignore' });
       child.on('error', () => {
         /* surfaced below via the catch on spawn throw; nothing to stream */
       });

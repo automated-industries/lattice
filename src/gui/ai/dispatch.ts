@@ -19,6 +19,8 @@ import {
 } from '../mutations.js';
 import { artifactFileRow } from '../file-row.js';
 import { upsertColumnMeta, upsertTableMeta } from '../column-descriptions.js';
+import { setRowVisibility } from '../../cloud/members.js';
+import { setTableDefaultVisibility } from '../../cloud/table-policy.js';
 import {
   findTableDuplicates,
   mergeDuplicates,
@@ -57,6 +59,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'create_row',
   'create_artifact',
   'set_definition',
+  'set_visibility',
   'dedup',
   'update_row',
   'delete_row',
@@ -166,6 +169,12 @@ export interface DispatchCtx {
   /** Inference aggressiveness 0..1 — sets how liberal the `dedup` tool's fuzzy matching is. */
   aggressiveness?: number;
   /**
+   * The GUI session that initiated this chat turn. Stamped on the assistant's
+   * mutations so they share the user's session-scoped undo/redo stack — the user
+   * can undo what they asked the assistant to do.
+   */
+  sessionId?: string;
+  /**
    * Create a new entity (table) with inferred columns — audited + reversible,
    * no DB reopen (defineLate). Supplied by the server when schema creation is
    * allowed; absent → `create_entity` reports it's unavailable. Returns the
@@ -224,6 +233,10 @@ export async function executeFunction(
     feed: ctx.feed,
     softDeletable: ctx.softDeletable,
     source: 'ai',
+    // Stamp the GUI session that initiated this chat turn, so the assistant's
+    // writes land in the SAME session-scoped undo/redo stack as a manual edit —
+    // the user can undo what they asked the assistant to do.
+    ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     ...(ctx.onColumnsAdded ? { onColumnsAdded: ctx.onColumnsAdded } : {}),
   };
 
@@ -348,6 +361,39 @@ export async function executeFunction(
         if (column) await upsertColumnMeta(ctx.db, table, column, { description });
         else await upsertTableMeta(ctx.db, table, { description });
         return { ok: true, result: { ok: true, table, ...(column ? { column } : {}) } };
+      }
+      case 'set_visibility': {
+        // Make a record (id present) or a whole table (id absent) private or
+        // visible to everyone. Cloud-only; the database enforces owner-only (the
+        // call raises for anything the user doesn't own), so this respects the
+        // user's access by construction.
+        const table = requireTable(args.table, ctx.validTables);
+        const visibility =
+          args.visibility === 'everyone'
+            ? 'everyone'
+            : args.visibility === 'private'
+              ? 'private'
+              : null;
+        if (!visibility) {
+          return { ok: false, error: "visibility must be 'private' or 'everyone'" };
+        }
+        if (ctx.db.getDialect() !== 'postgres') {
+          return {
+            ok: false,
+            error: 'Sharing settings only apply to a shared cloud workspace (this is a local one).',
+          };
+        }
+        const id = typeof args.id === 'string' && args.id ? args.id : undefined;
+        try {
+          if (id) {
+            await setRowVisibility(ctx.db, table, id, visibility);
+            return { ok: true, result: { table, id, visibility } };
+          }
+          await setTableDefaultVisibility(ctx.db, table, visibility);
+          return { ok: true, result: { table, visibility, scope: 'table' } };
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
       }
       case 'dedup': {
         const table = requireTable(args.table, ctx.validTables);

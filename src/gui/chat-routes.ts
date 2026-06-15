@@ -40,6 +40,8 @@ interface ChatContext {
   /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
   configPath?: string;
   outputDir?: string;
+  /** GUI session id — stamped on the assistant's mutations so they're undoable. */
+  sessionId?: string;
   pathname: string;
   method: string;
 }
@@ -512,6 +514,7 @@ export async function dispatchChatRoute(
     aggressiveness: getAggressiveness(),
     ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),
     ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
+    ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),

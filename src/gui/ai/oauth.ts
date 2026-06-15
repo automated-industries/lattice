@@ -32,6 +32,19 @@ const DEFAULT_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
 const DEFAULT_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
 const DEFAULT_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const DEFAULT_SCOPES = ['org:create_api_key', 'user:profile', 'user:inference'];
+/**
+ * The public client only allows ITS registered redirect — an arbitrary loopback
+ * callback is rejected ("redirect URI … not supported by client"). So the
+ * default is the manual code-paste flow: the user authorizes, the page shows a
+ * code, and they paste it back into the GUI. Override via ANTHROPIC_OAUTH_REDIRECT_URI
+ * (with a client that allowlists a loopback callback) to use the auto-callback.
+ */
+const DEFAULT_REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
+
+/** True for the manual code-paste flow (the registered console redirect). */
+export function isManualPasteRedirect(redirectUri: string): boolean {
+  return redirectUri.endsWith('/oauth/code/callback');
+}
 
 /**
  * Resolve the OAuth config: env overrides win, otherwise the built-in public
@@ -52,7 +65,8 @@ export function readOAuthConfig(env: NodeJS.ProcessEnv = process.env): OAuthConf
     tokenUrl: env.ANTHROPIC_OAUTH_TOKEN_URL || DEFAULT_TOKEN_URL,
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     clientId: env.ANTHROPIC_OAUTH_CLIENT_ID || DEFAULT_CLIENT_ID,
-    redirectUri: env.ANTHROPIC_OAUTH_REDIRECT_URI ?? '',
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    redirectUri: env.ANTHROPIC_OAUTH_REDIRECT_URI || DEFAULT_REDIRECT_URI,
     scopes,
   };
 }
@@ -93,6 +107,9 @@ export function buildAuthorizeUrl(cfg: OAuthConfig, state: string, codeChallenge
     state,
   });
   if (cfg.scopes.length) params.set('scope', cfg.scopes.join(' '));
+  // Manual code-paste flow (the registered console redirect): ask the authorize
+  // page to DISPLAY the code for the user to copy, rather than auto-redirect.
+  if (isManualPasteRedirect(cfg.redirectUri)) params.set('code', 'true');
   return `${cfg.authorizeUrl}?${params.toString()}`;
 }
 
@@ -124,11 +141,16 @@ export function parseTokenResponse(raw: unknown, now = Date.now()): OAuthTokens 
   return tokens;
 }
 
-/** Exchange an authorization code for tokens (form-encoded, per OAuth spec). */
+/**
+ * Exchange an authorization code for tokens (form-encoded, per OAuth spec).
+ * `state` is included when present — the manual code-paste flow binds the code
+ * to the state, and the provider expects it echoed back at exchange time.
+ */
 export async function exchangeCodeForTokens(
   cfg: OAuthConfig,
   code: string,
   codeVerifier: string,
+  state?: string,
 ): Promise<OAuthTokens> {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -137,6 +159,7 @@ export async function exchangeCodeForTokens(
     code,
     code_verifier: codeVerifier,
   });
+  if (state) body.set('state', state);
   const res = await fetch(cfg.tokenUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
