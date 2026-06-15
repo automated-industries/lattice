@@ -159,6 +159,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Managed-Postgres deployment guide** (AWS RDS / RDS Proxy, Cloud SQL, Neon):
   use a session-mode/direct endpoint for the realtime `LISTEN`, identity survives
   a pooler, no `search_path` pinning is needed, and a recommended parameter group.
+- **`maxRowBytes` option.** An optional `LatticeOptions.maxRowBytes` cap rejects an
+  insert/upsert/update whose row payload exceeds the limit — a guard against a
+  member writing oversized rows as a denial-of-service. Off by default.
+- **Durable `FileSourceKeyStore`.** A file-backed `SourceKeyStore` (optionally
+  AES-256-GCM encrypted at rest) so crypto-shred source keys survive a process
+  restart, where the default in-memory store would lose them. Complements the new
+  `docs/security.md` (threat model, deployment hardening, launch checklist).
 
 ## [3.2.1] - 2026-06-14
 
