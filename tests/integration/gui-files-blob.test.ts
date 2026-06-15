@@ -101,7 +101,8 @@ describe('files blob + open-in-finder', () => {
     expect(String((await r.json()).error)).toMatch(/no underlying blob/i);
   });
 
-  it('reports open-in-finder disabled unless LATTICE_LOCAL_OPEN=1', async () => {
+  it('reports open-in-finder disabled when LATTICE_LOCAL_OPEN=0 (default is now on)', async () => {
+    process.env.LATTICE_LOCAL_OPEN = '0'; // explicit opt-out — default is now enabled
     const s = await boot();
     const id = await seedFileRow(s.url);
     const r = await fetch(`${s.url}/api/files/${id}/open-in-finder`, { method: 'POST' });

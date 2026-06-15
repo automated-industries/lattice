@@ -73,7 +73,14 @@ const THROTTLE_WINDOW_MS = 200;
 export class ProgressThrottle {
   private readonly cb: RenderProgressCallback | undefined;
   private readonly windowMs: number;
-  private lastEmit = 0;
+  /**
+   * Last passthrough time, keyed per table (`event.table`, or `''` for the
+   * table-less `done`/`error` lifecycle events). Per-table — not a single shared
+   * clock — so when tables render CONCURRENTLY each one keeps its own ~5/sec
+   * budget: a fast table can't consume the window and starve a slow table's
+   * progress. `force` (table-start) resets only that table's budget.
+   */
+  private readonly lastEmit = new Map<string, number>();
 
   constructor(cb: RenderProgressCallback | undefined, windowMs: number = THROTTLE_WINDOW_MS) {
     this.cb = cb;
@@ -81,26 +88,28 @@ export class ProgressThrottle {
   }
 
   /**
-   * Emit a `table-progress` event, but only if the window since the last
-   * passthrough has elapsed. Dropped events are simply not delivered — the next
-   * one that survives carries the latest running count.
+   * Emit a `table-progress` event, but only if the window since this table's
+   * last passthrough has elapsed. Dropped events are simply not delivered — the
+   * next one that survives carries the latest running count.
    */
   tick(event: RenderProgress): void {
     if (!this.cb) return;
+    const key = event.table ?? '';
     const now = Date.now();
-    if (now - this.lastEmit < this.windowMs) return;
-    this.lastEmit = now;
+    if (now - (this.lastEmit.get(key) ?? 0) < this.windowMs) return;
+    this.lastEmit.set(key, now);
     this.cb(event);
   }
 
   /**
-   * Emit a lifecycle event immediately and reset the throttle window. Use for
-   * `table-start`, `table-done`, `done`, and `error` — none of which should
-   * ever be dropped. Resetting on `table-start` gives each table a clean budget.
+   * Emit a lifecycle event immediately and reset this table's throttle window.
+   * Use for `table-start`, `table-done`, `done`, and `error` — none of which
+   * should ever be dropped. Resetting on `table-start` gives each table a clean
+   * budget.
    */
   force(event: RenderProgress): void {
     if (!this.cb) return;
-    this.lastEmit = Date.now();
+    this.lastEmit.set(event.table ?? '', Date.now());
     this.cb(event);
   }
 }

@@ -98,6 +98,11 @@ export const css = `
     /* ── Top bar ───────────────────────────────────────── */
     header.topbar {
       display: flex; align-items: center; gap: 12px;
+      /* The topbar's backdrop-filter creates a stacking context; without an
+         explicit z-index it (and its dropdowns like .db-menu) get painted under
+         the main content. 100 keeps dropdowns above the dashboard cards while
+         staying below drawers (120/130), modals (1000), and toasts (2000). */
+      position: relative; z-index: 100;
       min-height: 56px; padding: 8px 20px;
       background: var(--glass);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
@@ -1255,6 +1260,9 @@ export const css = `
       margin-top: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer;
     }
     .rail-composer .composer-private input { cursor: pointer; }
+    /* On a local workspace the toggle is a checked, read-only indicator. */
+    .rail-composer .composer-private.is-disabled { opacity: 0.6; cursor: default; }
+    .rail-composer .composer-private.is-disabled input { cursor: not-allowed; }
     .rail-composer .composer-private-hint { color: var(--text-muted); opacity: 0.8; font-size: 11px; }
     .rail-composer .composer-mic {
       flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;

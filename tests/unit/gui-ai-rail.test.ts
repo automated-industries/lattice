@@ -124,14 +124,18 @@ describe('assistant rail markup + wiring', () => {
     // would only surface in the browser. new Function() compiles (but does
     // NOT execute) the body, so it throws SyntaxError on malformed JS while
     // never touching browser globals.
-    const open = guiAppHtml.indexOf('<script>');
-    const close = guiAppHtml.lastIndexOf('</script>');
-    expect(open).toBeGreaterThan(-1);
-    expect(close).toBeGreaterThan(open);
-    const body = guiAppHtml.slice(open + '<script>'.length, close);
-    // Intentional: new Function() compiles (without executing) the inline SPA
-    // script to surface syntax errors that bundling/tsc never sees.
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    expect(() => new Function(body)).not.toThrow();
+    // There are multiple inline <script> blocks now (the analytics snippet plus
+    // the SPA). Compile EACH so a syntax error in either surfaces here.
+    const re = /<script>([\s\S]*?)<\/script>/g;
+    const bodies: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(guiAppHtml)) !== null) bodies.push(m[1] ?? '');
+    expect(bodies.length).toBeGreaterThanOrEqual(1);
+    for (const body of bodies) {
+      // Intentional: new Function() compiles (without executing) the inline
+      // script to surface syntax errors that bundling/tsc never sees.
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
+      expect(() => new Function(body)).not.toThrow();
+    }
   });
 });

@@ -324,11 +324,27 @@ async function enrichWithLlm(
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
-  if (!auth) return [];
+  if (!auth) {
+    // No AI credentials → auto-link can't run. Log it (rather than feed-spamming
+    // local non-AI users) so "why didn't it link?" is answerable from the log.
+    console.warn('[ingest] auto-link skipped — no AI credentials configured');
+    return [];
+  }
   let client;
   try {
     client = createAnthropicClient(auth);
-  } catch {
+  } catch (e) {
+    // internal guideline: never swallow. A client-init failure means NO auto-link for this
+    // file — say so loudly + visibly instead of returning [] in silence.
+    const msg = (e as Error).message;
+    console.error('[ingest] auto-link unavailable — Anthropic client init failed:', msg);
+    mctx.feed.publish({
+      table: 'files',
+      op: 'update',
+      rowId: fileId,
+      source: 'ingest',
+      summary: `Couldn't auto-link "${name}": AI client unavailable`,
+    });
     return [];
   }
   const temperature = aggressivenessToTemperature(aggressiveness);
@@ -364,10 +380,17 @@ async function enrichWithLlm(
             created = true;
           }
         } catch (e) {
-          console.warn(
-            `[ingest] auto-create junction files↔${m.table} failed:`,
-            (e as Error).message,
-          );
+          // internal guideline: surface — a junction-create failure (e.g. cloud permission)
+          // silently breaks auto-link, so make the reason visible, not stderr-only.
+          const msg = (e as Error).message;
+          console.error(`[ingest] auto-create junction files↔${m.table} failed:`, msg);
+          mctx.feed.publish({
+            table: 'files',
+            op: 'update',
+            rowId: fileId,
+            source: 'ingest',
+            summary: `Couldn't create link table files ↔ ${m.table}: ${msg}`,
+          });
         }
       }
       if (jx) {
@@ -393,7 +416,17 @@ async function enrichWithLlm(
             });
           }
         } catch (e) {
-          console.warn(`[ingest] auto-link to ${m.table} failed:`, (e as Error).message);
+          // internal guideline: surface — a link failure (e.g. cloud RLS/permission) would
+          // otherwise leave "nothing linked" with no visible reason.
+          const msg = (e as Error).message;
+          console.error(`[ingest] auto-link to ${m.table} failed:`, msg);
+          mctx.feed.publish({
+            table: 'files',
+            op: 'update',
+            rowId: fileId,
+            source: 'ingest',
+            summary: `Couldn't auto-link "${name}" to ${m.table}: ${msg}`,
+          });
         }
       } else {
         // Could not link (no junction + creation unavailable/declined) —
@@ -495,7 +528,17 @@ async function enrichWithLlm(
     }
     return matches;
   } catch (e) {
-    console.warn('[ingest] classify failed:', (e as Error).message);
+    // internal guideline: surface — classification failing means zero auto-links; make the
+    // reason visible in the feed, not just stderr.
+    const msg = (e as Error).message;
+    console.error('[ingest] classify failed:', msg);
+    mctx.feed.publish({
+      table: 'files',
+      op: 'update',
+      rowId: fileId,
+      source: 'ingest',
+      summary: `Couldn't auto-link "${name}": ${msg}`,
+    });
     return [];
   }
 }
