@@ -18,6 +18,16 @@ import { resolveActiveS3Config } from '../framework/s3-config.js';
  * Localhost trust, like the other GUI routes.
  */
 
+/**
+ * Whether the GUI may shell the platform "open in Finder/Explorer" for a local
+ * file. Defaults ON (a `lattice gui` is a local desktop tool sharing the user's
+ * machine); set `LATTICE_LOCAL_OPEN=0` to disable, in which case the GUI hides the
+ * "Open in Finder" affordance entirely rather than offering a dead button.
+ */
+export function localFileOpenEnabled(): boolean {
+  return process.env.LATTICE_LOCAL_OPEN !== '0';
+}
+
 interface FilesContext {
   db: Lattice;
   /** Workspace root (holds `data/blobs/`), to resolve `blob_path` references. */
@@ -187,7 +197,7 @@ export async function dispatchFilesRoute(
 
   const openMatch = OPEN_RE.exec(ctx.pathname);
   if (openMatch && ctx.method === 'POST') {
-    if (process.env.LATTICE_LOCAL_OPEN !== '1') {
+    if (!localFileOpenEnabled()) {
       sendJson(res, { enabled: false });
       return true;
     }

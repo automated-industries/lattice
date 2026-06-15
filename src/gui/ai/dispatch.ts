@@ -2,6 +2,7 @@ import type { Lattice } from '../../lattice.js';
 import type { Row } from '../../types.js';
 import type { FeedBus } from '../feed.js';
 import { getFunction } from './registry.js';
+import { searchLatticeDocs } from './lattice-docs.js';
 import { fullTextSearch } from '../../search/fts.js';
 import type { DeleteResolution, DeleteEntityOutcome } from '../schema-ops.js';
 import {
@@ -43,6 +44,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_rows',
   'get_row',
   'search',
+  'lattice_help',
   'get_history',
   'create_row',
   'update_row',
@@ -231,8 +233,17 @@ export async function executeFunction(
         const cols = ctx.db.getRegisteredColumns(table);
         const orderBy =
           cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
+        // Paginate so the model can page a large table deliberately (limit +
+        // offset) instead of pulling a 200-row blob every read. Default + max stay
+        // 200 (unchanged behavior when the model omits them); offset is new.
+        const limit = Math.min(
+          200,
+          Math.max(1, typeof args.limit === 'number' ? Math.floor(args.limit) : 200),
+        );
+        const offset = Math.max(0, typeof args.offset === 'number' ? Math.floor(args.offset) : 0);
         // On a cloud, Postgres RLS filters reads to the rows this member may see.
-        const opts: Parameters<typeof ctx.db.query>[1] = { limit: 200, orderBy, orderDir: 'asc' };
+        const opts: Parameters<typeof ctx.db.query>[1] = { limit, orderBy, orderDir: 'asc' };
+        if (offset > 0) opts.offset = offset;
         if (ctx.softDeletable.has(table) && !includeDeleted) {
           opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
         }
@@ -248,6 +259,12 @@ export async function executeFunction(
         const row = await ctx.db.get(table, id);
         if (row === null) return { ok: false, error: 'Row not found' };
         return { ok: true, result: redactRow(row, await secretColumnsFor(ctx.db, table)) };
+      }
+      case 'lattice_help': {
+        // Answer questions about Lattice ITSELF from the canonical bundled docs —
+        // not the user's data. Read-only; no DB access, no permission concerns.
+        const query = requireString(args.query, 'query');
+        return { ok: true, result: searchLatticeDocs(query) };
       }
       case 'search': {
         const query = requireString(args.query, 'query');

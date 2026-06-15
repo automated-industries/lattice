@@ -48,11 +48,22 @@ export function readJson<T = Record<string, unknown>>(
   });
 }
 
-/** Run an async handler, converting any thrown error into a 500 JSON response. */
-export async function tryHandler(res: ServerResponse, fn: () => Promise<void>): Promise<void> {
+/** Run an async handler, converting any thrown error into a 500 JSON response.
+ *  #4.11 — the error is also LOGGED server-side (message + stack) before the 500
+ *  goes out. Previously a thrown cloud-op failure became a bare generic 500 with
+ *  no server-side trace, so the real cause was invisible to whoever ran the GUI
+ *  (Rule: no silent failures). The label defaults but a caller can pass a more
+ *  specific one (e.g. the route) for sharper logs. */
+export async function tryHandler(
+  res: ServerResponse,
+  fn: () => Promise<void>,
+  label = 'request',
+): Promise<void> {
   try {
     await fn();
   } catch (e) {
-    sendJson(res, { error: (e as Error).message }, 500);
+    const err = e as Error;
+    console.error(`[gui] ${label} failed: ${err.message}\n${err.stack ?? ''}`);
+    sendJson(res, { error: err.message }, 500);
   }
 }

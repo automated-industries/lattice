@@ -13,12 +13,19 @@ import {
   saveS3ConfigRaw,
 } from '../framework/user-config.js';
 import { activeWorkspaceLabel, mergeS3ConfigForSave } from '../framework/s3-config.js';
-import { probeCloud, cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+import {
+  probeCloud,
+  cloudRlsInstalled,
+  canManageRoles,
+  claimMemberInvite,
+} from '../framework/cloud-connect.js';
 import { secureCloud } from '../cloud/setup.js';
 import {
   installCloudSettings,
   getCloudSettingStrict,
   setCloudSetting,
+  getOrCreateInviteSalt,
+  hashInviteEmail,
   CLOUD_SETTING_SYSTEM_PROMPT,
 } from '../cloud/settings.js';
 
@@ -34,11 +41,13 @@ import {
   grantCell,
   revokeCell,
   assertScopedMemberRole,
+  revokeMemberRole,
 } from '../cloud/members.js';
 import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../cloud/invite.js';
+import { slugify } from '../render/markdown.js';
 import { MEMBER_GROUP } from '../cloud/rls.js';
 import { getAsyncOrSync, runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   archiveLocalSqlite,
   migrateLatticeData,
@@ -46,6 +55,7 @@ import {
 } from '../framework/cloud-migration.js';
 import { parseConfigFile } from '../config/parser.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
+import { getActiveWorkspace } from '../framework/workspace.js';
 import {
   registerOrUpdateCloudWorkspace,
   renameWorkspaceByConfigPath,
@@ -58,14 +68,17 @@ import { resolveContextDirForConfig } from '../framework/gui-bootstrap.js';
  * the header switcher + Settings reflect that this workspace is now cloud. No-op
  * when not running inside a `.lattice` root.
  */
-function updateActiveWorkspaceToCloud(configPath: string, label: string): void {
+function updateActiveWorkspaceToCloud(configPath: string, displayName: string, key: string): void {
   const root = findLatticeRoot(dirname(configPath));
   if (!root) return;
   registerOrUpdateCloudWorkspace(root, {
     configPath,
     contextDir: resolveContextDirForConfig(configPath),
-    displayName: label,
-    db: '${LATTICE_DB:' + label + '}',
+    displayName,
+    // The credential key + ${LATTICE_DB:…} reference must be a SANITIZED,
+    // space-free label (resolveDbPath rejects anything else); the human
+    // displayName is separate.
+    db: '${LATTICE_DB:' + key + '}',
     makeActive: true,
   });
 }
@@ -99,6 +112,14 @@ interface DbConfigContext {
    * the parent server holds the mutable `active` reference.
    */
   swap: () => Promise<void>;
+  /**
+   * Join a cloud as a NEW workspace: save the credential under `key`, scaffold a
+   * new cloud workspace named `displayName` pointing at `${LATTICE_DB:key}`, then
+   * open + activate it. Atomic (rolls back on failure). Returns the new workspace
+   * id. Used by the member join/redeem path so it never repoints (hijacks) the
+   * currently-open workspace.
+   */
+  createCloudWorkspace: (displayName: string, key: string, url: string) => Promise<string>;
 }
 
 /** Build a Postgres URL from form fields. Percent-encodes user + password. */
@@ -264,6 +285,42 @@ function resolveRelativeToConfig(configPath: string, candidate: string): string 
 }
 
 /**
+ * #3.4 — orphan-role cleanup, run by the owner at invite time (the owner holds
+ * CREATEROLE here). Two passes, both stamping `revoked_at` and dropping the scoped
+ * role so it can never be redeemed and never piles up:
+ *   1. RE-INVITE: any still-PENDING invite for THIS email (un-redeemed,
+ *      un-revoked) — re-inviting mints a fresh suffixed role, so without this the
+ *      prior role is orphaned AND its old token stays live. Revoking it makes the
+ *      newest invite the only valid one.
+ *   2. SWEEP: any pending invite that has EXPIRED — its role would otherwise
+ *      linger forever (invites have a TTL but nothing dropped the role on expiry).
+ * `revokeMemberRole` is idempotent on an already-gone role, so a stale invite
+ * whose role was dropped elsewhere just gets its `revoked_at` stamped. Failures
+ * surface (internal guideline) — a re-invite must not silently leave a live orphan behind.
+ */
+async function reclaimStaleInviteRoles(
+  db: DbConfigContext['db'],
+  emailHash: string,
+): Promise<void> {
+  const stale = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT DISTINCT "role" FROM "__lattice_member_invites"
+       WHERE "redeemed_at" IS NULL AND "revoked_at" IS NULL
+         AND ("email_hash" = ? OR "expires_at" <= now())`,
+    [emailHash],
+  )) as { role: string }[];
+  for (const { role } of stale) {
+    await revokeMemberRole(db, role);
+    await runAsyncOrSync(
+      db.adapter,
+      `UPDATE "__lattice_member_invites" SET "revoked_at" = now()
+         WHERE "role" = ? AND "revoked_at" IS NULL`,
+      [role],
+    );
+  }
+}
+
+/**
  * Join an existing Lattice cloud as a scoped member: probe the connection, then
  * persist the encrypted credential, point the workspace at it, and swap the
  * active DB. Shared by the manual `connect-existing` flow and the email-bound
@@ -275,6 +332,7 @@ async function joinCloudAsMember(
   res: ServerResponse,
   fields: { host: string; port: number; dbname: string; user: string; password: string },
   label: string,
+  opts: { claimInvite?: boolean } = {},
 ): Promise<void> {
   const url = buildPostgresUrl(fields);
   const probe = await probeCloud(url);
@@ -294,11 +352,42 @@ async function joinCloudAsMember(
     );
     return;
   }
-  saveDbCredential(label, url);
-  rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + label + '}');
-  updateActiveWorkspaceToCloud(ctx.configPath, label);
-  await ctx.swap();
-  sendJson(res, { ok: true, label, isCloud: true });
+  // #3.1 — one-time-use + revocation. On the email-bound redeem path, atomically
+  // CLAIM the invite as the member (stamp redeemed_at) BEFORE creating the
+  // workspace. A replayed/leaked token, a revoked invite, or an expired one is
+  // rejected here — and because the workspace hasn't been created yet, there is
+  // nothing to roll back (atomic by construction). The manual connect-existing
+  // flow has no invite row and skips this.
+  if (opts.claimInvite) {
+    const claim = await claimMemberInvite(url);
+    if (!claim.claimed) {
+      sendJson(
+        res,
+        {
+          ok: false,
+          error:
+            claim.error ??
+            'This invite has already been used, was revoked, or has expired. Ask the owner for a new one.',
+        },
+        403,
+      );
+      return;
+    }
+  }
+  // Create a NEW workspace for the cloud and switch to it — never repoint
+  // (hijack) the currently-open workspace, which previously overwrote the user's
+  // existing local workspace (wrong name, orphaned data, no switcher entry).
+  // The credential key + ${LATTICE_DB:…} reference MUST be a sanitized,
+  // space-free label or resolveDbPath rejects it (the default "Cloud workspace"
+  // — with a space — never resolved, silently dropping the member on an empty
+  // local DB). Sanitize the key; keep the human label as the display name.
+  const key = slugify(label) || 'cloud';
+  try {
+    const workspaceId = await ctx.createCloudWorkspace(label, key, url);
+    sendJson(res, { ok: true, label, isCloud: true, workspaceId });
+  } catch (e) {
+    sendJson(res, { ok: false, error: (e as Error).message }, 500);
+  }
 }
 
 export async function dispatchDbConfigRoute(
@@ -478,7 +567,9 @@ export async function dispatchDbConfigRoute(
         const backupPath = archiveLocalSqlite(sourceDbPath);
         saveDbCredential(parsed.label, url);
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
-        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label);
+        // parsed.label already satisfies the ${LATTICE_DB:…} charset (it was
+        // parsed from one), so it's a valid key + a fine display name.
+        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label, parsed.label);
         await ctx.swap();
         sendJson(res, {
           ok: true,
@@ -544,24 +635,70 @@ export async function dispatchDbConfigRoute(
       const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
         | { u?: string }
         | undefined;
-      const owner = me?.u ?? '';
+      const ownerRole = me?.u ?? '';
+      // The operator's own identity (mirrored into __lattice_user_identity on open)
+      // — so the owner row shows a real name/email, not the bare Postgres role.
+      const idRow = (await getAsyncOrSync(
+        ctx.db.adapter,
+        `SELECT display_name, email FROM "__lattice_user_identity" WHERE id = 'singleton'`,
+      ).catch(() => undefined)) as { display_name?: string; email?: string } | undefined;
+      // An EMPTY trimmed name must fall back to the role (not just a null one).
+      const trimmedOwnerName = idRow?.display_name?.trim() ?? '';
+      const ownerName = trimmedOwnerName.length > 0 ? trimmedOwnerName : ownerRole;
+      const ownerEmail = idRow?.email ?? '';
+
       // Only an owner can enumerate roles; a scoped member just sees itself.
       if (!(await canManageRoles(ctx.db))) {
-        sendJson(res, { members: owner ? [{ role: owner, isOwner: false, isYou: true }] : [] });
+        sendJson(res, {
+          members: ownerRole
+            ? [
+                {
+                  role: ownerRole,
+                  name: ownerName,
+                  email: ownerEmail,
+                  status: 'member',
+                  isYou: true,
+                },
+              ]
+            : [],
+        });
         return;
       }
+      // Member-group roles — EXCLUDING the owner (it was double-counted: prepended
+      // AND listed again from the group).
       const rows = (await allAsyncOrSync(
         ctx.db.adapter,
         `SELECT m.rolname AS role
            FROM pg_auth_members am
            JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = ?
            JOIN pg_roles m ON m.oid = am.member
+          WHERE m.rolname <> ?
           ORDER BY m.rolname`,
-        [MEMBER_GROUP],
+        [MEMBER_GROUP, ownerRole],
       )) as { role: string }[];
+      // role → its latest non-revoked invite (email + whether it's been redeemed)
+      // for human-readable display + accurate status. An invite with redeemed_at
+      // NULL means the person was invited but hasn't joined yet → "Invited"; once
+      // they redeem (redeemed_at set) → "Member". A member-group role with no
+      // invite row (e.g. a DBA-created role) is treated as a redeemed member.
+      const invites = (await allAsyncOrSync(
+        ctx.db.adapter,
+        `SELECT DISTINCT ON ("role") "role", "email", "redeemed_at"
+           FROM "__lattice_member_invites"
+          WHERE "revoked_at" IS NULL
+          ORDER BY "role", "created_at" DESC`,
+      ).catch(() => [])) as { role: string; email?: string; redeemed_at?: string | null }[];
+      const inviteByRole = new Map(invites.map((r) => [r.role, r]));
       const members = [
-        ...(owner ? [{ role: owner, isOwner: true, isYou: true }] : []),
-        ...rows.map((r) => ({ role: r.role, isOwner: false, isYou: r.role === owner })),
+        { role: ownerRole, name: ownerName, email: ownerEmail, status: 'owner', isYou: true },
+        ...rows.map((r) => {
+          const inv = inviteByRole.get(r.role);
+          const email = inv?.email ?? '';
+          const name = email ? (email.split('@')[0] ?? r.role) : r.role;
+          // Pending (un-redeemed) invite → Invited; redeemed or no invite → Member.
+          const status = inv && inv.redeemed_at == null ? 'invited' : 'member';
+          return { role: r.role, name, email, status, isYou: false };
+        }),
       ];
       sendJson(res, { members });
     });
@@ -594,6 +731,15 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { error: 'Could not resolve the cloud connection coordinates' }, 500);
         return;
       }
+      // #4.10 — salt the audit email hash with a stable per-cloud salt (a bare
+      // SHA-256 is rainbow-tableable). The salt is generated once + persisted, so
+      // the hash stays a stable lookup key for re-invite / orphan cleanup.
+      const emailHash = hashInviteEmail(await getOrCreateInviteSalt(ctx.db), email);
+      // #3.4 — before minting a fresh role, revoke any prior PENDING invite for
+      // this email (a re-invite would otherwise orphan the previous role + leave
+      // its token live) and sweep any expired-but-unredeemed orphans. Runs as the
+      // owner (who holds CREATEROLE) so the role drops actually take effect.
+      await reclaimStaleInviteRoles(ctx.db, emailHash);
       // Provision a fresh scoped role, then HARD-ASSERT it is non-privileged
       // before embedding it in a token (security non-regression — never a
       // superuser / CREATEROLE / BYPASSRLS / owner role).
@@ -601,28 +747,86 @@ export async function dispatchDbConfigRoute(
       const password = generateMemberPassword();
       await provisionMemberRole(ctx.db, role, password);
       await assertScopedMemberRole(ctx.db, role);
-      // Bake the pooler-correct user from the owner's own connection role so the
-      // invitee never has to type/know the username.
-      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
-        | { u?: string }
-        | undefined;
-      const user = poolerAwareUser(coords.host, role, me?.u ?? '');
+      // Bake the pooler-correct user from the owner's CONNECTION-STRING username
+      // (postgres.<ref>), NOT session_user — on the Supabase pooler session_user
+      // is the bare role with no tenant ref, which yields an unconnectable member
+      // username (ENOIDENTIFIER). coords.user carries the ref.
+      const user = poolerAwareUser(coords.host, role, coords.user);
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      const token = mintInviteToken({ coords, user, password, role, email, expiresAt });
+      // Stamp the owner's cloud (workspace) name so the member's new workspace is
+      // named after the cloud, not a generic default (1.3a).
+      const inviteRoot = findLatticeRoot(dirname(ctx.configPath));
+      const ownerWs = inviteRoot ? getActiveWorkspace(inviteRoot) : null;
+      const token = mintInviteToken({
+        coords,
+        user,
+        password,
+        role,
+        email,
+        expiresAt,
+        ...(ownerWs?.displayName ? { workspaceName: ownerWs.displayName } : {}),
+      });
       // Owner-only audit row. Plaintext email + password are NEVER stored — only a
       // hash of the email and the role name (for later revocation).
       await runAsyncOrSync(
         ctx.db.adapter,
-        `INSERT INTO "__lattice_member_invites" ("id","role","email_hash","expires_at")
-           VALUES (?, ?, ?, ?)`,
+        `INSERT INTO "__lattice_member_invites" ("id","role","email_hash","email","expires_at")
+           VALUES (?, ?, ?, ?, ?)`,
         [
           randomUUID(),
           role,
-          createHash('sha256').update(email.trim().toLowerCase()).digest('hex'),
+          emailHash,
+          // Plaintext email stored ONLY in this owner-only table so the owner's
+          // Members list can show who each member is (the hash above stays for
+          // tamper-evident audit; the password is still never stored anywhere).
+          email.trim().toLowerCase(),
           expiresAt.toISOString(),
         ],
       );
       sendJson(res, { ok: true, token, role, email });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/remove-member — owner-only: revoke a member's scoped role
+  // (the GUI "Kick" control). Wires the previously-unreachable revokeMemberRole.
+  if (pathname === '/api/cloud/remove-member' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can remove members' }, 403);
+        return;
+      }
+      const body = await readJson(req);
+      const role = typeof body.role === 'string' ? body.role : '';
+      if (!role) {
+        sendJson(res, { error: 'A member role is required' }, 400);
+        return;
+      }
+      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
+        | { u?: string }
+        | undefined;
+      if (role === (me?.u ?? '')) {
+        sendJson(res, { error: 'You cannot remove yourself (the owner)' }, 400);
+        return;
+      }
+      // revokeMemberRole reassigns/drops the member's objects then the role and
+      // SURFACES failures (internal guideline) — e.g. Supabase "permission denied to drop
+      // objects" — instead of swallowing them; tryHandler turns a throw into a
+      // 500 the GUI shows. If it succeeds, mark the audit invites revoked.
+      await revokeMemberRole(ctx.db, role);
+      await runAsyncOrSync(
+        ctx.db.adapter,
+        `UPDATE "__lattice_member_invites" SET "revoked_at" = now() WHERE "role" = ? AND "revoked_at" IS NULL`,
+        [role],
+      ).catch((e: unknown) => {
+        // Best-effort audit only — the role IS already revoked; log, don't fail.
+        console.error('[cloud] mark invite revoked failed:', (e as Error).message);
+      });
+      sendJson(res, { ok: true, role });
     });
     return true;
   }
@@ -651,8 +855,14 @@ export async function dispatchDbConfigRoute(
         sendJson(res, { ok: false, error: (e as Error).message }, 400);
         return;
       }
+      // Name the new workspace from the cloud name stamped into the invite
+      // (1.3a), else a client-supplied label, else a sane default (which now
+      // resolves because joinCloudAsMember sanitizes the key).
+      // Each candidate falls back when EMPTY, not just when null.
+      const fromCloud = payload.workspace_name?.trim() ?? '';
+      const fromBody = typeof body.label === 'string' ? body.label.trim() : '';
       const label =
-        typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Cloud workspace';
+        fromCloud.length > 0 ? fromCloud : fromBody.length > 0 ? fromBody : 'Cloud workspace';
       await joinCloudAsMember(
         ctx,
         res,
@@ -664,6 +874,7 @@ export async function dispatchDbConfigRoute(
           password: payload.password,
         },
         label,
+        { claimInvite: true }, // #3.1 — enforce one-time-use + revocation on redeem
       );
     });
     return true;
@@ -899,7 +1110,7 @@ export async function dispatchDbConfigRoute(
  *  Postgres URL. */
 function activeCloudCoords(
   configPath: string,
-): { host: string; port: number; dbname: string } | null {
+): { host: string; port: number; dbname: string; user: string } | null {
   const doc = parseDocument(readFileSync(configPath, 'utf8'));
   const rawDb = doc.get('db');
   const dbLine = typeof rawDb === 'string' ? rawDb.trim() : '';
@@ -907,7 +1118,13 @@ function activeCloudCoords(
   const url = labelMatch ? getDbCredential(labelMatch[1] ?? '') : dbLine;
   if (!url) return null;
   const parsed = parsePostgresUrl(url);
-  return parsed ? { host: parsed.host, port: parsed.port, dbname: parsed.dbname } : null;
+  // Keep `user` too: on the Supabase pooler the tenant ref lives ONLY in the
+  // connection-string username (`postgres.<ref>`), never in session_user (which
+  // returns the bare role). poolerAwareUser needs it to mint a connectable
+  // member username.
+  return parsed
+    ? { host: parsed.host, port: parsed.port, dbname: parsed.dbname, user: parsed.user }
+    : null;
 }
 
 // Re-export for tests that want to construct URLs without going through HTTP.

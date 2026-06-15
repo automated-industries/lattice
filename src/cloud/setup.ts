@@ -23,6 +23,33 @@ import { runAsyncOrSync } from '../db/adapter.js';
  * non-superuser owner can still SELECT every row to stamp it before FORCE RLS
  * filters the table to rows it already owns.
  */
+/**
+ * Secure ONE user table on a cloud: stamp current-role ownership of existing
+ * rows, FORCE per-row RLS, and (re)build the audience cell-masking view. Idempotent
+ * + additive. The per-table half of {@link secureCloud}, factored out so tables
+ * created at RUNTIME (data-model panel / assistant / ingest) are secured the same
+ * way — otherwise a runtime table on a secured cloud has RLS OFF (wide open).
+ * `backfillOwnership` runs BEFORE `enableRlsForTable` so a non-superuser owner can
+ * still SELECT every row to stamp it before FORCE RLS filters the table. No-op on
+ * SQLite, on bookkeeping tables, or on an unkeyable table.
+ */
+export async function secureNewCloudTable(
+  db: Lattice,
+  table: string,
+  pk: readonly string[],
+): Promise<void> {
+  if (db.getDialect() !== 'postgres') return;
+  if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) return;
+  if (pk.length === 0) return;
+  await backfillOwnership(db, table, pk);
+  await enableRlsForTable(db, table, pk);
+  const cols = db.getRegisteredColumns(table);
+  if (cols) {
+    await seedColumnPolicyFromYaml(db, table, db.getColumnAudience(table));
+    await regenerateAudienceViewFromDb(db, table, Object.keys(cols), pk);
+  }
+}
+
 export async function secureCloud(db: Lattice): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
   await installCloudRls(db);
@@ -31,19 +58,7 @@ export async function secureCloud(db: Lattice): Promise<void> {
   await enableChangelogRls(db);
   const registered = db.getRegisteredTableNames();
   for (const table of registered) {
-    // RLS bookkeeping + GUI-internal tables are definer-managed, not per-row RLS.
-    if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
-    const pk = db.getPrimaryKey(table);
-    if (pk.length === 0) continue; // unkeyable table — no per-row RLS
-    await backfillOwnership(db, table, pk);
-    await enableRlsForTable(db, table, pk);
-    const cols = db.getRegisteredColumns(table);
-    if (cols) {
-      // Seed the YAML-declared audiences into the canonical __lattice_column_policy
-      // (once), then build the mask view FROM the DB so it's cloud-canonical.
-      await seedColumnPolicyFromYaml(db, table, db.getColumnAudience(table));
-      await regenerateAudienceViewFromDb(db, table, Object.keys(cols), pk);
-    }
+    await secureNewCloudTable(db, table, db.getPrimaryKey(table));
   }
   // `secrets` is never shareable by default (a private-only table): the share/grant
   // functions refuse it and new rows are forced private, at the data-model level.

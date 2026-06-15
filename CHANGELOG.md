@@ -8,6 +8,303 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-06-14
+
+### Added — ask the assistant about Lattice itself (3.2)
+
+- **`lattice_help` tool.** The chat assistant can now answer questions about
+  Lattice's own features ("what is private mode?", "how do I invite a member?")
+  by searching Lattice's documentation, instead of guessing or searching your
+  data. It reads the SINGLE canonical docs source — the repo's `docs/*.md`, which
+  are the GitHub docs and now ship in the npm package (`files` includes `docs`) —
+  so there's no separate, drift-prone copy.
+
+### Added — chat knows the record you're viewing (3.2)
+
+- **The assistant resolves "this".** The chat now sends the record currently open
+  in the GUI (table + id) as context, so "delete this file", "summarize this", or
+  "share this row" act on it directly instead of asking which one. The hint is
+  validated server-side (table must exist) and every action still flows through
+  the permission-gated tools, so it can't widen access.
+
+### Fixed — chat rail follows the active workspace (3.2)
+
+- **Switching workspaces now resets the chat rail.** `chat_threads`/`chat_messages`
+  live in the workspace DB, but a workspace switch/create left the previous
+  workspace's conversation on screen. The rail now clears and reloads the new
+  workspace's threads on every switch.
+
+### Fixed — file view: inline image + Open/Download buttons (3.2)
+
+- **Uploaded images preview inline again.** The preview only rendered when the
+  stored `mime` started `image/`; an upload that didn't record a mime showed no
+  image. It now also detects images by filename extension.
+- **Open in Finder / Download are mutually exclusive + correctly gated.** A file
+  with bytes on this machine shows **Open in Finder** (when `LATTICE_LOCAL_OPEN`
+  is enabled — now the **default**; set `=0` to disable, which hides the button
+  rather than offering a dead one); a cloud (S3) file with no local copy shows
+  **Download**. Never both.
+
+### Fixed — GUI activity feed + data-model sharing (3.2)
+
+- **No feed pills for internal plumbing tables.** Writes to the assistant's own
+  `chat_threads`/`chat_messages` storage (and any `_lattice*` bookkeeping) no
+  longer surface as activity-feed pills — only real user-data activity does.
+- **"Added column(s)" events group instead of duplicating.** The auto-create
+  emitter produces "Added columns a, b to X", which the feed's grouping regex
+  didn't match (`/^Added a column/`), so a bulk ingest spammed an identical pill
+  per file. They now collapse into one counted pill.
+- **No "Share with workspace" button on never-share tables.** A never-share table
+  (e.g. `secrets`) is a hard-private floor, so its data-model panel shows a static
+  "never shared" note instead of a share toggle.
+
+### Fixed — members panel + kick (3.2)
+
+- **Kicking a member works on managed Postgres.** `revokeMemberRole` did
+  `REASSIGN OWNED` / `DROP OWNED` unconditionally, which a restricted-superuser
+  owner (e.g. Supabase's `postgres`) can't do for a role it isn't a member of —
+  it raised "permission denied to reassign objects" and the kick failed. A scoped
+  member owns no objects, so that insufficient-privilege error is now tolerated
+  (logged) and the role is still dropped; any other error — and a failed DROP ROLE
+  — still surfaces.
+- **Members list shows people, not roles, with the right status.** A pending
+  (un-redeemed) invite now shows the invitee email + an **Invited** status instead
+  of the raw Postgres role labeled "Member"; redeemed members show as **Member**.
+
+### Fixed — member reads of masked tables + row-access enrichment (3.2)
+
+- **Members can read audience-masked tables again.** A secured cloud REVOKEs base
+  `SELECT` from members for any table with a column audience and grants only the
+  `<table>_v` masking view, but the read path still queried the base table — so a
+  member got `permission denied` (and column masking gave the read path zero
+  protection). Member SELECTs now route to the masking view (writes still target
+  the base under RLS); the view is never exposed as a separate sidebar object.
+- **Per-row `_access` no longer 500s for members.** The sharing-affordance
+  enrichment read `__lattice_owners` directly, which members have no grant on, so
+  every member row fetch failed. It now goes through `SECURITY DEFINER`
+  `lattice_rows_access` / `lattice_row_grantees`, which return only the rows the
+  caller can see (and grantees only for rows the caller owns).
+
+### Fixed — realtime, egress + misc cloud hardening (3.2)
+
+- **Realtime actually delivers other clients' changes.** The change feed's op
+  domain is `upsert`/`delete`, but the SSE merge matched `INSERT`/`UPDATE`/`DELETE`
+  — so every remote change mapped to null and was dropped. And the payload parser
+  read `team_id`/`owner_user_id`/`client_ts` (never emitted) while dropping
+  `owner_role` (the editor), so "last edited by" never resolved. Both now mirror
+  the NOTIFY trigger exactly.
+- **Realtime fan-out is filtered per recipient.** The NOTIFY stream is global; a
+  member's stream now forwards only changes for rows it may actually read (probed
+  through the same RLS visibility function), so the pk / existence / editor of an
+  unreadable row no longer leaks. Deletes (unprobeable post-trigger) are still
+  forwarded so a shown row drops, but with the editor stripped.
+- **Realtime catches up after a gap.** A broker that drops its `LISTEN` (sleep,
+  network blip) replays the changes it missed on reconnect, via a bounded
+  `SECURITY DEFINER lattice_changes_since(seq, limit)` that returns only the
+  caller-visible upserts — so a brief disconnect no longer silently loses updates.
+- **Offline edits that can't replay are surfaced, not retried forever.** A write
+  that can never apply (row gone / RLS-invisible) now returns 409, and the client
+  marks the queued edit failed + surfaces it (dead-letter) instead of looping on
+  it. Any 4xx during replay is treated as terminal; only 5xx/network retries.
+- **Edit time is honored.** A row write may carry `x-lattice-client-ts`; the
+  audit/history timestamp now records when the edit was MADE (so an offline edit
+  replayed later isn't stamped at sync time). A future timestamp is rejected.
+- **Bounded row pages.** `GET /api/tables/:table/rows` validates `limit`/`offset`
+  (400 on non-numeric, was `LIMIT NaN`) and clamps `limit` to ≤ 1000 — an
+  unbounded page was a full-table egress on a cloud hot path.
+- **Salted invite-audit email hash.** The invitee-email hash in the audit table is
+  peppered with a per-cloud salt instead of a bare SHA-256.
+- **Generic 500s are logged.** The shared request wrapper now logs the failing
+  error (message + stack) server-side before returning a 500, so a swallowed
+  cloud-op failure is no longer invisible.
+
+### Fixed — cloud role lifecycle + offline integrity (3.2)
+
+- **Offline edits replay idempotently.** The GUI stamps every row write with a
+  stable `x-lattice-edit-id` and replays queued writes after a reconnect (or when
+  the original response was lost after the row committed), but the server ignored
+  the header — so a replayed `POST` created a duplicate row. The row-create path
+  now derives a deterministic id from the edit-id and treats a replay whose row
+  already exists as a no-op (HTTP 200, same id), never a duplicate. Scoped to the
+  edit-id path; the assistant/ingest create paths are unchanged.
+- **Invites are one-time-use, with revocation + expiry enforced.** A leaked or
+  replayed invite token was redeemable until expiry, and a revoked invite was
+  never checked on redeem. The member now atomically CLAIMS its invite on join via
+  a `SECURITY DEFINER` `lattice_claim_invite()` (keyed on `session_user`, so a
+  member can only burn its own invite): a second redeem, a revoked invite, or an
+  expired one is rejected before any workspace is created.
+- **Re-inviting an email no longer orphans the prior role.** Each re-invite mints
+  a fresh suffixed role; the prior pending invite's role is now revoked + dropped
+  (and expired-but-unredeemed invite roles are swept) at invite time, so scoped
+  roles don't pile up and a superseded token goes dead. `revokeMemberRole` is now
+  idempotent on an already-gone role.
+
+### Fixed — data-model sharing controls restored (3.2)
+
+- **Per-object sharing is back in the Data Model panel.** The 3.0 RLS rewrite
+  stopped setting the `ownedByMe` / `shared` fields the client gates the sharing
+  controls and the red/amber/green node border on, so they vanished entirely. The
+  server now sets them for a cloud owner — `ownedByMe = true`, and `shared` maps to
+  the table's rows defaulting to everyone-visible (the 3.1 RLS semantic). The
+  "Share with workspace / Make private" toggle is repointed to the existing
+  default-row-visibility endpoint (the old `/share` endpoint was removed in the
+  rewrite, so the button had been 404ing).
+
+### Fixed — cloud members + invites (3.2)
+
+- **Members can connect again on Supabase pooler hosts (was breaking).** The
+  minted member username now derives the pooler tenant ref from the owner's
+  connection-string username (`postgres.<ref>`), not `session_user` (which is the
+  bare role on the pooler) — so the member username keeps its `.<ref>` suffix.
+- **Re-inviting an existing member no longer errors on Supabase.** The role-exists
+  ALTER branch sets only `LOGIN PASSWORD`, not the `NOSUPERUSER`-class attributes
+  (restating them tripped supautils 42501 since the owner isn't a true superuser).
+- **Members list shows real people, not the Postgres role.** It now lists each
+  member's name + email (owner from the workspace identity; members from the
+  stored invitee email) with an Owner/Member status, and no longer double-counts
+  the owner. A new owner-only `POST /api/cloud/remove-member` + a "Kick" control
+  wire the previously-unreachable `revokeMemberRole`; revocation reassigns/drops
+  the member's objects and surfaces failures (internal guideline) instead of swallowing them.
+
+### Fixed — cloud RLS hardening (3.2)
+
+- **Runtime-created cloud tables are now secured.** A table made from the
+  data-model panel / assistant / ingest on a secured cloud is RLS-enabled +
+  ownership-stamped + member-granted (via a `secureNewCloudTable` helper factored
+  from `secureCloud`), instead of being left wide open.
+- **Changelog visibility fails closed on an empty source set.** A derived
+  observation with an empty `source_ref` was visible to every member (the
+  `NOT EXISTS` over an empty array was vacuously true); it now requires a
+  non-empty source array (mirrors `fold.ts`). The changelog policy runs directly
+  (converges on owner open) like the rest of the bootstrap.
+
+### Fixed — cloud join creates a new workspace + resilient member open (3.2)
+
+- **Joining a cloud now CREATES a new workspace (and switches to it)** instead of
+  repointing — hijacking — the currently-open one (which overwrote the user's
+  existing local workspace: wrong name, orphaned data, no switcher entry). The new
+  workspace is named after the cloud (the owner stamps `workspace_name` into the
+  invite), and the join is **atomic**: if the cloud can't be opened, the
+  half-created workspace + saved credential are rolled back.
+- **Member open is resilient.** Owner-side maintenance that needs schema write
+  grants (native-entity reconcile, legacy-secret cleanup, the identity-mirror
+  upsert) is skipped / best-effort on a cloud-MEMBER open, so a member no longer
+  fails to connect with "permission denied for schema public / \_\_lattice_user_identity".
+- New end-to-end Postgres test boots a real owner GUI + member GUI and asserts the
+  member lands on a new, correctly-named, active cloud workspace (local untouched).
+
+### Fixed — cloud join path + schema detection (3.2)
+
+- **Join no longer silently lands a member on an empty local DB.** A
+  `${LATTICE_DB:<label>}` reference whose label was malformed (e.g. the default
+  join label "Cloud workspace", which has a space) used to fall through to
+  filesystem-path resolution — creating a literal `${LATTICE_DB:…}` file (0-byte
+  on Windows) and a silent empty SQLite DB. `resolveDbPath` now THROWS on a
+  shaped-but-invalid reference (new shared `parseDbRef`/`isDbRefShaped` helpers),
+  and the join flow sanitizes the credential key / `${LATTICE_DB:…}` reference
+  (via `slugify`) while keeping the human display name — so the credential
+  actually resolves.
+- **`cloudRlsInstalled` resolves via the search_path**, not a hardcoded `public.`,
+  so a cloud installed into a non-public schema is detected correctly.
+
+### Fixed — cloud bootstrap converges on owner open (3.2)
+
+- **The cloud object bootstrap now converges.** `installCloudRls` /
+  `installCloudSettings` run their idempotent DDL directly (serialized by the
+  shared `pg_advisory_xact_lock`) instead of behind a one-shot version gate, and
+  run on every cloud-OWNER open. So an object added to the bootstrap in a later
+  release (e.g. `__lattice_member_invites`) now reaches clouds already stamped at
+  an earlier version, and "secure this cloud" no longer no-ops. The expensive
+  per-table ownership/RLS backfill stays version/secure-gated (internal guideline — no
+  whole-table scans on open).
+
+### Changed — concurrent background render (3.2)
+
+- **Entity-context tables now render concurrently** (bounded fan-out) instead of
+  strictly one-after-another, so several render at once and each card's progress
+  advances at its own rate. The cap keeps in-flight whole-table reads small.
+- **`ProgressThrottle` is now per-table keyed**, so a fast table can't consume the
+  shared throttle window and starve a slow table's progress updates.
+- `mapWithConcurrency` moved to a package-root module (re-exported from its old
+  path) so the render engine can share it without inverting layering.
+
+### Fixed — assistant never overflows the context window (3.2)
+
+- **Big reads no longer blow the prompt.** Each tool result is now budget-capped
+  before it enters the turn's prompt (which is re-sent on every tool-loop step), so
+  a few wide 200-row reads can't recompound past the model's context window.
+- **Invisible auto-recovery.** If the provider still rejects a turn as too long,
+  the assistant trims the oldest bulky tool result and retries automatically — the
+  user never sees a "prompt is too long" error.
+- **Friendly fallback, never the raw 400.** If recovery is exhausted, the user gets
+  a short actionable message instead of the raw provider error JSON (the real error
+  is logged for ops).
+- **`list_rows` pagination.** `list_rows` accepts `limit` + `offset` so the
+  assistant pages through large tables deliberately; the system prompt now tells it
+  to batch large work instead of loading whole tables.
+
+### Fixed — ingest auto-link surfaces failures (3.2)
+
+- **No more silent auto-link failures (internal guideline).** When ingest auto-linking can't
+  run or a link/junction write fails (e.g. a cloud permission/RLS error), the
+  reason is now logged loudly AND surfaced in the activity feed, instead of a bare
+  `catch { return []; }` that left "nothing linked" with no explanation. The
+  LLM-client-init failure path, the classify failure, and per-match junction/link
+  failures all surface now.
+
+### Fixed — activity feed grouping (3.2)
+
+- **Relationship-link activity now collapses.** Junction-materialization events
+  ("Linked files ↔ project", "Linked authors ↔ books") arrived as schema ops that
+  matched no grouping rule, so each spammed its own pill in the assistant feed.
+  A run now collapses into one counted "Linked N relationships" bubble.
+
+### Added — opt-in Google Analytics (3.2)
+
+- **Anonymous, opt-in product analytics (GA4).** Gated on the existing "Send
+  anonymous analytics" preference (and `DO_NOT_TRACK` / `SCARF_ANALYTICS` env):
+  gtag.js is loaded lazily only after consent, so there is zero network contact
+  while opted out. Configured with `send_page_view:false`, `allow_google_signals:
+false`, `allow_ad_personalization_signals:false`, `anonymize_ip:true`.
+- **Strict anonymization.** Event params are whitelisted to booleans / finite
+  numbers / short enum tokens — table and column names, row ids/content, file
+  names, queries, chat text, display name, email, paths, and the port are never
+  sent. `page_view` reports a synthetic route-type location, never the real hash.
+- Wired events: `app_open`, `page_view`, `row_create`/`row_update`/`row_delete`,
+  `file_ingest`, `assistant_message`, `assistant_thread_new`, `history_action`
+  (undo/redo/revert), `member_invite`, `table_create`/`table_delete`,
+  `data_model_share`, `workspace_create`/`workspace_switch`, `search`,
+  `setting_change`, `analytics_opt_in`/`analytics_opt_out`. All params are coarse
+  enums/counts only. The preference reports `analytics_effective`.
+
+### Changed — settings layout (3.2)
+
+- **Chat system prompt moved into Settings → Workspace.** The standalone "Chat"
+  settings tab is gone; the cloud system-prompt editor is now a "System Prompt"
+  subsection directly beneath "Database connection", shown only to the workspace
+  owner (it's absent for members and local workspaces). Endpoint unchanged.
+
+### Fixed — GUI polish (3.2)
+
+- **Render progress label.** The per-card background-render indicator reads
+  "Rendering NN%..." instead of a bare "NN%".
+- **Top-bar dropdown stacking.** The top bar now establishes an explicit stacking
+  context, so its `backdrop-filter` no longer traps the workspace-switcher / search
+  dropdowns beneath the dashboard cards.
+- **Objects ordered alphabetically.** The sidebar object list (and the history and
+  add-link pickers) are sorted by display label.
+
+### Added — GUI polish (3.2)
+
+- **Auto-emoji for objects.** An object with no custom icon and no built-in mapping
+  is given an apt emoji derived from its name (falling back to the default icon when
+  nothing fits).
+- **Private-mode indicator on local workspaces.** On a single-user local workspace
+  the assistant "Private mode" toggle renders checked + disabled (local data is
+  always private); it stays interactive on a cloud workspace.
+
+## [3.1.0] - 2026-06-14
+
 ### Added — email-bound cloud invites + members list (3.1)
 
 - **Email-bound invite tokens.** `POST /api/cloud/invite` takes an invitee email,

@@ -71,14 +71,39 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     args: obj({}),
   },
   {
+    name: 'lattice_help',
+    description:
+      'Look up how LATTICE ITSELF works in its documentation — features and usage (private mode, row/table sharing & visibility, cloud workspaces & members & invites, files/ingest, the data model, the assistant, history/undo, secrets, analytics). Use this whenever the user asks what a Lattice feature is or how to do something IN Lattice — NOT for questions about their own data. Returns the most relevant documentation sections.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        query: str(
+          'What about Lattice to look up, e.g. "what is private mode" or "how do I invite a member".',
+        ),
+      },
+      ['query'],
+    ),
+  },
+  {
     name: 'list_rows',
-    description: 'List rows in a table. Omits soft-deleted rows unless includeDeleted is true.',
+    description:
+      'List rows in a table (paginated, max 200/page). For a large table, page through it with limit + successive offsets instead of trying to read it all at once. Omits soft-deleted rows unless includeDeleted is true.',
     mutates: false,
     category: 'read',
     args: obj(
       {
         table: str('Table name to list rows from.'),
         includeDeleted: { type: 'boolean', description: 'Include soft-deleted rows.' },
+        limit: {
+          type: 'number',
+          description:
+            'Max rows to return (1–200, default 200). Use a smaller page for big tables.',
+        },
+        offset: {
+          type: 'number',
+          description: 'Rows to skip from the start — combine with limit to page through a table.',
+        },
       },
       ['table'],
     ),
