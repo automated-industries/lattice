@@ -53,6 +53,7 @@ import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js
 import { discoverCloudTables } from '../cloud/discover.js';
 import { installCloudRls, enableChangelogRls } from '../cloud/rls.js';
 import { installCloudSettings } from '../cloud/settings.js';
+import { reconcileCloudMemberAccess } from '../cloud/setup.js';
 import { rowAccessSummaries } from '../cloud/members.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
@@ -862,6 +863,12 @@ export async function openConfig(
           const knownTables = new Set<string>([...declared, ...discovered.map((t) => t.name)]);
           for (const t of discovered) {
             if (declared.has(t.name)) continue;
+            // A table the member has no column access to introspects to zero
+            // columns (information_schema is privilege-filtered). Registering it
+            // would surface an empty-schema entity that fails every read with
+            // `unknown column "deleted_at"`; skip it so the member only sees
+            // tables they can actually read.
+            if (t.columns.length === 0) continue;
             db.define(t.name, {
               columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
               ...(t.pk.length > 0 ? { primaryKey: t.pk.length === 1 ? t.pk[0] : t.pk } : {}),
@@ -928,6 +935,11 @@ export async function openConfig(
         await installCloudSettings(db);
         await db.ensureObservationSubstrate();
         await enableChangelogRls(db); // converges the v3 fail-closed changelog policy
+        // Converge per-table member access (ungated, no row scans): force the
+        // private-only conversation/secret tables to never_share, and re-issue
+        // member grants the version-gated per-table securing won't re-emit after
+        // a grant-dropping restore. Keeps "shows as shared" == "is readable".
+        await reconcileCloudMemberAccess(db);
       }
     } catch (e) {
       // internal guideline: never silently swallow. A converge failure must be visible, but
