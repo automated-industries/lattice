@@ -54,13 +54,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
-- **Workspace switch could hang indefinitely.** Switching (or closing) a workspace
-  `await`s teardown of the one being left, which stops that workspace's realtime
-  LISTEN/NOTIFY broker. On a degraded Postgres connection the broker's `stop()`
-  could never settle, freezing the switch forever — the server stayed responsive,
-  but the GUI's "Switching…" state never resolved. Teardown of the previous
-  workspace's broker is now **time-bounded** (3s): a wedged broker is abandoned
-  best-effort and the switch completes. SQLite workspaces (no broker) are unaffected.
+- **Workspace switch could hang the GUI indefinitely (both directions).** A switch
+  `await`s opening the target workspace and tearing down the previous one; neither
+  was time-bounded, so a slow or wedged Postgres (cloud) connection froze the GUI
+  on "Switching…" forever — and because the switch never returned, the rest of the
+  SPA was stuck too. Two root-cause fixes:
+  - **`RealtimeBroker.stop()` no longer hangs.** Its graceful `client.end()` waits
+    for a server close-ack that never arrives on a wedged / half-open pooler
+    connection (the silently-dead LISTEN the watchdog exists for). `stop()` now
+    caps the close and **force-destroys the socket** on timeout, so it always
+    returns promptly and the connection is **released, not leaked** (the prior
+    teardown band-aid bounded the wait but abandoned the broker, leaking its
+    connection — repeated switches could then exhaust the cloud's connection pool).
+  - **Opening the target workspace is time-bounded.** If a cloud open (peek
+    connection + init + owner bootstrap converge + LISTEN) doesn't complete within
+    the cap, the switch keeps the **current** workspace active and surfaces a clear
+    error instead of spinning forever; the slow open is disposed in the background
+    so it can't leak. SQLite workspaces (no broker, local file) are unaffected.
 
 ## [3.3.0] - 2026-06-15
 

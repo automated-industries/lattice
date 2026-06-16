@@ -1472,6 +1472,56 @@ export async function disposeActive(
 }
 
 /**
+ * Cap on opening a workspace during a switch before the GUI gives up and keeps
+ * the current one. Generous enough for a legitimately slow cloud (Postgres) open
+ * — peek connection + init + owner bootstrap converge + LISTEN broker — yet short
+ * enough that a stalled connection can't freeze the switcher indefinitely.
+ */
+const SWITCH_OPEN_TIMEOUT_MS = 20_000;
+
+/**
+ * Open a workspace, but never block longer than `timeoutMs`. Returns the opened
+ * {@link ActiveDb} on success, or `{ timedOut: true }` so the caller keeps the
+ * current workspace and surfaces an error instead of hanging the GUI on a slow or
+ * stalled (e.g. cloud) open. A slow open that resolves AFTER the timeout is
+ * disposed in the background so it can't leak a DB handle / pg connection. A
+ * genuine open error is re-thrown (distinct from a timeout).
+ */
+export async function openWithinTimeout(
+  open: () => Promise<ActiveDb>,
+  timeoutMs: number = SWITCH_OPEN_TIMEOUT_MS,
+  dispose: (db: ActiveDb) => Promise<void> = disposeActive,
+): Promise<{ db: ActiveDb } | { timedOut: true }> {
+  const opening = open();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  const outcome = await Promise.race([
+    opening.then(
+      (db) => ({ db }) as const,
+      (err: unknown) => ({ err }) as const,
+    ),
+    timedOut,
+  ]);
+  if (timer) clearTimeout(timer);
+  if (outcome === 'timeout') {
+    // Abandon the switch but never leak the half-open workspace: dispose it
+    // whenever the slow open eventually settles.
+    void opening.then(
+      (db) => dispose(db).catch(() => undefined),
+      () => undefined,
+    );
+    return { timedOut: true };
+  }
+  if ('err' in outcome) throw outcome.err;
+  return { db: outcome.db };
+}
+
+/**
  * Re-open the *same* workspace after a schema edit (create entity, add column,
  * rename, share…) so the new table definitions take effect — while preserving
  * the in-process {@link FeedBus}.
@@ -3273,9 +3323,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const paths = resolveWorkspacePaths(latticeRoot, ws);
-          let next: ActiveDb;
+          let opened: { db: ActiveDb } | { timedOut: true };
           try {
-            next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+            opened = await openWithinTimeout(() =>
+              openConfig(paths.configPath, paths.contextDir, autoRender),
+            );
           } catch (e) {
             const err = e as Error;
             sendJson(
@@ -3285,6 +3337,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
+          if ('timedOut' in opened) {
+            // The open never completed within the cap — keep the current workspace
+            // active (do NOT swap) and surface a clear error instead of hanging
+            // the switcher forever.
+            sendJson(
+              res,
+              {
+                error:
+                  `Opening "${ws.displayName}" timed out after ${String(SWITCH_OPEN_TIMEOUT_MS / 1000)}s — ` +
+                  'the database may be slow or unreachable. Staying on the current workspace.',
+              },
+              504,
+            );
+            return;
+          }
+          const next = opened.db;
           setActiveWorkspace(latticeRoot, ws.id);
           await disposeActive(active);
           active = activeRef = next;

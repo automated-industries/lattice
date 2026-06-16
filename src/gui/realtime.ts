@@ -107,6 +107,17 @@ const CATCHUP_LIMIT = 500;
  * past. 0 disables the watchdog. */
 const DEFAULT_WATCHDOG_MS = 20_000;
 
+/**
+ * Cap on the graceful `client.end()` during {@link RealtimeBroker.stop}. pg's
+ * `end()` awaits the server's close acknowledgement, which never arrives on a
+ * wedged / half-open pooler connection (the same silently-dead LISTEN the
+ * watchdog exists for). An unbounded await there froze workspace switches — the
+ * GUI awaits `stop()` while tearing the previous workspace down. On timeout the
+ * underlying socket is force-destroyed so the connection is released (not
+ * leaked) and `stop()` always returns promptly.
+ */
+const DEFAULT_STOP_END_MS = 2000;
+
 export class RealtimeBroker {
   private readonly url: string;
   private readonly emitter = new EventEmitter();
@@ -128,10 +139,16 @@ export class RealtimeBroker {
   /** Test seam: build the pg client. Defaults to the real `pg` Client; a test can
    *  inject a fake so the watchdog/reconnect lifecycle is exercised without a DB. */
   private readonly clientFactory: ((url: string) => pg.Client) | null;
+  /** Cap on the graceful end() in stop() before the socket is force-destroyed. */
+  private readonly stopEndTimeoutMs: number;
 
   constructor(
     connectionUrl: string,
-    opts: { watchdogIntervalMs?: number; clientFactory?: (url: string) => pg.Client } = {},
+    opts: {
+      watchdogIntervalMs?: number;
+      clientFactory?: (url: string) => pg.Client;
+      stopEndTimeoutMs?: number;
+    } = {},
   ) {
     if (!isPostgresUrl(connectionUrl)) {
       throw new Error(`RealtimeBroker: connectionUrl must be a postgres:// URL`);
@@ -139,6 +156,7 @@ export class RealtimeBroker {
     this.url = connectionUrl;
     this.watchdogIntervalMs = opts.watchdogIntervalMs ?? DEFAULT_WATCHDOG_MS;
     this.clientFactory = opts.clientFactory ?? null;
+    this.stopEndTimeoutMs = opts.stopEndTimeoutMs ?? DEFAULT_STOP_END_MS;
     // Avoid 'MaxListenersExceeded' warnings — multiple browser tabs each
     // attach two listeners (payload + state). 64 is generous; consumers
     // unsubscribe on close.
@@ -344,10 +362,31 @@ export class RealtimeBroker {
     const client = this.client;
     this.client = null;
     if (client) {
-      try {
-        await client.end();
-      } catch {
-        // ignore
+      // Bounded graceful close. `client.end()` can hang forever on a wedged /
+      // half-open connection; cap it and, on timeout, force the socket closed so
+      // the connection is released (not leaked) and stop() returns promptly. An
+      // unbounded await here previously froze workspace switches.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const ended = Promise.resolve(client.end()).then(
+        () => 'ended' as const,
+        () => 'ended' as const, // a graceful-close error is still "closed enough"
+      );
+      const timedOut = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => {
+          resolve('timeout');
+        }, this.stopEndTimeoutMs);
+        (timer as { unref?: () => void }).unref?.();
+      });
+      const outcome = await Promise.race([ended, timedOut]);
+      if (timer) clearTimeout(timer);
+      if (outcome === 'timeout') {
+        try {
+          const stream = (client as unknown as { connection?: { stream?: { destroy?: () => void } } })
+            .connection?.stream;
+          stream?.destroy?.();
+        } catch {
+          // best-effort force-close — the socket is being abandoned regardless
+        }
       }
     }
     this.setState('stopped');
