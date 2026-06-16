@@ -1862,7 +1862,7 @@ export const appJs = `
         function rowVisMarkup(tbl, r) {
           var a = r._access;
           if (!a) return '';
-          var vis = a.visibility;
+          var vis = effectiveVisibility(a);
           var glyph = vis === 'custom' ? '◎' : '◉';
           if (!a.ownedByMe) {
             var seen = vis === 'custom' ? 'Shared with you' : 'Visible to everyone';
@@ -2212,7 +2212,7 @@ export const appJs = `
     function detailVisLineEl(row) {
       var a = row._access;
       if (!a) return '';
-      var vis = a.visibility;
+      var vis = effectiveVisibility(a);
       var labelMap = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
       // Clear visual indicator: a lock when private, an eye when shared (everyone
       // or specific people), with a hover tooltip. The shared helper keeps the
@@ -2223,8 +2223,7 @@ export const appJs = `
         return '<div class="detail-vis muted" style="display:flex;align-items:center;gap:6px;margin:6px 0;font-size:13px">' +
           visIcon + '<span>' + escapeHtml(seen) + '</span></div>';
       }
-      var info = labelMap[vis] || '';
-      if (vis === 'custom' && a.grantees) info += ' (' + a.grantees.length + ')';
+      var info = visInfoLabel(a);
       var buttons;
       if (vis === 'custom') {
         // Leaving custom stops the grant list from applying — the toggle
@@ -2279,9 +2278,12 @@ export const appJs = `
         if (!panel) return;
         if (!panel.hidden) { panel.hidden = true; return; }
         var access = row._access || {};
-        var ensure = access.visibility === 'custom'
-          ? Promise.resolve()
-          : postVisibility('custom').then(function () { access.visibility = 'custom'; });
+        // Opening the panel must NOT pre-flip the row to 'custom' — that left a
+        // row the user never actually shared stuck at "custom (0)". The first
+        // grant flips it to custom server-side (lattice_grant_row); revoking the
+        // last leaves it custom-with-0-grantees, which now reads as private. So
+        // just load the member checklist.
+        var ensure = Promise.resolve();
         withBusy(detailVisManage, function () {
           return ensure.then(function () {
             return fetchJson('/api/cloud/members');
@@ -2315,8 +2317,13 @@ export const appJs = `
                   var at = list.indexOf(role);
                   if (cb.checked && at === -1) list.push(role);
                   if (!cb.checked && at !== -1) list.splice(at, 1);
+                  // The first grant flips the row to custom server-side; mirror
+                  // that locally so the indicator updates. Revoking the last leaves
+                  // visibility 'custom' but effectiveVisibility renders custom-0 as
+                  // private, so the label flips back to "Private to you".
+                  if (list.length > 0) access.visibility = 'custom';
                   var infoEl = content.querySelector('#detail-vis-info');
-                  if (infoEl) infoEl.textContent = 'Shared with specific people (' + list.length + ')';
+                  if (infoEl) infoEl.textContent = visInfoLabel(access);
                   invalidate(tableName);
                 }).catch(function (e) {
                   cb.checked = !cb.checked; // revert the failed change
@@ -2324,10 +2331,8 @@ export const appJs = `
                 }).then(function () { cb.disabled = false; });
               });
             });
-            if (access.visibility === 'custom') {
-              var infoEl = content.querySelector('#detail-vis-info');
-              if (infoEl) infoEl.textContent = 'Shared with specific people (' + (access.grantees || []).length + ')';
-            }
+            var infoEl = content.querySelector('#detail-vis-info');
+            if (infoEl) infoEl.textContent = visInfoLabel(access);
           }).catch(function (e) { showToast('Could not load members: ' + e.message, {}); });
         });
       });
@@ -4438,6 +4443,29 @@ export const appJs = `
     var EYE_SVG =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+    // A custom row with zero grantees is effectively PRIVATE (RLS shows it only to
+    // the owner), so it must read as private, not "Shared with specific people
+    // (0)". Only collapse for the OWNER's own view, where the grantees list is
+    // authoritative — a member viewing a row shared WITH them gets custom with no
+    // grantees list and must still read as "Shared with you".
+    function effectiveVisibility(access) {
+      if (!access || !access.visibility) return 'private';
+      if (access.visibility === 'custom' && access.ownedByMe &&
+        (!access.grantees || access.grantees.length === 0)) {
+        return 'private';
+      }
+      return access.visibility;
+    }
+    // Owner-facing status label for a row's sharing, honoring effectiveVisibility
+    // (so custom-0 reads as "Private to you") and appending the grantee count only
+    // for a genuine specific-people share.
+    function visInfoLabel(access) {
+      var v = effectiveVisibility(access);
+      var map = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
+      var s = map[v] || '';
+      if (v === 'custom' && access && access.grantees) s += ' (' + access.grantees.length + ')';
+      return s;
+    }
     // Shared per-row lock/eye indicator, reused on the entity-detail header and the
     // fs card tiles so the meaning is consistent. The access arg is the server-
     // attached row._access (visibility + ownedByMe); returns empty when absent (a
@@ -4445,7 +4473,7 @@ export const appJs = `
     // A hover tooltip spells out what the lock/eye means (state + ownership aware).
     function visIndicator(access, extraClass) {
       if (!access || !access.visibility) return '';
-      var vis = access.visibility;
+      var vis = effectiveVisibility(access);
       var tip = vis === 'private'
         ? 'Private — only you can see this'
         : vis === 'custom'

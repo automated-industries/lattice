@@ -12,6 +12,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A cloud member saw junction (link) tables listed as objects in the sidebar.**
+  A member joins with no entity config (relations are config-only and never live
+  in the database), so the GUI discovered every table from the catalog and listed
+  link tables as first-class objects — while the owner's config-driven sidebar
+  correctly omitted them. The member now classifies junctions from the physical
+  table shape (a lattice junction is exactly `id` + two `*_id` columns with no
+  payload) and keeps them out of its table set entirely. The database stays the
+  single source of truth — no schema is shipped to members; a member still sees
+  exactly the tables they can access, minus junctions.
+
+- **"Shared with specific people (0)" now reads as Private.** A row shared with
+  nobody is only visible to its owner (RLS), so it must read as private. Two
+  causes are fixed: opening the "Specific people…" panel no longer eagerly flips
+  the row to `custom` before any grantee is chosen (the first grant flips it
+  server-side; revoking the last leaves it custom-with-0-grantees), and the
+  sharing indicator/label now renders an owner's custom-with-0-grantees row as
+  private everywhere. A member viewing a row shared _with_ them still reads
+  "Shared with you" (unchanged).
+
 - **GUI froze ("Switching…" forever, clicks that never resolved) with more than
   one tab open.** The GUI opened three long-lived Server-Sent-Event streams per
   tab (realtime, activity feed, render progress). Browsers cap HTTP/1.1 at six

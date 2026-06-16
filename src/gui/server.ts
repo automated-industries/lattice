@@ -30,6 +30,7 @@ import type { EntityContextDefinition } from '../schema/entity-context.js';
 import {
   buildGuiGraph,
   getGuiEntities,
+  isJunctionByColumns,
   getGuiProject,
   isJunctionTable,
   fileJunctions,
@@ -908,6 +909,11 @@ export async function openConfig(
   // #2.1 — base table → masking view (`<table>_v`) for member reads. Populated on a
   // cloud member open for tables whose base SELECT was revoked in favor of the view.
   const maskedReadViews = new Map<string, string>();
+  // Junction tables a MEMBER discovered from the catalog. A junction is not an
+  // object, but a member has no relation config to classify it (relations live
+  // only in the owner's config, never in the DB), so it is classified from its
+  // physical column shape and kept out of the member's table set.
+  const discoveredJunctions = new Set<string>();
   if (db.getDialect() === 'postgres') {
     const peek = new Lattice({ config: configPath }, { encryptionKey });
     try {
@@ -945,6 +951,16 @@ export async function openConfig(
             // `unknown column "deleted_at"`; skip it so the member only sees
             // tables they can actually read.
             if (t.columns.length === 0) continue;
+            // A junction table is not an object. The owner hides it via its
+            // relation config, but a member has no config — so detect it from the
+            // physical column shape (id + exactly two `*_id` columns, no payload)
+            // and keep it out of the member's table set entirely. Without this the
+            // member's sidebar lists every link table as a fake object, while the
+            // owner's (config-driven) sidebar correctly omits them.
+            if (isJunctionByColumns(t.columns)) {
+              discoveredJunctions.add(t.name);
+              continue;
+            }
             db.define(t.name, {
               columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
               ...(t.pk.length > 0 ? { primaryKey: t.pk.length === 1 ? t.pk[0] : t.pk } : {}),
@@ -1032,11 +1048,14 @@ export async function openConfig(
     if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
     validTables.add(name);
   }
-  const junctionTables = new Set(
-    getGuiEntities(configPath, outputDir)
+  const junctionTables = new Set([
+    ...getGuiEntities(configPath, outputDir)
       .tables.filter(isJunctionTable)
       .map((t) => t.name),
-  );
+    // Member-discovered junctions (classified from the physical shape above);
+    // empty for an owner/local open.
+    ...discoveredJunctions,
+  ]);
   // Pull entity contexts from the live Lattice — covers both YAML-declared
   // contexts (already loaded in the constructor from `parsed.entityContexts`)
   // and anything a caller registered via `db.defineEntityContext()` against

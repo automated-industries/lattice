@@ -78,10 +78,22 @@ describe('visIndicator (shared lock/eye component)', () => {
   });
 
   it('distinguishes a custom share by ownership (owner vs recipient)', () => {
-    expect(vis({ visibility: 'custom', ownedByMe: true })).toContain('Shared with specific people');
+    // An owner's custom share with ≥1 grantee reads as "specific people".
+    const owned = { visibility: 'custom', ownedByMe: true, grantees: ['member-x'] };
+    expect(vis(owned)).toContain('Shared with specific people');
     expect(vis({ visibility: 'custom', ownedByMe: false })).toContain('Shared with you');
     // Custom is "shared", so it uses the eye, never the lock.
-    expect(vis({ visibility: 'custom', ownedByMe: true })).toContain(EYE);
+    expect(vis(owned)).toContain(EYE);
+  });
+
+  it('renders an owner custom-with-0-grantees row as PRIVATE (effectively private)', () => {
+    // A row "shared with specific people" but with nobody on the list is only
+    // visible to the owner, so it must read as private — not "specific people (0)".
+    const out = vis({ visibility: 'custom', ownedByMe: true, grantees: [] });
+    expect(out).toContain(LOCK);
+    expect(out).not.toContain(EYE);
+    expect(out).toContain('is-private');
+    expect(out).toContain('only you can see this');
   });
 
   it('appends the caller-supplied positioning class', () => {
