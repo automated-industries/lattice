@@ -88,6 +88,16 @@ export const analyticsJs = `
         page_title: t,
       });
     },
+    // Set the GA user_id to an OPAQUE per-user hash so active users are
+    // deduplicated across sessions/devices (without it, unique users ≈ events).
+    // Accepts ONLY a 64-char hex digest — a raw email or any other PII is
+    // rejected (never sent), preserving the privacy contract above. The caller
+    // hashes the email; this module never sees the plaintext.
+    setUser: function (idHash) {
+      if (!consent || !loaded) return;
+      if (typeof idHash !== 'string' || !/^[a-f0-9]{64}$/.test(idHash)) return;
+      gtag('config', MEASUREMENT_ID, { user_id: idHash });
+    },
   };
 })();
 `;

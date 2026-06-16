@@ -16,8 +16,8 @@ test('a server-side mutation streams a bubble into the rail feed', async ({ page
 
   await createRow(gui.url, 'items', { name: 'Hello from e2e' });
 
-  // The mutation is published to the in-process FeedBus and pushed over the
-  // /api/feed/stream SSE the page opened on boot.
+  // The mutation is published to the in-process FeedBus and pushed as a `feed`
+  // message over the multiplexed /api/stream WebSocket the page opened on boot.
   await expect(page.locator('.feed-item')).toHaveCount(1);
   await expect(page.locator('.feed-item .feed-summary')).toBeVisible();
   // GUI-sourced mutations are tagged "you" in the source pill.

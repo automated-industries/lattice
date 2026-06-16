@@ -245,7 +245,16 @@ function printHelp(): void {
   );
 }
 
+// Injected by tsup's `define` at build time (see tsup.config.ts). Undefined when
+// running unbundled from source (dev / tsx), where the package.json read below
+// works because import.meta.url points into src/.
+declare const __LATTICE_VERSION__: string | undefined;
+
 function getVersion(): string {
+  // Build-time constant — reliable in the bundled/published CLI + GUI, where the
+  // runtime package.json read fails (the bundle runs from node_modules). This is
+  // the fix for the "vunknown" version chip in published builds.
+  if (typeof __LATTICE_VERSION__ === 'string') return __LATTICE_VERSION__;
   try {
     const pkgPath = new URL('../package.json', import.meta.url).pathname;
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version: string };
