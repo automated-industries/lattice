@@ -17,6 +17,7 @@ import {
   type AssistantJunction,
   type DispatchCtx,
 } from './ai/dispatch.js';
+import { FetchBudget } from '../ai/fetch-policy.js';
 
 /**
  * POST /api/chat — the assistant chat stream. Resolves the Claude token,
@@ -512,6 +513,10 @@ export async function dispatchChatRoute(
     softDeletable: ctx.softDeletable,
     onColumnsAdded: columnDescriptionHook(ctx.db),
     aggressiveness: getAggressiveness(),
+    // The user's message this turn — ingest_url only fetches a URL found here.
+    userMessage: message,
+    // One shared fetch budget for the whole turn (caps assistant-driven fetches).
+    urlFetchBudget: new FetchBudget(),
     ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),
     ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
     ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),

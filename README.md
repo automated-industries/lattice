@@ -2314,6 +2314,16 @@ the library API is unchanged and fully backwards-compatible.
   **added, enriched, and linked** automatically, **auto-creating the junction table
   when none exists** (and a new object when a source fits nothing). All audited and
   revertible via the version history.
+- **Ask the assistant to read a link (`ingest_url`).** Paste or name a URL and say
+  "read / summarize / save this" — the assistant fetches the page, saves it as a
+  `files` web reference, and summarizes it. It fetches **only** URLs you wrote
+  yourself (never one found inside a file or a row), guards the fetch with an SSRF
+  check + an on/off + allow/block-list policy + a per-turn budget + a per-host
+  throttle, and treats the fetched page as **untrusted data** (injection-resistant
+  framing wherever the text is read). SPA pages render with headless Chromium when
+  the optional `playwright` dependency is installed (graceful static fallback
+  otherwise). Tunable via the `LATTICE_URL_*` env vars — see
+  [`.env.example`](.env.example).
 - **Inference Aggressiveness** slider tunes how much the assistant extrapolates
   (temperature + link liberality + auto-junction/auto-create gating).
 - **Context-aware.** The chat knows the record you're viewing, so "delete this

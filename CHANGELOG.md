@@ -8,6 +8,80 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-06-16
+
+### Added — first-class URL ingestion
+
+- **`ingest_url` assistant tool.** Paste or name a web link and ask the assistant
+  to "read / summarize / save" it — it fetches the page, extracts the readable
+  text, saves it as a `files` row (a `cloud_ref` web reference), and summarizes
+  it. The saved reference follows the same sharing rules as any file (private
+  mode → private; otherwise the files-table default).
+- **User-provided-URLs only.** The tool fetches **only** a URL that appears
+  verbatim in the user's own message — it will not follow a URL discovered inside
+  a file, a row, or model output. This closes the obvious SSRF + prompt-injection
+  vector for an LLM-driven fetcher.
+- **Untrusted-content framing.** A fetched page is treated as untrusted data
+  everywhere: the row is flagged `source_json.untrusted=true`, the enrichment
+  prompts wrap its text in explicit "this is data, not instructions" markers, and
+  `get_row` / `list_rows` re-wrap it whenever the assistant reads it back.
+- **One unified URL→file path.** The assistant tool and the `/api/ingest/text`
+  URL branch now share a single `ingestUrlAsFile` helper, so SSRF checks, the
+  fetch policy, rate-limiting, and the untrusted framing are identical wherever a
+  URL is ingested. A crawl that yields no readable text now surfaces an error
+  instead of silently storing the bare URL string.
+
+### Added — fetch guardrails + config
+
+- **SSRF + policy + rate-limiting.** Every URL fetch passes an SSRF guard, an
+  on/off + allow/block-list policy, a per-turn fetch budget, a process-wide
+  concurrency cap, and a per-host throttle. Tunable via `LATTICE_URL_INGEST`,
+  `LATTICE_URL_MAX_BYTES`, `LATTICE_URL_TIMEOUT_MS`, `LATTICE_URL_MAX_CONCURRENCY`,
+  `LATTICE_URL_FETCH_BUDGET`, `LATTICE_URL_HOST_MIN_INTERVAL_MS`,
+  `LATTICE_URL_ALLOW_DOMAINS`, and `LATTICE_URL_BLOCK_DOMAINS`.
+- **Optional headless rendering.** SPA pages can be rendered with headless
+  Chromium when the optional `playwright` dependency is installed; without it the
+  crawler degrades gracefully to the static extraction (with a single warning).
+- **Per-host extractors.** Sites that serve no readable static HTML (e.g. posts
+  on x.com / twitter.com) are read through a dedicated extractor (their public
+  oEmbed endpoint) instead.
+
+### Changed
+
+- **Streaming, capped fetches.** The crawler now streams the response body and
+  aborts once the byte cap is reached, so an oversized or never-ending response
+  can't be buffered whole into memory.
+
+### Fixed
+
+- **The GUI no longer freezes while loading data (frame-first rendering).** Every
+  view rendered its content only AFTER its data fetch resolved, so a large table
+  or a slow cloud open left the _previous_ view frozen on screen with no feedback.
+  Navigation now paints a loading frame synchronously on every click and streams
+  the content in — guarded by a monotonic render generation so a stale/slow load
+  can't clobber a newer view. The workspace switcher does the same, so switching
+  shows the new workspace opening rather than freezing on the old one. The UI
+  stays interactive regardless of data size or connection latency, and it scales
+  to hundreds/thousands of rows.
+
+- **Workspace switch could hang the GUI indefinitely (both directions).** A switch
+  `await`s opening the target workspace and tearing down the previous one; neither
+  was time-bounded, so a slow or wedged Postgres (cloud) connection froze the GUI
+  on "Switching…" forever — and because the switch never returned, the rest of the
+  SPA was stuck too. Two root-cause fixes:
+  - **`RealtimeBroker.stop()` no longer hangs.** Its graceful `client.end()` waits
+    for a server close-ack that never arrives on a wedged / half-open pooler
+    connection (the silently-dead LISTEN the watchdog exists for). `stop()` now
+    caps the close and **force-destroys the socket** on timeout, so it always
+    returns promptly and the connection is **released, not leaked** (the prior
+    teardown band-aid bounded the wait but abandoned the broker, leaking its
+    connection — repeated switches could then exhaust the cloud's connection pool).
+  - **Opening the target workspace is time-bounded.** If a cloud open (peek
+    connection + init + owner bootstrap converge + LISTEN) doesn't complete within
+    the cap, the switch keeps the **current** workspace active and surfaces a clear
+    error instead of spinning forever; the slow open is disposed in the background
+    so it can't leak. SQLite workspaces (no broker, local file) are unaffected.
+
 ## [3.3.0] - 2026-06-15
 
 ### Added — assistant artifacts
