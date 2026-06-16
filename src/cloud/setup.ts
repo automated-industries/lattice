@@ -147,6 +147,27 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
       );
     }
   }
+
+  // (6) Self-heal the one internal bookkeeping table a member reads/writes
+  // directly: __lattice_changelog. `enableChangelogRls` already grants this on
+  // every owner open AND scopes it with a per-viewer RLS policy (a member sees a
+  // derived row only when every source row is visible, and an audit row only when
+  // it owns the row), so the base grant is filtered, not a leak. Re-issuing it
+  // here is idempotent and self-heals a cloud whose grant was dropped (e.g. a
+  // `pg_dump --no-privileges` round-trip). Guarded by to_regclass for a cloud
+  // whose changelog substrate isn't installed. Every OTHER `__lattice_*` table
+  // stays owner-only — members reach owners/row_grants/cell_grants/changes/
+  // member_roles/cloud_settings/member_invites ONLY through SECURITY DEFINER
+  // functions keyed on session_user, so a direct grant there would leak another
+  // member's row existence/ownership/sharing and is intentionally NOT issued.
+  await runAsyncOrSync(
+    db.adapter,
+    `DO $LATTICE$ BEGIN
+       IF to_regclass('__lattice_changelog') IS NOT NULL THEN
+         EXECUTE 'GRANT SELECT, INSERT ON "__lattice_changelog" TO ${MEMBER_GROUP}';
+       END IF;
+     END $LATTICE$`,
+  );
 }
 
 /**
