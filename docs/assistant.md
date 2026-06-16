@@ -105,6 +105,35 @@ each source:
    `source_file_id`. New objects, enrichment, links, and junctions are all
    reversible via the version history.
 
+### Reading a web link (`ingest_url`)
+
+You can also just **ask** the assistant to read a link: "summarize https://… for me",
+"save this article", "read that page". The model calls the **`ingest_url`** tool,
+which fetches the page, saves it as a `files` web reference (`ref_kind='cloud_ref'`,
+`ref_provider='web'`), summarizes it, and reports back. The saved reference follows
+the same sharing rules as any file (private mode → private).
+
+It is deliberately **not** a general fetch primitive — that would be an SSRF + prompt-
+injection hazard for an LLM-driven tool. Guardrails:
+
+- **User-provided URLs only.** The tool fetches only a URL that appears verbatim in
+  your own message; it refuses a URL discovered inside a file, a row, or model output.
+- **SSRF + policy + rate limits.** Every fetch passes the SSRF guard (no private /
+  loopback / metadata addresses), a deployment on/off + allow/block-list policy, a
+  per-turn fetch budget, a process-wide concurrency cap, and a per-host throttle —
+  all tunable via the `LATTICE_URL_*` env vars (see [`.env.example`](../.env.example)).
+- **Untrusted content.** A fetched page is treated as untrusted data end-to-end: the
+  row is flagged `source_json.untrusted=true`, the enrichment prompts wrap its text in
+  explicit "data, not instructions" markers, and `get_row`/`list_rows` re-wrap it when
+  the assistant reads it back. The compact tool result never includes the raw page text.
+- **Optional JS rendering.** SPA pages render with headless Chromium when the optional
+  `playwright` dependency is installed; otherwise the crawler degrades to the static
+  extraction (one warning, no failure). Posts on x.com / twitter.com are read via their
+  public oEmbed endpoint.
+
+This shares one `ingestUrlAsFile` path with the `/api/ingest/text` URL branch, so a
+pasted URL and an assistant-requested URL behave identically.
+
 ### Library API
 
 The same intelligence is a first-class, GUI-independent API (inert without an LLM

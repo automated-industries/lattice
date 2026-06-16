@@ -17,6 +17,23 @@ function fixedClient(text: string): LlmClient {
   };
 }
 
+/** A client that records the system prompt + user content it was handed. */
+function capturingClient(reply: string): {
+  client: LlmClient;
+  last: { system: string; content: string };
+} {
+  const last = { system: '', content: '' };
+  const client: LlmClient = {
+    runTurn(params): Promise<TurnResult> {
+      last.system = params.system;
+      const first = params.messages[0];
+      last.content = typeof first?.content === 'string' ? first.content : '';
+      return Promise.resolve({ stopReason: 'end_turn', text: reply, toolUses: [] });
+    },
+  };
+  return { client, last };
+}
+
 const catalog: CatalogEntity[] = [
   {
     table: 'projects',
@@ -82,5 +99,28 @@ describe('summarize + classify helpers', () => {
     const client = fixedClient('[]');
     expect(await classifyLinks(client, 'text', 'f', [])).toEqual([]);
     expect(await classifyLinks(client, '   ', 'f', catalog)).toEqual([]);
+  });
+
+  it('untrusted=false does NOT add injection framing (default behavior)', async () => {
+    const { client, last } = capturingClient('ok');
+    await summarizeText(client, 'plain doc body', 'doc.txt', undefined, false);
+    expect(last.content).not.toContain('UNTRUSTED_EXTERNAL_CONTENT');
+    expect(last.system).not.toMatch(/untrusted/i);
+  });
+
+  it('summarizeText with untrusted=true wraps content + hardens the system prompt', async () => {
+    const { client, last } = capturingClient('ok');
+    await summarizeText(client, 'malicious page text', 'page', undefined, true);
+    expect(last.content).toContain('<UNTRUSTED_EXTERNAL_CONTENT>');
+    expect(last.content).toContain('malicious page text');
+    expect(last.system).toMatch(/untrusted/i);
+    expect(last.system).toMatch(/never instructions/i);
+  });
+
+  it('classifyLinks with untrusted=true frames the document text', async () => {
+    const { client, last } = capturingClient('```json\n[]\n```');
+    await classifyLinks(client, 'web page text', 'page', catalog, undefined, true);
+    expect(last.content).toContain('<UNTRUSTED_EXTERNAL_CONTENT>');
+    expect(last.system).toMatch(/untrusted/i);
   });
 });

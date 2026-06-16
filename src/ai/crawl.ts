@@ -34,6 +34,14 @@ export interface CrawlOptions {
    * degrades silently when Playwright or a browser is absent.
    */
   noJs?: boolean;
+  /**
+   * Render with headless Chromium up front rather than only as a low-text
+   * fallback — for SPA-heavy pages whose static HTML is an empty shell. When
+   * Playwright is absent this degrades to the static extraction with a single
+   * loud warning (it is an optional dependency, not a hard requirement).
+   * Ignored when `noJs` is set. Default false.
+   */
+  forceJs?: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
@@ -43,14 +51,31 @@ const DEFAULT_UA = 'LatticeSQL/2.0 (+https://latticesql.com)';
 export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise<CrawlResult> {
   const u = await assertSafeUrl(rawUrl, opts.allowPrivate ?? false);
   const fetchImpl = opts.fetcher ?? fetch;
+  const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // Per-host special-case extractors (e.g. tweets via oEmbed, which serve no
+  // readable static HTML) take precedence; a null return falls through to the
+  // generic crawl below.
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const special = DOMAIN_EXTRACTORS.find((e) =>
+    e.hosts.some((h) => host === h || host.endsWith('.' + h)),
+  );
+  if (special) {
+    const extracted = await special.extract(u, opts, fetchImpl);
+    if (extracted) return extracted;
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort();
-  }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  }, timeoutMs);
 
-  let res: Response;
+  let mime: string;
+  let body: Buffer;
+  let finalUrl: string;
   try {
-    res = await safeFetch(u.toString(), fetchImpl, {
+    const res = await safeFetch(u.toString(), fetchImpl, {
       allowPrivate: opts.allowPrivate ?? false,
       init: {
         signal: controller.signal,
@@ -60,19 +85,17 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
         },
       },
     });
+    if (!res.ok) {
+      throw new Error(`Lattice: crawl failed for ${rawUrl}: HTTP ${String(res.status)}`);
+    }
+    mime = (res.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+    finalUrl = res.url || u.toString();
+    // Stream the body and stop at maxBytes — never buffer an unbounded response
+    // into memory (a malicious or runaway server could stream gigabytes).
+    body = await readBodyCapped(res, maxBytes, controller);
   } finally {
     clearTimeout(timer);
   }
-
-  if (!res.ok) {
-    throw new Error(`Lattice: crawl failed for ${rawUrl}: HTTP ${String(res.status)}`);
-  }
-
-  let mime = (res.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
-  const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const raw = Buffer.from(await res.arrayBuffer());
-  const body = raw.length > maxBytes ? raw.subarray(0, maxBytes) : raw;
-  const finalUrl = res.url || u.toString();
 
   // Sniff the mime from the bytes when the server gave us nothing useful.
   if (mime === '' || mime === 'application/octet-stream') {
@@ -89,7 +112,7 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
       text: body.toString('utf-8'),
       excerpt: '',
       mime,
-      byteLength: raw.length,
+      byteLength: body.length,
     };
   }
 
@@ -111,11 +134,14 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
   }
   if (text.length === 0) text = strippedBodyText(dom);
 
-  // JS-rendered page fallback: if the static HTML yielded little text and
-  // Playwright is available, render the page and re-extract. Silently degrades
-  // when Playwright (or a browser) is absent — the static result stands.
-  if (!opts.noJs && text.length < 200) {
-    const rendered = await renderViaPlaywright(finalUrl, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  // JS-render via headless Chromium. Triggered up front when `forceJs` is set
+  // (SPA shells whose static HTML carries no text), and otherwise as a fallback
+  // when the static extraction yielded little text. Degrades to the static
+  // result when Playwright (or a browser) is absent — silently for the fallback,
+  // with one loud warning when `forceJs` explicitly asked for it.
+  const wantJs = opts.forceJs === true && !opts.noJs;
+  if (!opts.noJs && (wantJs || text.length < 200)) {
+    const rendered = await renderViaPlaywright(finalUrl, timeoutMs, wantJs);
     if (rendered) {
       const rdom = new JSDOM(rendered, { url: finalUrl });
       const rdoc = rdom.window.document as unknown as Document;
@@ -135,7 +161,132 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
 
   if (title.length === 0) title = titleFromUrl(finalUrl);
 
-  return { url: finalUrl, title, text, excerpt, mime: mime || 'text/html', byteLength: raw.length };
+  return {
+    url: finalUrl,
+    title,
+    text,
+    excerpt,
+    mime: mime || 'text/html',
+    byteLength: body.length,
+  };
+}
+
+/**
+ * Read a response body, stopping (and aborting the in-flight socket) once
+ * `maxBytes` is reached. Streams via the body reader so an oversized or
+ * never-ending response can't be buffered whole into memory; falls back to a
+ * (still capped) `arrayBuffer()` read for fetch stubs that expose no stream.
+ */
+async function readBodyCapped(
+  res: Response,
+  maxBytes: number,
+  controller: AbortController,
+): Promise<Buffer> {
+  const stream = res.body;
+  if (!stream) {
+    // No readable stream (a null-bodied response or a minimal fetch stub) — fall
+    // back to a single, still-capped buffered read.
+    const buf = Buffer.from(await res.arrayBuffer());
+    return buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf;
+  }
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(Buffer.from(value)); // copies — safe to keep past the read loop
+      total += value.byteLength;
+      if (total >= maxBytes) {
+        controller.abort(); // stop a server streaming more than we'll accept
+        break;
+      }
+    }
+  } catch {
+    // A mid-stream abort (our own cap, or the timeout) surfaces as a read
+    // rejection — we keep whatever we accumulated. Pre-body failures are
+    // already handled by the caller (safeFetch validated headers + res.ok).
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  const out = Buffer.concat(chunks);
+  return out.length > maxBytes ? out.subarray(0, maxBytes) : out;
+}
+
+/**
+ * Per-host extractors for sites that serve no usable static HTML (e.g. tweets).
+ * Each returns a {@link CrawlResult} or `null` to fall through to the generic
+ * crawl. Matched by exact host or any subdomain.
+ */
+type DomainExtractor = (
+  u: URL,
+  opts: CrawlOptions,
+  fetchImpl: typeof fetch,
+) => Promise<CrawlResult | null>;
+
+const DOMAIN_EXTRACTORS: { hosts: string[]; extract: DomainExtractor }[] = [
+  { hosts: ['x.com', 'twitter.com', 'mobile.twitter.com'], extract: twitterOEmbed },
+];
+
+interface OEmbedResponse {
+  html?: string;
+  author_name?: string;
+  title?: string;
+}
+
+/**
+ * Extract a tweet/post via Twitter's public oEmbed endpoint (the page itself is
+ * a JS shell with no readable static text). Goes through `safeFetch` so the
+ * oEmbed host is SSRF-validated like any other fetch. Returns `null` on any
+ * failure so the caller falls back to the generic crawl.
+ */
+async function twitterOEmbed(
+  u: URL,
+  opts: CrawlOptions,
+  fetchImpl: typeof fetch,
+): Promise<CrawlResult | null> {
+  const endpoint =
+    'https://publish.twitter.com/oembed?omit_script=true&dnt=true&url=' +
+    encodeURIComponent(u.toString());
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await safeFetch(endpoint, fetchImpl, {
+      allowPrivate: opts.allowPrivate ?? false,
+      init: {
+        signal: controller.signal,
+        headers: { 'user-agent': opts.userAgent ?? DEFAULT_UA, accept: 'application/json' },
+      },
+    });
+  } catch {
+    return null; // oEmbed unreachable — fall back to the normal crawl
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) return null;
+  let json: OEmbedResponse;
+  try {
+    json = (await res.json()) as OEmbedResponse;
+  } catch {
+    return null;
+  }
+  if (!json.html) return null;
+  const text = strippedBodyText(new JSDOM(json.html));
+  if (text.length === 0) return null;
+  const author = (json.author_name ?? '').trim();
+  const title = author.length > 0 ? `Post by ${author}` : 'Social post';
+  return {
+    url: u.toString(),
+    title,
+    text,
+    excerpt: text.slice(0, 280),
+    mime: 'text/html',
+    byteLength: Buffer.byteLength(json.html, 'utf-8'),
+  };
 }
 
 function strippedBodyText(dom: JSDOM): string {
@@ -196,12 +347,20 @@ interface PwBrowser {
   close(): Promise<void>;
 }
 
+let warnedPlaywrightMissing = false;
+
 /**
  * Render a page with headless Chromium (Playwright) and return its HTML, or
  * `null` if Playwright (or a browser) is unavailable or navigation fails.
  * Playwright is an optionalDependency, so this is a graceful, best-effort hook.
+ * When `warnIfMissing` is set (a caller that explicitly asked for JS rendering),
+ * a single loud warning is logged the first time Playwright is found absent.
  */
-async function renderViaPlaywright(url: string, timeoutMs: number): Promise<string | null> {
+async function renderViaPlaywright(
+  url: string,
+  timeoutMs: number,
+  warnIfMissing = false,
+): Promise<string | null> {
   let chromium: { launch: (o?: { headless?: boolean }) => Promise<PwBrowser> };
   try {
     const importMetaUrl = (import.meta as { url?: string }).url;
@@ -211,6 +370,15 @@ async function renderViaPlaywright(url: string, timeoutMs: number): Promise<stri
     };
     chromium = pw.chromium;
   } catch {
+    if (warnIfMissing && !warnedPlaywrightMissing) {
+      warnedPlaywrightMissing = true;
+      console.warn(
+        '[latticesql] JS rendering was requested but the optional "playwright" ' +
+          'dependency is not installed — serving the static HTML extraction instead. ' +
+          'Install it to render JS-heavy pages: `npm install playwright && ' +
+          'npx playwright install chromium`.',
+      );
+    }
     return null; // Playwright not installed.
   }
   let browser: PwBrowser | null = null;
