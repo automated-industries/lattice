@@ -47,7 +47,7 @@ import {
 } from '../lifecycle/manifest.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
-import type { Row } from '../types.js';
+import type { Row, TableDefinition } from '../types.js';
 import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
 import { getAsyncOrSync, allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
@@ -943,6 +943,10 @@ export async function openConfig(
           ]);
           const views = viewsRaw as { name: string }[];
           const knownTables = new Set<string>([...declared, ...discovered.map((t) => t.name)]);
+          // Discovered entity tables (name + a minimal definition) collected so we
+          // can synthesize a default render layout from them below — the member's
+          // config has `entities: {}`, so without this the render writes 0 files.
+          const memberEntityDefs: { name: string; definition: TableDefinition }[] = [];
           for (const t of discovered) {
             if (declared.has(t.name)) continue;
             // A table the member has no column access to introspects to zero
@@ -961,18 +965,37 @@ export async function openConfig(
               discoveredJunctions.add(t.name);
               continue;
             }
-            db.define(t.name, {
+            const def: TableDefinition = {
               columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
               ...(t.pk.length > 0 ? { primaryKey: t.pk.length === 1 ? t.pk[0] : t.pk } : {}),
               render: () => '',
               outputFile: `${t.name}/.lattice/${t.name}.md`,
-            });
+            };
+            db.define(t.name, def);
+            memberEntityDefs.push({ name: t.name, definition: def });
           }
           // A member only SEES `<base>_v` views it was granted SELECT on (the
           // audience-masking view for a table whose base SELECT was revoked).
           for (const { name } of views) {
             const base = name.slice(0, -2); // strip the "_v" suffix
             if (knownTables.has(base)) maskedReadViews.set(base, name);
+          }
+          // Synthesize a default per-row context tree from the introspected schema
+          // so a member's render produces context FILES. The render layout
+          // (entityContexts) lives ONLY in the owner's config, which the cloud
+          // model never ships to members — so a member's `entities: {}` config
+          // rendered 0 files even though they can read every row. The database is
+          // the source of truth, so we derive a canonical layout from the tables
+          // the member can actually see (same helper the owner uses on its
+          // config). belongsTo/hasMany rollups need relations a member can't
+          // introspect, so these are self-context-only — but that is the
+          // difference between the full per-row tree and nothing. Gated on
+          // autoRender to match the owner path; skips tables already declared.
+          if (autoRender && memberEntityDefs.length > 0) {
+            const existingContexts = db.entityContexts();
+            for (const { table, definition } of deriveCanonicalContexts(memberEntityDefs)) {
+              if (!existingContexts.has(table)) db.defineEntityContext(table, definition);
+            }
           }
         }
       }
@@ -3126,14 +3149,31 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               rows.push({ name: n });
             }
           }
-          const tables: { name: string; columns: string[]; rowCount: number }[] = [];
+          const tables: { name: string; columns: string[]; rowCount: number | null }[] = [];
           for (const r of rows) {
             // Lattice.introspectColumns dispatches on dialect internally:
             // PRAGMA table_info on SQLite, information_schema.columns on
             // Postgres. Returns string[] of column names either way.
-            const cols = await active.db.introspectColumns(r.name);
-            const rowCount = await active.db.count(r.name);
-            tables.push({ name: r.name, columns: cols, rowCount });
+            try {
+              const cols = await active.db.introspectColumns(r.name);
+              const rowCount = await active.db.count(r.name);
+              tables.push({ name: r.name, columns: cols, rowCount });
+            } catch (err) {
+              // A scoped cloud member has no SELECT grant on the owner-only
+              // bookkeeping tables (__lattice_owners, member_roles, cloud_settings,
+              // member_invites, changes, …) — those are reached only via SECURITY
+              // DEFINER functions, by design — and a NATIVE_INTERNAL_NAME we list
+              // optimistically (chat_threads/…) may not be physically present on a
+              // given cloud. Neither must 500 the whole System sidebar: show the
+              // name, mark the count unknown (null), and continue. A genuine fault
+              // (syntax, dropped connection) still surfaces.
+              const msg = err instanceof Error ? err.message : String(err);
+              if (/permission denied|does not exist/i.test(msg)) {
+                tables.push({ name: r.name, columns: [], rowCount: null });
+              } else {
+                throw err;
+              }
+            }
           }
           sendJson(res, { tables });
           return;
