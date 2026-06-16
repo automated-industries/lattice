@@ -14,12 +14,17 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('var(--sidebar-width)');
   });
 
-  it('wires the feed EventSource + resize on boot', () => {
-    expect(guiAppHtml).toContain("'/api/feed/stream'");
-    expect(guiAppHtml).toContain('function startFeed');
+  it('wires the multiplexed event stream + resize on boot', () => {
+    // Feed/realtime/render events ride ONE WebSocket (`/api/stream`) instead of
+    // three SSE streams, so a tab holds a single persistent connection.
+    expect(guiAppHtml).toContain("'/api/stream'");
+    expect(guiAppHtml).toContain('function startEventStream');
+    expect(guiAppHtml).toContain('new WebSocket(');
     expect(guiAppHtml).toContain('function initRailResize');
-    expect(guiAppHtml).toContain('startFeed();');
+    expect(guiAppHtml).toContain('startEventStream();');
     expect(guiAppHtml).toContain('initRailResize();');
+    // The three separate SSE stream openers are gone.
+    expect(guiAppHtml).not.toContain("new EventSource('/api/feed/stream')");
   });
 
   it('wires file ingest (drag-drop + paperclip) into the rail', () => {

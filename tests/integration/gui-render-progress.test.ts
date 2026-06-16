@@ -3,14 +3,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { waitForStreamMessage } from './stream-helper.js';
 
 /**
  * v3.1 async background render: opening a workspace no longer blocks on render —
  * the server starts serving immediately and renders in the background, exposing a
- * live snapshot over `GET /api/render/status` and an SSE stream over
- * `GET /api/render/progress` (which replays a `snapshot` event on connect, so a
- * tab that connects after a fast render still paints). Also covers the owner-gated
- * cloud-config endpoints refusing a non-cloud (SQLite) database.
+ * live snapshot over `GET /api/render/status` and `render-progress` /
+ * `render-snapshot` messages on the multiplexed `/api/stream` WebSocket (which
+ * replays a `render-snapshot` on connect, so a tab that connects after a fast
+ * render still paints). Also covers the owner-gated cloud-config endpoints
+ * refusing a non-cloud (SQLite) database.
  */
 
 const dirs: string[] = [];
@@ -50,44 +52,13 @@ async function boot(): Promise<GuiServerHandle> {
   return server;
 }
 
-/** Read the render SSE until a frame with `event: <name>` arrives; return its parsed data. */
-async function firstRenderEvent(
+/** Wait for a typed render message on the multiplexed `/api/stream` WebSocket. */
+function firstRenderEvent(
   url: string,
-  name: string,
+  type: 'render-snapshot' | 'render-progress',
   timeoutMs = 4000,
 ): Promise<Record<string, unknown>> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => {
-    ac.abort();
-  }, timeoutMs);
-  try {
-    const res = await fetch(`${url}/api/render/progress`, { signal: ac.signal });
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let sep: number;
-      while ((sep = buffer.indexOf('\n\n')) >= 0) {
-        const frame = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-        const lines = frame.split('\n');
-        const evLine = lines.find((l) => l.startsWith('event:'));
-        const dataLine = lines.find((l) => l.startsWith('data:'));
-        if (!dataLine) continue;
-        const ev = evLine ? evLine.slice('event:'.length).trim() : 'message';
-        if (ev !== name) continue;
-        const json = dataLine.slice('data:'.length).trim();
-        return JSON.parse(json) as Record<string, unknown>;
-      }
-    }
-    throw new Error(`render stream closed before a "${name}" event`);
-  } finally {
-    clearTimeout(timer);
-    ac.abort();
-  }
+  return waitForStreamMessage(url, type, () => true, timeoutMs);
 }
 
 describe('GUI background render progress', () => {
@@ -100,9 +71,9 @@ describe('GUI background render progress', () => {
     expect(snap.tables && typeof snap.tables === 'object').toBe(true);
   });
 
-  it('replays a snapshot event on SSE connect (covers connect-after-fast-render)', async () => {
+  it('replays a snapshot on WebSocket connect (covers connect-after-fast-render)', async () => {
     const s = await boot();
-    const snap = await firstRenderEvent(s.url, 'snapshot');
+    const snap = await firstRenderEvent(s.url, 'render-snapshot');
     expect(typeof snap.phase).toBe('string');
     expect(snap.tables && typeof snap.tables === 'object').toBe(true);
   });

@@ -541,6 +541,22 @@ export function isJunctionTable(table: GuiTableSummary): boolean {
   return table.columns.every((c) => fkCols.has(c) || JUNCTION_ALLOWED_NONFK.has(c));
 }
 
+/**
+ * DB-only junction detection from a table's COLUMNS alone — for a cloud MEMBER,
+ * who has no entity/relation config (relations live only in the owner's config,
+ * never in the database) and so cannot use {@link isJunctionTable}. A lattice
+ * junction is materialized as exactly `(id, "<x>_id", "<y>_id")` (see
+ * `materializeJunction`), so once system columns are stripped the remainder is
+ * exactly two `*_id` foreign-key columns with no payload of its own. This mirrors
+ * isJunctionTable's "two FKs + no payload" rule using only the physical shape the
+ * member can read from the catalog — keeping "a junction is not an object" true
+ * for members the same way it is for the owner.
+ */
+export function isJunctionByColumns(columns: string[]): boolean {
+  const payload = columns.filter((c) => !JUNCTION_ALLOWED_NONFK.has(c));
+  return payload.length === 2 && payload.every((c) => c.endsWith('_id'));
+}
+
 /** A junction table that connects the native `files` entity to another entity. */
 export interface FileJunction {
   /** The junction table name. */
