@@ -52,6 +52,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   aborts once the byte cap is reached, so an oversized or never-ending response
   can't be buffered whole into memory.
 
+### Fixed
+
+- **Workspace switch could hang indefinitely.** Switching (or closing) a workspace
+  `await`s teardown of the one being left, which stops that workspace's realtime
+  LISTEN/NOTIFY broker. On a degraded Postgres connection the broker's `stop()`
+  could never settle, freezing the switch forever — the server stayed responsive,
+  but the GUI's "Switching…" state never resolved. Teardown of the previous
+  workspace's broker is now **time-bounded** (3s): a wedged broker is abandoned
+  best-effort and the switch completes. SQLite workspaces (no broker) are unaffected.
+
 ## [3.3.0] - 2026-06-15
 
 ### Added — assistant artifacts
