@@ -8,6 +8,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.3] - 2026-06-16
+
+### Fixed
+
+- **Invited cloud members could connect but the GUI silently degraded to
+  read-only / "save as document," with an empty render.** A member's scoped role
+  was left without privileges on the bookkeeping objects the GUI and CLI need, so
+  reads/writes failed with "permission denied" on connect. `reconcileCloudMemberAccess`
+  — which runs on the secure cutover AND on every owner open, so existing clouds
+  self-heal — now also:
+  - grants the member group the GUI bookkeeping tables (`_lattice_gui_meta`,
+    `_lattice_gui_column_meta`, `_lattice_gui_audit`) and the identity table
+    (`__lattice_user_identity`) the member reads/writes directly on connect;
+  - grants the member group `EXECUTE` on the SQLite-compat polyfills
+    (`json_extract`, `strftime`) — owner-created, so a member never needs (and
+    cannot, post-revoke) `CREATE` on schema `public` to register them;
+  - adds `deleted_at` to any user entity table missing it (idempotent
+    `ALTER TABLE … ADD COLUMN IF NOT EXISTS`), so a cloud migrated from a
+    pre-soft-delete SQLite no longer breaks the render and exact counts (which
+    filter `WHERE deleted_at IS NULL`).
+
+  The owner-only governance table `__lattice_cell_grants` is **not** granted to
+  members — it is reached only through `SECURITY DEFINER` functions, so a direct
+  member grant would leak every cell-sharing decision; member cell-visibility
+  continues to flow through `lattice_cell_visible` unchanged.
+
 ## [3.3.2] - 2026-06-16
 
 ### Fixed
