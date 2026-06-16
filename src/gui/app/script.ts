@@ -1323,6 +1323,14 @@ export const appJs = `
             // switch (POST + reloadEverything), independent of the ephemeral
             // menu-item withBusy spinner — the menu can close/rebuild mid-switch.
             beginWsSwitching();
+            // Repaint the content area to a loading frame IMMEDIATELY so the
+            // switch shows the new workspace opening — a cloud open is several
+            // network round-trips — rather than leaving the previous workspace's
+            // view frozen on screen. Bumping renderGen invalidates any in-flight
+            // render from the workspace being left so it can't clobber this.
+            renderGen++;
+            var switchContent = document.getElementById('content');
+            if (switchContent) switchContent.innerHTML = routeLoadingHtml();
             withBusy(b, function () {
               return fetchJson('/api/workspaces/switch', {
                 method: 'POST',
