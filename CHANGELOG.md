@@ -8,6 +8,72 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-06-16
+
+### Fixed
+
+- **A cloud member saw junction (link) tables listed as objects in the sidebar.**
+  A member joins with no entity config (relations are config-only and never live
+  in the database), so the GUI discovered every table from the catalog and listed
+  link tables as first-class objects — while the owner's config-driven sidebar
+  correctly omitted them. The member now classifies junctions from the physical
+  table shape (a lattice junction is exactly `id` + two `*_id` columns with no
+  payload) and keeps them out of its table set entirely. The database stays the
+  single source of truth — no schema is shipped to members; a member still sees
+  exactly the tables they can access, minus junctions.
+
+- **"Shared with specific people (0)" now reads as Private.** A row shared with
+  nobody is only visible to its owner (RLS), so it must read as private. Two
+  causes are fixed: opening the "Specific people…" panel no longer eagerly flips
+  the row to `custom` before any grantee is chosen (the first grant flips it
+  server-side; revoking the last leaves it custom-with-0-grantees), and the
+  sharing indicator/label now renders an owner's custom-with-0-grantees row as
+  private everywhere. A member viewing a row shared _with_ them still reads
+  "Shared with you" (unchanged).
+
+- **GUI froze ("Switching…" forever, clicks that never resolved) with more than
+  one tab open.** The GUI opened three long-lived Server-Sent-Event streams per
+  tab (realtime, activity feed, render progress). Browsers cap HTTP/1.1 at six
+  connections per host, so two open tabs consumed all six slots and every data
+  request — entities, rows, workspace switch — queued indefinitely with no
+  recovery. The three streams are now multiplexed onto **one WebSocket**
+  (`/api/stream`) carrying typed `{ type, data }` messages. WebSocket connections
+  live in a separate, far larger browser pool than HTTP/1.1 requests, so the
+  whole six-connection HTTP budget stays free for data requests no matter how
+  many tabs are open. The client reconnects with backoff if the socket drops
+  (WebSocket has no built-in auto-reconnect); per-recipient realtime visibility
+  filtering, internal-table feed filtering, and self-echo de-duplication are all
+  preserved. Adds a `ws` runtime dependency.
+
+- **Version showed as "unknown" in published builds.** `getVersion()` read
+  `package.json` via `import.meta.url` at runtime, which fails once the code is
+  bundled and installed under `node_modules` — so the CLI `--version` and the GUI
+  version chip showed "vunknown". The version is now injected at build time
+  (tsup `define`), with the file read kept as a dev fallback.
+
+- **Assistant could report a sharing change it lacked permission to make.** The
+  `set_visibility` tool relied solely on the Postgres RLS function to reject an
+  unauthorized change, so a no-permission attempt could surface as success. It now
+  runs a deterministic pre-check (row owner via `lattice_rows_access`; table
+  default via role privilege) and returns an explicit refusal the assistant
+  relays — the RLS function stays as defense-in-depth.
+
+### Changed
+
+- **Faster cloud-workspace open.** The owner-vs-member probe now runs its
+  independent, read-only introspection queries concurrently (RLS-installed +
+  role-privilege; table discovery + masking-view lookup) instead of serially. No
+  change to the owner/member determination, the `information_schema` privilege
+  filters, or any RLS/grant gate.
+
+### Added
+
+- **GA unique-user de-duplication.** The GUI now sets the Google Analytics
+  `user_id` to a SHA-256 hash of the operator's email (hashed in-browser; the
+  plaintext is never sent, and the analytics layer accepts only a hex digest), so
+  active users are deduplicated across sessions/devices instead of counting ≈ 1
+  per event. Opt-in and gated on the existing analytics consent.
+
 ## [3.3.1] - 2026-06-16
 
 ### Added — first-class URL ingestion

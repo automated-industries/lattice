@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { waitForStreamMessage } from './stream-helper.js';
 
 /**
  * Integration coverage for the SQLite-reachable GUI HTTP surface in
@@ -186,7 +187,7 @@ describe('GUI server — row CRUD + audit history', () => {
 });
 
 describe('GUI server — realtime stream + history edge cases', () => {
-  it('serves realtime status and an SSE stream that cleans up on disconnect', async () => {
+  it('serves realtime status and a multiplexed event stream', async () => {
     const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
     const h = await boot(cfg);
 
@@ -194,19 +195,15 @@ describe('GUI server — realtime stream + history edge cases', () => {
     expect(status.status).toBe(200);
     expect(status.body.mode).toBe('local');
 
-    // Connect to the SSE stream, read the initial `state` event, then abort.
-    // The abort fires the server's req 'close' handler (cleanup path). The
-    // backported closeAllConnections() guard keeps the afterEach close() from
-    // hanging on this keep-alive socket.
-    const ac = new AbortController();
-    const streamRes = await fetch(`${h.url}/api/realtime/stream`, { signal: ac.signal });
-    expect(streamRes.status).toBe(200);
-    expect(streamRes.headers.get('content-type')).toContain('text/event-stream');
-    const reader = streamRes.body!.getReader();
-    const first = await reader.read();
-    expect(new TextDecoder().decode(first.value)).toContain('event: state');
-    ac.abort();
-    await reader.cancel().catch(() => undefined);
+    // The realtime/feed/render SSE streams were collapsed into ONE WebSocket
+    // (`/api/stream`) so a tab holds a single persistent connection instead of
+    // three. On connect it replays the realtime `state` as a `realtime-state`
+    // message; receiving it proves the stream is live and bound to this
+    // (local) workspace. The server's close() terminates the socket so the
+    // afterEach teardown doesn't hang on it.
+    const state = await waitForStreamMessage(h.url, 'realtime-state');
+    expect(state.mode).toBe('local');
+    expect(typeof state.state).toBe('string');
   });
 
   it('handles history revert + empty undo/redo', async () => {
