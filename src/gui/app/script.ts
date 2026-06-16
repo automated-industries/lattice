@@ -947,10 +947,12 @@ export const appJs = `
         error: false,
       };
       if (done) {
+        // This table finished: clear its overlay IN PLACE. Do NOT reconcile the
+        // whole view here — a 23-table render fired ~23 refetch+re-renders of the
+        // middle pane (one per table-done), which is the flashing-div symptom the
+        // user saw. The single whole-render done event below does one reconcile to
+        // snap every count; until then the per-card overlay communicates progress.
         clearCardProgress(e.table);
-        // The count for this table is now final on the server; nudge one
-        // reconciling refetch from /api/entities (debounced, coalesced).
-        scheduleRealtimeRefresh();
       } else {
         applyCardProgress(e.table, e.pct);
       }
@@ -1189,7 +1191,10 @@ export const appJs = `
       ]).then(function (r) {
         state.entities = r[0];
         renderSidebar();
-        renderRoute();
+        // Soft re-render: this is a background refresh (a mutation landed, or the
+        // render finished), not a navigation — keep the current view on screen and
+        // swap in the fresh data without flashing through a loading frame.
+        renderRoute({ soft: true });
       });
     }
 
@@ -1518,14 +1523,21 @@ export const appJs = `
       if (content && gen === renderGen) content.innerHTML = html;
     }
 
-    function renderRoute() {
+    function renderRoute(opts) {
+      // soft = a BACKGROUND refresh (a live data change or the render-progress
+      // reconcile), not a user navigation. A soft refresh re-renders the current
+      // view IN PLACE: it keeps the existing content on screen and lets the
+      // per-route renderer swap it only once the new data is ready (setContent +
+      // the renderGen guard), so the middle pane no longer flashes to a loading
+      // spinner on every refresh. A navigation (default; also the hashchange
+      // Event arg, which has no soft flag) still paints the loading frame
+      // synchronously for instant click feedback.
+      var soft = !!(opts && opts.soft);
       var content = document.getElementById('content');
       var hash = location.hash || '#/';
-      // Paint a loading frame SYNCHRONOUSLY before any fetch so a click repaints
-      // instantly and a slow/large load never leaves the previous view frozen on
-      // screen. Bumping renderGen invalidates any in-flight (older) render.
+      // Bumping renderGen invalidates any in-flight (older) render either way.
       renderGen++;
-      if (content) content.innerHTML = routeLoadingHtml();
+      if (content && !soft) content.innerHTML = routeLoadingHtml();
       if (!state.entities) return; // shell still booting — the loading frame stays
       highlightActive();
       if (window.LatticeGA) window.LatticeGA.pageView(routeType(hash));
@@ -3058,6 +3070,21 @@ export const appJs = `
       drawer.classList.remove('open');
       backdrop.classList.remove('open');
       window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 220);
+      // Keep the URL in sync with what's actually on screen. A settings hash
+      // (#/settings/..., e.g. from a "User Settings" link) opens this drawer over
+      // the dashboard, and renderRoute REOPENS the drawer for that hash — so if the
+      // hash stayed put, a later re-render (submitting a chat message, a live data
+      // refresh) would pop the panel open on its own. Reset the hash to the
+      // dashboard the drawer was overlaying. replaceState (not a location.hash
+      // assignment) avoids both a spurious history entry and a redundant re-render
+      // — the dashboard is already on screen beneath the drawer.
+      if (
+        location.hash.indexOf('#/settings/') === 0 &&
+        window.history &&
+        window.history.replaceState
+      ) {
+        window.history.replaceState(null, '', '#/');
+      }
     }
     function selectDrawerTab(tab) {
       drawerTab = tab;
