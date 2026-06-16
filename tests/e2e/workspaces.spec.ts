@@ -10,6 +10,10 @@ import {
   resolveWorkspacePaths,
 } from '../../src/index.js';
 
+// These tests share one server (and thus its active-workspace state), so they
+// must run in order rather than racing in parallel workers.
+test.describe.configure({ mode: 'serial' });
+
 let server: GuiServerHandle;
 let base: string;
 
@@ -61,4 +65,27 @@ test('the header workspace switcher lists workspaces and switches the active one
   await betaItem.click();
   // After switching, the header reflects the new active workspace.
   await expect(page.locator('#ws-name')).toHaveText('Beta');
+});
+
+test('switching paints a loading frame immediately and never freezes on the previous workspace', async ({
+  page,
+}) => {
+  await page.goto(server.url);
+  const startName = (await page.locator('#ws-name').textContent()) ?? '';
+
+  // Simulate a slow (cloud-like) open by delaying the switch POST.
+  await page.route('**/api/workspaces/switch', async (route) => {
+    await new Promise((r) => setTimeout(r, 800));
+    await route.continue();
+  });
+
+  await page.locator('#ws-button').click();
+  // Switch to whichever workspace is NOT currently active (order-independent).
+  await page.locator('#ws-menu button.db-item:not(.active)').first().click();
+
+  // The content area shows a loading frame immediately — well before the 800ms
+  // open completes — instead of leaving the previous workspace's view frozen.
+  await expect(page.locator('#content .route-loading')).toBeVisible({ timeout: 400 });
+  // …and the switch still completes (the active workspace changes).
+  await expect(page.locator('#ws-name')).not.toHaveText(startName, { timeout: 5000 });
 });
