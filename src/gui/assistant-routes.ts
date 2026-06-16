@@ -43,7 +43,12 @@ type CredentialName = keyof typeof CREDENTIALS;
 export const ANTHROPIC_KEY_KIND = CREDENTIALS.anthropic.kind;
 
 interface AssistantContext {
-  db: Lattice;
+  // Null in the virgin (no-workspace) state. Assistant credentials live in the
+  // machine-local store, not a workspace, so config / key / OAuth all work with
+  // no active DB — only the SQLite back-compat secrets lookup needs `db`, and it
+  // is skipped when `db` is null. This is what lets "Connect with Claude" run
+  // from first-run onboarding before any workspace exists.
+  db: Lattice | null;
   pathname: string;
   method: string;
 }
@@ -122,7 +127,8 @@ async function liveSecretsOfKind(db: Lattice, kind: string): Promise<SecretRow[]
 }
 
 /** Decrypted value of the first live secret row of a kind (framework decrypts on read). */
-async function secretValue(db: Lattice, kind: string): Promise<string | null> {
+async function secretValue(db: Lattice | null, kind: string): Promise<string | null> {
+  if (!db) return null; // no workspace (virgin state) → machine store only
   const rows = await liveSecretsOfKind(db, kind);
   return rows.find((r) => typeof r.value === 'string' && r.value.length > 0)?.value ?? null;
 }
@@ -153,10 +159,12 @@ async function secretValue(db: Lattice, kind: string): Promise<string | null> {
  * store. So on Postgres we use only the machine store + the caller's env-var
  * fallback.
  */
-async function readMachineCredential(db: Lattice, kind: string): Promise<string | null> {
+async function readMachineCredential(db: Lattice | null, kind: string): Promise<string | null> {
   const fromMachine = getAssistantCredential(kind);
   if (fromMachine) return fromMachine;
-  if (db.getDialect() !== 'sqlite') return null;
+  // No workspace (virgin, db null), or a non-SQLite (shared) DB → machine store
+  // only. db?.getDialect() is undefined when db is null, so this returns early.
+  if (db?.getDialect() !== 'sqlite') return null;
   const fromDb = await secretValue(db, kind);
   if (fromDb) {
     try {
@@ -174,7 +182,7 @@ async function readMachineCredential(db: Lattice, kind: string): Promise<string 
  * (persists across workspaces), then the workspace `secrets` row (back-compat),
  * then the `ANTHROPIC_API_KEY` env var. Server-side only.
  */
-export async function getAnthropicApiKey(db: Lattice): Promise<string | null> {
+export async function getAnthropicApiKey(db: Lattice | null): Promise<string | null> {
   return (
     (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
     process.env.ANTHROPIC_API_KEY ??
@@ -239,7 +247,7 @@ export function aggressivenessToTemperature(aggressiveness: number): number {
   return Math.min(1, Math.max(0, aggressiveness));
 }
 
-export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential | null> {
+export async function getVoiceCredential(db: Lattice | null): Promise<VoiceCredential | null> {
   const openai =
     (await readMachineCredential(db, CREDENTIALS.openai.kind)) ??
     process.env.OPENAI_API_KEY ??
@@ -257,7 +265,11 @@ export async function getVoiceCredential(db: Lattice): Promise<VoiceCredential |
   return null;
 }
 
-async function hasCredential(db: Lattice, name: CredentialName, envVar: string): Promise<boolean> {
+async function hasCredential(
+  db: Lattice | null,
+  name: CredentialName,
+  envVar: string,
+): Promise<boolean> {
   return (
     Boolean(await readMachineCredential(db, CREDENTIALS[name].kind)) || Boolean(process.env[envVar])
   );
@@ -275,7 +287,7 @@ interface StoredOAuthTokens {
  * near expiry) and falls back to a raw API key (secret row or env). Returns
  * null when nothing is configured.
  */
-export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null> {
+export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth | null> {
   // Treat an empty env var the same as unset, so `||` (not `??`) is correct here.
   // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
   const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
@@ -284,12 +296,7 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
     try {
       let tokens = JSON.parse(oauthRaw) as StoredOAuthTokens;
       const cfg = readOAuthConfig();
-      if (
-        cfg &&
-        tokens.refresh_token &&
-        tokens.expires_at &&
-        Date.now() > tokens.expires_at - 60_000
-      ) {
+      if (tokens.refresh_token && tokens.expires_at && Date.now() > tokens.expires_at - 60_000) {
         const refreshed = await refreshAccessToken(cfg, tokens.refresh_token);
         tokens = {
           access_token: refreshed.access_token,
@@ -313,11 +320,49 @@ export async function resolveClaudeAuth(db: Lattice): Promise<ClaudeAuth | null>
 }
 
 /** Whether any Claude auth (subscription OR API key) is configured. */
-export async function hasClaudeAuth(db: Lattice): Promise<boolean> {
+export async function hasClaudeAuth(db: Lattice | null): Promise<boolean> {
   return (
     Boolean(await readMachineCredential(db, CLAUDE_OAUTH_KIND)) ||
     (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY'))
   );
+}
+
+/**
+ * Which kind of Claude auth is active — so the GUI can show "Connected with
+ * Claude" vs "API key set". A connected subscription wins (it's what
+ * resolveClaudeAuth prefers).
+ */
+export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | 'key' | null> {
+  if (await readMachineCredential(db, CLAUDE_OAUTH_KIND)) return 'oauth';
+  if (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY')) return 'key';
+  return null;
+}
+
+/** True for a loopback Host header (optionally with a port). Exported for tests. */
+export function isLoopbackHost(host: string): boolean {
+  const h = host
+    .replace(/:\d+$/, '')
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase();
+  return h === 'localhost' || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/**
+ * The OAuth callback URL for THIS GUI origin. Derived per-request because the GUI
+ * runs on whatever local port was free. SECURITY: only a LOOPBACK Host header is
+ * trusted — the GUI binds to 127.0.0.1, so a non-loopback Host (a forged header,
+ * or an exposed/proxied deployment the docs warn against) must NOT shape the
+ * OAuth redirect, or a forged Host could route the authorization code to another
+ * origin. A non-loopback Host falls back to a bare loopback (the flow then simply
+ * won't complete — the safe failure). `ANTHROPIC_OAUTH_REDIRECT_URI` overrides
+ * everything for a deliberately-configured non-default deployment.
+ */
+function oauthRedirectUri(req: IncomingMessage): string {
+  const rawHost = req.headers.host ?? '127.0.0.1';
+  const host = isLoopbackHost(rawHost) ? rawHost : '127.0.0.1';
+  // Loopback is always plain http (the GUI serves http on 127.0.0.1); we don't
+  // honor x-forwarded-proto here since a proxied/non-loopback host isn't trusted.
+  return `http://${host}/api/assistant/oauth/callback`;
 }
 
 export async function dispatchAssistantRoute(
@@ -340,6 +385,7 @@ export async function dispatchAssistantRoute(
       hasOpenaiKey,
       hasElevenlabsKey,
       hasClaudeAuth: await hasClaudeAuth(db),
+      claudeAuthKind: await claudeAuthKind(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       sttPreference: readPreferences().voice_provider,
@@ -415,8 +461,12 @@ export async function dispatchAssistantRoute(
     // table (pre-machine installs stored it there); the machine store is now
     // the source of truth.
     setAssistantCredential(cred.kind, key);
-    for (const row of await liveSecretsOfKind(db, cred.kind)) {
-      await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+    // Retire any leftover pre-machine copy in the active workspace's secrets.
+    // Nothing to retire in the virgin (no-workspace) state — db is null there.
+    if (db) {
+      for (const row of await liveSecretsOfKind(db, cred.kind)) {
+        await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+      }
     }
     sendJson(res, { ok: true });
     return true;
@@ -433,8 +483,10 @@ export async function dispatchAssistantRoute(
     // Clear the machine-level store AND any leftover copy in the active
     // workspace's secrets table.
     deleteAssistantCredential(CREDENTIALS[name].kind);
-    for (const row of await liveSecretsOfKind(db, CREDENTIALS[name].kind)) {
-      await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+    if (db) {
+      for (const row of await liveSecretsOfKind(db, CREDENTIALS[name].kind)) {
+        await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });
+      }
     }
     sendJson(res, { ok: true });
     return true;
@@ -477,16 +529,20 @@ export async function dispatchAssistantRoute(
     return true;
   }
 
-  // GET /api/assistant/oauth/start — begin the PKCE subscription flow.
+  // GET /api/assistant/oauth/start — begin the PKCE subscription flow. Opened in
+  // a new tab by the GUI; the default (manual) flow shows a code on the provider
+  // page that the user pastes back via /oauth/exchange. A loopback callback is
+  // only used when an env-pinned client allowlists one.
   if (method === 'GET' && pathname === '/api/assistant/oauth/start') {
     const cfg = readOAuthConfig();
-    if (!cfg) {
-      sendJson(res, { error: 'oauth_not_configured' }, 503);
-      return true;
-    }
+    // Only fill a loopback redirect if none is configured (the default is the
+    // provider's registered console redirect, i.e. the manual code-paste flow).
+    if (!cfg.redirectUri) cfg.redirectUri = oauthRedirectUri(req);
     const verifier = generatePkceVerifier();
     const state = generateState();
-    const cookieOpts = 'HttpOnly; Path=/; Max-Age=300; SameSite=Lax';
+    // 10 min: the manual flow has the user authorize, copy a code, and paste it
+    // back, so the verifier/state must outlive a short window.
+    const cookieOpts = 'HttpOnly; Path=/; Max-Age=600; SameSite=Lax';
     res.writeHead(302, {
       Location: buildAuthorizeUrl(cfg, state, pkceChallengeFor(verifier)),
       'Set-Cookie': [
@@ -501,6 +557,9 @@ export async function dispatchAssistantRoute(
   // GET /api/assistant/oauth/callback — exchange the code, store the token.
   if (method === 'GET' && pathname === '/api/assistant/oauth/callback') {
     const cfg = readOAuthConfig();
+    // Must MATCH the redirect_uri used at /start (OAuth binds them) — derived
+    // from the same origin, so the same value unless pinned by env.
+    if (!cfg.redirectUri) cfg.redirectUri = oauthRedirectUri(req);
     const url = new URL(req.url ?? '', 'http://localhost');
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
@@ -517,12 +576,12 @@ export async function dispatchAssistantRoute(
       });
       res.end();
     };
-    if (!cfg || !code || !state || !verifier || state !== cookies.lat_oauth_state) {
+    if (!code || !state || !verifier || state !== cookies.lat_oauth_state) {
       redirect('error');
       return true;
     }
     try {
-      const tokens = await exchangeCodeForTokens(cfg, code, verifier);
+      const tokens = await exchangeCodeForTokens(cfg, code, verifier, state);
       // Machine-level, like the API-key PUT + the refresh path — so a connected
       // subscription persists across every workspace, not just the one that was
       // active when the user linked it (otherwise the OAuth-connect path would
@@ -532,6 +591,74 @@ export async function dispatchAssistantRoute(
     } catch {
       redirect('error');
     }
+    return true;
+  }
+
+  // POST /api/assistant/oauth/exchange — the MANUAL code-paste flow. After the
+  // user authorizes in the popped tab, the provider shows a code (often
+  // `<code>#<state>`); they paste it here. We verify the state against the cookie
+  // set at /start, exchange it for tokens, and store them. Body: { code }.
+  if (method === 'POST' && pathname === '/api/assistant/oauth/exchange') {
+    const cfg = readOAuthConfig();
+    const cookies = parseCookies(req);
+    const verifier = cookies.lat_oauth_verifier;
+    const clear = [
+      'lat_oauth_verifier=; HttpOnly; Path=/; Max-Age=0',
+      'lat_oauth_state=; HttpOnly; Path=/; Max-Age=0',
+    ];
+    try {
+      const body = await readJson(req);
+      const raw = typeof body.code === 'string' ? body.code.trim() : '';
+      // The pasted value may be `<code>#<state>`; split off the state.
+      const hash = raw.indexOf('#');
+      const code = hash >= 0 ? raw.slice(0, hash) : raw;
+      const pastedState = hash >= 0 ? raw.slice(hash + 1) : '';
+      if (!code || !verifier) {
+        sendJson(
+          res,
+          { ok: false, error: 'Paste the full code from the Claude authorization page.' },
+          400,
+        );
+        return true;
+      }
+      // CSRF: if the paste carried a state, it must match the one we issued.
+      if (pastedState && cookies.lat_oauth_state && pastedState !== cookies.lat_oauth_state) {
+        sendJson(
+          res,
+          {
+            ok: false,
+            error: 'That code does not match this connection attempt — try Connect again.',
+          },
+          400,
+        );
+        return true;
+      }
+      // `||` (not `??`): an EMPTY pasted state should fall through to the cookie.
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+      const state = pastedState || cookies.lat_oauth_state || undefined;
+      const tokens = await exchangeCodeForTokens(cfg, code, verifier, state);
+      setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'Set-Cookie': clear,
+      });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(400, {
+        'content-type': 'application/json; charset=utf-8',
+        'Set-Cookie': clear,
+      });
+      res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+    }
+    return true;
+  }
+
+  // DELETE /api/assistant/oauth — disconnect the linked Claude subscription.
+  // (The OAuth token isn't a named API-key credential, so it's cleared here
+  // rather than via /api/assistant/key.)
+  if (method === 'DELETE' && pathname === '/api/assistant/oauth') {
+    deleteAssistantCredential(CLAUDE_OAUTH_KIND);
+    sendJson(res, { ok: true });
     return true;
   }
 

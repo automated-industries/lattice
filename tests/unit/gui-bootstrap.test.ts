@@ -190,14 +190,30 @@ describe('gui-bootstrap: ensureRootForGui', () => {
     expect(findWorkspaceByConfigPath(boot.root, joined)?.kind).toBe('cloud');
   });
 
-  it('creates a default workspace when launched in an empty dir with no config', () => {
+  it('returns a virgin (zero-workspace) bootstrap in an empty dir with no config (3.3)', () => {
+    // 3.3 Feature B: no more force-created "My Workspace". A first launch with
+    // nothing to adopt yields a virgin bootstrap so the GUI shows its welcome
+    // screen; the registry stays empty until the user creates or joins one.
     const base = tmp();
     const boot = ensureRootForGui({
       startDir: base,
       configPath: join(base, 'lattice.config.yml'),
       explicitConfig: false,
     });
+    expect(boot.root).toBeTruthy();
+    expect(boot.workspaceId).toBeNull();
+    expect(boot.configPath).toBeNull();
+    expect(boot.contextDir).toBeNull();
+    expect(listWorkspaces(boot.root)).toHaveLength(0);
+    expect(getActiveWorkspace(boot.root)).toBeNull();
+  });
+
+  it('still adopts + activates an explicit config (no virgin state when a config exists)', () => {
+    const base = tmp();
+    const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');
+    const boot = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: true });
+    expect(boot.workspaceId).not.toBeNull();
+    expect(boot.configPath).not.toBeNull();
     expect(listWorkspaces(boot.root).length).toBeGreaterThanOrEqual(1);
-    expect(getActiveWorkspace(boot.root)).not.toBeNull();
   });
 });

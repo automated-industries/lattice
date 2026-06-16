@@ -506,11 +506,14 @@ describe('GUI server', () => {
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
     servers.push(server);
 
-    const empty = (await fetch(`${server.url}/api/gui-meta`).then((r) => r.json())) as Record<
+    const initialMeta = (await fetch(`${server.url}/api/gui-meta`).then((r) => r.json())) as Record<
       string,
-      { icon: string }
+      { icon?: string; description?: string }
     >;
-    expect(empty).toEqual({});
+    // 3.3: no icons are authored yet (icon is authored-only) ...
+    expect(Object.values(initialMeta).every((m) => !m.icon)).toBe(true);
+    // ... but native entities now expose a built-in table description.
+    expect(initialMeta.files?.description).toBeTruthy();
 
     const put = await fetch(`${server.url}/api/gui-meta/agents`, {
       method: 'PUT',
@@ -521,9 +524,29 @@ describe('GUI server', () => {
 
     const after = (await fetch(`${server.url}/api/gui-meta`).then((r) => r.json())) as Record<
       string,
-      { icon: string }
+      { icon?: string; description?: string }
     >;
     expect(after.agents?.icon).toBe('🦄');
+  });
+
+  it('persists + resolves a table definition via /api/gui-meta', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const put = await fetch(`${server.url}/api/gui-meta/agents`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ description: 'The AI agents in this workspace' }),
+    });
+    expect(put.status).toBe(200);
+
+    const after = (await fetch(`${server.url}/api/gui-meta`).then((r) => r.json())) as Record<
+      string,
+      { icon?: string; description?: string }
+    >;
+    expect(after.agents?.description).toBe('The AI agents in this workspace');
   });
 
   it('records mutations to the audit log and supports undo / redo', async () => {
@@ -654,8 +677,14 @@ describe('GUI server', () => {
 
     const initial = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
       r.json(),
-    )) as Record<string, Record<string, { secret: boolean }>>;
-    expect(initial).toEqual({});
+    )) as Record<string, Record<string, { secret?: boolean; description?: string }>>;
+    // 3.3: no secret flags are set yet ...
+    const anySecret = Object.values(initial).some((cols) =>
+      Object.values(cols).some((c) => c.secret),
+    );
+    expect(anySecret).toBe(false);
+    // ... but built-in column descriptions now resolve (every table's id).
+    expect(initial.agents?.id?.description).toBeTruthy();
 
     const put = await fetch(`${server.url}/api/gui-meta/columns/agents/name`, {
       method: 'PUT',
@@ -666,10 +695,12 @@ describe('GUI server', () => {
 
     const after = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
       r.json(),
-    )) as Record<string, Record<string, { secret: boolean }>>;
+    )) as Record<string, Record<string, { secret?: boolean; description?: string }>>;
     expect(after.agents?.name?.secret).toBe(true);
 
-    // Toggle off.
+    // Toggle off — the secret flag clears. The column carries no description, so
+    // its entry drops out of the payload entirely (only secret-or-described
+    // columns are returned), which reads as a falsy secret.
     await fetch(`${server.url}/api/gui-meta/columns/agents/name`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -677,8 +708,27 @@ describe('GUI server', () => {
     });
     const finalState = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
       r.json(),
-    )) as Record<string, Record<string, { secret: boolean }>>;
-    expect(finalState.agents?.name?.secret).toBe(false);
+    )) as Record<string, Record<string, { secret?: boolean; description?: string }>>;
+    expect(finalState.agents?.name?.secret ?? false).toBe(false);
+  });
+
+  it('round-trips a column definition through /api/gui-meta/columns', async () => {
+    const root = tempDir();
+    const { configPath, outputDir } = writeFixture(root);
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    const put = await fetch(`${server.url}/api/gui-meta/columns/agents/name`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ description: 'The display name of the agent' }),
+    });
+    expect(put.status).toBe(200);
+
+    const after = (await fetch(`${server.url}/api/gui-meta/columns`).then((r) =>
+      r.json(),
+    )) as Record<string, Record<string, { secret?: boolean; description?: string }>>;
+    expect(after.agents?.name?.description).toBe('The display name of the agent');
   });
 
   it('filters history by table, including junctions that touch the filtered table', async () => {

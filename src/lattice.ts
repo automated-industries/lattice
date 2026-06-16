@@ -204,6 +204,33 @@ export class Lattice {
     source: 'files';
   }>[] = [];
   private readonly _writeHooks: WriteHook[] = [];
+  /** Optional cap on per-row payload bytes; see LatticeOptions.maxRowBytes. */
+  private _maxRowBytes: number | undefined;
+
+  /**
+   * Reject the row if its payload exceeds `_maxRowBytes`. Cost is dominated
+   * by Buffer.byteLength() on string columns; we skip numbers/booleans
+   * (negligible contribution). Off when `_maxRowBytes` is unset.
+   */
+  private _assertRowSize(table: string, row: Row): void {
+    if (this._maxRowBytes === undefined) return;
+    let total = 0;
+    for (const v of Object.values(row)) {
+      if (typeof v === 'string') {
+        total += Buffer.byteLength(v, 'utf8');
+      } else if (Buffer.isBuffer(v)) {
+        total += v.length;
+      } else if (v != null && typeof v === 'object') {
+        // Estimate JSON cost — JSONB/JSON columns serialize through here.
+        total += Buffer.byteLength(JSON.stringify(v), 'utf8');
+      }
+      if (total > this._maxRowBytes) {
+        throw new Error(
+          `Lattice: row for "${table}" exceeds maxRowBytes (>${String(this._maxRowBytes)} bytes)`,
+        );
+      }
+    }
+  }
 
   constructor(pathOrConfig: string | LatticeConfigInput, options: LatticeOptions = {}) {
     // Resolve config-file form: read YAML, extract dbPath, collect table defs
@@ -237,6 +264,7 @@ export class Lattice {
 
     if (options.encryptionKey) this._encryptionKeyRaw = options.encryptionKey;
     if (options.changelog) this._changelogOptions = options.changelog;
+    if (options.maxRowBytes !== undefined) this._maxRowBytes = options.maxRowBytes;
 
     this._sanitizer.onAudit((event) => {
       for (const h of this._auditHandlers) h(event);
@@ -652,11 +680,12 @@ export class Lattice {
    * PK skip, etc.) and refreshes the column cache so subsequent
    * `query`/`insert`/`update` calls are aware of the new column.
    *
-   * Does NOT update the SchemaManager's stored TableDefinition. The
-   * runtime column cache is what insert/update/query consult; the def
-   * is only consulted by `applySchema` (which is only re-run at init).
-   * Callers who care about def-level fidelity (most don't) should
-   * re-`defineLate` the table on the next session start.
+   * Also mirrors the new column into the SchemaManager's stored
+   * TableDefinition, so `getRegisteredColumns()` reflects the post-ALTER
+   * schema. This matters because the Teams `share` flow serializes that def
+   * to propagate the schema to teammates — without the mirror, a
+   * runtime-added column was silently dropped from the shared spec. The
+   * runtime column cache remains what insert/update/query consult.
    *
    * Idempotent: if the column already exists on the table, this is a
    * no-op (introspect-first; skip the ALTER).
@@ -675,6 +704,11 @@ export class Lattice {
     }
     const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
     this._columnCache.set(table, new Set(cols));
+    // Mirror the new column into the registered def so getRegisteredColumns()
+    // (which the Teams `share` serialization reads) reflects the post-ALTER
+    // state. No-op for an unregistered table (def stays null).
+    const def = this._schema.getTables().get(table);
+    if (def && !(column in def.columns)) def.columns[column] = typeSpec;
   }
 
   // -------------------------------------------------------------------------
@@ -823,6 +857,7 @@ export class Lattice {
   async insert(table: string, row: Row, provenance?: ChangeProvenance): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
+    this._assertRowSize(table, row);
     const { sql, values, pkValue, rowWithPk } = this._prepareInsert(table, row);
     await runAsyncOrSync(this._adapter, sql, values);
     await this._afterInsert(table, pkValue, rowWithPk, provenance);
@@ -957,6 +992,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertRowSize(table, row);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
     const pkCols = this._schema.getPrimaryKey(table);
@@ -996,7 +1032,11 @@ export class Lattice {
     // Canonical pk (full composite key); single-column keys are the bare value.
     const pkValue = this._serializeRowPk(table, rowWithPk);
     this._sanitizer.emitAudit(table, 'update', pkValue);
-    this._scheduleAutoRender();
+    // Fire write hooks so sync / outbox / cache-invalidation subscribers see the
+    // upsert (it previously only scheduled an auto-render and silently skipped
+    // them). _fireWriteHooks self-schedules the auto-render, so this replaces the
+    // explicit call above rather than adding to it.
+    await this._fireWriteHooks(table, 'update', rowWithPk, pkValue, Object.keys(sanitized));
     return pkValue;
   }
 
@@ -1032,6 +1072,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertRowSize(table, row as Row);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
     const encrypted = this._encryptRow(table, sanitized);

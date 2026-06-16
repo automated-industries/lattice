@@ -378,33 +378,38 @@ export class PostgresAdapter implements StorageAdapter {
   private async _registerPolyfills(): Promise<void> {
     if (!this._pool) return;
     const pool = this._pool;
-    // Each registration is independent and non-fatal: a permission-restricted
-    // provider surfaces a warning rather than blocking pool readiness. `warn`
-    // is the full per-statement warning suffix so the messages stay identical.
-    const register = async (warn: string, sql: string): Promise<void> => {
-      try {
-        await pool.query(sql);
-      } catch (err) {
-        console.warn(`[PostgresAdapter] ${warn}`, err instanceof Error ? err.message : err);
-      }
-    };
-    await register(
-      'CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
-      'CREATE EXTENSION IF NOT EXISTS pgcrypto',
-    );
-    await register(
-      'could not register json_extract polyfill:',
-      `CREATE OR REPLACE FUNCTION json_extract(doc text, path text)
+    await registerPostgresPolyfills((sql) => pool.query(sql).then(() => undefined));
+  }
+}
+
+/**
+ * The SQLite-compat polyfills the dialect translator relies on (see
+ * {@link PostgresAdapter._registerPolyfills}). Extracted so they can ALSO be
+ * created up-front by the cloud owner during `secureCloud`: once a cloud revokes
+ * `CREATE ON SCHEMA … FROM PUBLIC`, a scoped member can neither create these
+ * functions nor `CREATE OR REPLACE` an owner's — so they must already exist
+ * before any member connects, or every member query that uses `json_extract` /
+ * `strftime` (e.g. the audit-table timestamp default) fails. Owner-created
+ * functions are EXECUTE-able by members by default.
+ */
+export const POSTGRES_POLYFILLS: readonly { warn: string; sql: string }[] = [
+  {
+    warn: 'CREATE EXTENSION pgcrypto failed (may already be enabled by your provider):',
+    sql: 'CREATE EXTENSION IF NOT EXISTS pgcrypto',
+  },
+  {
+    warn: 'could not register json_extract polyfill:',
+    sql: `CREATE OR REPLACE FUNCTION json_extract(doc text, path text)
          RETURNS text
          LANGUAGE sql
          IMMUTABLE
          AS $fn$
            SELECT doc::jsonb #>> string_to_array(regexp_replace(path, '^\\$\\.?', ''), '.')
          $fn$;`,
-    );
-    await register(
-      'could not register strftime polyfill:',
-      `CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
+  },
+  {
+    warn: 'could not register strftime polyfill:',
+    sql: `CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
          RETURNS text
          LANGUAGE plpgsql
          IMMUTABLE
@@ -431,7 +436,24 @@ export class PostgresAdapter implements StorageAdapter {
            );
          END;
          $fn$;`,
-    );
+  },
+];
+
+/**
+ * Run the polyfill DDL through `run`. Each statement is independent and
+ * non-fatal: a permission-restricted role surfaces a warning rather than
+ * throwing (a member who can't create them is fine as long as the owner already
+ * did). Used by the adapter on connect AND by `secureCloud` (as the owner).
+ */
+export async function registerPostgresPolyfills(
+  run: (sql: string) => Promise<unknown>,
+): Promise<void> {
+  for (const { warn, sql } of POSTGRES_POLYFILLS) {
+    try {
+      await run(sql);
+    } catch (err) {
+      console.warn(`[PostgresAdapter] ${warn}`, err instanceof Error ? err.message : err);
+    }
   }
 }
 

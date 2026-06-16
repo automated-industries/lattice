@@ -8,6 +8,165 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-06-15
+
+### Added — assistant artifacts
+
+- **Markdown artifacts.** Ask the assistant to "write a doc / note / summary" and
+  it creates a Markdown **artifact** — saved as a `files` row (flagged
+  `artifact_type='markdown'`, content inline), shown with an "✦ Artifact" badge,
+  rendered as formatted Markdown, and auto-opened in the viewer. Artifacts follow
+  the exact same sharing rules as any file (private mode → private; otherwise the
+  files-table default), enforced by cloud Row-Level Security.
+
+### Added — self-describing schema
+
+- **Column + table definitions.** New columns and tables get a concise one-line
+  definition generated automatically (a cheap, non-blocking, fail-silent model
+  pass) and shown as hover tooltips on table headers, field labels, the sidebar,
+  and dashboard cards. Built-in definitions ship for the native entities. The
+  assistant can author or correct one with the `set_definition` tool, and the
+  definitions are injected into its schema context so it categorizes better.
+
+### Added — seamless de-duplication
+
+- **Automatic file de-duplication.** Uploading a byte-identical file now merges
+  it onto the original automatically (the copy is soft-deleted, recoverable from
+  Trash / Undo) — no modal, no prompt. The assistant can also de-duplicate any
+  table on request (`dedup` tool); fuzzy-merge liberalness follows the
+  inference-aggressiveness slider.
+
+### Added — workspace branding (cloud)
+
+- **Workspace logo.** A cloud owner can upload a square PNG/JPEG logo that
+  replaces the default Lattice mark in the topbar for every member (Settings →
+  Workspace → Display). Owner-only to set; member-readable; cached by content
+  hash so it's fetched once per version. SVG is rejected (it can carry script).
+
+### Added — per-row sharing
+
+- **"Share with specific people".** Restored the per-row custom-share checklist:
+  a row owner can grant/revoke individual members access to a single cloud row
+  (owner-only, enforced in the database), alongside the existing
+  private ↔ everyone toggle.
+- **Privacy indicators everywhere.** Each object shows a small faint lock (private
+  to you) or eye (shared) marker — in the sidebar object list, on the entity page
+  next to its visibility line, and in the corner of every folder/collection card
+  tile — so a row's sharing is visible at a glance. Every indicator has a hover
+  tooltip explaining what the lock/eye means (state- and ownership-aware), driven
+  by one shared component. The per-row sharing controls now also appear in the
+  simple object view, not only the advanced data view.
+- **`set_visibility` assistant tool.** The assistant can change the sharing of a
+  row or a whole table (private ↔ everyone) on request, limited to what the
+  asking user is allowed to change. Assistant-initiated sharing changes are
+  undoable like any other change.
+
+### Added — first run + onboarding
+
+- **Zero-workspace welcome.** Lattice no longer force-creates a default
+  workspace. On first launch (and after deleting your last workspace) it shows a
+  "Welcome to Lattice" screen with Create / Join wizards (identity-first; local,
+  cloud, or join-by-invite). The last workspace can now be deleted.
+- **Boot loading screen.** A brief full-screen "Loading…" interstitial masks the
+  half-rendered shell during startup and fades out once the app is ready.
+- **Connect your assistant during onboarding.** After the name/email step, the
+  wizard offers an optional "Connect with Claude" step (reusing the same
+  subscription-OAuth flow as Settings) so a new workspace can have a working
+  assistant from the start. It's fully skippable — "Skip for now" continues to
+  create/join, and an already-connected account is detected and shown as such.
+
+### Added — connect a Claude subscription
+
+- **Connect with Claude.** The assistant can now authenticate with your Claude
+  Pro / Max / Enterprise **subscription** via OAuth (PKCE) instead of a pasted
+  API key — "Connect with Claude" is the primary action; the API-key field moves
+  under an "Advanced" disclosure. Endpoints/client are overridable via
+  `ANTHROPIC_OAUTH_*` env vars; the loopback redirect is derived per session.
+
+### Changed
+
+- The composer attach control is now an upload icon (the native multi-file
+  picker is the whole flow).
+- The activity feed attributes automatic, system-initiated changes to "Lattice".
+- The top bar shows the running Lattice version next to the settings gear.
+- A file entity page now renders its formatted Markdown document above the
+  column-by-column data view, so the readable content is what you see first.
+- The assistant explains things in plain language and does what you ask through
+  its tools, rather than describing database internals or API calls.
+- **One cloud-connection form everywhere.** Creating or migrating to a cloud now
+  uses a single structured connection form (Host / Port / Database / User /
+  Password) across the onboarding wizard, the "New workspace" wizard, and "Migrate
+  to cloud" — all routing through the same `migrate-to-cloud` setup (which installs
+  row-level security and makes you the owner). The separate `postgres://`
+  connection-string input has been retired, so there's one way to connect, not two.
+
+### Fixed
+
+- **Image previews no longer fail for files with non-ASCII names.** A filename
+  carrying a character outside Latin-1 (e.g. the narrow no-break space in a macOS
+  screenshot name) made the blob response's `content-disposition` header invalid
+  and the preview 500'd; the header is now RFC 5987 encoded (ASCII fallback +
+  `filename*=UTF-8''…`), so the image loads.
+- **"Open in file manager" reveals the file** in the OS file browser (Finder /
+  Explorer / the desktop file manager) instead of opening it in an editor — and
+  for a content-addressed blob (stored as `data/blobs/<hash>`, no name/extension)
+  it now reveals a **named copy** carrying the original filename + extension, so
+  you see your actual "Screenshot ….png" rather than a hash-named "Document".
+- **A too-large upload now reports a real error instead of "Failed to fetch".**
+  When a request body exceeded the size cap, the server reset the socket, which
+  the browser surfaced as an opaque "Failed to fetch" (e.g. saving a large
+  workspace logo). It now returns a clear `413` with the reason, and the logo
+  uploader reaches its precise "max 64 KB" validation message.
+- **"Share with specific people" works.** Switching a row to per-person sharing
+  failed with `invalid visibility "custom"` — the visibility setter rejected the
+  `custom` mode the underlying row-level-security function accepts. It now accepts
+  `custom`, so the member checklist loads and you can grant individual people.
+- **"Connect with Claude" works during first-run onboarding.** The optional
+  Connect step runs before any workspace exists, but the zero-workspace guard
+  rejected every assistant route with "No active workspace". Assistant
+  credentials are machine-level (not stored in a workspace), so configuration,
+  API-key, and subscription-OAuth endpoints now work with no active workspace.
+- **Assistant-driven changes are undoable.** A change the assistant makes on your
+  behalf is now recorded under the active session, so it shows up in the header
+  undo stack just like a manual edit.
+- **Scoped members can connect to a freshly secured cloud.** The SQLite-compat
+  helper functions are now created by the owner before the security cutover
+  revokes schema-create from members, so a member's first connection no longer
+  hits a permission error trying to create them.
+- **Migrating to a cloud no longer needs a manual refresh.** After the switch to
+  the cloud, the app re-fetches and re-renders immediately (entities, per-row
+  sharing indicators, realtime) — previously only the settings panel updated and
+  the rest of the UI showed stale pre-migrate data until you reloaded.
+- **`upsert()` fires write hooks.** It previously only scheduled an auto-render,
+  so sync / outbox / cache-invalidation subscribers silently missed every upsert;
+  it now fires the same write hooks as `insert`/`update`/`delete`.
+- **`addColumn()` mirrors the registered table definition.** A runtime-added
+  column now shows up in `getRegisteredColumns()`, so the Teams `share` schema
+  serialization propagates it to teammates instead of silently dropping it.
+- **Realtime survives a silent `LISTEN` drop.** A transaction-mode pooler /
+  managed-Postgres proxy can drop the `LISTEN` registration without closing the
+  socket, leaving the stream silently dead. A periodic backstop poll now re-runs
+  the bounded, visibility-gated catch-up query and delivers any missed changes
+  (configurable via `startGuiServer`'s `realtimeWatchdogMs`; `keepAlive` is also
+  enabled on the realtime socket). See the new managed-Postgres / AWS RDS notes
+  in the docs.
+
+### Added
+
+- **`startGuiServer` is exported** (with `StartGuiServerOptions` /
+  `GuiServerHandle`), so a library consumer can embed the GUI server without
+  shelling out to the CLI.
+- **Managed-Postgres deployment guide** (AWS RDS / RDS Proxy, Cloud SQL, Neon):
+  use a session-mode/direct endpoint for the realtime `LISTEN`, identity survives
+  a pooler, no `search_path` pinning is needed, and a recommended parameter group.
+- **`maxRowBytes` option.** An optional `LatticeOptions.maxRowBytes` cap rejects an
+  insert/upsert/update whose row payload exceeds the limit — a guard against a
+  member writing oversized rows as a denial-of-service. Off by default.
+- **Durable `FileSourceKeyStore`.** A file-backed `SourceKeyStore` (optionally
+  AES-256-GCM encrypted at rest) so crypto-shred source keys survive a process
+  restart, where the default in-memory store would lose them. Complements the new
+  `docs/security.md` (threat model, deployment hardening, launch checklist).
+
 ## [3.2.1] - 2026-06-14
 
 ### Fixed — cloud member access converges on every owner open
