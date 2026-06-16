@@ -7,6 +7,7 @@ import {
 } from './dispatch.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
 import type { ChatStreamEvent } from './sse.js';
+import { resolveTableDescription } from '../column-descriptions.js';
 
 /**
  * The assistant tool loop. Streams an Anthropic turn, executes any tool calls
@@ -132,6 +133,9 @@ const BASE_SYSTEM_PROMPT = [
   '- When the user asks about LATTICE ITSELF — what a feature is or how to use it (e.g. "what is private mode", "how does sharing work", "how do I invite someone") — call lattice_help with their question and answer from what it returns. Do NOT answer such questions from memory, and do NOT search the user\'s data for them.',
   '- A tool result that contains "error" means the call FAILED. Do NOT claim success or proceed as if it returned data — read the error, correct your arguments, and retry.',
   '- For bulk work, emit several tool calls in one turn instead of one at a time. Every change is recorded in version history and can be undone.',
+  '- Assume your user is NOT technical. Never surface implementation details — no SQL, no function/API names (nothing like `lattice_set_row_visibility` or `create_row`), no talk of Postgres, RLS, schemas, migrations, or the command line. Translate any such concept into plain language, or leave it out entirely. Speak in terms of records, fields, files, and who can see them — what the user works with — not how the system stores it.',
+  '- Guide the user on how to get things done THROUGH you (the assistant), not how to do them via an API, SQL, the command line, or by contacting an admin. When something can be done, just do it with your tools and confirm in plain language. Only explain the underlying API/SQL if the user explicitly asks for it.',
+  '- To change who can see a record or a whole table — make it private, share it with everyone, or share with specific people — use set_visibility (and set_definition / the other tools) yourself, for anything the user owns. Never tell the user to run a command, call a database function, or ask a DBA.',
   '- When you change data, briefly confirm what you did. Be concise.',
 ].join('\n');
 
@@ -151,6 +155,32 @@ async function buildSchemaContext(d: DispatchCtx): Promise<string> {
   if (names.length === 0) {
     return '(no tables yet — the user must create one before you can add rows)';
   }
+  // Authored/auto-generated definitions sharpen the model's categorization +
+  // extraction. Best-effort: a scoped cloud member may lack SELECT on the meta
+  // tables — fail silently and just omit definitions.
+  const tableDesc = new Map<string, string | null | undefined>();
+  const colDesc = new Map<string, string | null | undefined>();
+  try {
+    for (const m of (await d.db.query('_lattice_gui_meta', {})) as {
+      entity_name: string;
+      description?: string | null;
+    }[]) {
+      tableDesc.set(m.entity_name, m.description);
+    }
+  } catch {
+    /* member without access — skip */
+  }
+  try {
+    for (const m of (await d.db.query('_lattice_gui_column_meta', {})) as {
+      table_name: string;
+      column_name: string;
+      description?: string | null;
+    }[]) {
+      if (m.description) colDesc.set(`${m.table_name} ${m.column_name}`, m.description);
+    }
+  } catch {
+    /* member without access — skip */
+  }
   const lines: string[] = [];
   for (const t of names) {
     const cols = d.db.getRegisteredColumns(t);
@@ -162,9 +192,20 @@ async function buildSchemaContext(d: DispatchCtx): Promise<string> {
       // best-effort — list the table even if the count query fails
     }
     const tag = d.junctionTables.has(t) ? ' [junction]' : '';
+    const tdesc = resolveTableDescription(t, tableDesc.get(t));
     lines.push(
-      `- ${t}${tag} (${colNames.join(', ')}) — ${String(count)} row${count === 1 ? '' : 's'}`,
+      `- ${t}${tag} (${colNames.join(', ')}) — ${String(count)} row${count === 1 ? '' : 's'}` +
+        (tdesc ? ` — ${tdesc}` : ''),
     );
+    // Per-column definitions (authored or auto-generated; built-ins omitted to
+    // keep the context tight). Indented under the table line.
+    const annotated = colNames
+      .map((c) => {
+        const cd = colDesc.get(`${t} ${c}`);
+        return cd ? `    · ${c}: ${cd}` : null;
+      })
+      .filter((x): x is string => x != null);
+    if (annotated.length > 0) lines.push(annotated.join('\n'));
   }
   return lines.join('\n');
 }
@@ -361,6 +402,15 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         yield { type: 'tool_use', id: tu.id, name: tu.name };
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
         yield { type: 'tool_result', toolUseId: tu.id, isError: !res.ok };
+        // A tool may ask the GUI to open the row it just created (e.g.
+        // create_artifact) in the main viewer. Surface it as a typed event the
+        // client navigates on once the turn finishes.
+        if (res.ok && res.result && typeof res.result === 'object') {
+          const r = res.result as { open?: unknown; table?: unknown; id?: unknown };
+          if (r.open === true && typeof r.table === 'string' && typeof r.id === 'string') {
+            yield { type: 'open', table: r.table, id: r.id };
+          }
+        }
         const rawContent = JSON.stringify(res.ok ? res.result : { error: res.error });
         // Cap the result that enters THIS turn's prompt (it's re-sent on every
         // later tool-loop iteration), so one big read can't blow the context

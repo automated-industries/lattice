@@ -34,6 +34,17 @@ export interface LatticeOptions {
    * (or `outputFile`) are unaffected.
    */
   renderSkipsEmpty?: boolean;
+  /**
+   * Reject any insert/upsert/update whose row payload exceeds this many
+   * bytes (sum of UTF-8 byte lengths of string columns + buffer lengths).
+   * Off by default — when unset, only Postgres TOAST / SQLite blob limits
+   * (~1 GB) cap row size. A modest cap (e.g. 1 MiB) blocks one class of
+   * denial-of-service from a malicious member writing oversized rows; a
+   * production deployment should set this to whatever your app actually
+   * needs plus headroom. Throws `Error("Lattice: row exceeds maxRowBytes
+   * ...")` on violation, so callers can catch it.
+   */
+  maxRowBytes?: number;
 }
 
 /**

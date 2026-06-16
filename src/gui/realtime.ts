@@ -16,7 +16,7 @@ import { isPostgresUrl } from '../cloud/url.js';
 // Defence-in-depth: tsup.config.ts also lists `pg` in the CLI build's
 // `external` array so a future regression that re-introduces a static
 // import still keeps pg out of the bundle.
-type PgClientCtor = new (config: { connectionString: string }) => pg.Client;
+type PgClientCtor = new (config: { connectionString: string; keepAlive?: boolean }) => pg.Client;
 type PgModule = { Client: PgClientCtor };
 
 let _pgModule: PgModule | null = null;
@@ -92,6 +92,20 @@ const BACKOFF_MS = [1000, 2000, 5000, 10000];
 /** Max missed changes replayed on reconnect (#4.4). Bounded so a long gap can't
  *  stream the whole change table; a larger gap is reconciled by a client refetch. */
 const CATCHUP_LIMIT = 500;
+/**
+ * Backstop liveness-poll interval. A transaction-mode pooler / managed-Postgres
+ * proxy (e.g. AWS RDS Proxy) can silently drop a LISTEN registration WITHOUT
+ * closing the socket — no 'error', no 'end' — so the broker sits in `connected`,
+ * receiving zero NOTIFYs, forever. This periodic poll re-runs the same bounded,
+ * visibility-gated `lattice_changes_since` query the reconnect catch-up uses, so a
+ * silently-dead LISTEN still DELIVERS the missed changes (detect + recover in one).
+ * It SUPPLEMENTS the 'end'-driven reconnect and deliberately does NOT force a
+ * reconnect (re-acquiring another silently-dead LISTEN under such a pooler buys
+ * nothing). `deliver()` is at-least-once and the SSE consumers refetch-on-notify
+ * (idempotent), and `lattice_changes_since` filters `seq > cursor` against the
+ * monotonic `lastSeq`, so the poll never re-delivers a row the LISTEN advanced
+ * past. 0 disables the watchdog. */
+const DEFAULT_WATCHDOG_MS = 20_000;
 
 export class RealtimeBroker {
   private readonly url: string;
@@ -106,12 +120,25 @@ export class RealtimeBroker {
   /** True once an initial connection has succeeded, so a later open is a RECONNECT
    *  (and should catch up the gap) rather than the first connect (REST seeds it). */
   private hasConnected = false;
+  /** Backstop liveness-poll interval (ms); 0 disables. See DEFAULT_WATCHDOG_MS. */
+  private readonly watchdogIntervalMs: number;
+  private watchdogTimer: NodeJS.Timeout | null = null;
+  /** Overlap guard — a slow poll must not start a second concurrent query. */
+  private watchdogInFlight = false;
+  /** Test seam: build the pg client. Defaults to the real `pg` Client; a test can
+   *  inject a fake so the watchdog/reconnect lifecycle is exercised without a DB. */
+  private readonly clientFactory: ((url: string) => pg.Client) | null;
 
-  constructor(connectionUrl: string) {
+  constructor(
+    connectionUrl: string,
+    opts: { watchdogIntervalMs?: number; clientFactory?: (url: string) => pg.Client } = {},
+  ) {
     if (!isPostgresUrl(connectionUrl)) {
       throw new Error(`RealtimeBroker: connectionUrl must be a postgres:// URL`);
     }
     this.url = connectionUrl;
+    this.watchdogIntervalMs = opts.watchdogIntervalMs ?? DEFAULT_WATCHDOG_MS;
+    this.clientFactory = opts.clientFactory ?? null;
     // Avoid 'MaxListenersExceeded' warnings — multiple browser tabs each
     // attach two listeners (payload + state). 64 is generous; consumers
     // unsubscribe on close.
@@ -128,11 +155,20 @@ export class RealtimeBroker {
     await this.openClient();
   }
 
+  /** Build the pg client. keepAlive surfaces a genuinely dead TCP connection faster
+   *  (half-open socket → 'end' → reconnect); cheap defense-in-depth, NOT sufficient
+   *  alone for a pooler that drops LISTEN without closing the socket (that's the
+   *  watchdog poll's job). A test may inject a fake via the clientFactory seam. */
+  private makeClient(): pg.Client {
+    if (this.clientFactory) return this.clientFactory(this.url);
+    const pgMod = loadPg();
+    return new pgMod.Client({ connectionString: this.url, keepAlive: true });
+  }
+
   private async openClient(): Promise<void> {
     if (this.stopped) return;
     this.setState('connecting');
-    const pgMod = loadPg();
-    const client = new pgMod.Client({ connectionString: this.url });
+    const client = this.makeClient();
     // pg's 'error' on a Client (vs Pool) fires on async errors after
     // connect; the connect() promise rejects on initial failures.
     client.on('error', (err) => {
@@ -158,6 +194,9 @@ export class RealtimeBroker {
       // skipped — the live stream resumes regardless.
       if (this.hasConnected) await this.catchUp(client);
       this.hasConnected = true;
+      // Arm the backstop poll AFTER catch-up, so the first poll sees the
+      // post-catchup cursor (lastSeq) and never re-delivers what catch-up just did.
+      this.startWatchdog();
     } catch (err) {
       // Initial connect failed — schedule a retry. Don't surface the
       // raw URL in the log (it carries credentials).
@@ -194,23 +233,56 @@ export class RealtimeBroker {
         [this.lastSeq, CATCHUP_LIMIT],
       );
       for (const row of r.rows as Record<string, unknown>[]) {
-        const created = row.created_at;
-        this.deliver({
-          seq: Number(row.seq),
-          table_name: typeof row.table_name === 'string' ? row.table_name : null,
-          pk: typeof row.pk === 'string' ? row.pk : null,
-          op: typeof row.op === 'string' ? row.op : 'upsert',
-          owner_role: typeof row.owner_role === 'string' ? row.owner_role : null,
-          created_at:
-            created instanceof Date
-              ? created.toISOString()
-              : typeof created === 'string'
-                ? created
-                : '',
-        });
+        this.deliver(mapChangeRow(row));
       }
     } catch (e) {
       console.warn('[realtime] catch-up replay failed (skipping):', (e as Error).message);
+    }
+  }
+
+  /** Start the backstop liveness poll (idempotent; no-op when disabled). */
+  private startWatchdog(): void {
+    if (this.watchdogIntervalMs <= 0 || this.watchdogTimer || this.stopped) return;
+    this.watchdogTimer = setInterval(() => {
+      void this.runWatchdogPoll();
+    }, this.watchdogIntervalMs);
+    // Don't keep the process alive solely for the poll.
+    if (typeof this.watchdogTimer.unref === 'function') this.watchdogTimer.unref();
+  }
+
+  /** Stop the backstop poll. Idempotent. */
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  /**
+   * One backstop poll: re-run the bounded, visibility-gated `lattice_changes_since`
+   * and deliver anything past the cursor — so a silently-dead LISTEN (pooler drop
+   * with no socket close) still surfaces missed changes. Guards: skip if stopped /
+   * no client / not connected / a poll is already in flight / cursor at 0 (nothing
+   * to catch up to). Best-effort: a poll error is logged and does NOT reconnect
+   * (forcing a reconnect under a transaction-mode pooler just re-acquires another
+   * silently-dead LISTEN). The in-flight flag clears in `finally`.
+   */
+  private async runWatchdogPoll(): Promise<void> {
+    if (this.stopped || !this.client || this.currentState !== 'connected') return;
+    if (this.watchdogInFlight || this.lastSeq <= 0) return;
+    this.watchdogInFlight = true;
+    try {
+      const r = await this.client.query(
+        `SELECT seq, table_name, pk, op, owner_role, created_at FROM lattice_changes_since($1, $2)`,
+        [this.lastSeq, CATCHUP_LIMIT],
+      );
+      for (const row of r.rows as Record<string, unknown>[]) {
+        this.deliver(mapChangeRow(row));
+      }
+    } catch (e) {
+      console.warn('[realtime] watchdog poll failed (skipping):', (e as Error).message);
+    } finally {
+      this.watchdogInFlight = false;
     }
   }
 
@@ -220,6 +292,9 @@ export class RealtimeBroker {
   }
 
   private handleClientEnd(): void {
+    // The poll runs against this.client; tear it down before reconnecting so it
+    // can't fire against a dead/replaced client. openClient re-arms it on success.
+    this.stopWatchdog();
     if (this.stopped) {
       this.setState('stopped');
       return;
@@ -261,6 +336,7 @@ export class RealtimeBroker {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.stopWatchdog();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -291,6 +367,23 @@ export function feedOpForChange(op: string): 'update' | 'delete' | null {
   if (op === 'upsert' || op === 'INSERT' || op === 'UPDATE') return 'update';
   if (op === 'delete' || op === 'DELETE') return 'delete';
   return null;
+}
+
+/**
+ * Map a `lattice_changes_since` result row to a {@link RealtimePayload}. Shared by
+ * the reconnect catch-up and the watchdog poll so the two replay paths can't drift.
+ */
+export function mapChangeRow(row: Record<string, unknown>): RealtimePayload {
+  const created = row.created_at;
+  return {
+    seq: Number(row.seq),
+    table_name: typeof row.table_name === 'string' ? row.table_name : null,
+    pk: typeof row.pk === 'string' ? row.pk : null,
+    op: typeof row.op === 'string' ? row.op : 'upsert',
+    owner_role: typeof row.owner_role === 'string' ? row.owner_role : null,
+    created_at:
+      created instanceof Date ? created.toISOString() : typeof created === 'string' ? created : '',
+  };
 }
 
 export function parsePayload(raw: string | undefined): RealtimePayload | null {

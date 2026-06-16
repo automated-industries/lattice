@@ -396,6 +396,9 @@ export async function createUserEntity(
     `Created table ${entity}`,
     sessionId,
   );
+  // Auto-generate a one-line table definition in the background (fail-silent;
+  // skips native/meta/junction + already-described tables). No-op without auth.
+  active.generateTableDescription?.(entity, columns);
   return entity;
 }
 

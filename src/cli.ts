@@ -493,13 +493,19 @@ async function runGui(args: ParsedArgs): Promise<void> {
       configPath: resolve(args.config),
       explicitConfig: args.config !== './lattice.config.yml',
     });
-    console.log(`Lattice GUI: opening workspace "${boot.displayName}".`);
+    console.log(
+      boot.workspaceId
+        ? `Lattice GUI: opening workspace "${boot.displayName}".`
+        : 'Lattice GUI: no workspace yet — opening the welcome screen.',
+    );
     const handle = await startGuiServer({
       configPath: boot.configPath,
       outputDir: boot.contextDir,
+      latticeRoot: boot.root,
       port: args.port,
       openBrowser: !args.noOpen,
       autoRender: true,
+      version: getVersion(),
     });
     console.log(`Lattice GUI listening at ${handle.url}`);
     console.log('Press Ctrl+C to stop.');

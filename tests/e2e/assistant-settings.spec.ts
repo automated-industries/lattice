@@ -14,6 +14,9 @@ test('User Settings shows the Assistant panel; saving a Claude key flips it to "
 }) => {
   await page.goto(gui.url + '#/settings/user-config');
   const host = page.locator('#assistant-host');
+  // 3.3: the API-key field lives behind the "Advanced" disclosure (Connect with
+  // Claude is the primary path) — expand it before interacting with the key.
+  await host.getByText('Advanced — use an API key instead').click();
   await expect(host.getByText('Claude API token (chat)')).toBeVisible();
   // Initially not set.
   await expect(host.locator('.feed-source').first()).toHaveText('Not set');
@@ -25,16 +28,17 @@ test('User Settings shows the Assistant panel; saving a Claude key flips it to "
   await expect(host.locator('.feed-source').first()).toHaveText('Set');
 });
 
-test('subscription OAuth link is hidden until ANTHROPIC_OAUTH_* is configured', async ({
+test('Connect-with-Claude is the primary auth; the API key is behind Advanced (3.3)', async ({
   page,
 }) => {
   await page.goto(gui.url + '#/settings/user-config');
   const host = page.locator('#assistant-host');
-  await expect(host.getByText('Claude API token (chat)')).toBeVisible();
-  // oauthEnabled is false (no env) → no Connect link AND no dormant env-var hint
-  // (the hint was removed; the link renders only once OAuth is configured).
-  await expect(host.locator('a[href="/api/assistant/oauth/start"]')).toHaveCount(0);
-  await expect(host.getByText('connect your Claude subscription')).toHaveCount(0);
+  // 3.3: the public subscription-OAuth client is built in, so the Connect button
+  // shows by default (no env required) as the primary action.
+  await expect(host.locator('a[href="/api/assistant/oauth/start"]')).toBeVisible();
+  await expect(host.getByText('Connect with Claude')).toBeVisible();
+  // The API-key paste is demoted behind an "Advanced" disclosure.
+  await expect(host.getByText('Advanced — use an API key instead')).toBeVisible();
 });
 
 test('voice section reveals only the selected provider key field', async ({ page }) => {

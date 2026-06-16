@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createReadStream, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { createReadStream, statSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Lattice } from '../lattice.js';
 import { sendJson } from './http.js';
@@ -80,6 +80,62 @@ function localPathOf(row: FileRow, latticeRoot?: string): string | null {
   return null;
 }
 
+/** A recognizable file extension for common mime types, used to name a blob
+ *  copy when revealing it (a content-addressed blob is stored extensionless). */
+const MIME_EXT: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+  'application/pdf': '.pdf',
+  'text/plain': '.txt',
+  'text/markdown': '.md',
+  'text/csv': '.csv',
+  'application/json': '.json',
+};
+
+/**
+ * The on-disk path to REVEAL in the OS file browser for a files row. A row backed
+ * by a named local original (legacy `path` or a `local_ref` `ref_uri`) is revealed
+ * as-is. But a content-addressed blob is stored at `data/blobs/<sha256>` — no name,
+ * no extension — so revealing it shows a hash-named generic "Document" instead of
+ * the user's image. For a blob we therefore materialize a named copy at
+ * `data/finder/<id>/<original_name>` (adding an extension from the mime if missing)
+ * and reveal THAT, so the user sees their actual "Screenshot ….png". `loc` is the
+ * already-resolved {@link localPathOf}; `id` the row's primary key. Best-effort:
+ * any copy failure falls back to revealing `loc` so the action still does something.
+ */
+export function revealTargetFor(
+  row: FileRow,
+  latticeRoot: string | undefined,
+  loc: string,
+  id: string,
+): string {
+  const isNamedOriginal =
+    (typeof row.path === 'string' && row.path) || row.ref_kind === 'local_ref';
+  if (isNamedOriginal) return loc; // already a real, named file
+  if (!latticeRoot) return loc;
+  let name = sanitizeFilename(row.original_name ?? 'file');
+  if (!/\.[A-Za-z0-9]{1,8}$/.test(name)) {
+    const ext = typeof row.mime === 'string' ? MIME_EXT[row.mime] : undefined;
+    if (ext) name += ext;
+  }
+  const dir = join(latticeRoot, 'data', 'finder', id.replace(/[^A-Za-z0-9_-]/g, '_'));
+  const named = join(dir, name);
+  try {
+    // Re-export only when missing or stale (size differs) — idempotent re-reveal.
+    const fresh = existsSync(named) && statSync(named).size === statSync(loc).size;
+    if (!fresh) {
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(loc, named);
+    }
+    return named;
+  } catch {
+    return loc; // reveal the blob rather than nothing
+  }
+}
+
 /** The S3 object `{ bucket, key }` a row points at, or null. Prefers `source_json`
  *  (where the upload recorded it), falling back to parsing the `s3://bucket/key`
  *  `ref_uri`. */
@@ -126,10 +182,23 @@ function sanitizeFilename(name: string): string {
  * script/form/same-origin if an HTML blob is opened directly — while still
  * letting the GUI embed an image/PDF as a subresource for preview.
  */
+/**
+ * `content-disposition` for a filename that may contain non-ASCII characters.
+ * HTTP header values are ISO-8859-1, so a non-Latin-1 char — e.g. the U+202F
+ * narrow no-break space macOS puts before AM/PM in screenshot names — makes
+ * `res.writeHead` throw `ERR_INVALID_CHAR` and the blob serve 500s (the image
+ * never loads). Emit an ASCII-only `filename=` fallback PLUS an RFC 5987
+ * `filename*=UTF-8''…` with the real name (RFC 6266).
+ */
+export function contentDispositionInline(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
 function blobResponseHeaders(contentType: string, name: string): Record<string, string> {
   return {
     'content-type': contentType,
-    'content-disposition': `inline; filename="${name}"`,
+    'content-disposition': contentDispositionInline(name),
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'content-security-policy': "default-src 'none'; sandbox",
@@ -203,19 +272,35 @@ export async function dispatchFilesRoute(
     }
     const id = decodeURIComponent(openMatch[1] ?? '');
     const row = (await ctx.db.get('files', id)) as FileRow | null;
-    const loc = row ? localPathOf(row, ctx.latticeRoot) : null;
+    if (!row) {
+      sendJson(res, { error: 'file not found' }, 404);
+      return true;
+    }
+    const loc = localPathOf(row, ctx.latticeRoot);
     if (!loc) {
       sendJson(res, { error: 'file has no local path' }, 404);
       return true;
     }
-    const opener =
+    // Reveal only makes sense for bytes that exist on THIS machine — a member
+    // viewing a remote-only (S3) file has nothing local to select.
+    if (!localFileExists(loc)) {
+      sendJson(res, { error: 'file bytes are not on this machine (stored remotely)' }, 404);
+      return true;
+    }
+    // "Open in Finder" REVEALS the file (selects it in the OS file browser) — it
+    // does NOT open it in an app. A content-addressed blob is stored extensionless
+    // (data/blobs/<sha256>), so revealing it showed a hash-named generic
+    // "Document"; revealTargetFor materializes a named copy of the blob so the
+    // user sees their actual image/document name instead.
+    const target = revealTargetFor(row, ctx.latticeRoot, loc, id);
+    const reveal: { cmd: string; args: string[] } =
       process.platform === 'darwin'
-        ? 'open'
+        ? { cmd: 'open', args: ['-R', target] }
         : process.platform === 'win32'
-          ? 'explorer'
-          : 'xdg-open';
+          ? { cmd: 'explorer', args: [`/select,${target}`] }
+          : { cmd: 'xdg-open', args: [dirname(target)] }; // no portable file-select on Linux
     try {
-      const child = spawn(opener, [loc], { detached: true, stdio: 'ignore' });
+      const child = spawn(reveal.cmd, reveal.args, { detached: true, stdio: 'ignore' });
       child.on('error', () => {
         /* surfaced below via the catch on spawn throw; nothing to stream */
       });

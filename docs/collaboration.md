@@ -17,7 +17,11 @@ and flash on changes to rows shared with you. Two channels carry change:
   `LISTEN lattice_changes` and forwards every `NOTIFY` to the browser over SSE
   (`GET /api/realtime/stream`). Use a **session-mode** connection (e.g. the
   Supabase pooler on port 5432) — transaction-mode poolers silently drop
-  `LISTEN`.
+  `LISTEN`. A transaction-mode proxy can drop the registration _without_ closing
+  the socket, so the broker also runs a periodic **backstop poll** that re-delivers
+  missed changes regardless; see the managed-Postgres / RDS Proxy notes in
+  `cloud.md`. The poll interval is configurable via `startGuiServer`'s
+  `realtimeWatchdogMs` (0 disables it).
 - The **`__lattice_changes`** table is the append-only change feed: each row carries
   a monotonic `seq`, the `table_name`, the `pk`, the `op` (`upsert`/`delete`), the
   `owner_role`, and `created_at`. The per-table RLS trigger writes one entry per

@@ -14,6 +14,7 @@ import {
 } from './audience.js';
 import { NATIVE_INTERNAL_NAMES } from '../framework/native-entities.js';
 import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { registerPostgresPolyfills } from '../db/postgres.js';
 
 /**
  * Tables that are PRIVATE to their owner on a cloud and must never be bulk-shared:
@@ -70,7 +71,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
     const q = `"${table.replace(/"/g, '""')}"`;
-    const masked = tableNeedsAudienceView(db.getColumnAudience(table) ?? {});
+    const masked = tableNeedsAudienceView(db.getColumnAudience(table));
     if (masked) {
       // Member reads the cell-masking view; base SELECT stays revoked.
       const v = `"${`${table}_v`.replace(/"/g, '""')}"`;
@@ -127,6 +128,13 @@ export async function secureNewCloudTable(
 
 export async function secureCloud(db: Lattice): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
+  // Create the SQLite-compat polyfills (json_extract / strftime / pgcrypto) as
+  // the OWNER, up front — installCloudRls revokes CREATE ON SCHEMA from PUBLIC,
+  // after which a scoped member can neither create these nor CREATE OR REPLACE
+  // the owner's, so they must exist before any member connects (otherwise member
+  // queries that use them, e.g. the audit timestamp default, fail). Owner-created
+  // functions are EXECUTE-able by members by default. Idempotent + non-fatal.
+  await registerPostgresPolyfills((sql) => runAsyncOrSync(db.adapter, sql));
   await installCloudRls(db);
   await installCloudSettings(db);
   await db.ensureObservationSubstrate();

@@ -22,17 +22,122 @@ import {
 import { secureCloud } from '../cloud/setup.js';
 import {
   installCloudSettings,
+  getCloudSetting,
   getCloudSettingStrict,
   setCloudSetting,
   getOrCreateInviteSalt,
   hashInviteEmail,
   CLOUD_SETTING_SYSTEM_PROMPT,
+  CLOUD_SETTING_WORKSPACE_LOGO,
+  CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from '../cloud/settings.js';
+import { createHash } from 'node:crypto';
 
 /** Generous upper bound on the stored chat system prompt — well past any real
  *  house-style/domain preamble, but it stops an accidental multi-MB paste from
  *  bloating every member's turn (and the model context). Owner-only input. */
 const MAX_SYSTEM_PROMPT_CHARS = 100_000;
+
+/** Max decoded logo size — 64 KB (~88 KB base64, under the 1 MB JSON body cap). */
+const MAX_LOGO_BYTES = 65_536;
+/** Allowed logo image types. SVG is excluded — it can carry script (stored XSS). */
+const LOGO_MIMES = ['image/png', 'image/jpeg'] as const;
+
+/** Result of validating an uploaded workspace logo data: URI. */
+export type LogoParse =
+  | { ok: true; mime: 'image/png' | 'image/jpeg'; bytes: Buffer; etag: string }
+  | { ok: false; error: string };
+
+/** Pixel dimensions of a PNG (IHDR) or JPEG (first SOF marker), or null if unreadable. */
+function imageDimensions(mime: string, b: Buffer): { width: number; height: number } | null {
+  if (mime === 'image/png') {
+    // IHDR is the first chunk: 8-byte signature, 4-byte length, 'IHDR', then
+    // width@16 / height@20 as big-endian uint32.
+    if (b.length < 24) return null;
+    return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
+  }
+  // JPEG: walk the marker segments to the first Start-Of-Frame (SOFn).
+  let off = 2; // skip the SOI (FFD8)
+  while (off + 9 <= b.length) {
+    if (b[off] !== 0xff) {
+      off++;
+      continue;
+    }
+    const marker = b[off + 1] ?? 0;
+    // Standalone markers carry no length payload.
+    if (
+      marker === 0xd8 ||
+      marker === 0xd9 ||
+      (marker >= 0xd0 && marker <= 0xd7) ||
+      marker === 0x01
+    ) {
+      off += 2;
+      continue;
+    }
+    const segLen = ((b[off + 2] ?? 0) << 8) | (b[off + 3] ?? 0);
+    if (segLen < 2) return null;
+    const isSof =
+      marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isSof) {
+      // SOF payload: precision(1), height(2), width(2).
+      const height = ((b[off + 5] ?? 0) << 8) | (b[off + 6] ?? 0);
+      const width = ((b[off + 7] ?? 0) << 8) | (b[off + 8] ?? 0);
+      return { width, height };
+    }
+    off += 2 + segLen;
+  }
+  return null;
+}
+
+/**
+ * Validate an owner-uploaded workspace logo data: URI. Accepts ONLY square
+ * `image/png` or `image/jpeg` (validated by both the declared MIME AND the magic
+ * bytes — a declared image can't actually be HTML), decoded ≤ {@link MAX_LOGO_BYTES}.
+ * SVG is rejected by construction (not in {@link LOGO_MIMES}) — it can carry script
+ * and would execute in every member's GUI (stored XSS). Pure + exported for unit
+ * tests. Returns a validated `{ mime, bytes, etag }` or a `{ ok:false, error }`.
+ */
+export function parseAndValidateLogo(dataUri: unknown): LogoParse {
+  if (typeof dataUri !== 'string') return { ok: false, error: 'logo must be a data: URI string' };
+  const m = /^data:(image\/png|image\/jpeg);base64,([A-Za-z0-9+/=]+)$/.exec(dataUri.trim());
+  if (!m)
+    return { ok: false, error: 'logo must be a base64 data: URI of type image/png or image/jpeg' };
+  const mime = m[1] as 'image/png' | 'image/jpeg';
+  if (!LOGO_MIMES.includes(mime)) return { ok: false, error: 'unsupported image type' };
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(m[2] ?? '', 'base64');
+  } catch {
+    return { ok: false, error: 'logo is not valid base64' };
+  }
+  if (bytes.length === 0) return { ok: false, error: 'logo is empty' };
+  if (bytes.length > MAX_LOGO_BYTES) {
+    return { ok: false, error: `logo is too large (max ${String(MAX_LOGO_BYTES)} bytes decoded)` };
+  }
+  // Magic-byte sniff — the declared MIME must match the actual content so a
+  // text/html (or SVG) payload can't masquerade as a PNG/JPEG.
+  const isPng =
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+  const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if ((mime === 'image/png' && !isPng) || (mime === 'image/jpeg' && !isJpeg)) {
+    return { ok: false, error: 'logo content does not match its declared image type' };
+  }
+  const dims = imageDimensions(mime, bytes);
+  if (!dims || dims.width <= 0 || dims.height <= 0) {
+    return { ok: false, error: 'could not read the image dimensions' };
+  }
+  if (dims.width !== dims.height) {
+    return {
+      ok: false,
+      error: `logo must be square (got ${String(dims.width)}×${String(dims.height)})`,
+    };
+  }
+  return { ok: true, mime, bytes, etag: createHash('sha256').update(bytes).digest('hex') };
+}
 import {
   provisionMemberRole,
   generateMemberPassword,
@@ -40,6 +145,8 @@ import {
   setRowVisibility,
   grantCell,
   revokeCell,
+  grantRow,
+  revokeRow,
   assertScopedMemberRole,
   revokeMemberRole,
 } from '../cloud/members.js';
@@ -328,7 +435,7 @@ async function reclaimStaleInviteRoles(
  * the member connects directly as their scoped role under RLS, exactly as today.
  */
 async function joinCloudAsMember(
-  ctx: DbConfigContext,
+  createCloudWorkspace: DbConfigContext['createCloudWorkspace'],
   res: ServerResponse,
   fields: { host: string; port: number; dbname: string; user: string; password: string },
   label: string,
@@ -383,11 +490,62 @@ async function joinCloudAsMember(
   // local DB). Sanitize the key; keep the human label as the display name.
   const key = slugify(label) || 'cloud';
   try {
-    const workspaceId = await ctx.createCloudWorkspace(label, key, url);
+    const workspaceId = await createCloudWorkspace(label, key, url);
     sendJson(res, { ok: true, label, isCloud: true, workspaceId });
   } catch (e) {
     sendJson(res, { ok: false, error: (e as Error).message }, 500);
   }
+}
+
+/**
+ * The full `POST /api/cloud/redeem-invite` body: decrypt the email-bound token,
+ * then join via {@link joinCloudAsMember}. Exported so the GUI server can serve it
+ * from the zero-workspace "virgin" state too (where there is no active DB to build
+ * a full DbConfigContext) — it depends only on `createCloudWorkspace`, which is
+ * DB-independent (it opens a NEW workspace for the cloud).
+ */
+export async function redeemInvite(
+  createCloudWorkspace: DbConfigContext['createCloudWorkspace'],
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  await tryHandler(res, async () => {
+    const body = await readJson(req);
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    const token = typeof body.token === 'string' ? body.token.trim() : '';
+    if (!email || !token) {
+      sendJson(
+        res,
+        { ok: false, error: 'Enter the email this invite was sent to and the invite token.' },
+        400,
+      );
+      return;
+    }
+    let payload;
+    try {
+      payload = redeemInviteToken(email, token);
+    } catch (e) {
+      sendJson(res, { ok: false, error: (e as Error).message }, 400);
+      return;
+    }
+    const fromCloud = payload.workspace_name?.trim() ?? '';
+    const fromBody = typeof body.label === 'string' ? body.label.trim() : '';
+    const label =
+      fromCloud.length > 0 ? fromCloud : fromBody.length > 0 ? fromBody : 'Cloud workspace';
+    await joinCloudAsMember(
+      createCloudWorkspace,
+      res,
+      {
+        host: payload.host,
+        port: payload.port,
+        dbname: payload.dbname,
+        user: payload.user,
+        password: payload.password,
+      },
+      label,
+      { claimInvite: true },
+    );
+  });
 }
 
 export async function dispatchDbConfigRoute(
@@ -403,7 +561,10 @@ export async function dispatchDbConfigRoute(
       // `isOwner` drives the SPA's owner-only affordances (invite a member,
       // rename). It's derived live from the connected role's CREATEROLE
       // capability — there is no team-identity row to consult.
-      sendJson(res, { ...info, isOwner: info.state === 'cloud-owner' });
+      // `logoEtag` (null on local/unset) lets the SPA swap the topbar mark for the
+      // owner's logo without a second fetch — and the etag cache-busts the blob.
+      const logoEtag = await getCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO_ETAG);
+      sendJson(res, { ...info, isOwner: info.state === 'cloud-owner', logoEtag });
     });
     return true;
   }
@@ -604,7 +765,7 @@ export async function dispatchDbConfigRoute(
         // (the "invite" is those credentials). joinCloudAsMember probes, saves,
         // and swaps; the member role can't (and needn't) run DDL.
         await joinCloudAsMember(
-          ctx,
+          ctx.createCloudWorkspace,
           res,
           {
             host: parsed.host,
@@ -834,49 +995,11 @@ export async function dispatchDbConfigRoute(
   // POST /api/cloud/redeem-invite — the MEMBER side. Decrypt the email-bound
   // token locally with the invitee's email, reconstruct the SAME scoped
   // credential the owner minted, and join via the shared connect path. The UI
-  // only ever handles email + token — never a postgres:// string.
+  // only ever handles email + token — never a postgres:// string. Delegated to
+  // the exported `redeemInvite` so the GUI server can serve it from the virgin
+  // state too (it depends only on createCloudWorkspace, not the active DB).
   if (pathname === '/api/cloud/redeem-invite' && method === 'POST') {
-    await tryHandler(res, async () => {
-      const body = await readJson(req);
-      const email = typeof body.email === 'string' ? body.email.trim() : '';
-      const token = typeof body.token === 'string' ? body.token.trim() : '';
-      if (!email || !token) {
-        sendJson(
-          res,
-          { ok: false, error: 'Enter the email this invite was sent to and the invite token.' },
-          400,
-        );
-        return;
-      }
-      let payload;
-      try {
-        payload = redeemInviteToken(email, token);
-      } catch (e) {
-        sendJson(res, { ok: false, error: (e as Error).message }, 400);
-        return;
-      }
-      // Name the new workspace from the cloud name stamped into the invite
-      // (1.3a), else a client-supplied label, else a sane default (which now
-      // resolves because joinCloudAsMember sanitizes the key).
-      // Each candidate falls back when EMPTY, not just when null.
-      const fromCloud = payload.workspace_name?.trim() ?? '';
-      const fromBody = typeof body.label === 'string' ? body.label.trim() : '';
-      const label =
-        fromCloud.length > 0 ? fromCloud : fromBody.length > 0 ? fromBody : 'Cloud workspace';
-      await joinCloudAsMember(
-        ctx,
-        res,
-        {
-          host: payload.host,
-          port: payload.port,
-          dbname: payload.dbname,
-          user: payload.user,
-          password: payload.password,
-        },
-        label,
-        { claimInvite: true }, // #3.1 — enforce one-time-use + revocation on redeem
-      );
-    });
+    await redeemInvite(ctx.createCloudWorkspace, req, res);
     return true;
   }
 
@@ -953,6 +1076,32 @@ export async function dispatchDbConfigRoute(
       if (revoke) await revokeCell(ctx.db, table, pk, column, grantee);
       else await grantCell(ctx.db, table, pk, column, grantee);
       sendJson(res, { ok: true, table, pk, column, grantee, revoked: revoke });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/row-grant — "share with specific people". The row owner
+  // grants (or revokes) one member access to one row (table + pk), flipping the
+  // row to `custom` visibility. Owner-only — the SECURITY DEFINER function raises
+  // for a non-owner (and for a never-share table), surfaced here as an error.
+  if (pathname === '/api/cloud/row-grant' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const table = typeof body.table === 'string' ? body.table : '';
+      const pk = typeof body.pk === 'string' ? body.pk : '';
+      const grantee = typeof body.grantee === 'string' ? body.grantee : '';
+      const revoke = body.revoke === true;
+      if (!table || !pk || !grantee) {
+        sendJson(res, { error: 'table, pk and grantee are required' }, 400);
+        return;
+      }
+      if (ctx.db.getDialect() !== 'postgres') {
+        sendJson(res, { error: 'Per-row sharing requires a cloud (Postgres) database' }, 400);
+        return;
+      }
+      if (revoke) await revokeRow(ctx.db, table, pk, grantee);
+      else await grantRow(ctx.db, table, pk, grantee);
+      sendJson(res, { ok: true, table, pk, grantee, revoked: revoke });
     });
     return true;
   }
@@ -1067,6 +1216,90 @@ export async function dispatchDbConfigRoute(
       // the API gate above is defense in depth + a clean error.
       await setCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT, prompt);
       sendJson(res, { ok: true, length: prompt.length });
+    });
+    return true;
+  }
+
+  // GET /api/cloud/workspace-logo — the owner-set logo bytes, readable by every
+  // member (unlike the system prompt, the logo is meant to be seen). Cheap on the
+  // hot path: reads the ~64-byte etag first and answers an `If-None-Match` with a
+  // 304 before touching the full blob; the blob itself is `immutable` + cache-
+  // busted by `?v=<etag>`, so each client fetches it once per logo version.
+  if (pathname === '/api/cloud/workspace-logo' && method === 'GET') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'not a cloud workspace' }, 404);
+        return;
+      }
+      // Best-effort: a missing setting / un-upgraded cloud reads as "no logo".
+      const etag = await getCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO_ETAG);
+      if (!etag) {
+        sendJson(res, { error: 'no workspace logo set' }, 404);
+        return;
+      }
+      const inm = req.headers['if-none-match'];
+      if (typeof inm === 'string' && inm.replace(/"/g, '') === etag) {
+        res.writeHead(304, { etag: `"${etag}"` });
+        res.end();
+        return;
+      }
+      const stored = await getCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO);
+      const m = stored ? /^data:(image\/png|image\/jpeg);base64,(.+)$/.exec(stored) : null;
+      if (!m) {
+        sendJson(res, { error: 'no workspace logo set' }, 404);
+        return;
+      }
+      const bytes = Buffer.from(m[2] ?? '', 'base64');
+      res.writeHead(200, {
+        'content-type': m[1] === 'image/jpeg' ? 'image/jpeg' : 'image/png',
+        etag: `"${etag}"`,
+        // Content-addressed by `?v=<etag>`, so the blob never changes for a given
+        // URL — cache hard. `nosniff` + sandbox CSP mirror the file-blob serve.
+        'cache-control': 'private, max-age=31536000, immutable',
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+      });
+      res.end(bytes);
+    });
+    return true;
+  }
+
+  // POST /api/cloud/workspace-logo — owner-only. Empty body removes the logo
+  // (clears both keys → readers report null → the default Lattice mark returns).
+  // Otherwise validates a square PNG/JPEG data: URI and stores blob-then-etag.
+  if (pathname === '/api/cloud/workspace-logo' && method === 'POST') {
+    await tryHandler(res, async () => {
+      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
+        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
+        return;
+      }
+      if (!(await canManageRoles(ctx.db))) {
+        sendJson(res, { error: 'Only a cloud owner can change the workspace logo' }, 403);
+        return;
+      }
+      await installCloudSettings(ctx.db);
+      // Allow up to ~2 MB of request body so a too-big logo reaches the precise
+      // 64 KB validation message below (a smaller cap would 413 with only a
+      // generic "body too large"). parseAndValidateLogo enforces the real limit.
+      const body = await readJson(req, { maxBytes: 2_000_000 });
+      const raw = typeof body.logo === 'string' ? body.logo.trim() : '';
+      if (!raw) {
+        // Remove: clear both keys (readers map '' → null → default logo).
+        await setCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO, '');
+        await setCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO_ETAG, '');
+        sendJson(res, { ok: true, logoEtag: null });
+        return;
+      }
+      const parsed = parseAndValidateLogo(raw);
+      if (!parsed.ok) {
+        sendJson(res, { error: parsed.error }, 400);
+        return;
+      }
+      // Write the blob first, then the etag — if the second write fails, a reader
+      // sees the old etag (no logo) rather than a dangling etag with no blob.
+      await setCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO, raw);
+      await setCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO_ETAG, parsed.etag);
+      sendJson(res, { ok: true, logoEtag: parsed.etag });
     });
     return true;
   }
