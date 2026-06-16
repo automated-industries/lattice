@@ -504,6 +504,14 @@ export const css = `
     }
     .placeholder h2 { margin: 0 0 8px; color: var(--text); }
 
+    /* Frame-first navigation: a route paints this loading frame synchronously on
+       every click, then streams its content in. The view is never frozen. */
+    .route-loading {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 240px; padding: 48px;
+    }
+    .route-loading .spinner { width: 22px; height: 22px; margin: 0; }
+
     /* Data Model: a force-directed schema graph on top, edit panel below. */
     .dm-layout {
       display: flex; flex-direction: column; gap: 20px;
