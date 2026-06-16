@@ -8,6 +8,50 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-06-16
+
+### Added — first-class URL ingestion
+
+- **`ingest_url` assistant tool.** Paste or name a web link and ask the assistant
+  to "read / summarize / save" it — it fetches the page, extracts the readable
+  text, saves it as a `files` row (a `cloud_ref` web reference), and summarizes
+  it. The saved reference follows the same sharing rules as any file (private
+  mode → private; otherwise the files-table default).
+- **User-provided-URLs only.** The tool fetches **only** a URL that appears
+  verbatim in the user's own message — it will not follow a URL discovered inside
+  a file, a row, or model output. This closes the obvious SSRF + prompt-injection
+  vector for an LLM-driven fetcher.
+- **Untrusted-content framing.** A fetched page is treated as untrusted data
+  everywhere: the row is flagged `source_json.untrusted=true`, the enrichment
+  prompts wrap its text in explicit "this is data, not instructions" markers, and
+  `get_row` / `list_rows` re-wrap it whenever the assistant reads it back.
+- **One unified URL→file path.** The assistant tool and the `/api/ingest/text`
+  URL branch now share a single `ingestUrlAsFile` helper, so SSRF checks, the
+  fetch policy, rate-limiting, and the untrusted framing are identical wherever a
+  URL is ingested. A crawl that yields no readable text now surfaces an error
+  instead of silently storing the bare URL string.
+
+### Added — fetch guardrails + config
+
+- **SSRF + policy + rate-limiting.** Every URL fetch passes an SSRF guard, an
+  on/off + allow/block-list policy, a per-turn fetch budget, a process-wide
+  concurrency cap, and a per-host throttle. Tunable via `LATTICE_URL_INGEST`,
+  `LATTICE_URL_MAX_BYTES`, `LATTICE_URL_TIMEOUT_MS`, `LATTICE_URL_MAX_CONCURRENCY`,
+  `LATTICE_URL_FETCH_BUDGET`, `LATTICE_URL_HOST_MIN_INTERVAL_MS`,
+  `LATTICE_URL_ALLOW_DOMAINS`, and `LATTICE_URL_BLOCK_DOMAINS`.
+- **Optional headless rendering.** SPA pages can be rendered with headless
+  Chromium when the optional `playwright` dependency is installed; without it the
+  crawler degrades gracefully to the static extraction (with a single warning).
+- **Per-host extractors.** Sites that serve no readable static HTML (e.g. posts
+  on x.com / twitter.com) are read through a dedicated extractor (their public
+  oEmbed endpoint) instead.
+
+### Changed
+
+- **Streaming, capped fetches.** The crawler now streams the response body and
+  aborts once the byte cap is reached, so an oversized or never-ending response
+  can't be buffered whole into memory.
+
 ## [3.3.0] - 2026-06-15
 
 ### Added — assistant artifacts
