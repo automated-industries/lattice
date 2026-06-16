@@ -5,9 +5,9 @@ import { ensureLatticeRoot, findLatticeRoot } from './lattice-root.js';
 import { importLegacyUserConfig } from './migrate-to-root.js';
 import {
   addAdoptedWorkspace,
-  addWorkspace,
   findWorkspaceByConfigPath,
   getActiveWorkspace,
+  listWorkspaces,
   resolveWorkspacePaths,
   type WorkspaceRecord,
 } from './workspace.js';
@@ -26,13 +26,14 @@ import {
 
 export interface GuiBootstrap {
   root: string;
-  workspaceId: string;
-  /** Friendly name of the active workspace. */
+  /** Active workspace id, or NULL in the zero-workspace "virgin" state. */
+  workspaceId: string | null;
+  /** Friendly name of the active workspace (empty in the virgin state). */
   displayName: string;
-  /** Absolute config path of the active workspace to open. */
-  configPath: string;
-  /** Absolute render output dir for the active workspace. */
-  contextDir: string;
+  /** Absolute config path of the active workspace, or NULL when virgin. */
+  configPath: string | null;
+  /** Absolute render output dir for the active workspace, or NULL when virgin. */
+  contextDir: string | null;
 }
 
 /**
@@ -169,9 +170,15 @@ export function ensureRootForGui(opts: {
   // Best-effort: pull in stray sibling configs near the launch config + the root.
   reconcileWorkspaceRegistry(root, [dirname(configAbs), dirname(root)]);
 
-  const ws =
-    getActiveWorkspace(root) ??
-    addWorkspace(root, { displayName: opts.displayName ?? 'My Workspace' });
+  // Resolve the active workspace WITHOUT force-creating one. When there is no
+  // config to adopt and no existing workspace, return a virgin (zero-workspace)
+  // bootstrap — the GUI then shows its first-run "Welcome to Lattice" screen
+  // (create / join) instead of an auto-created "My Workspace". The registry
+  // already tolerates zero workspaces (activeWorkspaceId may be null).
+  const ws = getActiveWorkspace(root) ?? listWorkspaces(root)[0] ?? null;
+  if (!ws) {
+    return { root, workspaceId: null, displayName: '', configPath: null, contextDir: null };
+  }
   const paths = resolveWorkspacePaths(root, ws);
   return {
     root,

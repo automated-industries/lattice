@@ -30,6 +30,21 @@ export const CLOUD_SETTING_SYSTEM_PROMPT = 'chat_system_prompt';
 export const CLOUD_SETTING_INVITE_SALT = 'invite_email_salt';
 
 /**
+ * Setting key for the owner-set workspace logo — a `data:image/(png|jpeg);base64,…`
+ * URI that replaces the default Lattice topbar mark for every member of the cloud.
+ * Stored as text (base64) in the shared owner-write/member-read settings table.
+ */
+export const CLOUD_SETTING_WORKSPACE_LOGO = 'workspace_logo';
+
+/**
+ * Setting key for the workspace logo's content hash (sha256 hex of the decoded
+ * bytes, computed server-side on write). Used as the cache-busting `?v=` token and
+ * the `ETag` — cheap to read (~64 bytes) so a member's per-load cost is one tiny
+ * read, and the full blob is fetched at most once per logo version.
+ */
+export const CLOUD_SETTING_WORKSPACE_LOGO_ETAG = 'workspace_logo_etag';
+
+/**
  * The per-cloud salt used to hash invitee emails in `__lattice_member_invites`
  * (#4.10). A bare unsalted SHA-256 is trivially rainbow-tableable; a stable
  * per-cloud random salt defeats that while keeping the hash a stable lookup key
