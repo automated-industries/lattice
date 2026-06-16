@@ -1400,7 +1400,50 @@ async function attachRowAccess(db: Lattice, table: string, rows: Row[]): Promise
   }
 }
 
-async function disposeActive(active: ActiveDb): Promise<void> {
+/**
+ * Resolve when `p` settles or after `ms`, whichever comes first — never rejects.
+ * A timeout resolves to the `'timeout'` sentinel so the caller can proceed rather
+ * than block. The timer is unref'd so it never keeps the process alive.
+ */
+function settleWithin<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([
+    p.finally(() => {
+      clearTimeout(timer);
+    }),
+    timeout,
+  ]);
+}
+
+/**
+ * How long {@link disposeActive} waits for a previous workspace's realtime broker
+ * to stop before abandoning it. The broker is a Postgres LISTEN/NOTIFY client; on
+ * a degraded connection its `stop()` can hang, and a workspace switch must never
+ * block on tearing down the workspace it is leaving.
+ */
+const DISPOSE_TEARDOWN_TIMEOUT_MS = 3000;
+
+/**
+ * Tear down an ActiveDb: abort its in-flight render, stop its realtime broker,
+ * then close the DB. Called before reopening or swapping configs so listeners +
+ * pg clients don't leak.
+ *
+ * The realtime-broker stop is **time-bounded** ({@link DISPOSE_TEARDOWN_TIMEOUT_MS}):
+ * a wedged LISTEN/NOTIFY client (e.g. a stalled cloud connection) must not be able
+ * to freeze a workspace switch, which `await`s this before responding. On timeout
+ * the broker is abandoned best-effort (the process owns the socket) and teardown
+ * continues so the switch completes. `teardownTimeoutMs` is injectable for tests.
+ */
+export async function disposeActive(
+  active: ActiveDb,
+  teardownTimeoutMs: number = DISPOSE_TEARDOWN_TIMEOUT_MS,
+): Promise<void> {
   // Abort the in-flight background render FIRST — before closing the DB — so the
   // render loop bails before its next query hits a closing adapter.
   try {
@@ -1409,10 +1452,16 @@ async function disposeActive(active: ActiveDb): Promise<void> {
     // best-effort
   }
   if (active.realtime) {
-    try {
-      await active.realtime.stop();
-    } catch {
-      // best-effort
+    // Bound the stop: a slow/stuck broker must not wedge a workspace switch.
+    const stopped = Promise.resolve()
+      .then(() => active.realtime?.stop())
+      .catch(() => undefined); // swallow stop() errors — teardown is best-effort
+    const outcome = await settleWithin(stopped, teardownTimeoutMs);
+    if (outcome === 'timeout') {
+      console.warn(
+        `[gui] realtime broker stop() exceeded ${String(teardownTimeoutMs)}ms during teardown; ` +
+          'abandoning it so the workspace switch stays responsive.',
+      );
     }
   }
   try {
