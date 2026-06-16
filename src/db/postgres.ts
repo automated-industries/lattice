@@ -448,12 +448,31 @@ export const POSTGRES_POLYFILLS: readonly { warn: string; sql: string }[] = [
 export async function registerPostgresPolyfills(
   run: (sql: string) => Promise<unknown>,
 ): Promise<void> {
+  let permissionDenied = false;
   for (const { warn, sql } of POSTGRES_POLYFILLS) {
     try {
       await run(sql);
     } catch (err) {
-      console.warn(`[PostgresAdapter] ${warn}`, err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : String(err);
+      // A scoped cloud member has no CREATE on schema public, so it can neither
+      // create these nor CREATE OR REPLACE the owner's — but the owner already
+      // created them during secureCloud and members hold EXECUTE on them, so this
+      // is expected-and-recovered, not a failure. Collapse the per-statement
+      // "permission denied for schema public" noise into ONE debug line instead
+      // of three warnings on every member connect. A genuine non-permission
+      // failure (e.g. pgcrypto unavailable while securing as the owner) still
+      // warns loudly — it is actionable.
+      if (/permission denied/i.test(msg)) {
+        permissionDenied = true;
+      } else {
+        console.warn(`[PostgresAdapter] ${warn}`, msg);
+      }
     }
+  }
+  if (permissionDenied) {
+    console.debug(
+      '[PostgresAdapter] SQLite-compat polyfills are owner-managed on this cloud; skipping member-side (re)creation (expected).',
+    );
   }
 }
 

@@ -3100,7 +3100,7 @@ export const appJs = `
         '<div class="view-header">' +
           '<span class="entity-icon">⚙</span>' +
           '<h1>' + escapeHtml(tableName) + '</h1>' +
-          '<span class="count">' + entry.rowCount + ' row' + (entry.rowCount === 1 ? '' : 's') +
+          '<span class="count">' + (entry.rowCount == null ? 'no access' : (entry.rowCount + ' row' + (entry.rowCount === 1 ? '' : 's'))) +
             ' · read-only</span>' +
         '</div>' +
         '<div class="muted" style="margin-bottom:12px;font-size:13px;">' +

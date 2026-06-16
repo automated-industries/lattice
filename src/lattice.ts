@@ -498,7 +498,38 @@ export class Lattice {
 
   /** Async tail of init(). See {@link init} for the sync-validation phase. */
   private async _initAsync(options: InitOptions): Promise<void> {
-    if (options.introspectOnly) {
+    // Auto-detect a scoped cloud member on an already-provisioned cloud and skip
+    // schema DDL even when the caller didn't pass `introspectOnly` (the CLI
+    // `render`/`reconcile`/`watch` and library callers don't). A member role has
+    // no CREATE on schema public, and Postgres checks that privilege BEFORE the
+    // `IF NOT EXISTS` short-circuit — so applySchema's `CREATE TABLE IF NOT
+    // EXISTS` / `CREATE OR REPLACE VIEW` / `CREATE INDEX` fail with "permission
+    // denied for schema public" even though every object already exists. Detected
+    // with two privilege-safe reads: the cloud marker table exists, and the
+    // connected role cannot create roles (an owner/DBA can → normal DDL path).
+    // Any failure falls through to applySchema so a genuine misconfiguration
+    // still surfaces loudly — never a silent success. Inlined rather than calling
+    // framework/cloud-connect to avoid a core↔framework import cycle.
+    let introspectOnly = options.introspectOnly === true;
+    if (!introspectOnly && this.getDialect() === 'postgres') {
+      try {
+        const [marker, role] = await Promise.all([
+          getAsyncOrSync(this._adapter, `SELECT to_regclass('__lattice_owners') AS reg`),
+          getAsyncOrSync(
+            this._adapter,
+            `SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`,
+          ),
+        ]);
+        const provisioned = !!marker && (marker as { reg?: unknown }).reg != null;
+        const canCreateRoles =
+          !!role && (role as { rolcreaterole?: unknown }).rolcreaterole === true;
+        introspectOnly = provisioned && !canCreateRoles;
+      } catch {
+        // Detection unavailable (transient / permission) — fall through to the
+        // normal applySchema path, which fails loudly if the role truly can't DDL.
+      }
+    }
+    if (introspectOnly) {
       // Scoped cloud member: the owner already installed every table, migration,
       // and RLS policy. This role can't DDL, so issue none — just introspect the
       // declared tables to seed the column cache (skip any this member can't see)
