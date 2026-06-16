@@ -8,6 +8,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-06-16
+
+### Fixed
+
+- **Version showed as "unknown" in published builds.** `getVersion()` read
+  `package.json` via `import.meta.url` at runtime, which fails once the code is
+  bundled and installed under `node_modules` — so the CLI `--version` and the GUI
+  version chip showed "vunknown". The version is now injected at build time
+  (tsup `define`), with the file read kept as a dev fallback.
+
+- **Assistant could report a sharing change it lacked permission to make.** The
+  `set_visibility` tool relied solely on the Postgres RLS function to reject an
+  unauthorized change, so a no-permission attempt could surface as success. It now
+  runs a deterministic pre-check (row owner via `lattice_rows_access`; table
+  default via role privilege) and returns an explicit refusal the assistant
+  relays — the RLS function stays as defense-in-depth.
+
+### Changed
+
+- **Faster cloud-workspace open.** The owner-vs-member probe now runs its
+  independent, read-only introspection queries concurrently (RLS-installed +
+  role-privilege; table discovery + masking-view lookup) instead of serially. No
+  change to the owner/member determination, the `information_schema` privilege
+  filters, or any RLS/grant gate.
+
+### Added
+
+- **GA unique-user de-duplication.** The GUI now sets the Google Analytics
+  `user_id` to a SHA-256 hash of the operator's email (hashed in-browser; the
+  plaintext is never sent, and the analytics layer accepts only a hex digest), so
+  active users are deduplicated across sessions/devices instead of counting ≈ 1
+  per event. Opt-in and gated on the existing analytics consent.
+
 ## [3.3.1] - 2026-06-16
 
 ### Added — first-class URL ingestion

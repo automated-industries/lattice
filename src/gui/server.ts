@@ -908,11 +908,30 @@ export async function openConfig(
     const peek = new Lattice({ config: configPath }, { encryptionKey });
     try {
       await peek.init({ introspectOnly: true });
-      if (await cloudRlsInstalled(peek)) {
-        memberOpen = !(await canManageRoles(peek));
+      // Probe RLS-installed + role privilege CONCURRENTLY — two independent
+      // read-only queries, previously serial. The gate below is identical: a
+      // member open requires RLS installed AND no role-management privilege.
+      // (canManageRoles runs unconditionally now; on a non-cloud Postgres it is a
+      // harmless extra read whose result is simply unused.)
+      const [rlsInstalled, canManage] = await Promise.all([
+        cloudRlsInstalled(peek),
+        canManageRoles(peek),
+      ]);
+      if (rlsInstalled) {
+        memberOpen = !canManage;
         if (memberOpen) {
           const declared = new Set(db.getRegisteredTableNames());
-          const discovered = await discoverCloudTables(peek);
+          // Discover member-visible tables and the masking views CONCURRENTLY —
+          // both are privilege-filtered, read-only introspection and independent.
+          const [discovered, viewsRaw] = await Promise.all([
+            discoverCloudTables(peek),
+            allAsyncOrSync(
+              peek.adapter,
+              `SELECT table_name AS name FROM information_schema.views
+                 WHERE table_schema = current_schema() AND table_name LIKE '%\\_v' ESCAPE '\\'`,
+            ),
+          ]);
+          const views = viewsRaw as { name: string }[];
           const knownTables = new Set<string>([...declared, ...discovered.map((t) => t.name)]);
           for (const t of discovered) {
             if (declared.has(t.name)) continue;
@@ -931,13 +950,6 @@ export async function openConfig(
           }
           // A member only SEES `<base>_v` views it was granted SELECT on (the
           // audience-masking view for a table whose base SELECT was revoked).
-          // `information_schema.views` is privilege-filtered, so this is exactly
-          // the set of base tables whose reads must route to the view.
-          const views = (await allAsyncOrSync(
-            peek.adapter,
-            `SELECT table_name AS name FROM information_schema.views
-               WHERE table_schema = current_schema() AND table_name LIKE '%\\_v' ESCAPE '\\'`,
-          )) as { name: string }[];
           for (const { name } of views) {
             const base = name.slice(0, -2); // strip the "_v" suffix
             if (knownTables.has(base)) maskedReadViews.set(base, name);
