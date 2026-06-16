@@ -4,7 +4,6 @@ import { writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
-import { allAsyncOrSync } from '../db/adapter.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from './mutations.js';
 import { parseFile, describe, type ExtractResult } from './ai/extract.js';
@@ -30,36 +29,11 @@ import {
   type ClassifyMatch,
   type SchemaEntity,
 } from './ai/summarize.js';
-import { slugify } from '../render/markdown.js';
-
-/**
- * A filename-derived slug for a new `files` row, with a short id suffix so it
- * stays unique across re-uploads of the same filename. Passed on every ingest
- * insert: `files` schemas that physically carry a `slug` column (e.g. a cloud
- * whose `files` table declares `slug NOT NULL`) get it populated; the native
- * `files` entity has no slug column, so `_filterToSchemaColumns` drops it
- * harmlessly. Dialect-agnostic — fixes "not null constraint failed: files.slug"
- * on Postgres-backed clouds without touching SQLite behaviour.
- */
-function fileSlug(name: string, id: string): string {
-  const base = slugify(name.replace(/\.[^./\\]+$/, '')) || 'file';
-  return `${base}-${id.slice(0, 8)}`;
-}
-
-/**
- * Identity columns for a new `files` row, derived from the upload's display
- * name. Passed on every ingest insert so that a cloud whose `files` table
- * declares any of these NOT NULL (a common user customization — same class as
- * the `slug` constraint fixed earlier) inserts cleanly instead of 500-ing.
- * The native `files` entity has none of `name`/`title`, so
- * `_filterToSchemaColumns` drops the extras harmlessly; a cloud table that
- * physically carries them gets them populated. Keeps drag-drop from ever
- * breaking on a NOT NULL identity column.
- */
-function fileIdentity(displayName: string, id: string): Record<string, string> {
-  const label = displayName.trim() || 'file';
-  return { slug: fileSlug(displayName, id), name: label, title: label };
-}
+// File-row construction helpers live in a leaf module so the assistant's
+// create_artifact tool can reuse them without an import cycle (see file-row.ts).
+import { STRUCTURAL, fileIdentity, requiredFileDefaults } from './file-row.js';
+import { columnDescriptionHook } from './meta-gen.js';
+import { findExactFileDupesOf, mergeDuplicates, type DedupServiceCtx } from './dedup-service.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -105,6 +79,11 @@ interface IngestContext {
   /** Active config path, to resolve the workspace's S3 settings (cloud uploads
    *  also push bytes to S3 so other members can pull them). */
   configPath?: string;
+  /** Rendered-context output dir — with configPath, lets auto-dedup re-point a
+   *  merged file's many-to-many links onto the surviving copy. */
+  outputDir?: string;
+  /** GUI session id, recorded on the auto-dedup merge's audit entries. */
+  sessionId?: string;
   pathname: string;
   method: string;
 }
@@ -170,7 +149,6 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-const STRUCTURAL = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
 const LABEL_PREF = ['name', 'title', 'slug', 'label'];
 
 /** True for tables that look like pure many-to-many junctions (only FKs). */
@@ -183,83 +161,6 @@ function labelColumn(cols: Record<string, string>): string | null {
   for (const p of LABEL_PREF) if (p in cols) return p;
   const text = Object.keys(cols).find((c) => !STRUCTURAL.has(c) && !c.endsWith('_id'));
   return text ?? null;
-}
-
-const TEXT_COL_RE = /\b(TEXT|VARCHAR|CHAR|CLOB|CHARACTER|STRING|NAME|CITEXT)\b/i;
-
-/**
- * Names of the NOT-NULL, no-default, text-typed columns on the LIVE `files`
- * table, by PHYSICAL introspection — so it reflects the actual table (a legacy
- * schema, a raw-SQL table, or a cloud-synced one), not just Lattice's declared
- * definition, which can diverge. Dialect-aware; best-effort (returns empty on any
- * introspection error so ingest still proceeds). Primary-key columns are excluded
- * (`id` is always supplied), as are non-text columns (a filename can't satisfy a
- * NOT NULL integer/blob; the known numeric columns are set explicitly).
- */
-async function requiredTextFileColumns(db: Lattice): Promise<Set<string>> {
-  const out = new Set<string>();
-  try {
-    if (db.getDialect() === 'postgres') {
-      const rows = await allAsyncOrSync(
-        db.adapter,
-        `SELECT column_name AS name, data_type AS type, is_nullable, column_default AS dflt
-           FROM information_schema.columns
-          WHERE table_name = 'files' AND table_schema = current_schema()`,
-      );
-      for (const r of rows) {
-        if (
-          String(r.is_nullable).toUpperCase() === 'NO' &&
-          r.dflt == null &&
-          TEXT_COL_RE.test(String(r.type))
-        ) {
-          out.add(String(r.name));
-        }
-      }
-    } else {
-      const rows = await allAsyncOrSync(db.adapter, `PRAGMA table_info("files")`);
-      for (const r of rows) {
-        if (
-          Number(r.notnull) === 1 &&
-          r.dflt_value == null &&
-          Number(r.pk) === 0 &&
-          TEXT_COL_RE.test(String(r.type))
-        ) {
-          out.add(String(r.name));
-        }
-      }
-    }
-  } catch {
-    /* best-effort — leave the set empty and let the insert proceed */
-  }
-  return out;
-}
-
-/**
- * Fill any required text column on the live `files` table that the ingest insert
- * doesn't already set, with a filename-derived value — so a drag-drop NEVER fails
- * on a required column, whatever the (customized/legacy/cloud-synced) `files`
- * schema declares NOT NULL, including `path`. Slug-like columns get a filename
- * slug; everything else gets the display name. The native `files` entity declares
- * these all nullable, so this is a no-op there: it only fires on a schema that
- * genuinely requires the column (the "NOT NULL constraint failed: files.<col>"
- * case) and never writes a bogus `path` onto a nullable schema (which would
- * shadow the blob/ref the file is actually served from).
- */
-export async function requiredFileDefaults(
-  db: Lattice,
-  displayName: string,
-  id: string,
-  provided: Record<string, unknown>,
-): Promise<Record<string, string>> {
-  const required = await requiredTextFileColumns(db);
-  const label = displayName.trim() || 'file';
-  const out: Record<string, string> = {};
-  for (const col of required) {
-    if (STRUCTURAL.has(col)) continue;
-    if (provided[col] != null) continue;
-    out[col] = /slug/i.test(col) ? fileSlug(displayName, id) : label;
-  }
-  return out;
 }
 
 /**
@@ -687,6 +588,7 @@ export async function dispatchIngestRoute(
     feed: ctx.feed,
     softDeletable: ctx.softDeletable,
     source: 'ingest',
+    onColumnsAdded: columnDescriptionHook(ctx.db),
   };
 
   // Raw-bytes upload (drag-drop / paperclip from the browser, which can't
@@ -794,12 +696,17 @@ export async function dispatchIngestRoute(
         realPath = rawFilePath;
       }
     }
+    // Content hash set UNCONDITIONALLY (not just when a blob/S3 ref exists) so
+    // the post-insert auto-dedup can recognize a byte-identical re-upload even on
+    // the text-only native schema. createRow drops it if the schema lacks the col.
+    const fileSha = blob?.sha256 ?? s3Ref?.sha256 ?? createHash('sha256').update(buf).digest('hex');
     const uploadRow: Record<string, unknown> = {
       id: fileId,
       ...fileIdentity(name, fileId),
       ...(realPath ? { path: realPath } : {}),
       original_name: name,
       mime,
+      sha256: fileSha,
       size_bytes: buf.length,
       extracted_text: result.text,
       description: describe(result.text, mime, name),
@@ -813,17 +720,44 @@ export async function dispatchIngestRoute(
             ref_provider: 's3',
             ref_uri: s3Ref.ref_uri,
             source_json: s3Ref.source_json,
-            sha256: s3Ref.sha256,
             ...(blob ? { blob_path: blob.blob_path } : {}),
           }
         : blob
-          ? { ref_kind: 'blob', blob_path: blob.blob_path, sha256: blob.sha256 }
+          ? { ref_kind: 'blob', blob_path: blob.blob_path }
           : {}),
     };
     const { id } = await createRow(mctx, 'files', {
       ...(await requiredFileDefaults(ctx.db, name, fileId, uploadRow)),
       ...uploadRow,
     });
+    // Seamless auto-dedup: a byte-identical re-upload is merged onto the OLDEST
+    // existing copy (this just-created row is soft-deleted — recoverable from
+    // Trash / Undo) and enrichment is skipped. The only signal is the 'system'
+    // ("Lattice") feed pill. Best-effort: never blocks ingest.
+    try {
+      const dedupCtx: DedupServiceCtx = {
+        db: ctx.db,
+        feed: ctx.feed,
+        softDeletable: ctx.softDeletable,
+        configPath: ctx.configPath ?? '',
+        outputDir: ctx.outputDir ?? '',
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      };
+      const dupes = await findExactFileDupesOf(dedupCtx, { id, sha256: fileSha });
+      const survivor = dupes[0];
+      if (survivor) {
+        await mergeDuplicates(dedupCtx, 'files', survivor, [id]);
+        sendJson(res, {
+          id: survivor,
+          duplicateOf: survivor,
+          deduped: true,
+          extraction_status: 'skipped',
+        });
+        return true;
+      }
+    } catch {
+      /* dedup is best-effort — fall through to normal enrichment */
+    }
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
       const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res);

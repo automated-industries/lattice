@@ -102,14 +102,20 @@ describe.skipIf(!PG_URL)('cloud member access reconcile', () => {
     roles.push(member);
     const { o, ownerPool } = await ownerCloud(schema);
 
-    await o.upsert('chat_messages', { id: 'm1', thread_id: 't1', content_json: '{"text":"secret"}' });
+    await o.upsert('chat_messages', {
+      id: 'm1',
+      thread_id: 't1',
+      content_json: '{"text":"secret"}',
+    });
 
     // Simulate a restore that left chat stamped shared (the leak scenario):
     // policy says everyone + the existing row is visibility=everyone.
     await ownerPool.query(
       `UPDATE __lattice_table_policy SET never_share = false, default_row_visibility = 'everyone' WHERE table_name = 'chat_messages'`,
     );
-    await ownerPool.query(`UPDATE __lattice_owners SET visibility = 'everyone' WHERE table_name = 'chat_messages'`);
+    await ownerPool.query(
+      `UPDATE __lattice_owners SET visibility = 'everyone' WHERE table_name = 'chat_messages'`,
+    );
 
     const memberPw = generateMemberPassword();
     await provisionMemberRole(o, member, memberPw);

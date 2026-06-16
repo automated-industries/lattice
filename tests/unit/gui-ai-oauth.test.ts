@@ -9,8 +9,10 @@ import {
   oauthConfigured,
   exchangeCodeForTokens,
   refreshAccessToken,
+  isManualPasteRedirect,
   type OAuthConfig,
 } from '../../src/gui/ai/oauth.js';
+import { isLoopbackHost } from '../../src/gui/assistant-routes.js';
 
 const cfg: OAuthConfig = {
   authorizeUrl: 'https://example.test/oauth/authorize',
@@ -33,6 +35,20 @@ describe('oauth helpers', () => {
 
   it('generates distinct state tokens', () => {
     expect(generateState()).not.toBe(generateState());
+  });
+
+  it('isLoopbackHost trusts only loopback hosts (redirect-URI host-injection guard)', () => {
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('127.0.0.1:4317')).toBe(true);
+    expect(isLoopbackHost('localhost')).toBe(true);
+    expect(isLoopbackHost('localhost:8080')).toBe(true);
+    expect(isLoopbackHost('[::1]:4317')).toBe(true);
+    expect(isLoopbackHost('127.5.5.5')).toBe(true);
+    // Attacker-controlled / non-loopback hosts must NOT be trusted.
+    expect(isLoopbackHost('evil.com')).toBe(false);
+    expect(isLoopbackHost('evil.com:4317')).toBe(false);
+    expect(isLoopbackHost('127.0.0.1.evil.com')).toBe(false);
+    expect(isLoopbackHost('192.168.1.10')).toBe(false);
   });
 
   it('builds an authorize URL with PKCE + state params', () => {
@@ -61,9 +77,35 @@ describe('oauth helpers', () => {
     expect(() => parseTokenResponse({ refresh_token: 'rt' })).toThrow(/access_token/);
   });
 
-  it('readOAuthConfig returns null until all env vars are set, then a config', () => {
-    expect(readOAuthConfig({})).toBeNull();
-    expect(oauthConfigured({})).toBe(false);
+  it('readOAuthConfig returns built-in defaults (manual code-paste flow) when env is unset (3.3)', () => {
+    // 3.3: the public subscription-OAuth client is built in, so connect works out
+    // of the box. The client only allows ITS registered redirect, so the default
+    // is the manual code-paste flow (console code callback), not a loopback.
+    const cfg = readOAuthConfig({});
+    expect(cfg.authorizeUrl).toMatch(/^https:\/\//);
+    expect(cfg.tokenUrl).toMatch(/^https:\/\//);
+    expect(cfg.clientId).toBeTruthy();
+    expect(cfg.scopes.length).toBeGreaterThan(0);
+    expect(cfg.redirectUri).toMatch(/\/oauth\/code\/callback$/);
+    expect(isManualPasteRedirect(cfg.redirectUri)).toBe(true);
+    expect(oauthConfigured({})).toBe(true);
+  });
+
+  it('the manual-flow authorize URL carries code=true; a custom loopback redirect does not', () => {
+    const manual = new URL(buildAuthorizeUrl(readOAuthConfig({}), 'st', 'ch'));
+    expect(manual.searchParams.get('code')).toBe('true');
+    const loopback = new URL(
+      buildAuthorizeUrl(
+        { ...cfg, redirectUri: 'http://127.0.0.1:4317/api/assistant/oauth/callback' },
+        'st',
+        'ch',
+      ),
+    );
+    expect(loopback.searchParams.get('code')).toBeNull();
+    expect(isManualPasteRedirect('http://127.0.0.1:4317/api/assistant/oauth/callback')).toBe(false);
+  });
+
+  it('env values override every default', () => {
     const env = {
       ANTHROPIC_OAUTH_AUTHORIZE_URL: 'https://a/au',
       ANTHROPIC_OAUTH_TOKEN_URL: 'https://a/tok',
@@ -72,8 +114,10 @@ describe('oauth helpers', () => {
       ANTHROPIC_OAUTH_SCOPES: 'one two',
     } as NodeJS.ProcessEnv;
     const parsed = readOAuthConfig(env);
-    expect(parsed?.clientId).toBe('cid');
-    expect(parsed?.scopes).toEqual(['one', 'two']);
+    expect(parsed.authorizeUrl).toBe('https://a/au');
+    expect(parsed.clientId).toBe('cid');
+    expect(parsed.redirectUri).toBe('http://localhost/cb');
+    expect(parsed.scopes).toEqual(['one', 'two']);
     expect(oauthConfigured(env)).toBe(true);
   });
 });

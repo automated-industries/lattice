@@ -327,6 +327,8 @@ export {
   getCloudSetting,
   setCloudSetting,
   CLOUD_SETTING_SYSTEM_PROMPT,
+  CLOUD_SETTING_WORKSPACE_LOGO,
+  CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from './cloud/settings.js';
 // v3.1 — progress-bearing render API (background render + live per-table %)
 export { ProgressThrottle } from './render/progress.js';
@@ -376,3 +378,15 @@ export type {
   TurnResult,
   LlmMessage,
 } from './ai/index.js';
+
+// Embed the GUI server from a library consumer (no CLI shell-out needed).
+export { startGuiServer } from './gui/server.js';
+export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';
+
+// Durable file-backed SourceKeyStore for production crypto-shred deployments.
+// The default InMemorySourceKeyStore is process-local — restart implicitly
+// shreds every key. This implementation persists keys to a single JSON file
+// (optionally AES-256-GCM encrypted at rest) so keys survive restarts but
+// remain shred-durable on explicit destroy.
+export { FileSourceKeyStore } from './cloud/file-source-key-store.js';
+export type { FileSourceKeyStoreOptions } from './cloud/file-source-key-store.js';

@@ -28,9 +28,10 @@ export type FeedOp =
 /**
  * Who originated the mutation. Drives the source pill shown next to a feed
  * bubble so the user can tell apart their own clicks, command-palette runs,
- * and CLI writes.
+ * and CLI writes. `system` is Lattice acting on its own (e.g. an automatic
+ * de-duplication pass) — attributed to "Lattice" rather than a person.
  */
-export type FeedSource = 'gui' | 'command' | 'ai' | 'ingest' | 'cli';
+export type FeedSource = 'gui' | 'command' | 'ai' | 'ingest' | 'cli' | 'system';
 
 export interface FeedEvent {
   /** Monotonically increasing per-bus sequence number, assigned on publish. */
