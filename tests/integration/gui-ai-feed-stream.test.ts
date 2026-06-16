@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { waitForStreamMessage } from './stream-helper.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
@@ -35,44 +36,15 @@ function writeMinimalConfig(): { configPath: string; outputDir: string } {
 }
 
 /**
- * Read the feed SSE stream until a parsed `data:` event satisfies `match`,
- * or reject after `timeoutMs`. Returns the matching event.
+ * Wait for a `feed` message on the multiplexed `/api/stream` WebSocket whose
+ * payload satisfies `match`.
  */
-async function waitForFeedEvent(
+function waitForFeedEvent(
   url: string,
   match: (e: Record<string, unknown>) => boolean,
   timeoutMs = 4000,
 ): Promise<Record<string, unknown>> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => {
-    ac.abort();
-  }, timeoutMs);
-  try {
-    const res = await fetch(`${url}/api/feed/stream`, { signal: ac.signal });
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let sep: number;
-      while ((sep = buffer.indexOf('\n\n')) >= 0) {
-        const frame = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
-        if (!dataLine) continue;
-        const json = dataLine.slice('data:'.length).trim();
-        if (!json) continue;
-        const event = JSON.parse(json) as Record<string, unknown>;
-        if (match(event)) return event;
-      }
-    }
-    throw new Error('feed stream closed before a matching event');
-  } finally {
-    clearTimeout(timer);
-    ac.abort();
-  }
+  return waitForStreamMessage(url, 'feed', match, timeoutMs);
 }
 
 describe('GUI activity feed stream', () => {
