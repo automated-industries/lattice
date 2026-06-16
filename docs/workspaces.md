@@ -54,6 +54,19 @@ Registry helpers (all in the package root export):
 an explicit one, runs `init()`, and — unless `autoRender: false` — enables
 auto-render and writes the initial `Context/` tree.
 
+### First run & the zero-workspace state (3.3)
+
+The registry tolerates **zero** workspaces. `lattice gui` no longer force-creates
+a default "My Workspace": on a first launch with nothing to adopt (and after you
+delete your **last** workspace) the GUI shows a full-screen **"Welcome to
+Lattice"** screen with **Create a workspace** and **Join via invite** wizards
+(identity-first; local, cloud-via-migrate, or join-by-token). In this state the
+server has no active database — it serves the shell plus the workspace-management
+and onboarding routes, and every data route answers `409` until you create or
+join one. Creating/joining switches into the new workspace; the normal layout
+returns on reload. The last workspace can now be deleted (it drops you back to the
+welcome screen rather than being refused).
+
 ## Auto-render (SQL → markdown)
 
 `enableAutoRender(outputDir)` debounces a re-render on every

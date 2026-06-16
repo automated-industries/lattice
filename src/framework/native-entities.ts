@@ -76,6 +76,14 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       extraction_status: 'TEXT',
       extracted_text: 'TEXT',
       description: 'TEXT',
+      // System-created artifact flag (additive, nullable, back-compat).
+      //   NULL       ⇒ an ordinary file (uploaded / ingested / referenced)
+      //   'markdown' ⇒ a markdown document the assistant generated and saved
+      //                here; its content lives inline in `extracted_text` and
+      //                renders as formatted markdown in the viewer. Room for
+      //                further artifact types later. Governed by the same
+      //                sharing/visibility rules as any other file row.
+      artifact_type: 'TEXT',
       created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',

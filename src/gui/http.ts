@@ -20,10 +20,29 @@ export function sendJson(res: ServerResponse, body: unknown, status = 200): void
 export const DEFAULT_BODY_MAX_BYTES = 1_000_000;
 
 /**
- * Read and JSON-parse a request body. Caps the body at `maxBytes` (destroying
- * the socket on overflow), resolves `{}` for an empty body, and rejects on
- * invalid JSON. Defaults to `Record<string, unknown>`; pass a type argument for
- * a different shape (callers that validate the result may use `unknown`).
+ * Thrown by {@link readJson} when the body exceeds the cap. Carries HTTP 413 so
+ * {@link tryHandler} returns a real "Payload Too Large" response. Previously the
+ * reader called `req.destroy()` on overflow, RESETTING the socket — which the
+ * browser's `fetch` surfaces as an opaque "Failed to fetch" with no actionable
+ * message (e.g. a too-big workspace-logo upload). Rejecting cleanly while leaving
+ * the socket alive lets the route answer with the real reason — fail loudly and
+ * visibly, never with a silent connection reset.
+ */
+export class BodyTooLargeError extends Error {
+  readonly statusCode = 413;
+  constructor(maxBytes: number) {
+    super(`Request body too large (max ${String(maxBytes)} bytes)`);
+    this.name = 'BodyTooLargeError';
+  }
+}
+
+/**
+ * Read and JSON-parse a request body. Caps the body at `maxBytes` — on overflow
+ * it REJECTS with a {@link BodyTooLargeError} (HTTP 413) and stops buffering, but
+ * keeps draining the request so the socket stays alive and the route can send the
+ * error response (a destroyed socket becomes a browser "Failed to fetch"). Resolves
+ * `{}` for an empty body and rejects on invalid JSON. Defaults to
+ * `Record<string, unknown>`; pass a type argument for a different shape.
  */
 export function readJson<T = Record<string, unknown>>(
   req: IncomingMessage,
@@ -32,12 +51,19 @@ export function readJson<T = Record<string, unknown>>(
   const maxBytes = opts.maxBytes ?? DEFAULT_BODY_MAX_BYTES;
   return new Promise<T>((resolve, reject) => {
     let raw = '';
+    let overflowed = false;
     req.setEncoding('utf8');
     req.on('data', (chunk: string) => {
+      if (overflowed) return; // keep draining so 'end' fires; do NOT reset the socket
       raw += chunk;
-      if (raw.length > maxBytes) req.destroy(new Error('Request body too large'));
+      if (raw.length > maxBytes) {
+        overflowed = true;
+        raw = ''; // free the buffered prefix
+        reject(new BodyTooLargeError(maxBytes));
+      }
     });
     req.on('end', () => {
+      if (overflowed) return; // already rejected; never resolve too
       try {
         resolve(raw ? (JSON.parse(raw) as T) : ({} as T));
       } catch {
@@ -62,8 +88,13 @@ export async function tryHandler(
   try {
     await fn();
   } catch (e) {
-    const err = e as Error;
-    console.error(`[gui] ${label} failed: ${err.message}\n${err.stack ?? ''}`);
-    sendJson(res, { error: err.message }, 500);
+    const err = e as Error & { statusCode?: number };
+    // Honor a status the error carries (e.g. BodyTooLargeError → 413); default to
+    // 500. A 4xx is a client/request problem, not a server fault — log it quietly
+    // without a stack; keep the full stack for genuine 5xx faults (#4.11).
+    const status = typeof err.statusCode === 'number' ? err.statusCode : 500;
+    if (status >= 500) console.error(`[gui] ${label} failed: ${err.message}\n${err.stack ?? ''}`);
+    else console.warn(`[gui] ${label}: ${err.message}`);
+    sendJson(res, { error: err.message }, status);
   }
 }

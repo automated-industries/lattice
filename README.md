@@ -90,6 +90,8 @@ To use the Postgres backend (for Supabase, Neon, RDS, or any other Postgres-comp
 npm install latticesql pg
 ```
 
+> Deploying Lattice Cloud on managed Postgres (AWS RDS / RDS Proxy, Cloud SQL, Neon)? See the [managed-Postgres deployment notes](docs/cloud.md#deploying-on-managed-postgres-aws-rds--rds-proxy) — in particular, point the realtime `LISTEN` connection at a session-mode / direct endpoint, not a transaction-mode proxy.
+
 Then pass a connection string instead of a file path:
 
 ```ts

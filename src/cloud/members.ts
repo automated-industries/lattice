@@ -88,8 +88,13 @@ export async function provisionMemberRole(
   await runAsyncOrSync(db.adapter, `GRANT ${MEMBER_GROUP} TO "${role}"`);
 }
 
-// Sharing levels a row owner may set, mirroring lattice_set_row_visibility's CHECK.
-const VISIBILITY = new Set(['private', 'everyone']);
+// Sharing levels a row owner may set, mirroring lattice_set_row_visibility's CHECK
+// (private | everyone | custom). 'custom' is the "share with specific people" mode:
+// the owner flips the row to custom, then grantRow() adds individual members. This
+// set previously omitted 'custom', so the GUI's "Specific people…" flow — which
+// pre-flips the row to custom before listing members — failed with
+// `invalid visibility "custom"` and the member checklist never loaded.
+const VISIBILITY = new Set(['private', 'everyone', 'custom']);
 
 /**
  * Change a row's sharing through the owner-only `lattice_set_row_visibility`
@@ -106,7 +111,9 @@ export async function setRowVisibility(
 ): Promise<void> {
   assertPg(db);
   if (!VISIBILITY.has(visibility)) {
-    throw new Error(`lattice: invalid visibility "${visibility}" (expected private | everyone)`);
+    throw new Error(
+      `lattice: invalid visibility "${visibility}" (expected private | everyone | custom)`,
+    );
   }
   await runAsyncOrSync(db.adapter, `SELECT lattice_set_row_visibility(?, ?, ?)`, [
     table,
@@ -236,6 +243,34 @@ export async function revokeCell(
     column,
     grantee,
   ]);
+}
+
+/**
+ * Per-row "share with specific people": grant (or revoke) one member access to
+ * ONE row — a specific (table, pk) — flipping the row to `custom` visibility.
+ * Owner-only (the SECURITY DEFINER function raises for a non-owner, and for a
+ * `never_share` table). `pk` is the row's canonical primary-key string. Mirrors
+ * `grantCell`/`revokeCell` but at row granularity over `lattice_grant_row` /
+ * `lattice_revoke_row` (`__lattice_row_grants`).
+ */
+export async function grantRow(
+  db: Lattice,
+  table: string,
+  pk: string,
+  grantee: string,
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_grant_row(?, ?, ?)`, [table, pk, grantee]);
+}
+
+export async function revokeRow(
+  db: Lattice,
+  table: string,
+  pk: string,
+  grantee: string,
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_revoke_row(?, ?, ?)`, [table, pk, grantee]);
 }
 
 /**
