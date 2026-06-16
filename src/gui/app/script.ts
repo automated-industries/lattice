@@ -2150,6 +2150,22 @@ export const appJs = `
       var dot = name.lastIndexOf('.');
       return dot >= 0 && IMAGE_EXTS.indexOf(name.slice(dot + 1)) >= 0;
     }
+    // Which action affordances the file view offers for a row (extracted so it
+    // can be unit-tested). A file rendered inline (image / PDF with viewable
+    // bytes) needs neither. Anything else with bytes gets a browser Download so
+    // the underlying file is ALWAYS reachable — including office docs, audio, and
+    // video, and even when "Open in Finder" is unavailable (a remote GUI, or
+    // LATTICE_LOCAL_OPEN off). "Open in Finder" is additionally offered when the
+    // bytes live on this machine and local-open is enabled.
+    function fileActions(row, localOpenOn) {
+      var viewable = hasViewableFile(row);
+      var inline = viewable && (isImageFile(row) || String(row.mime || '') === 'application/pdf');
+      return {
+        inline: inline,
+        open: hasLocalBytes(row) && !!localOpenOn,
+        download: (isS3File(row) && !hasLocalBytes(row)) || (hasLocalBytes(row) && !inline),
+      };
+    }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
@@ -2172,15 +2188,14 @@ export const appJs = `
         html += '<div class="file-unsupported">No inline preview for this file type' +
           (mime ? ' (' + escapeHtml(mime) + ')' : '') + '.</div>';
       }
-      // Open in Finder vs Download are MUTUALLY EXCLUSIVE: a file on this machine's
-      // disk opens locally (when LATTICE_LOCAL_OPEN is on); a cloud (S3) file with
-      // no local copy is downloaded. Never both — there's only ever one source.
-      var canOpen = hasLocalBytes(row) && state.localOpen;
-      var canDownload = isS3File(row) && !hasLocalBytes(row);
-      if (canOpen || canDownload) {
+      // Action affordances — see fileActions. A non-inline file with bytes
+      // (office doc, audio, video, an S3-only file) is downloadable; local bytes
+      // also open in Finder when local-open is on.
+      var acts = fileActions(row, state.localOpen);
+      if (acts.open || acts.download) {
         html += '<div class="file-actions">' +
-          (canOpen ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
-          (canDownload ? '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' : '') +
+          (acts.open ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
+          (acts.download ? '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' : '') +
         '</div>';
       }
       host.innerHTML = html;

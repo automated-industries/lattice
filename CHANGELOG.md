@@ -8,6 +8,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **An uploaded document (`.pptx`, `.docx`, `.xlsx`, `.csv`, …) could not be
+  previewed, downloaded, or opened — only its extracted text survived.** A
+  browser drag-drop arrives as raw bytes with no local path, and the upload route
+  retained a content-addressed blob only for images and PDFs; every other type
+  had its bytes discarded after text extraction. The file view then had no
+  underlying file to serve, so `GET /api/files/:id/blob` 404'd ("this file has no
+  underlying blob here"). Uploads now retain the original bytes for documents and
+  media — images, PDFs, Office/OpenDocument files, `text/*`, JSON/XML/YAML, RTF,
+  and audio/video — while still discarding arbitrary/unknown binaries (archives,
+  executables, …), which keep their extracted text + description but no blob.
+  Retention is gated on the file type, not on extraction success, so a document
+  whose text fails to extract is still downloadable. (Already-ingested files
+  whose bytes were discarded are not recoverable; re-upload to get a retained
+  copy.)
+- **The file view offered no way to fetch a non-previewable file.** A file with
+  bytes that a browser can't render inline (an Office doc, audio, video) now
+  always shows a **Download** action, so the underlying file is reachable even
+  when "Open in Finder" is unavailable (a remote GUI, or `LATTICE_LOCAL_OPEN=0`);
+  local bytes additionally offer "Open in Finder" when local-open is enabled.
+
 ## [3.3.4] - 2026-06-16
 
 ### Fixed
