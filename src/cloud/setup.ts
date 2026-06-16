@@ -84,6 +84,69 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
       );
     }
   }
+
+  // (3) GUI/identity bookkeeping tables a member reads/writes DIRECTLY (not via
+  // an RLS-secured user table, so the loop above skips them). Without these the
+  // member's GUI silently degrades to read-only / "save as document":
+  //   - _lattice_gui_meta / _lattice_gui_column_meta — entity-icon + table/column
+  //     descriptions (workspace-global metadata the member reads, and may author);
+  //   - _lattice_gui_audit — the member's own GUI undo/redo log (session-scoped);
+  //   - __lattice_user_identity — the single "who is here" row mirrored on connect.
+  // Guarded by to_regclass so a library-only cloud (no GUI tables) is a no-op;
+  // idempotent, so an already-migrated cloud whose secure ran before these grants
+  // existed self-heals on the owner's next open. NOT __lattice_cell_grants /
+  // __lattice_row_grants — those stay owner-only and are reached only through
+  // SECURITY DEFINER functions, so a member never needs (or gets) a direct grant.
+  const memberSystemGrants: readonly [string, string][] = [
+    ['_lattice_gui_meta', 'SELECT, INSERT, UPDATE'],
+    ['_lattice_gui_column_meta', 'SELECT, INSERT, UPDATE'],
+    ['_lattice_gui_audit', 'SELECT, INSERT'],
+    ['__lattice_user_identity', 'SELECT, INSERT, UPDATE'],
+  ];
+  for (const [tbl, privs] of memberSystemGrants) {
+    await runAsyncOrSync(
+      db.adapter,
+      `DO $LATTICE$ BEGIN
+         IF to_regclass('${tbl}') IS NOT NULL THEN
+           EXECUTE 'GRANT ${privs} ON "${tbl}" TO ${MEMBER_GROUP}';
+         END IF;
+       END $LATTICE$`,
+    );
+  }
+
+  // (4) Polyfill functions a member's queries depend on (the audit-table
+  // strftime() default, audience json_extract()). The owner created them in
+  // secureCloud; grant EXECUTE explicitly so a member never has to (and cannot,
+  // post-revoke) CREATE them itself. Non-fatal: a library cloud that never
+  // registered the polyfills simply has nothing to grant.
+  try {
+    await runAsyncOrSync(
+      db.adapter,
+      `GRANT EXECUTE ON FUNCTION json_extract(text, text), strftime(text, text) TO ${MEMBER_GROUP}`,
+    );
+  } catch (err) {
+    console.warn(
+      '[reconcileCloudMemberAccess] could not grant EXECUTE on polyfills (will retry next open):',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // (5) Schema convergence: 3.3.x soft-delete filters reads/counts with
+  // `WHERE deleted_at IS NULL`, so a user entity table that lacks the column
+  // (e.g. migrated from a pre-soft-delete SQLite) breaks the render and exact
+  // counts. Add it idempotently to every user table missing it — owner-only
+  // ALTER, matching the TEXT type new tables get (schema-ops.createUserEntity).
+  for (const table of registered) {
+    if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
+    const cols = db.getRegisteredColumns(table);
+    if (cols && !('deleted_at' in cols)) {
+      const q = `"${table.replace(/"/g, '""')}"`;
+      await runAsyncOrSync(
+        db.adapter,
+        `ALTER TABLE ${q} ADD COLUMN IF NOT EXISTS "deleted_at" TEXT`,
+      );
+    }
+  }
 }
 
 /**
@@ -132,8 +195,10 @@ export async function secureCloud(db: Lattice): Promise<void> {
   // the OWNER, up front — installCloudRls revokes CREATE ON SCHEMA from PUBLIC,
   // after which a scoped member can neither create these nor CREATE OR REPLACE
   // the owner's, so they must exist before any member connects (otherwise member
-  // queries that use them, e.g. the audit timestamp default, fail). Owner-created
-  // functions are EXECUTE-able by members by default. Idempotent + non-fatal.
+  // queries that use them, e.g. the audit timestamp default, fail). Idempotent +
+  // non-fatal. EXECUTE is granted to the member group in reconcileCloudMemberAccess
+  // (below) — don't rely on the default PUBLIC grant, which a hardened cloud may
+  // have revoked.
   await registerPostgresPolyfills((sql) => runAsyncOrSync(db.adapter, sql));
   await installCloudRls(db);
   await installCloudSettings(db);
@@ -144,29 +209,10 @@ export async function secureCloud(db: Lattice): Promise<void> {
     await secureNewCloudTable(db, table, db.getPrimaryKey(table));
   }
   // Private-only tables (`secrets` + the assistant's internal chat tables) are
-  // forced never_share, and member grants are reconciled, here too — so the
-  // one-time secure cutover lands the same access state an owner open converges to.
+  // forced never_share; member grants for both user tables AND the GUI/identity
+  // bookkeeping tables, the polyfill EXECUTE grants, and the deleted_at schema
+  // convergence are all reconciled here — so the one-time secure cutover lands the
+  // exact same state an owner open converges to (reconcileCloudMemberAccess runs
+  // on every owner open too, so an already-migrated cloud self-heals).
   await reconcileCloudMemberAccess(db);
-  // GUI-direct system table grant. The per-table loop above skips every
-  // `__lattice_*` table, but `__lattice_user_identity` is the one such table a
-  // member reads/writes DIRECTLY on connect (gui/server.ts + userconfig-routes.ts)
-  // to record "who is sitting here". Without this grant a member hits
-  // "permission denied for table __lattice_user_identity" and cannot drive the
-  // GUI at all. Idempotent; re-securing an existing cloud retro-applies it.
-  // NOTE: it is a single `id='singleton'` row mirroring the connecting user, so
-  // concurrent members currently clobber it — a follow-up should re-key it per
-  // role (id = current_user) with own-row RLS. The grant is the blocker fix.
-  //
-  // The GUI creates `__lattice_user_identity` at workspace-open, which runs
-  // BEFORE the owner triggers secureCloud — so in the app path it exists here. A
-  // library-only cutover (no GUI) has no such table, so grant only when present;
-  // the cutover stays a single idempotent call either way.
-  await runAsyncOrSync(
-    db.adapter,
-    `DO $LATTICE$ BEGIN
-       IF to_regclass('__lattice_user_identity') IS NOT NULL THEN
-         EXECUTE 'GRANT SELECT, INSERT, UPDATE ON "__lattice_user_identity" TO ${MEMBER_GROUP}';
-       END IF;
-     END $LATTICE$`,
-  );
 }
