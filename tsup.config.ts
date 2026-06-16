@@ -1,4 +1,17 @@
 import { defineConfig } from 'tsup';
+import { readFileSync } from 'node:fs';
+
+// Inject the package version at BUILD time so the bundled CLI/GUI never falls
+// back to "unknown". Reading package.json via `import.meta.url` at runtime fails
+// once the code is bundled + installed under node_modules — that produced the
+// "vunknown" version chip in published builds. Resolved here against the repo
+// root (where this config lives) so it is always correct in the tarball.
+const pkgVersion = (
+  JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+    version: string;
+  }
+).version;
+const versionDefine = { __LATTICE_VERSION__: JSON.stringify(pkgVersion) };
 
 export default defineConfig([
   // -------------------------------------------------------------------------
@@ -7,6 +20,7 @@ export default defineConfig([
   {
     entry: ['src/index.ts'],
     format: ['esm', 'cjs'],
+    define: versionDefine,
     dts: true,
     splitting: false,
     sourcemap: false,
@@ -28,6 +42,7 @@ export default defineConfig([
       'fflate',
       'word-extractor',
       'unpdf',
+      'ws',
     ],
   },
 
@@ -37,6 +52,7 @@ export default defineConfig([
   {
     entry: ['src/cli.ts'],
     format: ['esm'],
+    define: versionDefine,
     dts: false,
     splitting: false,
     sourcemap: false,
@@ -62,6 +78,7 @@ export default defineConfig([
       'fflate',
       'word-extractor',
       'unpdf',
+      'ws',
     ],
   },
 ]);

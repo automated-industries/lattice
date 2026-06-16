@@ -387,6 +387,31 @@ export const appJs = `
         // Boot analytics with the resolved consent (no network contact when off),
         // then record the session open. advanced_mode is a boolean — safe to send.
         if (window.LatticeGA) window.LatticeGA.init(state.analyticsEffective);
+        // Deduplicate unique users in GA: set the GA user_id to a SHA-256 hash of
+        // the operator's email. Anonymized — the plaintext is hashed in-browser and
+        // never sent (analytics.ts only accepts a hex digest). Without a user_id,
+        // GA counts each session/device as a new user (active-users ≈ events).
+        // Best-effort + only when analytics consent is on.
+        if (window.LatticeGA && state.analyticsEffective && window.crypto && window.crypto.subtle) {
+          fetchJson('/api/userconfig/identity')
+            .then(function (id) {
+              var email = id && id.email ? String(id.email).trim().toLowerCase() : '';
+              if (!email) return undefined;
+              return window.crypto.subtle
+                .digest('SHA-256', new TextEncoder().encode(email))
+                .then(function (buf) {
+                  var hex = Array.prototype.map
+                    .call(new Uint8Array(buf), function (b) {
+                      return ('0' + b.toString(16)).slice(-2);
+                    })
+                    .join('');
+                  window.LatticeGA.setUser(hex);
+                });
+            })
+            .catch(function () {
+              /* best-effort — GA still functions without a user_id */
+            });
+        }
         gaTrack('app_open', { advanced_mode: advancedMode() });
         document.body.classList.toggle('advanced-mode', advancedMode());
         wireSettingsDrawer();
@@ -398,15 +423,13 @@ export const appJs = `
         wireHistoryControls();
         refreshHistoryState();
         renderRoute();
-        startRealtime();
-        startRenderProgress();
+        startEventStream();
         initSearch();
         initLastEdited();
         initOffline();
         initRailResize();
         initRailDrawer();
         initRailDragDrop();
-        startFeed();
         renderComposer();
         initThreadControls();
         checkNativeSetup();
@@ -422,12 +445,14 @@ export const appJs = `
     }
 
     // ────────────────────────────────────────────────────────────
-    // Realtime — Server-Sent Events from /api/realtime/stream.
-    // One EventSource per session; on 'change' events we mark the
-    // current view dirty and refetch via afterMutation() (debounced
-    // to coalesce bursts). On 'state' events we drive the topbar pill.
+    // Realtime / feed / render-progress all arrive over ONE multiplexed
+    // WebSocket (/api/stream) — see startEventStream() below. A single
+    // connection per tab (instead of three SSE streams) keeps the browser's
+    // tiny per-host HTTP connection budget free for data requests, so clicking
+    // objects and switching workspaces stay responsive no matter how many tabs
+    // are open. 'change' events mark the current view dirty and refetch via
+    // afterMutation() (debounced); 'state' events drive the topbar pill.
     // ────────────────────────────────────────────────────────────
-    var realtimeSource = null;
     var realtimePending = null;
     // Team-cloud collaboration state. usersById resolves "last edited by"
     // names; lastEditedByPk maps "<table>|<pk>" → { userId, at } from realtime
@@ -765,42 +790,87 @@ export const appJs = `
         afterMutation().catch(function () { /* swallow */ });
       }, 200);
     }
-    function startRealtime() {
-      if (realtimeSource) {
-        try { realtimeSource.close(); } catch (_) { /* ignore */ }
-        realtimeSource = null;
-      }
-      if (typeof EventSource === 'undefined') return;
-      realtimeSource = new EventSource('/api/realtime/stream');
-      realtimeSource.addEventListener('state', function (ev) {
-        try {
-          var data = JSON.parse(ev.data);
-          setStatusPill(data.mode || 'local', data.state || 'local');
-        } catch (_) { /* ignore malformed */ }
-      });
-      realtimeSource.addEventListener('change', function (ev) {
-        var p = null;
-        try { p = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
-        if (p) onRealtimeChange(p);
+    // ────────────────────────────────────────────────────────────
+    // Multiplexed event stream — ONE WebSocket carries realtime state/change,
+    // the activity feed, and background-render progress (previously three
+    // separate SSE streams). Holding one connection per tab instead of three
+    // keeps the browser's per-host HTTP budget free for data requests, so the
+    // GUI never freezes when several tabs are open. Each server message is
+    // { type, data }; we demux to the same handlers the SSE listeners used.
+    // ────────────────────────────────────────────────────────────
+    var eventStream = null; // the active WebSocket (or null)
+    var eventStreamReconnect = null; // pending reconnect timer
+    var eventStreamBackoff = 1000; // reconnect delay, grows to a cap
+    var eventStreamClosed = false; // true ⇒ closed on purpose (switch/teardown), don't reconnect
+    function dispatchStreamMessage(type, data) {
+      if (type === 'realtime-state') {
+        setStatusPill((data && data.mode) || 'local', (data && data.state) || 'local');
+      } else if (type === 'realtime-change') {
+        if (data) onRealtimeChange(data);
         scheduleRealtimeRefresh();
-      });
-      realtimeSource.onerror = function () {
-        // EventSource auto-reconnects; surface the disconnect on the pill
-        // until the server's 'state' event reports recovery.
+      } else if (type === 'feed') {
+        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
+        if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
+      } else if (type === 'render-snapshot') {
+        if (data) applyRenderSnapshot(data);
+      } else if (type === 'render-progress') {
+        if (data) onRenderEvent(data);
+      }
+    }
+    function scheduleEventStreamReconnect() {
+      if (eventStreamClosed || eventStreamReconnect) return;
+      var delay = eventStreamBackoff;
+      eventStreamBackoff = Math.min(eventStreamBackoff * 2, 15000);
+      eventStreamReconnect = setTimeout(function () {
+        eventStreamReconnect = null;
+        startEventStream();
+      }, delay);
+    }
+    function stopEventStream() {
+      eventStreamClosed = true;
+      if (eventStreamReconnect) { clearTimeout(eventStreamReconnect); eventStreamReconnect = null; }
+      if (eventStream) {
+        // Drop the onclose handler first so an intentional close doesn't trip the
+        // reconnect/disconnect path.
+        try { eventStream.onclose = null; eventStream.close(); } catch (_) { /* ignore */ }
+        eventStream = null;
+      }
+    }
+    function startEventStream() {
+      stopEventStream();
+      eventStreamClosed = false;
+      if (typeof WebSocket === 'undefined') return;
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var ws;
+      try { ws = new WebSocket(proto + '//' + location.host + '/api/stream'); }
+      catch (_) { scheduleEventStreamReconnect(); return; }
+      eventStream = ws;
+      ws.onopen = function () { eventStreamBackoff = 1000; };
+      ws.onmessage = function (ev) {
+        var msg = null;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
+        if (msg && msg.type) dispatchStreamMessage(msg.type, msg.data);
+      };
+      ws.onerror = function () { /* surfaced via onclose → reconnect */ };
+      ws.onclose = function () {
+        if (eventStream === ws) eventStream = null;
+        if (eventStreamClosed) return;
+        // Unexpected drop: show the disconnect on the pill and auto-reconnect with
+        // backoff (the server replays state + render snapshot on reconnect).
         setStatusPill('cloud', 'disconnected');
+        scheduleEventStreamReconnect();
       };
     }
 
     // ────────────────────────────────────────────────────────────
-    // Background-render progress — Server-Sent Events from
-    // /api/render/progress. A workspace opens/switches instantly and renders its
-    // context tree in the background; this paints a per-table % overlay on the
-    // dashboard cards (bottom-edge bar + ⟳ pill) and dims the row count until
-    // each table completes. Row COUNTS come only from /api/entities — the render
-    // stream drives only the transient overlay and one reconciling refetch on
-    // completion. Mirrors the realtime EventSource pattern above.
+    // Background-render progress — render events arrive over the multiplexed
+    // /api/stream WebSocket (render-snapshot + render-progress). A workspace
+    // opens/switches instantly and renders its context tree in the background;
+    // this paints a per-table % overlay on the dashboard cards (bottom-edge bar +
+    // ⟳ pill) and dims the row count until each table completes. Row COUNTS come
+    // only from /api/entities — the render events drive only the transient overlay
+    // and one reconciling refetch on completion.
     // ────────────────────────────────────────────────────────────
-    var renderSource = null;
     // { [table]: { pct, rendered, total, done, error } } — the live render state,
     // re-applied to cards after every dashboard rebuild (drawDashboard wipes the
     // DOM overlays but not this map).
@@ -913,37 +983,17 @@ export const appJs = `
         }
       }
     }
-    function startRenderProgress() {
-      if (renderSource) {
-        try { renderSource.close(); } catch (_) { /* ignore */ }
-        renderSource = null;
-      }
-      if (typeof EventSource === 'undefined') return;
-      // On (re)connect, fetch the single-shot snapshot so a tab that connects
-      // mid- or post-render paints correctly even before the next event. The SSE
-      // endpoint ALSO replays a 'snapshot' event on connect, so both paths agree.
-      fetchJson('/api/render/status').then(applyRenderSnapshot).catch(function () { /* ignore */ });
-      renderSource = new EventSource('/api/render/progress');
-      renderSource.addEventListener('snapshot', function (ev) {
-        var snap = null;
-        try { snap = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
-        if (snap) applyRenderSnapshot(snap);
-      });
-      renderSource.addEventListener('progress', function (ev) {
-        var e = null;
-        try { e = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
-        if (e) onRenderEvent(e);
-      });
-      // EventSource auto-reconnects on error; the status refetch on the next
-      // open repaints from the authoritative snapshot.
-    }
+    // Render snapshot + progress are applied from the multiplexed /api/stream
+    // WebSocket: the server replays a render-snapshot on connect (so a tab that
+    // connects mid- or post-render paints correctly) and streams render-progress
+    // events thereafter. See dispatchStreamMessage / startEventStream.
 
     // ────────────────────────────────────────────────────────────
     // Shared activity helpers — the operation-icon map and relative-time
     // formatter, used by Version History and the dashboard activity list. The
     // standalone Activity rail was removed in 1.16.1 (redundant with Version
-    // History); multiplayer realtime convergence runs on the separate realtime
-    // channel (startRealtime), not on this.
+    // History); multiplayer realtime convergence runs on the realtime-change
+    // messages of the multiplexed event stream (startEventStream), not on this.
     // ────────────────────────────────────────────────────────────
     var FEED_ICONS = {
       insert: '➕', update: '✏️', delete: '🗑',
@@ -1181,12 +1231,11 @@ export const appJs = `
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
         loadedTables = {};
-        startRealtime();
-        // A switch swaps the server-side render bus to the new workspace; drop the
-        // old workspace's overlay state and re-subscribe so the new render streams
-        // onto this workspace's cards.
+        // A switch swaps the server-side buses to the new workspace; drop the old
+        // workspace's render overlay state and reconnect the multiplexed event
+        // stream so realtime/feed/render all rebind to this workspace.
         renderProgress = {};
-        startRenderProgress();
+        startEventStream();
       });
     }
 
@@ -1353,7 +1402,6 @@ export const appJs = `
                 // to THIS workspace, and reload its thread list (+ latest convo).
                 newChat();
                 clearActivityFeed();
-                startFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
               }).catch(function (err) { menu.hidden = true; endWsSwitching(true); showToast('Switch failed: ' + err.message, {}); });
@@ -1814,7 +1862,7 @@ export const appJs = `
         function rowVisMarkup(tbl, r) {
           var a = r._access;
           if (!a) return '';
-          var vis = a.visibility;
+          var vis = effectiveVisibility(a);
           var glyph = vis === 'custom' ? '◎' : '◉';
           if (!a.ownedByMe) {
             var seen = vis === 'custom' ? 'Shared with you' : 'Visible to everyone';
@@ -2164,7 +2212,7 @@ export const appJs = `
     function detailVisLineEl(row) {
       var a = row._access;
       if (!a) return '';
-      var vis = a.visibility;
+      var vis = effectiveVisibility(a);
       var labelMap = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
       // Clear visual indicator: a lock when private, an eye when shared (everyone
       // or specific people), with a hover tooltip. The shared helper keeps the
@@ -2175,8 +2223,7 @@ export const appJs = `
         return '<div class="detail-vis muted" style="display:flex;align-items:center;gap:6px;margin:6px 0;font-size:13px">' +
           visIcon + '<span>' + escapeHtml(seen) + '</span></div>';
       }
-      var info = labelMap[vis] || '';
-      if (vis === 'custom' && a.grantees) info += ' (' + a.grantees.length + ')';
+      var info = visInfoLabel(a);
       var buttons;
       if (vis === 'custom') {
         // Leaving custom stops the grant list from applying — the toggle
@@ -2231,9 +2278,12 @@ export const appJs = `
         if (!panel) return;
         if (!panel.hidden) { panel.hidden = true; return; }
         var access = row._access || {};
-        var ensure = access.visibility === 'custom'
-          ? Promise.resolve()
-          : postVisibility('custom').then(function () { access.visibility = 'custom'; });
+        // Opening the panel must NOT pre-flip the row to 'custom' — that left a
+        // row the user never actually shared stuck at "custom (0)". The first
+        // grant flips it to custom server-side (lattice_grant_row); revoking the
+        // last leaves it custom-with-0-grantees, which now reads as private. So
+        // just load the member checklist.
+        var ensure = Promise.resolve();
         withBusy(detailVisManage, function () {
           return ensure.then(function () {
             return fetchJson('/api/cloud/members');
@@ -2267,8 +2317,13 @@ export const appJs = `
                   var at = list.indexOf(role);
                   if (cb.checked && at === -1) list.push(role);
                   if (!cb.checked && at !== -1) list.splice(at, 1);
+                  // The first grant flips the row to custom server-side; mirror
+                  // that locally so the indicator updates. Revoking the last leaves
+                  // visibility 'custom' but effectiveVisibility renders custom-0 as
+                  // private, so the label flips back to "Private to you".
+                  if (list.length > 0) access.visibility = 'custom';
                   var infoEl = content.querySelector('#detail-vis-info');
-                  if (infoEl) infoEl.textContent = 'Shared with specific people (' + list.length + ')';
+                  if (infoEl) infoEl.textContent = visInfoLabel(access);
                   invalidate(tableName);
                 }).catch(function (e) {
                   cb.checked = !cb.checked; // revert the failed change
@@ -2276,10 +2331,8 @@ export const appJs = `
                 }).then(function () { cb.disabled = false; });
               });
             });
-            if (access.visibility === 'custom') {
-              var infoEl = content.querySelector('#detail-vis-info');
-              if (infoEl) infoEl.textContent = 'Shared with specific people (' + (access.grantees || []).length + ')';
-            }
+            var infoEl = content.querySelector('#detail-vis-info');
+            if (infoEl) infoEl.textContent = visInfoLabel(access);
           }).catch(function (e) { showToast('Could not load members: ' + e.message, {}); });
         });
       });
@@ -4390,6 +4443,29 @@ export const appJs = `
     var EYE_SVG =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+    // A custom row with zero grantees is effectively PRIVATE (RLS shows it only to
+    // the owner), so it must read as private, not "Shared with specific people
+    // (0)". Only collapse for the OWNER's own view, where the grantees list is
+    // authoritative — a member viewing a row shared WITH them gets custom with no
+    // grantees list and must still read as "Shared with you".
+    function effectiveVisibility(access) {
+      if (!access || !access.visibility) return 'private';
+      if (access.visibility === 'custom' && access.ownedByMe &&
+        (!access.grantees || access.grantees.length === 0)) {
+        return 'private';
+      }
+      return access.visibility;
+    }
+    // Owner-facing status label for a row's sharing, honoring effectiveVisibility
+    // (so custom-0 reads as "Private to you") and appending the grantee count only
+    // for a genuine specific-people share.
+    function visInfoLabel(access) {
+      var v = effectiveVisibility(access);
+      var map = { everyone: 'Visible to everyone', private: 'Private to you', custom: 'Shared with specific people' };
+      var s = map[v] || '';
+      if (v === 'custom' && access && access.grantees) s += ' (' + access.grantees.length + ')';
+      return s;
+    }
     // Shared per-row lock/eye indicator, reused on the entity-detail header and the
     // fs card tiles so the meaning is consistent. The access arg is the server-
     // attached row._access (visibility + ownedByMe); returns empty when absent (a
@@ -4397,7 +4473,7 @@ export const appJs = `
     // A hover tooltip spells out what the lock/eye means (state + ownership aware).
     function visIndicator(access, extraClass) {
       if (!access || !access.visibility) return '';
-      var vis = access.visibility;
+      var vis = effectiveVisibility(access);
       var tip = vis === 'private'
         ? 'Private — only you can see this'
         : vis === 'custom'
@@ -6186,7 +6262,6 @@ export const appJs = `
 
 
     // ============ AI assistant rail (2.0) ============
-    var feedSource = null;
     var FEED_ICONS = {
       insert: '➕', update: '✏️', delete: '🗑',
       link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
@@ -6439,32 +6514,13 @@ export const appJs = `
         else { card.timeEl.textContent = formatElapsed(Math.max(0, evMs - startMs)); }
       }
     }
-    function startFeed() {
-      if (feedSource) {
-        try { feedSource.close(); } catch (_) { /* ignore */ }
-        feedSource = null;
-      }
-      if (typeof EventSource === 'undefined') return;
-      feedSource = new EventSource('/api/feed/stream');
-      feedSource.addEventListener('feed', function (ev) {
-        var data;
-        try { data = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
-        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
-        // Refresh on ANY data mutation, not just schema/new-table events. The
-        // local feed bus delivers every insert/update/delete/link even when
-        // there's no realtime broker (SQLite/local), so this is what makes the
-        // home dashboard counts AND the open entity view live-update without a
-        // manual reload (previously only schema ops or brand-new tables did).
-        // scheduleRealtimeRefresh is debounced (200ms) so a burst from one
-        // ingest still coalesces into a single refetch — and on Postgres/cloud
-        // it shares that debounce with the realtime 'change' handler (no double
-        // fetch). /api/entities batches its row counts into one query, not N.
-        if (data && (data.table || data.op === 'schema')) {
-          scheduleRealtimeRefresh();
-        }
-      });
-      // EventSource auto-reconnects on error; no extra handling needed.
-    }
+    // Feed events arrive over the multiplexed /api/stream WebSocket and are
+    // handled in dispatchStreamMessage('feed', …): renderFeedItem() paints the
+    // card, then scheduleRealtimeRefresh() refetches on ANY data mutation (the
+    // local feed bus delivers every insert/update/delete/link even with no
+    // realtime broker, so this is what live-updates the dashboard counts and the
+    // open entity view without a manual reload). The 200ms debounce coalesces a
+    // burst into a single refetch and is shared with the realtime 'change' path.
 
     // ────────────────────────────────────────────────────────────
     // Assistant rail resize — drag the left edge, clamp, persist.

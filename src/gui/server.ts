@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
+import { WebSocketServer, WebSocket } from 'ws';
 import {
   existsSync,
   mkdirSync,
@@ -29,6 +30,7 @@ import type { EntityContextDefinition } from '../schema/entity-context.js';
 import {
   buildGuiGraph,
   getGuiEntities,
+  isJunctionByColumns,
   getGuiProject,
   isJunctionTable,
   fileJunctions,
@@ -649,9 +651,10 @@ function readRowContext(
 /**
  * Live snapshot of the background render's progress for the active workspace.
  * Folded from the engine's {@link RenderProgress} events by
- * {@link startBackgroundRender} and served to the GUI over
- * `/api/render/status` (single-shot) + `/api/render/progress` (SSE). A fresh
- * one is constructed per {@link openConfig}, so a workspace switch starts clean.
+ * {@link startBackgroundRender} and served to the GUI over `/api/render/status`
+ * (single-shot) + `render-progress` messages on the multiplexed `/api/stream`
+ * WebSocket. A fresh one is constructed per {@link openConfig}, so a workspace
+ * switch starts clean.
  */
 export interface RenderStatusSnapshot {
   /** Coarse lifecycle: idle (never started) → running → done | error. */
@@ -704,8 +707,9 @@ export interface ActiveDb {
   /**
    * In-process activity feed for the sidebar. Unlike {@link ActiveDb.realtime}
    * (Postgres-only), this works for every dialect — every audited mutation is
-   * published here and streamed to the sidebar over /api/feed/stream. Owned by
-   * the active DB; replaced wholesale on switch (clients reconnect).
+   * published here and streamed to the sidebar as `feed` messages on the
+   * multiplexed `/api/stream` WebSocket. Owned by the active DB; replaced
+   * wholesale on switch (clients reconnect).
    */
   feed: FeedBus;
   /** Original db: connection string from the YAML, used to spin up the broker. */
@@ -719,9 +723,10 @@ export interface ActiveDb {
   autoRender: boolean;
   /**
    * Per-table render progress bus for this workspace. The background render
-   * publishes {@link RenderProgress} events here; the GUI subscribes over
-   * `/api/render/progress`. Always constructed (even for SQLite / non-autoRender)
-   * so the endpoints have a live target; replaced wholesale on switch.
+   * publishes {@link RenderProgress} events here; the GUI subscribes via the
+   * `render-progress` messages on the multiplexed `/api/stream` WebSocket. Always
+   * constructed (even for SQLite / non-autoRender) so the stream has a live
+   * target; replaced wholesale on switch.
    */
   renderProgress: RenderProgressBus;
   /**
@@ -904,15 +909,39 @@ export async function openConfig(
   // #2.1 — base table → masking view (`<table>_v`) for member reads. Populated on a
   // cloud member open for tables whose base SELECT was revoked in favor of the view.
   const maskedReadViews = new Map<string, string>();
+  // Junction tables a MEMBER discovered from the catalog. A junction is not an
+  // object, but a member has no relation config to classify it (relations live
+  // only in the owner's config, never in the DB), so it is classified from its
+  // physical column shape and kept out of the member's table set.
+  const discoveredJunctions = new Set<string>();
   if (db.getDialect() === 'postgres') {
     const peek = new Lattice({ config: configPath }, { encryptionKey });
     try {
       await peek.init({ introspectOnly: true });
-      if (await cloudRlsInstalled(peek)) {
-        memberOpen = !(await canManageRoles(peek));
+      // Probe RLS-installed + role privilege CONCURRENTLY — two independent
+      // read-only queries, previously serial. The gate below is identical: a
+      // member open requires RLS installed AND no role-management privilege.
+      // (canManageRoles runs unconditionally now; on a non-cloud Postgres it is a
+      // harmless extra read whose result is simply unused.)
+      const [rlsInstalled, canManage] = await Promise.all([
+        cloudRlsInstalled(peek),
+        canManageRoles(peek),
+      ]);
+      if (rlsInstalled) {
+        memberOpen = !canManage;
         if (memberOpen) {
           const declared = new Set(db.getRegisteredTableNames());
-          const discovered = await discoverCloudTables(peek);
+          // Discover member-visible tables and the masking views CONCURRENTLY —
+          // both are privilege-filtered, read-only introspection and independent.
+          const [discovered, viewsRaw] = await Promise.all([
+            discoverCloudTables(peek),
+            allAsyncOrSync(
+              peek.adapter,
+              `SELECT table_name AS name FROM information_schema.views
+                 WHERE table_schema = current_schema() AND table_name LIKE '%\\_v' ESCAPE '\\'`,
+            ),
+          ]);
+          const views = viewsRaw as { name: string }[];
           const knownTables = new Set<string>([...declared, ...discovered.map((t) => t.name)]);
           for (const t of discovered) {
             if (declared.has(t.name)) continue;
@@ -922,6 +951,16 @@ export async function openConfig(
             // `unknown column "deleted_at"`; skip it so the member only sees
             // tables they can actually read.
             if (t.columns.length === 0) continue;
+            // A junction table is not an object. The owner hides it via its
+            // relation config, but a member has no config — so detect it from the
+            // physical column shape (id + exactly two `*_id` columns, no payload)
+            // and keep it out of the member's table set entirely. Without this the
+            // member's sidebar lists every link table as a fake object, while the
+            // owner's (config-driven) sidebar correctly omits them.
+            if (isJunctionByColumns(t.columns)) {
+              discoveredJunctions.add(t.name);
+              continue;
+            }
             db.define(t.name, {
               columns: Object.fromEntries(t.columns.map((c) => [c, 'TEXT'])),
               ...(t.pk.length > 0 ? { primaryKey: t.pk.length === 1 ? t.pk[0] : t.pk } : {}),
@@ -931,13 +970,6 @@ export async function openConfig(
           }
           // A member only SEES `<base>_v` views it was granted SELECT on (the
           // audience-masking view for a table whose base SELECT was revoked).
-          // `information_schema.views` is privilege-filtered, so this is exactly
-          // the set of base tables whose reads must route to the view.
-          const views = (await allAsyncOrSync(
-            peek.adapter,
-            `SELECT table_name AS name FROM information_schema.views
-               WHERE table_schema = current_schema() AND table_name LIKE '%\\_v' ESCAPE '\\'`,
-          )) as { name: string }[];
           for (const { name } of views) {
             const base = name.slice(0, -2); // strip the "_v" suffix
             if (knownTables.has(base)) maskedReadViews.set(base, name);
@@ -1016,11 +1048,14 @@ export async function openConfig(
     if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
     validTables.add(name);
   }
-  const junctionTables = new Set(
-    getGuiEntities(configPath, outputDir)
+  const junctionTables = new Set([
+    ...getGuiEntities(configPath, outputDir)
       .tables.filter(isJunctionTable)
       .map((t) => t.name),
-  );
+    // Member-discovered junctions (classified from the physical shape above);
+    // empty for an owner/local open.
+    ...discoveredJunctions,
+  ]);
   // Pull entity contexts from the live Lattice — covers both YAML-declared
   // contexts (already loaded in the constructor from `parsed.entityContexts`)
   // and anything a caller registered via `db.defineEntityContext()` against
@@ -1254,7 +1289,7 @@ export function deleteDatabaseFiles(targetConfigPath: string): {
  * Kick off the background render for `active` — fire-and-forget. Returns
  * immediately; the render churns on its own and folds progress into
  * `active.renderState` while publishing each event to `active.renderProgress`
- * for the GUI's `/api/render/progress` SSE stream.
+ * for the GUI's `render-progress` messages on the multiplexed `/api/stream`.
  *
  * Called once the server is already serving and after every `active =`
  * (re)assignment, so opening/switching a workspace answers `/` and
@@ -1373,6 +1408,16 @@ export async function changeVisibleToActiveRole(
 /** True for a delete op (which can't be visibility-probed post-hoc). */
 function isDeleteOp(op: string): boolean {
   return op === 'delete' || op === 'DELETE';
+}
+
+/**
+ * Internal plumbing tables (the assistant's own chat storage + every `_lattice*`
+ * bookkeeping table) are NOT user activity — they must never surface as feed
+ * pills. files/secrets/notes etc. stay visible. Shared by the multiplexed event
+ * stream's two feed sources (the local feed bus + the cloud broker merge).
+ */
+function isFeedHiddenTable(t: string): boolean {
+  return t.startsWith('_lattice') || t.startsWith('__lattice') || isInternalNativeEntity(t);
 }
 
 /**
@@ -1526,7 +1571,7 @@ export async function openWithinTimeout(
  * rename, share…) so the new table definitions take effect — while preserving
  * the in-process {@link FeedBus}.
  *
- * `/api/feed/stream` clients subscribe to `active.feed` at connect time. A
+ * The `/api/stream` WebSocket subscribes to `active.feed` at connect time. A
  * brand-new bus from {@link openConfig} would orphan those subscriptions,
  * silently killing the activity feed AND the live sidebar refresh after the
  * first data-model edit of a session (the Context Constructor's no-reopen
@@ -1967,199 +2012,31 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Realtime: connection status + LISTEN/NOTIFY SSE stream ──────────
-        // /api/realtime/status — single-shot JSON snapshot of mode + state.
-        // /api/realtime/stream — Server-Sent Events; one event per NOTIFY
-        // payload plus 'state' events on connection transitions.
+        // ── Realtime: connection status (single-shot JSON) ─────────────────
+        // Live realtime change/state events flow over the multiplexed
+        // `/api/stream` WebSocket; this endpoint is just the snapshot probe.
         if (method === 'GET' && pathname === '/api/realtime/status') {
           const mode: 'local' | 'cloud' = active.realtime ? 'cloud' : 'local';
           const connected = active.realtime?.state() === 'connected';
           sendJson(res, { mode, state: active.realtime?.state() ?? 'local', connected });
           return;
         }
-        if (method === 'GET' && pathname === '/api/realtime/stream') {
-          res.writeHead(200, {
-            'content-type': 'text/event-stream; charset=utf-8',
-            'cache-control': 'no-store, no-transform',
-            connection: 'keep-alive',
-            'x-accel-buffering': 'no',
-          });
-          const broker = active.realtime;
-          const initialMode: 'local' | 'cloud' = broker ? 'cloud' : 'local';
-          const writeEvent = (event: string, data: unknown): void => {
-            try {
-              res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-            } catch {
-              // socket closed — handled by 'close' below
-            }
-          };
-          writeEvent('state', {
-            mode: initialMode,
-            state: broker?.state() ?? 'local',
-          });
-          const keepalive = setInterval(() => {
-            try {
-              res.write(`: keepalive\n\n`);
-            } catch {
-              // socket closed
-            }
-          }, 25_000);
-          const offState = broker?.subscribeState((state) => {
-            writeEvent('state', { mode: 'cloud', state });
-          });
-          const offPayload = broker?.subscribePayload((payload) => {
-            // This SSE stream is bound to the workspace open at connect time
-            // (`active`). If the server has since switched workspaces or dropped to
-            // the virgin state, `activeRef` no longer points at it — drop the event
-            // rather than probe a disposed/closed DB (the client reconnects on
-            // switch). Guards the stale-closure race after a workspace swap.
-            if (activeRef !== active) return;
-            // #4.3 — only forward a change the connected role may actually read;
-            // strip the editor (owner_role) from deletes (unprobeable post-hoc).
-            void changeVisibleToActiveRole(active.db, payload).then((visible) => {
-              if (!visible) return;
-              const out = isDeleteOp(payload.op) ? { ...payload, owner_role: null } : payload;
-              writeEvent('change', out);
-            });
-          });
-          const cleanup = (): void => {
-            clearInterval(keepalive);
-            if (offState) offState();
-            if (offPayload) offPayload();
-          };
-          req.on('close', cleanup);
-          req.on('error', cleanup);
-          return;
-        }
+        // Realtime change events, the activity feed, and background-render
+        // progress are no longer three separate Server-Sent-Event streams. They
+        // are multiplexed onto ONE WebSocket (`/api/stream`, handled via the HTTP
+        // `upgrade` path below) so a browser tab holds a single persistent
+        // connection instead of three. Three SSE streams per tab consumed the
+        // whole HTTP/1.1 6-connections-per-host budget after just two tabs, which
+        // starved every data request (entities/rows/switch) and froze the UI; a
+        // WebSocket lives in a separate, far larger connection pool, so data
+        // requests always keep the full HTTP budget free. See `handleEventStream`.
 
-        // ── Activity feed SSE: every audited mutation, for the sidebar ──────
-        // Works for every dialect (SQLite included), unlike /api/realtime/*
-        // which depends on Postgres LISTEN/NOTIFY. The stream carries NEW events
-        // only — historical activity is replayed per-conversation by the chat rail
-        // (each assistant turn persists the data-change events it produced), so the
-        // rail is scoped to the open conversation, not a global workspace backfill.
-        if (method === 'GET' && pathname === '/api/feed/stream') {
-          res.writeHead(200, {
-            'content-type': 'text/event-stream; charset=utf-8',
-            'cache-control': 'no-store, no-transform',
-            connection: 'keep-alive',
-            'x-accel-buffering': 'no',
-          });
-          const writeFeed = (data: unknown): void => {
-            try {
-              res.write(`event: feed\ndata: ${JSON.stringify(data)}\n\n`);
-            } catch {
-              // socket closed — handled by 'close' below
-            }
-          };
-          const keepalive = setInterval(() => {
-            try {
-              res.write(`: keepalive\n\n`);
-            } catch {
-              // socket closed
-            }
-          }, 25_000);
-          // Track keys of this server's own mutations so we can suppress the
-          // Postgres NOTIFY echo of them below (avoids double feed entries on
-          // cloud DBs); genuine other-client changes still come through.
-          const recentSelf = new Map<string, number>();
-          // Internal plumbing tables (the assistant's own chat_threads/chat_messages
-          // storage + every `_lattice*` bookkeeping table) are NOT user activity —
-          // never surface them as feed pills. files/secrets/notes etc. stay visible.
-          const isFeedHiddenTable = (t: string): boolean =>
-            t.startsWith('_lattice') || t.startsWith('__lattice') || isInternalNativeEntity(t);
-          const offFeed = active.feed.subscribe((e) => {
-            if (e.table && isFeedHiddenTable(e.table)) return;
-            recentSelf.set(`${e.table ?? ''}:${e.rowId ?? ''}:${e.op}`, Date.now());
-            writeFeed(e);
-          });
-          // Merge the Postgres realtime broker so changes made by OTHER clients
-          // on a shared cloud DB also appear in the feed (SQLite has no broker).
-          const offBroker = active.realtime?.subscribePayload((p) => {
-            // #4.1 — the change feed's op domain is `upsert` | `delete`, NOT
-            // INSERT/UPDATE/DELETE; matching the old uppercase forms dropped EVERY
-            // remote change, so another client's edits never reached the feed.
-            const op = feedOpForChange(p.op);
-            if (!op || !p.table_name || isFeedHiddenTable(p.table_name)) return;
-            const tableName = p.table_name; // non-null past the guard (kept across the async cb)
-            const key = `${tableName}:${p.pk ?? ''}:${op}`;
-            const seen = recentSelf.get(key);
-            if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
-            // Stale-stream guard (see /api/realtime/stream): if the server switched
-            // workspaces or went virgin since this stream connected, `activeRef` no
-            // longer matches the bound `active` — drop rather than probe a closed DB.
-            if (activeRef !== active) return;
-            // #4.3 — gate on the connected role's visibility (don't surface another
-            // member's unreadable rows in the feed); strip the editor on deletes.
-            void changeVisibleToActiveRole(active.db, p).then((visible) => {
-              if (!visible) return;
-              writeFeed({
-                seq: p.seq,
-                table: tableName,
-                op,
-                rowId: p.pk,
-                source: 'cli',
-                actor: isDeleteOp(p.op) ? undefined : (p.owner_role ?? undefined),
-                ts: p.created_at || new Date().toISOString(),
-                summary: `${op} on ${tableName} (another client)`,
-              });
-            });
-          });
-          const cleanup = (): void => {
-            clearInterval(keepalive);
-            offFeed();
-            if (offBroker) offBroker();
-          };
-          req.on('close', cleanup);
-          req.on('error', cleanup);
-          return;
-        }
-
-        // ── Background render: per-table progress (snapshot + SSE) ──────────
-        // /api/render/status — single-shot JSON snapshot of the live render
-        // state (phase + per-table %). /api/render/progress — Server-Sent
-        // Events; one event per RenderProgress emission, with an immediate
-        // `snapshot` replay on connect so a late (or post-completion) tab paints
-        // correctly. Both read `active` at request time so a reconnecting tab
-        // binds to the workspace in force after a switch.
+        // ── Background render: single-shot status snapshot ──────────────────
+        // `/api/render/status` returns the live render state (phase + per-table %)
+        // as plain JSON; the streaming per-table progress now flows over the
+        // multiplexed WebSocket. Reads `active` at request time.
         if (method === 'GET' && pathname === '/api/render/status') {
           sendJson(res, active.renderState);
-          return;
-        }
-        if (method === 'GET' && pathname === '/api/render/progress') {
-          res.writeHead(200, {
-            'content-type': 'text/event-stream; charset=utf-8',
-            'cache-control': 'no-store, no-transform',
-            connection: 'keep-alive',
-            'x-accel-buffering': 'no',
-          });
-          const writeEvent = (event: string, data: unknown): void => {
-            try {
-              res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-            } catch {
-              // socket closed — handled by 'close' below
-            }
-          };
-          // Replay the current folded state immediately so a tab that connects
-          // mid- or post-render renders the right card overlays without waiting
-          // for the next event.
-          writeEvent('snapshot', active.renderState);
-          const keepalive = setInterval(() => {
-            try {
-              res.write(`: keepalive\n\n`);
-            } catch {
-              // socket closed
-            }
-          }, 25_000);
-          const offProgress = active.renderProgress.subscribe((e) => {
-            writeEvent('progress', e);
-          });
-          const cleanup = (): void => {
-            clearInterval(keepalive);
-            offProgress();
-          };
-          req.on('close', cleanup);
-          req.on('error', cleanup);
           return;
         }
         if (method === 'GET' && pathname === '/api/project') {
@@ -4053,12 +3930,146 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     })();
   });
 
+  // ── Multiplexed event stream (one WebSocket, replaces three SSE streams) ──
+  // A browser tab opens a SINGLE WebSocket to `/api/stream` instead of three
+  // long-lived SSE GETs. Every server-pushed event — realtime state/change, the
+  // activity feed, and background-render progress — rides this one connection as
+  // a typed `{ type, data }` message. WebSocket connections live in a separate,
+  // far larger browser pool than HTTP/1.1 requests, so this keeps the entire
+  // 6-connections-per-host HTTP budget free for data requests no matter how many
+  // tabs are open (three SSE × two tabs used to exhaust it and freeze the GUI).
+  const wss = new WebSocketServer({ noServer: true });
+
+  // Wire one connection's subscriptions. Bound to the workspace open at connect
+  // time (`bound`); a workspace switch flips `activeRef`, after which this socket
+  // drops events (the client reconnects, rebinding to the new workspace). All the
+  // per-recipient visibility gating, internal-table filtering, and self-echo
+  // dedup that the old SSE endpoints did is preserved verbatim.
+  const handleEventStream = (ws: WebSocket): void => {
+    const bound = activeRef;
+    const send = (type: string, data: unknown): void => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({ type, data }));
+      } catch {
+        // socket closing — the 'close' handler tears the subscriptions down
+      }
+    };
+
+    const broker = bound?.realtime ?? null;
+    // Initial paint: connection state + the current render snapshot, mirroring
+    // what the old realtime/render SSE endpoints replayed on connect.
+    send('realtime-state', { mode: broker ? 'cloud' : 'local', state: broker?.state() ?? 'local' });
+    if (bound) send('render-snapshot', bound.renderState);
+
+    const offs: (() => void)[] = [];
+    if (bound) {
+      if (broker) {
+        offs.push(
+          broker.subscribeState((state) => {
+            send('realtime-state', { mode: 'cloud', state });
+          }),
+        );
+        // Realtime row changes — forward only what the connected role may read;
+        // strip the editor (owner_role) from deletes (unprobeable post-hoc).
+        offs.push(
+          broker.subscribePayload((payload) => {
+            if (activeRef !== bound) return; // stale after a workspace switch
+            void changeVisibleToActiveRole(bound.db, payload).then((visible) => {
+              if (!visible) return;
+              const out = isDeleteOp(payload.op) ? { ...payload, owner_role: null } : payload;
+              send('realtime-change', out);
+            });
+          }),
+        );
+      }
+      // Activity feed — local mutations from this server, merged with other
+      // clients' changes on a shared cloud DB (deduped within a 5s window).
+      const recentSelf = new Map<string, number>();
+      offs.push(
+        bound.feed.subscribe((e) => {
+          if (e.table && isFeedHiddenTable(e.table)) return;
+          recentSelf.set(`${e.table ?? ''}:${e.rowId ?? ''}:${e.op}`, Date.now());
+          send('feed', e);
+        }),
+      );
+      if (broker) {
+        offs.push(
+          broker.subscribePayload((p) => {
+            const op = feedOpForChange(p.op);
+            if (!op || !p.table_name || isFeedHiddenTable(p.table_name)) return;
+            const tableName = p.table_name;
+            const key = `${tableName}:${p.pk ?? ''}:${op}`;
+            const seen = recentSelf.get(key);
+            if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
+            if (activeRef !== bound) return; // stale after a workspace switch
+            void changeVisibleToActiveRole(bound.db, p).then((visible) => {
+              if (!visible) return;
+              send('feed', {
+                seq: p.seq,
+                table: tableName,
+                op,
+                rowId: p.pk,
+                source: 'cli',
+                actor: isDeleteOp(p.op) ? undefined : (p.owner_role ?? undefined),
+                ts: p.created_at || new Date().toISOString(),
+                summary: `${op} on ${tableName} (another client)`,
+              });
+            });
+          }),
+        );
+      }
+      // Background-render per-table progress.
+      offs.push(
+        bound.renderProgress.subscribe((e) => {
+          send('render-progress', e);
+        }),
+      );
+    }
+
+    // WebSocket has no SSE-style auto-reconnect, so a periodic ping keeps the
+    // connection alive through any idle-timeout in the path (the browser answers
+    // pongs automatically); the client reconnects with backoff if it ever drops.
+    const keepalive = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.ping();
+      } catch {
+        // socket closing
+      }
+    }, 25_000);
+
+    const cleanup = (): void => {
+      clearInterval(keepalive);
+      for (const off of offs) {
+        try {
+          off();
+        } catch {
+          // best-effort unsubscribe
+        }
+      }
+    };
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
+  };
+
+  server.on('upgrade', (req, socket, head) => {
+    const { pathname } = new URL(req.url ?? '/', `http://${host}`);
+    if (pathname !== '/api/stream') {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      handleEventStream(ws);
+    });
+  });
+
   const port = await listenWithPortFallback(server, startPort, host);
   // Now that the server is accepting connections, render the initial workspace's
   // context tree in the background — `/` and `/api/entities` answer instantly
   // while it churns, and a render that finishes before any tab connects is
-  // covered by the snapshot replay on `/api/render/progress`. No-op when virgin
-  // (no workspace open yet — the welcome screen is showing).
+  // covered by the `render-snapshot` replay on the `/api/stream` WebSocket. No-op
+  // when virgin (no workspace open yet — the welcome screen is showing).
   if (activeRef) startBackgroundRender(activeRef);
   // For 0.0.0.0 bindings, advertise via 127.0.0.1 so the printed URL is
   // actually clickable; real external access uses the operator's known
@@ -4073,6 +4084,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     url,
     close: () =>
       new Promise<void>((resolveClose, reject) => {
+        // Terminate the multiplexed event-stream sockets first — an open
+        // WebSocket would otherwise keep `server.close()` from completing.
+        for (const client of wss.clients) {
+          try {
+            client.terminate();
+          } catch {
+            // best-effort
+          }
+        }
+        wss.close();
         server.close((err) => {
           if (err) {
             reject(err);
@@ -4082,9 +4103,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             resolveClose();
           });
         });
-        // Force-drop lingering keep-alive / SSE connections (the realtime
-        // `/api/realtime/stream` EventSource stays open indefinitely), so
-        // close() doesn't hang waiting for a browser tab to disconnect.
+        // Force-drop lingering keep-alive connections so close() doesn't hang
+        // waiting for a browser tab to disconnect.
         if (typeof server.closeAllConnections === 'function') {
           server.closeAllConnections();
         }
