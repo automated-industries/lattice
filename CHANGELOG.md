@@ -8,6 +8,56 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.4] - 2026-06-16
+
+### Fixed
+
+- **A cloud member's `lattice render` / library `init()` failed with "permission
+  denied for schema public."** `init()` ran `applySchema` (`CREATE TABLE IF NOT
+EXISTS` / `CREATE OR REPLACE VIEW` / `CREATE INDEX`) on every connect, and
+  Postgres checks the `CREATE`-on-schema privilege _before_ the `IF NOT EXISTS`
+  short-circuit — so a scoped member (no `CREATE`) was denied even though every
+  object already exists. `init()` now auto-detects a member on a provisioned
+  cloud (Postgres + `__lattice_owners` present + the role cannot create roles)
+  and skips schema DDL entirely (introspect-only), the same path the GUI already
+  used. Members no longer need — and should not be granted — `CREATE ON SCHEMA
+public`. Owner / SQLite / fresh-database behavior is unchanged.
+
+- **The member GUI's System sidebar errored ("permission denied for table
+  \_\_lattice_changes").** `GET /api/system-tables` counted every internal table
+  and threw on the first one a member can't read, 500-ing the whole endpoint.
+  It now tolerates a per-table count failure (permission-denied, or an
+  optimistically-listed native table that isn't present) by listing the table
+  with an unknown count instead of failing the sidebar; genuine faults still
+  surface.
+
+- **A cloud member rendered 0 context files.** A member joins with `entities: {}`
+  (the render layout lives only in the owner's config, which the cloud model
+  never ships), so the renderer had nothing to render. The member now synthesizes
+  a default per-row context tree from the tables it can introspect (the database
+  is the source of truth — the same `deriveCanonicalContexts` the owner uses on
+  its config), so render produces the full per-row tree instead of nothing. No
+  schema is shipped between owner and member; junction tables stay excluded.
+
+- **Noisy per-connect polyfill warnings on a cloud member.** The SQLite-compat
+  polyfills (`json_extract`, `strftime`) are owner-created and member-`EXECUTE`-
+  granted, but a member's adapter still attempted to (re)create them on connect
+  and logged three `permission denied for schema public` warnings each time. That
+  expected-and-recovered case is now a single debug line; a genuine
+  (non-permission) polyfill failure still warns.
+
+### Security
+
+- Member access to the internal substrate stays least-privilege: the owner-only
+  bookkeeping tables (`__lattice_owners`, `__lattice_row_grants`,
+  `__lattice_cell_grants`, `__lattice_member_roles`, `__lattice_cloud_settings`,
+  `__lattice_member_invites`, `__lattice_changes`, the table/column policies, the
+  native-entity + migration ledgers) are **not** granted to members — every
+  legitimate member read flows through a `SECURITY DEFINER` function keyed on
+  `session_user`, so a direct grant would leak another member's row existence,
+  ownership, sharing graph, or identity. Only `__lattice_changelog` (already
+  per-viewer-filtered by its RLS policy) is reconciled as a self-healing grant.
+
 ## [3.3.3] - 2026-06-16
 
 ### Fixed
