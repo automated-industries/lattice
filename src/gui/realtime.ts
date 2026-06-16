@@ -381,8 +381,9 @@ export class RealtimeBroker {
       if (timer) clearTimeout(timer);
       if (outcome === 'timeout') {
         try {
-          const stream = (client as unknown as { connection?: { stream?: { destroy?: () => void } } })
-            .connection?.stream;
+          const stream = (
+            client as unknown as { connection?: { stream?: { destroy?: () => void } } }
+          ).connection?.stream;
           stream?.destroy?.();
         } catch {
           // best-effort force-close — the socket is being abandoned regardless

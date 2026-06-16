@@ -41,7 +41,11 @@ describe('openWithinTimeout', () => {
 
   it('returns the db on a fast open', async () => {
     const db = fakeDb('ok');
-    const res = await openWithinTimeout(() => Promise.resolve(db), 1000, () => Promise.resolve());
+    const res = await openWithinTimeout(
+      () => Promise.resolve(db),
+      1000,
+      () => Promise.resolve(),
+    );
     expect(res).toEqual({ db });
   });
 

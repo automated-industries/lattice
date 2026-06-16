@@ -1448,11 +1448,30 @@ export const appJs = `
     // ────────────────────────────────────────────────────────────
     // Routing
     // ────────────────────────────────────────────────────────────
+    // Monotonic render generation. Bumped on every renderRoute() so a renderer's
+    // async data load that resolves AFTER a newer navigation refuses to commit
+    // (it would otherwise clobber the newer view). See setContent + the per-
+    // renderer myGen guards.
+    var renderGen = 0;
+    function routeLoadingHtml() {
+      return '<div class="route-loading" aria-busy="true"><span class="spinner" aria-hidden="true"></span></div>';
+    }
+    // Commit HTML only if this render is still the current one — drops a stale
+    // async result instead of clobbering a newer view.
+    function setContent(content, gen, html) {
+      if (content && gen === renderGen) content.innerHTML = html;
+    }
+
     function renderRoute() {
-      if (!state.entities) return;
-      highlightActive();
       var content = document.getElementById('content');
       var hash = location.hash || '#/';
+      // Paint a loading frame SYNCHRONOUSLY before any fetch so a click repaints
+      // instantly and a slow/large load never leaves the previous view frozen on
+      // screen. Bumping renderGen invalidates any in-flight (older) render.
+      renderGen++;
+      if (content) content.innerHTML = routeLoadingHtml();
+      if (!state.entities) return; // shell still booting — the loading frame stays
+      highlightActive();
       if (window.LatticeGA) window.LatticeGA.pageView(routeType(hash));
 
       if (hash === '#/' || hash === '') { renderDashboard(content); return; }
@@ -1563,9 +1582,12 @@ export const appJs = `
     function renderDashboard(content) {
       // Workspace overview: counts + freshness + recent activity from
       // /api/dashboard. Falls back to plain cards if the call fails.
+      var myGen = renderGen;
       fetchJson('/api/dashboard').then(function (d) {
+        if (myGen !== renderGen) return;
         drawDashboard(content, d);
       }).catch(function () {
+        if (myGen !== renderGen) return;
         drawDashboard(content, dashboardFallback());
       });
     }
@@ -1732,6 +1754,7 @@ export const appJs = `
     var tableViewMode = {};
 
     function renderTable(content, tableName) {
+      var myGen = renderGen;
       clearUnseen(tableName);
       var t = tableByName(tableName);
       if (!t) {
@@ -1761,6 +1784,7 @@ export const appJs = `
       });
 
       Promise.all(fetches).then(function (results) {
+        if (myGen !== renderGen) return; // superseded by a newer navigation
         var rows = results[0];
         var headers = intrinsic.map(function (c) {
           return '<th' + titleAttr(colDesc(tableName, c)) + '>' + escapeHtml(fieldLabel(c)) + '</th>';
@@ -2253,9 +2277,10 @@ export const appJs = `
       });
     }
     function renderDetail(content, tableName, id) {
+      var myGen = renderGen;
       var t = tableByName(tableName);
       if (!t) {
-        content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>';
+        setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>');
         return;
       }
       var d = displayFor(tableName);
@@ -2273,6 +2298,7 @@ export const appJs = `
       });
 
       Promise.all(fetches).then(function (results) {
+        if (myGen !== renderGen) return; // superseded by a newer navigation
         var row = results[0];
 
         function paint(editing) {
@@ -2671,6 +2697,7 @@ export const appJs = `
     // Collection view — a folder of tiles. Top-level (#/fs/<table>) shows every
     // row; a nested path (#/fs/<table>/<id>/<rel>) shows the related rows.
     function renderFsCollection(content, segs) {
+      var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
@@ -2679,7 +2706,7 @@ export const appJs = `
         if (topLevel) {
           table = segs[0];
           if (!tableByName(table)) {
-            content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>';
+            setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>');
             return;
           }
           rowsP = fetchRows(table, '');
@@ -2690,6 +2717,7 @@ export const appJs = `
           rowsP = fsRelatedRows(last.parentTable, last.parentRow, last.rel);
         }
         return rowsP.then(function (rows) {
+          if (myGen !== renderGen) return; // superseded by a newer navigation
           var d = displayFor(table);
           var base = fsHref(segs);
           // "New" tile (top-level collections only) — a folder box with a + that
@@ -2840,17 +2868,19 @@ export const appJs = `
 
     // Item view — one row as a document (click-to-edit) + its relationship folders.
     function renderFsItem(content, segs) {
+      var myGen = renderGen;
       fsWalk(segs).then(function (crumbs) {
         var leaf = crumbs[crumbs.length - 1];
         if (!leaf || leaf.type !== 'node') throw new Error('Bad item path');
         var table = leaf.table, id = leaf.id, row = leaf.row;
         var t = tableByName(table);
-        if (!t) { content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'; return; }
+        if (!t) { setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'); return; }
         var d = displayFor(table);
         var bt = belongsToColumns(t);
         var rels = fsRelations(table);
         // Preload belongsTo targets so parent links can show names.
         Promise.all(bt.map(function (b) { return loadAllRows(b.rel.table); })).then(function () {
+          if (myGen !== renderGen) return; // superseded by a newer navigation
           var fields = [];
           intrinsicColumns(t).forEach(function (c) { fields.push(fsFieldHtml(table, row, c)); });
           bt.forEach(function (b) {
