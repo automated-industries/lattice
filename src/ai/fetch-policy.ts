@@ -75,7 +75,9 @@ export function assertUrlPolicy(u: URL, cfg: UrlIngestConfig = urlIngestConfig()
     throw new Error(`Lattice: host "${host}" is on the URL block-list (LATTICE_URL_BLOCK_DOMAINS)`);
   }
   if (cfg.allowDomains.length > 0 && !cfg.allowDomains.some((d) => hostMatches(host, d))) {
-    throw new Error(`Lattice: host "${host}" is not on the URL allow-list (LATTICE_URL_ALLOW_DOMAINS)`);
+    throw new Error(
+      `Lattice: host "${host}" is not on the URL allow-list (LATTICE_URL_ALLOW_DOMAINS)`,
+    );
   }
 }
 
@@ -119,9 +121,7 @@ export class FetchBudget {
   constructor(private readonly max: number = urlIngestConfig().fetchBudget) {}
   take(): void {
     if (this.used >= this.max) {
-      throw new Error(
-        `Lattice: URL fetch budget exhausted (${String(this.max)} fetches per turn)`,
-      );
+      throw new Error(`Lattice: URL fetch budget exhausted (${String(this.max)} fetches per turn)`);
     }
     this.used += 1;
   }

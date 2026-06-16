@@ -289,7 +289,12 @@ export async function enrichWithLlm(
 
     // Last resort: nothing linked AND nothing created, at high aggressiveness —
     // capture the source as a native `notes` object so it isn't lost.
-    if (linkedCount === 0 && createdCount === 0 && aggressiveness >= 0.66 && text.trim().length > 0) {
+    if (
+      linkedCount === 0 &&
+      createdCount === 0 &&
+      aggressiveness >= 0.66 &&
+      text.trim().length > 0
+    ) {
       try {
         const title = name.replace(/\.[^./\\]+$/, '').trim() || 'Note';
         const body = description.length > 0 ? description : text.slice(0, 2000);

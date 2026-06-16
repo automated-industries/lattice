@@ -138,8 +138,8 @@ describe('ingest_url tool + untrusted-content framing', () => {
     });
     const res = await executeFunction(ctx, 'list_rows', { table: 'files' });
     const rows = res.result as { extracted_text?: unknown }[];
-    expect(rows.some((r) => String(r.extracted_text).includes('<UNTRUSTED_EXTERNAL_CONTENT>'))).toBe(
-      true,
-    );
+    expect(
+      rows.some((r) => String(r.extracted_text).includes('<UNTRUSTED_EXTERNAL_CONTENT>')),
+    ).toBe(true);
   });
 });

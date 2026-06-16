@@ -161,7 +161,14 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
 
   if (title.length === 0) title = titleFromUrl(finalUrl);
 
-  return { url: finalUrl, title, text, excerpt, mime: mime || 'text/html', byteLength: body.length };
+  return {
+    url: finalUrl,
+    title,
+    text,
+    excerpt,
+    mime: mime || 'text/html',
+    byteLength: body.length,
+  };
 }
 
 /**
