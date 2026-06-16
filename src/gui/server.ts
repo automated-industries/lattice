@@ -1400,7 +1400,50 @@ async function attachRowAccess(db: Lattice, table: string, rows: Row[]): Promise
   }
 }
 
-async function disposeActive(active: ActiveDb): Promise<void> {
+/**
+ * Resolve when `p` settles or after `ms`, whichever comes first — never rejects.
+ * A timeout resolves to the `'timeout'` sentinel so the caller can proceed rather
+ * than block. The timer is unref'd so it never keeps the process alive.
+ */
+function settleWithin<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([
+    p.finally(() => {
+      clearTimeout(timer);
+    }),
+    timeout,
+  ]);
+}
+
+/**
+ * How long {@link disposeActive} waits for a previous workspace's realtime broker
+ * to stop before abandoning it. The broker is a Postgres LISTEN/NOTIFY client; on
+ * a degraded connection its `stop()` can hang, and a workspace switch must never
+ * block on tearing down the workspace it is leaving.
+ */
+const DISPOSE_TEARDOWN_TIMEOUT_MS = 3000;
+
+/**
+ * Tear down an ActiveDb: abort its in-flight render, stop its realtime broker,
+ * then close the DB. Called before reopening or swapping configs so listeners +
+ * pg clients don't leak.
+ *
+ * The realtime-broker stop is **time-bounded** ({@link DISPOSE_TEARDOWN_TIMEOUT_MS}):
+ * a wedged LISTEN/NOTIFY client (e.g. a stalled cloud connection) must not be able
+ * to freeze a workspace switch, which `await`s this before responding. On timeout
+ * the broker is abandoned best-effort (the process owns the socket) and teardown
+ * continues so the switch completes. `teardownTimeoutMs` is injectable for tests.
+ */
+export async function disposeActive(
+  active: ActiveDb,
+  teardownTimeoutMs: number = DISPOSE_TEARDOWN_TIMEOUT_MS,
+): Promise<void> {
   // Abort the in-flight background render FIRST — before closing the DB — so the
   // render loop bails before its next query hits a closing adapter.
   try {
@@ -1409,10 +1452,16 @@ async function disposeActive(active: ActiveDb): Promise<void> {
     // best-effort
   }
   if (active.realtime) {
-    try {
-      await active.realtime.stop();
-    } catch {
-      // best-effort
+    // Bound the stop: a slow/stuck broker must not wedge a workspace switch.
+    const stopped = Promise.resolve()
+      .then(() => active.realtime?.stop())
+      .catch(() => undefined); // swallow stop() errors — teardown is best-effort
+    const outcome = await settleWithin(stopped, teardownTimeoutMs);
+    if (outcome === 'timeout') {
+      console.warn(
+        `[gui] realtime broker stop() exceeded ${String(teardownTimeoutMs)}ms during teardown; ` +
+          'abandoning it so the workspace switch stays responsive.',
+      );
     }
   }
   try {
@@ -1420,6 +1469,56 @@ async function disposeActive(active: ActiveDb): Promise<void> {
   } catch {
     // best-effort
   }
+}
+
+/**
+ * Cap on opening a workspace during a switch before the GUI gives up and keeps
+ * the current one. Generous enough for a legitimately slow cloud (Postgres) open
+ * — peek connection + init + owner bootstrap converge + LISTEN broker — yet short
+ * enough that a stalled connection can't freeze the switcher indefinitely.
+ */
+const SWITCH_OPEN_TIMEOUT_MS = 20_000;
+
+/**
+ * Open a workspace, but never block longer than `timeoutMs`. Returns the opened
+ * {@link ActiveDb} on success, or `{ timedOut: true }` so the caller keeps the
+ * current workspace and surfaces an error instead of hanging the GUI on a slow or
+ * stalled (e.g. cloud) open. A slow open that resolves AFTER the timeout is
+ * disposed in the background so it can't leak a DB handle / pg connection. A
+ * genuine open error is re-thrown (distinct from a timeout).
+ */
+export async function openWithinTimeout(
+  open: () => Promise<ActiveDb>,
+  timeoutMs: number = SWITCH_OPEN_TIMEOUT_MS,
+  dispose: (db: ActiveDb) => Promise<void> = disposeActive,
+): Promise<{ db: ActiveDb } | { timedOut: true }> {
+  const opening = open();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  const outcome = await Promise.race([
+    opening.then(
+      (db) => ({ db }) as const,
+      (err: unknown) => ({ err }) as const,
+    ),
+    timedOut,
+  ]);
+  if (timer) clearTimeout(timer);
+  if (outcome === 'timeout') {
+    // Abandon the switch but never leak the half-open workspace: dispose it
+    // whenever the slow open eventually settles.
+    void opening.then(
+      (db) => dispose(db).catch(() => undefined),
+      () => undefined,
+    );
+    return { timedOut: true };
+  }
+  if ('err' in outcome) throw outcome.err;
+  return { db: outcome.db };
 }
 
 /**
@@ -3224,9 +3323,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const paths = resolveWorkspacePaths(latticeRoot, ws);
-          let next: ActiveDb;
+          let opened: { db: ActiveDb } | { timedOut: true };
           try {
-            next = await openConfig(paths.configPath, paths.contextDir, autoRender);
+            opened = await openWithinTimeout(() =>
+              openConfig(paths.configPath, paths.contextDir, autoRender),
+            );
           } catch (e) {
             const err = e as Error;
             sendJson(
@@ -3236,6 +3337,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             );
             return;
           }
+          if ('timedOut' in opened) {
+            // The open never completed within the cap — keep the current workspace
+            // active (do NOT swap) and surface a clear error instead of hanging
+            // the switcher forever.
+            sendJson(
+              res,
+              {
+                error:
+                  `Opening "${ws.displayName}" timed out after ${String(SWITCH_OPEN_TIMEOUT_MS / 1000)}s — ` +
+                  'the database may be slow or unreachable. Staying on the current workspace.',
+              },
+              504,
+            );
+            return;
+          }
+          const next = opened.db;
           setActiveWorkspace(latticeRoot, ws.id);
           await disposeActive(active);
           active = activeRef = next;
