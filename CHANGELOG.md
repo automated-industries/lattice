@@ -12,6 +12,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **GUI froze ("Switching…" forever, clicks that never resolved) with more than
+  one tab open.** The GUI opened three long-lived Server-Sent-Event streams per
+  tab (realtime, activity feed, render progress). Browsers cap HTTP/1.1 at six
+  connections per host, so two open tabs consumed all six slots and every data
+  request — entities, rows, workspace switch — queued indefinitely with no
+  recovery. The three streams are now multiplexed onto **one WebSocket**
+  (`/api/stream`) carrying typed `{ type, data }` messages. WebSocket connections
+  live in a separate, far larger browser pool than HTTP/1.1 requests, so the
+  whole six-connection HTTP budget stays free for data requests no matter how
+  many tabs are open. The client reconnects with backoff if the socket drops
+  (WebSocket has no built-in auto-reconnect); per-recipient realtime visibility
+  filtering, internal-table feed filtering, and self-echo de-duplication are all
+  preserved. Adds a `ws` runtime dependency.
+
 - **Version showed as "unknown" in published builds.** `getVersion()` read
   `package.json` via `import.meta.url` at runtime, which fails once the code is
   bundled and installed under `node_modules` — so the CLI `--version` and the GUI

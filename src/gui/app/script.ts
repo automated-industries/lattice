@@ -423,15 +423,13 @@ export const appJs = `
         wireHistoryControls();
         refreshHistoryState();
         renderRoute();
-        startRealtime();
-        startRenderProgress();
+        startEventStream();
         initSearch();
         initLastEdited();
         initOffline();
         initRailResize();
         initRailDrawer();
         initRailDragDrop();
-        startFeed();
         renderComposer();
         initThreadControls();
         checkNativeSetup();
@@ -447,12 +445,14 @@ export const appJs = `
     }
 
     // ────────────────────────────────────────────────────────────
-    // Realtime — Server-Sent Events from /api/realtime/stream.
-    // One EventSource per session; on 'change' events we mark the
-    // current view dirty and refetch via afterMutation() (debounced
-    // to coalesce bursts). On 'state' events we drive the topbar pill.
+    // Realtime / feed / render-progress all arrive over ONE multiplexed
+    // WebSocket (/api/stream) — see startEventStream() below. A single
+    // connection per tab (instead of three SSE streams) keeps the browser's
+    // tiny per-host HTTP connection budget free for data requests, so clicking
+    // objects and switching workspaces stay responsive no matter how many tabs
+    // are open. 'change' events mark the current view dirty and refetch via
+    // afterMutation() (debounced); 'state' events drive the topbar pill.
     // ────────────────────────────────────────────────────────────
-    var realtimeSource = null;
     var realtimePending = null;
     // Team-cloud collaboration state. usersById resolves "last edited by"
     // names; lastEditedByPk maps "<table>|<pk>" → { userId, at } from realtime
@@ -790,42 +790,87 @@ export const appJs = `
         afterMutation().catch(function () { /* swallow */ });
       }, 200);
     }
-    function startRealtime() {
-      if (realtimeSource) {
-        try { realtimeSource.close(); } catch (_) { /* ignore */ }
-        realtimeSource = null;
-      }
-      if (typeof EventSource === 'undefined') return;
-      realtimeSource = new EventSource('/api/realtime/stream');
-      realtimeSource.addEventListener('state', function (ev) {
-        try {
-          var data = JSON.parse(ev.data);
-          setStatusPill(data.mode || 'local', data.state || 'local');
-        } catch (_) { /* ignore malformed */ }
-      });
-      realtimeSource.addEventListener('change', function (ev) {
-        var p = null;
-        try { p = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
-        if (p) onRealtimeChange(p);
+    // ────────────────────────────────────────────────────────────
+    // Multiplexed event stream — ONE WebSocket carries realtime state/change,
+    // the activity feed, and background-render progress (previously three
+    // separate SSE streams). Holding one connection per tab instead of three
+    // keeps the browser's per-host HTTP budget free for data requests, so the
+    // GUI never freezes when several tabs are open. Each server message is
+    // { type, data }; we demux to the same handlers the SSE listeners used.
+    // ────────────────────────────────────────────────────────────
+    var eventStream = null; // the active WebSocket (or null)
+    var eventStreamReconnect = null; // pending reconnect timer
+    var eventStreamBackoff = 1000; // reconnect delay, grows to a cap
+    var eventStreamClosed = false; // true ⇒ closed on purpose (switch/teardown), don't reconnect
+    function dispatchStreamMessage(type, data) {
+      if (type === 'realtime-state') {
+        setStatusPill((data && data.mode) || 'local', (data && data.state) || 'local');
+      } else if (type === 'realtime-change') {
+        if (data) onRealtimeChange(data);
         scheduleRealtimeRefresh();
-      });
-      realtimeSource.onerror = function () {
-        // EventSource auto-reconnects; surface the disconnect on the pill
-        // until the server's 'state' event reports recovery.
+      } else if (type === 'feed') {
+        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
+        if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
+      } else if (type === 'render-snapshot') {
+        if (data) applyRenderSnapshot(data);
+      } else if (type === 'render-progress') {
+        if (data) onRenderEvent(data);
+      }
+    }
+    function scheduleEventStreamReconnect() {
+      if (eventStreamClosed || eventStreamReconnect) return;
+      var delay = eventStreamBackoff;
+      eventStreamBackoff = Math.min(eventStreamBackoff * 2, 15000);
+      eventStreamReconnect = setTimeout(function () {
+        eventStreamReconnect = null;
+        startEventStream();
+      }, delay);
+    }
+    function stopEventStream() {
+      eventStreamClosed = true;
+      if (eventStreamReconnect) { clearTimeout(eventStreamReconnect); eventStreamReconnect = null; }
+      if (eventStream) {
+        // Drop the onclose handler first so an intentional close doesn't trip the
+        // reconnect/disconnect path.
+        try { eventStream.onclose = null; eventStream.close(); } catch (_) { /* ignore */ }
+        eventStream = null;
+      }
+    }
+    function startEventStream() {
+      stopEventStream();
+      eventStreamClosed = false;
+      if (typeof WebSocket === 'undefined') return;
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var ws;
+      try { ws = new WebSocket(proto + '//' + location.host + '/api/stream'); }
+      catch (_) { scheduleEventStreamReconnect(); return; }
+      eventStream = ws;
+      ws.onopen = function () { eventStreamBackoff = 1000; };
+      ws.onmessage = function (ev) {
+        var msg = null;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
+        if (msg && msg.type) dispatchStreamMessage(msg.type, msg.data);
+      };
+      ws.onerror = function () { /* surfaced via onclose → reconnect */ };
+      ws.onclose = function () {
+        if (eventStream === ws) eventStream = null;
+        if (eventStreamClosed) return;
+        // Unexpected drop: show the disconnect on the pill and auto-reconnect with
+        // backoff (the server replays state + render snapshot on reconnect).
         setStatusPill('cloud', 'disconnected');
+        scheduleEventStreamReconnect();
       };
     }
 
     // ────────────────────────────────────────────────────────────
-    // Background-render progress — Server-Sent Events from
-    // /api/render/progress. A workspace opens/switches instantly and renders its
-    // context tree in the background; this paints a per-table % overlay on the
-    // dashboard cards (bottom-edge bar + ⟳ pill) and dims the row count until
-    // each table completes. Row COUNTS come only from /api/entities — the render
-    // stream drives only the transient overlay and one reconciling refetch on
-    // completion. Mirrors the realtime EventSource pattern above.
+    // Background-render progress — render events arrive over the multiplexed
+    // /api/stream WebSocket (render-snapshot + render-progress). A workspace
+    // opens/switches instantly and renders its context tree in the background;
+    // this paints a per-table % overlay on the dashboard cards (bottom-edge bar +
+    // ⟳ pill) and dims the row count until each table completes. Row COUNTS come
+    // only from /api/entities — the render events drive only the transient overlay
+    // and one reconciling refetch on completion.
     // ────────────────────────────────────────────────────────────
-    var renderSource = null;
     // { [table]: { pct, rendered, total, done, error } } — the live render state,
     // re-applied to cards after every dashboard rebuild (drawDashboard wipes the
     // DOM overlays but not this map).
@@ -938,37 +983,17 @@ export const appJs = `
         }
       }
     }
-    function startRenderProgress() {
-      if (renderSource) {
-        try { renderSource.close(); } catch (_) { /* ignore */ }
-        renderSource = null;
-      }
-      if (typeof EventSource === 'undefined') return;
-      // On (re)connect, fetch the single-shot snapshot so a tab that connects
-      // mid- or post-render paints correctly even before the next event. The SSE
-      // endpoint ALSO replays a 'snapshot' event on connect, so both paths agree.
-      fetchJson('/api/render/status').then(applyRenderSnapshot).catch(function () { /* ignore */ });
-      renderSource = new EventSource('/api/render/progress');
-      renderSource.addEventListener('snapshot', function (ev) {
-        var snap = null;
-        try { snap = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
-        if (snap) applyRenderSnapshot(snap);
-      });
-      renderSource.addEventListener('progress', function (ev) {
-        var e = null;
-        try { e = JSON.parse(ev.data); } catch (_) { /* ignore malformed */ }
-        if (e) onRenderEvent(e);
-      });
-      // EventSource auto-reconnects on error; the status refetch on the next
-      // open repaints from the authoritative snapshot.
-    }
+    // Render snapshot + progress are applied from the multiplexed /api/stream
+    // WebSocket: the server replays a render-snapshot on connect (so a tab that
+    // connects mid- or post-render paints correctly) and streams render-progress
+    // events thereafter. See dispatchStreamMessage / startEventStream.
 
     // ────────────────────────────────────────────────────────────
     // Shared activity helpers — the operation-icon map and relative-time
     // formatter, used by Version History and the dashboard activity list. The
     // standalone Activity rail was removed in 1.16.1 (redundant with Version
-    // History); multiplayer realtime convergence runs on the separate realtime
-    // channel (startRealtime), not on this.
+    // History); multiplayer realtime convergence runs on the realtime-change
+    // messages of the multiplexed event stream (startEventStream), not on this.
     // ────────────────────────────────────────────────────────────
     var FEED_ICONS = {
       insert: '➕', update: '✏️', delete: '🗑',
@@ -1206,12 +1231,11 @@ export const appJs = `
         if (location.hash !== '#/') location.hash = '#/';
         else renderRoute();
         loadedTables = {};
-        startRealtime();
-        // A switch swaps the server-side render bus to the new workspace; drop the
-        // old workspace's overlay state and re-subscribe so the new render streams
-        // onto this workspace's cards.
+        // A switch swaps the server-side buses to the new workspace; drop the old
+        // workspace's render overlay state and reconnect the multiplexed event
+        // stream so realtime/feed/render all rebind to this workspace.
         renderProgress = {};
-        startRenderProgress();
+        startEventStream();
       });
     }
 
@@ -1378,7 +1402,6 @@ export const appJs = `
                 // to THIS workspace, and reload its thread list (+ latest convo).
                 newChat();
                 clearActivityFeed();
-                startFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
               }).catch(function (err) { menu.hidden = true; endWsSwitching(true); showToast('Switch failed: ' + err.message, {}); });
@@ -6211,7 +6234,6 @@ export const appJs = `
 
 
     // ============ AI assistant rail (2.0) ============
-    var feedSource = null;
     var FEED_ICONS = {
       insert: '➕', update: '✏️', delete: '🗑',
       link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
@@ -6464,32 +6486,13 @@ export const appJs = `
         else { card.timeEl.textContent = formatElapsed(Math.max(0, evMs - startMs)); }
       }
     }
-    function startFeed() {
-      if (feedSource) {
-        try { feedSource.close(); } catch (_) { /* ignore */ }
-        feedSource = null;
-      }
-      if (typeof EventSource === 'undefined') return;
-      feedSource = new EventSource('/api/feed/stream');
-      feedSource.addEventListener('feed', function (ev) {
-        var data;
-        try { data = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
-        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
-        // Refresh on ANY data mutation, not just schema/new-table events. The
-        // local feed bus delivers every insert/update/delete/link even when
-        // there's no realtime broker (SQLite/local), so this is what makes the
-        // home dashboard counts AND the open entity view live-update without a
-        // manual reload (previously only schema ops or brand-new tables did).
-        // scheduleRealtimeRefresh is debounced (200ms) so a burst from one
-        // ingest still coalesces into a single refetch — and on Postgres/cloud
-        // it shares that debounce with the realtime 'change' handler (no double
-        // fetch). /api/entities batches its row counts into one query, not N.
-        if (data && (data.table || data.op === 'schema')) {
-          scheduleRealtimeRefresh();
-        }
-      });
-      // EventSource auto-reconnects on error; no extra handling needed.
-    }
+    // Feed events arrive over the multiplexed /api/stream WebSocket and are
+    // handled in dispatchStreamMessage('feed', …): renderFeedItem() paints the
+    // card, then scheduleRealtimeRefresh() refetches on ANY data mutation (the
+    // local feed bus delivers every insert/update/delete/link even with no
+    // realtime broker, so this is what live-updates the dashboard counts and the
+    // open entity view without a manual reload). The 200ms debounce coalesces a
+    // burst into a single refetch and is shared with the realtime 'change' path.
 
     // ────────────────────────────────────────────────────────────
     // Assistant rail resize — drag the left edge, clamp, persist.

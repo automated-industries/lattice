@@ -42,6 +42,7 @@ export default defineConfig([
       'fflate',
       'word-extractor',
       'unpdf',
+      'ws',
     ],
   },
 
@@ -77,6 +78,7 @@ export default defineConfig([
       'fflate',
       'word-extractor',
       'unpdf',
+      'ws',
     ],
   },
 ]);
