@@ -54,6 +54,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The GUI no longer freezes while loading data (frame-first rendering).** Every
+  view rendered its content only AFTER its data fetch resolved, so a large table
+  or a slow cloud open left the _previous_ view frozen on screen with no feedback.
+  Navigation now paints a loading frame synchronously on every click and streams
+  the content in — guarded by a monotonic render generation so a stale/slow load
+  can't clobber a newer view. The workspace switcher does the same, so switching
+  shows the new workspace opening rather than freezing on the old one. The UI
+  stays interactive regardless of data size or connection latency, and it scales
+  to hundreds/thousands of rows.
+
 - **Workspace switch could hang the GUI indefinitely (both directions).** A switch
   `await`s opening the target workspace and tearing down the previous one; neither
   was time-bounded, so a slow or wedged Postgres (cloud) connection froze the GUI
