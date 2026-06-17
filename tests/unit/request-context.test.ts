@@ -91,6 +91,15 @@ describe('createGuiRequestContext', () => {
     expect(ctx.workspaceId()).toBe('ws-9');
   });
 
+  it('goVirgin() clears the active ref and the workspace id (inverse of swapActive)', () => {
+    const { bindings, calls } = makeBindings(fakeActive());
+    const ctx = createGuiRequestContext(bindings);
+    ctx.goVirgin();
+    expect(calls.setActiveRef).toEqual([null]);
+    expect(calls.setWorkspaceId).toEqual([null]);
+    expect(calls.startBackgroundRender).toEqual([]); // virgin = nothing to render
+  });
+
   it('buildMutationCtx(): canonical base, onColumnsAdded folded when present, no clientTs key', () => {
     const onCols = vi.fn();
     const { bindings } = makeBindings(fakeActive({ onColumnsAdded: onCols }));
