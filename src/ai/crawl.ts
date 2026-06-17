@@ -46,7 +46,10 @@ export interface CrawlOptions {
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_UA = 'LatticeSQL/2.0 (+https://latticesql.com)';
+// A current Chrome UA: bot-protected help centers (Zendesk/Cloudflare) reject a
+// non-browser User-Agent with 401/403, so present as a real browser.
+const DEFAULT_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise<CrawlResult> {
   const u = await assertSafeUrl(rawUrl, opts.allowPrivate ?? false);
@@ -81,11 +84,60 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
         signal: controller.signal,
         headers: {
           'user-agent': opts.userAgent ?? DEFAULT_UA,
-          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'accept-language': 'en-US,en;q=0.9',
+          'upgrade-insecure-requests': '1',
+          'sec-fetch-dest': 'document',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-site': 'none',
+          'sec-fetch-user': '?1',
         },
       },
     });
     if (!res.ok) {
+      // Bot-protected pages reject automated fetches with 401/403/429. Before
+      // giving up, try a real headless browser (it presents as a full browser and
+      // often gets through); if that still fails, surface a clear, actionable
+      // error instead of a cryptic HTTP code.
+      if (res.status === 401 || res.status === 403 || res.status === 429) {
+        if (!opts.noJs) {
+          const target = res.url || u.toString();
+          const rendered = await renderViaPlaywright(target, timeoutMs, true);
+          if (rendered) {
+            const rdom = new JSDOM(rendered, { url: target });
+            const rdoc = rdom.window.document as unknown as Document;
+            let rtitle = (rdoc.title || '').trim();
+            let rtext = '';
+            let rexcerpt = '';
+            try {
+              const a = new Readability(rdoc).parse();
+              if (a) {
+                rtext = a.textContent.trim();
+                if (a.title.trim().length > 0) rtitle = a.title.trim();
+                rexcerpt = a.excerpt.trim();
+              }
+            } catch {
+              // fall back to stripped text below
+            }
+            if (rtext.length === 0) rtext = strippedBodyText(rdom);
+            if (rtext.length > 0) {
+              return {
+                url: target,
+                title: rtitle.length > 0 ? rtitle : titleFromUrl(target),
+                text: rtext,
+                excerpt: rexcerpt,
+                mime: 'text/html',
+                byteLength: Buffer.byteLength(rendered),
+              };
+            }
+          }
+        }
+        throw new Error(
+          `Lattice: ${rawUrl} blocked automated access (HTTP ${String(res.status)}). ` +
+            `The site may require a real browser — open it and paste the text to ingest manually.`,
+        );
+      }
       throw new Error(`Lattice: crawl failed for ${rawUrl}: HTTP ${String(res.status)}`);
     }
     mime = (res.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';

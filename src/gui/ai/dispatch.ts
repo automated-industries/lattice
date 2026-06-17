@@ -4,6 +4,8 @@ import type { FeedBus } from '../feed.js';
 import { getFunction } from './registry.js';
 import { searchLatticeDocs } from './lattice-docs.js';
 import { fullTextSearch } from '../../search/fts.js';
+import { buildRowContextLocator, readRowContext } from '../row-context.js';
+import { readManifest } from '../../lifecycle/manifest.js';
 import type { DeleteResolution, DeleteEntityOutcome } from '../schema-ops.js';
 import {
   createRow,
@@ -76,16 +78,17 @@ export function visibilityDenialReason(
 
 /**
  * Registry function names the dispatcher can execute. This is the data-and-
- * history surface — reads, row writes, junction links, and undo/redo/revert.
- * Schema mutations (create_entity, add_column, …) and database lifecycle
- * (switch/create) are intentionally excluded: they reshape the workspace and
- * re-open the active database, which a mid-conversation tool call must not do.
- * Those stay UI-driven.
+ * history surface — reads, row writes, junction links, undo/redo/revert, and the
+ * NO-REOPEN schema mutations (create_entity, add_column, create_relationship,
+ * delete_entity) that register live via defineLate so the assistant can shape the
+ * workspace on request. Only database LIFECYCLE (switch/create a whole database),
+ * which re-opens the active connection, stays UI-driven and excluded.
  */
 export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_entities',
   'list_rows',
   'get_row',
+  'get_row_context',
   'search',
   'lattice_help',
   'get_history',
@@ -101,6 +104,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'link',
   'unlink',
   'create_entity',
+  'add_column',
   'create_relationship',
   'delete_entity',
   'undo',
@@ -268,6 +272,15 @@ export interface DispatchCtx {
    * created table name, or null when it can't be created.
    */
   createEntity?: (name: string, columns: string[]) => Promise<string | null>;
+  /**
+   * Add a column to an existing user table — audited + reversible, no reopen
+   * (defineLate). Absent → `add_column` reports it's unavailable. Returns the
+   * created column name on success, or an error string.
+   */
+  addColumn?: (
+    table: string,
+    column: string,
+  ) => Promise<{ ok: true; column: string } | { ok: false; error: string }>;
   /**
    * Create (or return) a many-to-many junction between two existing tables —
    * audited + reversible, no reopen. Absent → `create_relationship` reports it's
@@ -453,6 +466,34 @@ export async function executeFunction(
             redactRow(row, await secretColumnsFor(ctx.db, table)),
           ),
         };
+      }
+      case 'get_row_context': {
+        // Read the row's RENDERED context — the organized, pre-joined markdown
+        // Lattice already produced (frontmatter + related entities + combined
+        // CONTEXT.md) — instead of re-deriving it from many raw DB reads. Falls
+        // back to the row tools when a row has no rendered context yet. The
+        // rendered tree is the viewer's own scoped projection (it only contains
+        // what they can see), and secret columns are redacted by readRowContext.
+        const table = requireTable(args.table, ctx.validTables);
+        const id = requireString(args.id, 'id');
+        if (!ctx.outputDir) {
+          return { ok: false, error: 'This workspace has no rendered context directory.' };
+        }
+        const row = await ctx.db.get(table, id);
+        if (row === null) return { ok: false, error: 'Row not found' };
+        const def = ctx.db.entityContexts().get(table);
+        const locator = buildRowContextLocator(table, row, def, readManifest(ctx.outputDir));
+        if (!locator) {
+          return { ok: false, error: 'No rendered context for this row yet — use get_row.' };
+        }
+        const secretCols = await secretColumnsFor(ctx.db, table);
+        const files = readRowContext(ctx.outputDir, locator, secretCols).filter(
+          (f) => f.content.trim().length > 0,
+        );
+        if (files.length === 0) {
+          return { ok: false, error: 'No rendered context for this row yet — use get_row.' };
+        }
+        return { ok: true, result: { files } };
       }
       case 'lattice_help': {
         // Answer questions about Lattice ITSELF from the canonical bundled docs —
@@ -787,6 +828,16 @@ export async function executeFunction(
         // Make the new table usable by later tool calls in this same turn.
         ctx.validTables.add(created);
         return { ok: true, result: { entity: created } };
+      }
+      case 'add_column': {
+        if (!ctx.addColumn) {
+          return { ok: false, error: 'Adding columns is not available in this context' };
+        }
+        const table = requireTable(args.table, ctx.validTables);
+        const column = requireString(args.column, 'column');
+        const r = await ctx.addColumn(table, column);
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, result: { table, column: r.column } };
       }
       case 'create_relationship': {
         if (!ctx.createJunction) {

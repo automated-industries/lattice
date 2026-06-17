@@ -24,6 +24,8 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
 
+**New in 3.4:** the browser GUI now **updates itself** — launched from an npm install it silently installs the latest published version and keeps checking in the background, relaunching on the same port while the open tab auto-reloads onto the new build (a git checkout / `npx` copy is left untouched); **file loopback** — editing a rendered `.md` context file on disk flows back into the database through the normal write path (changelog/versioned/undoable, live in the GUI), with a public [`reverseSyncFromFiles()`](docs/api-reference.md) for embedders; on a cloud, a member's **rendered context is now scoped to their own visibility** (rendered through their RLS connection + masking view, so their assistant only ever reads rows they may see); the assistant gains a **`get_row_context`** tool (reads a record's pre-joined rendered context in one call) and **`add_column`** (add a field to an existing table on request); and the cloud gets resilience + search fixes — the open-time converge is **per-table fault-isolated** (one un-manageable table no longer breaks the whole workspace), `migrate-to-cloud` now builds the full-text index (with a public [`rebuildFtsIndexes()`](docs/api-reference.md)), and a plaintext `postgres://` URL in a config is healed into an encrypted credential reference on open. New `GET /api/version`, `GET /api/update/status`, and `POST /api/workspaces/reload` endpoints. See [docs/workspaces.md](docs/workspaces.md), [docs/cloud.md](docs/cloud.md), and [docs/assistant.md](docs/assistant.md).
+
 **New in 2.1:** the GUI search box now asks the **assistant** (it answers using a full-text `search` tool) instead of running a plain text match; the assistant gains a **guarded, reversible `delete_entity`** (empty tables go immediately, non-empty tables ask what to do with the data first); new chat threads are named from a short AI summary; ingest failures are surfaced loudly instead of swallowed; and the activity feed, voice-note composer, upload timer, and live counts get a round of fixes. See [docs/assistant.md](docs/assistant.md).
 
 **New in 1.16:** the `.lattice` workspace model + auto-render, full-text search, sources/references, a workspace dashboard, a **multiplayer cloud-editing** experience (live share/de-share, "last edited by", change-flash + counts, and an offline edit queue that replays on reconnect), and a much richer **Data Model editor** in the GUI — a force-directed schema graph, bidirectional many-to-many links, and a soft-delete model where every schema change (create/rename/delete a table, column, or link) is tracked in version history and **reversible** (deletes never destroy data; revert restores it), with session-scoped undo/redo. All with no AI dependency. See [docs/workspaces.md](docs/workspaces.md) and [docs/collaboration.md](docs/collaboration.md). The AI assistant, chat, and ingest summarization are exclusive to the 2.0 line (2.0 = the 1.16 feature set plus that AI layer).
@@ -1259,6 +1261,29 @@ interface ReconcileResult {
   } | null;
 }
 ```
+
+---
+
+#### `reverseSyncFromFiles()` (v3.4+)
+
+```typescript
+await db.reverseSyncFromFiles(outputDir: string, opts?: ReverseSyncProcessOptions): Promise<ReverseSyncResult>
+```
+
+Changelog-aware reverse-sync of on-disk rendered-file edits back into the database — the entry point the GUI file-loopback uses. Unlike `reconcile()` (raw SQL pre-render step), pass `apply` to route each update through a versioned write so a file edit is recorded exactly like a GUI edit, and `useDefault` to round-trip frontmatter + body `key: value` fields for files without a hand-written `reverseSync`. File hashes are compared against the current manifest, so a render-written file is recognized as an echo and skipped; an unparseable (free-form/custom) file is reported via `onSkip` rather than guessed at. See [docs/api-reference.md](docs/api-reference.md) and [docs/workspaces.md](docs/workspaces.md#file-loopback-34).
+
+```typescript
+const result = await db.reverseSyncFromFiles('./context', { useDefault: true });
+console.log(result.filesChanged, result.updatesApplied);
+```
+
+#### `rebuildFtsIndexes()` (v3.4+)
+
+```typescript
+await db.rebuildFtsIndexes(): Promise<void>
+```
+
+(Re)build the full-text search indexes for all `fts`-configured tables, backfilling existing rows. Called automatically by `migrate-to-cloud` so search works on a migrated cloud; use it manually to recover search if an index was omitted. Idempotent.
 
 ---
 

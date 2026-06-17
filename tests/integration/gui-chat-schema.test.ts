@@ -202,6 +202,52 @@ describe('assistant schema creation via POST /api/chat', () => {
     ).toBe(true);
   });
 
+  it('adds a column to an existing table on request, then stores a value in it', async () => {
+    const server = await boot();
+    await fetch(`${server.url}/api/tables/tickets/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'tk1', key: 'AIR-1', summary: 'first' }),
+    });
+
+    turnState.turns = [
+      {
+        text: 'Adding a priority field and setting it.',
+        toolUses: [
+          { id: 'u1', name: 'add_column', input: { table: 'tickets', column: 'priority' } },
+          {
+            id: 'u2',
+            name: 'update_row',
+            input: { table: 'tickets', id: 'tk1', values: { priority: 'high' } },
+          },
+        ],
+      },
+      { text: 'Done — added the priority field and set it to high.' },
+    ];
+
+    const res = await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'add a priority field to tickets and set tk1 to high' }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    // The column was added live (no reopen) and the value persisted to it.
+    const rows = (await fetch(`${server.url}/api/tables/tickets/rows`).then((r) => r.json())) as {
+      rows: Record<string, unknown>[];
+    };
+    expect(rows.rows[0]).toMatchObject({ id: 'tk1', priority: 'high' });
+
+    // The schema change is recorded in version history (revertible).
+    const hist = (await fetch(`${server.url}/api/history?limit=50`).then((r) => r.json())) as {
+      entries: { operation: string; table_name: string }[];
+    };
+    expect(
+      hist.entries.some((e) => e.operation === 'schema.add_column' && e.table_name === 'tickets'),
+    ).toBe(true);
+  });
+
   it('persists rich per-turn structure (text + tool pills) for reload', async () => {
     const server = await boot();
     turnState.turns = [

@@ -167,8 +167,11 @@ describe.skipIf(!PG_URL)(
       expect(n1).toEqual([{ body: 'priv' }]);
 
       // 9) Every member write is recorded in the change feed (which drives realtime
-      //    via NOTIFY) by the DB trigger. Bob's RLS-blocked update/delete affected
-      //    0 rows, so they produced no change entry.
+      //    via NOTIFY) by the DB trigger. A SHARING change also emits a feed entry
+      //    (so a member's client re-renders when visibility changes), so each note
+      //    appears once for its insert plus once per sharing op: n2 was made
+      //    `everyone` and n3 was granted to bob. Bob's RLS-blocked update/delete
+      //    affected 0 rows, so they produced no change entry.
       const changes = (
         await admin.query<{ table_name: string; pk: string; op: string }>(
           `SELECT table_name, pk, op FROM "${schema}"."__lattice_changes" ORDER BY seq`,
@@ -179,7 +182,7 @@ describe.skipIf(!PG_URL)(
           .filter((c) => c.table_name === 'notes' && c.op === 'upsert')
           .map((c) => c.pk)
           .sort(),
-      ).toEqual(['n1', 'n2', 'n3']);
+      ).toEqual(['n1', 'n2', 'n2', 'n3', 'n3']);
       expect(changes.some((c) => c.table_name === 'memo')).toBe(true);
     });
 

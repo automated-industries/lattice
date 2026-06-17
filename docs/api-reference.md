@@ -608,6 +608,54 @@ const stop = await db.watch('./context', {
 stop();
 ```
 
+---
+
+#### `reverseSyncFromFiles(outputDir, opts?): Promise<ReverseSyncResult>`
+
+Detect external modifications to rendered context files and apply changelog-aware reverse-sync updates to the database.
+
+```ts
+const result = await db.reverseSyncFromFiles('./context');
+console.log(`Scanned ${result.filesScanned} files, changed ${result.filesChanged}`);
+
+// With changelog-aware apply and automatic default round-trip:
+await db.reverseSyncFromFiles('./context', {
+  apply: async (update) => {
+    await db.update(update.table, update.pk, update.set);
+  },
+  useDefault: true,
+  onSkip: (info) => {
+    console.log(`Skipped ${info.table}/${info.slug}/${info.filename} (custom render)`);
+  },
+});
+```
+
+Compares file content hashes against the current manifest, so a render-written file is recognized as an echo and skipped. Unlike `reconcile()` (which runs raw SQL), this is the changelog-aware entry point used by the GUI file-loopback: pass `apply` to route each update through a versioned write (so a file edit lands in the changelog and shows up live, just like a GUI edit), and `useDefault` to round-trip structured frontmatter + body `key: value` fields for files without a hand-written `reverseSync` function. A file whose changes can't be safely parsed (free-form/custom render) is surfaced via `onSkip` rather than guessed at, so a lossy render can't corrupt a row.
+
+**`ReverseSyncProcessOptions`** (all optional):
+
+| Option       | Type                                                  | Description                                                                              |
+| ------------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `apply`      | `(update: ReverseSyncUpdate) => Promise<void>`        | Route each update through a changelog-aware path instead of raw SQL                      |
+| `useDefault` | `boolean`                                             | Derive updates for files lacking a hand-written `reverseSync` (frontmatter + body pairs) |
+| `onSkip`     | `(info: { table; slug; filename; filePath }) => void` | Called when a changed file produced no importable update (free-form/custom render)       |
+
+The result reports `filesScanned`, `filesChanged`, `updatesApplied`, and any per-file `errors`.
+
+---
+
+#### `rebuildFtsIndexes(): Promise<void>`
+
+(Re)build the full-text search indexes for all tables with `fts` configuration, backfilling existing rows. Used after `migrate-to-cloud` to ensure search works on a migrated cloud workspace.
+
+```ts
+await db.rebuildFtsIndexes();
+```
+
+The `migrate-to-cloud` command calls this automatically after copying rows; use it manually to recover search if an index was omitted or needs rebuilding. Idempotent — running it multiple times is safe.
+
+---
+
 **`WatchOptions`:**
 
 | Option      | Type                              | Default | Description                                                    |
