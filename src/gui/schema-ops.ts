@@ -4,7 +4,7 @@ import { isNativeEntity } from '../framework/native-entities.js';
 import { recordSchemaAudit, createRow, deleteRow, type MutationCtx } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { getGuiEntities, type FileJunction } from './data.js';
-import type { ActiveDb } from './server.js';
+import type { ActiveDb } from './active-db.js';
 import { secureNewCloudTable } from '../cloud/setup.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 
