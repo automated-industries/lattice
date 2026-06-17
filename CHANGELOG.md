@@ -94,6 +94,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   before giving up. If a page still blocks automated access, the error is clear
   and actionable ("open it and paste the text to ingest manually") rather than a
   cryptic HTTP code.
+- **The members list refreshes after sending an invite.** A newly invited member
+  now appears ("Invited") immediately, without a manual reload.
 
 ## [3.3.5] - 2026-06-16
 
