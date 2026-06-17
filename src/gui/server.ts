@@ -1259,6 +1259,12 @@ function startBackgroundRender(active: ActiveDb): void {
   // once per ActiveDb; the broker is stopped in disposeActive, so the callback
   // can't fire afterward. requestRender reuses the coalesced + pending-requeue
   // auto-render path, so a burst of changes collapses to one re-render.
+  //
+  // Deliberately NOT gated on "is this change visible to me now": an UN-SHARE
+  // makes the row invisible, so a visibility filter would skip the re-render and
+  // leave the now-stale row on disk — the exact staleness this is meant to fix.
+  // Re-rendering on every remote change handles share AND un-share; the render
+  // itself reads current RLS state, so it adds/removes rows correctly either way.
   if (!active.eagerRenderWired && active.realtime) {
     active.eagerRenderWired = true;
     active.realtime.subscribePayload(() => {

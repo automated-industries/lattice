@@ -2555,8 +2555,18 @@ export class Lattice {
     this._autoRenderPending = false;
     this._autoRenderInFlight = true;
     try {
+      // Read the prior manifest BEFORE render so cleanup can detect orphans.
+      const prevManifest = readManifest(dir);
       const result = await this._render.render(dir);
       for (const h of this._renderHandlers) h(result);
+      // Prune stale files after render: a deleted row, or — for a cloud member —
+      // a row that was just un-shared (so it dropped out of the RLS-filtered read)
+      // must leave the rendered tree, not linger as a stale snapshot. cleanup uses
+      // the SAME per-viewer resolver the render did, so a member's own just-written
+      // files are kept and only genuinely-absent rows are removed. Without this an
+      // un-share would never prune the file (render only writes; it never deletes).
+      const newManifest = readManifest(dir);
+      await this._render.cleanup(dir, prevManifest, {}, newManifest);
     } catch (err) {
       for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
     } finally {

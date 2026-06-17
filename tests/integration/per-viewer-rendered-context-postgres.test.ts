@@ -421,4 +421,95 @@ describe.skipIf(!PG_URL)('WS8b: per-viewer rendered context (render-through-RLS)
 
     expect(appeared).toBe(true); // re-rendered without any manual action
   });
+
+  it('eagerly re-renders so an UN-SHARED row leaves the member tree (no stale view)', async () => {
+    const dbname = `lattice_pvru_${randomBytes(4).toString('hex')}`;
+    databases.push(dbname);
+    const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+    await admin.query(`CREATE DATABASE "${dbname}"`);
+    await admin.end();
+
+    const owner = new Lattice(dbUrl(dbname), { encryptionKey: 'pvr-test-key' });
+    registerNativeEntities(owner);
+    owner.define('widgets', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', deleted_at: 'TEXT' },
+      render: () => '',
+      outputFile: 'widgets.md',
+    });
+    owner.define('__lattice_user_identity', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        display_name: "TEXT NOT NULL DEFAULT ''",
+        email: "TEXT NOT NULL DEFAULT ''",
+        updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: '.lattice-native/user-identity.md',
+    });
+    await owner.init();
+    await owner.insert('widgets', { id: 'w8', body: 'ONCE_SHARED_W8' });
+    await secureCloud(owner);
+    await setRowVisibility(owner, 'widgets', 'w8', 'everyone'); // member CAN see it initially
+
+    const role = `lm_${randomBytes(3).toString('hex')}`;
+    roles.push(role);
+    const pw = generateMemberPassword();
+    await provisionMemberRole(owner, role, pw);
+    owner.close();
+
+    {
+      const ownerTmp = mkdtempSync(join(tmpdir(), `pvru-owner-${randomBytes(3).toString('hex')}-`));
+      dirs.push(ownerTmp);
+      const ownerRoot = join(ownerTmp, '.lattice');
+      const ownerWs = addWorkspace(ownerRoot, {
+        displayName: 'Owner',
+        db: dbUrl(dbname),
+        makeActive: true,
+      });
+      const ownerPaths = resolveWorkspacePaths(ownerRoot, ownerWs);
+      mkdirSync(ownerPaths.contextDir, { recursive: true });
+      servers.push(
+        await startGuiServer({
+          configPath: ownerPaths.configPath,
+          outputDir: ownerPaths.contextDir,
+          port: 0,
+          openBrowser: false,
+        }),
+      );
+    }
+
+    const tmp = mkdtempSync(join(tmpdir(), `pvru-${randomBytes(3).toString('hex')}-`));
+    dirs.push(tmp);
+    const root = join(tmp, '.lattice');
+    const ws = addWorkspace(root, {
+      displayName: 'Unshare Cloud',
+      db: dbUrl(dbname, role, pw),
+      makeActive: true,
+    });
+    const paths = resolveWorkspacePaths(root, ws);
+    mkdirSync(paths.contextDir, { recursive: true });
+    const member = await startGuiServer({
+      configPath: paths.configPath,
+      outputDir: paths.contextDir,
+      port: 0,
+      openBrowser: false,
+      autoRender: true,
+    });
+    servers.push(member);
+
+    await waitForRender(member);
+    expect(allRenderedText(paths.contextDir)).toContain('ONCE_SHARED_W8'); // visible at first
+
+    // Owner un-shares w8 (back to private). The eager re-render must DROP it from
+    // the member's tree — a visibility filter on the change would wrongly skip this.
+    const opool = new pg.Pool({ connectionString: dbUrl(dbname), max: 1 });
+    await opool.query(`SELECT lattice_set_row_visibility('widgets','w8','private')`);
+    const gone = await pollUntil(
+      () => !allRenderedText(paths.contextDir).includes('ONCE_SHARED_W8'),
+    );
+    await opool.end();
+
+    expect(gone).toBe(true); // the stale row was removed without a manual refresh
+  });
 });
