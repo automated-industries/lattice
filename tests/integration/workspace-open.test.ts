@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,9 +13,18 @@ import {
 } from '../../src/index.js';
 
 const dirs: string[] = [];
+let savedConfigDir: string | undefined;
+beforeEach(() => {
+  // configDir() gives LATTICE_CONFIG_DIR top priority; these tests assert its
+  // root-resolution path, so clear the worker-level override (see tests/setup).
+  savedConfigDir = process.env.LATTICE_CONFIG_DIR;
+  delete process.env.LATTICE_CONFIG_DIR;
+});
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   delete process.env.LATTICE_ROOT;
+  if (savedConfigDir === undefined) delete process.env.LATTICE_CONFIG_DIR;
+  else process.env.LATTICE_CONFIG_DIR = savedConfigDir;
 });
 
 function setupRoot(): string {
