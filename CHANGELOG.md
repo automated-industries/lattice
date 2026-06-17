@@ -66,7 +66,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   store and rewrites the line to a `${LATTICE_DB:<label>}` reference — so the
   secret no longer lingers in cleartext on disk. Idempotent; configs already using
   a reference, or a SQLite path, are untouched, and an existing credential is
-  never overwritten.
+  never overwritten. The credential store's master-key creation and every
+  load-modify-write are now serialized by a cross-process lock and written
+  atomically (temp + rename), so concurrent opens — two GUIs launching at once, or
+  parallel workers — can't lose an entry or write a divergent master key.
 - **Cloud sharing internals consolidated (no behavior change to live features).**
   Removed never-surfaced masking machinery — per-cell grants and app-role
   assignment (their tables, `SECURITY DEFINER` functions, and the unreachable
