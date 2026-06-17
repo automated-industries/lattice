@@ -1235,6 +1235,12 @@ export function deleteDatabaseFiles(targetConfigPath: string): {
  * + pg clients don't leak.
  */
 /**
+ * Minimum spacing between eager re-renders triggered by remote changes. Caps the
+ * shared-quota egress of "re-render on every remote change" under a sustained
+ * stream, while keeping a member's per-viewer tree fresh within ~1.5s.
+ */
+const EAGER_RERENDER_MIN_INTERVAL_MS = 1500;
+/**
  * Kick off the background render for `active` — fire-and-forget. Returns
  * immediately; the render churns on its own and folds progress into
  * `active.renderState` while publishing each event to `active.renderProgress`
@@ -1254,21 +1260,40 @@ function startBackgroundRender(active: ActiveDb): void {
   // the manifest, so the initial render's own writes are never re-ingested.
   active.fileWatcher?.start();
   // Eager per-viewer freshness: a REMOTE change (another client's write, or the
-  // owner re-sharing / un-sharing a row) schedules a debounced re-render so this
-  // member's RLS-scoped context tree reflects the new visibility promptly. Wired
-  // once per ActiveDb; the broker is stopped in disposeActive, so the callback
-  // can't fire afterward. requestRender reuses the coalesced + pending-requeue
-  // auto-render path, so a burst of changes collapses to one re-render.
+  // owner re-sharing / un-sharing a row) re-renders this member's RLS-scoped tree
+  // so it reflects the new visibility promptly. Wired once per ActiveDb; the
+  // broker is stopped in disposeActive.
   //
   // Deliberately NOT gated on "is this change visible to me now": an UN-SHARE
   // makes the row invisible, so a visibility filter would skip the re-render and
   // leave the now-stale row on disk — the exact staleness this is meant to fix.
   // Re-rendering on every remote change handles share AND un-share; the render
   // itself reads current RLS state, so it adds/removes rows correctly either way.
+  //
+  // THROTTLED to bound shared-quota egress: a render re-reads the member's visible
+  // tables, and single-flight alone would render back-to-back under a sustained
+  // stream of remote changes. A leading+trailing throttle caps it at one re-render
+  // per EAGER_RERENDER_MIN_INTERVAL_MS (freshness stays sub-2s); requestRender
+  // still debounces + coalesces beneath this.
   if (!active.eagerRenderWired && active.realtime) {
     active.eagerRenderWired = true;
-    active.realtime.subscribePayload(() => {
+    let lastFire = 0;
+    let trailing: ReturnType<typeof setTimeout> | undefined;
+    const fire = (): void => {
+      lastFire = Date.now();
       active.db.requestRender();
+    };
+    active.realtime.subscribePayload(() => {
+      const since = Date.now() - lastFire;
+      if (since >= EAGER_RERENDER_MIN_INTERVAL_MS) {
+        fire();
+      } else if (!trailing) {
+        trailing = setTimeout(() => {
+          trailing = undefined;
+          fire();
+        }, EAGER_RERENDER_MIN_INTERVAL_MS - since);
+        trailing.unref();
+      }
     });
   }
   if (active.renderState.phase === 'running') return;
