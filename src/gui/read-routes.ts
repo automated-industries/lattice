@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendJson } from './http.js';
+import { sendJson, parsePageParam } from './http.js';
 import { Lattice } from '../lattice.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { GuiRequestContext } from './request-context.js';
@@ -559,7 +559,14 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'Not a system table' }, 400);
       return true;
     }
-    const limit = Number(url.searchParams.get('limit') ?? '500');
+    // Bounded read: clamp `limit` to [1, MAX_ROWS_PAGE] and reject a non-numeric
+    // value, so a client can't request an unbounded slice (whole-table egress) or
+    // turn the interpolation into `LIMIT NaN`. Same contract as /api/tables/:t/rows.
+    const limit = parsePageParam(url.searchParams.get('limit'), 'limit');
+    if (limit === 'invalid') {
+      sendJson(res, { error: 'limit must be a non-negative integer' }, 400);
+      return true;
+    }
     const rowsResult = (await (async () => {
       type Adapter = { allAsync?: (sql: string) => Promise<unknown[]> };
       const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;

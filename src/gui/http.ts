@@ -19,6 +19,28 @@ export function sendJson(res: ServerResponse, body: unknown, status = 200): void
  *  an explicit `maxBytes` (ingest uploads 10 MB, chat history 2 MB). */
 export const DEFAULT_BODY_MAX_BYTES = 1_000_000;
 
+/** Max rows a single bounded list read returns — `limit` is clamped to this so no
+ *  one request can read an unbounded slice of a table (bounded reads). */
+export const MAX_ROWS_PAGE = 1000;
+/** Page size used when a request omits `limit`. */
+export const DEFAULT_ROWS_PAGE = 500;
+
+/**
+ * Parse + validate a `limit`/`offset` query param. Returns the numeric value, or
+ * `'invalid'` for a non-numeric / negative / non-integer string — the caller
+ * returns 400 instead of letting `Number('abc')` become `LIMIT NaN`. `limit` is
+ * clamped to `[1, MAX_ROWS_PAGE]` (so a client can never request an unbounded
+ * read); `offset` is floored at 0. Single source of truth for every paged read.
+ */
+export function parsePageParam(raw: string | null, kind: 'limit' | 'offset'): number | 'invalid' {
+  if (raw === null) return kind === 'limit' ? DEFAULT_ROWS_PAGE : 0;
+  if (!/^\d+$/.test(raw.trim())) return 'invalid';
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 'invalid';
+  if (kind === 'limit') return Math.min(Math.max(1, n), MAX_ROWS_PAGE);
+  return Math.max(0, n);
+}
+
 /**
  * Thrown by {@link readJson} when the body exceeds the cap. Carries HTTP 413 so
  * {@link tryHandler} returns a real "Payload Too Large" response. Previously the

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, parsePageParam } from './http.js';
 import type { Row } from '../types.js';
 import type { GuiRequestContext } from './request-context.js';
 import { readRelationFor, attachRowAccess } from './active-db.js';
@@ -40,25 +40,6 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/** Max rows a single `/rows` page may request — caps cloud egress on a hot path
- *  (Rule: bounded reads). A caller wanting more pages with limit+offset. */
-const MAX_ROWS_PAGE = 1000;
-const DEFAULT_ROWS_PAGE = 500;
-
-/**
- * Parse + validate a `limit`/`offset` query param (#4.9). Returns the numeric
- * value, or `'invalid'` for a non-numeric / negative / non-integer string (the
- * caller returns 400 instead of letting `Number('abc')` become `LIMIT NaN`).
- * `limit` is clamped to `[1, MAX_ROWS_PAGE]`; `offset` floored at 0.
- */
-function parsePageParam(raw: string | null, kind: 'limit' | 'offset'): number | 'invalid' {
-  if (raw === null) return kind === 'limit' ? DEFAULT_ROWS_PAGE : 0;
-  if (!/^\d+$/.test(raw.trim())) return 'invalid';
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return 'invalid';
-  if (kind === 'limit') return Math.min(Math.max(1, n), MAX_ROWS_PAGE);
-  return Math.max(0, n);
-}
 
 /**
  * Ordered, first-match dispatcher for the row-CRUD + link/unlink routes. Returns
