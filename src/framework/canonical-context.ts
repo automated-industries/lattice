@@ -149,9 +149,32 @@ function renderRelated(table: string): (rows: Row[]) => string {
   };
 }
 
-/** A row's human label: name → title → slug → id (whichever is present). */
+/**
+ * A row's human label. Tries the conventional name columns first, then short
+ * descriptive ones, then the id, and finally — for rows with none of those, most
+ * commonly a junction row that is only foreign keys — the first non-empty field
+ * as `key: value`. Only a completely empty row yields ''. This is what keeps a
+ * relation list from rendering as a wall of literal "(row)" placeholders.
+ */
 function rowLabel(row: Row): string {
-  return toText(row.name) || toText(row.title) || toText(row.slug) || toText(row.id);
+  for (const k of ['name', 'title', 'label', 'original_name', 'subject', 'slug']) {
+    const v = toText(row[k]);
+    if (v) return v;
+  }
+  for (const k of ['summary', 'description', 'body', 'content', 'url', 'path']) {
+    const v = toText(row[k]);
+    if (v) return v.length > 80 ? `${v.slice(0, 80)}…` : v;
+  }
+  const id = toText(row.id);
+  if (id) return id;
+  // Last resort: a junction / FK-only row — surface the first meaningful field
+  // (skip timestamps + the soft-delete marker) so it isn't a bare "(row)".
+  for (const [k, val] of Object.entries(row)) {
+    if (k === 'id' || k === 'deleted_at' || k.endsWith('_at')) continue;
+    const v = toText(val);
+    if (v) return `${k}: ${v}`;
+  }
+  return '';
 }
 
 /** Safe stringification of an unknown DB cell value. */
