@@ -15,6 +15,7 @@ import { resolveActiveS3Config } from '../framework/s3-config.js';
 import { createHash } from 'node:crypto';
 import { resolveClaudeAuth } from './assistant-routes.js';
 import { type ClassifyMatch } from './ai/summarize.js';
+import { sendJson, readJson } from './http.js';
 // LLM enrichment (description + auto-link + object extraction) is a shared leaf
 // module so both the ingest routes and the assistant's URL-ingest tool reuse it.
 import { enrichWithLlm } from './ai/enrich.js';
@@ -108,37 +109,6 @@ const MIME_BY_EXT: Record<string, string> = {
 
 function mimeFor(name: string): string {
   return MIME_BY_EXT[extname(name).toLowerCase()] ?? 'application/octet-stream';
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve_, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (c: string) => {
-      raw += c;
-      if (raw.length > 10_000_000) reject(new Error('payload too large'));
-    });
-    req.on('end', () => {
-      if (!raw) {
-        resolve_({});
-        return;
-      }
-      try {
-        resolve_(JSON.parse(raw) as Record<string, unknown>);
-      } catch {
-        reject(new Error('invalid JSON body'));
-      }
-    });
-    req.on('error', reject);
-  });
 }
 
 /** Build the URL-ingest enrichment context from a route's {@link IngestContext}. */
@@ -491,7 +461,7 @@ export async function dispatchIngestRoute(
 
   let body: Record<string, unknown>;
   try {
-    body = await readJson(req);
+    body = await readJson(req, { maxBytes: 10_000_000 });
   } catch (e) {
     sendJson(res, { error: (e as Error).message }, 400);
     return true;

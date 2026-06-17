@@ -2218,7 +2218,7 @@ export class Lattice {
     return this._schema.getPrimaryKey(table).filter((c) => cols.has(c));
   }
 
-  /** Canonical ACL / change-log `pk` string for a row. Matches {@link _pkSqlExpr}. */
+  /** Canonical ACL / change-log `pk` string for a row. Matches `cloud/rls.ts` `pkSqlExpr`. */
   private _serializeRowPk(table: string, row: Row): string {
     const pkCols = this._resolvedPkCols(table);
     const cols = pkCols.length > 0 ? pkCols : ['id'];
@@ -2245,21 +2245,6 @@ export class Lattice {
         return v != null ? String(v as string | number) : '';
       })
       .join(Lattice._PK_SEP);
-  }
-
-  /**
-   * SQL expression reconstructing {@link _serializeRowPk} from a row aliased
-   * `t`. Returns null when the table is unkeyable (no pk columns present) — the
-   * caller must then avoid referencing a pk column at all. Dialect-aware tab
-   * separator: SQLite `char(9)`, Postgres `chr(9)` (both = U+0009), matching
-   * {@link _PK_SEP}.
-   */
-  private _pkSqlExpr(pkCols: string[]): string | null {
-    if (pkCols.length === 0) return null;
-    // A single column joins to itself (no separator) — identical to the
-    // pre-2.2.1 `CAST(t."id" AS TEXT)`, preserving all existing single-key data.
-    const sep = this.getDialect() === 'postgres' ? 'chr(9)' : 'char(9)';
-    return pkCols.map((c) => `CAST(t."${c}" AS TEXT)`).join(` || ${sep} || `);
   }
 
   /**
