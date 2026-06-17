@@ -252,6 +252,40 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'bulk_update',
+    description:
+      'Apply ONE change to EVERY row that matches a filter, in a single operation — the right ' +
+      'tool for "make every row private", "set all X to Y", "clear field Z everywhere". Returns ' +
+      'the exact number of rows changed. Use this instead of editing rows one at a time, and never ' +
+      'refuse it as too large or offer a script instead — it finishes the whole job in one step. ' +
+      '`filter` selects the rows (omit it to mean ALL rows in the table). `set` is what to change: ' +
+      'a map of field → new value, and/or the special key "visibility" set to "private" or ' +
+      '"everyone" to change who can see the matched rows. Only affects rows the user is allowed to ' +
+      'change (the database enforces ownership); the returned count is what actually changed.',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        table: str('Table name.'),
+        filter: {
+          type: 'array',
+          description:
+            'Rows to match. Each clause is {col, op, val}; op is one of eq, ne, gt, gte, lt, lte, ' +
+            'like, in, isNull, isNotNull (omit val for isNull/isNotNull; use an array for in). ' +
+            'Multiple clauses are ANDed. Omit the filter entirely to match every row.',
+          items: { type: 'object', description: 'A single {col, op, val} filter clause.' },
+        },
+        set: {
+          type: 'object',
+          description:
+            'What to change on every matched row: a map of field → new value, and/or "visibility" ' +
+            'set to "private" or "everyone".',
+        },
+      },
+      ['table', 'set'],
+    ),
+  },
+  {
     name: 'dedup',
     description:
       'Find and merge duplicate rows in a table. Exact duplicates are always ' +
