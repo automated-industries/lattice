@@ -12,6 +12,7 @@ import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.
 import { generateThreadTitle } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
 import { columnDescriptionHook } from './meta-gen.js';
+import { sendJson, readJson } from './http.js';
 import {
   ASSISTANT_HIDDEN_TABLES,
   type AssistantJunction,
@@ -47,40 +48,9 @@ interface ChatContext {
   method: string;
 }
 
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
 /** Coerce an unknown DB column to a string, with a fallback for null/non-string. */
 function asStr(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback;
-}
-
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (c: string) => {
-      raw += c;
-      if (raw.length > 2_000_000) reject(new Error('payload too large'));
-    });
-    req.on('end', () => {
-      if (!raw) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(raw) as Record<string, unknown>);
-      } catch {
-        reject(new Error('invalid JSON body'));
-      }
-    });
-    req.on('error', reject);
-  });
 }
 
 /**
@@ -460,7 +430,7 @@ export async function dispatchChatRoute(
 
   let body: Record<string, unknown>;
   try {
-    body = await readJson(req);
+    body = await readJson(req, { maxBytes: 2_000_000 });
   } catch (e) {
     sendJson(res, { error: (e as Error).message }, 400);
     return true;
