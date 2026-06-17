@@ -609,6 +609,12 @@ export interface ActiveDb {
    * {@link startBackgroundRender}, which can be called more than once per ActiveDb.
    */
   eagerRenderWired?: boolean;
+  /**
+   * Tables the open-time cloud converge could not manage (e.g. owned by a
+   * different Postgres role). Empty on a clean open. Surfaced via /api/dbconfig so
+   * the user gets a specific, actionable message instead of a partial converge.
+   */
+  convergeWarnings: { table: string; reason: string }[];
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**
@@ -946,6 +952,10 @@ export async function openConfig(
     await retireLegacyPreferenceSecrets(db);
   }
 
+  // Tables the open-time converge couldn't manage (e.g. owned by a different
+  // Postgres role), surfaced to the client via /api/dbconfig so the user sees a
+  // specific, actionable message instead of a silent partial converge.
+  let convergeWarnings: { table: string; reason: string }[] = [];
   // Cloud OWNER open: converge the idempotent cloud bootstrap (RLS objects +
   // settings + observation substrate) so objects ADDED to the bootstrap in a
   // later release reach clouds already stamped at an earlier version — the class
@@ -968,7 +978,13 @@ export async function openConfig(
         // private-only conversation/secret tables to never_share, and re-issue
         // member grants the version-gated per-table securing won't re-emit after
         // a grant-dropping restore. Keeps "shows as shared" == "is readable".
-        await reconcileCloudMemberAccess(db);
+        // Per-table fault-isolated: a table this role can't manage (e.g. owned by
+        // a different role) is skipped + reported, never aborting the rest.
+        const access = await reconcileCloudMemberAccess(db);
+        convergeWarnings = access.skipped;
+        for (const s of convergeWarnings) {
+          console.warn(`[openConfig] cloud converge could not manage "${s.table}": ${s.reason}`);
+        }
       }
     } catch (e) {
       // internal guideline: never silently swallow. A converge failure must be visible, but
@@ -1092,6 +1108,7 @@ export async function openConfig(
     realtime,
     feed,
     fileWatcher,
+    convergeWarnings,
     dbPath: parsed.dbPath,
     autoRender,
     renderProgress: new RenderProgressBus(),
@@ -3287,6 +3304,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sendJson(res, { ok: true, id: ws.id });
           return;
         }
+        // Reload the CURRENT workspace's schema in place: re-read the config and
+        // re-register entities (so a table added out-of-band surfaces) WITHOUT a
+        // full process restart. Reuses reopenSameConfig — same connection target,
+        // fresh schema registration + converge. Lighter than killing the server.
+        if (method === 'POST' && pathname === '/api/workspaces/reload') {
+          try {
+            active = activeRef = await reopenSameConfig(active, autoRender);
+          } catch (e) {
+            sendJson(res, { error: `Reload failed: ${(e as Error).message}` }, 500);
+            return;
+          }
+          if (active.autoRender) startBackgroundRender(active);
+          const tables = [...active.validTables].filter(
+            (t) => !t.startsWith('_') && !t.startsWith('__'),
+          );
+          sendJson(res, { ok: true, tables, convergeWarnings: active.convergeWarnings });
+          return;
+        }
         if (method === 'POST' && pathname === '/api/workspaces/create') {
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
@@ -3935,6 +3970,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             configPath: active.configPath,
             pathname,
             method,
+            convergeWarnings: active.convergeWarnings,
             // Reopen the active config after an in-place edit; join a cloud as a
             // NEW workspace. Both go through the shared closures so the swap is
             // reflected in `activeRef` for the next request (not just the local
