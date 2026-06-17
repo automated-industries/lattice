@@ -4096,6 +4096,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         bound.feed.subscribe((e) => {
           if (e.table && isFeedHiddenTable(e.table)) return;
           recentSelf.set(`${e.table ?? ''}:${e.rowId ?? ''}:${e.op}`, Date.now());
+          // A bulk/multi-row self-change (e.g. the assistant's bulk_update) emits
+          // ONE summary with no rowId, but its realtime echo arrives per-row with
+          // specific pks that wouldn't match the summary key — so the same change
+          // would re-appear as a separate "CLI / another client" card. Record a
+          // coarse table+op marker for these so the broker can suppress the echo.
+          if (!e.rowId) recentSelf.set(`${e.table ?? ''}::${e.op}`, Date.now());
           send('feed', e);
         }),
       );
@@ -4106,7 +4112,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             if (!op || !p.table_name || isFeedHiddenTable(p.table_name)) return;
             const tableName = p.table_name;
             const key = `${tableName}:${p.pk ?? ''}:${op}`;
-            const seen = recentSelf.get(key);
+            // Match the exact row key OR the coarse table+op marker a bulk
+            // self-change records, so a bulk change's per-row echoes are all
+            // recognized as our own and not re-shown as another client.
+            const seen = recentSelf.get(key) ?? recentSelf.get(`${tableName}::${op}`);
             if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
             if (activeRef !== bound) return; // stale after a workspace switch
             void changeVisibleToActiveRole(bound.db, p).then((visible) => {

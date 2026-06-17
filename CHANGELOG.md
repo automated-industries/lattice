@@ -89,6 +89,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **An assistant bulk change no longer double-shows as "another client".** A bulk change made in this session (e.g. the assistant's bulk_update) emits one summary while its realtime echo arrives per-row; those echoes are now recognized as our own and suppressed, so the change shows once (as the assistant/you), not again as a separate "CLI / another client" card.
 - **"This card" and pasted in-system links now resolve to the actual record.**
   The assistant deterministically resolves the record you're viewing — and any
   record you paste a local GUI link to (`…/#/fs/<table>/<id>`) — to its real data
