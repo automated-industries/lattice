@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-06-17
+
 ### Added
 
 - **The assistant can add a field to an existing object.** A new `add_column`
