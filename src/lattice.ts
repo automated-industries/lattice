@@ -1940,6 +1940,19 @@ export class Lattice {
     return this._renderGuarded(outputDir, opts);
   }
 
+  /**
+   * Install a per-viewer read-relation resolver for ALL renders (initial,
+   * background, and the debounced auto-render that fires after every write).
+   * A cloud member open passes `(t) => maskedReadViews.get(t) ?? t` so the
+   * rendered context tree is read THROUGH the member's RLS connection + masking
+   * views — making the on-disk tree the viewer's own scoped projection. Owner /
+   * local SQLite leave it unset → identity → unchanged behavior. Set on the
+   * engine (not per-render-call) so the opts-less auto-render path masks too.
+   */
+  setRenderReadRelation(fn: (table: string) => string): void {
+    this._render.setRenderReadRelation(fn);
+  }
+
   async sync(outputDir: string): Promise<SyncResult> {
     const notInit = this._notInitError<SyncResult>();
     if (notInit) return notInit;

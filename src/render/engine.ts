@@ -53,6 +53,17 @@ export class RenderEngine {
   private readonly _getTaskContext: () => string;
   /** When true, skip the read + write for spec-less (no-op render) tables. */
   private readonly _skipEmpty: boolean;
+  /**
+   * Per-viewer read-relation resolver. When set (a cloud MEMBER open), every
+   * table read during render is routed through `_readRel(table)` — mapping a
+   * masked table to its `<table>_v` view so the rows that reach disk are already
+   * row-filtered + cell-masked by Postgres. It is ENGINE STATE (not a render
+   * option) on purpose: the debounced auto-render path re-renders with no opts
+   * after every member write, so a resolver carried only on RenderOptions would
+   * silently revert post-write renders to the base table. Unset (owner / SQLite)
+   * → identity → byte-identical to the prior behavior.
+   */
+  private _readRel: (table: string) => string = (t) => t;
 
   constructor(
     schema: SchemaManager,
@@ -64,6 +75,11 @@ export class RenderEngine {
     this._adapter = adapter;
     this._getTaskContext = getTaskContext ?? (() => '');
     this._skipEmpty = options?.skipEmpty ?? false;
+  }
+
+  /** Install the per-viewer read-relation resolver (see `_readRel`). */
+  setRenderReadRelation(fn: (table: string) => string): void {
+    this._readRel = fn;
   }
 
   async render(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
@@ -83,7 +99,7 @@ export class RenderEngine {
       // avoiding pulling a whole (possibly large) table off the wire for an
       // empty file. Default-off path below is unchanged.
       if (this._skipEmpty && def.render === NOOP_RENDER) continue;
-      let rows = await this._schema.queryTable(this._adapter, name);
+      let rows = await this._schema.queryTable(this._adapter, name, this._readRel);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
         rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
@@ -148,7 +164,7 @@ export class RenderEngine {
 
       if (def.tables) {
         for (const t of def.tables) {
-          tables[t] = await this._schema.queryTable(this._adapter, t);
+          tables[t] = await this._schema.queryTable(this._adapter, t, this._readRel);
         }
       }
 
@@ -252,7 +268,10 @@ export class RenderEngine {
     const entityContexts = this._schema.getEntityContexts();
     const currentSlugsByTable = new Map<string, Set<string>>();
     for (const [table, def] of entityContexts) {
-      const rows = await this._schema.queryTable(this._adapter, table);
+      // Thread the per-viewer resolver so the stale-file slug set is computed
+      // from the SAME (member-visible) row set the render wrote — otherwise
+      // cleanup would prune the member's own just-rendered files.
+      const rows = await this._schema.queryTable(this._adapter, table, this._readRel);
       const slugs = new Set(rows.map((row) => def.slug(row)));
       currentSlugsByTable.set(table, slugs);
     }
@@ -302,7 +321,7 @@ export class RenderEngine {
         // Bail at the top of each entity-context table if aborted.
         if (signal?.aborted) return null;
         const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
-        const allRows = await this._schema.queryTable(this._adapter, table);
+        const allRows = await this._schema.queryTable(this._adapter, table, this._readRel);
         const directoryRoot = def.directoryRoot ?? table;
 
         // `entitiesTotal` is the free denominator already read above — no

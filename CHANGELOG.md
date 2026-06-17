@@ -17,7 +17,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   leverages the rendered context tree Lattice already maintains instead of
   re-querying the database for everything. It falls back to the direct row tools
   when a record hasn't been rendered yet. (Injecting the rendered index into the
-  prompt + per-viewer-scoped render are tracked follow-ups.)
+  prompt is a tracked follow-up.)
+- **A cloud member's rendered context is their own scoped projection.** On a cloud,
+  the background render now reads every table THROUGH the member's row-level-security
+  connection and through the per-column masking view — so the rendered markdown a
+  member's assistant reads off disk contains only the rows they may see, with
+  owner-only columns blanked. This also fixes a member render of a table with a
+  masked column, which previously failed outright. Owners and local single-user
+  workspaces render the full tree exactly as before.
 - **Edits to the rendered context files now flow back into the database.** When
   the GUI is serving a workspace, editing a rendered `.md` file on disk is
   captured into the DB through the normal write path — so it lands in the

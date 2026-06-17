@@ -897,6 +897,15 @@ export async function openConfig(
   }
   await db.init(memberOpen ? { introspectOnly: true } : {});
 
+  // Per-viewer render: on a cloud MEMBER open, route every render-time table read
+  // through the member's masking view (`<table>_v`) when one exists, so the
+  // rendered context tree on disk is the member's own RLS-scoped, cell-masked
+  // projection (what get_row_context then serves). Owner / SQLite leave the
+  // resolver at identity. Set before any render is started.
+  if (memberOpen && maskedReadViews.size > 0) {
+    db.setRenderReadRelation((table) => maskedReadViews.get(table) ?? table);
+  }
+
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
   // active Lattice has a current view of who the operator is. Idempotent:
   // every open just upserts the single 'singleton' row.
