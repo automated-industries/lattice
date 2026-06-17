@@ -186,6 +186,27 @@ describe('chat tool loop', () => {
     expect(capturedSystem.toLowerCase()).toContain('error');
   });
 
+  it('no longer pushes back on bulk work — points at bulk_update instead of looping/refusing (3.3.5)', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'make every row private' }));
+
+    // The old defensive pushback / per-page write framing is gone.
+    expect(capturedSystem).not.toContain('small batches');
+    expect(capturedSystem).not.toContain('NEVER try to load');
+    expect(capturedSystem).not.toContain('a page at a time');
+    // The new directives: just do it, design the bulk op once with bulk_update,
+    // and never refuse for size or offer a script instead.
+    expect(capturedSystem).toContain('bulk_update');
+    expect(capturedSystem).toContain('Never refuse');
+    expect(capturedSystem).toMatch(/never offer to "write a script"/i);
+  });
+
   it("injects the cloud owner's workspace system prompt when provided", async () => {
     let capturedSystem = '';
     const client: LlmClient = {

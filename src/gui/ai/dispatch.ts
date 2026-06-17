@@ -96,6 +96,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'set_visibility',
   'dedup',
   'update_row',
+  'bulk_update',
   'delete_row',
   'link',
   'unlink',
@@ -309,6 +310,57 @@ function requireTable(v: unknown, valid: Set<string>): string {
   const table = requireString(v, 'table');
   if (!valid.has(table)) throw new Error(`Unknown table: ${table}`);
   return table;
+}
+
+const BULK_FILTER_OPS = new Set([
+  'eq',
+  'ne',
+  'gt',
+  'gte',
+  'lt',
+  'lte',
+  'like',
+  'in',
+  'isNull',
+  'isNotNull',
+]);
+
+/**
+ * Validate + normalize a bulk_update `filter` arg into the {col, op, val} shape
+ * `db.query` accepts. Strict: an unknown column or op is a recoverable tool error
+ * (so the model can correct it), NEVER a silently-wrong match that would touch the
+ * wrong rows. `undefined`/omitted → no clauses → matches every row (by design).
+ */
+function parseBulkFilters(
+  raw: unknown,
+  table: string,
+  db: Lattice,
+): { col: string; op: string; val?: unknown }[] {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) throw new Error('filter must be an array of {col, op, val} clauses');
+  const cols = db.getRegisteredColumns(table) ?? {};
+  const out: { col: string; op: string; val?: unknown }[] = [];
+  for (const clause of raw) {
+    if (!clause || typeof clause !== 'object') {
+      throw new Error('each filter clause must be an object {col, op, val}');
+    }
+    const c = clause as { col?: unknown; op?: unknown; val?: unknown };
+    if (typeof c.col !== 'string' || !(c.col in cols)) {
+      throw new Error(`filter references unknown column "${String(c.col)}" on "${table}"`);
+    }
+    if (typeof c.op !== 'string' || !BULK_FILTER_OPS.has(c.op)) {
+      throw new Error(`filter has invalid op "${String(c.op)}"`);
+    }
+    const needsVal = c.op !== 'isNull' && c.op !== 'isNotNull';
+    if (needsVal && !('val' in c)) throw new Error(`filter op "${c.op}" requires a val`);
+    out.push(needsVal ? { col: c.col, op: c.op, val: c.val } : { col: c.col, op: c.op });
+  }
+  return out;
+}
+
+/** The mutations.ts tag for a write that didn't land (RLS-denied / read-only). */
+function isWriteConflict(e: unknown): boolean {
+  return !!e && typeof e === 'object' && (e as { code?: string }).code === 'row_write_conflict';
 }
 
 /**
@@ -604,6 +656,101 @@ export async function executeFunction(
         }
         await updateRow(mctx, table, id, args.values as Partial<Row>);
         return { ok: true, result: { ok: true } };
+      }
+      case 'bulk_update': {
+        // ONE change applied to EVERY matching row, deterministically + completely
+        // — the fix for the assistant looping per-row, hitting MAX_TOOL_LOOPS, and
+        // falsely reporting "all done" at ~10%. The model designs the op once; this
+        // handler iterates a BOUNDED, pre-read id list in-process (not via LLM
+        // turns), so it always finishes and returns the TRUE changed count.
+        const table = requireTable(args.table, ctx.validTables);
+        if (!args.set || typeof args.set !== 'object') {
+          return { ok: false, error: 'set object is required (the change to apply)' };
+        }
+        const set = { ...(args.set as Record<string, unknown>) };
+        const filters = parseBulkFilters(args.filter, table, ctx.db);
+        // Never silently include trashed rows in a bulk change.
+        if (ctx.softDeletable.has(table)) filters.push({ col: 'deleted_at', op: 'isNull' });
+
+        // Split the change into a visibility request (special key) + column writes.
+        let visibility: 'private' | 'everyone' | undefined;
+        if ('visibility' in set) {
+          if (set.visibility !== 'private' && set.visibility !== 'everyone') {
+            return { ok: false, error: "visibility must be 'private' or 'everyone'" };
+          }
+          visibility = set.visibility;
+          delete set.visibility;
+        }
+        const colValues = set;
+        const hasColWrites = Object.keys(colValues).length > 0;
+        if (!hasColWrites && visibility === undefined) {
+          return { ok: false, error: 'set must contain at least one field or "visibility"' };
+        }
+
+        // Identify the matching rows ONCE. On a cloud this read runs as the
+        // member's role, so RLS already scopes it to rows the member can see.
+        const pkCol = ctx.db.getPrimaryKey(table)[0] ?? 'id';
+        const opts: Parameters<typeof ctx.db.query>[1] = { orderBy: pkCol, orderDir: 'asc' };
+        opts.filters = filters as NonNullable<typeof opts.filters>;
+        const matched: Row[] = await ctx.db.query(table, opts);
+
+        let changedCols = 0;
+        let changedVis = 0;
+
+        // PATH A — column writes: route each matched row through updateRow so every
+        // change is audited + fed + undoable exactly like a single-row edit. Under
+        // cloud RLS a non-owned row's UPDATE affects 0 rows → updateRow throws a
+        // write-conflict, which we record as skipped (not counted) without aborting
+        // the batch. This is the SAME trust boundary as update_row, iterated.
+        if (hasColWrites) {
+          for (const r of matched) {
+            const id = String(r[pkCol]);
+            try {
+              await updateRow(mctx, table, id, colValues as Partial<Row>);
+              changedCols++;
+            } catch (e) {
+              if (!isWriteConflict(e)) throw e;
+            }
+          }
+        }
+
+        // PATH B — visibility: cloud-only; the per-row owner-only SECURITY DEFINER
+        // fn has no set-based form, so loop it over the matched pks. Pre-filter to
+        // owned rows (rowAccessSummaries) — the SAME owner gate set_visibility uses
+        // — so a member's bulk "make private" only flips ITS OWN matched rows; the
+        // DEFINER fn raising on a non-owned row is caught as defense-in-depth.
+        if (visibility !== undefined) {
+          if (ctx.db.getDialect() !== 'postgres') {
+            return {
+              ok: false,
+              error:
+                'Sharing settings only apply to a shared cloud workspace (this is a local one).',
+            };
+          }
+          const pks = matched.map((r) => String(r[pkCol]));
+          const access = await rowAccessSummaries(ctx.db, table, pks);
+          for (const pk of pks) {
+            if (!access.get(pk)?.ownedByMe) continue;
+            try {
+              await setRowVisibility(ctx.db, table, pk, visibility);
+              changedVis++;
+            } catch {
+              /* DEFINER fn raised (not owner / never_share) — skip, don't abort */
+            }
+          }
+        }
+
+        const affected = visibility !== undefined ? changedVis : changedCols;
+        return {
+          ok: true,
+          result: {
+            table,
+            affected,
+            matched: matched.length,
+            ...(matched.length !== affected ? { skipped: matched.length - affected } : {}),
+            ...(visibility !== undefined ? { visibility } : { changed: Object.keys(colValues) }),
+          },
+        };
       }
       case 'delete_row': {
         const table = requireTable(args.table, ctx.validTables);
