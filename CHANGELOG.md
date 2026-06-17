@@ -8,6 +8,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Edits to the rendered context files now flow back into the database.** When
+  the GUI is serving a workspace, editing a rendered `.md` file on disk is
+  captured into the DB through the normal write path — so it lands in the
+  changelog (versioned/undoable) and shows up live, exactly as if the change had
+  been made in the GUI. Structured frontmatter and body `key: value` fields
+  round-trip automatically (no hand-written `reverseSync` needed); a file whose
+  changes can't be safely parsed (free-form/custom render) is surfaced as a
+  notice rather than guessed at, so a lossy render can't corrupt a row. Render
+  echoes are suppressed via the manifest, so there is no write loop. New
+  `Lattice.reverseSyncFromFiles(outputDir, opts)` exposes the changelog-aware
+  reverse-sync for embedders.
+
 ### Fixed
 
 - **An uploaded document (`.pptx`, `.docx`, `.xlsx`, `.csv`, …) could not be

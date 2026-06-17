@@ -49,6 +49,7 @@ import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row, TableDefinition } from '../types.js';
 import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
+import { createFileLoopbackWatcher, type FileLoopbackWatcher } from './file-watcher.js';
 import { getAsyncOrSync, allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { isPostgresUrl } from '../cloud/url.js';
@@ -712,6 +713,12 @@ export interface ActiveDb {
    * wholesale on switch (clients reconnect).
    */
   feed: FeedBus;
+  /**
+   * File loopback watcher (workspace/autoRender mode only; null otherwise).
+   * Captures edits to the rendered tree back into the DB via the changelog path.
+   * Started by startBackgroundRender, stopped by disposeActive.
+   */
+  fileWatcher: FileLoopbackWatcher | null;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**
@@ -1155,6 +1162,14 @@ export async function openConfig(
     }
   }
 
+  const feed = new FeedBus();
+  // File loopback: edits to the rendered tree flow back to the DB through the
+  // changelog path. Only in workspace (autoRender) mode; constructed here, started
+  // by startBackgroundRender, stopped by disposeActive.
+  const fileWatcher = autoRender
+    ? createFileLoopbackWatcher({ db, feed, softDeletable, outputDir })
+    : null;
+
   return {
     configPath,
     outputDir,
@@ -1165,7 +1180,8 @@ export async function openConfig(
     manifest,
     softDeletable,
     realtime,
-    feed: new FeedBus(),
+    feed,
+    fileWatcher,
     dbPath: parsed.dbPath,
     autoRender,
     renderProgress: new RenderProgressBus(),
@@ -1323,6 +1339,10 @@ export function deleteDatabaseFiles(targetConfigPath: string): {
  */
 function startBackgroundRender(active: ActiveDb): void {
   if (!active.autoRender) return;
+  // Begin watching the rendered tree for on-disk edits (idempotent; this is the
+  // single "begin serving this workspace" chokepoint). Echo suppression keys off
+  // the manifest, so the initial render's own writes are never re-ingested.
+  active.fileWatcher?.start();
   if (active.renderState.phase === 'running') return;
   active.renderState.phase = 'running';
   const db = active.db;
@@ -1512,7 +1532,14 @@ export async function disposeActive(
   active: ActiveDb,
   teardownTimeoutMs: number = DISPOSE_TEARDOWN_TIMEOUT_MS,
 ): Promise<void> {
-  // Abort the in-flight background render FIRST — before closing the DB — so the
+  // Stop the file loopback watcher FIRST so no on-disk edit can fire a write
+  // against a DB that's about to close.
+  try {
+    active.fileWatcher?.stop();
+  } catch {
+    // best-effort
+  }
+  // Abort the in-flight background render — before closing the DB — so the
   // render loop bails before its next query hits a closing adapter.
   try {
     active.renderAbort.abort();
