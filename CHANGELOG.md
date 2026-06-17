@@ -89,6 +89,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **"This card" and pasted in-system links now resolve to the actual record.**
+  The assistant deterministically resolves the record you're viewing — and any
+  record you paste a local GUI link to (`…/#/fs/<table>/<id>`) — to its real data
+  (via the permission-gated read) and puts that in context, instead of asking
+  "which card?" or replying "I can't fetch local URLs." Resolution happens in
+  code, not by prompting the model to guess; the prior verbose "what you're
+  viewing" instruction is replaced by the concrete resolved data.
 - **One un-manageable table no longer takes down the whole cloud workspace.** The
   open-time cloud converge is now per-table fault-isolated: if the connecting role
   can't `ALTER`/`GRANT` a table (most often because it was created by a different

@@ -216,11 +216,20 @@ async function buildSchemaContext(d: DispatchCtx): Promise<string> {
   return lines.join('\n');
 }
 
+/** A record the user is referring to (viewing, or linked by a local GUI URL),
+ *  resolved to its actual data so the assistant has the concrete record — not a
+ *  bare id it has to interpret. */
+export interface ReferencedRecord {
+  table: string;
+  id: string;
+  data: unknown;
+}
+
 function buildSystemPrompt(
   schema: string,
   operatorName?: string,
   cloudSystemPrompt?: string,
-  activeContext?: { table: string; id: string },
+  referencedRecords: ReferencedRecord[] = [],
 ): string {
   // Tell the assistant who it's talking to so it can address the operator and
   // link records to "you" without asking for a name it already has access to.
@@ -235,12 +244,21 @@ function buildSystemPrompt(
     cloudSystemPrompt && cloudSystemPrompt.trim().length > 0
       ? `\n\n# Workspace instructions\n${cloudSystemPrompt.trim()}`
       : '';
-  // What the user is looking at right now, so deictic references ("this file",
-  // "this row", "delete this") resolve without asking. The assistant should act
-  // on it via the normal tools (get_row/update_row/delete_row by this id).
+  // Records the user is referring to — the one they're viewing, plus any they
+  // pasted a local GUI link to — resolved to their ACTUAL data (not a bare id).
+  // Deictic references ("this", "it") and a pasted local link both resolve to
+  // these by construction, so the assistant never has to ask which record.
   const view =
-    activeContext?.table && activeContext.id
-      ? `\n\n# What the user is viewing\nThe user is currently viewing the "${activeContext.table}" record with id "${activeContext.id}". When they say "this", "this file", "this row", "this record", "it", or similar without naming a specific record, they mean THAT one — operate on it directly (read it with get_row, change or delete it by that id) rather than asking which record they mean.`
+    referencedRecords.length > 0
+      ? `\n\n# Records in context\n` +
+        referencedRecords
+          .map((r) => {
+            const json = JSON.stringify(r.data);
+            const body = json.length > 1500 ? `${json.slice(0, 1500)}…` : json;
+            return `- ${r.table} / ${r.id}:\n${body}`;
+          })
+          .join('\n') +
+        `\n("this", "this record/file/card", "it", and a pasted link to one of these refer to the matching record above — act on it by its id.)`
       : '';
   return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}\n\n# Current database\n${schema}`;
 }
@@ -333,6 +351,43 @@ function dispatchableTools(): AnthropicTool[] {
   return buildAnthropicTools().filter((t) => DISPATCHABLE.has(t.name));
 }
 
+/** A LOCAL Lattice GUI link to a record: `http://127.0.0.1:4317/#/fs/<table>/<id>`
+ *  (or `/#/objects/<table>/<id>`). Captures table + id. */
+const LOCAL_GUI_RECORD_RE =
+  /https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/#\/(?:fs|objects)\/([^/\s?#]+)\/([^/\s?#]+)/gi;
+
+/**
+ * Deterministically resolve the records the user is referring to — the one they
+ * are VIEWING (activeContext) and any they pasted a LOCAL GUI LINK to — to their
+ * actual row data via the RLS-gated get_row tool. This is why "update this card"
+ * and a pasted in-system link work without the model guessing or refusing: the
+ * reference is resolved in CODE and the concrete data is put in context, rather
+ * than relying on the model to interpret a bare id or trying to web-fetch a
+ * localhost URL. Only tables the operator can see are resolved (validTables +
+ * RLS); an unreadable/absent row is simply skipped.
+ */
+export async function resolveReferencedRecords(
+  ctx: DispatchCtx,
+  message: string,
+  activeContext?: { table: string; id: string },
+): Promise<ReferencedRecord[]> {
+  const refs = new Map<string, { table: string; id: string }>();
+  if (activeContext && ctx.validTables.has(activeContext.table)) {
+    refs.set(`${activeContext.table}\t${activeContext.id}`, activeContext);
+  }
+  for (const m of message.matchAll(LOCAL_GUI_RECORD_RE)) {
+    const table = decodeURIComponent(m[1] ?? '');
+    const id = decodeURIComponent((m[2] ?? '').replace(/[?#].*$/, ''));
+    if (table && id && ctx.validTables.has(table)) refs.set(`${table}\t${id}`, { table, id });
+  }
+  const out: ReferencedRecord[] = [];
+  for (const ref of refs.values()) {
+    const r = await executeFunction(ctx, 'get_row', { table: ref.table, id: ref.id });
+    if (r.ok) out.push({ table: ref.table, id: ref.id, data: r.result });
+  }
+  return out;
+}
+
 /**
  * Run the chat loop, yielding SSE events. Never throws — model/tool failures
  * are surfaced as `error` / tool_result events so the stream always ends with
@@ -348,11 +403,18 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   // Build the schema-aware system prompt once per turn — gives the model the
   // real table list so it stops guessing (and re-establishes context each turn,
   // since the persisted history is text-only).
+  // Resolve "this card" / a pasted local link to actual record data in code, so
+  // the model has the concrete record rather than a bare id to interpret.
+  const referencedRecords = await resolveReferencedRecords(
+    opts.dispatch,
+    opts.userMessage,
+    opts.activeContext,
+  );
   const system = buildSystemPrompt(
     await buildSchemaContext(opts.dispatch),
     opts.operatorName,
     opts.cloudSystemPrompt,
-    opts.activeContext,
+    referencedRecords,
   );
 
   let loop = 0;
