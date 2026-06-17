@@ -31,7 +31,7 @@ export type FeedOp =
  * and CLI writes. `system` is Lattice acting on its own (e.g. an automatic
  * de-duplication pass) — attributed to "Lattice" rather than a person.
  */
-export type FeedSource = 'gui' | 'command' | 'ai' | 'ingest' | 'cli' | 'system';
+export type FeedSource = 'gui' | 'command' | 'ai' | 'ingest' | 'cli' | 'system' | 'file-edit';
 
 export interface FeedEvent {
   /** Monotonically increasing per-bus sequence number, assigned on publish. */

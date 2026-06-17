@@ -56,6 +56,7 @@ import { entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js'
 import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import { feedOpForChange } from './realtime.js';
+import { createUpdateService, type UpdateService } from './update-service.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import {
   resolveColumnDescription,
@@ -168,6 +169,15 @@ export interface StartGuiServerOptions {
    * Omitted ⇒ the broker's default (20s). 0 disables it.
    */
   realtimeWatchdogMs?: number;
+  /**
+   * Run the in-process auto-update poll: while the GUI is open, check npm for a
+   * newer version and, when one lands on an installable copy, install it and
+   * exit with the supervisor's restart code so it relaunches on the new version.
+   * Set ONLY for a supervised child (`LATTICE_GUI_SUPERVISED=1`) — exiting to
+   * apply an update is safe only when a supervisor is there to respawn it.
+   * `GET /api/version` + `GET /api/update/status` are served regardless.
+   */
+  selfUpdate?: boolean;
 }
 
 export interface GuiServerHandle {
@@ -673,6 +683,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // did, not another cloud user's edit). The per-entry Revert stays global.
   const sessionId = crypto.randomUUID();
 
+  // Auto-update poll (supervised child only). Created after the WebSocket server
+  // exists (so it can broadcast), started after the socket is listening, stopped
+  // on close. The request handler reads it for `/api/update/status`.
+  let updateService: UpdateService | null = null;
+
   // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
   // (zero-workspace) state until the first workspace is created or joined. The
   // request handler gates every data route behind a non-null check.
@@ -874,6 +889,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
+
+        // Version + update status — answered in BOTH virgin and active states, and
+        // independent of any workspace. The browser polls `/api/version` on each
+        // `/api/stream` reconnect; a value newer than the page it loaded means the
+        // server relaunched onto a new build, so the tab reloads itself.
+        if (method === 'GET' && pathname === '/api/version') {
+          sendJson(res, { version: guiVersion });
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/update/status') {
+          sendJson(
+            res,
+            updateService?.status() ?? {
+              current: guiVersion,
+              latest: null,
+              kind: 'unknown',
+              installable: false,
+              checking: false,
+              installing: false,
+              lastError: null,
+            },
+          );
+          return;
+        }
 
         // Zero-workspace "virgin" state: no active DB. Serve only the shell +
         // the workspace-management & onboarding routes; everything else 409s
@@ -2844,6 +2883,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // tabs are open (three SSE × two tabs used to exhaust it and freeze the GUI).
   const wss = new WebSocketServer({ noServer: true });
 
+  // Broadcast to EVERY connected `/api/stream` client. Update events are global
+  // (not workspace-scoped), so they bypass the per-connection `bound` gating that
+  // feed/realtime use. Backs the in-process update service's `emit`.
+  const broadcast = (type: string, data: unknown): void => {
+    const frame = JSON.stringify({ type, data });
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      try {
+        client.send(frame);
+      } catch {
+        // socket closing — its own close handler tears down
+      }
+    }
+  };
+
+  if (options.selfUpdate && guiVersion) {
+    updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
+  }
+
   // Wire one connection's subscriptions. Bound to the workspace open at connect
   // time (`bound`); a workspace switch flips `activeRef`, after which this socket
   // drops events (the client reconnects, rebinding to the new workspace). All the
@@ -2975,6 +3033,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // covered by the `render-snapshot` replay on the `/api/stream` WebSocket. No-op
   // when virgin (no workspace open yet — the welcome screen is showing).
   if (activeRef) startBackgroundRender(activeRef);
+  // Begin the auto-update poll now that we're listening (no-op unless a
+  // supervised child enabled it). The first tick checks immediately.
+  updateService?.start();
   // For 0.0.0.0 bindings, advertise via 127.0.0.1 so the printed URL is
   // actually clickable; real external access uses the operator's known
   // hostname/IP, not the bind wildcard.
@@ -2988,6 +3049,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     url,
     close: () =>
       new Promise<void>((resolveClose, reject) => {
+        // Stop the update poll first so its interval can't fire mid-teardown.
+        updateService?.stop();
         // Terminate the multiplexed event-stream sockets first — an open
         // WebSocket would otherwise keep `server.close()` from completing.
         for (const client of wss.clients) {

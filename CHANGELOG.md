@@ -8,6 +8,81 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Edits to the rendered context files now flow back into the database.** When
+  the GUI is serving a workspace, editing a rendered `.md` file on disk is
+  captured into the DB through the normal write path — so it lands in the
+  changelog (versioned/undoable) and shows up live, exactly as if the change had
+  been made in the GUI. Structured frontmatter and body `key: value` fields
+  round-trip automatically (no hand-written `reverseSync` needed); a file whose
+  changes can't be safely parsed (free-form/custom render) is surfaced as a
+  notice rather than guessed at, so a lossy render can't corrupt a row. Render
+  echoes are suppressed via the manifest, so there is no write loop. New
+  `Lattice.reverseSyncFromFiles(outputDir, opts)` exposes the changelog-aware
+  reverse-sync for embedders.
+- **The browser GUI now updates itself.** When `lattice gui` is launched from an
+  installable copy (a global or project-local install), it runs as a small
+  supervisor that silently installs the latest published version before opening,
+  and keeps checking in the background while you work. When a new version lands it
+  installs it and relaunches the server on the same port; the open tab reconnects,
+  notices the version changed, and reloads onto the new build — no manual refresh,
+  no reinstall step. A copy running from a git checkout or `npx` is left untouched
+  (auto-update is disabled there). A failed install is surfaced in the GUI rather
+  than swallowed. New `GET /api/version` and `GET /api/update/status` report the
+  running version and update state.
+
+### Changed
+
+- **Cloud sharing internals consolidated (no behavior change to live features).**
+  Removed never-surfaced masking machinery — per-cell grants and app-role
+  assignment (their tables, `SECURITY DEFINER` functions, and the unreachable
+  `/api/cloud/cell-share` route) and the `role:` / `subject:` / `source:`
+  column-audience clauses. The live sharing features are unchanged: row
+  `private` / `everyone` / custom "specific people" sharing, table
+  `default_row_visibility` + `never_share`, and the `owner` secret-column mask.
+  The duplicated owner-check and never-share check across the share/grant
+  functions are now single `SECURITY DEFINER` helpers (`lattice_require_owner`,
+  `lattice_table_is_never_share`) — message-for-message identical. A one-time,
+  idempotent convergence rewrites any legacy/unrecognized column audience to
+  `owner` (strictly more restrictive, never widening) so existing clouds upgrade
+  safely. All changes are additive/idempotent and converge on an owner's next
+  secure.
+
+### Fixed
+
+- **An uploaded document (`.pptx`, `.docx`, `.xlsx`, `.csv`, …) could not be
+  previewed, downloaded, or opened — only its extracted text survived.** A
+  browser drag-drop arrives as raw bytes with no local path, and the upload route
+  retained a content-addressed blob only for images and PDFs; every other type
+  had its bytes discarded after text extraction. The file view then had no
+  underlying file to serve, so `GET /api/files/:id/blob` 404'd ("this file has no
+  underlying blob here"). Uploads now retain the original bytes for documents and
+  media — images, PDFs, Office/OpenDocument files, `text/*`, JSON/XML/YAML, RTF,
+  and audio/video — while still discarding arbitrary/unknown binaries (archives,
+  executables, …), which keep their extracted text + description but no blob.
+  Retention is gated on the file type, not on extraction success, so a document
+  whose text fails to extract is still downloadable. (Already-ingested files
+  whose bytes were discarded are not recoverable; re-upload to get a retained
+  copy.)
+- **The file view offered no way to fetch a non-previewable file.** A file with
+  bytes that a browser can't render inline (an Office doc, audio, video) now
+  always shows a **Download** action, so the underlying file is reachable even
+  when "Open in Finder" is unavailable (a remote GUI, or `LATTICE_LOCAL_OPEN=0`);
+  local bytes additionally offer "Open in Finder" when local-open is enabled.
+- **Dropping a single file into the assistant rail now opens the resulting
+  record.** After a one-file ingest the GUI navigates to the new file (or the
+  dedup survivor if it merged a duplicate); multi-file drops do not navigate.
+- **The "Drop to ingest" overlay no longer sticks after a cancelled drag.** The
+  drag overlay is tracked with an enter/leave counter plus window-level
+  `dragend`/`drop` backstops, so leaving via a child element or cancelling the
+  drag outside the window always clears it; it also only appears for file drags.
+- **A deleted record no longer lingers on screen.** When the open record is
+  deleted (by the assistant, another client, or a hard delete), the detail/item
+  view now navigates to the parent table/folder instead of repainting the
+  tombstone; a removed entity/table returns to the dashboard. An explicit trash
+  view still shows soft-deleted rows.
+
 ## [3.3.5] - 2026-06-16
 
 ### Fixed

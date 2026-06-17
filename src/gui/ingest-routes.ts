@@ -111,6 +111,67 @@ function mimeFor(name: string): string {
   return MIME_BY_EXT[extname(name).toLowerCase()] ?? 'application/octet-stream';
 }
 
+/**
+ * Document / data MIME types whose original bytes are worth retaining as a
+ * content-addressed blob on upload, BEYOND the inline-previewable image/PDF set
+ * and the `text/*` prefix handled in {@link isRetainableMime}. A browser
+ * drag-drop arrives as bytes with no local path, so if we don't keep the blob
+ * the original file is gone after text extraction — leaving nothing to download
+ * or open in the file view.
+ */
+const RETAINABLE_DOC_MIMES = new Set<string>([
+  'application/pdf',
+  // Office Open XML (docx / xlsx / pptx)
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  // Legacy MS Office (doc / xls / ppt)
+  'application/msword',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint',
+  // OpenDocument (odt / ods / odp)
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+  // Structured-text / data formats not caught by the text/* prefix
+  'application/json',
+  'application/xml',
+  'application/x-yaml',
+  'application/yaml',
+  'application/rtf',
+  'application/epub+zip',
+]);
+
+function isRetainableMime(mime: string): boolean {
+  return (
+    mime.startsWith('image/') ||
+    mime.startsWith('audio/') ||
+    mime.startsWith('video/') ||
+    mime.startsWith('text/') ||
+    RETAINABLE_DOC_MIMES.has(mime)
+  );
+}
+
+/**
+ * Whether an uploaded file's original bytes should be retained as a blob.
+ *
+ * True for images, audio, video, any `text/*` type, and the document/data
+ * types in {@link RETAINABLE_DOC_MIMES}; false for arbitrary binaries
+ * (`application/octet-stream`, archives, executables, disk images, …) — for
+ * those we keep the extracted text + description but not a blob we can't
+ * preview or do anything useful with. Falls back to the filename's
+ * extension-derived type when the provided content-type is generic, so a
+ * `report.docx` posted as `application/octet-stream` is still recognized.
+ */
+export function shouldRetainUploadBlob(mime: string, name = ''): boolean {
+  // Normalize: drop any parameters (`; charset=…`) and lower-case, so a
+  // `application/json; charset=utf-8` or `TEXT/CSV` still matches.
+  const base = ((mime || '').split(';')[0] ?? '').trim().toLowerCase();
+  if (isRetainableMime(base)) return true;
+  if (!base || base === 'application/octet-stream') return isRetainableMime(mimeFor(name));
+  return false;
+}
+
 /** Build the URL-ingest enrichment context from a route's {@link IngestContext}. */
 function enrichContext(ctx: IngestContext): UrlIngestEnrich {
   return {
@@ -303,10 +364,14 @@ export async function dispatchIngestRoute(
     try {
       await writeFile(tmp, buf);
       result = await extractSource(ctx.db, tmp, mime, name);
-      // Retain a content-addressed blob for previewable uploads (images / PDFs).
-      // Browser drag-drops arrive as bytes with no local path, so this is the
-      // only way the GUI can render an inline preview later.
-      if (ctx.latticeRoot && (mime.startsWith('image/') || mime === 'application/pdf')) {
+      // Retain a content-addressed blob for documents and media (images, PDFs,
+      // office docs, text/data, audio, video). Browser drag-drops arrive as bytes
+      // with no local path, so this is the only way the underlying file can be
+      // previewed, downloaded, or opened later — without it, only the extracted
+      // text survives. Arbitrary/unknown binaries are still discarded (text +
+      // description kept, no blob). Gate on the file TYPE, not on extraction
+      // success: a document whose text fails to extract should still be reachable.
+      if (ctx.latticeRoot && shouldRetainUploadBlob(mime, name)) {
         try {
           const meta = await attachBlob(tmp, ctx.latticeRoot);
           blob = { blob_path: meta.blob_path, sha256: meta.sha256 };

@@ -143,8 +143,6 @@ import {
   generateMemberPassword,
   memberRoleName,
   setRowVisibility,
-  grantCell,
-  revokeCell,
   grantRow,
   revokeRow,
   assertScopedMemberRole,
@@ -1050,32 +1048,6 @@ export async function dispatchDbConfigRoute(
       }
       await setRowVisibility(ctx.db, table, pk, visibility);
       sendJson(res, { ok: true, table, pk, visibility });
-    });
-    return true;
-  }
-
-  // POST /api/cloud/cell-share — per-card audience override. The row owner grants
-  // (or revokes) one member access to one masked cell (table + pk + column),
-  // without changing the column's schema-level audience. Owner-only.
-  if (pathname === '/api/cloud/cell-share' && method === 'POST') {
-    await tryHandler(res, async () => {
-      const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
-      const column = typeof body.column === 'string' ? body.column : '';
-      const grantee = typeof body.grantee === 'string' ? body.grantee : '';
-      const revoke = body.revoke === true;
-      if (!table || !pk || !column || !grantee) {
-        sendJson(res, { error: 'table, pk, column and grantee are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Per-cell sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      if (revoke) await revokeCell(ctx.db, table, pk, column, grantee);
-      else await grantCell(ctx.db, table, pk, column, grantee);
-      sendJson(res, { ok: true, table, pk, column, grantee, revoked: revoke });
     });
     return true;
   }

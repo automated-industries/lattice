@@ -313,12 +313,12 @@ describe('native document extraction', () => {
   });
 
   it('RTF: a \\* destination mid-word does not insert a spurious space', async () => {
-    // `Auto{\*\bkmkstart …}mated` — a bookmark inside a word. The separator must
+    // `Auto{\*\bkmkstart …}mation` — a bookmark inside a word. The separator must
     // only fire after a control word (`\ansi`), not between two body letters.
-    const rtf = '{\\rtf1 Auto{\\*\\bkmkstart _Ref1}mated Industries.\\par}';
+    const rtf = '{\\rtf1 Auto{\\*\\bkmkstart _Ref1}mation Tools.\\par}';
     const r = await parseFile(writeFixture('bkmk.rtf', rtf), undefined, 'bkmk.rtf');
-    expect(r.text).toContain('Automated Industries');
-    expect(r.text).not.toContain('Auto mated');
+    expect(r.text).toContain('Automation Tools');
+    expect(r.text).not.toContain('Auto mation');
   });
 
   it('RTF: \\tab delimiters survive the whitespace collapse', async () => {

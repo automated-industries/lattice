@@ -4,6 +4,7 @@ import type { EntityContextDefinition } from '../schema/entity-context.js';
 import type { LatticeManifest } from '../lifecycle/manifest.js';
 import type { RealtimeBroker, RealtimePayload } from './realtime.js';
 import type { FeedBus } from './feed.js';
+import type { FileLoopbackWatcher } from './file-watcher.js';
 import type { RenderProgressBus } from './render-progress.js';
 import { getAsyncOrSync } from '../db/adapter.js';
 import { rowAccessSummaries } from '../cloud/members.js';
@@ -74,6 +75,12 @@ export interface ActiveDb {
    * wholesale on switch (clients reconnect).
    */
   feed: FeedBus;
+  /**
+   * File loopback watcher (workspace/autoRender mode only; null otherwise).
+   * Captures edits to the rendered tree back into the DB via the changelog path.
+   * Started by startBackgroundRender, stopped by disposeActive.
+   */
+  fileWatcher: FileLoopbackWatcher | null;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**

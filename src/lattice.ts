@@ -2043,6 +2043,26 @@ export class Lattice {
     };
   }
 
+  /**
+   * Run reverse-sync against the rendered tree at `outputDir` and return what was
+   * applied. Unlike {@link reconcile} (which runs reverse-sync with raw SQL as a
+   * pre-render step), this is the changelog-aware entry point the GUI file-loopback
+   * uses: pass `apply` to route each update through a versioned write (so a file
+   * edit is recorded exactly like a GUI edit) and `useDefault` to round-trip
+   * frontmatter + body `key: value` fields for files lacking a hand-written
+   * `reverseSync`. Compares file hashes against the current manifest, so a
+   * render-written file is recognized as an echo and skipped.
+   */
+  async reverseSyncFromFiles(
+    outputDir: string,
+    opts: import('./reverse-sync/engine.js').ReverseSyncProcessOptions = {},
+  ): Promise<import('./types.js').ReverseSyncResult> {
+    const notInit = this._notInitError<import('./types.js').ReverseSyncResult>();
+    if (notInit) return notInit;
+    const prevManifest = readManifest(outputDir);
+    return this._reverseSync.process(outputDir, prevManifest, false, opts);
+  }
+
   watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {
     const notInit = this._notInitError<StopFn>();
     if (notInit) return notInit;

@@ -377,6 +377,52 @@ describe('ingest routes', () => {
     expect(Buffer.from(await blob.arrayBuffer()).equals(png)).toBe(true);
   });
 
+  it('retains a non-image document upload (csv) as a downloadable blob', async () => {
+    // Regression: a browser drag-drop of a document (here a .csv; the original
+    // bug was a .pptx) extracted text but DISCARDED the bytes, so blob_path
+    // stayed null and /blob 404'd — the file view could neither preview nor
+    // download the underlying file. Documents + media now keep their bytes.
+    const { server: sp } = boot();
+    const server = await sp;
+    servers.push(server);
+    const csv = 'region,arr\nNorth America,800\nEMEA,420\n';
+    const res = await fetch(`${server.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/csv', 'x-filename': 'segments.csv' },
+      body: csv,
+    });
+    expect(res.status).toBe(201);
+    const { id } = (await res.json()) as { id: string };
+    const row = await getFile(server.url, id);
+    expect(row.ref_kind).toBe('blob'); // pre-fix: null (bytes discarded)
+    expect(typeof row.blob_path).toBe('string');
+
+    // The retained blob is served back so the file view can download/open it.
+    const blob = await fetch(`${server.url}/api/files/${id}/blob`);
+    expect(blob.status).toBe(200); // pre-fix: 404 "no underlying blob here"
+    expect(await blob.text()).toBe(csv);
+  });
+
+  it('does NOT retain a blob for an arbitrary binary upload (keeps text-only)', async () => {
+    // The other side of the docs+media gate: an unknown/arbitrary binary keeps
+    // the extracted description but no blob — there is nothing useful to preview.
+    const { server: sp } = boot();
+    const server = await sp;
+    servers.push(server);
+    const res = await fetch(`${server.url}/api/ingest/upload`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'firmware.bin' },
+      body: Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]),
+    });
+    expect(res.status).toBe(201);
+    const { id } = (await res.json()) as { id: string };
+    const row = await getFile(server.url, id);
+    expect(row.blob_path == null).toBe(true);
+    expect(row.ref_kind == null).toBe(true);
+    const blob = await fetch(`${server.url}/api/files/${id}/blob`);
+    expect(blob.status).toBe(404);
+  });
+
   it('400s on a missing path', async () => {
     const { server: sp } = boot();
     const server = await sp;
