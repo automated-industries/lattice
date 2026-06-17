@@ -971,14 +971,21 @@ export const appJs = `
         return;
       }
       if (e.kind === 'done') {
-        // Whole-render completion: clear every overlay and let the debounced
-        // refetch snap the counts to their real values.
+        // Whole-render completion: clear every overlay and refetch so counts +
+        // the open record's rendered context snap to their real values.
         Object.keys(renderProgress).forEach(function (table) {
           var s = renderProgress[table];
           if (s) s.done = true;
           clearCardProgress(table);
         });
-        scheduleRealtimeRefresh();
+        // Force the refresh now that the render is COMPLETE — the rendered context
+        // files are fresh on disk. Bypass scheduleRealtimeRefresh's leading-edge
+        // coalescing: the originating change's feed event already fired a refresh
+        // BEFORE the render finished, which would otherwise leave an open card's
+        // rendered-context panel showing the pre-change markdown until a manual
+        // reload (the "card context updated only after I refreshed" bug).
+        if (realtimePending) { clearTimeout(realtimePending); realtimePending = null; }
+        afterMutation().catch(function () { /* swallow — next action retries */ });
         return;
       }
       if (!e.table) return;
@@ -3064,7 +3071,7 @@ export const appJs = `
             (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             // Formatted markdown (rendered context) sits ABOVE the column-by-column
             // data view; the raw fields follow underneath.
-            '<div class="fs-context" id="fs-context"></div>' +
+            '<div class="fs-context" id="fs-context" hidden></div>' +
             '<div class="fs-doc">' + fields.join('') + '</div>' +
             (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
           if (table === 'files') renderFilePreview(row);
@@ -3469,8 +3476,12 @@ export const appJs = `
           return '<div class="fs-context-doc"><div class="md-body">' +
             mdToHtml(stripFrontmatter(f.content)) + '</div></div>';
         }).filter(Boolean).join('');
+        // Populate with FORMATTED html, then reveal — the container starts hidden
+        // so the user never sees an empty/unformatted flash while it loads. Stays
+        // hidden when there's no rendered context to show.
         mount.innerHTML = blocks;
-      }).catch(function () { mount.innerHTML = ''; });
+        mount.hidden = !blocks;
+      }).catch(function () { mount.innerHTML = ''; mount.hidden = true; });
     }
 
     // ────────────────────────────────────────────────────────────

@@ -37,6 +37,10 @@ interface ChatContext {
   junctionTables: Set<string>;
   softDeletable: Set<string>;
   createEntity?: (name: string, columns: string[]) => Promise<string | null>;
+  addColumn?: (
+    table: string,
+    column: string,
+  ) => Promise<{ ok: true; column: string } | { ok: false; error: string }>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   deleteEntity?: DispatchCtx['deleteEntity'];
   /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
@@ -512,6 +516,7 @@ export async function dispatchChatRoute(
     ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
     ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+    ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
   };

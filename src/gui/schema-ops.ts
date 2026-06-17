@@ -6,6 +6,7 @@ import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { getGuiEntities, type FileJunction } from './data.js';
 import type { ActiveDb } from './active-db.js';
 import { secureNewCloudTable } from '../cloud/setup.js';
+import { regenerateAudienceViewFromDb } from '../cloud/audience.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 
 /**
@@ -400,6 +401,87 @@ export async function createUserEntity(
   // skips native/meta/junction + already-described tables). No-op without auth.
   active.generateTableDescription?.(entity, columns);
   return entity;
+}
+
+/**
+ * Add a column to an existing user entity at RUNTIME — no reopen. Mirrors
+ * createUserEntity: ALTER + live-register via `db.addColumn` (so later tool calls
+ * see it this turn), persist to the config (survives a reopen), rebuild the cloud
+ * masking view (so members see it), re-derive canonical context, and record a
+ * revertible audit op. Refuses junctions, native objects, and bookkeeping tables.
+ * The data layer already auto-adds columns on write (mutations.ensureColumns);
+ * this is the explicit, first-class path so the assistant never has to refuse.
+ */
+export async function addUserColumn(
+  active: ActiveDb,
+  table: string,
+  column: string,
+  sessionId: string,
+): Promise<{ ok: true; column: string } | { ok: false; error: string }> {
+  if (!active.validTables.has(table)) return { ok: false, error: `Unknown table "${table}".` };
+  if (
+    active.junctionTables.has(table) ||
+    table.startsWith('_lattice_') ||
+    table.startsWith('__lattice_') ||
+    isNativeEntity(table)
+  ) {
+    return {
+      ok: false,
+      error: `Columns can't be added to "${table}" — it's a system or relationship table.`,
+    };
+  }
+  const col = column
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+  if (!/^[a-z][a-z0-9_]*$/.test(col)) {
+    return { ok: false, error: `"${column}" is not a valid column name.` };
+  }
+  if (new Set(['id', 'deleted_at', 'created_at', 'updated_at']).has(col)) {
+    return { ok: false, error: `"${col}" is a reserved column.` };
+  }
+  const existing = active.db.getRegisteredColumns(table);
+  if (existing && col in existing) {
+    return { ok: false, error: `Column "${col}" already exists on "${table}".` };
+  }
+
+  // ALTER + register on the live DB (no reopen) so the column is usable this turn.
+  await active.db.addColumn(table, col, 'TEXT');
+
+  // Persist to the config so it survives a reopen — best-effort + only for tables
+  // declared in the YAML (introspected / cloud-member tables re-derive on reopen).
+  try {
+    const doc = loadConfigDoc(active.configPath);
+    if (doc.getIn(['entities', table])) {
+      doc.setIn(['entities', table, 'fields', col], { type: 'text' });
+      saveConfigDoc(active.configPath, doc);
+    }
+  } catch {
+    /* the DB ALTER is the source of truth; config persistence is best-effort */
+  }
+
+  // Cloud: the masking view selects an explicit column list, so a new column is
+  // invisible to members until the view is regenerated (mirrors ensureColumns).
+  if (active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db))) {
+    const cols = active.db.getRegisteredColumns(table);
+    const pk = active.db.getPrimaryKey(table);
+    if (cols && pk.length > 0) {
+      await regenerateAudienceViewFromDb(active.db, table, Object.keys(cols), pk);
+    }
+  }
+
+  syncCanonicalContexts(active);
+  await recordSchemaOp(
+    active,
+    'schema.add_column',
+    table,
+    null,
+    { column: col, type: 'text' },
+    `Added column ${col} to ${table}`,
+    sessionId,
+  );
+  return { ok: true, column: col };
 }
 
 /**

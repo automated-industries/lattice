@@ -10,6 +10,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **The assistant can add a field to an existing object.** A new `add_column`
+  tool lets the assistant add a column to a table on request ("add a priority
+  field to projects") — registered live (no reopen), persisted, audited/revertible,
+  and on a cloud the masking view is rebuilt so members see the new field. It had
+  been able to create whole tables but, inconsistently, not add a single column.
 - **The assistant reads your rendered context.** A new `get_row_context` tool
   lets the GUI assistant pull a record's organized, pre-joined rendered context
   (its own fields + related records + the combined summary) in a single call, and
@@ -52,6 +57,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Assistant system prompt trimmed (no behavior change).** Removed instructions that deterministic code already enforces — the "only fetch a URL the user typed" rule (enforced by the ingest_url gate) and the verbose "what you're viewing" block (replaced by resolved record data) — and merged the overlapping "non-technical / do it yourself / don't tell the user to run commands" rules into one.
 - **A plaintext database URL in a config is healed on open.** If a workspace
   config still stores a raw `postgres://…` connection string (with its password)
   in the `db:` line, opening it now moves the URL into the encrypted credential
@@ -84,6 +90,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **An assistant bulk change no longer double-shows as "another client".** A bulk change made in this session (e.g. the assistant's bulk_update) emits one summary while its realtime echo arrives per-row; those echoes are now recognized as our own and suppressed, so the change shows once (as the assistant/you), not again as a separate "CLI / another client" card.
+- **The file-loopback no longer re-ingests a render's own output.** A large render takes longer than the watcher's debounce, so a reverse-sync pass could run mid-render, read the render's half-written files before the manifest hash caught up, and re-import them as spurious "file-edit" changes (e.g. "Updated 9006 rows … file-edit", which also showed out of order in the activity feed). The watcher now defers while a render is in flight and runs once it settles, so the echo check recognizes the render's writes and skips them.
+- **An open record now updates live after the assistant changes it.** When a change triggers a re-render, the open card's rendered-context panel refreshes once the render COMPLETES, instead of showing the pre-change markdown until a manual reload (the post-render refresh was being coalesced away by an earlier one).
+- **"This card" and pasted in-system links now resolve to the actual record.**
+  The assistant deterministically resolves the record you're viewing — and any
+  record you paste a local GUI link to (`…/#/fs/<table>/<id>`) — to its real data
+  (via the permission-gated read) and puts that in context, instead of asking
+  "which card?" or replying "I can't fetch local URLs." Resolution happens in
+  code, not by prompting the model to guess; the prior verbose "what you're
+  viewing" instruction is replaced by the concrete resolved data.
 - **One un-manageable table no longer takes down the whole cloud workspace.** The
   open-time cloud converge is now per-table fault-isolated: if the connecting role
   can't `ALTER`/`GRANT` a table (most often because it was created by a different

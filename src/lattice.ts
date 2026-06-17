@@ -2076,6 +2076,17 @@ export class Lattice {
   }
 
   /**
+   * True while a render is actively writing the context tree + manifest (auto-
+   * render OR a guarded background render). The file-loopback watcher checks this
+   * to avoid reverse-syncing mid-render — a pass then would read half-written
+   * output whose manifest hash hasn't caught up yet and re-ingest the render's
+   * OWN writes as spurious "file-edit" changes.
+   */
+  isRendering(): boolean {
+    return this._autoRenderInFlight;
+  }
+
+  /**
    * Fold the viewer-visible DERIVED observations onto a table's ground rows in one
    * batched changelog read — the render-time, whole-table analogue of
    * {@link foldForViewer} (which is per-row). Read THROUGH this connection: on a
