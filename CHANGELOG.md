@@ -48,6 +48,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `owner` (strictly more restrictive, never widening) so existing clouds upgrade
   safely. All changes are additive/idempotent and converge on an owner's next
   secure.
+- **Member access is now provisioned from one declarative registry.** What a cloud
+  member may read/write — the GUI/identity/changelog bookkeeping tables, the
+  polyfill EXECUTE grants, and the per-table user grants — is centralized in a
+  single source of truth that the secure/reconcile path derives from (and a test
+  asserts: every readable object granted, every owner-only object not). This
+  removes the hand-enumerated GRANT sites behind the recurring "the member's GUI
+  degraded because we forgot to grant X" regressions. No behavior change — the
+  converged grant state is identical.
 
 ### Fixed
 

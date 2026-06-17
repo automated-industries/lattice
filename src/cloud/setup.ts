@@ -4,7 +4,6 @@ import {
   enableChangelogRls,
   enableRlsForTable,
   backfillOwnership,
-  MEMBER_GROUP,
 } from './rls.js';
 import { installCloudSettings } from './settings.js';
 import {
@@ -12,6 +11,11 @@ import {
   regenerateAudienceViewFromDb,
   tableNeedsAudienceView,
 } from './audience.js';
+import {
+  grantMemberTableAccessSql,
+  grantMemberBookkeepingSql,
+  grantMemberExecuteSql,
+} from './member-access.js';
 import { NATIVE_INTERNAL_NAMES } from '../framework/native-entities.js';
 import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
@@ -70,48 +74,23 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
-    const q = `"${table.replace(/"/g, '""')}"`;
     const masked = tableNeedsAudienceView(db.getColumnAudience(table));
-    if (masked) {
-      // Member reads the cell-masking view; base SELECT stays revoked.
-      const v = `"${`${table}_v`.replace(/"/g, '""')}"`;
-      await runAsyncOrSync(db.adapter, `GRANT SELECT ON ${v} TO ${MEMBER_GROUP}`);
-      await runAsyncOrSync(db.adapter, `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`);
-    } else {
-      await runAsyncOrSync(
-        db.adapter,
-        `GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`,
-      );
+    for (const sql of grantMemberTableAccessSql(table, { masked })) {
+      await runAsyncOrSync(db.adapter, sql);
     }
   }
 
-  // (3) GUI/identity bookkeeping tables a member reads/writes DIRECTLY (not via
-  // an RLS-secured user table, so the loop above skips them). Without these the
-  // member's GUI silently degrades to read-only / "save as document":
-  //   - _lattice_gui_meta / _lattice_gui_column_meta — entity-icon + table/column
-  //     descriptions (workspace-global metadata the member reads, and may author);
-  //   - _lattice_gui_audit — the member's own GUI undo/redo log (session-scoped);
-  //   - __lattice_user_identity — the single "who is here" row mirrored on connect.
-  // Guarded by to_regclass so a library-only cloud (no GUI tables) is a no-op;
-  // idempotent, so an already-migrated cloud whose secure ran before these grants
-  // existed self-heals on the owner's next open. NOT __lattice_cell_grants /
-  // __lattice_row_grants — those stay owner-only and are reached only through
-  // SECURITY DEFINER functions, so a member never needs (or gets) a direct grant.
-  const memberSystemGrants: readonly [string, string][] = [
-    ['_lattice_gui_meta', 'SELECT, INSERT, UPDATE'],
-    ['_lattice_gui_column_meta', 'SELECT, INSERT, UPDATE'],
-    ['_lattice_gui_audit', 'SELECT, INSERT'],
-    ['__lattice_user_identity', 'SELECT, INSERT, UPDATE'],
-  ];
-  for (const [tbl, privs] of memberSystemGrants) {
-    await runAsyncOrSync(
-      db.adapter,
-      `DO $LATTICE$ BEGIN
-         IF to_regclass('${tbl}') IS NOT NULL THEN
-           EXECUTE 'GRANT ${privs} ON "${tbl}" TO ${MEMBER_GROUP}';
-         END IF;
-       END $LATTICE$`,
-    );
+  // (3) Bookkeeping tables a member reads/writes DIRECTLY (not via an RLS-secured
+  // user table, so the loop above skips them) — GUI meta/audit, the identity row,
+  // and the per-viewer-filtered changelog. Without these the member's GUI silently
+  // degrades to read-only / "save as document". Derived from the central
+  // MEMBER_READABLE_BOOKKEEPING registry (one source of truth, asserted by a
+  // registry-driven test) and each grant is to_regclass-guarded + idempotent, so a
+  // library-only cloud is a no-op and an already-migrated cloud self-heals on open.
+  // OWNER_ONLY_BOOKKEEPING is intentionally NOT granted — those are reached only
+  // through SECURITY DEFINER functions keyed on session_user.
+  for (const sql of grantMemberBookkeepingSql()) {
+    await runAsyncOrSync(db.adapter, sql);
   }
 
   // (4) Polyfill functions a member's queries depend on (the audit-table
@@ -120,10 +99,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
   // post-revoke) CREATE them itself. Non-fatal: a library cloud that never
   // registered the polyfills simply has nothing to grant.
   try {
-    await runAsyncOrSync(
-      db.adapter,
-      `GRANT EXECUTE ON FUNCTION json_extract(text, text), strftime(text, text) TO ${MEMBER_GROUP}`,
-    );
+    await runAsyncOrSync(db.adapter, grantMemberExecuteSql());
   } catch (err) {
     console.warn(
       '[reconcileCloudMemberAccess] could not grant EXECUTE on polyfills (will retry next open):',
@@ -148,26 +124,9 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
     }
   }
 
-  // (6) Self-heal the one internal bookkeeping table a member reads/writes
-  // directly: __lattice_changelog. `enableChangelogRls` already grants this on
-  // every owner open AND scopes it with a per-viewer RLS policy (a member sees a
-  // derived row only when every source row is visible, and an audit row only when
-  // it owns the row), so the base grant is filtered, not a leak. Re-issuing it
-  // here is idempotent and self-heals a cloud whose grant was dropped (e.g. a
-  // `pg_dump --no-privileges` round-trip). Guarded by to_regclass for a cloud
-  // whose changelog substrate isn't installed. Every OTHER `__lattice_*` table
-  // stays owner-only — members reach owners/row_grants/cell_grants/changes/
-  // member_roles/cloud_settings/member_invites ONLY through SECURITY DEFINER
-  // functions keyed on session_user, so a direct grant there would leak another
-  // member's row existence/ownership/sharing and is intentionally NOT issued.
-  await runAsyncOrSync(
-    db.adapter,
-    `DO $LATTICE$ BEGIN
-       IF to_regclass('__lattice_changelog') IS NOT NULL THEN
-         EXECUTE 'GRANT SELECT, INSERT ON "__lattice_changelog" TO ${MEMBER_GROUP}';
-       END IF;
-     END $LATTICE$`,
-  );
+  // (`__lattice_changelog` is granted via the MEMBER_READABLE_BOOKKEEPING registry
+  // in step (3) — its per-viewer RLS policy, installed by `enableChangelogRls`,
+  // filters reads so the base grant is safe, not a leak.)
 }
 
 /**
