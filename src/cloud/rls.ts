@@ -2,6 +2,10 @@ import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
+import { pkSqlExpr } from '../db/pk.js';
+// Re-exported so existing consumers (cloud/audience.ts) keep importing it from
+// here; the canonical definition now lives in the pure db/pk.ts leaf.
+export { pkSqlExpr } from '../db/pk.js';
 
 /**
  * Run idempotent cloud-bootstrap DDL directly, serialized by the SAME
@@ -58,16 +62,6 @@ export async function runCloudBootstrapSql(db: Lattice, sql: string): Promise<vo
 /** RLS lives only on Postgres clouds. */
 function isPg(db: Lattice): boolean {
   return db.getDialect() === 'postgres';
-}
-
-/** Canonical pk SQL expression, matching `Lattice._pkSqlExpr` but with a caller-chosen
- *  column prefix: `''` for a policy row context (`CAST("id" AS TEXT)`), or `NEW.`/`OLD.`
- *  for a trigger (`CAST(NEW."id" AS TEXT)`). Single column → bare (no separator). */
-export function pkSqlExpr(pkCols: readonly string[], prefix: string): string {
-  if (pkCols.length === 0) {
-    throw new Error('cloud RLS: cannot key a table with no primary key column');
-  }
-  return pkCols.map((c) => `CAST(${prefix}"${c}" AS TEXT)`).join(` || chr(9) || `);
 }
 
 /**

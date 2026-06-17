@@ -56,6 +56,10 @@ import {
 } from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { PostgresAdapter } from './db/postgres.js';
+import {
+  serializeRowPk as _serializeRowPkCodec,
+  serializePkLookup as _serializePkLookupCodec,
+} from './db/pk.js';
 import { SchemaManager } from './schema/manager.js';
 import type { CompiledTableDef } from './schema/manager.js';
 import { assertSafeIdentifier } from './schema/identifier.js';
@@ -2326,8 +2330,6 @@ export class Lattice {
   // truth for both. A single-column key serializes to the bare value (so all
   // pre-2.2.1 single-`id` data stays valid).
 
-  private static readonly _PK_SEP = '\t';
-
   /**
    * The primary-key columns of `table` that PHYSICALLY exist, in declared
    * order. Empty when the table has no Lattice-addressable key — e.g. a table
@@ -2340,16 +2342,9 @@ export class Lattice {
     return this._schema.getPrimaryKey(table).filter((c) => cols.has(c));
   }
 
-  /** Canonical ACL / change-log `pk` string for a row. Matches `cloud/rls.ts` `pkSqlExpr`. */
+  /** Canonical ACL / change-log `pk` string for a row. Matches `db/pk.ts` `pkSqlExpr`. */
   private _serializeRowPk(table: string, row: Row): string {
-    const pkCols = this._resolvedPkCols(table);
-    const cols = pkCols.length > 0 ? pkCols : ['id'];
-    return cols
-      .map((c) => {
-        const v = row[c];
-        return v != null ? String(v as string | number) : '';
-      })
-      .join(Lattice._PK_SEP);
+    return _serializeRowPkCodec(this._resolvedPkCols(table), row);
   }
 
   /**
@@ -2358,15 +2353,7 @@ export class Lattice {
    * {@link _serializeRowPk} keyed it at insert time.
    */
   private _serializePkLookup(table: string, id: PkLookup): string {
-    if (typeof id === 'string') return id; // single-column key — the bare value
-    const pkCols = this._resolvedPkCols(table);
-    if (pkCols.length === 0) return JSON.stringify(id);
-    return pkCols
-      .map((c) => {
-        const v = id[c];
-        return v != null ? String(v as string | number) : '';
-      })
-      .join(Lattice._PK_SEP);
+    return _serializePkLookupCodec(this._resolvedPkCols(table), id);
   }
 
   /**
