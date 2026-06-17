@@ -8,6 +8,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.3.5] - 2026-06-16
+
+### Fixed
+
+- **The GUI's middle pane flashed/reloaded repeatedly, especially during a
+  background render.** A live refresh re-rendered the current view by first
+  wiping it to a loading spinner (`renderRoute`'s frame-first paint, right for a
+  user navigation, wrong for a background refresh), and the background render
+  fired a full reconcile on _every_ table-done (~23× for a 23-table render), so
+  the pane wiped-and-rebuilt over and over. Background refreshes now re-render
+  **in place** — the existing view stays on screen and is swapped only once the
+  new data is ready — and the render reconciles **once** at completion, letting
+  the per-card progress overlay communicate progress meanwhile. User navigation
+  still paints the instant loading frame.
+
+- **The settings drawer reopened itself.** Opening it via a `#/settings/*` link
+  left that hash in the URL after the drawer was closed; because renderRoute
+  reopens the drawer for that hash, a later re-render (submitting a chat message,
+  a live refresh) popped the panel back open. Closing the drawer now resets the
+  URL to the dashboard it overlays, so the URL always reflects what's on screen
+  and the panel never self-reopens.
+
+- **The chat assistant pushed back on bulk requests and falsely reported
+  completion.** Asked to change many rows ("make every row private", "retag all
+  X as Y"), it worked in small per-row batches, hit the tool-loop cap, and
+  claimed "done" after changing only a fraction. The system prompt no longer
+  tells it to batch defensively or police the request's size, and a new
+  **`bulk_update`** tool lets the model describe the change once — a table, a
+  filter (the same `{col, op, val}` filters reads use; omit it for all rows), and
+  what to set (column values and/or `visibility`). The handler applies it to
+  every matching row in one tool call and returns the **true** affected count, so
+  the job completes regardless of size and the assistant reports the real number.
+
+### Security
+
+- `bulk_update` enforces the **same** per-row gating as the single-row tools — no
+  privilege bypass. Column writes go through the audited `updateRow` path, so
+  Postgres RLS confines a member to rows it may edit (a non-owned row is skipped,
+  not counted); visibility changes pre-filter to owned rows and still run through
+  the owner-only `SECURITY DEFINER` function. Hidden tables (secrets, chat
+  storage) remain unreachable, soft-deleted rows are excluded, and every change
+  is individually audited + undoable.
+
 ## [3.3.4] - 2026-06-16
 
 ### Fixed
