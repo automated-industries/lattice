@@ -13,6 +13,14 @@ import {
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { sendJson, readJson } from './http.js';
+import {
+  type ActiveDb,
+  changeVisibleToActiveRole,
+  isDeleteOp,
+  isFeedHiddenTable,
+  readRelationFor,
+  attachRowAccess,
+} from './active-db.js';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
 import { findLatticeRoot, workspaceDir } from '../framework/lattice-root.js';
@@ -48,8 +56,8 @@ import {
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row, TableDefinition } from '../types.js';
-import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
-import { getAsyncOrSync, allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { RealtimeBroker, feedOpForChange } from './realtime.js';
+import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { isPostgresUrl } from '../cloud/url.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
@@ -64,7 +72,6 @@ import {
   upsertColumnMeta,
   upsertTableMeta,
 } from './column-descriptions.js';
-import { rowAccessSummaries } from '../cloud/members.js';
 import { FeedBus } from './feed.js';
 import { fullTextSearch } from '../search/fts.js';
 import {
@@ -656,105 +663,11 @@ function readRowContext(
  * WebSocket. A fresh one is constructed per {@link openConfig}, so a workspace
  * switch starts clean.
  */
-export interface RenderStatusSnapshot {
-  /** Coarse lifecycle: idle (never started) → running → done | error. */
-  phase: 'idle' | 'running' | 'done' | 'error';
-  /** The table currently being rendered, if any. */
-  currentTable?: string;
-  /** Zero-based index of {@link currentTable} among the entity-context tables. */
-  tableIndex?: number;
-  /** Total number of entity-context tables in this render. */
-  tableCount?: number;
-  /** Per-table progress, keyed by table name. */
-  tables: Record<
-    string,
-    { pct: number; entitiesRendered: number; entitiesTotal: number; done: boolean }
-  >;
-  /** Wall-clock duration of the render, set when it completes. */
-  durationMs?: number;
-  /** Error text when {@link phase} is `error`. */
-  error?: string;
-}
-
-export interface ActiveDb {
-  configPath: string;
-  outputDir: string;
-  db: Lattice;
-  validTables: Set<string>;
-  junctionTables: Set<string>;
-  /**
-   * Entity contexts registered on the live Lattice — covers both YAML and
-   * programmatic `defineEntityContext()` registrations. Tables missing here
-   * fall back to {@link ActiveDb.manifest} for row-context discovery.
-   */
-  entityContextByTable: Map<string, EntityContextDefinition>;
-  /**
-   * Last-read render manifest. Used as the fallback when a table has no
-   * registered {@link EntityContextDefinition} but has rendered context
-   * files on disk — typically when the user defines entity contexts in
-   * an mjs/ts module the GUI process never imports. Re-read on each
-   * `openConfig` so manual `lattice render` runs are picked up the next
-   * time the GUI swaps DBs (or on next request via a small cache).
-   */
-  manifest: LatticeManifest | null;
-  softDeletable: Set<string>;
-  /**
-   * Active LISTEN/NOTIFY broker when the underlying Lattice is backed
-   * by Postgres. Null for SQLite (no realtime). Owned by the active
-   * DB; replaced wholesale on switch.
-   */
-  realtime: RealtimeBroker | null;
-  /**
-   * In-process activity feed for the sidebar. Unlike {@link ActiveDb.realtime}
-   * (Postgres-only), this works for every dialect — every audited mutation is
-   * published here and streamed to the sidebar as `feed` messages on the
-   * multiplexed `/api/stream` WebSocket. Owned by the active DB; replaced
-   * wholesale on switch (clients reconnect).
-   */
-  feed: FeedBus;
-  /** Original db: connection string from the YAML, used to spin up the broker. */
-  dbPath: string;
-  /**
-   * Workspace mode: canonical entity contexts are auto-derived and every
-   * mutation schedules a render. Drives whether a runtime schema creation
-   * registers a canonical context inline (so the new table renders without a
-   * reopen). False for plain `lattice gui --config x.yml` (manifest-only).
-   */
-  autoRender: boolean;
-  /**
-   * Per-table render progress bus for this workspace. The background render
-   * publishes {@link RenderProgress} events here; the GUI subscribes via the
-   * `render-progress` messages on the multiplexed `/api/stream` WebSocket. Always
-   * constructed (even for SQLite / non-autoRender) so the stream has a live
-   * target; replaced wholesale on switch.
-   */
-  renderProgress: RenderProgressBus;
-  /**
-   * Aborts the in-flight background render for this workspace. {@link disposeActive}
-   * fires it before closing the DB so the render loop bails before its next query
-   * hits a closing adapter. One controller per workspace (single-use).
-   */
-  renderAbort: AbortController;
-  /** Folded snapshot of {@link renderProgress}, served over `/api/render/status`. */
-  renderState: RenderStatusSnapshot;
-  /**
-   * #2.1 — base table → its audience-masking view (`<table>_v`) for the rows a
-   * MEMBER must read through. A secured cloud REVOKEs base SELECT from members
-   * for any table with a column audience and grants only the masking view, so a
-   * member's base read would be `permission denied`; the read path routes those
-   * SELECTs to the view (writes still target the base under RLS). Empty for an
-   * owner open and for local/SQLite (no masking, base SELECT intact).
-   */
-  maskedReadViews: Map<string, string>;
-  /**
-   * Non-blocking, fail-silent hooks (attached by openConfig) that auto-generate
-   * column / table definitions via a cheap model when a user creates them.
-   * `onColumnsAdded` feeds {@link MutationCtx}; `generateTableDescription` is
-   * called by createUserEntity. No-op without Claude auth.
-   */
-  onColumnsAdded?: (table: string, columns: string[]) => void;
-  generateTableDescription?: (table: string, columns: string[]) => void;
-}
+// The ActiveDb value object + its read-side helpers now live in active-db.ts
+// (the bottom of the GUI module graph). Re-exported here so existing importers
+// of './server.js' (schema-ops.ts + tests) keep working post-extraction.
+export type { ActiveDb, RenderStatusSnapshot } from './active-db.js';
+export { changeVisibleToActiveRole } from './active-db.js';
 
 /**
  * Resolve the rendered-context root for a SPECIFIC config, probing relative to
@@ -1385,87 +1298,6 @@ function startBackgroundRender(active: ActiveDb): void {
       });
     },
   );
-}
-
-/**
- * Attach a per-row `_access` summary (visibility + ownedByMe [+ grantees]) onto
- * each row so the GUI's sharing affordance renders. The frontend hides the share
- * UI when `_access` is absent, so this is what makes cloud sharing visible again
- * (the 3.0 RLS rewrite dropped the old enrichment without a replacement). No-op
- * off a secured cloud. Each row's key is its canonical pk string (single = bare
- * value, composite = TAB-joined), matching `__lattice_owners.pk`.
- */
-/**
- * #4.3 — should a realtime change envelope be forwarded to the role THIS server
- * is connected as? The NOTIFY fan-out is global (every change on the whole cloud),
- * so without this gate a member's realtime/feed stream would leak the pk +
- * existence + editor (`owner_role`) of rows the member cannot read. For an
- * `upsert` we probe the row's visibility through the SAME SECURITY-DEFINER
- * function RLS uses (keyed on `session_user` = this connection's role), so the
- * filter is inherently per-recipient. A `delete` can't be probed (the ownership
- * record is removed by the delete trigger) — those are still forwarded so a client
- * drops a row it may be showing, but the caller STRIPS `owner_role` from the
- * forwarded delete so the editor of an unreadable row is never disclosed. No-op
- * (always visible) on a non-cloud single-user SQLite DB. Fails CLOSED (don't
- * forward) on a probe error, logging it.
- */
-export async function changeVisibleToActiveRole(
-  db: Lattice,
-  payload: RealtimePayload,
-): Promise<boolean> {
-  if (db.getDialect() !== 'postgres') return true; // single-user local — nothing to gate
-  if (payload.op === 'delete' || payload.op === 'DELETE') return true; // can't probe; owner_role stripped by caller
-  if (!payload.table_name || !payload.pk) return false;
-  try {
-    const row = (await getAsyncOrSync(db.adapter, `SELECT lattice_row_visible(?, ?) AS v`, [
-      payload.table_name,
-      payload.pk,
-    ])) as { v?: unknown } | undefined;
-    return row?.v === true || row?.v === 't' || row?.v === 1;
-  } catch (e) {
-    console.warn('[realtime] visibility probe failed (dropping change):', (e as Error).message);
-    return false;
-  }
-}
-
-/** True for a delete op (which can't be visibility-probed post-hoc). */
-function isDeleteOp(op: string): boolean {
-  return op === 'delete' || op === 'DELETE';
-}
-
-/**
- * Internal plumbing tables (the assistant's own chat storage + every `_lattice*`
- * bookkeeping table) are NOT user activity — they must never surface as feed
- * pills. files/secrets/notes etc. stay visible. Shared by the multiplexed event
- * stream's two feed sources (the local feed bus + the cloud broker merge).
- */
-function isFeedHiddenTable(t: string): boolean {
-  return t.startsWith('_lattice') || t.startsWith('__lattice') || isInternalNativeEntity(t);
-}
-
-/**
- * #2.1 — the relation a SELECT for `table` should target: the audience-masking
- * view (`<table>_v`) when this (member) connection lost base SELECT, else the base
- * table itself. Passing `<table>_v` to `db.query`/`db.get`-style SELECTs is safe —
- * the view is unregistered (column validation passes through) so it never appears
- * as a sidebar entity, and the view re-applies row visibility + cell masking. Only
- * reads route here; writes always target the base table under RLS.
- */
-function readRelationFor(active: ActiveDb, table: string): string {
-  return active.maskedReadViews.get(table) ?? table;
-}
-
-async function attachRowAccess(db: Lattice, table: string, rows: Row[]): Promise<void> {
-  if (rows.length === 0) return;
-  const pkCols = db.getPrimaryKey(table);
-  if (pkCols.length === 0) return;
-  const pkOf = (r: Row): string => pkCols.map((c) => String(r[c])).join('\t');
-  const summaries = await rowAccessSummaries(db, table, rows.map(pkOf));
-  if (summaries.size === 0) return;
-  for (const r of rows) {
-    const a = summaries.get(pkOf(r));
-    if (a) (r as Row & { _access?: unknown })._access = a;
-  }
 }
 
 /**
