@@ -1,8 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
-import { existsSync } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { sendJson, readJson } from './http.js';
 import {
   type ActiveDb,
@@ -10,15 +9,7 @@ import {
   isDeleteOp,
   isFeedHiddenTable,
 } from './active-db.js';
-import {
-  resolveOutputDirForConfig,
-  friendlyConfigName,
-  listConfigs,
-  createBlankConfig,
-  deleteDatabaseFiles,
-} from './config-paths.js';
 import { openConfig, startBackgroundRender, disposeActive } from './lifecycle.js';
-import { parseConfigFile } from '../config/parser.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
 import {
   listWorkspaces,
@@ -52,6 +43,7 @@ import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
 import { handleWorkspacesRoutes, type WorkspacesRoutesDeps } from './workspaces-routes.js';
+import { handleDatabasesRoutes, type DatabasesRoutesDeps } from './databases-routes.js';
 import {
   readIdentity,
   writeIdentity,
@@ -424,6 +416,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
   const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
+  const databasesDeps: DatabasesRoutesDeps = { host, autoRender };
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -511,158 +504,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
         if (await handleWorkspacesRoutes(req, res, ctx, workspacesDeps)) return;
 
-        if (method === 'GET' && pathname === '/api/databases') {
-          const parsedActive = parseConfigFile(active.configPath);
-          // Friendly name comes from the YAML's optional `name:` key, falling
-          // back to the config basename.
-          const friendlyLabel = friendlyConfigName(parsedActive.name, active.configPath);
-          const kind: 'local' | 'cloud' = active.realtime ? 'cloud' : 'local';
-          sendJson(res, {
-            current: {
-              path: active.configPath,
-              dbFile: basename(parsedActive.dbPath),
-              label: friendlyLabel,
-              kind,
-            },
-            configs: listConfigs(active.configPath),
-          });
-          return;
-        }
-        if (method === 'POST' && pathname === '/api/databases/switch') {
-          const body = (await readJson<unknown>(req)) as { path?: unknown };
-          if (typeof body.path !== 'string') {
-            sendJson(res, { error: 'path must be a string' }, 400);
-            return;
-          }
-          const newPath = resolve(body.path);
-          if (!existsSync(newPath)) {
-            sendJson(res, { error: `Config not found: ${newPath}` }, 400);
-            return;
-          }
-          // Try to open the new config first; only swap once it succeeds so a
-          // bad config doesn't leave the server with no active DB. Common
-          // failure mode: switching back to a cloud DB whose saved credential
-          // was rotated or whose Postgres is now unreachable. Surface the
-          // raw error verbatim so the UI's toast names the real cause.
-          let next: ActiveDb;
-          try {
-            // Resolve the rendered-context root for THIS config (probing its
-            // own directory), not the launch-wide outputDir. Reusing one
-            // outputDir across every DB switch is what bled one DB's rendered
-            // "files" view into another DB that had none of its own.
-            next = await openConfig(newPath, resolveOutputDirForConfig(newPath), autoRender);
-          } catch (e) {
-            const err = e as Error & { code?: string };
-            console.error(`[dbconfig.switch] openConfig(${newPath}) failed:`, err);
-            const codePrefix = err.code ? `[${err.code}] ` : '';
-            sendJson(
-              res,
-              { error: `Failed to switch to ${newPath}: ${codePrefix}${err.message}` },
-              500,
-            );
-            return;
-          }
-          await disposeActive(active);
-          active = activeRef = next;
-          startBackgroundRender(active); // render the switched-to DB's tree off the response path
-          sendJson(res, { ok: true, path: active.configPath });
-          return;
-        }
-        if (method === 'POST' && pathname === '/api/databases/create') {
-          const body = (await readJson<unknown>(req)) as { name?: unknown };
-          if (typeof body.name !== 'string' || !body.name.trim()) {
-            sendJson(res, { error: 'name must be a non-empty string' }, 400);
-            return;
-          }
-          const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
-          const next = await openConfig(
-            newConfigPath,
-            resolveOutputDirForConfig(newConfigPath),
-            autoRender,
-          );
-          await disposeActive(active);
-          active = activeRef = next;
-          startBackgroundRender(active); // render the newly-created DB's tree off the response path
-          sendJson(res, { ok: true, path: active.configPath });
-          return;
-        }
-        if (method === 'POST' && pathname === '/api/databases/delete') {
-          const body = (await readJson<unknown>(req)) as { path?: unknown };
-          if (typeof body.path !== 'string' || !body.path.trim()) {
-            sendJson(res, { error: 'path must be a non-empty string' }, 400);
-            return;
-          }
-          const target = resolve(body.path);
-          // Only delete a config we actually list (same directory as the
-          // active config). This stops the endpoint from being coaxed into
-          // unlinking arbitrary files outside the database set.
-          const known = listConfigs(active.configPath);
-          const match = known.find((c) => resolve(c.path) === target);
-          if (!match) {
-            sendJson(res, { error: `Not a known database config: ${target}` }, 400);
-            return;
-          }
-          // When deleting the active database we must switch away first so the
-          // SQLite file handle is released (and the server keeps an active DB).
-          let switchedTo: string | null = null;
-          if (resolve(active.configPath) === target) {
-            const fallback = known.find((c) => resolve(c.path) !== target);
-            if (!fallback) {
-              sendJson(
-                res,
-                {
-                  error:
-                    'Cannot delete the only database. Create or add another database first, then delete this one.',
-                },
-                400,
-              );
-              return;
-            }
-            let next: ActiveDb;
-            try {
-              next = await openConfig(
-                fallback.path,
-                resolveOutputDirForConfig(fallback.path),
-                autoRender,
-              );
-            } catch (e) {
-              const err = e as Error & { code?: string };
-              const codePrefix = err.code ? `[${err.code}] ` : '';
-              sendJson(
-                res,
-                {
-                  error: `Cannot delete: failed to switch to ${fallback.path} first: ${codePrefix}${err.message}`,
-                },
-                500,
-              );
-              return;
-            }
-            await disposeActive(active);
-            active = activeRef = next;
-            startBackgroundRender(active); // render the fallback DB's tree off the response path
-            switchedTo = active.configPath;
-          }
-          // Surface any filesystem failure loudly rather than
-          // half-deleting silently.
-          let deleted: { deletedConfig: string; deletedDbFile: string | null };
-          try {
-            deleted = deleteDatabaseFiles(target);
-          } catch (e) {
-            sendJson(
-              res,
-              { error: `Failed to delete database files: ${(e as Error).message}` },
-              500,
-            );
-            return;
-          }
-          sendJson(res, {
-            ok: true,
-            deletedConfig: deleted.deletedConfig,
-            deletedDbFile: deleted.deletedDbFile,
-            switchedTo,
-          });
-          return;
-        }
+        // ── Databases: list / switch / create / delete (extracted leaf — databases-routes.ts) ──
+        if (await handleDatabasesRoutes(req, res, ctx, databasesDeps)) return;
 
         // ── GUI-only metadata (per-entity icon overrides) ─────────────────
         if (method === 'PUT' && pathname.startsWith('/api/gui-meta/')) {
