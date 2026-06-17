@@ -82,6 +82,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   view now navigates to the parent table/folder instead of repainting the
   tombstone; a removed entity/table returns to the dashboard. An explicit trash
   view still shows soft-deleted rows.
+- **Ingest enrichment no longer reports a contradictory result.** The "captured
+  as a new note — it didn't fit any existing record" fallback is now gated on a
+  single "matched or wrote anything" signal (file-description update, link, or
+  created entity), so it can't fire after the ingest already updated/linked a
+  record. Enrichment feed events are also attributed to the actual originator
+  (the AI path shows the AI badge, not always `ingest`).
 
 ## [3.3.5] - 2026-06-16
 
