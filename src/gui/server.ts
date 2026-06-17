@@ -602,6 +602,12 @@ export interface ActiveDb {
    * Started by startBackgroundRender, stopped by disposeActive.
    */
   fileWatcher: FileLoopbackWatcher | null;
+  /**
+   * Once-guard: true after the broker→re-render subscription is wired (eager
+   * per-viewer freshness — a remote change re-renders this member's tree). Set in
+   * {@link startBackgroundRender}, which can be called more than once per ActiveDb.
+   */
+  eagerRenderWired?: boolean;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**
@@ -1239,6 +1245,18 @@ function startBackgroundRender(active: ActiveDb): void {
   // single "begin serving this workspace" chokepoint). Echo suppression keys off
   // the manifest, so the initial render's own writes are never re-ingested.
   active.fileWatcher?.start();
+  // Eager per-viewer freshness: a REMOTE change (another client's write, or the
+  // owner re-sharing / un-sharing a row) schedules a debounced re-render so this
+  // member's RLS-scoped context tree reflects the new visibility promptly. Wired
+  // once per ActiveDb; the broker is stopped in disposeActive, so the callback
+  // can't fire afterward. requestRender reuses the coalesced + pending-requeue
+  // auto-render path, so a burst of changes collapses to one re-render.
+  if (!active.eagerRenderWired && active.realtime) {
+    active.eagerRenderWired = true;
+    active.realtime.subscribePayload(() => {
+      active.db.requestRender();
+    });
+  }
   if (active.renderState.phase === 'running') return;
   active.renderState.phase = 'running';
   const db = active.db;

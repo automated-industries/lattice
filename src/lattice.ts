@@ -1964,6 +1964,17 @@ export class Lattice {
   }
 
   /**
+   * Request a debounced re-render (the same coalesced, pending-requeue path that
+   * a local write triggers). Used to eagerly refresh a cloud member's rendered
+   * tree when a REMOTE change arrives — notably an owner re-sharing or un-sharing
+   * a row, after which the member's per-viewer projection must be recompiled. A
+   * no-op when auto-render isn't enabled.
+   */
+  requestRender(): void {
+    this._scheduleAutoRender();
+  }
+
+  /**
    * Fold the viewer-visible DERIVED observations onto a table's ground rows in one
    * batched changelog read — the render-time, whole-table analogue of
    * {@link foldForViewer} (which is per-row). Read THROUGH this connection: on a

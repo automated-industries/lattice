@@ -23,7 +23,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   connection and through the per-column masking view — so the rendered markdown a
   member's assistant reads off disk contains only the rows they may see, with
   owner-only columns blanked, and with the per-viewer enrichment values they're
-  allowed to see folded in. This also fixes a member render of a table with a
+  allowed to see folded in. When sharing changes — a row shared or un-shared — the
+  affected member's context tree re-renders promptly (no manual refresh), so it
+  never lingers on a stale view. This also fixes a member render of a table with a
   masked column, which previously failed outright. Owners and local single-user
   workspaces render the full tree exactly as before.
 - **Edits to the rendered context files now flow back into the database.** When

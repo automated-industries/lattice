@@ -61,6 +61,16 @@ function allRenderedText(dir: string): string {
   return out;
 }
 
+/** Poll a predicate until true or timeout; returns whether it became true. */
+async function pollUntil(fn: () => boolean, timeoutMs = 15000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (fn()) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
 async function waitForRender(gui: GuiServerHandle, timeoutMs = 25000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -317,5 +327,98 @@ describe.skipIf(!PG_URL)('WS8b: per-viewer rendered context (render-through-RLS)
     // value — folded over the ground truth, which no longer appears.
     expect(rendered).toContain('ENRICHED_BODY_W1');
     expect(rendered).not.toContain('GROUND_BODY_W1');
+  });
+
+  it('eagerly re-renders a member tree when the owner shares a new row (no manual refresh)', async () => {
+    const dbname = `lattice_pvre_${randomBytes(4).toString('hex')}`;
+    databases.push(dbname);
+    const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+    await admin.query(`CREATE DATABASE "${dbname}"`);
+    await admin.end();
+
+    const owner = new Lattice(dbUrl(dbname), { encryptionKey: 'pvr-test-key' });
+    registerNativeEntities(owner);
+    owner.define('widgets', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', deleted_at: 'TEXT' },
+      render: () => '',
+      outputFile: 'widgets.md',
+    });
+    owner.define('__lattice_user_identity', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        display_name: "TEXT NOT NULL DEFAULT ''",
+        email: "TEXT NOT NULL DEFAULT ''",
+        updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: '.lattice-native/user-identity.md',
+    });
+    await owner.init();
+    // w9 starts PRIVATE — the member cannot see it on first render.
+    await owner.insert('widgets', { id: 'w9', body: 'LATER_SHARED_W9' });
+    await secureCloud(owner);
+
+    const role = `lm_${randomBytes(3).toString('hex')}`;
+    roles.push(role);
+    const pw = generateMemberPassword();
+    await provisionMemberRole(owner, role, pw);
+    owner.close();
+
+    // Owner GUI once → GUI-meta tables.
+    {
+      const ownerTmp = mkdtempSync(join(tmpdir(), `pvre-owner-${randomBytes(3).toString('hex')}-`));
+      dirs.push(ownerTmp);
+      const ownerRoot = join(ownerTmp, '.lattice');
+      const ownerWs = addWorkspace(ownerRoot, {
+        displayName: 'Owner',
+        db: dbUrl(dbname),
+        makeActive: true,
+      });
+      const ownerPaths = resolveWorkspacePaths(ownerRoot, ownerWs);
+      mkdirSync(ownerPaths.contextDir, { recursive: true });
+      servers.push(
+        await startGuiServer({
+          configPath: ownerPaths.configPath,
+          outputDir: ownerPaths.contextDir,
+          port: 0,
+          openBrowser: false,
+        }),
+      );
+    }
+
+    // Member GUI (autoRender) → first render: w9 not visible yet.
+    const tmp = mkdtempSync(join(tmpdir(), `pvre-${randomBytes(3).toString('hex')}-`));
+    dirs.push(tmp);
+    const root = join(tmp, '.lattice');
+    const ws = addWorkspace(root, {
+      displayName: 'Eager Cloud',
+      db: dbUrl(dbname, role, pw),
+      makeActive: true,
+    });
+    const paths = resolveWorkspacePaths(root, ws);
+    mkdirSync(paths.contextDir, { recursive: true });
+    const member = await startGuiServer({
+      configPath: paths.configPath,
+      outputDir: paths.contextDir,
+      port: 0,
+      openBrowser: false,
+      autoRender: true,
+    });
+    servers.push(member);
+
+    await waitForRender(member);
+    expect(allRenderedText(paths.contextDir)).not.toContain('LATER_SHARED_W9');
+
+    // Owner shares w9 with everyone (a pure sharing change — no user-table write).
+    // The change-feed NOTIFY must reach the member's broker and eagerly re-render.
+    const opool = new pg.Pool({ connectionString: dbUrl(dbname), max: 1 });
+    await opool.query(`SELECT lattice_set_row_visibility('widgets','w9','everyone')`);
+    const appeared = await pollUntil(() =>
+      allRenderedText(paths.contextDir).includes('LATER_SHARED_W9'),
+    );
+    await opool.end();
+
+    expect(appeared).toBe(true); // re-rendered without any manual action
   });
 });

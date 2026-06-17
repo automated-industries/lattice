@@ -311,6 +311,11 @@ BEGIN
   PERFORM lattice_require_owner(p_table, p_pk, 'change its sharing');
   UPDATE "__lattice_owners" SET "visibility" = p_visibility, "updated_at" = now()
     WHERE "table_name" = p_table AND "pk" = p_pk;
+  -- Emit a change-feed entry so the realtime NOTIFY fires: a sharing change alters
+  -- what members may see, so their clients must refetch + re-render even though no
+  -- user-table row was written.
+  INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
+    VALUES (p_table, p_pk, 'upsert', session_user);
 END $fn$;
 
 -- Owner-only: grant a specific member access to a row (sets visibility = 'custom').
@@ -326,6 +331,9 @@ BEGIN
   INSERT INTO "__lattice_row_grants" ("table_name","pk","grantee_role","granted_by")
     VALUES (p_table, p_pk, p_grantee, session_user)
     ON CONFLICT ("table_name","pk","grantee_role") DO NOTHING;
+  -- Change-feed entry → realtime NOTIFY so the granted member re-renders.
+  INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
+    VALUES (p_table, p_pk, 'upsert', session_user);
 END $fn$;
 
 -- Owner-only: revoke a member's access to a row.
@@ -335,6 +343,10 @@ BEGIN
   PERFORM lattice_require_owner(p_table, p_pk, 'revoke access');
   DELETE FROM "__lattice_row_grants"
     WHERE "table_name" = p_table AND "pk" = p_pk AND "grantee_role" = p_grantee;
+  -- Change-feed entry → realtime NOTIFY so the revoked member re-renders (their
+  -- now-stale derived values revert to ground truth on the next render).
+  INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
+    VALUES (p_table, p_pk, 'upsert', session_user);
 END $fn$;
 
 -- Can the connected member see a source? Reduces to the source row's own RLS, so
