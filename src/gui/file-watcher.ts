@@ -75,6 +75,16 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
       pending = true;
       return;
     }
+    // Never reverse-sync while a render is in flight. A render rewrites the
+    // context files + manifest; a pass now would read the render's own (possibly
+    // half-written) output before its manifest hash catches up, mismatch the echo
+    // check, and re-ingest the render's writes as spurious "file-edit" changes
+    // (e.g. "Updated 9006 rows … file-edit"). Defer until the render settles —
+    // reschedule so we re-check after the debounce rather than dropping the pass.
+    if (deps.db.isRendering()) {
+      schedule();
+      return;
+    }
     running = true;
     try {
       await deps.db.reverseSyncFromFiles(deps.outputDir, { useDefault: true, apply, onSkip });

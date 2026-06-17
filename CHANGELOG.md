@@ -90,6 +90,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ### Fixed
 
 - **An assistant bulk change no longer double-shows as "another client".** A bulk change made in this session (e.g. the assistant's bulk_update) emits one summary while its realtime echo arrives per-row; those echoes are now recognized as our own and suppressed, so the change shows once (as the assistant/you), not again as a separate "CLI / another client" card.
+- **The file-loopback no longer re-ingests a render's own output.** A large render takes longer than the watcher's debounce, so a reverse-sync pass could run mid-render, read the render's half-written files before the manifest hash caught up, and re-import them as spurious "file-edit" changes (e.g. "Updated 9006 rows … file-edit", which also showed out of order in the activity feed). The watcher now defers while a render is in flight and runs once it settles, so the echo check recognizes the render's writes and skips them.
 - **An open record now updates live after the assistant changes it.** When a change triggers a re-render, the open card's rendered-context panel refreshes once the render COMPLETES, instead of showing the pre-change markdown until a manual reload (the post-render refresh was being coalesced away by an earlier one).
 - **"This card" and pasted in-system links now resolve to the actual record.**
   The assistant deterministically resolves the record you're viewing — and any
