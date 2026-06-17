@@ -50,6 +50,16 @@ describe('crawlUrl', () => {
     ).rejects.toThrow(/HTTP 404/);
   });
 
+  it('throws a clear, actionable error when a site blocks automated access (403)', async () => {
+    // noJs skips the headless-browser retry, so this exercises the final
+    // "blocked — paste the text manually" message rather than a cryptic HTTP code.
+    const f = (() =>
+      Promise.resolve(new Response('forbidden', { status: 403 }))) as unknown as typeof fetch;
+    await expect(
+      crawlUrl('https://example.com/blocked', { fetcher: f, allowPrivate: true, noJs: true }),
+    ).rejects.toThrow(/blocked automated access/i);
+  });
+
   it('blocks a 3xx redirect to a private address (SSRF)', async () => {
     // First (public) hop is allowed; the 302 Location targets a private host and
     // must be re-validated + rejected before it is followed.

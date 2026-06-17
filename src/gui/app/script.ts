@@ -6034,7 +6034,11 @@ export const appJs = `
 
       var inviteBtn = host.querySelector('[data-act="open-invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
-        showInviteMemberModal(info);
+        // Refresh the members list after a successful invite so the new invitee
+        // appears ("Invited") without a manual reload.
+        showInviteMemberModal(info, function () {
+          if (typeof loadMembers === 'function') loadMembers();
+        });
       });
 
       // Members list: the owner sees the owner + every member role; a member
@@ -6315,7 +6319,7 @@ export const appJs = `
       });
     }
 
-    function showInviteMemberModal(info) {
+    function showInviteMemberModal(info, onInvited) {
       // Owner-only invite: collect the invitee's email; the server provisions a
       // scoped role and returns ONE email-bound token carrying its credential.
       // The invitee redeems it with the same email in "Join a cloud" — no
@@ -6340,6 +6344,7 @@ export const appJs = `
           }).then(function (res) {
             gaTrack('member_invite', {}); // event only — never the invitee email
             showInviteTokenModal(res || {});
+            if (typeof onInvited === 'function') onInvited();
           });
         },
       });

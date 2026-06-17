@@ -123,16 +123,23 @@ export async function enrichWithLlm(
       table: 'files',
       op: 'update',
       rowId: fileId,
-      source: 'ingest',
+      source: mctx.source,
       summary: `Couldn't auto-link "${name}": AI client unavailable`,
     });
     return [];
   }
   const temperature = aggressivenessToTemperature(aggressiveness);
+  // Single source of truth for "did this ingest match or write anything?" — the
+  // last-resort note must never claim "didn't fit any existing record" when it
+  // actually updated the file's description, linked it, or created an entity.
+  let matchedOrWrote = false;
   let description = '';
   try {
     description = (await summarizeText(client, text, name, temperature, untrusted)).trim();
-    if (description) await updateRow(mctx, 'files', fileId, { description });
+    if (description) {
+      await updateRow(mctx, 'files', fileId, { description });
+      matchedOrWrote = true;
+    }
   } catch (e) {
     console.warn('[ingest] LLM description failed:', (e as Error).message);
   }
@@ -170,7 +177,7 @@ export async function enrichWithLlm(
             table: 'files',
             op: 'update',
             rowId: fileId,
-            source: 'ingest',
+            source: mctx.source,
             summary: `Couldn't create link table files ↔ ${m.table}: ${msg}`,
           });
         }
@@ -193,7 +200,7 @@ export async function enrichWithLlm(
               table: jx.junction,
               op: 'schema',
               rowId: null,
-              source: 'ingest',
+              source: mctx.source,
               summary: `Created link table files ↔ ${m.table} and linked this file`,
             });
           }
@@ -206,7 +213,7 @@ export async function enrichWithLlm(
             table: 'files',
             op: 'update',
             rowId: fileId,
-            source: 'ingest',
+            source: mctx.source,
             summary: `Couldn't auto-link "${name}" to ${m.table}: ${msg}`,
           });
         }
@@ -217,7 +224,7 @@ export async function enrichWithLlm(
           table: 'files',
           op: 'update',
           rowId: fileId,
-          source: 'ingest',
+          source: mctx.source,
           summary: `Looks related to ${m.table} (${m.id})`,
         });
       }
@@ -290,6 +297,7 @@ export async function enrichWithLlm(
     // Last resort: nothing linked AND nothing created, at high aggressiveness —
     // capture the source as a native `notes` object so it isn't lost.
     if (
+      !matchedOrWrote &&
       linkedCount === 0 &&
       createdCount === 0 &&
       aggressiveness >= 0.66 &&
@@ -308,7 +316,7 @@ export async function enrichWithLlm(
           table: 'notes',
           op: 'insert',
           rowId: noteId,
-          source: 'ingest',
+          source: mctx.source,
           summary: `Created a new note "${title}" — it didn't fit any existing record`,
         });
       } catch (e) {
@@ -325,7 +333,7 @@ export async function enrichWithLlm(
       table: 'files',
       op: 'update',
       rowId: fileId,
-      source: 'ingest',
+      source: mctx.source,
       summary: `Couldn't auto-link "${name}": ${msg}`,
     });
     return [];
