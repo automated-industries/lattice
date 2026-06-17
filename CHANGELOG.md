@@ -77,6 +77,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   drag overlay is tracked with an enter/leave counter plus window-level
   `dragend`/`drop` backstops, so leaving via a child element or cancelling the
   drag outside the window always clears it; it also only appears for file drags.
+- **A deleted record no longer lingers on screen.** When the open record is
+  deleted (by the assistant, another client, or a hard delete), the detail/item
+  view now navigates to the parent table/folder instead of repainting the
+  tombstone; a removed entity/table returns to the dashboard. An explicit trash
+  view still shows soft-deleted rows.
 
 ## [3.3.5] - 2026-06-16
 

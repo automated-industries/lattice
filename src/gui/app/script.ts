@@ -2412,7 +2412,9 @@ export const appJs = `
       var myGen = renderGen;
       var t = tableByName(tableName);
       if (!t) {
-        setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>');
+        // The entity/table was removed (e.g. the assistant dropped it) — return to
+        // the dashboard rather than painting a dead "Unknown entity" view.
+        location.hash = '#/';
         return;
       }
       var d = displayFor(tableName);
@@ -2432,6 +2434,14 @@ export const appJs = `
       Promise.all(fetches).then(function (results) {
         if (myGen !== renderGen) return; // superseded by a newer navigation
         var row = results[0];
+
+        // The open record was deleted out from under the view (assistant, another
+        // client, or a hard delete) — don't repaint a tombstone. Fall back to the
+        // parent table, unless the user is intentionally browsing this table's trash.
+        if (!row || (row.deleted_at && tableViewMode[tableName] !== 'trash')) {
+          location.hash = '#/objects/' + encodeURIComponent(tableName);
+          return;
+        }
 
         function paint(editing) {
           var rows = [];
@@ -2602,6 +2612,12 @@ export const appJs = `
 
         paint(false);
       }).catch(function (err) {
+        // A 404 means the row was hard-deleted out from under the view — go to the
+        // parent table instead of a dead "Failed" pane. Other errors still surface.
+        if (/not found|404|no row|does not exist/i.test(err.message || '')) {
+          location.hash = '#/objects/' + encodeURIComponent(tableName);
+          return;
+        }
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
@@ -3006,7 +3022,13 @@ export const appJs = `
         if (!leaf || leaf.type !== 'node') throw new Error('Bad item path');
         var table = leaf.table, id = leaf.id, row = leaf.row;
         var t = tableByName(table);
-        if (!t) { setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'); return; }
+        if (!t) { location.hash = '#/'; return; } // table removed → dashboard
+        // The open record was deleted out from under the view — fall back to the
+        // parent folder rather than repaint a tombstone (respect an explicit trash view).
+        if (!row || (row.deleted_at && tableViewMode[table] !== 'trash')) {
+          location.hash = '#/fs/' + encodeURIComponent(table);
+          return;
+        }
         var d = displayFor(table);
         var bt = belongsToColumns(t);
         var rels = fsRelations(table);
