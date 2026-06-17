@@ -971,14 +971,21 @@ export const appJs = `
         return;
       }
       if (e.kind === 'done') {
-        // Whole-render completion: clear every overlay and let the debounced
-        // refetch snap the counts to their real values.
+        // Whole-render completion: clear every overlay and refetch so counts +
+        // the open record's rendered context snap to their real values.
         Object.keys(renderProgress).forEach(function (table) {
           var s = renderProgress[table];
           if (s) s.done = true;
           clearCardProgress(table);
         });
-        scheduleRealtimeRefresh();
+        // Force the refresh now that the render is COMPLETE — the rendered context
+        // files are fresh on disk. Bypass scheduleRealtimeRefresh's leading-edge
+        // coalescing: the originating change's feed event already fired a refresh
+        // BEFORE the render finished, which would otherwise leave an open card's
+        // rendered-context panel showing the pre-change markdown until a manual
+        // reload (the "card context updated only after I refreshed" bug).
+        if (realtimePending) { clearTimeout(realtimePending); realtimePending = null; }
+        afterMutation().catch(function () { /* swallow — next action retries */ });
         return;
       }
       if (!e.table) return;
