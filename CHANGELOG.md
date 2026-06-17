@@ -57,6 +57,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Assistant system prompt trimmed (no behavior change).** Removed instructions that deterministic code already enforces — the "only fetch a URL the user typed" rule (enforced by the ingest_url gate) and the verbose "what you're viewing" block (replaced by resolved record data) — and merged the overlapping "non-technical / do it yourself / don't tell the user to run commands" rules into one.
 - **A plaintext database URL in a config is healed on open.** If a workspace
   config still stores a raw `postgres://…` connection string (with its password)
   in the `db:` line, opening it now moves the URL into the encrypted credential
