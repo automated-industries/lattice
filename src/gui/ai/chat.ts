@@ -29,6 +29,11 @@ export const DEFAULT_MODEL = 'claude-haiku-4-5';
 // may emit several tool_use blocks, so a 2048-token cap truncated bulk work.
 // (Capacity, not a workaround — see CHANGELOG.)
 const MAX_TOOL_LOOPS = 16;
+// Circuit-breaker: stop a turn after this many consecutive rounds where EVERY
+// tool call failed. Without it, a persistent failure (a bad write, a rate-limit)
+// loops until MAX_TOOL_LOOPS while the model narrates "let me retry…", leaving
+// the user staring at a hung typing indicator. Surfaces the real last error.
+const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
 const MAX_TOKENS = 4096;
 
 // Caps for the cross-turn tool-memory record (see onToolRecord, persisted +
@@ -126,7 +131,7 @@ const BASE_SYSTEM_PROMPT = [
   '- The tables under "Current database" below are what already exists. When the user asks for an object type that has no table, CREATE it with create_entity (pass sensible starter columns), then add rows with create_row — do not refuse or ask whether you "have the ability."',
   '- To relate two tables (link their rows), call create_relationship(table_a, table_b) to get a junction + its two foreign-key columns, then `link` each pair using those columns. If the junction already exists, just `link`.',
   '- Use the exact table names from the schema (or one you just created) — never guess a name for a table that should already exist.',
-  '- Prefer reading (list_rows, get_row) before writing.',
+  "- Prefer reading before writing. To understand a specific record, prefer get_row_context — it returns the record's pre-rendered context (its own fields plus its related records and a combined summary) in ONE call, already organized, which is cheaper and richer than stitching together many list_rows/get_row reads. Use get_row for a single record's exact current fields, list_rows to browse, and search to find records by text; fall back to those whenever get_row_context reports no rendered context.",
   '- READS on a large table must page (list_rows with `limit` + successive `offset`) so a result fits the context — if a read says it was truncated, narrow it (a filter, or a smaller limit/offset); never re-request the whole thing. WRITES are different: do NOT page or loop row-by-row. For ANY change that should hit more than one row ("make every row private", "retag all X as Y", "set everything public", "clear column Z on all rows"), describe the change ONCE with bulk_update — give it the table, a filter selecting the rows (the same {col, op, val} filters list_rows uses; omit the filter to mean ALL rows), and the change to apply. It applies to every matching row in one operation and returns the exact number changed. State that real number back to the user.',
   '- When you point the user at a specific row/object — especially if they ask you to "link", "open", or "show" it — make it clickable with an INLINE link in this exact form: [short label](lattice://<table>/<id>), using the real table name and the row id from your tool results (e.g. [the offer contract](lattice://contracts/9b7c60f0-fbc2-4f87-a550-c59e3c5d761f)). It renders as a pill that opens that object in the GUI. Only link ids you actually retrieved — never invent one — and prefer the user-facing record (the contract/person/etc. row) over an internal `files` id.',
   "- Attached files are rows in the `files` table; a file's full text content (CSV, document, etc.) is in its `extracted_text` column. To work from an attached file, read the relevant `files` row(s) and parse `extracted_text` — never guess a file's contents.",
@@ -351,6 +356,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   );
 
   let loop = 0;
+  let consecutiveAllFailed = 0;
   try {
     for (; loop < MAX_TOOL_LOOPS; loop++) {
       const deltas: string[] = [];
@@ -399,9 +405,13 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
 
       // Execute each tool call and feed results back as a single user turn.
       const resultBlocks: ContentBlock[] = [];
+      let turnAllFailed = true; // reaches here only when toolUses.length > 0
+      let lastToolError = '';
       for (const tu of turn.toolUses) {
         yield { type: 'tool_use', id: tu.id, name: tu.name };
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
+        if (res.ok) turnAllFailed = false;
+        else if (res.error) lastToolError = res.error;
         yield { type: 'tool_result', toolUseId: tu.id, isError: !res.ok };
         // A tool may ask the GUI to open the row it just created (e.g.
         // create_artifact) in the main viewer. Surface it as a typed event the
@@ -433,6 +443,22 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
           content: capToolResult(rawContent),
           isError: !res.ok,
         });
+      }
+      // Circuit-breaker: every tool in this round failed. Count consecutive
+      // all-failed rounds and stop loudly with the REAL last error instead of
+      // looping while the model paraphrases the failure into a vague "system
+      // issue" and the user watches a hung typing indicator.
+      if (turnAllFailed) {
+        consecutiveAllFailed++;
+        if (consecutiveAllFailed >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+          yield {
+            type: 'error',
+            message: `Stopped after ${String(consecutiveAllFailed)} rounds where every tool call failed. Last error: ${lastToolError || 'unknown error'}.`,
+          };
+          break;
+        }
+      } else {
+        consecutiveAllFailed = 0;
       }
       messages.push({ role: 'user', content: resultBlocks });
     }

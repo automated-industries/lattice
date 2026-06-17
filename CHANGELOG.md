@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **The assistant reads your rendered context.** A new `get_row_context` tool
+  lets the GUI assistant pull a record's organized, pre-joined rendered context
+  (its own fields + related records + the combined summary) in a single call, and
+  it's instructed to prefer that over stitching together many raw reads — so it
+  leverages the rendered context tree Lattice already maintains instead of
+  re-querying the database for everything. It falls back to the direct row tools
+  when a record hasn't been rendered yet. (Injecting the rendered index into the
+  prompt + per-viewer-scoped render are tracked follow-ups.)
 - **Edits to the rendered context files now flow back into the database.** When
   the GUI is serving a workspace, editing a rendered `.md` file on disk is
   captured into the DB through the normal write path — so it lands in the
@@ -48,6 +56,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `owner` (strictly more restrictive, never widening) so existing clouds upgrade
   safely. All changes are additive/idempotent and converge on an owner's next
   secure.
+- **Member access is now provisioned from one declarative registry.** What a cloud
+  member may read/write — the GUI/identity/changelog bookkeeping tables, the
+  polyfill EXECUTE grants, and the per-table user grants — is centralized in a
+  single source of truth that the secure/reconcile path derives from (and a test
+  asserts: every readable object granted, every owner-only object not). This
+  removes the hand-enumerated GRANT sites behind the recurring "the member's GUI
+  degraded because we forgot to grant X" regressions. No behavior change — the
+  converged grant state is identical.
 
 ### Fixed
 
@@ -82,12 +98,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   view now navigates to the parent table/folder instead of repainting the
   tombstone; a removed entity/table returns to the dashboard. An explicit trash
   view still shows soft-deleted rows.
-- **Ingest enrichment no longer reports a contradictory result.** The "captured
-  as a new note — it didn't fit any existing record" fallback is now gated on a
-  single "matched or wrote anything" signal (file-description update, link, or
-  created entity), so it can't fire after the ingest already updated/linked a
-  record. Enrichment feed events are also attributed to the actual originator
-  (the AI path shows the AI badge, not always `ingest`).
+- **Ingest enrichment no longer reads as contradictory, and badges are correct.**
+  The capture-as-a-note fallback no longer asserts a record "didn't fit any
+  existing record" (which contradicted a dedup merge that can run in the same
+  ingest) — it now reads as a neutral "Captured … as a note". Enrichment feed
+  events are attributed to the actual originator, so the AI-path enrichment shows
+  the AI badge instead of always `ingest`.
 - **URL ingestion handles bot-protected pages.** The crawler now sends a
   browser-like User-Agent + headers (so help centers behind Zendesk/Cloudflare
   stop returning 403), and on a 401/403/429 it retries via a headless browser
@@ -96,6 +112,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   cryptic HTTP code.
 - **The members list refreshes after sending an invite.** A newly invited member
   now appears ("Invited") immediately, without a manual reload.
+- **Chat history survives a refresh — even mid-turn.** The active conversation is
+  remembered per workspace and restored on reload (instead of jumping to the
+  newest thread). The assistant's reply is now checkpointed to the database as it
+  streams (upserted under a stable id), so refreshing in the middle of a long
+  batch turn recovers the work so far rather than losing the whole turn. A failure
+  to save is surfaced to the user (a warning in the stream) instead of being
+  swallowed.
+- **The assistant no longer hangs on a vague "system error".** A turn now stops
+  after repeated consecutive tool failures (circuit-breaker) and reports the real
+  underlying error instead of looping while the model paraphrases it into a
+  "system issue" and the typing indicator hangs.
+- **Search works on a migrated cloud.** `migrate-to-cloud` now builds the
+  full-text index for searchable tables after copying the rows, so search (and
+  the assistant's entity lookup) finds migrated records instead of returning
+  empty — previously the cloud had all the data but no `__lattice_fts_*` index.
+  New `Lattice.rebuildFtsIndexes()` exposes a re-index for embedders. (Making
+  members' cloud search RLS-correct over the shared index is a tracked follow-up.)
 
 ## [3.3.5] - 2026-06-16
 
