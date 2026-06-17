@@ -22,7 +22,6 @@ import {
   startBackgroundRender,
   disposeActive,
   openWithinTimeout,
-  applySchemaConfig,
   SWITCH_OPEN_TIMEOUT_MS,
 } from './lifecycle.js';
 import { parseConfigFile } from '../config/parser.js';
@@ -43,15 +42,6 @@ import { createUpdateService, type UpdateService } from './update-service.js';
 import { createGuiRequestContext } from './request-context.js';
 import { upsertTableMeta } from './column-descriptions.js';
 import {
-  parseAudit,
-  undoLast,
-  redoLast,
-  revertEntry,
-  isSchemaOp,
-  type AuditEntry,
-} from './mutations.js';
-import {
-  emitDdlEnvelope,
   createFileJunction,
   createUserJunction,
   createUserEntity,
@@ -67,6 +57,7 @@ import { dispatchIngestRoute } from './ingest-routes.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
+import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
 import {
   readIdentity,
   writeIdentity,
@@ -215,12 +206,6 @@ export type { ActiveDb, RenderStatusSnapshot } from './active-db.js';
 export { changeVisibleToActiveRole } from './active-db.js';
 export { sqliteFileForConfig, deleteDatabaseFiles } from './config-paths.js';
 export { openConfig, disposeActive, openWithinTimeout } from './lifecycle.js';
-
-/** Human one-liner for an undo/redo/revert of a schema entry (activity feed). */
-function schemaReverseSummary(verb: string, entry: AuditEntry): string {
-  const what = entry.operation.replace('schema.', '').replace(/_/g, ' ');
-  return `${verb} schema change (${what}) on ${entry.table_name}`;
-}
 
 export async function startGuiServer(options: StartGuiServerOptions): Promise<GuiServerHandle> {
   // Virgin (zero-workspace) boot ⇒ no config to open. configPath/outputDir are
@@ -443,6 +428,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
+  const historyDeps: HistoryRoutesDeps = { host, autoRender };
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -524,149 +510,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Schema create/alter/delete (extracted leaf — schema-routes.ts) ──
         if (await handleSchemaRoutes(req, res, ctx, schemaDeps)) return;
 
-        // ── Version history (audit log + undo/redo + revert) ──────────────
-        if (method === 'POST' && pathname === '/api/history/undo') {
-          // Peek the latest LIVE entry to branch row vs schema. Schema reverts
-          // need config + re-open (which dispose the db row helpers capture), so
-          // they're handled here directly; row ops go through undoLast.
-          const live = (
-            (await active.db.query('_lattice_gui_audit', {
-              filters: [
-                { col: 'undone', op: 'eq', val: 0 },
-                { col: 'session_id', op: 'eq', val: sessionId },
-              ],
-            })) as Record<string, unknown>[]
-          ).map(parseAudit);
-          const target = live.sort((a, b) => b.ts.localeCompare(a.ts))[0];
-          if (target && isSchemaOp(target.operation)) {
-            try {
-              active = activeRef = await applySchemaConfig(active, target, 'inverse', autoRender);
-            } catch (err) {
-              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
-              return;
-            }
-            await active.db.update('_lattice_gui_audit', target.id, { undone: 1 });
-            active.feed.publish({
-              table: target.table_name,
-              op: 'undo',
-              rowId: null,
-              source: 'gui',
-              summary: schemaReverseSummary('Undid', target),
-            });
-            await emitDdlEnvelope(active, target.table_name);
-            sendJson(res, { ok: true, entry: target });
-            return;
-          }
-          const entry = await undoLast({
-            db: active.db,
-            feed: active.feed,
-            softDeletable: active.softDeletable,
-            source: 'gui',
-            sessionId,
-          });
-          if (!entry) {
-            sendJson(res, { error: 'Nothing to undo' }, 400);
-            return;
-          }
-          sendJson(res, { ok: true, entry });
-          return;
-        }
-        if (method === 'POST' && pathname === '/api/history/redo') {
-          const undone = (
-            (await active.db.query('_lattice_gui_audit', {
-              filters: [
-                { col: 'undone', op: 'eq', val: 1 },
-                { col: 'session_id', op: 'eq', val: sessionId },
-              ],
-            })) as Record<string, unknown>[]
-          ).map(parseAudit);
-          const target = undone.sort((a, b) => a.ts.localeCompare(b.ts))[0];
-          if (target && isSchemaOp(target.operation)) {
-            try {
-              active = activeRef = await applySchemaConfig(active, target, 'forward', autoRender);
-            } catch (err) {
-              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
-              return;
-            }
-            await active.db.update('_lattice_gui_audit', target.id, { undone: 0 });
-            active.feed.publish({
-              table: target.table_name,
-              op: 'redo',
-              rowId: null,
-              source: 'gui',
-              summary: schemaReverseSummary('Redid', target),
-            });
-            await emitDdlEnvelope(active, target.table_name);
-            sendJson(res, { ok: true, entry: target });
-            return;
-          }
-          const entry = await redoLast({
-            db: active.db,
-            feed: active.feed,
-            softDeletable: active.softDeletable,
-            source: 'gui',
-            sessionId,
-          });
-          if (!entry) {
-            sendJson(res, { error: 'Nothing to redo' }, 400);
-            return;
-          }
-          sendJson(res, { ok: true, entry });
-          return;
-        }
-        if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {
-          const id = decodeURIComponent(pathname.slice('/api/history/revert/'.length));
-          const row = (await active.db.get('_lattice_gui_audit', id)) as Record<
-            string,
-            unknown
-          > | null;
-          if (row && isSchemaOp(String(row.operation))) {
-            const target = parseAudit(row);
-            if (target.undone === 1) {
-              sendJson(res, { error: 'Entry already undone' }, 400);
-              return;
-            }
-            try {
-              active = activeRef = await applySchemaConfig(active, target, 'inverse', autoRender);
-            } catch (err) {
-              sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
-              return;
-            }
-            await active.db.update('_lattice_gui_audit', id, { undone: 1 });
-            active.feed.publish({
-              table: target.table_name,
-              op: 'undo',
-              rowId: null,
-              source: 'gui',
-              summary: schemaReverseSummary('Reverted', target),
-            });
-            await emitDdlEnvelope(active, target.table_name);
-            sendJson(res, { ok: true });
-            return;
-          }
-          const result = await revertEntry(
-            {
-              db: active.db,
-              feed: active.feed,
-              softDeletable: active.softDeletable,
-              source: 'gui',
-            },
-            id,
-          );
-          if (!result.ok) {
-            sendJson(
-              res,
-              {
-                error:
-                  result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone',
-              },
-              result.reason === 'not_found' ? 404 : 400,
-            );
-            return;
-          }
-          sendJson(res, { ok: true });
-          return;
-        }
+        // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
+        if (await handleHistoryRoutes(req, res, ctx, historyDeps)) return;
 
         // ── Workspaces (header switcher) ──────────────────────────────────
         // Additive: when the GUI was not opened inside a `.lattice` root,
