@@ -70,6 +70,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   always shows a **Download** action, so the underlying file is reachable even
   when "Open in Finder" is unavailable (a remote GUI, or `LATTICE_LOCAL_OPEN=0`);
   local bytes additionally offer "Open in Finder" when local-open is enabled.
+- **Dropping a single file into the assistant rail now opens the resulting
+  record.** After a one-file ingest the GUI navigates to the new file (or the
+  dedup survivor if it merged a duplicate); multi-file drops do not navigate.
+- **The "Drop to ingest" overlay no longer sticks after a cancelled drag.** The
+  drag overlay is tracked with an enter/leave counter plus window-level
+  `dragend`/`drop` backstops, so leaving via a child element or cancelling the
+  drag outside the window always clears it; it also only appears for file drags.
 
 ## [3.3.5] - 2026-06-16
 

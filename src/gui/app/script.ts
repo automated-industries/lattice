@@ -7089,8 +7089,16 @@ export const appJs = `
         .finally(function () { done(); });
     }
     function uploadFiles(files) {
-      if (!files) return;
+      if (!files || !files.length) return;
       gaTrack('file_ingest', { count: files.length }); // count only — never file names
+      // Single-file drop: open the resulting record once it lands (the dedup
+      // survivor if it was a duplicate). Multi-file drops do not navigate.
+      if (files.length === 1) {
+        uploadFile(files[0]).then(function (j) {
+          if (j && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
+        });
+        return;
+      }
       for (var i = 0; i < files.length; i++) uploadFile(files[i]);
     }
     // Mobile: tapping the handle expands/collapses the bottom drawer.
@@ -7101,13 +7109,36 @@ export const appJs = `
     }
     function initRailDragDrop() {
       var rail = document.getElementById('assistant-rail'); if (!rail) return;
-      rail.addEventListener('dragover', function (e) { e.preventDefault(); rail.classList.add('dragging-file'); });
-      rail.addEventListener('dragleave', function (e) { if (e.target === rail) rail.classList.remove('dragging-file'); });
+      // Only react to FILE drags (not text/selection drags).
+      function isFileDrag(e) {
+        var t = e.dataTransfer && e.dataTransfer.types;
+        return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
+      }
+      // enter/leave counter: leaving via a child element fires dragleave then a
+      // dragenter, so the depth stays > 0 until the cursor actually exits the rail.
+      var depth = 0;
+      function clearOverlay() { depth = 0; rail.classList.remove('dragging-file'); }
+      rail.addEventListener('dragenter', function (e) {
+        if (!isFileDrag(e)) return;
+        e.preventDefault(); depth++; rail.classList.add('dragging-file');
+      });
+      rail.addEventListener('dragover', function (e) {
+        if (!isFileDrag(e)) return;
+        e.preventDefault(); rail.classList.add('dragging-file');
+      });
+      rail.addEventListener('dragleave', function () {
+        depth = Math.max(0, depth - 1);
+        if (depth === 0) rail.classList.remove('dragging-file');
+      });
       rail.addEventListener('drop', function (e) {
         e.preventDefault();
-        rail.classList.remove('dragging-file');
+        clearOverlay();
         if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
       });
+      // Backstops: a drag cancelled outside the window, or a drop anywhere, must
+      // clear the overlay — the per-element dragleave can miss those exits.
+      window.addEventListener('dragend', clearOverlay);
+      window.addEventListener('drop', clearOverlay);
     }
 
     // Surface a notice when files/secrets aren't bound as native objects — the
