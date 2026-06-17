@@ -625,7 +625,8 @@ export async function dispatchChatRoute(
           res.write(
             formatSseFrame({
               type: 'warn',
-              message: 'Saving this conversation is failing — recent messages may not survive a refresh.',
+              message:
+                'Saving this conversation is failing — recent messages may not survive a refresh.',
             }),
           );
         } catch {
