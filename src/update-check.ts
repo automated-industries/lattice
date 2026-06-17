@@ -22,21 +22,29 @@ function isNewer(latest: string, current: string): boolean {
 }
 
 /**
- * Check the npm registry for a newer version. Caches results for 24 hours.
- * Returns the latest version string if an update is available, null otherwise.
+ * Check the npm registry for a newer version. Caches results for `ttlMs`
+ * (default 24h). Returns the latest version string if an update is available,
+ * null otherwise.
+ *
+ * @param opts.ttlMs - Max age of a cached result to trust. The long-running GUI
+ *   poll passes a shorter window so it isn't pinned to a stale 24h entry.
+ * @param opts.force - Skip the cache read entirely and fetch fresh (the cache is
+ *   still written, so the CLI exit-notice path benefits from the warm result).
  */
 export async function checkForUpdate(
   pkgName: string,
   currentVersion: string,
+  opts: { ttlMs?: number; force?: boolean } = {},
 ): Promise<string | null> {
+  const ttlMs = opts.ttlMs ?? ONE_DAY_MS;
   const cacheDir = join(homedir(), `.${pkgName}`);
   const cachePath = join(cacheDir, 'update-check.json');
 
-  // Check cache first
+  // Check cache first (unless forced fresh)
   try {
-    if (existsSync(cachePath)) {
+    if (!opts.force && existsSync(cachePath)) {
       const cached = JSON.parse(readFileSync(cachePath, 'utf-8')) as CachedCheck;
-      if (Date.now() - cached.checked < ONE_DAY_MS) {
+      if (Date.now() - cached.checked < ttlMs) {
         return isNewer(cached.latest, currentVersion) ? cached.latest : null;
       }
     }

@@ -21,6 +21,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   echoes are suppressed via the manifest, so there is no write loop. New
   `Lattice.reverseSyncFromFiles(outputDir, opts)` exposes the changelog-aware
   reverse-sync for embedders.
+- **The browser GUI now updates itself.** When `lattice gui` is launched from an
+  installable copy (a global or project-local install), it runs as a small
+  supervisor that silently installs the latest published version before opening,
+  and keeps checking in the background while you work. When a new version lands it
+  installs it and relaunches the server on the same port; the open tab reconnects,
+  notices the version changed, and reloads onto the new build — no manual refresh,
+  no reinstall step. A copy running from a git checkout or `npx` is left untouched
+  (auto-update is disabled there). A failed install is surfaced in the GUI rather
+  than swallowed. New `GET /api/version` and `GET /api/update/status` report the
+  running version and update state.
 
 ### Fixed
 
