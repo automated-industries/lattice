@@ -384,7 +384,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'add_column',
     description:
-      "Add a new field (column) to an existing object/table. Use this when the user wants to store a value the table has no field for yet (e.g. \"add a status field to projects\"). The column holds text. To then set its value on a row, use update_row.",
+      'Add a new field (column) to an existing object/table. Use this when the user wants to store a value the table has no field for yet (e.g. "add a status field to projects"). The column holds text. To then set its value on a row, use update_row.',
     mutates: true,
     category: 'schema',
     args: obj(
