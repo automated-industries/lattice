@@ -1,15 +1,20 @@
 import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { parseDocument } from 'yaml';
 import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
 import { findLatticeRoot, rootConfigDir } from './lattice-root.js';
 
@@ -101,16 +106,16 @@ export function getOrCreateMasterKey(): string {
   if (existsSync(keyPath)) {
     return readFileSync(keyPath, 'utf8').trim();
   }
-  const key = randomBytes(32).toString('base64');
-  writeFileSync(keyPath, key, 'utf8');
-  if (platform() !== 'win32') {
-    try {
-      chmodSync(keyPath, 0o600);
-    } catch {
-      // best-effort
-    }
-  }
-  return key;
+  // Create under the cross-process lock with a re-check: two concurrent fresh
+  // processes must not write divergent keys, which would make each other's
+  // encrypted credentials undecryptable. The first to acquire writes; the rest
+  // re-read the key it created.
+  return withCredentialLock(() => {
+    if (existsSync(keyPath)) return readFileSync(keyPath, 'utf8').trim();
+    const key = randomBytes(32).toString('base64');
+    writeFileAtomic(keyPath, key);
+    return key;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +295,113 @@ export function analyticsEnabled(): boolean {
 
 const DB_CREDENTIALS_FILENAME = 'db-credentials.enc';
 
+// ---------------------------------------------------------------------------
+// Cross-process lock for credential-store mutations.
+//
+// The credential store + master key are shared, process-global files. Heal-on-
+// open turns opening a raw-`postgres://` config into a load-modify-write of that
+// store, so two concurrent opens (two `lattice gui` launches, or the parallel
+// test workers) would otherwise race: lost updates (one writer's whole-file save
+// clobbers another's) and a master-key creation race (two processes write
+// divergent keys → each other's ciphertext becomes undecryptable). We serialize
+// the mutation across processes with an exclusive lock file, re-entrant within a
+// single process, with a stale-lock breaker so a crashed holder can't wedge it.
+// ---------------------------------------------------------------------------
+
+const CRED_LOCK_FILENAME = '.credentials.lock';
+const LOCK_STALE_MS = 10_000; // a lock older than this is presumed abandoned
+const LOCK_TIMEOUT_MS = 15_000; // give up acquiring after this
+let lockDepthInProcess = 0; // re-entrancy counter for THIS process
+
+/** Sleep synchronously without busy-spinning the CPU. */
+function syncSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run `fn` while holding an exclusive lock over the credential store, so the
+ * load-modify-write of the shared encrypted files is atomic across concurrent
+ * processes. Re-entrant within a single process; breaks a stale lock left by a
+ * crashed holder.
+ */
+function withCredentialLock<T>(fn: () => T): T {
+  if (lockDepthInProcess > 0) {
+    // Already held by this process — run inline (the outer holder protects us).
+    lockDepthInProcess++;
+    try {
+      return fn();
+    } finally {
+      lockDepthInProcess--;
+    }
+  }
+  const dir = ensureConfigDir();
+  const lockPath = join(dir, CRED_LOCK_FILENAME);
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let fd: number;
+  for (;;) {
+    try {
+      fd = openSync(lockPath, 'wx'); // O_CREAT|O_EXCL — atomic; throws EEXIST if held
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+          unlinkSync(lockPath); // abandoned by a crashed holder — reclaim it
+          continue;
+        }
+      } catch {
+        continue; // the lock vanished between stat and now — retry the acquire
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Lattice: timed out acquiring the credential-store lock. If no Lattice ` +
+            `process is running, remove ${lockPath} and retry.`,
+        );
+      }
+      syncSleep(25);
+    }
+  }
+  lockDepthInProcess++;
+  try {
+    return fn();
+  } finally {
+    lockDepthInProcess--;
+    try {
+      closeSync(fd);
+      unlinkSync(lockPath);
+    } catch {
+      // best-effort release
+    }
+  }
+}
+
+/** Atomically write `data` to `path` via a temp file + rename, then chmod 0600. */
+function writeFileAtomic(path: string, data: string): void {
+  const tmp = `${path}.${String(process.pid)}.${randomBytes(4).toString('hex')}.tmp`;
+  writeFileSync(tmp, data, 'utf8');
+  if (platform() !== 'win32') {
+    try {
+      chmodSync(tmp, 0o600);
+    } catch {
+      // best-effort
+    }
+  }
+  renameSync(tmp, path); // atomic same-dir replace — a reader never sees a partial file
+}
+
+/**
+ * Atomically load → mutate → save the credential store under the cross-process
+ * lock. The load happens INSIDE the lock, so a mutation can never clobber a
+ * concurrently-written entry (the lost-update bug).
+ */
+function mutateCredentials(mutate: (creds: Record<string, string>) => void): void {
+  withCredentialLock(() => {
+    const creds = loadCredentials();
+    mutate(creds);
+    saveCredentials(creds);
+  });
+}
+
 function loadCredentials(): Record<string, string> {
   const dir = ensureConfigDir();
   const path = join(dir, DB_CREDENTIALS_FILENAME);
@@ -317,14 +429,7 @@ function saveCredentials(creds: Record<string, string>): void {
   const path = join(dir, DB_CREDENTIALS_FILENAME);
   const key = deriveKey(getOrCreateMasterKey());
   const ciphertext = encrypt(JSON.stringify(creds), key);
-  writeFileSync(path, ciphertext + '\n', 'utf8');
-  if (platform() !== 'win32') {
-    try {
-      chmodSync(path, 0o600);
-    } catch {
-      // best-effort
-    }
-  }
+  writeFileAtomic(path, ciphertext + '\n');
 }
 
 /** Return the labels of all saved DB credentials. URLs are not exposed. */
@@ -340,9 +445,62 @@ export function getDbCredential(label: string): string | null {
 
 /** Persist (or overwrite) the connection URL stored under `label`. */
 export function saveDbCredential(label: string, url: string): void {
-  const creds = loadCredentials();
-  creds[label] = url;
-  saveCredentials(creds);
+  mutateCredentials((creds) => {
+    creds[label] = url;
+  });
+}
+
+/** Derive a `${LATTICE_DB:…}`-charset label from a connection URL — the database
+ *  name, falling back to the host, then `cloud`. Sanitized to `[A-Za-z0-9._-]`. */
+function labelForUrl(url: string): string {
+  let base = 'cloud';
+  try {
+    const u = new URL(url);
+    base = u.pathname.replace(/^\//, '') || u.hostname || 'cloud';
+  } catch {
+    /* malformed — fall back to 'cloud' */
+  }
+  const safe = base.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^-+|-+$/g, '');
+  return safe.length > 0 ? safe : 'cloud';
+}
+
+/**
+ * Heal a config whose `db:` line is a RAW `postgres://…` connection string into
+ * the encrypted-credential model: move the URL into the encrypted credential
+ * store under a synthesized label and rewrite the `db:` line to
+ * `${LATTICE_DB:<label>}`. Keeps a plaintext connection string (with its
+ * password) from lingering in a YAML file on disk. Idempotent: a `db:` line that
+ * is already a `${LATTICE_DB:…}` reference, a SQLite path, or anything non-raw is
+ * left untouched. If the chosen label is already taken by a DIFFERENT URL, a
+ * short uniquifying suffix is appended so an existing credential is never
+ * clobbered. Returns the label when a heal happened, else null.
+ */
+export function healRawDbUrl(configPath: string): string | null {
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, 'utf8');
+  } catch {
+    return null; // no readable config → nothing to heal
+  }
+  const doc = parseDocument(raw);
+  const dbVal = doc.get('db');
+  const dbLine = typeof dbVal === 'string' ? dbVal.trim() : '';
+  if (!/^postgres(ql)?:\/\//i.test(dbLine)) return null; // already a ref / not a raw URL
+
+  // Decide the label and persist the credential atomically: the collision check
+  // and the write happen against the SAME locked snapshot, so a concurrent heal
+  // can neither make us fork a spurious suffix off a clobbered read nor lose the
+  // entry the rewritten config will reference.
+  let label = labelForUrl(dbLine);
+  mutateCredentials((creds) => {
+    if (creds[label] !== undefined && creds[label] !== dbLine) {
+      label = `${label}-${randomBytes(2).toString('hex')}`;
+    }
+    creds[label] = dbLine;
+  });
+  doc.set('db', '${LATTICE_DB:' + label + '}');
+  writeFileSync(configPath, doc.toString(), 'utf8');
+  return label;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,23 +592,22 @@ export function saveDbCredentialForTeam(opts: {
 }): string {
   const base = sanitizeTeamLabel(opts.teamName);
   let label = `${base}.config`;
-  const creds = loadCredentials();
-  if (label in creds && creds[label] !== opts.cloudUrl) {
-    const shortId = opts.teamId.split('-')[0] ?? opts.teamId.slice(0, 8);
-    label = `${base}-${shortId}.config`;
-  }
-  creds[label] = opts.cloudUrl;
-  saveCredentials(creds);
+  mutateCredentials((creds) => {
+    if (label in creds && creds[label] !== opts.cloudUrl) {
+      const shortId = opts.teamId.split('-')[0] ?? opts.teamId.slice(0, 8);
+      label = `${base}-${shortId}.config`;
+    }
+    creds[label] = opts.cloudUrl;
+  });
   return label;
 }
 
 /** Remove the connection URL stored under `label`. No-op if absent. */
 export function deleteDbCredential(label: string): void {
-  const creds = loadCredentials();
-  if (!(label in creds)) return;
-  const { [label]: _removed, ...rest } = creds;
-  void _removed;
-  saveCredentials(rest);
+  mutateCredentials((creds) => {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- label is a credential key
+    delete creds[label];
+  });
 }
 
 // ---------------------------------------------------------------------------

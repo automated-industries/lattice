@@ -10,7 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { sendJson, readJson } from './http.js';
 import { Lattice } from '../lattice.js';
@@ -40,7 +40,6 @@ import {
 } from './data.js';
 import {
   readManifest,
-  entityFileNames,
   manifestPath,
   writeManifest,
   type LatticeManifest,
@@ -49,6 +48,9 @@ import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { guiAppHtml } from './app.js';
 import type { Row, TableDefinition } from '../types.js';
 import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
+import { createFileLoopbackWatcher, type FileLoopbackWatcher } from './file-watcher.js';
+import { buildRowContextLocator, readRowContext } from './row-context.js';
+import { createUpdateService, type UpdateService } from './update-service.js';
 import { getAsyncOrSync, allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { isPostgresUrl } from '../cloud/url.js';
@@ -92,6 +94,7 @@ import {
   createFileJunction,
   createUserJunction,
   createUserEntity,
+  addUserColumn,
   softDeleteUserEntity,
   aiDeleteEntity,
   type DeleteResolution,
@@ -121,6 +124,7 @@ import {
   writeIdentity,
   deleteDbCredential,
   saveDbCredential,
+  healRawDbUrl,
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
@@ -180,6 +184,15 @@ export interface StartGuiServerOptions {
    * Omitted ⇒ the broker's default (20s). 0 disables it.
    */
   realtimeWatchdogMs?: number;
+  /**
+   * Run the in-process auto-update poll: while the GUI is open, check npm for a
+   * newer version and, when one lands on an installable copy, install it and
+   * exit with the supervisor's restart code so it relaunches on the new version.
+   * Set ONLY for a supervised child (`LATTICE_GUI_SUPERVISED=1`) — exiting to
+   * apply an update is safe only when a supervisor is there to respawn it.
+   * `GET /api/version` + `GET /api/update/status` are served regardless.
+   */
+  selfUpdate?: boolean;
 }
 
 export interface GuiServerHandle {
@@ -517,135 +530,8 @@ function parsePageParam(raw: string | null, kind: 'limit' | 'offset'): number | 
   return Math.max(0, n);
 }
 
-interface ContextFile {
-  name: string;
-  path: string;
-  content: string;
-}
-
-/**
- * A row-context locator describes the on-disk shape of a single rendered
- * entity directory — independent of whether the directory was produced by a
- * YAML-declared {@link EntityContextDefinition} or a programmatic
- * `db.defineEntityContext()` call (or, for users on the manifest-only path,
- * just by `lattice render` writing a manifest).
- */
-interface RowContextLocator {
-  /** Directory (relative to outputDir) that holds this row's files. */
-  directoryRoot: string;
-  /** Slug derived from the row — appended to directoryRoot. */
-  slug: string;
-  /** Filenames inside the entity directory to surface to the browser. */
-  fileNames: string[];
-}
-
-/**
- * Best-effort slug derivation for the manifest-only fallback path.
- *
- * The on-disk manifest tells us which slug strings have been rendered
- * (`manifest.entityContexts[table].entities` is keyed by slug) but does
- * **not** persist the slug formula itself. So when we need to map a row
- * back to its directory and the Lattice schema doesn't carry an
- * {@link EntityContextDefinition} for this table, we try common fields
- * (`slug`, then `id`, then `name`) and pick the first whose value matches
- * a slug in the manifest. Returns `null` when no match is found.
- *
- * This is a heuristic — not a guarantee. The clean fix is for callers to
- * register their {@link EntityContextDefinition} so {@link Lattice.entityContexts}
- * has it; the manifest fallback exists so users who render via a
- * programmatic `lattice.schema.mjs` (and never wire that file into the GUI)
- * still see their rendered context.
- */
-function deriveSlugFromManifest(
-  row: Record<string, unknown>,
-  knownSlugs: ReadonlySet<string>,
-): string | null {
-  const candidateFields = ['slug', 'id', 'name'];
-  for (const field of candidateFields) {
-    const value = row[field];
-    if (typeof value === 'string' && knownSlugs.has(value)) return value;
-  }
-  return null;
-}
-
-/**
- * Build a {@link RowContextLocator} for `(table, row)` using the layered
- * discovery chain:
- *
- *   1. **Live Lattice schema** — anything registered via the YAML config or
- *      a programmatic `db.defineEntityContext()` call. Carries the
- *      authoritative slug function and declared file list.
- *   2. **Manifest** — entries written by a prior `lattice render`. Used
- *      when the schema doesn't know about this table (typical for projects
- *      that register entity contexts in an mjs/ts module the GUI doesn't
- *      import). The slug is derived heuristically from common row fields.
- *
- * Returns `null` when neither path yields a locator — the GUI surfaces
- * "no rendered context" to the user.
- */
-function buildRowContextLocator(
-  table: string,
-  row: Record<string, unknown>,
-  schemaDef: EntityContextDefinition | undefined,
-  manifest: LatticeManifest | null,
-): RowContextLocator | null {
-  if (schemaDef) {
-    return {
-      directoryRoot: schemaDef.directoryRoot ?? '',
-      slug: schemaDef.slug(row),
-      fileNames: Object.keys(schemaDef.files),
-    };
-  }
-  const manifestEntry = manifest?.entityContexts[table];
-  if (!manifestEntry) return null;
-  const knownSlugs = new Set(Object.keys(manifestEntry.entities));
-  const derivedSlug = deriveSlugFromManifest(row, knownSlugs);
-  if (!derivedSlug) return null;
-  const entityFiles = manifestEntry.entities[derivedSlug];
-  const fileNames = entityFiles ? entityFileNames(entityFiles) : manifestEntry.declaredFiles;
-  return {
-    directoryRoot: manifestEntry.directoryRoot,
-    slug: derivedSlug,
-    fileNames,
-  };
-}
-
-/**
- * Read the Lattice-rendered context files for a single row. Returns the
- * declared files for the row's entity context (relative to `outputDir`),
- * with their content if they exist on disk. Files that haven't been
- * rendered yet come back with `content: ''` and `exists: false`-equivalent
- * (empty content; caller can infer from `path`).
- */
-function readRowContext(
-  outputDir: string,
-  locator: RowContextLocator,
-  secretCols: Set<string>,
-): ContextFile[] {
-  const { slug, directoryRoot, fileNames } = locator;
-  const entityDir = resolve(outputDir, directoryRoot, slug);
-  // Defence in depth: the slug must not escape outputDir.
-  const resolvedBase = resolve(outputDir);
-  if (entityDir !== resolvedBase && !entityDir.startsWith(resolvedBase + sep)) {
-    throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
-  }
-  return fileNames.map((filename) => {
-    const absPath = join(entityDir, filename);
-    // POSIX-joined: relPath is a logical id returned to the browser, not a
-    // filesystem path (absPath above is the native one for the read).
-    const relPath = [directoryRoot, slug, filename].join('/');
-    if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
-    let content = readFileSync(absPath, 'utf8');
-    // Redact `<secretCol>: …` lines from the rendered markdown so the secret
-    // value never reaches the browser (default-detail template writes one
-    // `key: value` line per column).
-    for (const col of secretCols) {
-      const re = new RegExp(`^(${col}):.*$`, 'gm');
-      content = content.replace(re, `$1: ••••••••`);
-    }
-    return { name: filename, path: relPath, content };
-  });
-}
+// Row-context reading (locator + file read) is shared with the AI assistant's
+// `get_row_context` tool — see ./row-context.ts.
 
 /** Everything tied to a single open lattice config / DB. Swapped wholesale when the user picks a different DB. */
 /**
@@ -712,6 +598,24 @@ export interface ActiveDb {
    * wholesale on switch (clients reconnect).
    */
   feed: FeedBus;
+  /**
+   * File loopback watcher (workspace/autoRender mode only; null otherwise).
+   * Captures edits to the rendered tree back into the DB via the changelog path.
+   * Started by startBackgroundRender, stopped by disposeActive.
+   */
+  fileWatcher: FileLoopbackWatcher | null;
+  /**
+   * Once-guard: true after the broker→re-render subscription is wired (eager
+   * per-viewer freshness — a remote change re-renders this member's tree). Set in
+   * {@link startBackgroundRender}, which can be called more than once per ActiveDb.
+   */
+  eagerRenderWired?: boolean;
+  /**
+   * Tables the open-time cloud converge could not manage (e.g. owned by a
+   * different Postgres role). Empty on a clean open. Surfaced via /api/dbconfig so
+   * the user gets a specific, actionable message instead of a partial converge.
+   */
+  convergeWarnings: { table: string; reason: string }[];
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**
@@ -783,6 +687,13 @@ export async function openConfig(
   autoRender = false,
   realtimeWatchdogMs?: number,
 ): Promise<ActiveDb> {
+  // Heal a legacy config that still stores a RAW postgres:// URL (password in
+  // cleartext on disk): move it into the encrypted credential store and rewrite
+  // the db: line to a ${LATTICE_DB:label} reference. Idempotent + a no-op for
+  // already-referenced / SQLite configs. Done BEFORE parsing so the parse resolves
+  // the new reference. parsed.dbPath is the same URL either way, so the open is
+  // unaffected — only the at-rest secret is removed.
+  healRawDbUrl(configPath);
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
   // a connection string (postgres://…), a `file:` URL, or `:memory:`,
@@ -1007,6 +918,19 @@ export async function openConfig(
   }
   await db.init(memberOpen ? { introspectOnly: true } : {});
 
+  // Per-viewer render: on a cloud MEMBER open, route every render-time table read
+  // through the member's masking view (`<table>_v`) when one exists, so the
+  // rendered context tree on disk is the member's own RLS-scoped, cell-masked
+  // projection (what get_row_context then serves). Owner / SQLite leave the
+  // resolver at identity. Set before any render is started.
+  if (memberOpen) {
+    if (maskedReadViews.size > 0) {
+      db.setRenderReadRelation((table) => maskedReadViews.get(table) ?? table);
+    }
+    // Overlay this member's visible derived enrichments onto the rendered rows.
+    db.enableRenderFold();
+  }
+
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
   // active Lattice has a current view of who the operator is. Idempotent:
   // every open just upserts the single 'singleton' row.
@@ -1029,6 +953,10 @@ export async function openConfig(
     await retireLegacyPreferenceSecrets(db);
   }
 
+  // Tables the open-time converge couldn't manage (e.g. owned by a different
+  // Postgres role), surfaced to the client via /api/dbconfig so the user sees a
+  // specific, actionable message instead of a silent partial converge.
+  let convergeWarnings: { table: string; reason: string }[] = [];
   // Cloud OWNER open: converge the idempotent cloud bootstrap (RLS objects +
   // settings + observation substrate) so objects ADDED to the bootstrap in a
   // later release reach clouds already stamped at an earlier version — the class
@@ -1051,7 +979,13 @@ export async function openConfig(
         // private-only conversation/secret tables to never_share, and re-issue
         // member grants the version-gated per-table securing won't re-emit after
         // a grant-dropping restore. Keeps "shows as shared" == "is readable".
-        await reconcileCloudMemberAccess(db);
+        // Per-table fault-isolated: a table this role can't manage (e.g. owned by
+        // a different role) is skipped + reported, never aborting the rest.
+        const access = await reconcileCloudMemberAccess(db);
+        convergeWarnings = access.skipped;
+        for (const s of convergeWarnings) {
+          console.warn(`[openConfig] cloud converge could not manage "${s.table}": ${s.reason}`);
+        }
       }
     } catch (e) {
       // internal guideline: never silently swallow. A converge failure must be visible, but
@@ -1155,6 +1089,14 @@ export async function openConfig(
     }
   }
 
+  const feed = new FeedBus();
+  // File loopback: edits to the rendered tree flow back to the DB through the
+  // changelog path. Only in workspace (autoRender) mode; constructed here, started
+  // by startBackgroundRender, stopped by disposeActive.
+  const fileWatcher = autoRender
+    ? createFileLoopbackWatcher({ db, feed, softDeletable, outputDir })
+    : null;
+
   return {
     configPath,
     outputDir,
@@ -1165,7 +1107,9 @@ export async function openConfig(
     manifest,
     softDeletable,
     realtime,
-    feed: new FeedBus(),
+    feed,
+    fileWatcher,
+    convergeWarnings,
     dbPath: parsed.dbPath,
     autoRender,
     renderProgress: new RenderProgressBus(),
@@ -1309,6 +1253,12 @@ export function deleteDatabaseFiles(targetConfigPath: string): {
  * + pg clients don't leak.
  */
 /**
+ * Minimum spacing between eager re-renders triggered by remote changes. Caps the
+ * shared-quota egress of "re-render on every remote change" under a sustained
+ * stream, while keeping a member's per-viewer tree fresh within ~1.5s.
+ */
+const EAGER_RERENDER_MIN_INTERVAL_MS = 1500;
+/**
  * Kick off the background render for `active` — fire-and-forget. Returns
  * immediately; the render churns on its own and folds progress into
  * `active.renderState` while publishing each event to `active.renderProgress`
@@ -1323,6 +1273,47 @@ export function deleteDatabaseFiles(targetConfigPath: string): {
  */
 function startBackgroundRender(active: ActiveDb): void {
   if (!active.autoRender) return;
+  // Begin watching the rendered tree for on-disk edits (idempotent; this is the
+  // single "begin serving this workspace" chokepoint). Echo suppression keys off
+  // the manifest, so the initial render's own writes are never re-ingested.
+  active.fileWatcher?.start();
+  // Eager per-viewer freshness: a REMOTE change (another client's write, or the
+  // owner re-sharing / un-sharing a row) re-renders this member's RLS-scoped tree
+  // so it reflects the new visibility promptly. Wired once per ActiveDb; the
+  // broker is stopped in disposeActive.
+  //
+  // Deliberately NOT gated on "is this change visible to me now": an UN-SHARE
+  // makes the row invisible, so a visibility filter would skip the re-render and
+  // leave the now-stale row on disk — the exact staleness this is meant to fix.
+  // Re-rendering on every remote change handles share AND un-share; the render
+  // itself reads current RLS state, so it adds/removes rows correctly either way.
+  //
+  // THROTTLED to bound shared-quota egress: a render re-reads the member's visible
+  // tables, and single-flight alone would render back-to-back under a sustained
+  // stream of remote changes. A leading+trailing throttle caps it at one re-render
+  // per EAGER_RERENDER_MIN_INTERVAL_MS (freshness stays sub-2s); requestRender
+  // still debounces + coalesces beneath this.
+  if (!active.eagerRenderWired && active.realtime) {
+    active.eagerRenderWired = true;
+    let lastFire = 0;
+    let trailing: ReturnType<typeof setTimeout> | undefined;
+    const fire = (): void => {
+      lastFire = Date.now();
+      active.db.requestRender();
+    };
+    active.realtime.subscribePayload(() => {
+      const since = Date.now() - lastFire;
+      if (since >= EAGER_RERENDER_MIN_INTERVAL_MS) {
+        fire();
+      } else if (!trailing) {
+        trailing = setTimeout(() => {
+          trailing = undefined;
+          fire();
+        }, EAGER_RERENDER_MIN_INTERVAL_MS - since);
+        trailing.unref();
+      }
+    });
+  }
   if (active.renderState.phase === 'running') return;
   active.renderState.phase = 'running';
   const db = active.db;
@@ -1512,7 +1503,14 @@ export async function disposeActive(
   active: ActiveDb,
   teardownTimeoutMs: number = DISPOSE_TEARDOWN_TIMEOUT_MS,
 ): Promise<void> {
-  // Abort the in-flight background render FIRST — before closing the DB — so the
+  // Stop the file loopback watcher FIRST so no on-disk edit can fire a write
+  // against a DB that's about to close.
+  try {
+    active.fileWatcher?.stop();
+  } catch {
+    // best-effort
+  }
+  // Abort the in-flight background render — before closing the DB — so the
   // render loop bails before its next query hits a closing adapter.
   try {
     active.renderAbort.abort();
@@ -1809,6 +1807,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // did, not another cloud user's edit). The per-entry Revert stays global.
   const sessionId = crypto.randomUUID();
 
+  // Auto-update poll (supervised child only). Created after the WebSocket server
+  // exists (so it can broadcast), started after the socket is listening, stopped
+  // on close. The request handler reads it for `/api/update/status`.
+  let updateService: UpdateService | null = null;
+
   // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
   // (zero-workspace) state until the first workspace is created or joined. The
   // request handler gates every data route behind a non-null check.
@@ -2010,6 +2013,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
+
+        // Version + update status — answered in BOTH virgin and active states, and
+        // independent of any workspace. The browser polls `/api/version` on each
+        // `/api/stream` reconnect; a value newer than the page it loaded means the
+        // server relaunched onto a new build, so the tab reloads itself.
+        if (method === 'GET' && pathname === '/api/version') {
+          sendJson(res, { version: guiVersion });
+          return;
+        }
+        if (method === 'GET' && pathname === '/api/update/status') {
+          sendJson(
+            res,
+            updateService?.status() ?? {
+              current: guiVersion,
+              latest: null,
+              kind: 'unknown',
+              installable: false,
+              checking: false,
+              installing: false,
+              lastError: null,
+            },
+          );
+          return;
+        }
 
         // Zero-workspace "virgin" state: no active DB. Serve only the shell +
         // the workspace-management & onboarding routes; everything else 409s
@@ -3278,6 +3305,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sendJson(res, { ok: true, id: ws.id });
           return;
         }
+        // Reload the CURRENT workspace's schema in place: re-read the config and
+        // re-register entities (so a table added out-of-band surfaces) WITHOUT a
+        // full process restart. Reuses reopenSameConfig — same connection target,
+        // fresh schema registration + converge. Lighter than killing the server.
+        if (method === 'POST' && pathname === '/api/workspaces/reload') {
+          try {
+            active = activeRef = await reopenSameConfig(active, autoRender);
+          } catch (e) {
+            sendJson(res, { error: `Reload failed: ${(e as Error).message}` }, 500);
+            return;
+          }
+          if (active.autoRender) startBackgroundRender(active);
+          const tables = [...active.validTables].filter(
+            (t) => !t.startsWith('_') && !t.startsWith('__'),
+          );
+          sendJson(res, { ok: true, tables, convergeWarnings: active.convergeWarnings });
+          return;
+        }
         if (method === 'POST' && pathname === '/api/workspaces/create') {
           if (!latticeRoot) {
             sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
@@ -3864,6 +3909,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // The assistant can create tables + relationships on request — same
             // audited, no-reopen primitives the Context Constructor uses.
             createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
+            addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
             createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
             // Guarded, reversible table delete — empty tables go immediately;
             // non-empty ones come back as `needsResolution` so the assistant asks.
@@ -3926,6 +3972,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             configPath: active.configPath,
             pathname,
             method,
+            convergeWarnings: active.convergeWarnings,
             // Reopen the active config after an in-place edit; join a cloud as a
             // NEW workspace. Both go through the shared closures so the swap is
             // reflected in `activeRef` for the next request (not just the local
@@ -3980,6 +4027,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // tabs are open (three SSE × two tabs used to exhaust it and freeze the GUI).
   const wss = new WebSocketServer({ noServer: true });
 
+  // Broadcast to EVERY connected `/api/stream` client. Update events are global
+  // (not workspace-scoped), so they bypass the per-connection `bound` gating that
+  // feed/realtime use. Backs the in-process update service's `emit`.
+  const broadcast = (type: string, data: unknown): void => {
+    const frame = JSON.stringify({ type, data });
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      try {
+        client.send(frame);
+      } catch {
+        // socket closing — its own close handler tears down
+      }
+    }
+  };
+
+  if (options.selfUpdate && guiVersion) {
+    updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
+  }
+
   // Wire one connection's subscriptions. Bound to the workspace open at connect
   // time (`bound`); a workspace switch flips `activeRef`, after which this socket
   // drops events (the client reconnects, rebinding to the new workspace). All the
@@ -4030,6 +4096,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         bound.feed.subscribe((e) => {
           if (e.table && isFeedHiddenTable(e.table)) return;
           recentSelf.set(`${e.table ?? ''}:${e.rowId ?? ''}:${e.op}`, Date.now());
+          // A bulk/multi-row self-change (e.g. the assistant's bulk_update) emits
+          // ONE summary with no rowId, but its realtime echo arrives per-row with
+          // specific pks that wouldn't match the summary key — so the same change
+          // would re-appear as a separate "CLI / another client" card. Record a
+          // coarse table+op marker for these so the broker can suppress the echo.
+          if (!e.rowId) recentSelf.set(`${e.table ?? ''}::${e.op}`, Date.now());
           send('feed', e);
         }),
       );
@@ -4040,7 +4112,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             if (!op || !p.table_name || isFeedHiddenTable(p.table_name)) return;
             const tableName = p.table_name;
             const key = `${tableName}:${p.pk ?? ''}:${op}`;
-            const seen = recentSelf.get(key);
+            // Match the exact row key OR the coarse table+op marker a bulk
+            // self-change records, so a bulk change's per-row echoes are all
+            // recognized as our own and not re-shown as another client.
+            const seen = recentSelf.get(key) ?? recentSelf.get(`${tableName}::${op}`);
             if (seen && Date.now() - seen < 5000) return; // our own mutation, already shown
             if (activeRef !== bound) return; // stale after a workspace switch
             void changeVisibleToActiveRole(bound.db, p).then((visible) => {
@@ -4111,6 +4186,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // covered by the `render-snapshot` replay on the `/api/stream` WebSocket. No-op
   // when virgin (no workspace open yet — the welcome screen is showing).
   if (activeRef) startBackgroundRender(activeRef);
+  // Begin the auto-update poll now that we're listening (no-op unless a
+  // supervised child enabled it). The first tick checks immediately.
+  updateService?.start();
   // For 0.0.0.0 bindings, advertise via 127.0.0.1 so the printed URL is
   // actually clickable; real external access uses the operator's known
   // hostname/IP, not the bind wildcard.
@@ -4124,6 +4202,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     url,
     close: () =>
       new Promise<void>((resolveClose, reject) => {
+        // Stop the update poll first so its interval can't fire mid-teardown.
+        updateService?.stop();
         // Terminate the multiplexed event-stream sockets first — an open
         // WebSocket would otherwise keep `server.close()` from completing.
         for (const client of wss.clients) {

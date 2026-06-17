@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { fullTextSearch, hasFtsIndex } from '../../src/search/fts.js';
+import { fullTextSearch, hasFtsIndex, ftsTableName } from '../../src/search/fts.js';
+import { runAsyncOrSync } from '../../src/db/adapter.js';
 
 /**
  * Full-text search — Phase 1 (LIKE fallback). The engine is read-only: it
@@ -236,6 +237,41 @@ describe('fullTextSearch — Phase 2 (indexed, opt-in)', () => {
     expect(ftsObjects).toEqual([]);
     // It still searches via the LIKE fallback.
     const r = await fullTextSearch(db.adapter, ['plain'], { query: 'hello' });
+    expect(r.groups[0]?.hits.map((h) => h.id)).toEqual(['p1']);
+  });
+});
+
+describe('rebuildFtsIndexes (Phase 2 indexed; migrate recovery)', () => {
+  let db: Lattice | undefined;
+  afterEach(() => {
+    db?.close();
+    db = undefined;
+  });
+
+  it('rebuilds a missing FTS index and re-finds existing rows (the post-migrate state)', async () => {
+    db = new Lattice(':memory:');
+    db.define('people', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', deleted_at: 'TEXT' },
+      fts: { fields: ['name'] },
+      render: () => '',
+      outputFile: 'p.md',
+    });
+    await db.init();
+    await db.insert('people', { id: 'p1', name: 'Andrey Andro' });
+
+    // Baseline: the indexed search finds the row.
+    expect(await hasFtsIndex(db.adapter, 'people')).toBe(true);
+    let r = await fullTextSearch(db.adapter, ['people'], { query: 'Andrey' });
+    expect(r.groups[0]?.hits.map((h) => h.id)).toEqual(['p1']);
+
+    // Simulate the post-migrate state: rows present, FTS index absent.
+    await runAsyncOrSync(db.adapter, `DROP TABLE "${ftsTableName('people')}"`);
+    expect(await hasFtsIndex(db.adapter, 'people')).toBe(false);
+
+    // Rebuild → the index is recreated and backfilled from the existing rows.
+    await db.rebuildFtsIndexes();
+    expect(await hasFtsIndex(db.adapter, 'people')).toBe(true);
+    r = await fullTextSearch(db.adapter, ['people'], { query: 'Andrey' });
     expect(r.groups[0]?.hits.map((h) => h.id)).toEqual(['p1']);
   });
 });

@@ -158,6 +158,10 @@ Lattice only needs the roles to exist and to be members of `lattice_members`.
 
 ---
 
+### Cloud sharing internals consolidated (v3.4)
+
+The internal machinery backing row sharing was refactored in v3.4 with **no behavior change** to the live features: row `private` / `everyone` / custom "specific people" sharing, table `default_row_visibility` and `never_share`, and the `owner` secret-column mask all work identically. The consolidation removed unreachable masking machinery and moved permission checks into single `SECURITY DEFINER` helpers, eliminating the risk of regressions when sharing logic changes. The changes are additive and idempotent — clouds converge safely on an owner's next open.
+
 ## Sharing: private by default
 
 Every row is **private to its owner** the moment it's written — the per-table
@@ -235,6 +239,22 @@ redaction is just model-context safety). See _Per-column audiences_ below; the s
 now lives canonically in the DB and the mask view regenerates from it on change.
 
 ---
+
+## Opening the cloud & the converge
+
+When any member opens a cloud, Lattice runs a **converge** pass: it reads the current Postgres schema against the workspace's registered entities and reconciles them — granting table/column privileges to the member group, rebuilding masking views, installing any missing RLS machinery. Since v3.4, the converge is **per-table fault-isolated**: if the connecting role cannot `ALTER` or `GRANT` a table (most often because it was created by a different Postgres role), that one table is skipped with an actionable reason instead of failing the whole workspace and degrading all objects to "Failed to fetch". The skip is reported in `GET /api/dbconfig` as `convergeWarnings`, for example: `"owned by role X, but this workspace connects as Y — fix with: `ALTER TABLE … OWNER TO Y`"`.
+
+`POST /api/workspaces/reload` re-reads the config and re-registers entities in place without restarting the GUI, so a table added out-of-band surfaces immediately.
+
+### Plaintext database URL heal-on-open
+
+If a workspace config stores a raw `postgres://…` connection string (with its password in cleartext) in the `db:` line — typically from an older workspace or a migration — opening it now automatically moves the URL into the encrypted credential store and rewrites the line to a `${LATTICE_DB:<label>}` reference. This is idempotent: configs already using a reference, or pointing to a SQLite file, are untouched. An existing credential is never overwritten, so the operation is safe to repeat.
+
+## Rendered context scoped to viewer
+
+On a cloud, the background render now reads every table **through the member's row-level-security connection and through the per-column masking view**. The rendered markdown a member's assistant reads off disk contains only the rows they may see (per RLS), with owner-only columns blanked, and with any per-viewer enrichment values they're allowed to see folded in. When sharing changes — a row is shared or un-shared — the affected member's context tree re-renders promptly, so it never lingers on a stale view.
+
+Owners and local single-user workspaces render the full tree unchanged, as before.
 
 ## The three user flows
 

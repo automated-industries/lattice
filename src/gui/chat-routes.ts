@@ -36,6 +36,10 @@ interface ChatContext {
   junctionTables: Set<string>;
   softDeletable: Set<string>;
   createEntity?: (name: string, columns: string[]) => Promise<string | null>;
+  addColumn?: (
+    table: string,
+    column: string,
+  ) => Promise<{ ok: true; column: string } | { ok: false; error: string }>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   deleteEntity?: DispatchCtx['deleteEntity'];
   /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
@@ -343,6 +347,7 @@ async function persistMessage(
   ownerUserId: string | null,
   turns?: PersistedTurn[],
   startedAt?: string,
+  id?: string,
 ): Promise<void> {
   // `text` stays for backward-compat (old clients + the model-history replay);
   // `turns` carries the rich structure so a reloaded conversation shows the same
@@ -351,6 +356,26 @@ async function persistMessage(
   const payload: { text: string; turns?: PersistedTurn[]; startedAt?: string } =
     turns && turns.length > 0 ? { text, turns } : { text };
   if (startedAt) payload.startedAt = startedAt;
+  // Upsert-by-id powers incremental assistant checkpointing: the same row is
+  // inserted early in the turn and UPDATEd as it streams, so a mid-turn refresh
+  // recovers the work so far. Without an id (e.g. the user message) a fresh row
+  // is always inserted.
+  if (id) {
+    const existing = await db.get('chat_messages', id);
+    if (existing) {
+      await db.update('chat_messages', id, { content_json: JSON.stringify(payload) });
+      return;
+    }
+    await db.insert('chat_messages', {
+      id,
+      thread_id: threadId,
+      owner_user_id: ownerUserId,
+      role,
+      content_json: JSON.stringify(payload),
+      source: role === 'user' ? 'gui' : 'ai',
+    });
+    return;
+  }
   await db.insert('chat_messages', {
     id: crypto.randomUUID(),
     thread_id: threadId,
@@ -521,6 +546,7 @@ export async function dispatchChatRoute(
     ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
     ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+    ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
   };
@@ -561,6 +587,60 @@ export async function dispatchChatRoute(
   const cloudSystemPrompt =
     (await getCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT)) ?? undefined;
 
+  // Incremental checkpointing: the assistant message is persisted under a stable
+  // id and UPDATEd as the turn streams, so a refresh mid-turn (notably a long
+  // batch run) recovers the work so far instead of losing the whole turn.
+  const assistantMsgId = crypto.randomUUID();
+  let lastCheckpoint = 0;
+  let checkpointWarned = false;
+  const buildCleanTurns = (): PersistedTurn[] =>
+    turns
+      .map((t) => ({
+        text: t.text,
+        tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
+        ...(t.events.length > 0 ? { events: t.events } : {}),
+        ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
+      }))
+      .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
+  const checkpoint = async (force: boolean): Promise<void> => {
+    if (!threadId) return;
+    const now = Date.now();
+    if (!force && now - lastCheckpoint < 1500) return; // throttle mid-stream writes
+    const cleanTurns = buildCleanTurns();
+    if (cleanTurns.length === 0 && assistantText.length === 0) return;
+    lastCheckpoint = now;
+    try {
+      await persistMessage(
+        ctx.db,
+        threadId,
+        'assistant',
+        assistantText,
+        null,
+        cleanTurns,
+        turnStartedAt,
+        assistantMsgId,
+      );
+    } catch (e) {
+      // Surface a persist failure to the client (the stream is still open here)
+      // rather than silently losing the conversation — but only once per turn.
+      console.warn('[chat] checkpoint persist failed:', (e as Error).message);
+      if (!checkpointWarned) {
+        checkpointWarned = true;
+        try {
+          res.write(
+            formatSseFrame({
+              type: 'warn',
+              message:
+                'Saving this conversation is failing — recent messages may not survive a refresh.',
+            }),
+          );
+        } catch {
+          // socket gone — nothing more we can do
+        }
+      }
+    }
+  };
+
   try {
     const client = createAnthropicClient(auth);
     const temperature = aggressivenessToTemperature(getAggressiveness());
@@ -597,6 +677,7 @@ export async function dispatchChatRoute(
       } catch {
         break; // client disconnected
       }
+      await checkpoint(false); // throttled mid-stream persist for refresh recovery
     }
   } catch (e) {
     try {
@@ -609,28 +690,11 @@ export async function dispatchChatRoute(
     unsubscribeFeed();
   }
   res.end();
+  // Final checkpoint: persist the complete assistant message (upsert over any
+  // mid-stream checkpoints under the same id). The stream is closed now, so a
+  // failure here is logged, not surfaced (the mid-stream checkpoints already warn).
+  await checkpoint(true);
   if (threadId) {
-    const cleanTurns: PersistedTurn[] = turns
-      .map((t) => ({
-        text: t.text,
-        tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
-        ...(t.events.length > 0 ? { events: t.events } : {}),
-        ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
-      }))
-      .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
-    try {
-      await persistMessage(
-        ctx.db,
-        threadId,
-        'assistant',
-        assistantText,
-        null,
-        cleanTurns,
-        turnStartedAt,
-      );
-    } catch (e) {
-      console.warn('[chat] persist assistant message failed:', (e as Error).message);
-    }
     // Give a newly-created thread an AI-generated short title in place of the
     // truncated-first-message placeholder set by ensureThread. Best-effort and
     // idempotent: only when THIS request created the thread, we have a reply,

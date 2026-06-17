@@ -7,14 +7,35 @@ import type { LatticeManifest, EntityFileManifestInfo } from '../lifecycle/manif
 import { isV1EntityFiles, normalizeEntityFiles } from '../lifecycle/manifest.js';
 import { contentHash } from '../render/writer.js';
 import type { ReverseSyncUpdate } from '../schema/entity-context.js';
+import type { Row } from '../types.js';
+import { deriveUpdatesFromFile } from './default-reverse-sync.js';
+
+/**
+ * Options for {@link ReverseSyncEngine.process}.
+ *
+ * With no options the engine keeps its original behavior: only files with a
+ * hand-written `reverseSync` are processed, and updates are applied via raw SQL.
+ * The GUI file-loopback passes `apply` (to route writes through the changelog
+ * path so a file edit is version-controlled exactly like a GUI edit) and
+ * `useDefault` (to round-trip frontmatter + body `key: value` fields for files
+ * that have no hand-written `reverseSync`).
+ */
+export interface ReverseSyncProcessOptions {
+  /** Apply each update through a changelog-aware path instead of raw SQL. */
+  apply?: (update: ReverseSyncUpdate) => Promise<void>;
+  /** Derive updates for files lacking a hand-written `reverseSync`. */
+  useDefault?: boolean;
+  /** Called when a changed file produced no importable update (free-form/custom render). */
+  onSkip?: (info: { table: string; slug: string; filename: string; filePath: string }) => void;
+}
 
 /**
  * Reverse-sync engine: detects external modifications to rendered entity context
  * files and sweeps the changes back into the database before the next render.
  *
- * Only processes files whose {@link EntityFileSpec} includes a `reverseSync` function.
  * Compares current file content hash against the last-rendered hash stored in
- * the manifest to detect changes.
+ * the manifest to detect changes (which also suppresses render echoes — a
+ * render-written file matches its manifest hash and is skipped).
  */
 export class ReverseSyncEngine {
   private readonly _schema: SchemaManager;
@@ -38,6 +59,7 @@ export class ReverseSyncEngine {
     outputDir: string,
     prevManifest: LatticeManifest | null,
     dryRun = false,
+    opts: ReverseSyncProcessOptions = {},
   ): Promise<ReverseSyncResult> {
     const result: ReverseSyncResult = {
       filesScanned: 0,
@@ -52,17 +74,21 @@ export class ReverseSyncEngine {
       const manifestEntry = prevManifest.entityContexts[table];
       if (!manifestEntry) continue;
 
-      // Check if any file spec in this entity context has reverseSync
-      const reverseSyncFiles = new Map<
-        string,
-        NonNullable<(typeof def.files)[string]['reverseSync']>
-      >();
+      // Effective reverse-sync fn per file: a hand-written `spec.reverseSync`
+      // wins; otherwise the default frontmatter+body derivation when enabled.
+      // Files with neither are left untouched.
+      const pkCols = this._schema.getPrimaryKey(table);
+      const fileFns = new Map<string, (content: string, row: Row) => ReverseSyncUpdate[]>();
       for (const [filename, spec] of Object.entries(def.files)) {
         if (spec.reverseSync) {
-          reverseSyncFiles.set(filename, spec.reverseSync);
+          fileFns.set(filename, spec.reverseSync);
+        } else if (opts.useDefault) {
+          fileFns.set(filename, (content, row) =>
+            deriveUpdatesFromFile(content, row, { table, pkCols }),
+          );
         }
       }
-      if (reverseSyncFiles.size === 0) continue;
+      if (fileFns.size === 0) continue;
 
       // Build slug → entityRow map for this table
       const allRows = await this._schema.queryTable(this._adapter, table);
@@ -87,7 +113,7 @@ export class ReverseSyncEngine {
           ? normalizeEntityFiles(entityFilesRaw)
           : entityFilesRaw;
 
-        for (const [filename, reverseSyncFn] of reverseSyncFiles) {
+        for (const [filename, reverseSyncFn] of fileFns) {
           const fileInfo = entityFiles[filename];
           if (!fileInfo) continue; // File wasn't written last render (omitIfEmpty)
 
@@ -114,10 +140,19 @@ export class ReverseSyncEngine {
 
           try {
             const updates: ReverseSyncUpdate[] = reverseSyncFn(currentContent, entityRow);
-            if (updates.length === 0) continue;
+            if (updates.length === 0) {
+              // Changed on disk but nothing round-trippable parsed out (free-form
+              // prose / custom render). Never guess — surface it, don't corrupt.
+              opts.onSkip?.({ table, slug, filename, filePath });
+              continue;
+            }
 
             if (!dryRun) {
-              await this._applyUpdates(updates);
+              if (opts.apply) {
+                for (const update of updates) await opts.apply(update);
+              } else {
+                await this._applyUpdates(updates);
+              }
             }
             result.updatesApplied += updates.length;
           } catch (err) {
