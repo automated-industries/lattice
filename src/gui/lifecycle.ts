@@ -69,7 +69,7 @@ export async function openConfig(
   // Native entities (`secrets`, `files`) include encrypted columns —
   // every GUI-opened Lattice must have an encryption key. Resolve once
   // here (env var or auto-generated `~/.lattice/master.key`) and feed
-  // into the Lattice options so `_validateEncryptionConfig` is happy
+  // into the Lattice options so the encryption-key validation is happy
   // at init() time.
   const encryptionKey = getOrCreateMasterKey();
   const db = new Lattice({ config: configPath }, { encryptionKey });

@@ -82,12 +82,7 @@ import {
   type WorkspaceRecord,
 } from './framework/workspace.js';
 import { deriveCanonicalContexts } from './framework/canonical-context.js';
-import {
-  deriveKey,
-  encrypt as encryptValue,
-  decrypt as decryptValue,
-  resolveEncryptedColumns,
-} from './security/encryption.js';
+import { EncryptionLayer } from './security/encryption-layer.js';
 import {
   ensureEmbeddingsTable,
   storeEmbedding,
@@ -180,12 +175,10 @@ export class Lattice {
   /** Cache of actual table columns (from PRAGMA), populated after init(). */
   private readonly _columnCache = new Map<string, Set<string>>();
 
-  /** Derived encryption key (from options.encryptionKey via scrypt). */
-  private _encryptionKey?: Buffer;
-  /** Map of table → set of column names that should be encrypted at rest. */
-  private readonly _encryptedTableColumns = new Map<string, Set<string>>();
   /** Raw encryption key passphrase from constructor options. */
   private readonly _encryptionKeyRaw?: string;
+  /** Lazily-constructed column-encryption layer (see {@link _encryption}). */
+  private _encryptionLayer?: EncryptionLayer;
 
   /** Changelog retention options. */
   private readonly _changelogOptions?: ChangelogOptions;
@@ -379,17 +372,13 @@ export class Lattice {
     if (this._schema.getTables().has(table)) {
       return this;
     }
-    if (def.encrypted && !this._encryptionKeyRaw) {
-      throw new Error(
-        `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
-      );
-    }
+    this._encryption.validateTable(table, def);
     this._registerTable(table, def);
     await this._schema.applySchemaForAsync(this._adapter, table);
     const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
     this._columnCache.set(table, new Set(cols));
     if (def.encrypted) {
-      await this._registerEncryptedColumns(table, def.encrypted);
+      await this._encryption.registerColumns(table, def.encrypted);
     }
     return this;
   }
@@ -496,7 +485,7 @@ export class Lattice {
     this._adapter.open();
     // Throw-only encryption-key validation. Resolving encrypted columns moves
     // into the async tail (needs the schema to exist first).
-    this._validateEncryptionConfig();
+    this._encryption.validateConfig();
     return this._initAsync(options);
   }
 
@@ -546,7 +535,7 @@ export class Lattice {
           // Table absent or not visible to this member — leave it uncached.
         }
       }
-      await this._finalizeEncryptionSetup();
+      await this._encryption.finalizeSetup();
       this._initialized = true;
       return;
     }
@@ -567,7 +556,7 @@ export class Lattice {
     }
 
     // Resolve encrypted columns (needs introspectColumns to see post-migration schema)
-    await this._finalizeEncryptionSetup();
+    await this._encryption.finalizeSetup();
 
     // Create embeddings table if any table uses embeddings
     const hasEmbeddings = [...this._schema.getTables().values()].some((d) => d.embeddings);
@@ -616,8 +605,7 @@ export class Lattice {
     this._autoRenderInFlight = false;
     this._adapter.close();
     this._columnCache.clear();
-    this._encryptedTableColumns.clear();
-    delete this._encryptionKey;
+    this._encryptionLayer?.clear();
     this._initialized = false;
   }
 
@@ -762,107 +750,18 @@ export class Lattice {
   // -------------------------------------------------------------------------
 
   /**
-   * Throw-only validation of encryption-key configuration. Runs in the
-   * synchronous prefix of `init()` so `expect(() => db.init()).toThrow(...)`
-   * still observes the throw — moving this check into the async tail would
-   * convert the throw into a rejected Promise and break those tests.
-   * Column resolution happens later in {@link _finalizeEncryptionSetup} once
-   * the schema has been applied.
+   * Lazily-constructed column-encryption layer. Field-backed `??= new` getter
+   * mirrors `_report`/`_changelog`; the layer defers its scrypt key derivation
+   * to the first column registration, so merely touching this getter is cheap.
    */
-  private _validateEncryptionConfig(): void {
-    for (const [table, def] of this._schema.getEntityContexts()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) {
-        throw new Error(
-          `Entity context "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
-        );
-      }
-    }
-    for (const [table, def] of this._schema.getTables()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) {
-        throw new Error(
-          `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
-        );
-      }
-    }
-  }
-
-  /**
-   * Resolve which columns to encrypt per table, using introspectColumns to
-   * see the post-migration schema. Runs in the async tail of init() after
-   * applySchema/applyMigrationsAsync.
-   */
-  private async _finalizeEncryptionSetup(): Promise<void> {
-    for (const [table, def] of this._schema.getEntityContexts()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) continue; // already validated above
-      await this._registerEncryptedColumns(table, def.encrypted);
-    }
-    for (const [table, def] of this._schema.getTables()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) continue;
-      // Entity-context encryption for this table (if any) was already
-      // resolved in the first loop — skip to avoid clobbering with a
-      // narrower table-level spec.
-      if (this._encryptedTableColumns.has(table)) continue;
-      await this._registerEncryptedColumns(table, def.encrypted);
-    }
-  }
-
-  /**
-   * Shared helper: derive the encryption key on first use, introspect the
-   * table's current columns, resolve which to encrypt, and record the set
-   * in `_encryptedTableColumns`. Called from both `_finalizeEncryptionSetup`
-   * (boot path) and `defineLate` (post-init table registration).
-   */
-  private async _registerEncryptedColumns(
-    table: string,
-    encrypted: true | { columns: string[] },
-  ): Promise<void> {
-    if (!this._encryptionKeyRaw) {
-      throw new Error(
-        `Cannot register encrypted columns for "${table}": no encryptionKey was provided`,
-      );
-    }
-    this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
-    const allCols = await introspectColumnsAsyncOrSync(this._adapter, table);
-    const encCols = resolveEncryptedColumns(encrypted, allCols);
-    this._encryptedTableColumns.set(table, encCols);
-  }
-
-  /** Encrypt applicable columns in a row before writing. Returns a new row. */
-  private _encryptRow(table: string, row: Row): Row {
-    const encCols = this._encryptedTableColumns.get(table);
-    if (!encCols || !this._encryptionKey) return row;
-    const result = { ...row };
-    for (const col of encCols) {
-      const val = result[col];
-      if (typeof val === 'string' && val.length > 0) {
-        result[col] = encryptValue(val, this._encryptionKey);
-      }
-    }
-    return result;
-  }
-
-  /** Decrypt applicable columns in a row after reading. Mutates in place. */
-  private _decryptRow(table: string, row: Row): Row {
-    const encCols = this._encryptedTableColumns.get(table);
-    if (!encCols || !this._encryptionKey) return row;
-    for (const col of encCols) {
-      const val = row[col];
-      if (typeof val === 'string' && val.length > 0) {
-        row[col] = decryptValue(val, this._encryptionKey);
-      }
-    }
-    return row;
-  }
-
-  /** Decrypt applicable columns in multiple rows. Mutates in place. */
-  private _decryptRows(table: string, rows: Row[]): Row[] {
-    if (!this._encryptedTableColumns.has(table)) return rows;
-    for (const row of rows) this._decryptRow(table, row);
-    return rows;
+  private get _encryption(): EncryptionLayer {
+    this._encryptionLayer ??= new EncryptionLayer({
+      encryptionKeyRaw: this._encryptionKeyRaw,
+      getEntityContexts: () => this._schema.getEntityContexts(),
+      getTables: () => this._schema.getTables(),
+      introspectColumns: (table) => introspectColumnsAsyncOrSync(this._adapter, table),
+    });
+    return this._encryptionLayer;
   }
 
   // -------------------------------------------------------------------------
@@ -961,7 +860,7 @@ export class Lattice {
     } else {
       rowWithPk = sanitized;
     }
-    const encrypted = this._encryptRow(table, rowWithPk);
+    const encrypted = this._encryption.encryptRow(table, rowWithPk);
     const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
       .join(', ');
@@ -1034,7 +933,7 @@ export class Lattice {
       rowWithPk = sanitized;
     }
 
-    const encrypted = this._encryptRow(table, rowWithPk);
+    const encrypted = this._encryption.encryptRow(table, rowWithPk);
 
     const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
@@ -1103,7 +1002,7 @@ export class Lattice {
     this._assertRowSize(table, row as Row);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
-    const encrypted = this._encryptRow(table, sanitized);
+    const encrypted = this._encryption.encryptRow(table, sanitized);
     const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
       .join(', ');
@@ -1353,7 +1252,7 @@ export class Lattice {
     const row =
       (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
       null;
-    return row ? this._decryptRow(table, row) : null;
+    return row ? this._encryption.decryptRow(table, row) : null;
   }
 
   // -------------------------------------------------------------------------
@@ -1394,7 +1293,7 @@ export class Lattice {
 
     if (existing) {
       // Update existing
-      const encUpdated = this._encryptRow(table, withConventions);
+      const encUpdated = this._encryption.encryptRow(table, withConventions);
       const entries = Object.entries(encUpdated).filter(([k]) => k !== 'id');
       if (entries.length === 0) return existing.id as string;
       const setCols = entries.map(([k]) => `"${k}" = ?`).join(', ');
@@ -1421,7 +1320,7 @@ export class Lattice {
       insertData.created_at = new Date().toISOString();
 
     const filtered = this._filterToSchemaColumns(table, insertData);
-    const encInserted = this._encryptRow(table, filtered);
+    const encInserted = this._encryption.encryptRow(table, filtered);
     const colNames = Object.keys(encInserted)
       .map((c) => `"${c}"`)
       .join(', ');
@@ -1968,7 +1867,7 @@ export class Lattice {
     }
 
     const rows = await allAsyncOrSync(this._adapter, sql, params);
-    return this._decryptRows(table, rows);
+    return this._encryption.decryptRows(table, rows);
   }
 
   async count(table: string, opts: CountOptions = {}): Promise<number> {
