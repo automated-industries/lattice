@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **The assistant reads your rendered context.** A new `get_row_context` tool
+  lets the GUI assistant pull a record's organized, pre-joined rendered context
+  (its own fields + related records + the combined summary) in a single call, and
+  it's instructed to prefer that over stitching together many raw reads — so it
+  leverages the rendered context tree Lattice already maintains instead of
+  re-querying the database for everything. It falls back to the direct row tools
+  when a record hasn't been rendered yet. (Injecting the rendered index into the
+  prompt + per-viewer-scoped render are tracked follow-ups.)
 - **Edits to the rendered context files now flow back into the database.** When
   the GUI is serving a workspace, editing a rendered `.md` file on disk is
   captured into the DB through the normal write path — so it lands in the

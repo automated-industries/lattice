@@ -10,7 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { sendJson, readJson } from './http.js';
 import { Lattice } from '../lattice.js';
@@ -40,7 +40,6 @@ import {
 } from './data.js';
 import {
   readManifest,
-  entityFileNames,
   manifestPath,
   writeManifest,
   type LatticeManifest,
@@ -50,6 +49,7 @@ import { guiAppHtml } from './app.js';
 import type { Row, TableDefinition } from '../types.js';
 import { RealtimeBroker, feedOpForChange, type RealtimePayload } from './realtime.js';
 import { createFileLoopbackWatcher, type FileLoopbackWatcher } from './file-watcher.js';
+import { buildRowContextLocator, readRowContext } from './row-context.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
 import { getAsyncOrSync, allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
@@ -528,135 +528,8 @@ function parsePageParam(raw: string | null, kind: 'limit' | 'offset'): number | 
   return Math.max(0, n);
 }
 
-interface ContextFile {
-  name: string;
-  path: string;
-  content: string;
-}
-
-/**
- * A row-context locator describes the on-disk shape of a single rendered
- * entity directory — independent of whether the directory was produced by a
- * YAML-declared {@link EntityContextDefinition} or a programmatic
- * `db.defineEntityContext()` call (or, for users on the manifest-only path,
- * just by `lattice render` writing a manifest).
- */
-interface RowContextLocator {
-  /** Directory (relative to outputDir) that holds this row's files. */
-  directoryRoot: string;
-  /** Slug derived from the row — appended to directoryRoot. */
-  slug: string;
-  /** Filenames inside the entity directory to surface to the browser. */
-  fileNames: string[];
-}
-
-/**
- * Best-effort slug derivation for the manifest-only fallback path.
- *
- * The on-disk manifest tells us which slug strings have been rendered
- * (`manifest.entityContexts[table].entities` is keyed by slug) but does
- * **not** persist the slug formula itself. So when we need to map a row
- * back to its directory and the Lattice schema doesn't carry an
- * {@link EntityContextDefinition} for this table, we try common fields
- * (`slug`, then `id`, then `name`) and pick the first whose value matches
- * a slug in the manifest. Returns `null` when no match is found.
- *
- * This is a heuristic — not a guarantee. The clean fix is for callers to
- * register their {@link EntityContextDefinition} so {@link Lattice.entityContexts}
- * has it; the manifest fallback exists so users who render via a
- * programmatic `lattice.schema.mjs` (and never wire that file into the GUI)
- * still see their rendered context.
- */
-function deriveSlugFromManifest(
-  row: Record<string, unknown>,
-  knownSlugs: ReadonlySet<string>,
-): string | null {
-  const candidateFields = ['slug', 'id', 'name'];
-  for (const field of candidateFields) {
-    const value = row[field];
-    if (typeof value === 'string' && knownSlugs.has(value)) return value;
-  }
-  return null;
-}
-
-/**
- * Build a {@link RowContextLocator} for `(table, row)` using the layered
- * discovery chain:
- *
- *   1. **Live Lattice schema** — anything registered via the YAML config or
- *      a programmatic `db.defineEntityContext()` call. Carries the
- *      authoritative slug function and declared file list.
- *   2. **Manifest** — entries written by a prior `lattice render`. Used
- *      when the schema doesn't know about this table (typical for projects
- *      that register entity contexts in an mjs/ts module the GUI doesn't
- *      import). The slug is derived heuristically from common row fields.
- *
- * Returns `null` when neither path yields a locator — the GUI surfaces
- * "no rendered context" to the user.
- */
-function buildRowContextLocator(
-  table: string,
-  row: Record<string, unknown>,
-  schemaDef: EntityContextDefinition | undefined,
-  manifest: LatticeManifest | null,
-): RowContextLocator | null {
-  if (schemaDef) {
-    return {
-      directoryRoot: schemaDef.directoryRoot ?? '',
-      slug: schemaDef.slug(row),
-      fileNames: Object.keys(schemaDef.files),
-    };
-  }
-  const manifestEntry = manifest?.entityContexts[table];
-  if (!manifestEntry) return null;
-  const knownSlugs = new Set(Object.keys(manifestEntry.entities));
-  const derivedSlug = deriveSlugFromManifest(row, knownSlugs);
-  if (!derivedSlug) return null;
-  const entityFiles = manifestEntry.entities[derivedSlug];
-  const fileNames = entityFiles ? entityFileNames(entityFiles) : manifestEntry.declaredFiles;
-  return {
-    directoryRoot: manifestEntry.directoryRoot,
-    slug: derivedSlug,
-    fileNames,
-  };
-}
-
-/**
- * Read the Lattice-rendered context files for a single row. Returns the
- * declared files for the row's entity context (relative to `outputDir`),
- * with their content if they exist on disk. Files that haven't been
- * rendered yet come back with `content: ''` and `exists: false`-equivalent
- * (empty content; caller can infer from `path`).
- */
-function readRowContext(
-  outputDir: string,
-  locator: RowContextLocator,
-  secretCols: Set<string>,
-): ContextFile[] {
-  const { slug, directoryRoot, fileNames } = locator;
-  const entityDir = resolve(outputDir, directoryRoot, slug);
-  // Defence in depth: the slug must not escape outputDir.
-  const resolvedBase = resolve(outputDir);
-  if (entityDir !== resolvedBase && !entityDir.startsWith(resolvedBase + sep)) {
-    throw new Error(`Path traversal detected: slug "${slug}" escapes output directory`);
-  }
-  return fileNames.map((filename) => {
-    const absPath = join(entityDir, filename);
-    // POSIX-joined: relPath is a logical id returned to the browser, not a
-    // filesystem path (absPath above is the native one for the read).
-    const relPath = [directoryRoot, slug, filename].join('/');
-    if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
-    let content = readFileSync(absPath, 'utf8');
-    // Redact `<secretCol>: …` lines from the rendered markdown so the secret
-    // value never reaches the browser (default-detail template writes one
-    // `key: value` line per column).
-    for (const col of secretCols) {
-      const re = new RegExp(`^(${col}):.*$`, 'gm');
-      content = content.replace(re, `$1: ••••••••`);
-    }
-    return { name: filename, path: relPath, content };
-  });
-}
+// Row-context reading (locator + file read) is shared with the AI assistant's
+// `get_row_context` tool — see ./row-context.ts.
 
 /** Everything tied to a single open lattice config / DB. Swapped wholesale when the user picks a different DB. */
 /**
