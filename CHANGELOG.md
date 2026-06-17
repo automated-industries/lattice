@@ -112,11 +112,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   cryptic HTTP code.
 - **The members list refreshes after sending an invite.** A newly invited member
   now appears ("Invited") immediately, without a manual reload.
-- **Refreshing the GUI restores the conversation you were in.** The active chat
-  thread is remembered per workspace, so a reload — even in the middle of a long
-  batch turn — reopens the same conversation instead of jumping to the newest
-  thread. (Mid-turn message checkpointing and surfaced persist failures are
-  tracked as follow-ups.)
+- **Chat history survives a refresh — even mid-turn.** The active conversation is
+  remembered per workspace and restored on reload (instead of jumping to the
+  newest thread). The assistant's reply is now checkpointed to the database as it
+  streams (upserted under a stable id), so refreshing in the middle of a long
+  batch turn recovers the work so far rather than losing the whole turn. A failure
+  to save is surfaced to the user (a warning in the stream) instead of being
+  swallowed.
 - **The assistant no longer hangs on a vague "system error".** A turn now stops
   after repeated consecutive tool failures (circuit-breaker) and reports the real
   underlying error instead of looping while the model paraphrases it into a
