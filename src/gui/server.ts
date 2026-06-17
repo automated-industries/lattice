@@ -56,7 +56,7 @@ import type { Row } from '../types.js';
 import { feedOpForChange } from './realtime.js';
 import { buildRowContextLocator, readRowContext } from './row-context.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
-import { buildMutationCtx } from './request-context.js';
+import { createGuiRequestContext } from './request-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import {
   resolveColumnDescription,
@@ -798,6 +798,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Non-null for the entire normal handler below. Reassigned in lockstep
         // with `activeRef` at every swap site so the next request sees the swap.
         let active: ActiveDb = activeRef;
+
+        // Per-request handle the route modules will take as their third arg.
+        // Closes over the handler's reassignable bindings (never their values) so
+        // ctx.active() is always live and ctx.swapActive is the single write-back
+        // path. Inline swap sites stay verbatim until the route modules move them.
+        const ctx = createGuiRequestContext({
+          getActiveRef: () => activeRef,
+          setActiveRef: (next) => {
+            activeRef = next;
+          },
+          setLocalActive: (next) => {
+            active = next;
+          },
+          getWorkspaceId: () => currentWorkspaceId,
+          setWorkspaceId: (next) => {
+            currentWorkspaceId = next;
+          },
+          startBackgroundRender,
+          sessionId,
+        });
 
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {
@@ -2480,7 +2500,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           // #4.6 — the originating client's true edit time is honored for the
           // audit timestamp so an offline edit shows when it was made.
-          const mctx = buildMutationCtx(active, 'gui', sessionId, {
+          const mctx = ctx.buildMutationCtx({
             clientTs: headerValue(req, 'x-lattice-client-ts'),
           });
 
@@ -2579,7 +2599,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const body = (await readJson<unknown>(req)) as Row;
-          const linkCtx = buildMutationCtx(active, 'gui', sessionId);
+          const linkCtx = ctx.buildMutationCtx();
           if (op === 'link') {
             await linkRows(linkCtx, table, body);
           } else {
