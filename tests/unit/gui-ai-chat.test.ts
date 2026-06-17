@@ -127,6 +127,26 @@ describe('chat tool loop', () => {
     expect(feedEvents.some((e) => e.op === 'insert' && e.source === 'ai')).toBe(true);
   });
 
+  it('stops after consecutive tool failures (circuit-breaker) and surfaces the real error', async () => {
+    // The model keeps calling a tool that always fails (get_row on a missing id).
+    // The scripted client repeats this turn; the breaker must stop it well before
+    // the 16-step cap and report the actual error, not loop into a hung indicator.
+    const client = scriptedClient([
+      {
+        text: 'Looking that up…',
+        toolUses: [{ id: 'tu', name: 'get_row', input: { table: 'people', id: 'nope' } }],
+      },
+    ]);
+    const events = await collect(runChat({ client, dispatch, userMessage: 'tell me about nope' }));
+    const types = events.map((e) => e.type);
+    // Exactly 3 failed rounds (MAX_CONSECUTIVE_TOOL_FAILURES), not 16.
+    expect(types.filter((t) => t === 'tool_result').length).toBe(3);
+    const err = events.find((e) => e.type === 'error') as { message: string } | undefined;
+    expect(err).toBeTruthy();
+    expect(err?.message).toMatch(/every tool call failed|Row not found/i);
+    expect(types[types.length - 1]).toBe('done');
+  });
+
   it('replays prior tool_use + tool_result history into the model messages', async () => {
     // A follow-up turn: history already carries the structured tool blocks the
     // chat route rehydrates (assistant tool_use → user tool_result). The row id

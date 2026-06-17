@@ -67,6 +67,19 @@ join one. Creating/joining switches into the new workspace; the normal layout
 returns on reload. The last workspace can now be deleted (it drops you back to the
 welcome screen rather than being refused).
 
+## Seamless GUI auto-update (3.4)
+
+When `lattice gui` is launched from a published install (global or project-local npm install), it runs as a small supervisor that silently installs the latest published version before opening the browser. While you work, the supervisor keeps checking for updates in the background; when a new version lands it installs it and relaunches the server on the same port. The open tab reconnects, notices the version changed, and reloads onto the new build — **no manual refresh, no reinstall**.
+
+A git checkout or `npx` copy is left untouched (auto-update is disabled there); a failed install surfaces in the GUI rather than being swallowed.
+
+**HTTP endpoints** (for polling / UI integration):
+
+| Route                | Method | Returns                   |
+| -------------------- | ------ | ------------------------- |
+| `/api/version`       | GET    | `{ version: string }`     |
+| `/api/update/status` | GET    | Update state and progress |
+
 ## Auto-render (SQL → markdown)
 
 `enableAutoRender(outputDir)` debounces a re-render on every
@@ -78,6 +91,26 @@ state.
 A bare `new Lattice(path)` does **not** auto-render (`_scheduleAutoRender`
 early-returns when no output dir is set) — call `render(dir)` / `reconcile(dir)`
 manually, or opt in with `enableAutoRender(dir)`.
+
+## File loopback (3.4)
+
+When the GUI is serving a workspace, editing a rendered `.md` file on disk is automatically captured back into the database through the normal write path — so the change lands in the changelog (versioned/undoable) and appears live in the GUI, exactly as if the edit had been made there. Structured frontmatter and body `key: value` fields round-trip automatically; edits that can't be safely parsed (free-form or custom renders) are surfaced as a notice rather than guessed at, so a lossy render can't corrupt a row. Render echoes are suppressed via the manifest, so there is no write loop.
+
+**For embedders**, `reverseSyncFromFiles()` exposes the same changelog-aware reverse-sync the GUI loopback uses:
+
+```ts
+import { Lattice } from 'latticesql';
+
+const db = new Lattice(config);
+await db.init();
+
+// Round-trip frontmatter + body `key: value` edits from the rendered tree
+// back into the DB. Pass `apply` to route each update through a versioned
+// write (so a file edit is recorded exactly like a GUI edit).
+const result = await db.reverseSyncFromFiles('./context', { useDefault: true });
+```
+
+`reverseSyncFromFiles(outputDir, opts)` compares file hashes against the current manifest (so a render-written file is recognized as an echo and skipped), parses the changed files, applies the updates, and returns a summary of what was applied.
 
 The canonical `Context/` layout is DB-aligned and zero-config: table → folder,
 row → subfolder, `<ENTITY>.md` plus relation rollups, derived from the schema

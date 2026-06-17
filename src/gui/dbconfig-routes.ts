@@ -143,8 +143,6 @@ import {
   generateMemberPassword,
   memberRoleName,
   setRowVisibility,
-  grantCell,
-  revokeCell,
   grantRow,
   revokeRow,
   assertScopedMemberRole,
@@ -213,6 +211,10 @@ interface DbConfigContext {
   configPath: string;
   pathname: string;
   method: string;
+  /** Tables the open-time cloud converge couldn't manage (owner mismatch, etc.),
+   *  echoed to the client in GET /api/dbconfig so the UI can show an actionable
+   *  warning instead of a silent partial converge. Empty on a clean open. */
+  convergeWarnings: { table: string; reason: string }[];
   /**
    * Re-open the same configPath after the YAML has been updated.
    * Closes the current Lattice and replaces it. Caller-owned because
@@ -564,7 +566,12 @@ export async function dispatchDbConfigRoute(
       // `logoEtag` (null on local/unset) lets the SPA swap the topbar mark for the
       // owner's logo without a second fetch — and the etag cache-busts the blob.
       const logoEtag = await getCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO_ETAG);
-      sendJson(res, { ...info, isOwner: info.state === 'cloud-owner', logoEtag });
+      sendJson(res, {
+        ...info,
+        isOwner: info.state === 'cloud-owner',
+        logoEtag,
+        convergeWarnings: ctx.convergeWarnings,
+      });
     });
     return true;
   }
@@ -716,6 +723,11 @@ export async function dispatchDbConfigRoute(
       const target = await openTargetLatticeForMigration(ctx.configPath, url, encryptionKey);
       try {
         const result = await migrateLatticeData(ctx.db, target);
+        // Build the full-text indexes on the cloud AFTER the rows are copied — the
+        // migrate copy doesn't run init's FTS step, which otherwise leaves the
+        // cloud with all the data but no `__lattice_fts_*` index, so search and the
+        // assistant find nothing. Idempotent + backfills the just-copied rows.
+        await target.rebuildFtsIndexes();
         // Owner-side cloud setup: the migrator's connection owns the cloud, so it
         // installs RLS + the observation substrate and stamps itself as owner of
         // every just-migrated row. Each member later sees only its own rows
@@ -1050,32 +1062,6 @@ export async function dispatchDbConfigRoute(
       }
       await setRowVisibility(ctx.db, table, pk, visibility);
       sendJson(res, { ok: true, table, pk, visibility });
-    });
-    return true;
-  }
-
-  // POST /api/cloud/cell-share — per-card audience override. The row owner grants
-  // (or revokes) one member access to one masked cell (table + pk + column),
-  // without changing the column's schema-level audience. Owner-only.
-  if (pathname === '/api/cloud/cell-share' && method === 'POST') {
-    await tryHandler(res, async () => {
-      const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
-      const column = typeof body.column === 'string' ? body.column : '';
-      const grantee = typeof body.grantee === 'string' ? body.grantee : '';
-      const revoke = body.revoke === true;
-      if (!table || !pk || !column || !grantee) {
-        sendJson(res, { error: 'table, pk, column and grantee are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Per-cell sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      if (revoke) await revokeCell(ctx.db, table, pk, column, grantee);
-      else await grantCell(ctx.db, table, pk, column, grantee);
-      sendJson(res, { ok: true, table, pk, column, grantee, revoked: revoke });
     });
     return true;
   }

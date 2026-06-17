@@ -27,6 +27,21 @@ describe('deriveCanonicalContexts', () => {
     expect(Object.keys(byTable.projects.files).sort()).toEqual(['FILES.md', 'PROJECT.md']);
   });
 
+  it('labels an FK-only (junction-style) related row instead of rendering "(row)"', () => {
+    const out = deriveCanonicalContexts([
+      { name: 'files', definition: files },
+      { name: 'projects', definition: projects },
+    ]);
+    const byTable = Object.fromEntries(out.map((o) => [o.table, o.definition]));
+    // The reverse hasMany rollup on projects lists related `files` rows. A row
+    // with no name/title/slug/id (e.g. a junction row that is only foreign keys)
+    // used to render as the literal placeholder "(row)".
+    const render = byTable.projects.files['FILES.md']!.render;
+    const md = render([{ project_id: 'p1' } as unknown as Record<string, unknown>]);
+    expect(md).not.toContain('(row)');
+    expect(md).toContain('project_id: p1'); // first meaningful field surfaced
+  });
+
   it('derives a stable, legible slug preferring name/title/slug', () => {
     const out = deriveCanonicalContexts([{ name: 'files', definition: files }]);
     const slug = out[0]!.definition.slug;

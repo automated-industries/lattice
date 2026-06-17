@@ -123,7 +123,7 @@ export async function enrichWithLlm(
       table: 'files',
       op: 'update',
       rowId: fileId,
-      source: 'ingest',
+      source: mctx.source,
       summary: `Couldn't auto-link "${name}": AI client unavailable`,
     });
     return [];
@@ -170,7 +170,7 @@ export async function enrichWithLlm(
             table: 'files',
             op: 'update',
             rowId: fileId,
-            source: 'ingest',
+            source: mctx.source,
             summary: `Couldn't create link table files ↔ ${m.table}: ${msg}`,
           });
         }
@@ -193,7 +193,7 @@ export async function enrichWithLlm(
               table: jx.junction,
               op: 'schema',
               rowId: null,
-              source: 'ingest',
+              source: mctx.source,
               summary: `Created link table files ↔ ${m.table} and linked this file`,
             });
           }
@@ -206,7 +206,7 @@ export async function enrichWithLlm(
             table: 'files',
             op: 'update',
             rowId: fileId,
-            source: 'ingest',
+            source: mctx.source,
             summary: `Couldn't auto-link "${name}" to ${m.table}: ${msg}`,
           });
         }
@@ -217,7 +217,7 @@ export async function enrichWithLlm(
           table: 'files',
           op: 'update',
           rowId: fileId,
-          source: 'ingest',
+          source: mctx.source,
           summary: `Looks related to ${m.table} (${m.id})`,
         });
       }
@@ -308,8 +308,8 @@ export async function enrichWithLlm(
           table: 'notes',
           op: 'insert',
           rowId: noteId,
-          source: 'ingest',
-          summary: `Created a new note "${title}" — it didn't fit any existing record`,
+          source: mctx.source,
+          summary: `Captured "${title}" as a note`,
         });
       } catch (e) {
         console.warn('[ingest] auto-create object failed:', (e as Error).message);
@@ -325,7 +325,7 @@ export async function enrichWithLlm(
       table: 'files',
       op: 'update',
       rowId: fileId,
-      source: 'ingest',
+      source: mctx.source,
       summary: `Couldn't auto-link "${name}": ${msg}`,
     });
     return [];

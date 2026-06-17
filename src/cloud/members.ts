@@ -208,50 +208,11 @@ export async function assertScopedMemberRole(db: Lattice, role: string): Promise
 }
 
 /**
- * Per-card audience override: grant (or revoke) one member access to ONE masked
- * cell — a specific (table, pk, column) — without changing the column's
- * schema-level audience. Owner-only (the SQL function raises for a non-owner).
- * `pk` is the row's canonical primary-key string.
- */
-export async function grantCell(
-  db: Lattice,
-  table: string,
-  pk: string,
-  column: string,
-  grantee: string,
-): Promise<void> {
-  assertPg(db);
-  await runAsyncOrSync(db.adapter, `SELECT lattice_grant_cell(?, ?, ?, ?)`, [
-    table,
-    pk,
-    column,
-    grantee,
-  ]);
-}
-
-export async function revokeCell(
-  db: Lattice,
-  table: string,
-  pk: string,
-  column: string,
-  grantee: string,
-): Promise<void> {
-  assertPg(db);
-  await runAsyncOrSync(db.adapter, `SELECT lattice_revoke_cell(?, ?, ?, ?)`, [
-    table,
-    pk,
-    column,
-    grantee,
-  ]);
-}
-
-/**
  * Per-row "share with specific people": grant (or revoke) one member access to
  * ONE row — a specific (table, pk) — flipping the row to `custom` visibility.
  * Owner-only (the SECURITY DEFINER function raises for a non-owner, and for a
- * `never_share` table). `pk` is the row's canonical primary-key string. Mirrors
- * `grantCell`/`revokeCell` but at row granularity over `lattice_grant_row` /
- * `lattice_revoke_row` (`__lattice_row_grants`).
+ * `never_share` table). `pk` is the row's canonical primary-key string. Backed by
+ * `lattice_grant_row` / `lattice_revoke_row` (`__lattice_row_grants`).
  */
 export async function grantRow(
   db: Lattice,

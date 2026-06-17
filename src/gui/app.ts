@@ -74,6 +74,7 @@ export const guiAppHtml = `<!doctype html>
       <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
     </div>
     <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
+    <span class="app-update" id="app-update" title="A new version is being applied" hidden></span>
     <span class="app-version" id="app-version" title="Lattice version"><!--LATTICE_VERSION--></span>
     <button id="settings-gear" title="Settings" aria-label="Open settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
