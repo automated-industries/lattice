@@ -3064,7 +3064,7 @@ export const appJs = `
             (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             // Formatted markdown (rendered context) sits ABOVE the column-by-column
             // data view; the raw fields follow underneath.
-            '<div class="fs-context" id="fs-context"></div>' +
+            '<div class="fs-context" id="fs-context" hidden></div>' +
             '<div class="fs-doc">' + fields.join('') + '</div>' +
             (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
           if (table === 'files') renderFilePreview(row);
@@ -3469,8 +3469,12 @@ export const appJs = `
           return '<div class="fs-context-doc"><div class="md-body">' +
             mdToHtml(stripFrontmatter(f.content)) + '</div></div>';
         }).filter(Boolean).join('');
+        // Populate with FORMATTED html, then reveal — the container starts hidden
+        // so the user never sees an empty/unformatted flash while it loads. Stays
+        // hidden when there's no rendered context to show.
         mount.innerHTML = blocks;
-      }).catch(function () { mount.innerHTML = ''; });
+        mount.hidden = !blocks;
+      }).catch(function () { mount.innerHTML = ''; mount.hidden = true; });
     }
 
     // ────────────────────────────────────────────────────────────
