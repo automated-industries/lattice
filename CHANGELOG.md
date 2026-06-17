@@ -88,6 +88,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   created entity), so it can't fire after the ingest already updated/linked a
   record. Enrichment feed events are also attributed to the actual originator
   (the AI path shows the AI badge, not always `ingest`).
+- **URL ingestion handles bot-protected pages.** The crawler now sends a
+  browser-like User-Agent + headers (so help centers behind Zendesk/Cloudflare
+  stop returning 403), and on a 401/403/429 it retries via a headless browser
+  before giving up. If a page still blocks automated access, the error is clear
+  and actionable ("open it and paste the text to ingest manually") rather than a
+  cryptic HTTP code.
 
 ## [3.3.5] - 2026-06-16
 
