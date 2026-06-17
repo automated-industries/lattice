@@ -573,14 +573,7 @@ export class Lattice {
 
     // Build full-text-search indexes (FTS5 / tsvector) for opt-in tables only.
     // Tables without `fts` are untouched — no index, no triggers, no overhead.
-    for (const [name, def] of this._schema.getTables()) {
-      if (!def.fts) continue;
-      const actualCols = await introspectColumnsAsyncOrSync(this._adapter, name);
-      const cols = (def.fts.fields ?? autoFtsColumns(actualCols)).filter((c) =>
-        actualCols.includes(c),
-      );
-      await ensureFtsIndex(this._adapter, name, cols);
-    }
+    await this._buildFtsIndexes();
 
     // Create changelog table if any table uses changelog tracking
     if (this._changelogTables.size > 0) {
@@ -2041,6 +2034,32 @@ export class Lattice {
       reverseSeed: reverseSeedResult,
       reverseSeedRequired,
     };
+  }
+
+  /** Build/refresh the full-text index for every `fts`-configured table (idempotent;
+   *  `ensureFtsIndex` creates the index, triggers, and backfills existing rows). */
+  private async _buildFtsIndexes(): Promise<void> {
+    for (const [name, def] of this._schema.getTables()) {
+      if (!def.fts) continue;
+      const actualCols = await introspectColumnsAsyncOrSync(this._adapter, name);
+      const cols = (def.fts.fields ?? autoFtsColumns(actualCols)).filter((c) =>
+        actualCols.includes(c),
+      );
+      await ensureFtsIndex(this._adapter, name, cols);
+    }
+  }
+
+  /**
+   * Rebuild the full-text search indexes for all `fts`-configured tables and
+   * backfill existing rows. `init()` runs this on an empty DB; this public entry
+   * point re-runs it AFTER rows are present — notably after a migrate-to-cloud row
+   * copy, which otherwise leaves the cloud with data but no `__lattice_fts_*`
+   * tables (so search/the assistant find nothing). Idempotent.
+   */
+  async rebuildFtsIndexes(): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    await this._buildFtsIndexes();
   }
 
   /**

@@ -714,6 +714,11 @@ export async function dispatchDbConfigRoute(
       const target = await openTargetLatticeForMigration(ctx.configPath, url, encryptionKey);
       try {
         const result = await migrateLatticeData(ctx.db, target);
+        // Build the full-text indexes on the cloud AFTER the rows are copied — the
+        // migrate copy doesn't run init's FTS step, which otherwise leaves the
+        // cloud with all the data but no `__lattice_fts_*` index, so search and the
+        // assistant find nothing. Idempotent + backfills the just-copied rows.
+        await target.rebuildFtsIndexes();
         // Owner-side cloud setup: the migrator's connection owns the cloud, so it
         // installs RLS + the observation substrate and stamps itself as owner of
         // every just-migrated row. Each member later sees only its own rows

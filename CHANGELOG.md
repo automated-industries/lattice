@@ -113,6 +113,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   after repeated consecutive tool failures (circuit-breaker) and reports the real
   underlying error instead of looping while the model paraphrases it into a
   "system issue" and the typing indicator hangs.
+- **Search works on a migrated cloud.** `migrate-to-cloud` now builds the
+  full-text index for searchable tables after copying the rows, so search (and
+  the assistant's entity lookup) finds migrated records instead of returning
+  empty — previously the cloud had all the data but no `__lattice_fts_*` index.
+  New `Lattice.rebuildFtsIndexes()` exposes a re-index for embedders. (Making
+  members' cloud search RLS-correct over the shared index is a tracked follow-up.)
 
 ## [3.3.5] - 2026-06-16
 
