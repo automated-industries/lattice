@@ -59,11 +59,7 @@ async function getJson(gui: GuiServerHandle, path: string): Promise<HttpResult> 
 }
 
 /** POST a JSON route. */
-async function postJson(
-  gui: GuiServerHandle,
-  path: string,
-  payload: unknown,
-): Promise<HttpResult> {
+async function postJson(gui: GuiServerHandle, path: string, payload: unknown): Promise<HttpResult> {
   const r = await fetch(`${gui.url}${path}`, {
     method: 'POST',
     headers: JSON_HEADERS,
@@ -158,7 +154,8 @@ async function waitForRender(gui: GuiServerHandle, timeoutMs = 25000): Promise<v
     const { body } = await getJson<{ phase: string; error?: string }>(gui, '/api/render/status');
     if (body.phase === 'done') return;
     if (body.phase === 'error') throw new Error(`member render failed: ${body.error ?? 'unknown'}`);
-    if (Date.now() > deadline) throw new Error(`member render did not finish (phase=${body.phase})`);
+    if (Date.now() > deadline)
+      throw new Error(`member render did not finish (phase=${body.phase})`);
     await new Promise((r) => setTimeout(r, 150));
   }
 }
@@ -199,97 +196,100 @@ type DbCfgResp = { state?: string; type?: string; isCloud?: boolean };
 type RowResp = { id?: string; error?: string };
 type ContextResp = { files?: { name: string; content: string }[] };
 
-describe.skipIf(!PG_URL)('cloud sharing: owner shares → member sees/renders/creates → owner sees', () => {
-  it('drives the full share journey over the HTTP API with RLS-correct visibility', async () => {
-    const { ownerDb, cloudUrl } = await makeCloud();
-    const owner = await bootOwnerGui(cloudUrl, 'Team Cloud');
+describe.skipIf(!PG_URL)(
+  'cloud sharing: owner shares → member sees/renders/creates → owner sees',
+  () => {
+    it('drives the full share journey over the HTTP API with RLS-correct visibility', async () => {
+      const { ownerDb, cloudUrl } = await makeCloud();
+      const owner = await bootOwnerGui(cloudUrl, 'Team Cloud');
 
-    // ── Owner creates three rows. All start owner-private. ─────────────────────
-    // (Owner side runs through the owner's library connection: the render layout
-    // that names these entities lives in the owner's code, never in the cloud, so
-    // an owner GUI booted on a bare workspace config has no entities registered —
-    // only a MEMBER discovers them from the catalog, which the journey below does.)
-    await ownerDb.insert('shared_t', { id: 'r-everyone', name: 'Shared with everyone' });
-    await ownerDb.insert('shared_t', { id: 'r-private', name: 'Owner private' });
-    await ownerDb.insert('shared_t', { id: 'r-custom', name: 'Shared with one member' });
+      // ── Owner creates three rows. All start owner-private. ─────────────────────
+      // (Owner side runs through the owner's library connection: the render layout
+      // that names these entities lives in the owner's code, never in the cloud, so
+      // an owner GUI booted on a bare workspace config has no entities registered —
+      // only a MEMBER discovers them from the catalog, which the journey below does.)
+      await ownerDb.insert('shared_t', { id: 'r-everyone', name: 'Shared with everyone' });
+      await ownerDb.insert('shared_t', { id: 'r-private', name: 'Owner private' });
+      await ownerDb.insert('shared_t', { id: 'r-custom', name: 'Shared with one member' });
 
-    // ── Invite a member; mint the scoped role (the real GUI invite flow). ──────
-    const inv = (await postJson(owner, '/api/cloud/invite', { email: 'member@example.com' }))
-      .body as InviteResp;
-    expect(inv.error).toBeUndefined();
-    expect(inv.ok).toBe(true);
-    const token = inv.token!;
-    const role = inv.role!;
-    roles.push(role);
+      // ── Invite a member; mint the scoped role (the real GUI invite flow). ──────
+      const inv = (await postJson(owner, '/api/cloud/invite', { email: 'member@example.com' }))
+        .body as InviteResp;
+      expect(inv.error).toBeUndefined();
+      expect(inv.ok).toBe(true);
+      const token = inv.token!;
+      const role = inv.role!;
+      roles.push(role);
 
-    // ── Owner sets sharing explicitly: everyone, private, and a custom grant. ──
-    await setRowVisibility(ownerDb, 'shared_t', 'r-everyone', 'everyone');
-    await setRowVisibility(ownerDb, 'shared_t', 'r-private', 'private');
-    await grantRow(ownerDb, 'shared_t', 'r-custom', role);
+      // ── Owner sets sharing explicitly: everyone, private, and a custom grant. ──
+      await setRowVisibility(ownerDb, 'shared_t', 'r-everyone', 'everyone');
+      await setRowVisibility(ownerDb, 'shared_t', 'r-private', 'private');
+      await grantRow(ownerDb, 'shared_t', 'r-custom', role);
 
-    // ── Member joins the cloud through redeem-invite. ──────────────────────────
-    const member = await bootMemberGui();
-    const redeem = (
-      await postJson(member, '/api/cloud/redeem-invite', { email: 'member@example.com', token })
-    ).body as RedeemResp;
-    expect(redeem.error).toBeUndefined();
-    expect(redeem.ok).toBe(true);
+      // ── Member joins the cloud through redeem-invite. ──────────────────────────
+      const member = await bootMemberGui();
+      const redeem = (
+        await postJson(member, '/api/cloud/redeem-invite', { email: 'member@example.com', token })
+      ).body as RedeemResp;
+      expect(redeem.error).toBeUndefined();
+      expect(redeem.ok).toBe(true);
 
-    const dbcfg = (await getJson(member, '/api/dbconfig')).body as DbCfgResp;
-    expect(dbcfg.isCloud).toBe(true);
-    expect(dbcfg.type).toBe('postgres');
-    expect(dbcfg.state).toBe('cloud-member');
+      const dbcfg = (await getJson(member, '/api/dbconfig')).body as DbCfgResp;
+      expect(dbcfg.isCloud).toBe(true);
+      expect(dbcfg.type).toBe('postgres');
+      expect(dbcfg.state).toBe('cloud-member');
 
-    // ── Member SEES exactly the shared subset — RLS read back over the API. ────
-    const list = (await getJson(member, '/api/tables/shared_t/rows')).body as RowsResp;
-    expect(list.error).toBeUndefined();
-    const visible = (list.rows ?? []).map((r) => r.id).sort();
-    expect(visible).toEqual(['r-custom', 'r-everyone']); // NOT r-private
-    expect(visible).not.toContain('r-private');
+      // ── Member SEES exactly the shared subset — RLS read back over the API. ────
+      const list = (await getJson(member, '/api/tables/shared_t/rows')).body as RowsResp;
+      expect(list.error).toBeUndefined();
+      const visible = (list.rows ?? []).map((r) => r.id).sort();
+      expect(visible).toEqual(['r-custom', 'r-everyone']); // NOT r-private
+      expect(visible).not.toContain('r-private');
 
-    // Single-row reads confirm the same boundary: visible → 200, private → 404.
-    const okRow = await getJson(member, '/api/tables/shared_t/rows/r-everyone');
-    expect(okRow.status).toBe(200);
-    expect((okRow.body as RowResp).id).toBe('r-everyone');
-    const hiddenRow = await getJson(member, '/api/tables/shared_t/rows/r-private');
-    expect(hiddenRow.status).toBe(404);
+      // Single-row reads confirm the same boundary: visible → 200, private → 404.
+      const okRow = await getJson(member, '/api/tables/shared_t/rows/r-everyone');
+      expect(okRow.status).toBe(200);
+      expect((okRow.body as RowResp).id).toBe('r-everyone');
+      const hiddenRow = await getJson(member, '/api/tables/shared_t/rows/r-private');
+      expect(hiddenRow.status).toBe(404);
 
-    // ── Member RENDERS non-empty context for a visible row (the "0 files" guard).
-    await waitForRender(member);
-    const context = (await getJson(member, '/api/tables/shared_t/rows/r-everyone/context'))
-      .body as ContextResp;
-    expect((context.files ?? []).length).toBeGreaterThan(0);
+      // ── Member RENDERS non-empty context for a visible row (the "0 files" guard).
+      await waitForRender(member);
+      const context = (await getJson(member, '/api/tables/shared_t/rows/r-everyone/context'))
+        .body as ContextResp;
+      expect((context.files ?? []).length).toBeGreaterThan(0);
 
-    // ── Member CREATES a row and RE-SHARES it everyone. ────────────────────────
-    const created = await postJson(member, '/api/tables/shared_t/rows', {
-      id: 'r-member',
-      name: 'Created by the member',
+      // ── Member CREATES a row and RE-SHARES it everyone. ────────────────────────
+      const created = await postJson(member, '/api/tables/shared_t/rows', {
+        id: 'r-member',
+        name: 'Created by the member',
+      });
+      expect((created.body as CreateResp).error).toBeUndefined();
+      expect([200, 201]).toContain(created.status);
+      const reshare = (
+        await postJson(member, '/api/cloud/share', {
+          table: 'shared_t',
+          pk: 'r-member',
+          visibility: 'everyone',
+        })
+      ).body as ShareResp;
+      expect(reshare.error).toBeUndefined();
+      expect(reshare.ok).toBe(true);
+
+      // ── Owner SEES the member's row (read back through the owner connection). ──
+      const ownerRows = await ownerDb.query('shared_t', {});
+      expect(ownerRows.map((r) => r.id as string)).toContain('r-member');
+
+      // ── Negative gate: a member cannot re-share a row they do NOT own. ─────────
+      const denied = (
+        await postJson(member, '/api/cloud/share', {
+          table: 'shared_t',
+          pk: 'r-everyone', // owned by the owner
+          visibility: 'private',
+        })
+      ).body as ShareResp;
+      expect(denied.ok).not.toBe(true);
+      expect(denied.error).toBeTruthy();
     });
-    expect((created.body as CreateResp).error).toBeUndefined();
-    expect([200, 201]).toContain(created.status);
-    const reshare = (
-      await postJson(member, '/api/cloud/share', {
-        table: 'shared_t',
-        pk: 'r-member',
-        visibility: 'everyone',
-      })
-    ).body as ShareResp;
-    expect(reshare.error).toBeUndefined();
-    expect(reshare.ok).toBe(true);
-
-    // ── Owner SEES the member's row (read back through the owner connection). ──
-    const ownerRows = await ownerDb.query('shared_t', {});
-    expect(ownerRows.map((r) => r.id as string)).toContain('r-member');
-
-    // ── Negative gate: a member cannot re-share a row they do NOT own. ─────────
-    const denied = (
-      await postJson(member, '/api/cloud/share', {
-        table: 'shared_t',
-        pk: 'r-everyone', // owned by the owner
-        visibility: 'private',
-      })
-    ).body as ShareResp;
-    expect(denied.ok).not.toBe(true);
-    expect(denied.error).toBeTruthy();
-  });
-});
+  },
+);

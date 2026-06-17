@@ -9,8 +9,6 @@ import {
   changeVisibleToActiveRole,
   isDeleteOp,
   isFeedHiddenTable,
-  readRelationFor,
-  attachRowAccess,
 } from './active-db.js';
 import {
   resolveOutputDirForConfig,
@@ -42,18 +40,12 @@ import {
 import type { LatticeFieldDef } from '../config/types.js';
 import { getGuiEntities, fileJunctions, entityDescriptions, type GuiTableSummary } from './data.js';
 import { guiAppHtml } from './app.js';
-import type { Row } from '../types.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
 import { createGuiRequestContext } from './request-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { upsertColumnMeta, upsertTableMeta } from './column-descriptions.js';
 import {
-  createRow,
-  updateRow,
-  deleteRow,
-  linkRows,
-  unlinkRows,
   parseAudit,
   undoLast,
   redoLast,
@@ -83,7 +75,7 @@ import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
-import { ROWS_PATH } from './route-paths.js';
+import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import {
   readIdentity,
@@ -223,40 +215,8 @@ function columnRefTarget(configPath: string, entity: string, col: string): strin
   return typeof ref === 'string' && ref ? ref : null;
 }
 
-const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;
-
-/**
- * Read one request header as a trimmed string (Node lowercases header names and
- * may hand back an array for repeated headers — collapse to the first value).
- * Returns undefined when absent or blank so callers can treat "no header" and
- * "empty header" identically.
- */
-function headerValue(req: IncomingMessage, name: string): string | undefined {
-  const raw = req.headers[name.toLowerCase()];
-  const v = Array.isArray(raw) ? raw[0] : raw;
-  const trimmed = typeof v === 'string' ? v.trim() : '';
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-/** Max rows a single `/rows` page may request — caps cloud egress on a hot path
- *  (Rule: bounded reads). A caller wanting more pages with limit+offset. */
-const MAX_ROWS_PAGE = 1000;
-const DEFAULT_ROWS_PAGE = 500;
-
-/**
- * Parse + validate a `limit`/`offset` query param (#4.9). Returns the numeric
- * value, or `'invalid'` for a non-numeric / negative / non-integer string (the
- * caller returns 400 instead of letting `Number('abc')` become `LIMIT NaN`).
- * `limit` is clamped to `[1, MAX_ROWS_PAGE]`; `offset` floored at 0.
- */
-function parsePageParam(raw: string | null, kind: 'limit' | 'offset'): number | 'invalid' {
-  if (raw === null) return kind === 'limit' ? DEFAULT_ROWS_PAGE : 0;
-  if (!/^\d+$/.test(raw.trim())) return 'invalid';
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return 'invalid';
-  if (kind === 'limit') return Math.min(Math.max(1, n), MAX_ROWS_PAGE);
-  return Math.max(0, n);
-}
+// Row-CRUD + link/unlink routes (incl. the page-param + header helpers and the
+// /rows + /link regexes) live in tables-routes.ts / route-paths.ts.
 
 // Row-context reading (locator + file read) is shared with the AI assistant's
 // `get_row_context` tool — see ./row-context.ts.
@@ -503,6 +463,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // (host/guiVersion/guiAppHtml/sendText never change for the server's life),
   // built once here rather than per request.
   const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText };
+  const tablesDeps: TablesRoutesDeps = { host };
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -1872,126 +1833,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
 
-        // ── Row CRUD: /api/tables/:table/rows[/:id] ───────────────────────
-        const rowsMatch = ROWS_PATH.exec(pathname);
-        if (rowsMatch) {
-          const [, rawTable, rawId] = rowsMatch;
-          const table = decodeURIComponent(rawTable ?? '');
-          const id = rawId ? decodeURIComponent(rawId) : null;
-          if (!active.validTables.has(table)) {
-            sendJson(res, { error: `Unknown table: ${table}` }, 400);
-            return;
-          }
-          // #4.6 — the originating client's true edit time is honored for the
-          // audit timestamp so an offline edit shows when it was made.
-          const mctx = ctx.buildMutationCtx({
-            clientTs: headerValue(req, 'x-lattice-client-ts'),
-          });
-
-          if (id === null) {
-            if (method === 'GET') {
-              // #4.9 — bound + validate the page params: an unbounded `limit` is a
-              // full-table egress on a cloud hot path, and `Number('abc')` was
-              // becoming `LIMIT NaN`. Reject non-numeric; clamp limit ≤ MAX.
-              const limit = parsePageParam(url.searchParams.get('limit'), 'limit');
-              const offset = parsePageParam(url.searchParams.get('offset'), 'offset');
-              if (limit === 'invalid' || offset === 'invalid') {
-                sendJson(res, { error: 'limit and offset must be non-negative integers' }, 400);
-                return;
-              }
-              const deletedMode = url.searchParams.get('deleted');
-              // Row visibility is enforced by Postgres RLS at the database.
-              const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
-              if (active.softDeletable.has(table) && deletedMode !== 'any') {
-                queryOpts.filters = [
-                  { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
-                ];
-              }
-              // #2.1 — a member reads an audience-masked table through its
-              // `<table>_v` view (base SELECT was revoked); the base name is used
-              // everywhere else (validTables, ownership lookups, writes).
-              const rows = await active.db.query(readRelationFor(active, table), queryOpts);
-              await attachRowAccess(active.db, table, rows);
-              sendJson(res, { rows });
-              return;
-            }
-            if (method === 'POST') {
-              const body = (await readJson<unknown>(req)) as Row;
-              // #3.6 — pass the client edit-id through so a replayed offline POST
-              // resolves to the same row (idempotent no-op) instead of a duplicate.
-              const editId = headerValue(req, 'x-lattice-edit-id');
-              const created = await createRow(mctx, table, body, undefined, editId);
-              // A replayed POST (the row already existed) is reported as 200, not
-              // 201, so the client can tell a fresh insert from an idempotent no-op.
-              sendJson(res, { id: created.id }, created.idempotent ? 200 : 201);
-              return;
-            }
-          } else {
-            if (method === 'GET') {
-              // #2.1 — route a masked table's single-row read through `<table>_v`
-              // too (base SELECT revoked for members). Build the pk filter from the
-              // BASE table's registered key; the view exposes the same columns.
-              const readRel = readRelationFor(active, table);
-              let row: Row | null;
-              if (readRel === table) {
-                row = await active.db.get(table, id);
-              } else {
-                // Masked tables use a single `id` PK in practice; filter the view
-                // on the first PK column (fallback `id`) — the view exposes it.
-                const pkCol = active.db.getPrimaryKey(table)[0] ?? 'id';
-                const found = await active.db.query(readRel, { where: { [pkCol]: id }, limit: 1 });
-                row = found[0] ?? null;
-              }
-              if (row === null) {
-                sendJson(res, { error: 'Row not found' }, 404);
-                return;
-              }
-              // A row the operator can't read already returns null (RLS-filtered /
-              // not in the view), so reaching here means the row is visible.
-              await attachRowAccess(active.db, table, [row]);
-              sendJson(res, row);
-              return;
-            }
-            if (method === 'PATCH') {
-              const body = (await readJson<unknown>(req)) as Partial<Row>;
-              await updateRow(mctx, table, id, body);
-              sendJson(res, { ok: true });
-              return;
-            }
-            if (method === 'DELETE') {
-              const hard = url.searchParams.get('hard') === 'true';
-              await deleteRow(mctx, table, id, hard);
-              sendJson(res, { ok: true });
-              return;
-            }
-          }
-          sendJson(res, { error: `Method ${method} not allowed` }, 405);
-          return;
-        }
-
-        // ── Junction link / unlink: /api/tables/:table/(link|unlink) ───────
-        const linkMatch = LINK_PATH.exec(pathname);
-        if (linkMatch) {
-          const [, rawTable, op] = linkMatch;
-          const table = decodeURIComponent(rawTable ?? '');
-          if (!active.junctionTables.has(table)) {
-            sendJson(res, { error: `Not a junction table: ${table}` }, 400);
-            return;
-          }
-          if (method !== 'POST') {
-            sendJson(res, { error: `Method ${method} not allowed` }, 405);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as Row;
-          const linkCtx = ctx.buildMutationCtx();
-          if (op === 'link') {
-            await linkRows(linkCtx, table, body);
-          } else {
-            await unlinkRows(linkCtx, table, body);
-          }
-          sendJson(res, { ok: true });
-          return;
-        }
+        // ── Row CRUD + junction link/unlink (extracted leaf — tables-routes.ts) ──
+        if (await handleTablesRoutes(req, res, ctx, tablesDeps)) return;
 
         // ── User Config routes ───────────────────────────────────────────
         // Reads + writes machine-local user identity and the saved
