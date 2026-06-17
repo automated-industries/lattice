@@ -101,6 +101,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   batch turn — reopens the same conversation instead of jumping to the newest
   thread. (Mid-turn message checkpointing and surfaced persist failures are
   tracked as follow-ups.)
+- **The assistant no longer hangs on a vague "system error".** A turn now stops
+  after repeated consecutive tool failures (circuit-breaker) and reports the real
+  underlying error instead of looping while the model paraphrases it into a
+  "system issue" and the typing indicator hangs.
 
 ## [3.3.5] - 2026-06-16
 

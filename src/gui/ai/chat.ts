@@ -29,6 +29,11 @@ export const DEFAULT_MODEL = 'claude-haiku-4-5';
 // may emit several tool_use blocks, so a 2048-token cap truncated bulk work.
 // (Capacity, not a workaround — see CHANGELOG.)
 const MAX_TOOL_LOOPS = 16;
+// Circuit-breaker: stop a turn after this many consecutive rounds where EVERY
+// tool call failed. Without it, a persistent failure (a bad write, a rate-limit)
+// loops until MAX_TOOL_LOOPS while the model narrates "let me retry…", leaving
+// the user staring at a hung typing indicator. Surfaces the real last error.
+const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
 const MAX_TOKENS = 4096;
 
 // Caps for the cross-turn tool-memory record (see onToolRecord, persisted +
@@ -351,6 +356,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   );
 
   let loop = 0;
+  let consecutiveAllFailed = 0;
   try {
     for (; loop < MAX_TOOL_LOOPS; loop++) {
       const deltas: string[] = [];
@@ -399,9 +405,13 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
 
       // Execute each tool call and feed results back as a single user turn.
       const resultBlocks: ContentBlock[] = [];
+      let turnAllFailed = true; // reaches here only when toolUses.length > 0
+      let lastToolError = '';
       for (const tu of turn.toolUses) {
         yield { type: 'tool_use', id: tu.id, name: tu.name };
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
+        if (res.ok) turnAllFailed = false;
+        else if (res.error) lastToolError = res.error;
         yield { type: 'tool_result', toolUseId: tu.id, isError: !res.ok };
         // A tool may ask the GUI to open the row it just created (e.g.
         // create_artifact) in the main viewer. Surface it as a typed event the
@@ -433,6 +443,22 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
           content: capToolResult(rawContent),
           isError: !res.ok,
         });
+      }
+      // Circuit-breaker: every tool in this round failed. Count consecutive
+      // all-failed rounds and stop loudly with the REAL last error instead of
+      // looping while the model paraphrases the failure into a vague "system
+      // issue" and the user watches a hung typing indicator.
+      if (turnAllFailed) {
+        consecutiveAllFailed++;
+        if (consecutiveAllFailed >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+          yield {
+            type: 'error',
+            message: `Stopped after ${String(consecutiveAllFailed)} rounds where every tool call failed. Last error: ${lastToolError || 'unknown error'}.`,
+          };
+          break;
+        }
+      } else {
+        consecutiveAllFailed = 0;
       }
       messages.push({ role: 'user', content: resultBlocks });
     }
