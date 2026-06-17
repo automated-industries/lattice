@@ -7,9 +7,7 @@
  *
  * This pins the converged member-access state: after reconcileCloudMemberAccess,
  * the lattice_members group can read/write the GUI meta + identity tables, can
- * EXECUTE the polyfills, and every user entity table has `deleted_at` — while the
- * owner-only governance table __lattice_cell_grants stays UNgranted (it's reached
- * only via SECURITY DEFINER functions, so a direct member grant would be a leak).
+ * EXECUTE the polyfills, and every user entity table has `deleted_at`.
  *
  * Postgres-gated: skipped without LATTICE_TEST_PG_URL.
  */
@@ -136,20 +134,5 @@ describe.skipIf(!PG_URL)('3.3.3 cloud member provisioning grants', () => {
 
     // The migrated entity table now has deleted_at.
     expect(await columnExists(o, 'projects', 'deleted_at')).toBe(true);
-  });
-
-  it('does NOT grant the member group direct access to __lattice_cell_grants (owner-only)', async () => {
-    const o = await ownerCloud();
-    const member = `lm_${randomBytes(4).toString('hex')}`;
-    roles.push(member);
-    await provisionMemberRole(o, member, generateMemberPassword());
-
-    await reconcileCloudMemberAccess(o);
-
-    // __lattice_cell_grants is reached only through SECURITY DEFINER functions
-    // (lattice_cell_visible / lattice_grant_cell), so a member must have NO direct
-    // privilege on it — a direct grant would leak every cell-sharing decision.
-    expect(await memberHasTablePriv(o, '__lattice_cell_grants', 'SELECT')).toBe(false);
-    expect(await memberHasTablePriv(o, '__lattice_cell_grants', 'INSERT')).toBe(false);
   });
 });

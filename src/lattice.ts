@@ -573,14 +573,7 @@ export class Lattice {
 
     // Build full-text-search indexes (FTS5 / tsvector) for opt-in tables only.
     // Tables without `fts` are untouched — no index, no triggers, no overhead.
-    for (const [name, def] of this._schema.getTables()) {
-      if (!def.fts) continue;
-      const actualCols = await introspectColumnsAsyncOrSync(this._adapter, name);
-      const cols = (def.fts.fields ?? autoFtsColumns(actualCols)).filter((c) =>
-        actualCols.includes(c),
-      );
-      await ensureFtsIndex(this._adapter, name, cols);
-    }
+    await this._buildFtsIndexes();
 
     // Create changelog table if any table uses changelog tracking
     if (this._changelogTables.size > 0) {
@@ -1947,6 +1940,100 @@ export class Lattice {
     return this._renderGuarded(outputDir, opts);
   }
 
+  /**
+   * Install a per-viewer read-relation resolver for ALL renders (initial,
+   * background, and the debounced auto-render that fires after every write).
+   * A cloud member open passes `(t) => maskedReadViews.get(t) ?? t` so the
+   * rendered context tree is read THROUGH the member's RLS connection + masking
+   * views — making the on-disk tree the viewer's own scoped projection. Owner /
+   * local SQLite leave it unset → identity → unchanged behavior. Set on the
+   * engine (not per-render-call) so the opts-less auto-render path masks too.
+   */
+  setRenderReadRelation(fn: (table: string) => string): void {
+    this._render.setRenderReadRelation(fn);
+  }
+
+  /**
+   * Turn on the per-viewer enrichment fold for ALL renders. A cloud member open
+   * calls this so the rendered context overlays the member-visible DERIVED
+   * observations onto each ground row ({@link foldRenderRows}). Owner / local
+   * SQLite leave it off → ground truth renders unchanged.
+   */
+  enableRenderFold(): void {
+    this._render.setRenderFold((table, rows) => this.foldRenderRows(table, rows));
+  }
+
+  /**
+   * Request a debounced re-render (the same coalesced, pending-requeue path that
+   * a local write triggers). Used to eagerly refresh a cloud member's rendered
+   * tree when a REMOTE change arrives — notably an owner re-sharing or un-sharing
+   * a row, after which the member's per-viewer projection must be recompiled. A
+   * no-op when auto-render isn't enabled.
+   */
+  requestRender(): void {
+    this._scheduleAutoRender();
+  }
+
+  /**
+   * True while a render is actively writing the context tree + manifest (auto-
+   * render OR a guarded background render). The file-loopback watcher checks this
+   * to avoid reverse-syncing mid-render — a pass then would read half-written
+   * output whose manifest hash hasn't caught up yet and re-ingest the render's
+   * OWN writes as spurious "file-edit" changes.
+   */
+  isRendering(): boolean {
+    return this._autoRenderInFlight;
+  }
+
+  /**
+   * Fold the viewer-visible DERIVED observations onto a table's ground rows in one
+   * batched changelog read — the render-time, whole-table analogue of
+   * {@link foldForViewer} (which is per-row). Read THROUGH this connection: on a
+   * cloud member connection the changelog RLS (`lattice_changelog_sel`) already
+   * drops any derived observation whose sources the member can't all reach AND
+   * hides every owner-only ground-truth/audit entry — so what returns is exactly
+   * the member-visible derived set, and overlaying it is leak-free by construction
+   * (the database, not this code, is the enforcement point). One read per table,
+   * never per row (the per-row `history()` fan-out would be an unbounded hot-path
+   * cost). A no-op when the changelog substrate is absent or nothing is derived.
+   */
+  async foldRenderRows(table: string, rows: Row[]): Promise<Row[]> {
+    if (rows.length === 0) return rows;
+    if (!(await this._changelogTableExists())) return rows;
+    // recentChanges reads via THIS adapter (RLS-filtered for a member); a member
+    // sees no owner-only ground-truth rows, so only derived observations return.
+    const changes = await this.recentChanges({ table, limit: 100_000 });
+    const obsByRow = new Map<string, Observation[]>();
+    for (const h of changes) {
+      if (h.changeKind !== 'derived') continue;
+      const sources = h.sourceRef ?? null;
+      const opened = this._openSealedObservation(h.changes, sources, undefined);
+      // A sealed value we can't open (no key at render time) reverts to ground.
+      if (opened === null) continue;
+      const list = obsByRow.get(h.rowId) ?? [];
+      list.push(
+        ...observationsFromChange({
+          changes: opened,
+          createdAt: h.createdAt,
+          changeKind: 'derived',
+          sourceRef: sources,
+        }),
+      );
+      obsByRow.set(h.rowId, list);
+    }
+    if (obsByRow.size === 0) return rows;
+    // Every observation that survived the changelog RLS read is, by construction,
+    // one this viewer may see — so the visible-source set is the union of their
+    // refs (the `'all'` semantics of foldForViewer's single-user path).
+    const visibleSources = new Set<string>();
+    for (const list of obsByRow.values())
+      for (const o of list) for (const s of o.sourceRef ?? []) visibleSources.add(s);
+    return rows.map((r) => {
+      const obs = obsByRow.get(this._serializeRowPk(table, r));
+      return obs ? foldEntity(r, obs, { visibleSources }) : r;
+    });
+  }
+
   async sync(outputDir: string): Promise<SyncResult> {
     const notInit = this._notInitError<SyncResult>();
     if (notInit) return notInit;
@@ -2041,6 +2128,52 @@ export class Lattice {
       reverseSeed: reverseSeedResult,
       reverseSeedRequired,
     };
+  }
+
+  /** Build/refresh the full-text index for every `fts`-configured table (idempotent;
+   *  `ensureFtsIndex` creates the index, triggers, and backfills existing rows). */
+  private async _buildFtsIndexes(): Promise<void> {
+    for (const [name, def] of this._schema.getTables()) {
+      if (!def.fts) continue;
+      const actualCols = await introspectColumnsAsyncOrSync(this._adapter, name);
+      const cols = (def.fts.fields ?? autoFtsColumns(actualCols)).filter((c) =>
+        actualCols.includes(c),
+      );
+      await ensureFtsIndex(this._adapter, name, cols);
+    }
+  }
+
+  /**
+   * Rebuild the full-text search indexes for all `fts`-configured tables and
+   * backfill existing rows. `init()` runs this on an empty DB; this public entry
+   * point re-runs it AFTER rows are present — notably after a migrate-to-cloud row
+   * copy, which otherwise leaves the cloud with data but no `__lattice_fts_*`
+   * tables (so search/the assistant find nothing). Idempotent.
+   */
+  async rebuildFtsIndexes(): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    await this._buildFtsIndexes();
+  }
+
+  /**
+   * Run reverse-sync against the rendered tree at `outputDir` and return what was
+   * applied. Unlike {@link reconcile} (which runs reverse-sync with raw SQL as a
+   * pre-render step), this is the changelog-aware entry point the GUI file-loopback
+   * uses: pass `apply` to route each update through a versioned write (so a file
+   * edit is recorded exactly like a GUI edit) and `useDefault` to round-trip
+   * frontmatter + body `key: value` fields for files lacking a hand-written
+   * `reverseSync`. Compares file hashes against the current manifest, so a
+   * render-written file is recognized as an echo and skipped.
+   */
+  async reverseSyncFromFiles(
+    outputDir: string,
+    opts: import('./reverse-sync/engine.js').ReverseSyncProcessOptions = {},
+  ): Promise<import('./types.js').ReverseSyncResult> {
+    const notInit = this._notInitError<import('./types.js').ReverseSyncResult>();
+    if (notInit) return notInit;
+    const prevManifest = readManifest(outputDir);
+    return this._reverseSync.process(outputDir, prevManifest, false, opts);
   }
 
   watch(outputDir: string, opts: WatchOptions = {}): Promise<StopFn> {
@@ -2433,8 +2566,18 @@ export class Lattice {
     this._autoRenderPending = false;
     this._autoRenderInFlight = true;
     try {
+      // Read the prior manifest BEFORE render so cleanup can detect orphans.
+      const prevManifest = readManifest(dir);
       const result = await this._render.render(dir);
       for (const h of this._renderHandlers) h(result);
+      // Prune stale files after render: a deleted row, or — for a cloud member —
+      // a row that was just un-shared (so it dropped out of the RLS-filtered read)
+      // must leave the rendered tree, not linger as a stale snapshot. cleanup uses
+      // the SAME per-viewer resolver the render did, so a member's own just-written
+      // files are kept and only genuinely-absent rows are removed. Without this an
+      // un-share would never prune the file (render only writes; it never deletes).
+      const newManifest = readManifest(dir);
+      await this._render.cleanup(dir, prevManifest, {}, newManifest);
     } catch (err) {
       for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
     } finally {

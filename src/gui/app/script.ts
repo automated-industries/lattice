@@ -802,6 +802,43 @@ export const appJs = `
     var eventStreamReconnect = null; // pending reconnect timer
     var eventStreamBackoff = 1000; // reconnect delay, grows to a cap
     var eventStreamClosed = false; // true ⇒ closed on purpose (switch/teardown), don't reconnect
+    // Version this page was served with (from the shell's version chip, "v3.3.5").
+    // When a reconnect reports a different server version, the server relaunched
+    // onto a new build (a background auto-update) so the tab reloads itself — the
+    // universal "no manual refresh" trigger, independent of how the restart happened.
+    var BOOT_VERSION = (function () {
+      var el = document.getElementById('app-version');
+      return el ? String(el.textContent || '').replace(/^v/, '').trim() : '';
+    })();
+    var reloadingForUpdate = false;
+    function showUpdatePill(text) {
+      var el = document.getElementById('app-update');
+      if (el) { el.textContent = text; el.hidden = false; }
+    }
+    function hideUpdatePill() {
+      var el = document.getElementById('app-update');
+      if (el) { el.hidden = true; }
+    }
+    function reloadForUpdate(label) {
+      if (reloadingForUpdate) return;
+      reloadingForUpdate = true;
+      showUpdatePill(label || 'Updated — reloading…');
+      setTimeout(function () { location.reload(); }, 600);
+    }
+    // On every (re)connect, ask the server its version. A change vs BOOT_VERSION
+    // means a relaunch onto new code → reload. Best-effort; never throws.
+    function checkServerVersion() {
+      if (!BOOT_VERSION) return;
+      fetch('/api/version')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          var v = d && d.version ? String(d.version).replace(/^v/, '').trim() : '';
+          if (!v) return;
+          if (v !== BOOT_VERSION) reloadForUpdate('Updated to v' + v + ' — reloading…');
+          else hideUpdatePill();
+        })
+        .catch(function () { /* offline / mid-restart — the next reconnect retries */ });
+    }
     function dispatchStreamMessage(type, data) {
       if (type === 'realtime-state') {
         setStatusPill((data && data.mode) || 'local', (data && data.state) || 'local');
@@ -815,6 +852,13 @@ export const appJs = `
         if (data) applyRenderSnapshot(data);
       } else if (type === 'render-progress') {
         if (data) onRenderEvent(data);
+      } else if (type === 'update-applied') {
+        // Files on disk are the new version; the server is about to relaunch.
+        // Don't reload yet (the server is exiting) — the reconnect version check
+        // does the actual reload once it's back up on the new code.
+        showUpdatePill('Updating…');
+      } else if (type === 'update-error') {
+        showToast('Update failed: ' + ((data && data.message) || 'unknown error'), {});
       }
     }
     function scheduleEventStreamReconnect() {
@@ -845,7 +889,7 @@ export const appJs = `
       try { ws = new WebSocket(proto + '//' + location.host + '/api/stream'); }
       catch (_) { scheduleEventStreamReconnect(); return; }
       eventStream = ws;
-      ws.onopen = function () { eventStreamBackoff = 1000; };
+      ws.onopen = function () { eventStreamBackoff = 1000; checkServerVersion(); };
       ws.onmessage = function (ev) {
         var msg = null;
         try { msg = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
@@ -927,14 +971,21 @@ export const appJs = `
         return;
       }
       if (e.kind === 'done') {
-        // Whole-render completion: clear every overlay and let the debounced
-        // refetch snap the counts to their real values.
+        // Whole-render completion: clear every overlay and refetch so counts +
+        // the open record's rendered context snap to their real values.
         Object.keys(renderProgress).forEach(function (table) {
           var s = renderProgress[table];
           if (s) s.done = true;
           clearCardProgress(table);
         });
-        scheduleRealtimeRefresh();
+        // Force the refresh now that the render is COMPLETE — the rendered context
+        // files are fresh on disk. Bypass scheduleRealtimeRefresh's leading-edge
+        // coalescing: the originating change's feed event already fired a refresh
+        // BEFORE the render finished, which would otherwise leave an open card's
+        // rendered-context panel showing the pre-change markdown until a manual
+        // reload (the "card context updated only after I refreshed" bug).
+        if (realtimePending) { clearTimeout(realtimePending); realtimePending = null; }
+        afterMutation().catch(function () { /* swallow — next action retries */ });
         return;
       }
       if (!e.table) return;
@@ -1327,6 +1378,7 @@ export const appJs = `
 
     var wsOutsideClickBound = false;
     function renderWsSwitcher(data) {
+      activeWsId = (data && data.current) || null; // keys the per-workspace chat-thread memory
       var wrap = document.getElementById('ws-switcher');
       var btn = document.getElementById('ws-button');
       var menu = document.getElementById('ws-menu');
@@ -2162,6 +2214,22 @@ export const appJs = `
       var dot = name.lastIndexOf('.');
       return dot >= 0 && IMAGE_EXTS.indexOf(name.slice(dot + 1)) >= 0;
     }
+    // Which action affordances the file view offers for a row (extracted so it
+    // can be unit-tested). A file rendered inline (image / PDF with viewable
+    // bytes) needs neither. Anything else with bytes gets a browser Download so
+    // the underlying file is ALWAYS reachable — including office docs, audio, and
+    // video, and even when "Open in Finder" is unavailable (a remote GUI, or
+    // LATTICE_LOCAL_OPEN off). "Open in Finder" is additionally offered when the
+    // bytes live on this machine and local-open is enabled.
+    function fileActions(row, localOpenOn) {
+      var viewable = hasViewableFile(row);
+      var inline = viewable && (isImageFile(row) || String(row.mime || '') === 'application/pdf');
+      return {
+        inline: inline,
+        open: hasLocalBytes(row) && !!localOpenOn,
+        download: (isS3File(row) && !hasLocalBytes(row)) || (hasLocalBytes(row) && !inline),
+      };
+    }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
@@ -2184,15 +2252,14 @@ export const appJs = `
         html += '<div class="file-unsupported">No inline preview for this file type' +
           (mime ? ' (' + escapeHtml(mime) + ')' : '') + '.</div>';
       }
-      // Open in Finder vs Download are MUTUALLY EXCLUSIVE: a file on this machine's
-      // disk opens locally (when LATTICE_LOCAL_OPEN is on); a cloud (S3) file with
-      // no local copy is downloaded. Never both — there's only ever one source.
-      var canOpen = hasLocalBytes(row) && state.localOpen;
-      var canDownload = isS3File(row) && !hasLocalBytes(row);
-      if (canOpen || canDownload) {
+      // Action affordances — see fileActions. A non-inline file with bytes
+      // (office doc, audio, video, an S3-only file) is downloadable; local bytes
+      // also open in Finder when local-open is on.
+      var acts = fileActions(row, state.localOpen);
+      if (acts.open || acts.download) {
         html += '<div class="file-actions">' +
-          (canOpen ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
-          (canDownload ? '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' : '') +
+          (acts.open ? '<button class="btn" id="file-open">Open in Finder</button>' : '') +
+          (acts.download ? '<a class="btn" href="' + blobUrl + '" download="' + escapeHtml(row.original_name || 'file') + '">Download</a>' : '') +
         '</div>';
       }
       host.innerHTML = html;
@@ -2353,7 +2420,9 @@ export const appJs = `
       var myGen = renderGen;
       var t = tableByName(tableName);
       if (!t) {
-        setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(tableName) + '</div>');
+        // The entity/table was removed (e.g. the assistant dropped it) — return to
+        // the dashboard rather than painting a dead "Unknown entity" view.
+        location.hash = '#/';
         return;
       }
       var d = displayFor(tableName);
@@ -2373,6 +2442,14 @@ export const appJs = `
       Promise.all(fetches).then(function (results) {
         if (myGen !== renderGen) return; // superseded by a newer navigation
         var row = results[0];
+
+        // The open record was deleted out from under the view (assistant, another
+        // client, or a hard delete) — don't repaint a tombstone. Fall back to the
+        // parent table, unless the user is intentionally browsing this table's trash.
+        if (!row || (row.deleted_at && tableViewMode[tableName] !== 'trash')) {
+          location.hash = '#/objects/' + encodeURIComponent(tableName);
+          return;
+        }
 
         function paint(editing) {
           var rows = [];
@@ -2543,6 +2620,12 @@ export const appJs = `
 
         paint(false);
       }).catch(function (err) {
+        // A 404 means the row was hard-deleted out from under the view — go to the
+        // parent table instead of a dead "Failed" pane. Other errors still surface.
+        if (/not found|404|no row|does not exist/i.test(err.message || '')) {
+          location.hash = '#/objects/' + encodeURIComponent(tableName);
+          return;
+        }
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
@@ -2947,7 +3030,13 @@ export const appJs = `
         if (!leaf || leaf.type !== 'node') throw new Error('Bad item path');
         var table = leaf.table, id = leaf.id, row = leaf.row;
         var t = tableByName(table);
-        if (!t) { setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'); return; }
+        if (!t) { location.hash = '#/'; return; } // table removed → dashboard
+        // The open record was deleted out from under the view — fall back to the
+        // parent folder rather than repaint a tombstone (respect an explicit trash view).
+        if (!row || (row.deleted_at && tableViewMode[table] !== 'trash')) {
+          location.hash = '#/fs/' + encodeURIComponent(table);
+          return;
+        }
         var d = displayFor(table);
         var bt = belongsToColumns(t);
         var rels = fsRelations(table);
@@ -2982,7 +3071,7 @@ export const appJs = `
             (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             // Formatted markdown (rendered context) sits ABOVE the column-by-column
             // data view; the raw fields follow underneath.
-            '<div class="fs-context" id="fs-context"></div>' +
+            '<div class="fs-context" id="fs-context" hidden></div>' +
             '<div class="fs-doc">' + fields.join('') + '</div>' +
             (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
           if (table === 'files') renderFilePreview(row);
@@ -3387,8 +3476,12 @@ export const appJs = `
           return '<div class="fs-context-doc"><div class="md-body">' +
             mdToHtml(stripFrontmatter(f.content)) + '</div></div>';
         }).filter(Boolean).join('');
+        // Populate with FORMATTED html, then reveal — the container starts hidden
+        // so the user never sees an empty/unformatted flash while it loads. Stays
+        // hidden when there's no rendered context to show.
         mount.innerHTML = blocks;
-      }).catch(function () { mount.innerHTML = ''; });
+        mount.hidden = !blocks;
+      }).catch(function () { mount.innerHTML = ''; mount.hidden = true; });
     }
 
     // ────────────────────────────────────────────────────────────
@@ -5953,7 +6046,11 @@ export const appJs = `
 
       var inviteBtn = host.querySelector('[data-act="open-invite"]');
       if (inviteBtn) inviteBtn.addEventListener('click', function () {
-        showInviteMemberModal(info);
+        // Refresh the members list after a successful invite so the new invitee
+        // appears ("Invited") without a manual reload.
+        showInviteMemberModal(info, function () {
+          if (typeof loadMembers === 'function') loadMembers();
+        });
       });
 
       // Members list: the owner sees the owner + every member role; a member
@@ -6234,7 +6331,7 @@ export const appJs = `
       });
     }
 
-    function showInviteMemberModal(info) {
+    function showInviteMemberModal(info, onInvited) {
       // Owner-only invite: collect the invitee's email; the server provisions a
       // scoped role and returns ONE email-bound token carrying its credential.
       // The invitee redeems it with the same email in "Join a cloud" — no
@@ -6259,6 +6356,7 @@ export const appJs = `
           }).then(function (res) {
             gaTrack('member_invite', {}); // event only — never the invitee email
             showInviteTokenModal(res || {});
+            if (typeof onInvited === 'function') onInvited();
           });
         },
       });
@@ -6600,6 +6698,21 @@ export const appJs = `
     function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
     var currentThreadId = null;
     var loadThreadSeq = 0; // discards a stale loadThread response when a newer load supersedes it
+    // Active workspace id (set by renderWsSwitcher, which runs before the thread
+    // list loads on both boot and switch). Keys the per-workspace "last open
+    // conversation" so a refresh restores the EXACT thread the user was in — not
+    // merely the newest, which during a long batch turn may be a different thread.
+    var activeWsId = null;
+    function chatThreadKey() { return 'lattice.chatThread.' + (activeWsId || '_default'); }
+    function rememberThread(id) {
+      try {
+        if (id) window.localStorage.setItem(chatThreadKey(), id);
+        else window.localStorage.removeItem(chatThreadKey());
+      } catch (_) { /* storage unavailable — non-fatal */ }
+    }
+    function recallThread() {
+      try { return window.localStorage.getItem(chatThreadKey()) || ''; } catch (_) { return ''; }
+    }
     function clearChat() {
       chatHistory = [];
       var feedEl = railFeedEl();
@@ -6628,6 +6741,7 @@ export const appJs = `
     function newChat() {
       gaTrack('assistant_thread_new', {});
       currentThreadId = null;
+      rememberThread(null);
       clearChat();
       var sel = document.getElementById('rail-threads');
       if (sel) sel.value = '';
@@ -6646,8 +6760,18 @@ export const appJs = `
           opts += '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.title || 'Chat') + '</option>';
         });
         sel.innerHTML = opts;
-        if (autoSelect && !currentThreadId && threads.length > 0) {
-          loadThread(threads[0].id); // threads are newest-first
+        if (autoSelect && !currentThreadId) {
+          // Restore the exact conversation the user was last in (per workspace);
+          // fall back to the most recent thread only when there's nothing stored
+          // or the stored thread is gone.
+          var remembered = recallThread();
+          if (remembered && threads.some(function (t) { return t.id === remembered; })) {
+            loadThread(remembered);
+          } else if (threads.length > 0) {
+            loadThread(threads[0].id); // threads are newest-first
+          } else {
+            sel.value = '';
+          }
         } else {
           sel.value = currentThreadId || '';
         }
@@ -6660,6 +6784,7 @@ export const appJs = `
         var msgs = (d && d.messages) || [];
         clearChat();
         currentThreadId = id;
+        rememberThread(id);
         var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
         msgs.forEach(function (m) {
           if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
@@ -6819,7 +6944,7 @@ export const appJs = `
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
         }
-        var tid = r.headers.get('x-thread-id'); if (tid) currentThreadId = tid;
+        var tid = r.headers.get('x-thread-id'); if (tid) { currentThreadId = tid; rememberThread(tid); }
         var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
         function pump() {
           return reader.read().then(function (res) {
@@ -7030,8 +7155,16 @@ export const appJs = `
         .finally(function () { done(); });
     }
     function uploadFiles(files) {
-      if (!files) return;
+      if (!files || !files.length) return;
       gaTrack('file_ingest', { count: files.length }); // count only — never file names
+      // Single-file drop: open the resulting record once it lands (the dedup
+      // survivor if it was a duplicate). Multi-file drops do not navigate.
+      if (files.length === 1) {
+        uploadFile(files[0]).then(function (j) {
+          if (j && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
+        });
+        return;
+      }
       for (var i = 0; i < files.length; i++) uploadFile(files[i]);
     }
     // Mobile: tapping the handle expands/collapses the bottom drawer.
@@ -7042,13 +7175,36 @@ export const appJs = `
     }
     function initRailDragDrop() {
       var rail = document.getElementById('assistant-rail'); if (!rail) return;
-      rail.addEventListener('dragover', function (e) { e.preventDefault(); rail.classList.add('dragging-file'); });
-      rail.addEventListener('dragleave', function (e) { if (e.target === rail) rail.classList.remove('dragging-file'); });
+      // Only react to FILE drags (not text/selection drags).
+      function isFileDrag(e) {
+        var t = e.dataTransfer && e.dataTransfer.types;
+        return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
+      }
+      // enter/leave counter: leaving via a child element fires dragleave then a
+      // dragenter, so the depth stays > 0 until the cursor actually exits the rail.
+      var depth = 0;
+      function clearOverlay() { depth = 0; rail.classList.remove('dragging-file'); }
+      rail.addEventListener('dragenter', function (e) {
+        if (!isFileDrag(e)) return;
+        e.preventDefault(); depth++; rail.classList.add('dragging-file');
+      });
+      rail.addEventListener('dragover', function (e) {
+        if (!isFileDrag(e)) return;
+        e.preventDefault(); rail.classList.add('dragging-file');
+      });
+      rail.addEventListener('dragleave', function () {
+        depth = Math.max(0, depth - 1);
+        if (depth === 0) rail.classList.remove('dragging-file');
+      });
       rail.addEventListener('drop', function (e) {
         e.preventDefault();
-        rail.classList.remove('dragging-file');
+        clearOverlay();
         if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
       });
+      // Backstops: a drag cancelled outside the window, or a drop anywhere, must
+      // clear the overlay — the per-element dragleave can miss those exits.
+      window.addEventListener('dragend', clearOverlay);
+      window.addEventListener('drop', clearOverlay);
     }
 
     // Surface a notice when files/secrets aren't bound as native objects — the

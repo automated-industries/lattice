@@ -8,6 +8,178 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-06-17
+
+### Added
+
+- **The assistant can add a field to an existing object.** A new `add_column`
+  tool lets the assistant add a column to a table on request ("add a priority
+  field to projects") — registered live (no reopen), persisted, audited/revertible,
+  and on a cloud the masking view is rebuilt so members see the new field. It had
+  been able to create whole tables but, inconsistently, not add a single column.
+- **The assistant reads your rendered context.** A new `get_row_context` tool
+  lets the GUI assistant pull a record's organized, pre-joined rendered context
+  (its own fields + related records + the combined summary) in a single call, and
+  it's instructed to prefer that over stitching together many raw reads — so it
+  leverages the rendered context tree Lattice already maintains instead of
+  re-querying the database for everything. It falls back to the direct row tools
+  when a record hasn't been rendered yet. (Injecting the rendered index into the
+  prompt is a tracked follow-up.)
+- **A cloud member's rendered context is their own scoped projection.** On a cloud,
+  the background render now reads every table THROUGH the member's row-level-security
+  connection and through the per-column masking view — so the rendered markdown a
+  member's assistant reads off disk contains only the rows they may see, with
+  owner-only columns blanked, and with the per-viewer enrichment values they're
+  allowed to see folded in. When sharing changes — a row shared or un-shared — the
+  affected member's context tree re-renders promptly (no manual refresh), so it
+  never lingers on a stale view. This also fixes a member render of a table with a
+  masked column, which previously failed outright. Owners and local single-user
+  workspaces render the full tree exactly as before.
+- **Edits to the rendered context files now flow back into the database.** When
+  the GUI is serving a workspace, editing a rendered `.md` file on disk is
+  captured into the DB through the normal write path — so it lands in the
+  changelog (versioned/undoable) and shows up live, exactly as if the change had
+  been made in the GUI. Structured frontmatter and body `key: value` fields
+  round-trip automatically (no hand-written `reverseSync` needed); a file whose
+  changes can't be safely parsed (free-form/custom render) is surfaced as a
+  notice rather than guessed at, so a lossy render can't corrupt a row. Render
+  echoes are suppressed via the manifest, so there is no write loop. New
+  `Lattice.reverseSyncFromFiles(outputDir, opts)` exposes the changelog-aware
+  reverse-sync for embedders.
+- **The browser GUI now updates itself.** When `lattice gui` is launched from an
+  installable copy (a global or project-local install), it runs as a small
+  supervisor that silently installs the latest published version before opening,
+  and keeps checking in the background while you work. When a new version lands it
+  installs it and relaunches the server on the same port; the open tab reconnects,
+  notices the version changed, and reloads onto the new build — no manual refresh,
+  no reinstall step. A copy running from a git checkout or `npx` is left untouched
+  (auto-update is disabled there). A failed install is surfaced in the GUI rather
+  than swallowed. New `GET /api/version` and `GET /api/update/status` report the
+  running version and update state.
+
+### Changed
+
+- **Assistant system prompt trimmed (no behavior change).** Removed instructions that deterministic code already enforces — the "only fetch a URL the user typed" rule (enforced by the ingest_url gate) and the verbose "what you're viewing" block (replaced by resolved record data) — and merged the overlapping "non-technical / do it yourself / don't tell the user to run commands" rules into one.
+- **A plaintext database URL in a config is healed on open.** If a workspace
+  config still stores a raw `postgres://…` connection string (with its password)
+  in the `db:` line, opening it now moves the URL into the encrypted credential
+  store and rewrites the line to a `${LATTICE_DB:<label>}` reference — so the
+  secret no longer lingers in cleartext on disk. Idempotent; configs already using
+  a reference, or a SQLite path, are untouched, and an existing credential is
+  never overwritten. The credential store's master-key creation and every
+  load-modify-write are now serialized by a cross-process lock and written
+  atomically (temp + rename), so concurrent opens — two GUIs launching at once, or
+  parallel workers — can't lose an entry or write a divergent master key.
+- **Cloud sharing internals consolidated (no behavior change to live features).**
+  Removed never-surfaced masking machinery — per-cell grants and app-role
+  assignment (their tables, `SECURITY DEFINER` functions, and the unreachable
+  `/api/cloud/cell-share` route) and the `role:` / `subject:` / `source:`
+  column-audience clauses. The live sharing features are unchanged: row
+  `private` / `everyone` / custom "specific people" sharing, table
+  `default_row_visibility` + `never_share`, and the `owner` secret-column mask.
+  The duplicated owner-check and never-share check across the share/grant
+  functions are now single `SECURITY DEFINER` helpers (`lattice_require_owner`,
+  `lattice_table_is_never_share`) — message-for-message identical. A one-time,
+  idempotent convergence rewrites any legacy/unrecognized column audience to
+  `owner` (strictly more restrictive, never widening) so existing clouds upgrade
+  safely. All changes are additive/idempotent and converge on an owner's next
+  secure.
+- **Member access is now provisioned from one declarative registry.** What a cloud
+  member may read/write — the GUI/identity/changelog bookkeeping tables, the
+  polyfill EXECUTE grants, and the per-table user grants — is centralized in a
+  single source of truth that the secure/reconcile path derives from (and a test
+  asserts: every readable object granted, every owner-only object not). This
+  removes the hand-enumerated GRANT sites behind the recurring "the member's GUI
+  degraded because we forgot to grant X" regressions. No behavior change — the
+  converged grant state is identical.
+
+### Fixed
+
+- **An assistant bulk change no longer double-shows as "another client".** A bulk change made in this session (e.g. the assistant's bulk_update) emits one summary while its realtime echo arrives per-row; those echoes are now recognized as our own and suppressed, so the change shows once (as the assistant/you), not again as a separate "CLI / another client" card.
+- **The file-loopback no longer re-ingests a render's own output.** A large render takes longer than the watcher's debounce, so a reverse-sync pass could run mid-render, read the render's half-written files before the manifest hash caught up, and re-import them as spurious "file-edit" changes (e.g. "Updated 9006 rows … file-edit", which also showed out of order in the activity feed). The watcher now defers while a render is in flight and runs once it settles, so the echo check recognizes the render's writes and skips them.
+- **An open record now updates live after the assistant changes it.** When a change triggers a re-render, the open card's rendered-context panel refreshes once the render COMPLETES, instead of showing the pre-change markdown until a manual reload (the post-render refresh was being coalesced away by an earlier one).
+- **"This card" and pasted in-system links now resolve to the actual record.**
+  The assistant deterministically resolves the record you're viewing — and any
+  record you paste a local GUI link to (`…/#/fs/<table>/<id>`) — to its real data
+  (via the permission-gated read) and puts that in context, instead of asking
+  "which card?" or replying "I can't fetch local URLs." Resolution happens in
+  code, not by prompting the model to guess; the prior verbose "what you're
+  viewing" instruction is replaced by the concrete resolved data.
+- **One un-manageable table no longer takes down the whole cloud workspace.** The
+  open-time cloud converge is now per-table fault-isolated: if the connecting role
+  can't `ALTER`/`GRANT` a table (most often because it was created by a different
+  Postgres role), that one table is skipped and every other table still
+  reconciles — instead of the whole converge aborting and degrading every object
+  to "Failed to fetch". The skip is reported with an actionable reason ("owned by
+  role X, but this workspace connects as Y — fix with: `ALTER TABLE … OWNER TO
+Y`"), surfaced via `GET /api/dbconfig` as `convergeWarnings` rather than a lone
+  console line.
+- **Schema reload without a restart.** `POST /api/workspaces/reload` re-reads the
+  config and re-registers entities in place, so a table added out-of-band surfaces
+  without killing and relaunching the GUI process.
+- **An uploaded document (`.pptx`, `.docx`, `.xlsx`, `.csv`, …) could not be
+  previewed, downloaded, or opened — only its extracted text survived.** A
+  browser drag-drop arrives as raw bytes with no local path, and the upload route
+  retained a content-addressed blob only for images and PDFs; every other type
+  had its bytes discarded after text extraction. The file view then had no
+  underlying file to serve, so `GET /api/files/:id/blob` 404'd ("this file has no
+  underlying blob here"). Uploads now retain the original bytes for documents and
+  media — images, PDFs, Office/OpenDocument files, `text/*`, JSON/XML/YAML, RTF,
+  and audio/video — while still discarding arbitrary/unknown binaries (archives,
+  executables, …), which keep their extracted text + description but no blob.
+  Retention is gated on the file type, not on extraction success, so a document
+  whose text fails to extract is still downloadable. (Already-ingested files
+  whose bytes were discarded are not recoverable; re-upload to get a retained
+  copy.)
+- **The file view offered no way to fetch a non-previewable file.** A file with
+  bytes that a browser can't render inline (an Office doc, audio, video) now
+  always shows a **Download** action, so the underlying file is reachable even
+  when "Open in Finder" is unavailable (a remote GUI, or `LATTICE_LOCAL_OPEN=0`);
+  local bytes additionally offer "Open in Finder" when local-open is enabled.
+- **Dropping a single file into the assistant rail now opens the resulting
+  record.** After a one-file ingest the GUI navigates to the new file (or the
+  dedup survivor if it merged a duplicate); multi-file drops do not navigate.
+- **The "Drop to ingest" overlay no longer sticks after a cancelled drag.** The
+  drag overlay is tracked with an enter/leave counter plus window-level
+  `dragend`/`drop` backstops, so leaving via a child element or cancelling the
+  drag outside the window always clears it; it also only appears for file drags.
+- **A deleted record no longer lingers on screen.** When the open record is
+  deleted (by the assistant, another client, or a hard delete), the detail/item
+  view now navigates to the parent table/folder instead of repainting the
+  tombstone; a removed entity/table returns to the dashboard. An explicit trash
+  view still shows soft-deleted rows.
+- **Ingest enrichment no longer reads as contradictory, and badges are correct.**
+  The capture-as-a-note fallback no longer asserts a record "didn't fit any
+  existing record" (which contradicted a dedup merge that can run in the same
+  ingest) — it now reads as a neutral "Captured … as a note". Enrichment feed
+  events are attributed to the actual originator, so the AI-path enrichment shows
+  the AI badge instead of always `ingest`.
+- **URL ingestion handles bot-protected pages.** The crawler now sends a
+  browser-like User-Agent + headers (so help centers behind Zendesk/Cloudflare
+  stop returning 403), and on a 401/403/429 it retries via a headless browser
+  before giving up. If a page still blocks automated access, the error is clear
+  and actionable ("open it and paste the text to ingest manually") rather than a
+  cryptic HTTP code.
+- **The members list refreshes after sending an invite.** A newly invited member
+  now appears ("Invited") immediately, without a manual reload.
+- **Chat history survives a refresh — even mid-turn.** The active conversation is
+  remembered per workspace and restored on reload (instead of jumping to the
+  newest thread). The assistant's reply is now checkpointed to the database as it
+  streams (upserted under a stable id), so refreshing in the middle of a long
+  batch turn recovers the work so far rather than losing the whole turn. A failure
+  to save is surfaced to the user (a warning in the stream) instead of being
+  swallowed.
+- **The assistant no longer hangs on a vague "system error".** A turn now stops
+  after repeated consecutive tool failures (circuit-breaker) and reports the real
+  underlying error instead of looping while the model paraphrases it into a
+  "system issue" and the typing indicator hangs.
+- **Search works on a migrated cloud.** `migrate-to-cloud` now builds the
+  full-text index for searchable tables after copying the rows, so search (and
+  the assistant's entity lookup) finds migrated records instead of returning
+  empty — previously the cloud had all the data but no `__lattice_fts_*` index.
+  New `Lattice.rebuildFtsIndexes()` exposes a re-index for embedders. (Making
+  members' cloud search RLS-correct over the shared index is a tracked follow-up.)
+
 ## [3.3.5] - 2026-06-16
 
 ### Fixed

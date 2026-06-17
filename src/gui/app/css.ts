@@ -293,6 +293,8 @@ export const css = `
     }
     .app-version { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
     .app-version:empty { display: none; }
+    .app-update { flex: 0 0 auto; color: var(--accent, #4a9); font-size: 12px; white-space: nowrap; }
+    .app-update[hidden] { display: none; }
     /* Unseen-change count next to a sidebar entity. */
     .nav-badge {
       display: inline-block; min-width: 16px; text-align: center;

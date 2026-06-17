@@ -326,22 +326,39 @@ export class SchemaManager {
    * Registered tables (via `define()`) are queried directly.
    * Tables used only in entity contexts (schema managed externally) fall back
    * to a raw SELECT with optional `deleted_at IS NULL` soft-delete filtering.
+   *
+   * `readRel` resolves the relation actually read FROM, leaving the definition
+   * lookup keyed on the registered `name`. A cloud member's render passes a
+   * resolver that maps a masked table to its `<table>_v` view: the read is then
+   * row-filtered + cell-masked by Postgres (the view re-applies the RLS
+   * predicates), while soft-delete detection still uses the registered
+   * definition for `name`. The view is registered in NEITHER `_tables` nor
+   * `_entityContexts`, so the resolver must touch the FROM clause ONLY — routing
+   * the lookup through `readRel(name)` would hit the "Unknown table" throw.
+   * Defaults to identity, so every existing caller is byte-identical.
    */
-  async queryTable(adapter: StorageAdapter, name: string): Promise<Row[]> {
+  async queryTable(
+    adapter: StorageAdapter,
+    name: string,
+    readRel: (table: string) => string = (t) => t,
+  ): Promise<Row[]> {
+    const from = readRel(name);
     if (this._tables.has(name)) {
       // Auto-filter soft-deleted rows when the table has a deleted_at column
       const def = this._tables.get(name);
       if (def?.columns && 'deleted_at' in def.columns) {
-        return allAsyncOrSync(adapter, `SELECT * FROM "${name}" WHERE deleted_at IS NULL`);
+        return allAsyncOrSync(adapter, `SELECT * FROM "${from}" WHERE deleted_at IS NULL`);
       }
-      return allAsyncOrSync(adapter, `SELECT * FROM "${name}"`);
+      return allAsyncOrSync(adapter, `SELECT * FROM "${from}"`);
     }
     if (this._entityContexts.has(name)) {
-      const cols = await introspectColumnsAsyncOrSync(adapter, name);
+      // Introspect the relation actually read (the view carries deleted_at when
+      // the base does — audienceViewSql passes through every column).
+      const cols = await introspectColumnsAsyncOrSync(adapter, from);
       const hasDeletedAt = cols.includes('deleted_at');
       return allAsyncOrSync(
         adapter,
-        `SELECT * FROM "${name}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`,
+        `SELECT * FROM "${from}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`,
       );
     }
     throw new Error(`Unknown table: "${name}"`);

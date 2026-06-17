@@ -11,27 +11,20 @@ import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js
  * `CASE WHEN <audience-predicate> THEN col END` — masked cells read as NULL, so
  * `SELECT *` keeps working and the column stays a real column (no side tables).
  *
- * The predicate calls the `session_user`-keyed `SECURITY DEFINER` helpers from
- * the RLS bootstrap (`lattice_has_role` / `lattice_is_subject` /
- * `lattice_source_visible`), so the mask binds to the real member even though the
- * view executes with its owner's rights. That identity choice is what lets an
- * owner-defined view filter per-viewer without re-broadening.
+ * The `owner` predicate calls the `session_user`-keyed `SECURITY DEFINER` helper
+ * `lattice_is_owner` from the RLS bootstrap, so the mask binds to the real member
+ * even though the view executes with its owner's rights. That identity choice is
+ * what lets an owner-defined view filter per-viewer without re-broadening.
  *
  * The view is a rendered artifact, generated from schema metadata, never
  * hand-edited. Postgres-only; SQLite (single-user, local) needs no masking.
  */
 
-// A column's audience is a '+'-joined set of clauses with OR semantics — the
-// column is visible if ANY clause holds:
+// A column's audience is one of:
 //   everyone | row-audience  → unmasked (visible to whoever can see the row)
-//   role:<name>              → lattice_has_role('<name>')
-//   subject:<col>            → lattice_is_subject("<col>")   (col holds the subject's role id)
-//   source:<col>             → lattice_source_visible("<col>") (col holds the source's pk)
 //   owner                    → lattice_is_owner(<table>, <pk>) (only the row owner; a
 //                              DB-enforced "secret" column — needs the row context below)
-// An unknown clause throws at generation time — fail closed, never silently open.
-const ROLE_NAME_RE = /^[A-Za-z0-9_-]{1,63}$/;
-const COL_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+// Anything else throws at generation time — fail closed, never silently open.
 
 /** Row context the `owner` clause needs (the table literal + pk SQL expression). */
 export interface AudienceRowCtx {
@@ -46,43 +39,19 @@ export function isRowAudience(audience: string | undefined): boolean {
 }
 
 /**
- * Compile a column `audience` spec into a boolean SQL predicate over the helper
- * functions. Returns `'true'` for the row-audience / everyone case. Throws on an
- * unknown or malformed clause.
+ * Compile a column `audience` spec into a boolean SQL predicate. Returns `'true'`
+ * for the row-audience / everyone case, `lattice_is_owner(...)` for the owner
+ * (secret-column) case. Throws on anything else — fail closed.
  */
 export function audiencePredicate(audience: string, ctx?: AudienceRowCtx): string {
   if (isRowAudience(audience)) return 'true';
-  const clauses = audience
-    .split('+')
-    .map((c) => c.trim())
-    .filter(Boolean);
-  const parts: string[] = [];
-  for (const clause of clauses) {
-    if (clause === 'everyone' || clause === 'row-audience') return 'true';
-    if (clause === 'owner') {
-      if (!ctx) throw new Error('lattice: the "owner" audience needs a row context');
-      parts.push(`lattice_is_owner(${ctx.tableLit}, ${ctx.pkExpr})`);
-      continue;
-    }
-    const idx = clause.indexOf(':');
-    const kind = idx === -1 ? clause : clause.slice(0, idx);
-    const arg = idx === -1 ? '' : clause.slice(idx + 1).trim();
-    if (kind === 'role') {
-      if (!ROLE_NAME_RE.test(arg)) throw new Error(`lattice: invalid role in audience "${clause}"`);
-      parts.push(`lattice_has_role('${arg}')`);
-    } else if (kind === 'subject') {
-      if (!COL_RE.test(arg))
-        throw new Error(`lattice: invalid subject column in audience "${clause}"`);
-      parts.push(`lattice_is_subject("${arg}")`);
-    } else if (kind === 'source') {
-      if (!COL_RE.test(arg))
-        throw new Error(`lattice: invalid source column in audience "${clause}"`);
-      parts.push(`lattice_source_visible("${arg}")`);
-    } else {
-      throw new Error(`lattice: unknown audience clause "${clause}"`);
-    }
+  const a = audience.trim();
+  if (a === 'everyone' || a === 'row-audience') return 'true';
+  if (a === 'owner') {
+    if (!ctx) throw new Error('lattice: the "owner" audience needs a row context');
+    return `lattice_is_owner(${ctx.tableLit}, ${ctx.pkExpr})`;
   }
-  return parts.length > 0 ? parts.map((p) => `(${p})`).join(' OR ') : 'true';
+  throw new Error(`lattice: unknown audience clause "${audience}"`);
 }
 
 /** Whether a table needs a masking view at all (any column has a real audience). */
@@ -129,11 +98,7 @@ export function audienceViewSql(
     if (isRowAudience(aud)) return quoteIdent(col);
     const pred = audiencePredicate(aud, { tableLit: lit, pkExpr });
     if (pred === 'true') return quoteIdent(col);
-    // OR a per-card override: the row owner may grant a specific member this one
-    // cell without changing the column's schema-level audience.
-    const colLit = `'${col.replace(/'/g, "''")}'`;
-    const full = `(${pred}) OR lattice_cell_visible(${lit}, ${pkExpr}, ${colLit})`;
-    return `CASE WHEN ${full} THEN ${quoteIdent(col)} END AS ${quoteIdent(col)}`;
+    return `CASE WHEN ${pred} THEN ${quoteIdent(col)} END AS ${quoteIdent(col)}`;
   });
   return [
     `CREATE OR REPLACE VIEW ${view} AS SELECT ${selectCols.join(', ')} FROM ${base}` +
