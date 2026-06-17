@@ -17,7 +17,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   leverages the rendered context tree Lattice already maintains instead of
   re-querying the database for everything. It falls back to the direct row tools
   when a record hasn't been rendered yet. (Injecting the rendered index into the
-  prompt + per-viewer-scoped render are tracked follow-ups.)
+  prompt is a tracked follow-up.)
+- **A cloud member's rendered context is their own scoped projection.** On a cloud,
+  the background render now reads every table THROUGH the member's row-level-security
+  connection and through the per-column masking view — so the rendered markdown a
+  member's assistant reads off disk contains only the rows they may see, with
+  owner-only columns blanked, and with the per-viewer enrichment values they're
+  allowed to see folded in. When sharing changes — a row shared or un-shared — the
+  affected member's context tree re-renders promptly (no manual refresh), so it
+  never lingers on a stale view. This also fixes a member render of a table with a
+  masked column, which previously failed outright. Owners and local single-user
+  workspaces render the full tree exactly as before.
 - **Edits to the rendered context files now flow back into the database.** When
   the GUI is serving a workspace, editing a rendered `.md` file on disk is
   captured into the DB through the normal write path — so it lands in the
@@ -42,6 +52,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **A plaintext database URL in a config is healed on open.** If a workspace
+  config still stores a raw `postgres://…` connection string (with its password)
+  in the `db:` line, opening it now moves the URL into the encrypted credential
+  store and rewrites the line to a `${LATTICE_DB:<label>}` reference — so the
+  secret no longer lingers in cleartext on disk. Idempotent; configs already using
+  a reference, or a SQLite path, are untouched, and an existing credential is
+  never overwritten.
 - **Cloud sharing internals consolidated (no behavior change to live features).**
   Removed never-surfaced masking machinery — per-cell grants and app-role
   assignment (their tables, `SECURITY DEFINER` functions, and the unreachable

@@ -81,6 +81,12 @@ export interface ActiveDb {
    * Started by startBackgroundRender, stopped by disposeActive.
    */
   fileWatcher: FileLoopbackWatcher | null;
+  /**
+   * Once-guard: true after the broker→re-render subscription is wired (eager
+   * per-viewer freshness — a remote change re-renders this member's tree). Set in
+   * {@link startBackgroundRender}, which can be called more than once per ActiveDb.
+   */
+  eagerRenderWired?: boolean;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**

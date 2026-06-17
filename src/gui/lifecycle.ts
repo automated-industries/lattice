@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { Lattice } from '../lattice.js';
 import type { TableDefinition } from '../types.js';
 import { parseConfigFile } from '../config/parser.js';
-import { readIdentity, getOrCreateMasterKey } from '../framework/user-config.js';
+import { readIdentity, getOrCreateMasterKey, healRawDbUrl } from '../framework/user-config.js';
 import { registerNativeEntities, adoptNativeEntities } from '../framework/native-entities.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
@@ -45,6 +45,13 @@ export async function openConfig(
   autoRender = false,
   realtimeWatchdogMs?: number,
 ): Promise<ActiveDb> {
+  // Heal a legacy config that still stores a RAW postgres:// URL (password in
+  // cleartext on disk): move it into the encrypted credential store and rewrite
+  // the db: line to a ${LATTICE_DB:label} reference. Idempotent + a no-op for
+  // already-referenced / SQLite configs. Done BEFORE parsing so the parse resolves
+  // the new reference. parsed.dbPath is the same URL either way, so the open is
+  // unaffected — only the at-rest secret is removed.
+  healRawDbUrl(configPath);
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
   // a connection string (postgres://…), a `file:` URL, or `:memory:`,
@@ -269,6 +276,19 @@ export async function openConfig(
   }
   await db.init(memberOpen ? { introspectOnly: true } : {});
 
+  // Per-viewer render: on a cloud MEMBER open, route every render-time table read
+  // through the member's masking view (`<table>_v`) when one exists, so the
+  // rendered context tree on disk is the member's own RLS-scoped, cell-masked
+  // projection (what get_row_context then serves). Owner / SQLite leave the
+  // resolver at identity. Set before any render is started.
+  if (memberOpen) {
+    if (maskedReadViews.size > 0) {
+      db.setRenderReadRelation((table) => maskedReadViews.get(table) ?? table);
+    }
+    // Overlay this member's visible derived enrichments onto the rendered rows.
+    db.enableRenderFold();
+  }
+
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the
   // active Lattice has a current view of who the operator is. Idempotent:
   // every open just upserts the single 'singleton' row.
@@ -472,6 +492,24 @@ export function startBackgroundRender(active: ActiveDb): void {
   // single "begin serving this workspace" chokepoint). Echo suppression keys off
   // the manifest, so the initial render's own writes are never re-ingested.
   active.fileWatcher?.start();
+  // Eager per-viewer freshness: a REMOTE change (another client's write, or the
+  // owner re-sharing / un-sharing a row) schedules a debounced re-render so this
+  // member's RLS-scoped context tree reflects the new visibility promptly. Wired
+  // once per ActiveDb; the broker is stopped in disposeActive, so the callback
+  // can't fire afterward. requestRender reuses the coalesced + pending-requeue
+  // auto-render path, so a burst of changes collapses to one re-render.
+  //
+  // Deliberately NOT gated on "is this change visible to me now": an UN-SHARE
+  // makes the row invisible, so a visibility filter would skip the re-render and
+  // leave the now-stale row on disk — the exact staleness this is meant to fix.
+  // Re-rendering on every remote change handles share AND un-share; the render
+  // itself reads current RLS state, so it adds/removes rows correctly either way.
+  if (!active.eagerRenderWired && active.realtime) {
+    active.eagerRenderWired = true;
+    active.realtime.subscribePayload(() => {
+      active.db.requestRender();
+    });
+  }
   if (active.renderState.phase === 'running') return;
   active.renderState.phase = 'running';
   const db = active.db;

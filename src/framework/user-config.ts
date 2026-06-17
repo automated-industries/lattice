@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { parseDocument } from 'yaml';
 import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
 import { findLatticeRoot, rootConfigDir } from './lattice-root.js';
 
@@ -343,6 +344,54 @@ export function saveDbCredential(label: string, url: string): void {
   const creds = loadCredentials();
   creds[label] = url;
   saveCredentials(creds);
+}
+
+/** Derive a `${LATTICE_DB:…}`-charset label from a connection URL — the database
+ *  name, falling back to the host, then `cloud`. Sanitized to `[A-Za-z0-9._-]`. */
+function labelForUrl(url: string): string {
+  let base = 'cloud';
+  try {
+    const u = new URL(url);
+    base = u.pathname.replace(/^\//, '') || u.hostname || 'cloud';
+  } catch {
+    /* malformed — fall back to 'cloud' */
+  }
+  const safe = base.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^-+|-+$/g, '');
+  return safe.length > 0 ? safe : 'cloud';
+}
+
+/**
+ * Heal a config whose `db:` line is a RAW `postgres://…` connection string into
+ * the encrypted-credential model: move the URL into the encrypted credential
+ * store under a synthesized label and rewrite the `db:` line to
+ * `${LATTICE_DB:<label>}`. Keeps a plaintext connection string (with its
+ * password) from lingering in a YAML file on disk. Idempotent: a `db:` line that
+ * is already a `${LATTICE_DB:…}` reference, a SQLite path, or anything non-raw is
+ * left untouched. If the chosen label is already taken by a DIFFERENT URL, a
+ * short uniquifying suffix is appended so an existing credential is never
+ * clobbered. Returns the label when a heal happened, else null.
+ */
+export function healRawDbUrl(configPath: string): string | null {
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, 'utf8');
+  } catch {
+    return null; // no readable config → nothing to heal
+  }
+  const doc = parseDocument(raw);
+  const dbVal = doc.get('db');
+  const dbLine = typeof dbVal === 'string' ? dbVal.trim() : '';
+  if (!/^postgres(ql)?:\/\//i.test(dbLine)) return null; // already a ref / not a raw URL
+
+  let label = labelForUrl(dbLine);
+  const existing = getDbCredential(label);
+  if (existing !== null && existing !== dbLine) {
+    label = `${label}-${randomBytes(2).toString('hex')}`;
+  }
+  saveDbCredential(label, dbLine);
+  doc.set('db', '${LATTICE_DB:' + label + '}');
+  writeFileSync(configPath, doc.toString(), 'utf8');
+  return label;
 }
 
 // ---------------------------------------------------------------------------
