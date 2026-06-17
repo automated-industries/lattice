@@ -94,6 +94,7 @@ import {
   createFileJunction,
   createUserJunction,
   createUserEntity,
+  addUserColumn,
   softDeleteUserEntity,
   aiDeleteEntity,
   type DeleteResolution,
@@ -3908,6 +3909,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // The assistant can create tables + relationships on request — same
             // audited, no-reopen primitives the Context Constructor uses.
             createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
+            addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
             createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
             // Guarded, reversible table delete — empty tables go immediately;
             // non-empty ones come back as `needsResolution` so the assistant asks.

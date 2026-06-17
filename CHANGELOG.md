@@ -10,6 +10,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **The assistant can add a field to an existing object.** A new `add_column`
+  tool lets the assistant add a column to a table on request ("add a priority
+  field to projects") — registered live (no reopen), persisted, audited/revertible,
+  and on a cloud the masking view is rebuilt so members see the new field. It had
+  been able to create whole tables but, inconsistently, not add a single column.
 - **The assistant reads your rendered context.** A new `get_row_context` tool
   lets the GUI assistant pull a record's organized, pre-joined rendered context
   (its own fields + related records + the combined summary) in a single call, and
