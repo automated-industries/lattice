@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, copyFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync } from '../db/adapter.js';
-import type { RenderResult } from '../types.js';
+import type { RenderResult, Row } from '../types.js';
 import { atomicWrite, contentHash } from './writer.js';
 import { applyTokenBudget } from './token-budget.js';
 import { resolveEntitySource, truncateContent, type ProtectionContext } from './entity-query.js';
@@ -64,6 +64,15 @@ export class RenderEngine {
    * → identity → byte-identical to the prior behavior.
    */
   private _readRel: (table: string) => string = (t) => t;
+  /**
+   * Optional per-viewer fold applied to an entity-context table's rows after the
+   * RLS-filtered read, before they are rendered. On a cloud MEMBER open it
+   * overlays the viewer-visible DERIVED observations (the per-viewer enrichment
+   * values) onto each ground row. Unset (owner / SQLite) → ground truth renders
+   * as-is. Like `_readRel`, it is engine state so the post-write auto-render
+   * applies it too.
+   */
+  private _foldRows: ((table: string, rows: Row[]) => Promise<Row[]>) | undefined;
 
   constructor(
     schema: SchemaManager,
@@ -80,6 +89,11 @@ export class RenderEngine {
   /** Install the per-viewer read-relation resolver (see `_readRel`). */
   setRenderReadRelation(fn: (table: string) => string): void {
     this._readRel = fn;
+  }
+
+  /** Install the per-viewer fold applied to entity rows before render (see `_foldRows`). */
+  setRenderFold(fn: (table: string, rows: Row[]) => Promise<Row[]>): void {
+    this._foldRows = fn;
   }
 
   async render(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
@@ -321,7 +335,10 @@ export class RenderEngine {
         // Bail at the top of each entity-context table if aborted.
         if (signal?.aborted) return null;
         const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
-        const allRows = await this._schema.queryTable(this._adapter, table, this._readRel);
+        const baseRows = await this._schema.queryTable(this._adapter, table, this._readRel);
+        // Per-viewer enrichment: overlay the viewer-visible derived observations
+        // onto the RLS-filtered ground rows (no-op when no fold is installed).
+        const allRows = this._foldRows ? await this._foldRows(table, baseRows) : baseRows;
         const directoryRoot = def.directoryRoot ?? table;
 
         // `entitiesTotal` is the free denominator already read above — no

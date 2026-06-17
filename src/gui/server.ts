@@ -902,8 +902,12 @@ export async function openConfig(
   // rendered context tree on disk is the member's own RLS-scoped, cell-masked
   // projection (what get_row_context then serves). Owner / SQLite leave the
   // resolver at identity. Set before any render is started.
-  if (memberOpen && maskedReadViews.size > 0) {
-    db.setRenderReadRelation((table) => maskedReadViews.get(table) ?? table);
+  if (memberOpen) {
+    if (maskedReadViews.size > 0) {
+      db.setRenderReadRelation((table) => maskedReadViews.get(table) ?? table);
+    }
+    // Overlay this member's visible derived enrichments onto the rendered rows.
+    db.enableRenderFold();
   }
 
   // Mirror ~/.lattice/identity.json into __lattice_user_identity so the

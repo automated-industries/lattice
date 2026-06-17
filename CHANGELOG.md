@@ -22,7 +22,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   the background render now reads every table THROUGH the member's row-level-security
   connection and through the per-column masking view — so the rendered markdown a
   member's assistant reads off disk contains only the rows they may see, with
-  owner-only columns blanked. This also fixes a member render of a table with a
+  owner-only columns blanked, and with the per-viewer enrichment values they're
+  allowed to see folded in. This also fixes a member render of a table with a
   masked column, which previously failed outright. Owners and local single-user
   workspaces render the full tree exactly as before.
 - **Edits to the rendered context files now flow back into the database.** When

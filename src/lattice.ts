@@ -1953,6 +1953,65 @@ export class Lattice {
     this._render.setRenderReadRelation(fn);
   }
 
+  /**
+   * Turn on the per-viewer enrichment fold for ALL renders. A cloud member open
+   * calls this so the rendered context overlays the member-visible DERIVED
+   * observations onto each ground row ({@link foldRenderRows}). Owner / local
+   * SQLite leave it off → ground truth renders unchanged.
+   */
+  enableRenderFold(): void {
+    this._render.setRenderFold((table, rows) => this.foldRenderRows(table, rows));
+  }
+
+  /**
+   * Fold the viewer-visible DERIVED observations onto a table's ground rows in one
+   * batched changelog read — the render-time, whole-table analogue of
+   * {@link foldForViewer} (which is per-row). Read THROUGH this connection: on a
+   * cloud member connection the changelog RLS (`lattice_changelog_sel`) already
+   * drops any derived observation whose sources the member can't all reach AND
+   * hides every owner-only ground-truth/audit entry — so what returns is exactly
+   * the member-visible derived set, and overlaying it is leak-free by construction
+   * (the database, not this code, is the enforcement point). One read per table,
+   * never per row (the per-row `history()` fan-out would be an unbounded hot-path
+   * cost). A no-op when the changelog substrate is absent or nothing is derived.
+   */
+  async foldRenderRows(table: string, rows: Row[]): Promise<Row[]> {
+    if (rows.length === 0) return rows;
+    if (!(await this._changelogTableExists())) return rows;
+    // recentChanges reads via THIS adapter (RLS-filtered for a member); a member
+    // sees no owner-only ground-truth rows, so only derived observations return.
+    const changes = await this.recentChanges({ table, limit: 100_000 });
+    const obsByRow = new Map<string, Observation[]>();
+    for (const h of changes) {
+      if (h.changeKind !== 'derived') continue;
+      const sources = h.sourceRef ?? null;
+      const opened = this._openSealedObservation(h.changes, sources, undefined);
+      // A sealed value we can't open (no key at render time) reverts to ground.
+      if (opened === null) continue;
+      const list = obsByRow.get(h.rowId) ?? [];
+      list.push(
+        ...observationsFromChange({
+          changes: opened,
+          createdAt: h.createdAt,
+          changeKind: 'derived',
+          sourceRef: sources,
+        }),
+      );
+      obsByRow.set(h.rowId, list);
+    }
+    if (obsByRow.size === 0) return rows;
+    // Every observation that survived the changelog RLS read is, by construction,
+    // one this viewer may see — so the visible-source set is the union of their
+    // refs (the `'all'` semantics of foldForViewer's single-user path).
+    const visibleSources = new Set<string>();
+    for (const list of obsByRow.values())
+      for (const o of list) for (const s of o.sourceRef ?? []) visibleSources.add(s);
+    return rows.map((r) => {
+      const obs = obsByRow.get(this._serializeRowPk(table, r));
+      return obs ? foldEntity(r, obs, { visibleSources }) : r;
+    });
+  }
+
   async sync(outputDir: string): Promise<SyncResult> {
     const notInit = this._notInitError<SyncResult>();
     if (notInit) return notInit;

@@ -28,6 +28,7 @@ import { secureCloud } from '../../src/cloud/setup.js';
 import { setColumnAudience } from '../../src/cloud/audience.js';
 import {
   setRowVisibility,
+  grantRow,
   provisionMemberRole,
   generateMemberPassword,
 } from '../../src/cloud/members.js';
@@ -218,5 +219,103 @@ describe.skipIf(!PG_URL)('WS8b: per-viewer rendered context (render-through-RLS)
     // view itself never leaks as a separate rendered object.
     expect(rendered.length).toBeGreaterThan(0);
     expect(rendered).not.toContain('widgets_v');
+  });
+
+  it("overlays a member's visible derived enrichment onto the rendered row (per-viewer fold)", async () => {
+    // ── Owner: a ground-truth row shared everyone, a source file F, and a derived
+    //    enrichment of `body` from F (recorded as an observation, NOT a row write).
+    const dbname = `lattice_pvrf_${randomBytes(4).toString('hex')}`;
+    databases.push(dbname);
+    const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+    await admin.query(`CREATE DATABASE "${dbname}"`);
+    await admin.end();
+
+    const owner = new Lattice(dbUrl(dbname), { encryptionKey: 'pvr-test-key' });
+    registerNativeEntities(owner); // provides `files` (the enrichment source table)
+    owner.define('widgets', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', deleted_at: 'TEXT' },
+      render: () => '',
+      outputFile: 'widgets.md',
+    });
+    owner.define('__lattice_user_identity', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        display_name: "TEXT NOT NULL DEFAULT ''",
+        email: "TEXT NOT NULL DEFAULT ''",
+        updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: '.lattice-native/user-identity.md',
+    });
+    await owner.init();
+    await owner.insert('widgets', { id: 'w1', body: 'GROUND_BODY_W1' });
+    await owner.upsert('files', { id: 'F', original_name: 'card.pdf' });
+    await owner.observe(
+      'widgets',
+      'w1',
+      { body: 'ENRICHED_BODY_W1' },
+      { sourceRef: ['F'], changeKind: 'derived' },
+    );
+    await secureCloud(owner);
+    await setRowVisibility(owner, 'widgets', 'w1', 'everyone');
+
+    const role = `lm_${randomBytes(3).toString('hex')}`;
+    roles.push(role);
+    const pw = generateMemberPassword();
+    await provisionMemberRole(owner, role, pw);
+    await grantRow(owner, 'files', 'F', role); // the member CAN see the source
+    owner.close();
+
+    // Owner GUI once → GUI-meta tables (the member render reads them).
+    {
+      const ownerTmp = mkdtempSync(join(tmpdir(), `pvrf-owner-${randomBytes(3).toString('hex')}-`));
+      dirs.push(ownerTmp);
+      const ownerRoot = join(ownerTmp, '.lattice');
+      const ownerWs = addWorkspace(ownerRoot, {
+        displayName: 'Owner',
+        db: dbUrl(dbname),
+        makeActive: true,
+      });
+      const ownerPaths = resolveWorkspacePaths(ownerRoot, ownerWs);
+      mkdirSync(ownerPaths.contextDir, { recursive: true });
+      servers.push(
+        await startGuiServer({
+          configPath: ownerPaths.configPath,
+          outputDir: ownerPaths.contextDir,
+          port: 0,
+          openBrowser: false,
+        }),
+      );
+    }
+
+    // Member GUI (autoRender) → render folds in the visible derived value.
+    const tmp = mkdtempSync(join(tmpdir(), `pvrf-${randomBytes(3).toString('hex')}-`));
+    dirs.push(tmp);
+    const root = join(tmp, '.lattice');
+    const ws = addWorkspace(root, {
+      displayName: 'Fold Cloud',
+      db: dbUrl(dbname, role, pw),
+      makeActive: true,
+    });
+    const paths = resolveWorkspacePaths(root, ws);
+    mkdirSync(paths.contextDir, { recursive: true });
+    servers.push(
+      await startGuiServer({
+        configPath: paths.configPath,
+        outputDir: paths.contextDir,
+        port: 0,
+        openBrowser: false,
+        autoRender: true,
+      }),
+    );
+
+    await waitForRender(servers[servers.length - 1]!);
+    const rendered = allRenderedText(paths.contextDir);
+
+    // The member can see the source, so the rendered row carries the ENRICHED
+    // value — folded over the ground truth, which no longer appears.
+    expect(rendered).toContain('ENRICHED_BODY_W1');
+    expect(rendered).not.toContain('GROUND_BODY_W1');
   });
 });
