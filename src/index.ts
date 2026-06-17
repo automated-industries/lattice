@@ -286,8 +286,6 @@ export {
   generateMemberPassword,
   memberRoleName,
   setRowVisibility,
-  grantCell,
-  revokeCell,
 } from './cloud/members.js';
 export { discoverCloudTables } from './cloud/discover.js';
 export type { DiscoveredTable } from './cloud/discover.js';

@@ -210,6 +210,26 @@ export async function secureNewCloudTable(
   }
 }
 
+/**
+ * Neutralize any legacy/unrecognized column audience to 'owner' (strictly more
+ * restrictive — never widens). The `role:` / `subject:` / `source:` column-audience
+ * clauses were removed; a stray spec from an older build would otherwise make the
+ * audience compiler throw and break that table's mask-view regeneration. Idempotent;
+ * a no-op when the policy table or such rows are absent.
+ */
+async function convergeLegacyColumnAudience(db: Lattice): Promise<void> {
+  await runAsyncOrSync(
+    db.adapter,
+    `DO $$ BEGIN
+       IF to_regclass('__lattice_column_policy') IS NOT NULL THEN
+         UPDATE "__lattice_column_policy" SET "audience" = 'owner'
+          WHERE "audience" IS NOT NULL
+            AND "audience" NOT IN ('', 'everyone', 'row-audience', 'owner');
+       END IF;
+     END $$;`,
+  );
+}
+
 export async function secureCloud(db: Lattice): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
   // Create the SQLite-compat polyfills (json_extract / strftime / pgcrypto) as
@@ -225,6 +245,9 @@ export async function secureCloud(db: Lattice): Promise<void> {
   await installCloudSettings(db);
   await db.ensureObservationSubstrate();
   await enableChangelogRls(db);
+  // Neutralize any legacy column-audience spec BEFORE regenerating mask views
+  // (secureNewCloudTable → regenerateAudienceViewFromDb compiles each audience).
+  await convergeLegacyColumnAudience(db);
   const registered = db.getRegisteredTableNames();
   for (const table of registered) {
     await secureNewCloudTable(db, table, db.getPrimaryKey(table));

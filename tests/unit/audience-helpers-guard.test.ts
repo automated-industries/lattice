@@ -32,19 +32,15 @@ const DEFINER_FUNCTIONS = [
   'lattice_set_row_visibility',
   'lattice_grant_row',
   'lattice_revoke_row',
-  'lattice_is_subject',
-  'lattice_has_role',
+  'lattice_require_owner',
+  'lattice_table_is_never_share',
   'lattice_source_visible',
-  'lattice_assign_role',
-  'lattice_revoke_role',
-  'lattice_cell_visible',
-  'lattice_grant_cell',
-  'lattice_revoke_cell',
+  'lattice_is_owner',
 ];
 
 describe('cloud RLS — session_user / SECURITY DEFINER identity invariant', () => {
-  it('defines the Stage-0 audience helpers', () => {
-    for (const fn of ['lattice_is_subject', 'lattice_has_role', 'lattice_source_visible']) {
+  it('defines the live audience/visibility helpers', () => {
+    for (const fn of ['lattice_source_visible', 'lattice_is_owner', 'lattice_require_owner']) {
       expect(CLOUD_RLS_BOOTSTRAP_SQL).toContain(`FUNCTION ${fn}(`);
     }
   });

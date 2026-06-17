@@ -32,6 +32,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   than swallowed. New `GET /api/version` and `GET /api/update/status` report the
   running version and update state.
 
+### Changed
+
+- **Cloud sharing internals consolidated (no behavior change to live features).**
+  Removed never-surfaced masking machinery — per-cell grants and app-role
+  assignment (their tables, `SECURITY DEFINER` functions, and the unreachable
+  `/api/cloud/cell-share` route) and the `role:` / `subject:` / `source:`
+  column-audience clauses. The live sharing features are unchanged: row
+  `private` / `everyone` / custom "specific people" sharing, table
+  `default_row_visibility` + `never_share`, and the `owner` secret-column mask.
+  The duplicated owner-check and never-share check across the share/grant
+  functions are now single `SECURITY DEFINER` helpers (`lattice_require_owner`,
+  `lattice_table_is_never_share`) — message-for-message identical. A one-time,
+  idempotent convergence rewrites any legacy/unrecognized column audience to
+  `owner` (strictly more restrictive, never widening) so existing clouds upgrade
+  safely. All changes are additive/idempotent and converge on an owner's next
+  secure.
+
 ### Fixed
 
 - **An uploaded document (`.pptx`, `.docx`, `.xlsx`, `.csv`, …) could not be

@@ -137,8 +137,6 @@ describe.skipIf(!PG_URL)('3.3.4 member substrate', () => {
     for (const t of [
       '__lattice_owners',
       '__lattice_row_grants',
-      '__lattice_cell_grants',
-      '__lattice_member_roles',
       '__lattice_cloud_settings',
       '__lattice_member_invites',
       '__lattice_changes',

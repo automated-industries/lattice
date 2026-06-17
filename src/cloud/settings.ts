@@ -17,7 +17,7 @@ import { cloudSchema, pinDefinerSearchPath, runCloudBootstrapSql } from './rls.j
  *     **app-mediated** (hidden from the UI + every API response), NOT cryptographic
  *     — a member CAN read the value from their own session if they go looking.
  *   - `lattice_set_cloud_setting(key, value)` — owner-only (RAISEs unless the
- *     caller can create roles, the same gate as `lattice_assign_role`).
+ *     caller can create roles, the cloud-owner gate).
  *
  * Postgres-only: a local SQLite workspace is single-user, so there is nothing to
  * keep secret and these are all no-ops / null there.
