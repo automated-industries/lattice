@@ -123,6 +123,7 @@ import {
   writeIdentity,
   deleteDbCredential,
   saveDbCredential,
+  healRawDbUrl,
 } from '../framework/user-config.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
@@ -679,6 +680,13 @@ export async function openConfig(
   autoRender = false,
   realtimeWatchdogMs?: number,
 ): Promise<ActiveDb> {
+  // Heal a legacy config that still stores a RAW postgres:// URL (password in
+  // cleartext on disk): move it into the encrypted credential store and rewrite
+  // the db: line to a ${LATTICE_DB:label} reference. Idempotent + a no-op for
+  // already-referenced / SQLite configs. Done BEFORE parsing so the parse resolves
+  // the new reference. parsed.dbPath is the same URL either way, so the open is
+  // unaffected — only the at-rest secret is removed.
+  healRawDbUrl(configPath);
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
   // a connection string (postgres://…), a `file:` URL, or `:memory:`,

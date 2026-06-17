@@ -52,6 +52,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **A plaintext database URL in a config is healed on open.** If a workspace
+  config still stores a raw `postgres://…` connection string (with its password)
+  in the `db:` line, opening it now moves the URL into the encrypted credential
+  store and rewrites the line to a `${LATTICE_DB:<label>}` reference — so the
+  secret no longer lingers in cleartext on disk. Idempotent; configs already using
+  a reference, or a SQLite path, are untouched, and an existing credential is
+  never overwritten.
 - **Cloud sharing internals consolidated (no behavior change to live features).**
   Removed never-surfaced masking machinery — per-cell grants and app-role
   assignment (their tables, `SECURITY DEFINER` functions, and the unreachable
