@@ -57,6 +57,7 @@ import { guiAppHtml } from './app.js';
 import type { Row } from '../types.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
+import { buildMutationCtx } from './request-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import {
   resolveColumnDescription,
@@ -78,7 +79,6 @@ import {
   recordSchemaAudit,
   isSchemaOp,
   type AuditEntry,
-  type MutationCtx,
 } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import {
@@ -2606,17 +2606,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             sendJson(res, { error: `Unknown table: ${table}` }, 400);
             return;
           }
-          const mctx: MutationCtx = {
-            db: active.db,
-            feed: active.feed,
-            softDeletable: active.softDeletable,
-            source: 'gui',
-            sessionId,
-            ...(active.onColumnsAdded ? { onColumnsAdded: active.onColumnsAdded } : {}),
-            // #4.6 — the originating client's true edit time, honored for the
-            // audit timestamp so an offline edit shows when it was made.
+          // #4.6 — the originating client's true edit time is honored for the
+          // audit timestamp so an offline edit shows when it was made.
+          const mctx = buildMutationCtx(active, 'gui', sessionId, {
             clientTs: headerValue(req, 'x-lattice-client-ts'),
-          };
+          });
 
           if (id === null) {
             if (method === 'GET') {
@@ -2713,13 +2707,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             return;
           }
           const body = (await readJson<unknown>(req)) as Row;
-          const linkCtx: MutationCtx = {
-            db: active.db,
-            feed: active.feed,
-            softDeletable: active.softDeletable,
-            source: 'gui',
-            sessionId,
-          };
+          const linkCtx = buildMutationCtx(active, 'gui', sessionId);
           if (op === 'link') {
             await linkRows(linkCtx, table, body);
           } else {
