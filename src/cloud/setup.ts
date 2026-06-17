@@ -4,7 +4,6 @@ import {
   enableChangelogRls,
   enableRlsForTable,
   backfillOwnership,
-  MEMBER_GROUP,
 } from './rls.js';
 import { installCloudSettings } from './settings.js';
 import {
@@ -12,6 +11,11 @@ import {
   regenerateAudienceViewFromDb,
   tableNeedsAudienceView,
 } from './audience.js';
+import {
+  grantMemberTableAccessSql,
+  grantMemberBookkeepingSql,
+  grantMemberExecuteSql,
+} from './member-access.js';
 import { NATIVE_INTERNAL_NAMES } from '../framework/native-entities.js';
 import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
@@ -42,17 +46,75 @@ const PRIVATE_ONLY_TABLES: readonly string[] = [...NATIVE_INTERNAL_NAMES, 'secre
  *
  * No-op off Postgres.
  */
-export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
-  if (db.getDialect() !== 'postgres') return;
+/**
+ * Outcome of {@link reconcileCloudMemberAccess}: the per-table converge is fault-
+ * isolated, so a table the connecting role can't manage (e.g. created by a
+ * different Postgres role) is SKIPPED with an actionable reason rather than
+ * aborting the converge for every other table. `skipped` is empty on a clean run.
+ */
+export interface CloudMemberAccessReport {
+  skipped: { table: string; reason: string }[];
+}
+
+/**
+ * Turn a per-table converge failure into an actionable reason. An owner mismatch
+ * ("must be owner of table X") is the common cause — a table created by a
+ * different Postgres role than the one the workspace connects as — so name the
+ * real owner, the connected role, and the exact ALTER that fixes it. Any other
+ * error falls through to its raw message.
+ */
+async function explainTableFailure(db: Lattice, table: string, err: unknown): Promise<string> {
+  const msg = err instanceof Error ? err.message : String(err);
+  // An ALTER on a non-owned table says "must be owner of table X"; a GRANT/REVOKE
+  // says "permission denied for table X". Both have the same root cause — the
+  // connecting role doesn't own the table — so enrich either with the real owner.
+  if (!/must be owner|permission denied/i.test(msg)) return msg;
+  try {
+    const rows = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT pg_get_userbyid(c.relowner) AS owner, current_user AS me
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema() AND c.relname = ?`,
+      [table],
+    )) as { owner?: string; me?: string }[];
+    const r = rows[0];
+    if (r?.owner && r.me && r.owner !== r.me) {
+      return `owned by Postgres role "${r.owner}", but this workspace connects as "${r.me}" — fix with: ALTER TABLE "${table.replace(/"/g, '""')}" OWNER TO "${r.me}";`;
+    }
+  } catch {
+    /* introspection failed too — fall back to the raw message */
+  }
+  return msg;
+}
+
+export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemberAccessReport> {
+  const skipped: { table: string; reason: string }[] = [];
+  if (db.getDialect() !== 'postgres') return { skipped };
   const registered = db.getRegisteredTableNames();
+
+  // Per-table fault isolation: a table the connecting role can't ALTER/GRANT
+  // (e.g. owned by a different role) is recorded + skipped, never aborting the
+  // converge for every OTHER table. Without this, one un-ownable table degraded
+  // the whole workspace to "Failed to fetch".
+  const tryTable = async (table: string, fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (e) {
+      const reason = await explainTableFailure(db, table, e);
+      skipped.push({ table, reason });
+      console.warn(`[reconcileCloudMemberAccess] skipped "${table}": ${reason}`);
+    }
+  };
 
   // (1) Private-only tables stay never_share (per-owner) on every open.
   for (const t of PRIVATE_ONLY_TABLES) {
     if (!registered.includes(t)) continue;
-    await runAsyncOrSync(
-      db.adapter,
-      `SELECT lattice_set_table_never_share('${t.replace(/'/g, "''")}', true)`,
-    );
+    await tryTable(t, async () => {
+      await runAsyncOrSync(
+        db.adapter,
+        `SELECT lattice_set_table_never_share('${t.replace(/'/g, "''")}', true)`,
+      );
+    });
   }
 
   // (2) Re-issue member grants for every RLS-secured user table (ungated). Only
@@ -70,48 +132,25 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
-    const q = `"${table.replace(/"/g, '""')}"`;
     const masked = tableNeedsAudienceView(db.getColumnAudience(table));
-    if (masked) {
-      // Member reads the cell-masking view; base SELECT stays revoked.
-      const v = `"${`${table}_v`.replace(/"/g, '""')}"`;
-      await runAsyncOrSync(db.adapter, `GRANT SELECT ON ${v} TO ${MEMBER_GROUP}`);
-      await runAsyncOrSync(db.adapter, `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`);
-    } else {
-      await runAsyncOrSync(
-        db.adapter,
-        `GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`,
-      );
-    }
+    await tryTable(table, async () => {
+      for (const sql of grantMemberTableAccessSql(table, { masked })) {
+        await runAsyncOrSync(db.adapter, sql);
+      }
+    });
   }
 
-  // (3) GUI/identity bookkeeping tables a member reads/writes DIRECTLY (not via
-  // an RLS-secured user table, so the loop above skips them). Without these the
-  // member's GUI silently degrades to read-only / "save as document":
-  //   - _lattice_gui_meta / _lattice_gui_column_meta — entity-icon + table/column
-  //     descriptions (workspace-global metadata the member reads, and may author);
-  //   - _lattice_gui_audit — the member's own GUI undo/redo log (session-scoped);
-  //   - __lattice_user_identity — the single "who is here" row mirrored on connect.
-  // Guarded by to_regclass so a library-only cloud (no GUI tables) is a no-op;
-  // idempotent, so an already-migrated cloud whose secure ran before these grants
-  // existed self-heals on the owner's next open. NOT __lattice_cell_grants /
-  // __lattice_row_grants — those stay owner-only and are reached only through
-  // SECURITY DEFINER functions, so a member never needs (or gets) a direct grant.
-  const memberSystemGrants: readonly [string, string][] = [
-    ['_lattice_gui_meta', 'SELECT, INSERT, UPDATE'],
-    ['_lattice_gui_column_meta', 'SELECT, INSERT, UPDATE'],
-    ['_lattice_gui_audit', 'SELECT, INSERT'],
-    ['__lattice_user_identity', 'SELECT, INSERT, UPDATE'],
-  ];
-  for (const [tbl, privs] of memberSystemGrants) {
-    await runAsyncOrSync(
-      db.adapter,
-      `DO $LATTICE$ BEGIN
-         IF to_regclass('${tbl}') IS NOT NULL THEN
-           EXECUTE 'GRANT ${privs} ON "${tbl}" TO ${MEMBER_GROUP}';
-         END IF;
-       END $LATTICE$`,
-    );
+  // (3) Bookkeeping tables a member reads/writes DIRECTLY (not via an RLS-secured
+  // user table, so the loop above skips them) — GUI meta/audit, the identity row,
+  // and the per-viewer-filtered changelog. Without these the member's GUI silently
+  // degrades to read-only / "save as document". Derived from the central
+  // MEMBER_READABLE_BOOKKEEPING registry (one source of truth, asserted by a
+  // registry-driven test) and each grant is to_regclass-guarded + idempotent, so a
+  // library-only cloud is a no-op and an already-migrated cloud self-heals on open.
+  // OWNER_ONLY_BOOKKEEPING is intentionally NOT granted — those are reached only
+  // through SECURITY DEFINER functions keyed on session_user.
+  for (const sql of grantMemberBookkeepingSql()) {
+    await runAsyncOrSync(db.adapter, sql);
   }
 
   // (4) Polyfill functions a member's queries depend on (the audit-table
@@ -120,10 +159,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
   // post-revoke) CREATE them itself. Non-fatal: a library cloud that never
   // registered the polyfills simply has nothing to grant.
   try {
-    await runAsyncOrSync(
-      db.adapter,
-      `GRANT EXECUTE ON FUNCTION json_extract(text, text), strftime(text, text) TO ${MEMBER_GROUP}`,
-    );
+    await runAsyncOrSync(db.adapter, grantMemberExecuteSql());
   } catch (err) {
     console.warn(
       '[reconcileCloudMemberAccess] could not grant EXECUTE on polyfills (will retry next open):',
@@ -140,34 +176,20 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<void> {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     const cols = db.getRegisteredColumns(table);
     if (cols && !('deleted_at' in cols)) {
-      const q = `"${table.replace(/"/g, '""')}"`;
-      await runAsyncOrSync(
-        db.adapter,
-        `ALTER TABLE ${q} ADD COLUMN IF NOT EXISTS "deleted_at" TEXT`,
-      );
+      await tryTable(table, async () => {
+        const q = `"${table.replace(/"/g, '""')}"`;
+        await runAsyncOrSync(
+          db.adapter,
+          `ALTER TABLE ${q} ADD COLUMN IF NOT EXISTS "deleted_at" TEXT`,
+        );
+      });
     }
   }
 
-  // (6) Self-heal the one internal bookkeeping table a member reads/writes
-  // directly: __lattice_changelog. `enableChangelogRls` already grants this on
-  // every owner open AND scopes it with a per-viewer RLS policy (a member sees a
-  // derived row only when every source row is visible, and an audit row only when
-  // it owns the row), so the base grant is filtered, not a leak. Re-issuing it
-  // here is idempotent and self-heals a cloud whose grant was dropped (e.g. a
-  // `pg_dump --no-privileges` round-trip). Guarded by to_regclass for a cloud
-  // whose changelog substrate isn't installed. Every OTHER `__lattice_*` table
-  // stays owner-only — members reach owners/row_grants/cell_grants/changes/
-  // member_roles/cloud_settings/member_invites ONLY through SECURITY DEFINER
-  // functions keyed on session_user, so a direct grant there would leak another
-  // member's row existence/ownership/sharing and is intentionally NOT issued.
-  await runAsyncOrSync(
-    db.adapter,
-    `DO $LATTICE$ BEGIN
-       IF to_regclass('__lattice_changelog') IS NOT NULL THEN
-         EXECUTE 'GRANT SELECT, INSERT ON "__lattice_changelog" TO ${MEMBER_GROUP}';
-       END IF;
-     END $LATTICE$`,
-  );
+  // (`__lattice_changelog` is granted via the MEMBER_READABLE_BOOKKEEPING registry
+  // in step (3) — its per-viewer RLS policy, installed by `enableChangelogRls`,
+  // filters reads so the base grant is safe, not a leak.)
+  return { skipped };
 }
 
 /**
@@ -210,6 +232,26 @@ export async function secureNewCloudTable(
   }
 }
 
+/**
+ * Neutralize any legacy/unrecognized column audience to 'owner' (strictly more
+ * restrictive — never widens). The `role:` / `subject:` / `source:` column-audience
+ * clauses were removed; a stray spec from an older build would otherwise make the
+ * audience compiler throw and break that table's mask-view regeneration. Idempotent;
+ * a no-op when the policy table or such rows are absent.
+ */
+async function convergeLegacyColumnAudience(db: Lattice): Promise<void> {
+  await runAsyncOrSync(
+    db.adapter,
+    `DO $$ BEGIN
+       IF to_regclass('__lattice_column_policy') IS NOT NULL THEN
+         UPDATE "__lattice_column_policy" SET "audience" = 'owner'
+          WHERE "audience" IS NOT NULL
+            AND "audience" NOT IN ('', 'everyone', 'row-audience', 'owner');
+       END IF;
+     END $$;`,
+  );
+}
+
 export async function secureCloud(db: Lattice): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
   // Create the SQLite-compat polyfills (json_extract / strftime / pgcrypto) as
@@ -225,6 +267,9 @@ export async function secureCloud(db: Lattice): Promise<void> {
   await installCloudSettings(db);
   await db.ensureObservationSubstrate();
   await enableChangelogRls(db);
+  // Neutralize any legacy column-audience spec BEFORE regenerating mask views
+  // (secureNewCloudTable → regenerateAudienceViewFromDb compiles each audience).
+  await convergeLegacyColumnAudience(db);
   const registered = db.getRegisteredTableNames();
   for (const table of registered) {
     await secureNewCloudTable(db, table, db.getPrimaryKey(table));

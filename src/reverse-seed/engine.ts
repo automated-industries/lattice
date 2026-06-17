@@ -616,5 +616,14 @@ function parseEntityProfileContent(content: string): Record<string, unknown> {
   return row;
 }
 
-// Export parsers for testing
-export { parseDefaultTable, parseDefaultList, parseDefaultDetail, parseDefaultJson };
+// Export parsers + helpers for testing and reuse by the file-loopback derivation.
+export {
+  parseDefaultTable,
+  parseDefaultList,
+  parseDefaultDetail,
+  parseDefaultJson,
+  parseEntityProfileContent,
+  parseKeyValuePairs,
+  coerceValue,
+  getTemplateParser,
+};

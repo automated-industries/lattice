@@ -43,6 +43,14 @@ in the GUI via the same mode-aware navigator the activity feed uses; it links th
 user-facing record (the contract/person/etc.) rather than an internal `files` id,
 and only ids it actually retrieved.
 
+**The assistant reads your organized context.** A new `get_row_context` tool lets
+the assistant pull a record's full rendered context — its own fields, related
+records, and combined summary — in a single call. It leverages the context tree
+Lattice maintains rather than re-stitching together raw reads, so the model can
+answer follow-ups like "summarize this record" or "what are the related items?" in
+one tool call. It falls back to direct row tools when a record hasn't been rendered
+yet.
+
 **Deleting a table is guarded + reversible.** The `delete_entity` tool refuses
 built-in tables, tables another table links to, and tables you don't own. An
 **empty** table is soft-deleted immediately; a **non-empty** one is **not**
@@ -50,6 +58,12 @@ deleted until you decide what happens to the data — the tool reports the row
 count and the assistant asks, then you choose `delete_data` (soft-delete the rows
 too) or `move_to` another table. The physical table + rows are kept (no hard
 drop), so the whole thing is revertible from version history.
+
+**Adding a field to an existing table.** The `add_column` tool lets the assistant
+add a single column to an existing table on request ("add a priority field to
+projects", "add an email column"). The column is registered live, persisted,
+audited, and revertible. On a cloud, the per-column masking view is rebuilt so
+members see the new field immediately.
 
 Conversations persist in the native `chat_threads` / `chat_messages` entities;
 use the thread switcher to revisit them. A new thread is **named from a short AI
@@ -73,6 +87,13 @@ open, the chat passes that record (table + id) as context, so "delete this file"
 "summarize this", or "share this row" act on it directly instead of asking which
 one. It's a hint only — every action still goes through the same permission-gated
 tools, so it can't reach a record you couldn't otherwise touch.
+
+**Pasted GUI links resolve to the actual record.** When you paste a local GUI link
+(the address bar's `…/#/fs/<table>/<id>`) into the chat, the assistant resolves it
+deterministically to its real data in the database (via the same permission-gated
+read as any other access), so it can answer queries about that record without
+needing to fetch or guess. Resolution happens in code; the resolved data appears in
+context alongside the viewed record.
 
 The assistant can also **answer questions about Lattice itself.** Ask "what is
 private mode?" or "how do I invite a member?" and it calls the `lattice_help` tool,

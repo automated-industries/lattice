@@ -7,7 +7,9 @@ import { generateAll } from './codegen/generate.js';
 import { parseConfigFile } from './config/parser.js';
 import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
+import { detectInstallContext } from './update-context.js';
 import { startGuiServer } from './gui/server.js';
+import { superviseGui } from './gui/supervisor.js';
 import { ensureRootForGui } from './framework/gui-bootstrap.js';
 import { ensureLatticeRoot, findLatticeRoot, rootConfigDir } from './framework/lattice-root.js';
 import {
@@ -490,6 +492,25 @@ async function runWatch(args: ParsedArgs): Promise<void> {
 }
 
 async function runGui(args: ParsedArgs): Promise<void> {
+  // A fresh, installable invocation becomes the supervisor: it silently installs
+  // the latest version and respawns the server on a background update, so the GUI
+  // self-updates with no manual refresh. The supervised child (and any
+  // non-installable context — dev checkout, npx) falls through to run the server
+  // directly. `LATTICE_GUI_SUPERVISED` prevents infinite re-supervision.
+  if (!process.env.LATTICE_GUI_SUPERVISED && detectInstallContext().installable) {
+    try {
+      await superviseGui({
+        cliPath: process.argv[1] ?? '',
+        childArgs: process.argv.slice(2),
+        currentVersion: getVersion(),
+      });
+    } catch (e) {
+      console.error(`Error: ${(e as Error).message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   try {
     // The `.lattice`/workspace model is universal for the GUI: ensure a root
     // exists, adopt the opened config as a workspace, and reconcile any stray
@@ -515,6 +536,9 @@ async function runGui(args: ParsedArgs): Promise<void> {
       openBrowser: !args.noOpen,
       autoRender: true,
       version: getVersion(),
+      // Only a supervised child polls + relaunches: exiting to apply an update is
+      // safe solely when the supervisor is there to respawn it.
+      selfUpdate: process.env.LATTICE_GUI_SUPERVISED === '1',
     });
     console.log(`Lattice GUI listening at ${handle.url}`);
     console.log('Press Ctrl+C to stop.');
