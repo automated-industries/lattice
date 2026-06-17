@@ -110,6 +110,15 @@ export interface GuiRequestContext {
    * move it — passing `null` is a real "no label" write, distinct from omission.
    */
   swapActive(next: ActiveDb, workspaceId?: string | null): void;
+  /**
+   * Transition to the virgin (zero-workspace) state: clears the active DB and the
+   * served-workspace id to null. The inverse of {@link swapActive}, used when the
+   * LAST workspace is deleted — the next request then hits server.ts's virgin
+   * guard and serves the welcome screen. The caller disposes the old active DB
+   * first; the per-request `active` local is left stale (the caller makes no
+   * further use of it this request).
+   */
+  goVirgin(): void;
   /** Build the canonical MutationCtx for a write against the CURRENT active DB. */
   buildMutationCtx(opts?: BuildMutationCtxOptions): MutationCtx;
 }
@@ -152,6 +161,10 @@ export function createGuiRequestContext(bindings: GuiRequestContextBindings): Gu
       setLocalActive(next);
       if (rest.length > 0) setWorkspaceId(rest[0] ?? null);
       startBackgroundRender(next);
+    },
+    goVirgin(): void {
+      setActiveRef(null);
+      setWorkspaceId(null);
     },
     buildMutationCtx: (opts: BuildMutationCtxOptions = {}) =>
       buildMutationCtx(active(), 'gui', sessionId, opts),

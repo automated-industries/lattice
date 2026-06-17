@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { sendJson, readJson } from './http.js';
 import {
@@ -17,20 +17,13 @@ import {
   createBlankConfig,
   deleteDatabaseFiles,
 } from './config-paths.js';
-import {
-  openConfig,
-  startBackgroundRender,
-  disposeActive,
-  openWithinTimeout,
-  SWITCH_OPEN_TIMEOUT_MS,
-} from './lifecycle.js';
+import { openConfig, startBackgroundRender, disposeActive } from './lifecycle.js';
 import { parseConfigFile } from '../config/parser.js';
-import { findLatticeRoot, workspaceDir } from '../framework/lattice-root.js';
+import { findLatticeRoot } from '../framework/lattice-root.js';
 import {
   listWorkspaces,
   getActiveWorkspace,
   setActiveWorkspace,
-  getWorkspace,
   addWorkspace,
   removeWorkspace,
   resolveWorkspacePaths,
@@ -58,6 +51,7 @@ import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
+import { handleWorkspacesRoutes, type WorkspacesRoutesDeps } from './workspaces-routes.js';
 import {
   readIdentity,
   writeIdentity,
@@ -429,6 +423,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
+  const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -513,220 +508,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
         if (await handleHistoryRoutes(req, res, ctx, historyDeps)) return;
 
-        // ── Workspaces (header switcher) ──────────────────────────────────
-        // Additive: when the GUI was not opened inside a `.lattice` root,
-        // these return empty and the header switcher stays hidden.
-        if (method === 'GET' && pathname === '/api/workspaces') {
-          if (!latticeRoot) {
-            sendJson(res, { current: null, workspaces: [] });
-            return;
-          }
-          const all = listWorkspaces(latticeRoot);
-          const activeWs = getActiveWorkspace(latticeRoot);
-          sendJson(res, {
-            // The served workspace is the source of truth for the header label;
-            // fall back to the registry only if we couldn't match the boot config.
-            current: currentWorkspaceId ?? (activeWs ? activeWs.id : null),
-            workspaces: all.map((w) => ({
-              id: w.id,
-              label: w.displayName,
-              dir: w.dir,
-              kind: w.kind,
-            })),
-          });
-          return;
-        }
-        if (method === 'POST' && pathname === '/api/workspaces/switch') {
-          if (!latticeRoot) {
-            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as { id?: unknown };
-          if (typeof body.id !== 'string') {
-            sendJson(res, { error: 'id must be a string' }, 400);
-            return;
-          }
-          const ws = getWorkspace(latticeRoot, body.id);
-          if (!ws) {
-            sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
-            return;
-          }
-          const paths = resolveWorkspacePaths(latticeRoot, ws);
-          let opened: { db: ActiveDb } | { timedOut: true };
-          try {
-            opened = await openWithinTimeout(() =>
-              openConfig(paths.configPath, paths.contextDir, autoRender),
-            );
-          } catch (e) {
-            const err = e as Error;
-            sendJson(
-              res,
-              { error: `Failed to open workspace ${ws.displayName}: ${err.message}` },
-              500,
-            );
-            return;
-          }
-          if ('timedOut' in opened) {
-            // The open never completed within the cap — keep the current workspace
-            // active (do NOT swap) and surface a clear error instead of hanging
-            // the switcher forever.
-            sendJson(
-              res,
-              {
-                error:
-                  `Opening "${ws.displayName}" timed out after ${String(SWITCH_OPEN_TIMEOUT_MS / 1000)}s — ` +
-                  'the database may be slow or unreachable. Staying on the current workspace.',
-              },
-              504,
-            );
-            return;
-          }
-          const next = opened.db;
-          setActiveWorkspace(latticeRoot, ws.id);
-          await disposeActive(active);
-          active = activeRef = next;
-          startBackgroundRender(active); // render the new workspace's tree off the response path
-          currentWorkspaceId = ws.id; // header now tracks the just-switched DB
-          sendJson(res, { ok: true, id: ws.id });
-          return;
-        }
-        if (method === 'POST' && pathname === '/api/workspaces/create') {
-          if (!latticeRoot) {
-            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as { name?: unknown };
-          const name = typeof body.name === 'string' ? body.name.trim() : '';
-          if (!name) {
-            sendJson(res, { error: 'name is required' }, 400);
-            return;
-          }
-          let created;
-          try {
-            created = addWorkspace(latticeRoot, { displayName: name, makeActive: false });
-          } catch (e) {
-            sendJson(res, { error: `Failed to create workspace: ${(e as Error).message}` }, 500);
-            return;
-          }
-          // Open + activate the new workspace (mirror the switch handler).
-          const newPaths = resolveWorkspacePaths(latticeRoot, created);
-          let newActive: ActiveDb;
-          try {
-            newActive = await openConfig(newPaths.configPath, newPaths.contextDir, autoRender);
-          } catch (e) {
-            sendJson(
-              res,
-              {
-                error: `Created but failed to open ${created.displayName}: ${(e as Error).message}`,
-              },
-              500,
-            );
-            return;
-          }
-          setActiveWorkspace(latticeRoot, created.id);
-          await disposeActive(active);
-          active = activeRef = newActive;
-          startBackgroundRender(active); // render the new workspace's tree off the response path
-          currentWorkspaceId = created.id; // header tracks the new, now-served DB
-          sendJson(res, { ok: true, id: created.id });
-          return;
-        }
-        if (method === 'POST' && pathname === '/api/workspaces/delete') {
-          if (!latticeRoot) {
-            sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as { id?: unknown };
-          if (typeof body.id !== 'string') {
-            sendJson(res, { error: 'id must be a string' }, 400);
-            return;
-          }
-          const ws = getWorkspace(latticeRoot, body.id);
-          if (!ws) {
-            sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
-            return;
-          }
-          const wsPaths = resolveWorkspacePaths(latticeRoot, ws);
-          const isActive = resolve(active.configPath) === resolve(wsPaths.configPath);
-          // Switch away from the active workspace first so file handles release
-          // and the server keeps a live DB.
-          let switchedTo: string | null = null;
-          if (isActive) {
-            const fallback = listWorkspaces(latticeRoot).find((w) => w.id !== ws.id);
-            if (fallback) {
-              // Switch to a sibling first so the deleted DB's handle releases.
-              const fbPaths = resolveWorkspacePaths(latticeRoot, fallback);
-              let next: ActiveDb;
-              try {
-                next = await openConfig(fbPaths.configPath, fbPaths.contextDir, autoRender);
-              } catch (e) {
-                const err = e as Error & { code?: string };
-                const codePrefix = err.code ? `[${err.code}] ` : '';
-                sendJson(
-                  res,
-                  {
-                    error: `Cannot delete: failed to switch to ${fallback.displayName} first: ${codePrefix}${err.message}`,
-                  },
-                  500,
-                );
-                return;
-              }
-              setActiveWorkspace(latticeRoot, fallback.id);
-              await disposeActive(active);
-              active = activeRef = next;
-              startBackgroundRender(active); // render the fallback workspace's tree off the response path
-              switchedTo = fallback.id;
-              currentWorkspaceId = fallback.id; // deleted the served DB → header follows the fallback
-            } else {
-              // Deleting the LAST workspace → enter the virgin (zero-workspace)
-              // state. Release the DB and leave the server with no active DB; the
-              // client renders the welcome screen on the next /api/workspaces poll.
-              await disposeActive(active);
-              setActive(null, null);
-              // `active` (the per-request local) is now stale, but the handler
-              // returns immediately below — no further use this request.
-            }
-          }
-          // Drop the registry record, then clean up files (loud on failure).
-          removeWorkspace(latticeRoot, ws.id);
-          try {
-            if (!ws.configPath && ws.kind === 'local') {
-              // Scaffolded local workspace: remove its whole folder (config+db+context).
-              rmSync(workspaceDir(latticeRoot, ws.dir), { recursive: true, force: true });
-            } else if (ws.kind === 'cloud') {
-              // Cloud workspace: forget the LOCAL pointer only — never touch the
-              // shared remote Postgres. Remove the managed sibling config (if any)
-              // and drop the saved credential when no other workspace uses it.
-              if (ws.configPath && existsSync(ws.configPath)) {
-                rmSync(ws.configPath, { force: true });
-              }
-              const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
-              const label = labelMatch?.[1];
-              if (label) {
-                const stillUsed = listWorkspaces(latticeRoot).some((w) =>
-                  w.db.includes('${LATTICE_DB:' + label + '}'),
-                );
-                if (!stillUsed) {
-                  try {
-                    deleteDbCredential(label);
-                  } catch {
-                    // credential already gone — fine
-                  }
-                }
-              }
-            }
-            // Adopted local workspaces: leave the user's files in place (non-destructive).
-          } catch (e) {
-            sendJson(
-              res,
-              { error: `Workspace unregistered but file cleanup failed: ${(e as Error).message}` },
-              500,
-            );
-            return;
-          }
-          sendJson(res, { ok: true, switchedTo });
-          return;
-        }
+        // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
+        if (await handleWorkspacesRoutes(req, res, ctx, workspacesDeps)) return;
 
         if (method === 'GET' && pathname === '/api/databases') {
           const parsedActive = parseConfigFile(active.configPath);
