@@ -84,6 +84,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **One un-manageable table no longer takes down the whole cloud workspace.** The
+  open-time cloud converge is now per-table fault-isolated: if the connecting role
+  can't `ALTER`/`GRANT` a table (most often because it was created by a different
+  Postgres role), that one table is skipped and every other table still
+  reconciles — instead of the whole converge aborting and degrading every object
+  to "Failed to fetch". The skip is reported with an actionable reason ("owned by
+  role X, but this workspace connects as Y — fix with: `ALTER TABLE … OWNER TO
+Y`"), surfaced via `GET /api/dbconfig` as `convergeWarnings` rather than a lone
+  console line.
+- **Schema reload without a restart.** `POST /api/workspaces/reload` re-reads the
+  config and re-registers entities in place, so a table added out-of-band surfaces
+  without killing and relaunching the GUI process.
 - **An uploaded document (`.pptx`, `.docx`, `.xlsx`, `.csv`, …) could not be
   previewed, downloaded, or opened — only its extracted text survived.** A
   browser drag-drop arrives as raw bytes with no local path, and the upload route

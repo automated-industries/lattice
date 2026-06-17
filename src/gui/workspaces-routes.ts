@@ -8,6 +8,7 @@ import {
   openConfig,
   openWithinTimeout,
   disposeActive,
+  reopenSameConfig,
   SWITCH_OPEN_TIMEOUT_MS,
 } from './lifecycle.js';
 import {
@@ -121,6 +122,23 @@ export async function handleWorkspacesRoutes(
     await disposeActive(active);
     ctx.swapActive(next, ws.id); // header now tracks the just-switched DB; render kicks off-path
     sendJson(res, { ok: true, id: ws.id });
+    return true;
+  }
+  // Reload the CURRENT workspace's schema in place: re-read the config and
+  // re-register entities (so a table added out-of-band surfaces) WITHOUT a full
+  // process restart. Reuses reopenSameConfig — same connection target, fresh
+  // schema registration + converge. Lighter than killing the server.
+  if (method === 'POST' && pathname === '/api/workspaces/reload') {
+    let next: ActiveDb;
+    try {
+      next = await reopenSameConfig(active, deps.autoRender);
+    } catch (e) {
+      sendJson(res, { error: `Reload failed: ${(e as Error).message}` }, 500);
+      return true;
+    }
+    ctx.swapActive(next); // same workspace, in-place reload — no id change; render kicks off-path
+    const tables = [...next.validTables].filter((t) => !t.startsWith('_') && !t.startsWith('__'));
+    sendJson(res, { ok: true, tables, convergeWarnings: next.convergeWarnings });
     return true;
   }
   if (method === 'POST' && pathname === '/api/workspaces/create') {

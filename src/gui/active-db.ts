@@ -87,6 +87,12 @@ export interface ActiveDb {
    * {@link startBackgroundRender}, which can be called more than once per ActiveDb.
    */
   eagerRenderWired?: boolean;
+  /**
+   * Tables the open-time cloud converge could not manage (e.g. owned by a
+   * different Postgres role). Empty on a clean open. Surfaced via /api/dbconfig so
+   * the user gets a specific, actionable message instead of a partial converge.
+   */
+  convergeWarnings: { table: string; reason: string }[];
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**

@@ -211,6 +211,10 @@ interface DbConfigContext {
   configPath: string;
   pathname: string;
   method: string;
+  /** Tables the open-time cloud converge couldn't manage (owner mismatch, etc.),
+   *  echoed to the client in GET /api/dbconfig so the UI can show an actionable
+   *  warning instead of a silent partial converge. Empty on a clean open. */
+  convergeWarnings: { table: string; reason: string }[];
   /**
    * Re-open the same configPath after the YAML has been updated.
    * Closes the current Lattice and replaces it. Caller-owned because
@@ -562,7 +566,12 @@ export async function dispatchDbConfigRoute(
       // `logoEtag` (null on local/unset) lets the SPA swap the topbar mark for the
       // owner's logo without a second fetch — and the etag cache-busts the blob.
       const logoEtag = await getCloudSetting(ctx.db, CLOUD_SETTING_WORKSPACE_LOGO_ETAG);
-      sendJson(res, { ...info, isOwner: info.state === 'cloud-owner', logoEtag });
+      sendJson(res, {
+        ...info,
+        isOwner: info.state === 'cloud-owner',
+        logoEtag,
+        convergeWarnings: ctx.convergeWarnings,
+      });
     });
     return true;
   }

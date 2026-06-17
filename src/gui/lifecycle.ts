@@ -311,6 +311,10 @@ export async function openConfig(
     await retireLegacyPreferenceSecrets(db);
   }
 
+  // Tables the open-time converge couldn't manage (e.g. owned by a different
+  // Postgres role), surfaced to the client via /api/dbconfig so the user sees a
+  // specific, actionable message instead of a silent partial converge.
+  let convergeWarnings: { table: string; reason: string }[] = [];
   // Cloud OWNER open: converge the idempotent cloud bootstrap (RLS objects +
   // settings + observation substrate) so objects ADDED to the bootstrap in a
   // later release reach clouds already stamped at an earlier version — the class
@@ -333,7 +337,13 @@ export async function openConfig(
         // private-only conversation/secret tables to never_share, and re-issue
         // member grants the version-gated per-table securing won't re-emit after
         // a grant-dropping restore. Keeps "shows as shared" == "is readable".
-        await reconcileCloudMemberAccess(db);
+        // Per-table fault-isolated: a table this role can't manage (e.g. owned
+        // by a different role) is skipped + reported, never aborting the rest.
+        const access = await reconcileCloudMemberAccess(db);
+        convergeWarnings = access.skipped;
+        for (const s of convergeWarnings) {
+          console.warn(`[openConfig] cloud converge could not manage "${s.table}": ${s.reason}`);
+        }
       }
     } catch (e) {
       // internal guideline: never silently swallow. A converge failure must be visible, but
@@ -457,6 +467,7 @@ export async function openConfig(
     realtime,
     feed,
     fileWatcher,
+    convergeWarnings,
     dbPath: parsed.dbPath,
     autoRender,
     renderProgress: new RenderProgressBus(),

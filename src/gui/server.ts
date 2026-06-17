@@ -639,6 +639,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             configPath: active.configPath,
             pathname,
             method,
+            convergeWarnings: active.convergeWarnings,
             // Reopen the active config after an in-place edit; join a cloud as a
             // NEW workspace. Both go through the shared closures so the swap is
             // reflected in `activeRef` for the next request (not just the local
