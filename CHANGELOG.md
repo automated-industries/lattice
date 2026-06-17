@@ -96,6 +96,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   cryptic HTTP code.
 - **The members list refreshes after sending an invite.** A newly invited member
   now appears ("Invited") immediately, without a manual reload.
+- **Refreshing the GUI restores the conversation you were in.** The active chat
+  thread is remembered per workspace, so a reload — even in the middle of a long
+  batch turn — reopens the same conversation instead of jumping to the newest
+  thread. (Mid-turn message checkpointing and surfaced persist failures are
+  tracked as follow-ups.)
 
 ## [3.3.5] - 2026-06-16
 

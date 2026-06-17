@@ -1371,6 +1371,7 @@ export const appJs = `
 
     var wsOutsideClickBound = false;
     function renderWsSwitcher(data) {
+      activeWsId = (data && data.current) || null; // keys the per-workspace chat-thread memory
       var wrap = document.getElementById('ws-switcher');
       var btn = document.getElementById('ws-button');
       var menu = document.getElementById('ws-menu');
@@ -6686,6 +6687,21 @@ export const appJs = `
     function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
     var currentThreadId = null;
     var loadThreadSeq = 0; // discards a stale loadThread response when a newer load supersedes it
+    // Active workspace id (set by renderWsSwitcher, which runs before the thread
+    // list loads on both boot and switch). Keys the per-workspace "last open
+    // conversation" so a refresh restores the EXACT thread the user was in — not
+    // merely the newest, which during a long batch turn may be a different thread.
+    var activeWsId = null;
+    function chatThreadKey() { return 'lattice.chatThread.' + (activeWsId || '_default'); }
+    function rememberThread(id) {
+      try {
+        if (id) window.localStorage.setItem(chatThreadKey(), id);
+        else window.localStorage.removeItem(chatThreadKey());
+      } catch (_) { /* storage unavailable — non-fatal */ }
+    }
+    function recallThread() {
+      try { return window.localStorage.getItem(chatThreadKey()) || ''; } catch (_) { return ''; }
+    }
     function clearChat() {
       chatHistory = [];
       var feedEl = railFeedEl();
@@ -6714,6 +6730,7 @@ export const appJs = `
     function newChat() {
       gaTrack('assistant_thread_new', {});
       currentThreadId = null;
+      rememberThread(null);
       clearChat();
       var sel = document.getElementById('rail-threads');
       if (sel) sel.value = '';
@@ -6732,8 +6749,18 @@ export const appJs = `
           opts += '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.title || 'Chat') + '</option>';
         });
         sel.innerHTML = opts;
-        if (autoSelect && !currentThreadId && threads.length > 0) {
-          loadThread(threads[0].id); // threads are newest-first
+        if (autoSelect && !currentThreadId) {
+          // Restore the exact conversation the user was last in (per workspace);
+          // fall back to the most recent thread only when there's nothing stored
+          // or the stored thread is gone.
+          var remembered = recallThread();
+          if (remembered && threads.some(function (t) { return t.id === remembered; })) {
+            loadThread(remembered);
+          } else if (threads.length > 0) {
+            loadThread(threads[0].id); // threads are newest-first
+          } else {
+            sel.value = '';
+          }
         } else {
           sel.value = currentThreadId || '';
         }
@@ -6746,6 +6773,7 @@ export const appJs = `
         var msgs = (d && d.messages) || [];
         clearChat();
         currentThreadId = id;
+        rememberThread(id);
         var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
         msgs.forEach(function (m) {
           if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
@@ -6905,7 +6933,7 @@ export const appJs = `
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
         }
-        var tid = r.headers.get('x-thread-id'); if (tid) currentThreadId = tid;
+        var tid = r.headers.get('x-thread-id'); if (tid) { currentThreadId = tid; rememberThread(tid); }
         var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
         function pump() {
           return reader.read().then(function (res) {
