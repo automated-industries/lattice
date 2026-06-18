@@ -683,6 +683,43 @@ export function deleteAssistantCredential(kind: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// "Credential cleared" sentinels.
+//
+// Clearing an assistant credential must be authoritative: it has to suppress
+// the matching environment-variable fallback too, and stay cleared across
+// reloads/restarts until the user saves a new value. A deleted store entry
+// alone can't do that — the env var would re-resolve the credential on the next
+// read. We persist a per-kind sentinel in the SAME encrypted machine-local
+// store (under a reserved key prefix that can't collide with a real `kind`):
+// when set, callers skip BOTH the stored read and the env fallback for that
+// kind. Saving a value clears the sentinel.
+// ---------------------------------------------------------------------------
+
+const CLEARED_SENTINEL_PREFIX = '__cleared__:';
+
+/** True when `kind` was explicitly cleared and not since re-saved. */
+export function isAssistantCredentialCleared(kind: string): boolean {
+  return loadAssistantCredentials()[CLEARED_SENTINEL_PREFIX + kind] === '1';
+}
+
+/** Mark `kind` as cleared so its env fallback is suppressed until a re-save. */
+export function setAssistantCredentialCleared(kind: string): void {
+  const creds = loadAssistantCredentials();
+  creds[CLEARED_SENTINEL_PREFIX + kind] = '1';
+  saveAssistantCredentials(creds);
+}
+
+/** Clear the "cleared" sentinel for `kind` (called when a new value is saved). */
+export function clearAssistantCredentialCleared(kind: string): void {
+  const creds = loadAssistantCredentials();
+  const sentinel = CLEARED_SENTINEL_PREFIX + kind;
+  if (!(sentinel in creds)) return;
+  const { [sentinel]: _removed, ...rest } = creds;
+  void _removed;
+  saveAssistantCredentials(rest);
+}
+
+// ---------------------------------------------------------------------------
 // Per-team bearer tokens — `~/.lattice/keys/<label>.token`
 // ---------------------------------------------------------------------------
 

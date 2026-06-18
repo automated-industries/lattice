@@ -140,6 +140,27 @@ interface AnthropicMessagesApi {
 }
 type AnthropicCtor = new (config: Record<string, unknown>) => AnthropicMessagesApi;
 
+/**
+ * Build the SDK constructor config from a {@link ClaudeAuth}. Exported as a pure
+ * test seam. `apiKey` is ALWAYS set explicitly (to a key or to null) so the SDK
+ * never falls back to its own `process.env.ANTHROPIC_API_KEY` default — which, on
+ * the OAuth path, would add an `x-api-key` header alongside the Bearer token and
+ * get the request rejected.
+ */
+export function buildVisionAnthropicConfig(auth: ClaudeAuth): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+  if (auth.authToken) {
+    config.authToken = auth.authToken;
+    config.apiKey = null;
+  } else if (auth.apiKey) {
+    config.apiKey = auth.apiKey;
+  } else {
+    config.apiKey = null;
+  }
+  if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
+  return config;
+}
+
 function defaultSender(auth: ClaudeAuth): (input: VisionSenderInput) => Promise<string> {
   return async (input) => {
     const importMetaUrl = (import.meta as { url?: string }).url;
@@ -147,11 +168,7 @@ function defaultSender(auth: ClaudeAuth): (input: VisionSenderInput) => Promise<
     const sdk = req('@anthropic-ai/sdk') as { Anthropic?: AnthropicCtor; default?: AnthropicCtor };
     const Anthropic = sdk.Anthropic ?? sdk.default;
     if (!Anthropic) throw new Error("Could not resolve Anthropic from '@anthropic-ai/sdk'");
-    const config: Record<string, unknown> = {};
-    if (auth.authToken) config.authToken = auth.authToken;
-    else if (auth.apiKey) config.apiKey = auth.apiKey;
-    if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
-    const client = new Anthropic(config);
+    const client = new Anthropic(buildVisionAnthropicConfig(auth));
     const res = await client.messages.create({
       model: input.model,
       max_tokens: 1024,
@@ -182,11 +199,7 @@ function defaultPdfSender(auth: ClaudeAuth): (input: PdfSenderInput) => Promise<
     const sdk = req('@anthropic-ai/sdk') as { Anthropic?: AnthropicCtor; default?: AnthropicCtor };
     const Anthropic = sdk.Anthropic ?? sdk.default;
     if (!Anthropic) throw new Error("Could not resolve Anthropic from '@anthropic-ai/sdk'");
-    const config: Record<string, unknown> = {};
-    if (auth.authToken) config.authToken = auth.authToken;
-    else if (auth.apiKey) config.apiKey = auth.apiKey;
-    if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
-    const client = new Anthropic(config);
+    const client = new Anthropic(buildVisionAnthropicConfig(auth));
     const res = await client.messages.create({
       model: input.model,
       max_tokens: 4096,
