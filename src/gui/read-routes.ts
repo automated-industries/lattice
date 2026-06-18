@@ -394,6 +394,9 @@ export async function handleReadRoutes(
 
   // ── GUI column metadata (per-column secret flag) ─────────────────
   if (method === 'GET' && pathname === '/api/gui-meta/columns') {
+    // Whole-table read is intentional + bounded: _lattice_gui_column_meta holds at
+    // most one row per (table, column) in the SCHEMA — bounded by the schema size,
+    // not by data volume — so it never grows with row count (not a Rule-28 hot read).
     const rows = (await active.db.query('_lattice_gui_column_meta', {})) as {
       table_name: string;
       column_name: string;
@@ -589,6 +592,8 @@ export async function handleReadRoutes(
 
   // ── GUI-only metadata (per-entity icon overrides) ─────────────────
   if (method === 'GET' && pathname === '/api/gui-meta') {
+    // Whole-table read is intentional + bounded: _lattice_gui_meta holds at most one
+    // row per ENTITY in the schema — bounded by the schema size, not data volume.
     const rows = (await active.db.query('_lattice_gui_meta', {})) as {
       entity_name: string;
       icon: string | null;
