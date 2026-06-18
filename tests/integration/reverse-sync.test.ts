@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { readManifest, type LatticeManifest } from '../../src/lifecycle/manifest.js';
+import {
+  readManifest,
+  entityFileNames,
+  type LatticeManifest,
+} from '../../src/lifecycle/manifest.js';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -413,6 +417,63 @@ describe('reverse-sync', () => {
 
     // DB unchanged
     expect((await db.get('agents', 'a1'))?.name).toBe('Alpha');
+
+    db.close();
+  });
+
+  it('tolerates an OLD on-disk v1 (string[]) manifest entry: filenames still read for cleanup, reverse-sync treats it as no-baseline (skips, never mis-reads it as a Record)', async () => {
+    const { db, outputDir } = await setupDb();
+
+    await db.insert('agents', { id: 'a1', name: 'Alpha', slug: 'alpha', role: 'Scout' });
+
+    // First reconcile writes a fresh v2 manifest.
+    await db.reconcile(outputDir);
+
+    // Hand-construct a legacy v1 manifest entry directly: the value for the slug
+    // is a bare string[] (the pre-hash format), NOT a Record. This is what an old
+    // .lattice/manifest.json on disk looks like.
+    const manifestFile = join(outputDir, '.lattice', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as LatticeManifest;
+    manifest.version = 1;
+    const v1Entry = manifest.entityContexts.agents!.entities.alpha!;
+    const v1Filenames = Object.keys(v1Entry); // e.g. ['AGENT.md']
+    // Cast through unknown — the WRITTEN type is v2-only, but a real old file
+    // carries the array shape, and the read boundary must tolerate it.
+    (manifest.entityContexts.agents!.entities as Record<string, unknown>).alpha = v1Filenames;
+    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+
+    // (1) Cleanup path: entityFileNames must still return the bare filename list
+    // off the v1 entry, so orphan detection keeps working for stale manifests.
+    const reread = readManifest(outputDir)!;
+    const rawEntry = (
+      reread.entityContexts.agents!.entities as Record<
+        string,
+        Parameters<typeof entityFileNames>[0]
+      >
+    ).alpha!;
+    expect(Array.isArray(rawEntry)).toBe(true); // it really is a string[] on disk
+    expect(entityFileNames(rawEntry)).toEqual(v1Filenames);
+
+    // (2) Reverse-sync path: an external edit to the file must NOT crash (the v1
+    // entry is an array, not a Record) and must be treated as no-baseline (skipped),
+    // leaving the DB untouched.
+    writeFileSync(join(outputDir, 'agents', 'alpha', 'AGENT.md'), '# Hacked\n**Role:** Intruder\n');
+
+    const result = await db.reconcile(outputDir);
+    expect(result.reverseSync).not.toBeNull();
+    expect(result.reverseSync!.filesChanged).toBe(0); // v1 entry skipped, never mis-read
+    expect(result.reverseSync!.conflicts).toEqual([]); // no false conflict either
+    expect(result.reverseSync!.errors).toEqual([]); // no crash from treating array as Record
+    expect((await db.get('agents', 'a1'))?.name).toBe('Alpha');
+    expect((await db.get('agents', 'a1'))?.role).toBe('Scout');
+
+    // The reconcile re-render regenerates the manifest entry in the v2 (Record)
+    // shape — the stale v1 entry is upgraded automatically, not left forever.
+    const after = readManifest(outputDir)!;
+    expect(after.version).toBe(2);
+    const upgraded = after.entityContexts.agents!.entities.alpha!;
+    expect(Array.isArray(upgraded)).toBe(false);
+    expect(typeof (upgraded as Record<string, { hash: string }>)['AGENT.md'].hash).toBe('string');
 
     db.close();
   });

@@ -97,8 +97,6 @@ export {
   writeManifest,
   manifestPath,
   entityFileNames,
-  normalizeEntityFiles,
-  isV1EntityFiles,
 } from './lifecycle/manifest.js';
 export type {
   LatticeManifest,

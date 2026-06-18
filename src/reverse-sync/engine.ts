@@ -4,7 +4,6 @@ import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { ReverseSyncResult } from '../types.js';
 import type { LatticeManifest, EntityFileManifestInfo } from '../lifecycle/manifest.js';
-import { isV1EntityFiles, normalizeEntityFiles } from '../lifecycle/manifest.js';
 import { contentHash, rowVersionHash } from '../render/writer.js';
 import type { ReverseSyncUpdate } from '../schema/entity-context.js';
 import type { Row } from '../types.js';
@@ -109,10 +108,11 @@ export class ReverseSyncEngine {
           ? join(outputDir, def.directory(entityRow))
           : join(outputDir, directoryRoot, slug);
 
-        // Normalize v1 → v2 entity files
-        const entityFiles: Record<string, EntityFileManifestInfo> = isV1EntityFiles(entityFilesRaw)
-          ? normalizeEntityFiles(entityFilesRaw)
-          : entityFilesRaw;
+        // A legacy v1 entry (bare filename array) has no content hashes, so there
+        // is no baseline to compare a file against — treat it as no-baseline and
+        // skip the entity. The next render rewrites it in the v2 (hashed) shape.
+        if (Array.isArray(entityFilesRaw)) continue;
+        const entityFiles: Record<string, EntityFileManifestInfo> = entityFilesRaw;
 
         for (const [filename, reverseSyncFn] of fileFns) {
           const fileInfo = entityFiles[filename];

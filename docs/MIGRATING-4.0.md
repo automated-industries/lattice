@@ -264,3 +264,24 @@ UPDATE files
 (Adjust for rows whose `path` already pointed inside `data/blobs/` — those are
 owned blobs and should instead set `ref_kind = 'blob'`, `blob_path = path`.) After
 the backfill verifies clean, run the `DROP COLUMN` statements above.
+
+## Render manifest is v2-only
+
+The render manifest (`.lattice/manifest.json`) is now written exclusively in the
+hashed v2 shape — each entity's files entry is a `{ filename: { hash, ... } }`
+map (content hashes power change detection for the file → DB write-back), never
+the older bare `["FILE.md", ...]` filename array.
+
+**No action is required.** An old v1 `manifest.json` still on disk is handled
+gracefully: its filenames are read for cleanup (so orphaned files are still
+detected), and because a v1 entry carries no content hashes there is no baseline
+to compare against, so write-back simply skips those entries — exactly as before.
+The first render after upgrading rewrites the manifest in the v2 shape, upgrading
+it automatically.
+
+If you would rather force a clean v2 render immediately, delete the manifest and
+re-render — it will be regenerated from scratch:
+
+```sh
+rm .lattice/manifest.json
+```
