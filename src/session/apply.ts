@@ -99,6 +99,14 @@ export function applyWriteEntry(db: Database.Database, entry: SessionWriteEntry)
       if (!target) {
         return { ok: false, reason: 'Field "target" is required for op "update"' };
       }
+      // Intentionally last-writer-wins: no optimistic-concurrency / version gate. This
+      // is the SESSION.md apply path — a single-writer, synchronous (better-sqlite3)
+      // ingestion of a write log the operator authored. A version gate would need an
+      // expected-version IN THE INPUT to compare against, and the SESSION.md write
+      // format carries none (it says "update row X set fields", not "...if version=N").
+      // Adding a gate would be dead code on the tables this writes (no version column)
+      // and changes nothing for a single writer. (Contrast the multi-writer cloud
+      // reverse-sync path, which DOES gate on a captured row hash.)
       const setCols = Object.keys(fields)
         .map((c) => `"${c}" = ?`)
         .join(', ');
