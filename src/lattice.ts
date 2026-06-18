@@ -2380,7 +2380,20 @@ export class Lattice {
       const newManifest = readManifest(dir);
       await this._render.cleanup(dir, prevManifest, {}, newManifest);
     } catch (err) {
-      for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
+      // A render write failed (e.g. disk full / read-only mount). Surface it
+      // loudly through the existing error channel — never swallow it — carrying
+      // the original errno code and an actionable message. The prior rendered
+      // context + manifest are left intact as the record (the manifest is the
+      // last write, so it is never committed over a partial tree), and the next
+      // render self-heals once the cause clears.
+      const base = err instanceof Error ? err : new Error(String(err));
+      const code = (base as NodeJS.ErrnoException).code;
+      const error = new Error(
+        `render write failed${code ? ` (${code})` : ''}; the prior rendered context + manifest are left intact as the record, and the next render self-heals: ${base.message}`,
+      ) as NodeJS.ErrnoException;
+      if (code) error.code = code;
+      error.cause = base;
+      for (const h of this._errorHandlers) h(error);
     } finally {
       this._autoRenderInFlight = false;
       // Mutations may have arrived while the render was in flight (and hit the

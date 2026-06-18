@@ -10,6 +10,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A failed render no longer leaves new files on disk under the prior manifest,
+  and a swallowed auto-render failure is surfaced.** Render now runs a pre-flight
+  writability probe over its stable target directories (the output root, the
+  `.lattice` manifest dir, and each entity-context directory root) before writing
+  any live file, by writing and deleting a sentinel inside each one. This converts
+  the common disk-full / read-only-mount failure into a clean pre-commit throw
+  with no live files touched. The manifest is written last and atomically, so it
+  is the single commit point: a render that throws never commits a new manifest
+  over a partially-written tree — the prior context + manifest stay the record and
+  the next render self-heals (unchanged files are skipped, the rest are completed,
+  cleanup reconciles). Auto-render failures are now re-raised through the existing
+  error channel carrying the underlying error code and an actionable message
+  instead of being lost. Attach-copy failures (the binary/reference attachment
+  step) are no longer silently swallowed — they propagate to the same commit gate.
+  The honest guarantee is manifest-atomic + tree-eventually-consistent, not full
+  multi-file tree atomicity: a crash between the first file write and the manifest
+  commit leaves the prior manifest describing a tree with some newer files, which
+  the next render reconciles.
 - **Migrate-to-cloud surfaces files whose local blob bytes were left behind, and
   asserts per-table row counts.** `migrateLatticeData` copies `files` rows but not
   their owned-local blob bytes (under `<root>/data/blobs/`), so after the source
