@@ -59,8 +59,8 @@ import {
   serializeRowPk as _serializeRowPkCodec,
   serializePkLookup as _serializePkLookupCodec,
 } from './db/pk.js';
-import { SchemaManager } from './schema/manager.js';
-import type { CompiledTableDef } from './schema/manager.js';
+import { SchemaManager, pageClause } from './schema/manager.js';
+import type { CompiledTableDef, PageOptions } from './schema/manager.js';
 import { assertSafeIdentifier } from './schema/identifier.js';
 import { ChangelogService } from './changelog/service.js';
 import { ReportBuilder } from './report/builder.js';
@@ -1428,7 +1428,7 @@ export class Lattice {
    * Get all non-deleted rows from a table, ordered by the given column.
    * Works on any table, not just defined ones.
    */
-  async getActive(table: string, orderBy = 'name'): Promise<Row[]> {
+  async getActive(table: string, orderBy = 'name', opts: PageOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
 
@@ -1436,7 +1436,8 @@ export class Lattice {
     const hasDeletedAt = cols.has('deleted_at');
     const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
     const order = cols.has(orderBy) ? ` ORDER BY "${orderBy}"` : '';
-    return allAsyncOrSync(this._adapter, `SELECT * FROM "${table}"${where}${order}`);
+    const page = pageClause(opts);
+    return allAsyncOrSync(this._adapter, `SELECT * FROM "${table}"${where}${order}${page.sql}`, page.params);
   }
 
   /**

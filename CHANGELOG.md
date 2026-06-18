@@ -16,6 +16,15 @@ three largest source files into focused modules and adds optimistic-concurrency,
 atomic-commit, and bounded-read hardening — behavior-preserving except where
 tagged BREAKING.
 
+### Added
+
+- **`getActive` and `queryTable` accept an optional `{ limit, offset }` bound.**
+  Omitting it is byte-identical to the prior unbounded read (every existing caller
+  is unchanged); a bound appends a parameterized `LIMIT ? [OFFSET ?]` (validated as
+  non-negative integers; a bare `offset` without `limit` is ignored, since SQL
+  `OFFSET` requires `LIMIT`). Lets a consumer cap a read instead of pulling a whole
+  table. (The GUI's own list endpoints are already bounded at the route layer.)
+
 ### Changed
 
 - **BREAKING — the legacy `files.path` and `files.kind` columns are removed.**
