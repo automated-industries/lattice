@@ -90,6 +90,11 @@ tagged BREAKING.
 
 ### Fixed
 
+- **SESSION.md write-apply targets the real primary key.** An `update`/`delete` on a
+  table with no `id` column guessed the primary key as the FIRST declared column, so
+  the `WHERE` could match the wrong column and update/delete the wrong rows (or none).
+  It now resolves the target column as `id` → the declared single-column primary key
+  (PRAGMA `pk`) → first column only as a last resort.
 - **The `db.watch()` loop no longer hides render failures or skips stale-file cleanup.**
   A render/cleanup error now surfaces via `console.error` when no `onError` handler is
   supplied (it was silently swallowed), and orphan cleanup now receives the post-render

@@ -150,4 +150,45 @@ describe('applyWriteEntry', () => {
     if (result.ok) return;
     expect(result.reason).toContain('target');
   });
+
+  it('targets the declared PK column (not the first column) when a table has no id', () => {
+    // Regression: with no `id` column, the pk was guessed as columnRows[0] (the first
+    // declared column), so update/delete with `target` matched on the WRONG column —
+    // updating/deleting the wrong rows (or none). Here `slug` is the PK but `body` is
+    // first, so a target of 'b' must resolve via slug, not body.
+    const d = new Database(':memory:');
+    d.exec(`CREATE TABLE notes (body TEXT, slug TEXT PRIMARY KEY, deleted_at TEXT)`);
+    d.prepare(`INSERT INTO notes (body, slug) VALUES (?, ?)`).run('A', 'a');
+    d.prepare(`INSERT INTO notes (body, slug) VALUES (?, ?)`).run('B', 'b');
+
+    const upd = applyWriteEntry(d, {
+      id: 't1',
+      timestamp: '2026-03-25T10:00:00Z',
+      op: 'update',
+      table: 'notes',
+      target: 'b',
+      fields: { body: 'B2' },
+    });
+    expect(upd.ok).toBe(true);
+    expect(d.prepare(`SELECT body FROM notes WHERE slug='b'`).get()).toEqual({ body: 'B2' });
+    expect(d.prepare(`SELECT body FROM notes WHERE slug='a'`).get()).toEqual({ body: 'A' });
+
+    // delete (soft) resolves the same way — only slug='a' is tombstoned.
+    const del = applyWriteEntry(d, {
+      id: 't2',
+      timestamp: '2026-03-25T10:01:00Z',
+      op: 'delete',
+      table: 'notes',
+      target: 'a',
+      fields: {},
+    });
+    expect(del.ok).toBe(true);
+    expect(d.prepare(`SELECT deleted_at FROM notes WHERE slug='a'`).get()).not.toEqual({
+      deleted_at: null,
+    });
+    expect(d.prepare(`SELECT deleted_at FROM notes WHERE slug='b'`).get()).toEqual({
+      deleted_at: null,
+    });
+    d.close();
+  });
 });
