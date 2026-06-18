@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { safeFetch } from './url-safety.js';
 import {
   ReferenceUnavailableError,
@@ -44,21 +44,14 @@ function refKindOf(row: FilesRow): RefKind {
 
 function blobHandle(row: FilesRow, latticeRoot: string): SourceHandle {
   const rel = row.blob_path ?? null;
-  const legacy = row.path ?? null;
-  const abs = rel
-    ? join(latticeRoot, rel)
-    : legacy
-      ? isAbsolute(legacy)
-        ? legacy
-        : join(latticeRoot, legacy)
-      : null;
-  const location = rel ? `blob:${rel}` : (legacy ?? 'blob:?');
+  const abs = rel ? join(latticeRoot, rel) : null;
+  const location = rel ? `blob:${rel}` : 'blob:?';
   return {
     kind: 'blob',
     provider: 'fs',
     location,
     async readContent(): Promise<Buffer> {
-      if (!abs) throw new ReferenceUnavailableError(location, 'row has no blob_path/path');
+      if (!abs) throw new ReferenceUnavailableError(location, 'row has no blob_path');
       try {
         return await readFile(abs);
       } catch (e) {

@@ -31,8 +31,9 @@ import { findExactFileDupesOf, mergeDuplicates, type DedupServiceCtx } from './d
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
  * snippet) as a row in the native `files` entity and summarize its contents —
- * no bytes are copied into a blob store; `files.path` holds the local path and
- * the preview/extraction read from there. Writes go through the shared
+ * no bytes are copied into a blob store; the row records a `local_ref`
+ * (`ref_kind='local_ref'`, `ref_uri` = the absolute path) and the
+ * preview/extraction read from there. Writes go through the shared
  * mutation primitives with source='ingest', so each lands in the audit log +
  * activity feed.
  *
@@ -347,6 +348,21 @@ export async function dispatchIngestRoute(
       }
     }
     const mime = req.headers['content-type'] ?? 'application/octet-stream';
+    // A browser hides a dragged file's OS path, so a real OS path is available
+    // only when a client can supply it (a non-browser/desktop client, via
+    // `x-filepath`). When present, the file already lives at a stable disk
+    // location, so the upload references it in place as a `local_ref` (mirroring
+    // the /api/ingest/file route) instead of retaining a redundant blob copy.
+    const rawFilePath =
+      (typeof req.headers['x-filepath'] === 'string' && req.headers['x-filepath']) || '';
+    let realPath = '';
+    if (rawFilePath) {
+      try {
+        realPath = decodeURIComponent(rawFilePath);
+      } catch {
+        realPath = rawFilePath;
+      }
+    }
     let buf: Buffer;
     try {
       buf = await readBuffer(req);
@@ -371,7 +387,10 @@ export async function dispatchIngestRoute(
       // text survives. Arbitrary/unknown binaries are still discarded (text +
       // description kept, no blob). Gate on the file TYPE, not on extraction
       // success: a document whose text fails to extract should still be reachable.
-      if (ctx.latticeRoot && shouldRetainUploadBlob(mime, name)) {
+      // Skip blob retention entirely when the client supplied the real OS path
+      // (`x-filepath`): the file already persists at that path, so it is recorded
+      // as a `local_ref` and served from disk — no redundant copy.
+      if (ctx.latticeRoot && !realPath && shouldRetainUploadBlob(mime, name)) {
         try {
           const meta = await attachBlob(tmp, ctx.latticeRoot);
           blob = { blob_path: meta.blob_path, sha256: meta.sha256 };
@@ -422,23 +441,6 @@ export async function dispatchIngestRoute(
       }
     }
     const fileId = crypto.randomUUID();
-    // A browser hides a dragged file's OS path, so set `path` only when a client
-    // can actually supply the real one (a non-browser/desktop client, via
-    // `x-filepath`). For a browser drop with no path, `path` is left to
-    // requiredFileDefaults — which fills it from the filename ONLY if the physical
-    // `files` table declares `path NOT NULL`, so an upload never 500s on a required
-    // path WITHOUT writing a bogus path onto the native (nullable) schema, where a
-    // set `path` would shadow the retained blob the file is served from.
-    const rawFilePath =
-      (typeof req.headers['x-filepath'] === 'string' && req.headers['x-filepath']) || '';
-    let realPath = '';
-    if (rawFilePath) {
-      try {
-        realPath = decodeURIComponent(rawFilePath);
-      } catch {
-        realPath = rawFilePath;
-      }
-    }
     // Content hash set UNCONDITIONALLY (not just when a blob/S3 ref exists) so
     // the post-insert auto-dedup can recognize a byte-identical re-upload even on
     // the text-only native schema. createRow drops it if the schema lacks the col.
@@ -446,7 +448,6 @@ export async function dispatchIngestRoute(
     const uploadRow: Record<string, unknown> = {
       id: fileId,
       ...fileIdentity(name, fileId),
-      ...(realPath ? { path: realPath } : {}),
       original_name: name,
       mime,
       sha256: fileSha,
@@ -454,9 +455,16 @@ export async function dispatchIngestRoute(
       extracted_text: result.text,
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
-      // Reference fields. When S3 stored the bytes, record the cloud_ref (other
-      // members fetch via S3) AND keep the uploader's local blob_path (their fast
-      // path). Otherwise the legacy local-only blob, or nothing (text-only).
+      // Reference fields (a single `ref_kind` discriminator). When S3 stored the
+      // bytes, record the cloud_ref (other members fetch via S3) AND keep the
+      // uploader's local blob_path (their fast path). Otherwise, when a desktop
+      // client supplied the real OS path (`x-filepath`), record a local_ref that
+      // points at the file in place (no blob was retained for this case — see the
+      // retention gate above) so it is served straight from disk. A browser drop
+      // with no path falls back to the retained local-only blob. The local_ref is
+      // built inline (not via referenceLocalFile) so the already-computed
+      // extraction status / size / original_name on uploadRow win over the
+      // helper's `pending` defaults.
       ...(s3Ref
         ? {
             ref_kind: 'cloud_ref',
@@ -465,9 +473,11 @@ export async function dispatchIngestRoute(
             source_json: s3Ref.source_json,
             ...(blob ? { blob_path: blob.blob_path } : {}),
           }
-        : blob
-          ? { ref_kind: 'blob', blob_path: blob.blob_path }
-          : {}),
+        : realPath
+          ? { ref_kind: 'local_ref', ref_uri: realPath, ref_provider: 'fs' }
+          : blob
+            ? { ref_kind: 'blob', blob_path: blob.blob_path }
+            : {}),
     };
     const { id } = await createRow(mctx, 'files', {
       ...(await requiredFileDefaults(ctx.db, name, fileId, uploadRow)),
@@ -619,7 +629,11 @@ export async function dispatchIngestRoute(
   const localRow: Record<string, unknown> = {
     id: localFileId,
     ...fileIdentity(name, localFileId),
-    path: abs,
+    // Reference the file in place: a `local_ref` whose `ref_uri` is the absolute
+    // OS path. No bytes are copied; the resolver serves it straight from disk.
+    ref_kind: 'local_ref',
+    ref_uri: abs,
+    ref_provider: 'fs',
     original_name: name,
     mime,
     size_bytes: size,

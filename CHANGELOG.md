@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **BREAKING — the legacy `files.path` and `files.kind` columns are removed.**
+  The native `files` entity no longer declares them; file resolution now flows
+  through the content-addressed columns (`sha256` / `blob_path`) for owned bytes
+  and the reference model (`ref_kind` / `ref_uri` / `ref_provider`) for files that
+  live elsewhere. An ingested local file is recorded as a `local_ref` whose
+  `ref_uri` is its absolute OS path (previously stored in `path`); a browser drop
+  with no path is retained as an owned `blob`. Consumers that read `row.path` /
+  `row.kind` must read `ref_uri` (local_ref) or `blob_path` (owned blob) instead.
+  Drop the columns from a physical schema with
+  `ALTER TABLE files DROP COLUMN path; ALTER TABLE files DROP COLUMN kind;`
+  (SQLite ≥ 3.35 for `DROP COLUMN`; PostgreSQL unaffected). See
+  [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the backfill SQL.
 - **BREAKING — the per-field `ref:` shorthand is removed; declare relationships
   with an explicit entity-level `relations:` block.** Previously a field could
   carry `ref: <table>` to auto-create a `belongsTo` relation, with the relation
