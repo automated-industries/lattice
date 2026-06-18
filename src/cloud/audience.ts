@@ -178,6 +178,31 @@ export async function loadColumnPolicy(
   return out;
 }
 
+/**
+ * Read EVERY table's canonical column→audience map from __lattice_column_policy in a
+ * single query. This is the DB-canonical source the `<t>_v` masking views are built
+ * from, so a consumer deciding "is this table masked?" must read it here — NOT from
+ * the in-memory, config-derived schema audience, which never reflects a mask applied
+ * at runtime (e.g. the GUI "mark column secret" path). Returns an empty map on a
+ * non-Postgres DB.
+ */
+export async function loadAllColumnPolicy(
+  db: Lattice,
+): Promise<Map<string, Record<string, string>>> {
+  const out = new Map<string, Record<string, string>>();
+  if (db.getDialect() !== 'postgres') return out;
+  const rows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT "table_name", "column_name", "audience" FROM "__lattice_column_policy"`,
+  )) as { table_name: string; column_name: string; audience: string }[];
+  for (const r of rows) {
+    const m = out.get(r.table_name) ?? {};
+    m[r.column_name] = r.audience;
+    out.set(r.table_name, m);
+  }
+  return out;
+}
+
 /** Seed a table's YAML-declared audiences into __lattice_column_policy — ONE TIME
  *  per table, the migration from the legacy on-disk spec to the DB-canonical store.
  *  A marker in __lattice_migrations gates it: after the first run we never seed from

@@ -90,6 +90,17 @@ tagged BREAKING.
 
 ### Fixed
 
+- **Security: a column masked at runtime is no longer re-exposed to cloud members.**
+  Marking a column secret in the GUI (or any runtime `setColumnAudience`) masks it via
+  the `<t>_v` view + `__lattice_column_policy`, but the in-memory schema audience
+  (populated only from the declared config) stayed empty. `reconcileCloudMemberAccess`
+  read that stale in-memory source to decide whether a table was masked, so on the next
+  workspace open it saw a runtime-masked table as unmasked and re-GRANTed members
+  `SELECT` on the base table — letting a member read the hidden column directly off the
+  base, bypassing the masking view. reconcile now decides masked-ness from the
+  DB-canonical `__lattice_column_policy` (the same source the views are built from),
+  loaded in one query, so a runtime mask survives reconcile. Config-declared masking is
+  unchanged (it is seeded into the policy table before reconcile runs).
 - **SESSION.md write-apply targets the real primary key.** An `update`/`delete` on a
   table with no `id` column guessed the primary key as the FIRST declared column, so
   the `WHERE` could match the wrong column and update/delete the wrong rows (or none).

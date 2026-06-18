@@ -10,6 +10,7 @@ import {
   seedColumnPolicyFromYaml,
   regenerateAudienceViewFromDb,
   tableNeedsAudienceView,
+  loadAllColumnPolicy,
 } from './audience.js';
 import {
   grantMemberTableAccessBatchSql,
@@ -128,11 +129,18 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   )) as { name: string }[];
   const rlsOn = new Set(rlsRows.map((r) => r.name));
 
+  // Decide masked-ness from the DB-canonical column policy (the source the <t>_v views
+  // are built from), NOT the in-memory config-derived schema audience. The in-memory
+  // map never reflects a column masked at RUNTIME (e.g. the GUI "mark secret" path), so
+  // reading it here would take the unmasked grant path and re-GRANT members base SELECT
+  // on a runtime-masked table — re-exposing the column the owner hid. One query for all.
+  const columnPolicy = await loadAllColumnPolicy(db);
+
   for (const table of registered) {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
-    const masked = tableNeedsAudienceView(db.getColumnAudience(table));
+    const masked = tableNeedsAudienceView(columnPolicy.get(table) ?? {});
     await tryTable(table, async () => {
       // One round-trip per table (the masked case batches its 2 GRANTs) — the
       // per-table tryTable wrapper still isolates a failure to this table + records

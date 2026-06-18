@@ -19,6 +19,7 @@ import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { MEMBER_GROUP } from '../../src/cloud/rls.js';
 import { reconcileCloudMemberAccess, secureCloud } from '../../src/cloud/setup.js';
+import { setColumnAudience } from '../../src/cloud/audience.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 import { getAsyncOrSync } from '../../src/db/adapter.js';
 
@@ -94,6 +95,53 @@ describe.skipIf(!PG_URL)('reconcile batching — masked table 2-GRANT batch', ()
     expect(await memberHasTablePriv(o, 'notes', 'UPDATE')).toBe(true);
     expect(await memberHasTablePriv(o, 'notes', 'DELETE')).toBe(true);
     // Masking still holds: the member never gets base-table SELECT (reads route via _v).
+    expect(await memberHasTablePriv(o, 'notes', 'SELECT')).toBe(false);
+  });
+
+  it('does not re-expose a column masked at RUNTIME (not declared in config)', async () => {
+    // Security regression: a column marked secret in the GUI (setColumnAudience at
+    // runtime) masks via the _v view + __lattice_column_policy, but the in-memory
+    // schema audience (config-only) stays empty. reconcile read that stale in-memory
+    // source, saw the table as UNMASKED, and re-GRANTed members base SELECT on the
+    // next open — exposing the secret column directly off the base table, bypassing
+    // the masking view. reconcile must decide masked-ness from the DB-canonical policy.
+    const schema = `mrt_${randomBytes(4).toString('hex')}`;
+    schemas.push(schema);
+    const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    await admin.end();
+
+    const o = new Lattice(schemaUrl(schema));
+    dbs.push(o);
+    // NOTE: no columnAudience in the config — the mask is applied purely at runtime.
+    o.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', secret_note: 'TEXT', deleted_at: 'TEXT' },
+      render: () => '',
+      outputFile: 'notes.md',
+    });
+    await o.init();
+    await secureCloud(o);
+    // The GUI "mark column secret" path: mask at runtime (builds notes_v, revokes base
+    // SELECT) without ever touching the declared config.
+    await setColumnAudience(
+      o,
+      'notes',
+      'secret_note',
+      'owner',
+      ['id', 'body', 'secret_note', 'deleted_at'],
+      ['id'],
+    );
+
+    const member = `lm_${randomBytes(4).toString('hex')}`;
+    roles.push(member);
+    await provisionMemberRole(o, member, generateMemberPassword());
+
+    await reconcileCloudMemberAccess(o);
+
+    // The runtime mask must survive reconcile: read via the view, DML on the base, but
+    // NO base SELECT (the bypass granted it from the stale in-memory schema).
+    expect(await memberHasTablePriv(o, 'notes_v', 'SELECT')).toBe(true);
+    expect(await memberHasTablePriv(o, 'notes', 'INSERT')).toBe(true);
     expect(await memberHasTablePriv(o, 'notes', 'SELECT')).toBe(false);
   });
 });
