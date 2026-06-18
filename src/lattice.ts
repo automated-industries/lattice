@@ -63,6 +63,7 @@ import { SchemaManager, pageClause } from './schema/manager.js';
 import type { CompiledTableDef, PageOptions } from './schema/manager.js';
 import { assertSafeIdentifier } from './schema/identifier.js';
 import { ChangelogService } from './changelog/service.js';
+import { ChangelogWriter } from './changelog/writer.js';
 import { ReportBuilder } from './report/builder.js';
 import { SeedEngine } from './crud/seed-engine.js';
 import { Sanitizer } from './security/sanitize.js';
@@ -168,6 +169,7 @@ const RENDER_FOLD_MAX_CHANGES = 100_000;
 export class Lattice {
   private readonly _adapter: StorageAdapter;
   private _changelogService?: ChangelogService;
+  private _changelogWriterInstance?: ChangelogWriter;
   private _reportBuilder?: ReportBuilder;
   private _seedEngine?: SeedEngine;
   private readonly _schema: SchemaManager;
@@ -2383,90 +2385,11 @@ export class Lattice {
    *  scoped member can decide there are no observations without trying to create
    *  the table. */
   private async _changelogTableExists(): Promise<boolean> {
-    if (this.getDialect() === 'postgres') {
-      const row = (await getAsyncOrSync(
-        this._adapter,
-        `SELECT to_regclass('__lattice_changelog') AS reg`,
-      )) as { reg?: string | null } | undefined;
-      return !!row && row.reg != null;
-    }
-    const row = (await getAsyncOrSync(
-      this._adapter,
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='__lattice_changelog'`,
-    )) as { name?: string } | undefined;
-    return !!row;
+    return this._changelogWriter.tableExists();
   }
 
   private async _ensureChangelogTable(): Promise<void> {
-    // `created_at` default is dialect-specific: SQLite's `strftime` isn't valid
-    // Postgres, and a cloud change-log (the per-viewer observation substrate)
-    // must create cleanly on Postgres. Both produce a sortable ISO-8601 string;
-    // every write also passes `created_at` explicitly (see _writeChangelogRow),
-    // so the default only matters for any out-of-band insert.
-    const createdAtDefault =
-      this.getDialect() === 'postgres'
-        ? `to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
-        : `(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
-    await runAsyncOrSync(
-      this._adapter,
-      `
-      CREATE TABLE IF NOT EXISTS __lattice_changelog (
-        id TEXT PRIMARY KEY,
-        table_name TEXT NOT NULL,
-        row_id TEXT NOT NULL,
-        operation TEXT NOT NULL,
-        changes TEXT,
-        previous TEXT,
-        source TEXT,
-        reason TEXT,
-        created_at TEXT NOT NULL DEFAULT ${createdAtDefault},
-        source_ref TEXT,
-        change_kind TEXT,
-        superseded_by TEXT,
-        audience TEXT,
-        source_sensitive INTEGER NOT NULL DEFAULT 0
-      )
-    `,
-    );
-    // Idempotent additive migration for change-logs created before 3.0:
-    // introspect the live columns and ALTER in any provenance column that is
-    // missing. Each is nullable or defaulted, so existing rows + readers are
-    // unaffected. (CREATE TABLE IF NOT EXISTS above only covers fresh DBs.)
-    const existing = new Set(
-      await introspectColumnsAsyncOrSync(this._adapter, '__lattice_changelog'),
-    );
-    const additive: [string, string][] = [
-      ['source_ref', 'TEXT'],
-      ['change_kind', 'TEXT'],
-      ['superseded_by', 'TEXT'],
-      ['audience', 'TEXT'],
-      ['source_sensitive', 'INTEGER NOT NULL DEFAULT 0'],
-    ];
-    for (const [col, type] of additive) {
-      if (!existing.has(col)) {
-        await runAsyncOrSync(
-          this._adapter,
-          `ALTER TABLE __lattice_changelog ADD COLUMN ${col} ${type}`,
-        );
-      }
-    }
-    // Monotonic insertion order. SQLite has `rowid` natively; Postgres needs an
-    // explicit identity column — ordering by `created_at` alone ties when two
-    // entries land in the same millisecond (the uuid `id` is no tiebreak), which
-    // corrupts history/replay order. The change feed uses the same pattern.
-    if (this.getDialect() === 'postgres' && !existing.has('seq')) {
-      await runAsyncOrSync(
-        this._adapter,
-        `ALTER TABLE __lattice_changelog ADD COLUMN seq BIGINT GENERATED ALWAYS AS IDENTITY`,
-      );
-    }
-    await runAsyncOrSync(
-      this._adapter,
-      `
-      CREATE INDEX IF NOT EXISTS idx_changelog_row
-      ON __lattice_changelog (table_name, row_id, created_at)
-    `,
-    );
+    return this._changelogWriter.ensureTable();
   }
 
   /** Append a changelog entry if the table has changelog enabled. The optional
@@ -2482,8 +2405,16 @@ export class Lattice {
     reason?: string,
     prov?: ChangeProvenance,
   ): Promise<void> {
-    if (!this._changelogTables.has(table)) return;
-    await this._writeChangelogRow(table, rowId, operation, changes, previous, source, reason, prov);
+    return this._changelogWriter.append(
+      table,
+      rowId,
+      operation,
+      changes,
+      previous,
+      source,
+      reason,
+      prov,
+    );
   }
 
   /** The ungated change-log INSERT. `_appendChangelog` wraps it with the
@@ -2500,76 +2431,21 @@ export class Lattice {
     reason?: string,
     prov?: ChangeProvenance,
   ): Promise<void> {
-    const id = uuidv4();
-    // Normalize the source-set to a JSON array string for the source_ref column.
-    const sourceRef =
-      prov?.sourceRef == null
-        ? null
-        : JSON.stringify(Array.isArray(prov.sourceRef) ? prov.sourceRef : [prov.sourceRef]);
-    // Stamp created_at explicitly so the value + ordering are identical on SQLite
-    // and Postgres (the column default differs per dialect; see _ensureChangelogTable).
-    const createdAt = new Date().toISOString();
-    await runAsyncOrSync(
-      this._adapter,
-      `INSERT INTO __lattice_changelog
-         (id, table_name, row_id, operation, changes, previous, source, reason,
-          source_ref, change_kind, superseded_by, audience, source_sensitive, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        table,
-        rowId,
-        operation,
-        changes ? JSON.stringify(changes) : null,
-        previous ? JSON.stringify(previous) : null,
-        source ?? null,
-        reason ?? prov?.reason ?? null,
-        sourceRef,
-        prov?.changeKind ?? null,
-        prov?.supersededBy ?? null,
-        prov?.audience ?? null,
-        prov?.sourceSensitive ? 1 : 0,
-        createdAt,
-      ],
+    return this._changelogWriter.writeRow(
+      table,
+      rowId,
+      operation,
+      changes,
+      previous,
+      source,
+      reason,
+      prov,
     );
   }
 
   /** Prune changelog entries based on retention policy. */
   private async _pruneChangelog(): Promise<void> {
-    const opts = this._changelogOptions;
-    if (!opts) return;
-
-    if (opts.retentionDays != null && opts.retentionDays > 0) {
-      await runAsyncOrSync(
-        this._adapter,
-        `DELETE FROM __lattice_changelog
-         WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)`,
-        [`-${String(opts.retentionDays)} days`],
-      );
-    }
-
-    if (opts.maxEntriesPerRow != null && opts.maxEntriesPerRow > 0) {
-      // Delete entries beyond the max per (table_name, row_id), keeping the newest
-      await runAsyncOrSync(
-        this._adapter,
-        `DELETE FROM __lattice_changelog WHERE id IN (
-           SELECT c.id FROM __lattice_changelog c
-           INNER JOIN (
-             SELECT table_name, row_id, COUNT(*) as cnt
-             FROM __lattice_changelog
-             GROUP BY table_name, row_id
-             HAVING cnt > ?
-           ) g ON c.table_name = g.table_name AND c.row_id = g.row_id
-           WHERE c.created_at <= (
-             SELECT created_at FROM __lattice_changelog c2
-             WHERE c2.table_name = c.table_name AND c2.row_id = c.row_id
-             ORDER BY c2.created_at DESC
-             LIMIT 1 OFFSET ?
-           )
-         )`,
-        [opts.maxEntriesPerRow, opts.maxEntriesPerRow],
-      );
-    }
+    return this._changelogWriter.prune();
   }
 
   /** Parse a raw changelog DB row into a ChangeEntry. */
@@ -2582,6 +2458,17 @@ export class Lattice {
         this._appendChangelog(table, rowId, operation, changes, previous, source, reason),
     });
     return this._changelogService;
+  }
+
+  /** Lazily-constructed changelog write/DDL collaborator (see src/changelog/writer.js). */
+  private get _changelogWriter(): ChangelogWriter {
+    this._changelogWriterInstance ??= new ChangelogWriter({
+      adapter: this._adapter,
+      dialect: () => this.getDialect(),
+      isChangelogTable: (t) => this._changelogTables.has(t),
+      changelogOptions: this._changelogOptions,
+    });
+    return this._changelogWriterInstance;
   }
 
   // -------------------------------------------------------------------------
