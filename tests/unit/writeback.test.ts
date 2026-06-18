@@ -148,9 +148,12 @@ describe('WritebackPipeline', () => {
     const pipeline = new WritebackPipeline();
     const persisted: string[] = [];
     let failOnEntry2 = true;
-    const persist = vi.fn(async (entry: unknown) => {
-      if (entry === 'entry2' && failOnEntry2) throw new Error('persist failed (transient)');
+    const persist = vi.fn((entry: unknown): Promise<void> => {
+      if (entry === 'entry2' && failOnEntry2) {
+        return Promise.reject(new Error('persist failed (transient)'));
+      }
       persisted.push(entry as string);
+      return Promise.resolve();
     });
     pipeline.define({ file, parse: lineParser, persist, dedupeKey: (e) => e as string });
 
