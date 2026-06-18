@@ -39,6 +39,21 @@ export function atomicWrite(filePath: string, content: string): boolean {
   return true;
 }
 
+/**
+ * Probe that a directory is writable by creating it (recursively) and then
+ * writing + deleting a uniquely-named sentinel file INSIDE it. The sentinel is
+ * written in the target directory on purpose — that is what catches an
+ * output-volume disk-full (ENOSPC) or read-only mount (EROFS/EACCES) that
+ * atomicWrite would otherwise only hit at the final rename, after live files
+ * have already been touched. Throws the underlying errno error on failure.
+ */
+export function probeDirWritable(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const probe = join(dir, `.lattice-probe-${randomBytes(8).toString('hex')}`);
+  writeFileSync(probe, '', 'utf8');
+  unlinkSync(probe);
+}
+
 function existingHash(filePath: string): string | null {
   if (!existsSync(filePath)) return null;
   try {

@@ -4,7 +4,7 @@ import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import type { RenderResult, Row } from '../types.js';
-import { atomicWrite, contentHash, rowVersionHash } from './writer.js';
+import { atomicWrite, contentHash, rowVersionHash, probeDirWritable } from './writer.js';
 import { applyTokenBudget } from './token-budget.js';
 import {
   resolveEntitySource,
@@ -135,6 +135,13 @@ export class RenderEngine {
     const counters = { skipped: 0 };
     const signal = opts.signal;
     const throttle = new ProgressThrottle(opts.onProgress);
+
+    // Convert a disk-full / read-only-mount failure into a clean throw BEFORE
+    // any live file is touched. On failure the prior rendered tree + manifest
+    // stay the record (the manifest is written last, so it is never committed
+    // over a partial tree) and the error is re-raised. No try/catch wraps the
+    // phases — the commit point stays the final writeManifest below.
+    this._preflightWritable(outputDir);
 
     // Single-table renders (phase 1 — fast; lightweight table-done only).
     for (const [name, def] of this._schema.getTables()) {
@@ -278,6 +285,26 @@ export class RenderEngine {
     });
 
     return result;
+  }
+
+  /**
+   * Pre-flight writability check over the STABLE target directories before any
+   * live file is written: the output root, the `.lattice` manifest dir, and each
+   * entity context's directory root. Each is probed by writing + deleting a
+   * sentinel INSIDE the directory, which is what surfaces an output-volume
+   * disk-full or read-only mount up front. A failure here throws before a single
+   * live byte is touched, so the prior rendered tree + manifest stay the record
+   * and the error is re-raised to the caller. Per-row leaf directories are not
+   * enumerated (that would require reading the rows); a failure isolated to one
+   * leaf still re-raises loudly and leaves the prior manifest intact, it is just
+   * not pre-empted.
+   */
+  private _preflightWritable(outputDir: string): void {
+    const dirs = new Set<string>([outputDir, join(outputDir, '.lattice')]);
+    for (const [table, def] of this._schema.getEntityContexts()) {
+      dirs.add(join(outputDir, def.directoryRoot ?? table));
+    }
+    for (const dir of dirs) probeDirWritable(dir);
   }
 
   /**
@@ -579,23 +606,23 @@ export class RenderEngine {
                 // No copy: write `<name>.ref.md` pointing at the durable location
                 // (works for local paths and cloud URLs alike).
                 const refPath = join(entityDir, `${basename(filePath)}.ref.md`);
-                try {
-                  atomicWrite(refPath, `# Reference\n\n- **location:** ${filePath}\n`);
+                // A write failure (disk space, permission) propagates out of
+                // render() — never swallowed — so the manifest is not committed
+                // over a tree with a missing attachment. The error is re-raised
+                // and the prior manifest stays the record.
+                if (atomicWrite(refPath, `# Reference\n\n- **location:** ${filePath}\n`)) {
                   filesWritten.push(refPath);
-                } catch {
-                  // Silently skip write failures (permission, disk space, etc.)
                 }
               } else {
                 const absPath = isAbsolute(filePath) ? filePath : resolve(outputDir, filePath);
                 if (existsSync(absPath)) {
                   const destPath = join(entityDir, basename(absPath));
                   if (!existsSync(destPath)) {
-                    try {
-                      copyFileSync(absPath, destPath);
-                      filesWritten.push(destPath);
-                    } catch {
-                      // Silently skip copy failures (permission, disk space, etc.)
-                    }
+                    // A copy failure (disk space, permission) propagates out of
+                    // render() — never swallowed — so the manifest is not
+                    // committed over a tree with a missing binary attachment.
+                    copyFileSync(absPath, destPath);
+                    filesWritten.push(destPath);
                   }
                 }
               }
