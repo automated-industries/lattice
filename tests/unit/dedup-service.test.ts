@@ -10,6 +10,7 @@ import {
   findTableDuplicates,
   findExactFileDupesOf,
   mergeDuplicates,
+  DEDUP_MAX_SCAN_ROWS,
   type DedupServiceCtx,
 } from '../../src/gui/dedup-service.js';
 import { DEFAULT_NEAR_THRESHOLD } from '../../src/dedup/match.js';
@@ -109,6 +110,60 @@ describe('dedup service (real config, SQLite)', () => {
     expect(groups[0]?.ids[0]).toBe('t1');
     expect(groups[0]?.ids).toContain('t2');
     expect(groups[0]?.ids).not.toContain('t3');
+  });
+
+  it('under-cap result is byte-identical: the count guard + in-SQL deleted_at filter do not change the groups', async () => {
+    // A tiny set well under DEDUP_MAX_SCAN_ROWS — the cap never trips and the
+    // in-SQL `deleted_at IS NULL` read returns exactly what the prior JS
+    // `.filter(!deleted_at)` did. The groups must be EXACTLY as before.
+    await db.insert('things', { id: 't1', name: 'Acme', created_at: '2026-01-01T00:00:00Z' });
+    await db.insert('things', { id: 't2', name: 'Acme', created_at: '2026-01-02T00:00:00Z' });
+    await db.insert('things', { id: 't3', name: 'Acme', created_at: '2026-01-03T00:00:00Z' });
+    await db.insert('things', { id: 't4', name: 'Other', created_at: '2026-01-04T00:00:00Z' });
+    const groups = await findTableDuplicates(ctx, 'things', {});
+    expect(groups).toHaveLength(1);
+    const g = groups[0];
+    expect(g?.ids[0]).toBe('t1'); // oldest survivor
+    expect([...(g?.ids ?? [])].sort()).toEqual(['t1', 't2', 't3']);
+    expect(g?.ids).not.toContain('t4');
+  });
+
+  it('over-cap LOUD refusal: throws and NEVER runs the unbounded read when active count exceeds the cap', async () => {
+    // Stubbing `count` to report a count over the cap exercises the refusal
+    // mechanism without inserting 50k rows. `query` is spied to PROVE the
+    // unbounded full-table read never happens once the guard fires.
+    await db.insert('things', { id: 't1', name: 'Acme' });
+    const realCount = db.count.bind(db);
+    const realQuery = db.query.bind(db);
+    let countCalls = 0;
+    let queryCalls = 0;
+    db.count = (..._a: Parameters<typeof realCount>): Promise<number> => {
+      countCalls++;
+      return Promise.resolve(DEDUP_MAX_SCAN_ROWS + 1);
+    };
+    db.query = (...a: Parameters<typeof realQuery>): ReturnType<typeof realQuery> => {
+      queryCalls++;
+      return realQuery(...a);
+    };
+    try {
+      await expect(findTableDuplicates(ctx, 'things', {})).rejects.toThrow(/exceeds|cap|dedup/i);
+      // The COUNT gate ran; the unbounded read did not.
+      expect(countCalls).toBeGreaterThan(0);
+      expect(queryCalls).toBe(0);
+    } finally {
+      db.count = realCount;
+      db.query = realQuery;
+    }
+  });
+
+  it('excludes soft-deleted rows via the in-SQL filter (a soft-deleted dup is not grouped)', async () => {
+    await db.insert('things', { id: 't1', name: 'Acme', created_at: '2026-01-01T00:00:00Z' });
+    await db.insert('things', { id: 't2', name: 'Acme', created_at: '2026-01-02T00:00:00Z' });
+    // Soft-delete the second member of what would otherwise be a dup pair.
+    await db.update('things', 't2', { deleted_at: '2026-01-03T00:00:00Z' });
+    const groups = await findTableDuplicates(ctx, 'things', {});
+    // Only one live 'Acme' remains → no duplicate group.
+    expect(groups).toHaveLength(0);
   });
 
   it('mergeDuplicates relinks junctions onto the survivor and soft-deletes the dup', async () => {
