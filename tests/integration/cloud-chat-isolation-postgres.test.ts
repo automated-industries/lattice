@@ -29,7 +29,7 @@ import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { secureCloud } from '../../src/cloud/setup.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
-import { runAsyncOrSync, getAsyncOrSync } from '../../src/db/adapter.js';
+import { runAsyncOrSync } from '../../src/db/adapter.js';
 import { addWorkspace, resolveWorkspacePaths } from '../../src/framework/workspace.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
