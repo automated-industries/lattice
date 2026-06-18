@@ -52,7 +52,6 @@ export interface FtsOptions {
 const SKIP_COLUMN = /^(id|.*_id|deleted_at|created_at|updated_at|_reward_(total|count))$/;
 
 const FTS_PREFIX = '__lattice_fts_';
-const NOT_DELETED = 'b.deleted_at IS NULL';
 
 /** The internal index table name for a base table. */
 export function ftsTableName(table: string): string {
@@ -211,7 +210,7 @@ async function indexedSearchTable(
   hasDeletedAt: boolean,
 ): Promise<FtsGroup | null> {
   const fts = ftsTableName(table);
-  const deleted = hasDeletedAt ? `AND ${NOT_DELETED}` : '';
+  const deleted = hasDeletedAt ? `AND b.deleted_at IS NULL` : '';
   let rows: Record<string, unknown>[];
   if (adapter.dialect === 'postgres') {
     rows = (await allAsyncOrSync(

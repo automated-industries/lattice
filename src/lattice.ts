@@ -142,19 +142,19 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
 }
 
 /**
- * Soft-delete filter fragment. A row is "live" only when `deleted_at IS NULL`.
- * Interpolated into the WHERE clause of natural-key lookups so a soft-deleted
- * row never satisfies a uniqueness probe.
+ * Soft-delete convention: a row is "live" only when `deleted_at IS NULL`, and that
+ * exact predicate is written inline wherever a query must exclude soft-deleted rows
+ * (no indirection — it is a self-documenting SQL fragment, used identically here, in
+ * search/fts.ts, and in crud/seed-engine.ts).
  *
- * v4.0 BREAKING: the legacy empty-string branch (`OR deleted_at = ''`) was
- * removed. The library only ever writes a timestamp (on delete) or NULL (on
- * insert/restore), never `''`, so this is a no-op for any DB that has only used
- * this library to soft-delete. Consumers with legacy/externally-inserted rows
- * MUST normalize every `deleted_at = ''` row to NULL BEFORE upgrading (see
- * MIGRATING-4.0.md) — otherwise those live rows will read as deleted, and a
- * natural-key upsert against a hidden row can insert a duplicate.
+ * v4.0 BREAKING: the legacy empty-string branch (`OR deleted_at = ''`) was removed.
+ * The library only ever writes a timestamp (on delete) or NULL (on insert/restore),
+ * never `''`, so this is a no-op for any DB that has only used this library to
+ * soft-delete. Consumers with legacy/externally-inserted rows MUST normalize every
+ * `deleted_at = ''` row to NULL BEFORE upgrading (see MIGRATING-4.0.md) — otherwise
+ * those live rows read as deleted, and a natural-key upsert against a hidden row can
+ * insert a duplicate.
  */
-const NOT_DELETED = 'deleted_at IS NULL';
 
 /**
  * Cap on the changelog rows the render-time per-viewer fold ({@link Lattice.foldRenderRows})
@@ -1300,7 +1300,7 @@ export class Lattice {
     // Check if record exists
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
 
@@ -1365,7 +1365,7 @@ export class Lattice {
 
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
     if (!existing) return false;
@@ -1417,7 +1417,7 @@ export class Lattice {
       this._adapter,
       `SELECT COUNT(*) as cnt FROM "${table}"
        WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-       AND ${NOT_DELETED}`,
+       AND deleted_at IS NULL`,
       [sourceFile, ...currentKeys],
     );
     // Postgres returns COUNT(*) as a string; SQLite returns a number. Coerce
@@ -1429,7 +1429,7 @@ export class Lattice {
         this._adapter,
         `UPDATE "${table}" SET deleted_at = datetime('now'), updated_at = datetime('now')
          WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-         AND ${NOT_DELETED}`,
+         AND deleted_at IS NULL`,
         [sourceFile, ...currentKeys],
       );
     }
@@ -1490,7 +1490,7 @@ export class Lattice {
     return (
       (await getAsyncOrSync(
         this._adapter,
-        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
+        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
         [naturalKeyVal],
       )) ?? null
     );
