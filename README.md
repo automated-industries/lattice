@@ -1907,7 +1907,9 @@ entities:
       title: { type: text, required: true }
       status: { type: text, default: open }
       priority: { type: integer, default: 1 }
-      assignee_id: { type: uuid, ref: user } # creates belongsTo relation
+      assignee_id: { type: uuid } # plain FK column
+    relations:
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
     render:
       template: default-list
       formatRow: '{{title}} ({{status}}) — {{assignee.name}}'
@@ -2120,10 +2122,11 @@ trail tracks the drill path. **Click any value to edit it in place** — the cha
 saves immediately via `PATCH` and is undoable. Native `files` rows show the inline
 file/markdown preview; their binary metadata stays read-only.
 
-Relationships come from the schema: a `belongsTo` (a field with `ref:`) renders as
-a parent link, while the reverse side (other entities that point here) plus
-many-to-many junctions become the drill-in sub-folders. Declare `ref:` on your
-foreign-key fields to get the nested file tree.
+Relationships come from the schema: a `belongsTo` (declared in an entity's
+`relations:` block) renders as a parent link, while the reverse side (other
+entities that point here) plus many-to-many junctions become the drill-in
+sub-folders. Declare a `belongsTo` relation for each foreign-key field to get the
+nested file tree.
 
 The header carries the logo, undo/redo, the **workspace switcher**, and a
 **settings gear** (top-right). The gear opens a slide-over drawer with **Workspace**,

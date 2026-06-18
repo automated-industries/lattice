@@ -45,8 +45,6 @@ export const BUILTIN_COLUMN_DESCRIPTIONS: Readonly<
     description: 'Short summary of what this file is (AI- or human-authored).',
     artifact_type:
       "Set to 'markdown' for an assistant-authored document artifact; otherwise empty.",
-    path: 'Legacy local path (deprecated — superseded by ref_kind/ref_uri).',
-    kind: 'Legacy type tag (deprecated — superseded by mime/ref_kind).',
   },
   notes: {
     title: 'Short title of the note.',
