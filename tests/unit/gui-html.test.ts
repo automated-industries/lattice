@@ -174,11 +174,21 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('function titleAttr(');
   });
 
-  it('3.3: "Specific people" grants use /api/cloud/row-grant keyed on member role', () => {
-    // Recovered per-row custom-share: the checklist lists member ROLES (the grant
-    // target the RLS function keys on) and writes through the new owner-only route.
-    expect(guiAppHtml).toContain("'/api/cloud/row-grant'");
+  it('3.4: "Specific people" grants STAGE a multi-select and commit via one batch Save', () => {
+    // Per-row custom-share is now staged: the checklist lists member ROLES (the
+    // grant target the RLS function keys on), toggles mutate a local map only,
+    // and a single "Save sharing" control commits the whole batch through the
+    // owner-only batch route.
+    expect(guiAppHtml).toContain("'/api/cloud/row-grants'");
     expect(guiAppHtml).toContain('data-grant-role');
+    // The batch Save control ships (primary button) + a staging session is tracked.
+    expect(guiAppHtml).toContain('id="grants-save"');
+    expect(guiAppHtml).toContain('Save sharing');
+    expect(guiAppHtml).toContain('openGrantsPanel');
+    // The OLD live-per-checkbox commit is gone: a 'change' listener that directly
+    // POSTed a single /api/cloud/row-grant {grantee, revoke} on every toggle.
+    expect(guiAppHtml).not.toContain("'/api/cloud/row-grant'");
+    expect(guiAppHtml).not.toContain('grantee: role, revoke: !cb.checked');
     // The dead ad-hoc per-row grants endpoint (no server route existed) is gone.
     expect(guiAppHtml).not.toContain("/rows/' + encodeURIComponent(id) + '/grants");
   });
