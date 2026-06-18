@@ -346,12 +346,14 @@ describe.skipIf(!PG_URL)('cloud lifecycle: create → secure → invite → conn
       (await A.query<{ id: string }>(`SELECT id FROM chat_messages`)).rows.map((r) => r.id),
     ).not.toContain('m-owner');
 
-    // Alice writes her own chat (the ownership trigger stamps her as owner).
+    // Alice writes her own chat. owner_user_id is stamped to her connection
+    // identity (session_user) exactly as the app does, so her own read passes the
+    // per-author RLS while everyone else's is filtered out.
     await A.query(
-      `INSERT INTO chat_threads (id, title, owner_user_id) VALUES ('t-alice','Alice chat','alice-uid')`,
+      `INSERT INTO chat_threads (id, title, owner_user_id) VALUES ('t-alice','Alice chat',session_user)`,
     );
     await A.query(
-      `INSERT INTO chat_messages (id, thread_id, role, owner_user_id, content_json) VALUES ('m-alice','t-alice','user','alice-uid','{"text":"alice note"}')`,
+      `INSERT INTO chat_messages (id, thread_id, role, owner_user_id, content_json) VALUES ('m-alice','t-alice','user',session_user,'{"text":"alice note"}')`,
     );
 
     // Alice sees HER chat and only hers.

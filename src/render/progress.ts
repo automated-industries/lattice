@@ -51,6 +51,16 @@ export type RenderProgressCallback = (event: RenderProgress) => void;
 export interface RenderOptions {
   onProgress?: RenderProgressCallback;
   signal?: AbortSignal;
+  /**
+   * Incremental render scope. When set, ONLY the entity-context tables affected
+   * by a change to one of these tables are re-rendered — the changed table itself
+   * plus any entity context that SOURCES from it (cross-table dependents) — and
+   * every other table's manifest entry + rendered files are left untouched. Used
+   * by the auto-render that fires on a single write or a single remote (cloud)
+   * change, so a one-row edit re-renders one entity instead of the whole tree.
+   * Omitted → a full render of everything (initial open, explicit `render()`).
+   */
+  changedTables?: ReadonlySet<string>;
 }
 
 /** Default per-table throttle window: at most one passthrough per 200 ms. */
