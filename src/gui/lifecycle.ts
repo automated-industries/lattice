@@ -8,7 +8,12 @@ import { registerNativeEntities, adoptNativeEntities } from '../framework/native
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
-import { installCloudRls, enableChangelogRls } from '../cloud/rls.js';
+import {
+  installCloudRls,
+  enableChangelogRls,
+  enableChatPrivacyRls,
+  ownPolyfillsByGroup,
+} from '../cloud/rls.js';
 import { installCloudSettings } from '../cloud/settings.js';
 import { reconcileCloudMemberAccess } from '../cloud/setup.js';
 import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
@@ -336,9 +341,11 @@ export async function openConfig(
         // ever created gets them now, before any member connects. Idempotent.
         await registerPostgresPolyfills((sql) => runAsyncOrSync(db.adapter, sql));
         await installCloudRls(db);
+        await ownPolyfillsByGroup(db); // group-own polyfills so any member can upgrade them
         await installCloudSettings(db);
         await db.ensureObservationSubstrate();
         await enableChangelogRls(db); // converges the v3 fail-closed changelog policy
+        await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables (fail-closed on NULL owner)
         // Converge per-table member access (ungated, no row scans): force the
         // private-only conversation/secret tables to never_share, and re-issue
         // member grants the version-gated per-table securing won't re-emit after
@@ -543,11 +550,26 @@ export function startBackgroundRender(active: ActiveDb): void {
     active.eagerRenderWired = true;
     let lastFire = 0;
     let trailing: ReturnType<typeof setTimeout> | undefined;
+    // Accumulate the CHANGED tables across the throttle window so the re-render is
+    // incremental — only the entity contexts a remote change touched (the changed
+    // table + its cross-table dependents) re-render, not the whole tree. A change
+    // with no table name forces a full render.
+    const pendingTables = new Set<string>();
+    let pendingFull = false;
     const fire = (): void => {
       lastFire = Date.now();
-      active.db.requestRender();
+      if (pendingFull || pendingTables.size === 0) {
+        pendingFull = false;
+        pendingTables.clear();
+        active.db.requestRender(); // full
+        return;
+      }
+      for (const t of pendingTables) active.db.requestRender(t);
+      pendingTables.clear();
     };
-    active.realtime.subscribePayload(() => {
+    active.realtime.subscribePayload((payload) => {
+      if (payload.table_name) pendingTables.add(payload.table_name);
+      else pendingFull = true;
       const since = Date.now() - lastFire;
       if (since >= EAGER_RERENDER_MIN_INTERVAL_MS) {
         fire();

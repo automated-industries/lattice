@@ -56,12 +56,17 @@ export const searchJs = `    // ────────────────
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
         fetchJson('/api/workspaces').catch(function () { return null; }),
+        fetchJson('/api/dbconfig').catch(function () { return {}; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[2] || {};
         state.systemTables = (results[3] && results[3].tables) || [];
         renderWsSwitcher(results[4]);
+        // Re-point the header logo at the NEW workspace's mark — the switch path
+        // must refresh branding the way boot does (the etag cache-busts the
+        // <img>), else the previous workspace's logo stays until a hard refresh.
+        applyWorkspaceLogo((results[5] || {}).logoEtag);
         renderSidebar();
         // renderWsSwitcher set cloudMode from the new workspace's kind; re-render
         // the composer so the Private-mode toggle reflects local vs cloud (it is

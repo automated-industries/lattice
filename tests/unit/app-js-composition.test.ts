@@ -9,10 +9,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // organization refactor: the composed string MUST equal the original byte-for-byte,
 // which is what proves the inlined `<script>${appJs}</script>` is unchanged.
 //
-// These constants were captured from the pre-split `appJs` value. If `appJs` is
-// ever changed intentionally, recapture the length + hash and update them here.
-const ORIGINAL_LENGTH = 387781;
-const ORIGINAL_SHA256 = 'b8978131a4f8f14fc0e02cc6903e1785f42b9496b408c85d2b4d09db798aeac1';
+// These constants pin the composed `appJs`. They are re-captured whenever `appJs`
+// changes intentionally (the modules are edited together as the source of truth):
+// the offline-retry self-heal, and most recently the 3.4.1 merge's workspace-switch
+// logo refresh (the switch path now re-fetches /api/dbconfig + re-points the header
+// logo, matching the boot path). Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 388149;
+const ORIGINAL_SHA256 = 'be2ae5c987bcbdef32ce3245af34ba1069876c8ace3a67a3720636aba778332a';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

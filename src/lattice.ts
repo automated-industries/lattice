@@ -1521,8 +1521,9 @@ export class Lattice {
       `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
       Object.values(filtered),
     );
-    // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh.
-    this._autoRender.schedule();
+    // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh
+    // every entity context that sources THROUGH this junction (manyToMany).
+    this._autoRender.schedule(junctionTable);
   }
 
   /**
@@ -1540,7 +1541,7 @@ export class Lattice {
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
-    this._autoRender.schedule();
+    this._autoRender.schedule(junctionTable);
   }
 
   // -------------------------------------------------------------------------
@@ -1836,9 +1837,12 @@ export class Lattice {
    * tree when a REMOTE change arrives — notably an owner re-sharing or un-sharing
    * a row, after which the member's per-viewer projection must be recompiled. A
    * no-op when auto-render isn't enabled.
+   *
+   * Pass the CHANGED table so only that entity (+ its cross-table dependents) is
+   * re-rendered instead of the whole tree; omit it to force a full render.
    */
-  requestRender(): void {
-    this._autoRender.schedule();
+  requestRender(table?: string): void {
+    this._autoRender.schedule(table);
   }
 
   /**
@@ -2317,8 +2321,9 @@ export class Lattice {
       }
     }
     // Every mutation schedules an auto-render when one is enabled (workspaces
-    // enable it by default). No-op + zero overhead when disabled.
-    this._autoRender.schedule();
+    // enable it by default). Scoped to the written table so only that entity
+    // (+ its cross-table dependents) re-renders. No-op when disabled.
+    this._autoRender.schedule(table);
   }
 
   /**

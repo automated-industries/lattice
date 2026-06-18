@@ -46,6 +46,16 @@ export class AutoRenderScheduler {
   private _pending = false;
   private _inFlight = false;
   private _debounceMs = 250;
+  /**
+   * Incremental render scope, accumulated between debounced renders. A write or a
+   * remote (cloud) change records the AFFECTED table here, so the next render
+   * re-renders only that entity (+ its cross-table dependents) instead of the whole
+   * tree. `_pendingAll` forces a full render (the initial render, or a change with
+   * no known table). Captured + reset when a render starts, so changes during a
+   * render re-accumulate and re-trigger.
+   */
+  private _pendingTables = new Set<string>();
+  private _pendingAll = true;
 
   constructor(private readonly deps: AutoRenderDeps) {}
 
@@ -70,6 +80,9 @@ export class AutoRenderScheduler {
       this._timer = undefined;
     }
     this._pending = false;
+    // Reset the render scope so a re-enable starts fresh (default = full render).
+    this._pendingAll = true;
+    this._pendingTables = new Set();
   }
 
   /**
@@ -84,6 +97,8 @@ export class AutoRenderScheduler {
     }
     this._pending = false;
     this._inFlight = false;
+    this._pendingAll = true;
+    this._pendingTables = new Set();
   }
 
   /** True while a render is actively writing the context tree + manifest. */
@@ -91,10 +106,23 @@ export class AutoRenderScheduler {
     return this._inFlight;
   }
 
-  schedule(): void {
+  schedule(table?: string): void {
     if (!this._dir) return;
+    // Record the render scope: a specific changed table → incremental; no table →
+    // a full render. (A later full request never narrows a pending one.)
+    if (table === undefined) this._pendingAll = true;
+    else this._pendingTables.add(table);
     this._pending = true;
-    if (this._timer) return;
+    this._armTimer();
+  }
+
+  /**
+   * Arm the debounce timer if not already armed. Does NOT touch the render scope —
+   * used by {@link schedule} AND the post-render re-arm, so a re-arm never escalates
+   * a pending incremental render to a full one.
+   */
+  private _armTimer(): void {
+    if (!this._dir || this._timer) return;
     this._timer = setTimeout(() => {
       this._timer = undefined;
       void this._run();
@@ -114,6 +142,15 @@ export class AutoRenderScheduler {
    * always cleared.
    */
   async runGuarded(outputDir: string, opts: RenderOptions): Promise<RenderResult> {
+    // A full background render (no `changedTables`) satisfies any queued render
+    // scope, so clear it — this is what prevents the open render from being
+    // followed by a redundant second full render. Changes that land DURING this
+    // render re-accumulate via schedule() and trigger an incremental follow-up.
+    if (!opts.changedTables) {
+      this._pendingAll = false;
+      this._pendingTables = new Set();
+      this._pending = false;
+    }
     // If an auto-render is already in flight, wait for it to clear before
     // claiming the guard so the two never overlap on the same dir.
     while (this._inFlight) {
@@ -145,11 +182,20 @@ export class AutoRenderScheduler {
     }
     if (!this._pending) return;
     this._pending = false;
+    // Capture + reset the render scope NOW so changes that land during this render
+    // re-accumulate and re-trigger a follow-up render.
+    const renderAll = this._pendingAll;
+    const changed = this._pendingTables;
+    this._pendingAll = false;
+    this._pendingTables = new Set();
     this._inFlight = true;
     try {
       // Read the prior manifest BEFORE render so cleanup can detect orphans.
       const prevManifest = this.deps.readManifest(dir);
-      const result = await this.deps.render(dir);
+      // Incremental when we know exactly which tables changed; full otherwise.
+      const renderOpts: RenderOptions =
+        renderAll || changed.size === 0 ? {} : { changedTables: changed };
+      const result = await this.deps.render(dir, renderOpts);
       this.deps.emitRender(result);
       // Prune stale files after render: a deleted row, or — for a cloud member —
       // a row that was just un-shared (so it dropped out of the RLS-filtered read)
@@ -183,6 +229,8 @@ export class AutoRenderScheduler {
   }
 
   private _rearmIfPending(): void {
-    if (this._pending) this.schedule();
+    // Re-arm the timer only — the pending render SCOPE is already recorded, so this
+    // must NOT call schedule() (which, arg-less, would force a full render).
+    if (this._pending) this._armTimer();
   }
 }

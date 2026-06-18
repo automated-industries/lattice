@@ -106,9 +106,10 @@ describe.skipIf(!PG_URL)('cloud member access reconcile', () => {
       id: 'm1',
       thread_id: 't1',
       content_json: '{"text":"secret"}',
+      owner_user_id: 'owner-x', // belongs to the owner, not the member
     });
 
-    // Simulate a restore that left chat stamped shared (the leak scenario):
+    // Simulate a restore that left chat stamped shared (the old leak scenario):
     // policy says everyone + the existing row is visibility=everyone.
     await ownerPool.query(
       `UPDATE __lattice_table_policy SET never_share = false, default_row_visibility = 'everyone' WHERE table_name = 'chat_messages'`,
@@ -121,10 +122,13 @@ describe.skipIf(!PG_URL)('cloud member access reconcile', () => {
     await provisionMemberRole(o, member, memberPw);
     const M = memberPool(schema, member, memberPw);
 
-    // Leak reproduced: in the bad state the member can see the owner's chat.
-    expect((await M.query('SELECT id FROM chat_messages')).rows).toHaveLength(1);
+    // Defense-in-depth: even in this corrupted "everyone" state, the per-author
+    // chat RLS (owner_user_id = session_user, fail-closed on NULL) STILL blocks the
+    // member — a chat row is readable only by its author, so this can't leak even
+    // if the table policy is wrong. (Previously the member saw it here.)
+    expect((await M.query('SELECT id FROM chat_messages')).rows).toHaveLength(0);
 
-    // Owner open converges access → chat snaps back to private.
+    // Owner open also converges the table policy back to never_share (belt + braces).
     await reconcileCloudMemberAccess(o);
 
     expect((await M.query('SELECT id FROM chat_messages')).rows).toHaveLength(0);

@@ -197,6 +197,41 @@ tagged BREAKING.
   having no baseline (skips it), and the first render regenerates it in the v2
   shape — so no action is required on upgrade.
 
+## [3.4.1] - 2026-06-18
+
+### Fixed
+
+- **Security: assistant chats are now strictly private to their author on a
+  cloud.** A cloud member could see other members' assistant conversations. Two
+  causes, both fixed: the GUI chat reads had been changed to trust Postgres RLS
+  and dropped their app-layer owner filter — but the app connects as a `BYPASSRLS`
+  role, so RLS never filtered it; and new threads/messages were being written with
+  a NULL owner (world-readable). Now every chat read is filtered by the connected
+  user's identity and fails closed (an unresolved identity returns nothing, not
+  everything), every thread + message — including the assistant's replies — is
+  stamped with its author, and a `RESTRICTIVE` Postgres policy on `chat_threads` /
+  `chat_messages` (keyed on the owner, fail-closed on NULL) enforces the same
+  isolation at the database for non-bypass members. Orphaned NULL-owner chats
+  become invisible to everyone.
+- **A member could no longer render at all if another member created the
+  SQLite-compat polyfills first.** The `json_extract` / `strftime` polyfills were
+  re-registered with `CREATE OR REPLACE FUNCTION` on every connect, which Postgres
+  only allows the function's owner to run — so every other member's registration
+  raised "must be owner of function" and, sharing the render transaction, aborted
+  it (empty render). Registration is now create-if-absent (a present function is a
+  no-op for any role), and the polyfills are re-owned to the members group so a
+  future definition change can be applied by any member.
+- **A workspace open / cloud change no longer re-renders the entire context
+  tree.** The background render is now incremental: a change re-renders only the
+  affected entity context (the changed table plus any context that sources from
+  it) instead of all tables, and a full open render is no longer followed by a
+  redundant second render. On a large cloud this turns a ~60s full pass into a
+  near-instant per-entity update.
+- **Switching workspaces refreshes the header logo.** The workspace switch
+  re-fetches the active workspace's branding (cache-busted by its logo etag), so
+  the logo updates with the name instead of showing the previous workspace's mark
+  until a hard refresh.
+
 ## [3.4.0] - 2026-06-17
 
 ### Added

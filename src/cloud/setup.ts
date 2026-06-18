@@ -2,6 +2,8 @@ import type { Lattice } from '../lattice.js';
 import {
   installCloudRls,
   enableChangelogRls,
+  enableChatPrivacyRls,
+  ownPolyfillsByGroup,
   enableRlsForTable,
   backfillOwnership,
 } from './rls.js';
@@ -274,9 +276,11 @@ export async function secureCloud(db: Lattice): Promise<void> {
   // have revoked.
   await registerPostgresPolyfills((sql) => runAsyncOrSync(db.adapter, sql));
   await installCloudRls(db);
+  await ownPolyfillsByGroup(db); // group-own the polyfills so any member can upgrade them
   await installCloudSettings(db);
   await db.ensureObservationSubstrate();
   await enableChangelogRls(db);
+  await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables
   // Neutralize any legacy column-audience spec BEFORE regenerating mask views
   // (secureNewCloudTable → regenerateAudienceViewFromDb compiles each audience).
   await convergeLegacyColumnAudience(db);

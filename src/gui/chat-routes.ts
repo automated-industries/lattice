@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
+import { getAsyncOrSync } from '../db/adapter.js';
 import { FeedBus } from './feed.js';
 import {
   resolveClaudeAuth,
@@ -55,6 +56,23 @@ interface ChatContext {
 /** Coerce an unknown DB column to a string, with a fallback for null/non-string. */
 function asStr(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback;
+}
+
+/** A chat is private to whoever created it. We never rely on Postgres RLS alone:
+ *  the app connects as a BYPASSRLS role, so RLS does NOT filter the owner's
+ *  connection — every chat read MUST also filter by this key in the app layer,
+ *  and every chat write MUST stamp it. On a cloud the key is the connection's
+ *  Postgres login role (`session_user`, the same identity the cloud RLS keys on);
+ *  on a local single-user SQLite DB there is no cross-user boundary so it is null
+ *  and no scoping is applied. */
+function isCloudChat(db: Lattice): boolean {
+  return db.getDialect() === 'postgres';
+}
+async function resolveChatOwnerId(db: Lattice): Promise<string | null> {
+  if (!isCloudChat(db)) return null; // local single-user — no per-user scoping
+  const row = await getAsyncOrSync(db.adapter, 'SELECT session_user AS u');
+  const u = row?.u;
+  return typeof u === 'string' && u.length > 0 ? u : null;
 }
 
 /**
@@ -363,20 +381,33 @@ export async function dispatchChatRoute(
   res: ServerResponse,
   ctx: ChatContext,
 ): Promise<boolean> {
-  // Row visibility (including per-user chat privacy on a cloud) is enforced by
-  // Postgres RLS at the database, so the app layer never filters by owner here.
+  // A chat belongs ONLY to the user who created it. The app connects as a
+  // BYPASSRLS role, so Postgres RLS does NOT filter the owner's connection — we
+  // MUST scope every chat read by owner in the app layer too (and fail CLOSED:
+  // on a cloud with no resolvable identity, show nothing rather than everything).
+  const ownerUserId = await resolveChatOwnerId(ctx.db);
+  const cloud = isCloudChat(ctx.db);
+  // Belt-and-suspenders predicate: on a cloud a row is visible to this user ONLY
+  // if its owner matches; a NULL owner (orphaned/legacy) is visible to NO ONE.
+  const ownedByMe = (r: Record<string, unknown>): boolean =>
+    !cloud || (r.owner_user_id != null && r.owner_user_id === ownerUserId);
 
   // GET /api/chat/threads — conversation list, most recent first.
   if (ctx.method === 'GET' && ctx.pathname === '/api/chat/threads') {
+    if (cloud && ownerUserId == null) {
+      sendJson(res, { threads: [] }); // fail closed — identity unresolved
+      return true;
+    }
     const filters: { col: string; op: 'isNull' | 'eq'; val?: unknown }[] = [
       { col: 'deleted_at', op: 'isNull' },
     ];
+    if (ownerUserId != null) filters.push({ col: 'owner_user_id', op: 'eq', val: ownerUserId });
     const rows = (await ctx.db.query('chat_threads', { filters, limit: 100 })) as Record<
       string,
       unknown
     >[];
     const threads = rows
-      .filter((r) => !r.deleted_at)
+      .filter((r) => !r.deleted_at && ownedByMe(r))
       .map((r) => ({
         id: asStr(r.id),
         title: asStr(r.title, 'Chat'),
@@ -391,15 +422,22 @@ export async function dispatchChatRoute(
   const msgMatch = /^\/api\/chat\/threads\/([^/]+)\/messages$/.exec(ctx.pathname);
   if (ctx.method === 'GET' && msgMatch) {
     const threadId = decodeURIComponent(msgMatch[1] ?? '');
-    // Thread ownership / cross-member isolation is enforced by Postgres RLS at
-    // the database, so no app-layer owner check is needed here.
-    const msgFilters = [{ col: 'thread_id', op: 'eq' as const, val: threadId }];
+    if (cloud && ownerUserId == null) {
+      sendJson(res, { messages: [] }); // fail closed — identity unresolved
+      return true;
+    }
+    // Scope by owner too (not just thread_id) so a member can't read another
+    // member's messages even by guessing a thread id.
+    const msgFilters: { col: string; op: 'eq' | 'isNull'; val?: unknown }[] = [
+      { col: 'thread_id', op: 'eq', val: threadId },
+    ];
+    if (ownerUserId != null) msgFilters.push({ col: 'owner_user_id', op: 'eq', val: ownerUserId });
     const rows = (await ctx.db.query('chat_messages', {
       filters: msgFilters,
       limit: 1000,
     })) as Record<string, unknown>[];
     const messages = rows
-      .filter((r) => r.thread_id === threadId && !r.deleted_at)
+      .filter((r) => r.thread_id === threadId && !r.deleted_at && ownedByMe(r))
       .map((r) => {
         let text = '';
         let turns: PersistedTurn[] | undefined;
@@ -466,23 +504,38 @@ export async function dispatchChatRoute(
     return true;
   }
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
+
+  // Fail CLOSED: on a cloud we must know who this is before creating or reading
+  // any chat row — otherwise a thread would land with a NULL owner (world-
+  // readable). If the identity can't be resolved, refuse rather than write an
+  // un-owned chat.
+  if (cloud && ownerUserId == null) {
+    sendJson(res, { error: 'Could not resolve your cloud identity; chat is disabled.' }, 500);
+    return true;
+  }
+
   // The record the user is currently viewing (table + id), so "delete this file"
   // resolves to it. Client-supplied hint, validated to a known table; every action
   // still flows through the permission-gated tools, so this can't widen access.
   const activeContext = parseActiveContext(body.activeContext, ctx.validTables);
   // Server-authoritative prior-turn context: real tool_use/tool_result blocks
   // rebuilt from the persisted thread so the model retains row ids across turns
-  // (the text-only client history drops them). New thread → text-only fallback.
-  const history = await rehydrateHistory(ctx.db, requestedThread, mapHistory(body.history), null);
+  // (the text-only client history drops them). Scoped to THIS user's messages.
+  const history = await rehydrateHistory(
+    ctx.db,
+    requestedThread,
+    mapHistory(body.history),
+    ownerUserId,
+  );
 
   // Resolve the thread + persist the user message BEFORE streaming so the
-  // thread id can ride back on a header. One thread per conversation; the
-  // client reuses it across turns. Row ownership is recorded + isolated by
-  // Postgres RLS at the database.
+  // thread id can ride back on a header. One thread per conversation; the client
+  // reuses it across turns. Every chat row is STAMPED with this user's id so it
+  // is private to them (app-layer filter + RLS both key on it).
   let threadId = '';
   try {
-    threadId = await ensureThread(ctx.db, requestedThread, message, null);
-    await persistMessage(ctx.db, threadId, 'user', message, null);
+    threadId = await ensureThread(ctx.db, requestedThread, message, ownerUserId);
+    await persistMessage(ctx.db, threadId, 'user', message, ownerUserId);
   } catch (e) {
     console.warn('[chat] persist user message failed:', (e as Error).message);
   }
@@ -585,7 +638,7 @@ export async function dispatchChatRoute(
         threadId,
         'assistant',
         assistantText,
-        null,
+        ownerUserId,
         cleanTurns,
         turnStartedAt,
         assistantMsgId,
