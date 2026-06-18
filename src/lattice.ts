@@ -172,6 +172,16 @@ export class Lattice {
   private _autoRenderPending = false;
   private _autoRenderInFlight = false;
   private _autoRenderDebounceMs = 250;
+  /**
+   * Incremental auto-render scope, accumulated between debounced renders. A write
+   * or a remote (cloud) change records the AFFECTED table here, so the next
+   * auto-render re-renders only that entity (+ its cross-table dependents) instead
+   * of the whole tree. `_pendingRenderAll` forces a full render (the initial
+   * render, or a change with no known table). Captured + reset when a render
+   * starts, so changes during a render re-accumulate and re-trigger.
+   */
+  private _pendingRenderTables = new Set<string>();
+  private _pendingRenderAll = true;
 
   /** Cache of actual table columns (from PRAGMA), populated after init(). */
   private readonly _columnCache = new Map<string, Set<string>>();
@@ -1600,8 +1610,9 @@ export class Lattice {
       `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
       Object.values(filtered),
     );
-    // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh.
-    this._scheduleAutoRender();
+    // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh
+    // every entity context that sources THROUGH this junction (manyToMany).
+    this._scheduleAutoRender(junctionTable);
   }
 
   /**
@@ -1619,7 +1630,7 @@ export class Lattice {
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
-    this._scheduleAutoRender();
+    this._scheduleAutoRender(junctionTable);
   }
 
   // -------------------------------------------------------------------------
@@ -1937,6 +1948,16 @@ export class Lattice {
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
+    // A full background render (no `changedTables`) satisfies any queued render
+    // scope, so clear it — this is what prevents the open render from being
+    // followed by a redundant second full render. Changes that land DURING this
+    // render re-accumulate below and trigger an incremental follow-up instead.
+    if (!opts.changedTables) {
+      this._pendingRenderAll = false;
+      this._pendingRenderTables = new Set();
+      this._autoRenderPending = false;
+    }
+
     return this._renderGuarded(outputDir, opts);
   }
 
@@ -1969,9 +1990,12 @@ export class Lattice {
    * tree when a REMOTE change arrives — notably an owner re-sharing or un-sharing
    * a row, after which the member's per-viewer projection must be recompiled. A
    * no-op when auto-render isn't enabled.
+   *
+   * Pass the CHANGED table so only that entity (+ its cross-table dependents) is
+   * re-rendered instead of the whole tree; omit it to force a full render.
    */
-  requestRender(): void {
-    this._scheduleAutoRender();
+  requestRender(table?: string): void {
+    this._scheduleAutoRender(table);
   }
 
   /**
@@ -2482,8 +2506,9 @@ export class Lattice {
       }
     }
     // Every mutation schedules an auto-render when one is enabled (workspaces
-    // enable it by default). No-op + zero overhead when disabled.
-    this._scheduleAutoRender();
+    // enable it by default). Scoped to the written table so only that entity
+    // (+ its cross-table dependents) re-renders. No-op when disabled.
+    this._scheduleAutoRender(table);
   }
 
   /**
@@ -2510,10 +2535,21 @@ export class Lattice {
     return this;
   }
 
-  private _scheduleAutoRender(): void {
+  private _scheduleAutoRender(table?: string): void {
     if (!this._autoRenderDir) return;
+    // Record the render scope: a specific changed table → incremental; no table →
+    // a full render. (A later full request never narrows a pending one.)
+    if (table === undefined) this._pendingRenderAll = true;
+    else this._pendingRenderTables.add(table);
     this._autoRenderPending = true;
-    if (this._autoRenderTimer) return;
+    this._armAutoRenderTimer();
+  }
+
+  /** Arm the debounce timer if not already armed. Does NOT change the render
+   *  scope — used both by `_scheduleAutoRender` and the post-render re-arm so a
+   *  re-arm never escalates a pending incremental render to a full one. */
+  private _armAutoRenderTimer(): void {
+    if (!this._autoRenderDir || this._autoRenderTimer) return;
     this._autoRenderTimer = setTimeout(() => {
       this._autoRenderTimer = undefined;
       void this._runAutoRender();
@@ -2564,11 +2600,20 @@ export class Lattice {
     }
     if (!this._autoRenderPending) return;
     this._autoRenderPending = false;
+    // Capture + reset the render scope NOW so changes that land during this
+    // render re-accumulate and re-trigger a follow-up render.
+    const renderAll = this._pendingRenderAll;
+    const changed = this._pendingRenderTables;
+    this._pendingRenderAll = false;
+    this._pendingRenderTables = new Set();
     this._autoRenderInFlight = true;
     try {
       // Read the prior manifest BEFORE render so cleanup can detect orphans.
       const prevManifest = readManifest(dir);
-      const result = await this._render.render(dir);
+      // Incremental when we know exactly which tables changed; full otherwise.
+      const renderOpts: RenderOptions =
+        renderAll || changed.size === 0 ? {} : { changedTables: changed };
+      const result = await this._render.render(dir, renderOpts);
       for (const h of this._renderHandlers) h(result);
       // Prune stale files after render: a deleted row, or — for a cloud member —
       // a row that was just un-shared (so it dropped out of the RLS-filtered read)
@@ -2589,7 +2634,9 @@ export class Lattice {
   }
 
   private _rearmAutoRenderIfPending(): void {
-    if (this._autoRenderPending) this._scheduleAutoRender();
+    // Re-arm the timer only — the pending render SCOPE is already recorded, so a
+    // re-arm must not call _scheduleAutoRender() (which would force a full render).
+    if (this._autoRenderPending) this._armAutoRenderTimer();
   }
 
   /**

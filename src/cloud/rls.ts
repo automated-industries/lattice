@@ -596,6 +596,29 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 `;
 }
 
+/**
+ * Re-own the SQLite-compat polyfills (`json_extract` / `strftime`) to the members
+ * GROUP role, so any member (a member of that group) can replace them on a future
+ * upgrade. They must never stay owned by whichever single role created them first —
+ * that is exactly what made every OTHER member's per-connect registration raise
+ * "must be owner of function" and abort their render. Best-effort: reassigning
+ * ownership needs the current owner or a superuser, so a non-owner connection
+ * leaves it as-is — harmless, because the create-if-absent registration guard
+ * already keeps members from tripping on the ownership. Idempotent. No-op off PG.
+ */
+export async function ownPolyfillsByGroup(db: Lattice): Promise<void> {
+  if (!isPg(db)) return;
+  for (const sig of ['json_extract(text, text)', 'strftime(text, text)']) {
+    try {
+      const reg = await getAsyncOrSync(db.adapter, `SELECT to_regprocedure($1) AS reg`, [sig]);
+      if (reg?.reg == null) continue; // not created yet — nothing to reassign
+      await runAsyncOrSync(db.adapter, `ALTER FUNCTION ${sig} OWNER TO "${MEMBER_GROUP}"`);
+    } catch {
+      // best-effort hygiene — the create-if-absent guard is the actual fix
+    }
+  }
+}
+
 /** Install the cloud RLS bootstrap (bookkeeping + helper functions). No-op on SQLite. */
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
@@ -665,6 +688,50 @@ DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
 CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH CHECK (true);
 `,
   );
+}
+
+/**
+ * Lock the assistant's chat tables (`chat_threads` / `chat_messages`) to their
+ * author with a RESTRICTIVE policy keyed on the `owner_user_id` column, fail-
+ * CLOSED on NULL.
+ *
+ * RESTRICTIVE means this is AND-ed with the base `lattice_sel`
+ * (`lattice_row_visible`) policy, so a chat row is visible / mutable to a member
+ * ONLY when it is owned by THIS session AND `owner_user_id` is not null. Net
+ * effect: an un-owned (NULL) chat row — the orphaned/legacy rows that leaked — is
+ * visible to NO member, and one member can never reach another's chats even if a
+ * stray `everyone` flag or an ownership-record mismatch would otherwise let the
+ * base policy pass. This is defense-in-depth behind the app-layer owner filter in
+ * chat-routes.ts, which additionally covers the BYPASSRLS owner connection that
+ * Postgres RLS does not gate at all. `owner_user_id` is stamped by the app to the
+ * same `session_user` the cloud RLS keys on. Idempotent → converges on every
+ * owner open. No-op off Postgres.
+ */
+export async function enableChatPrivacyRls(db: Lattice): Promise<void> {
+  if (!isPg(db)) return;
+  for (const t of ['chat_threads', 'chat_messages']) {
+    // The chat tables are created lazily (only once the assistant is used), so a
+    // cloud may not have them yet — skip rather than error on a missing relation.
+    const reg = await getAsyncOrSync(db.adapter, `SELECT to_regclass($1) AS reg`, [t]);
+    if (reg?.reg == null) continue;
+    const q = `"${t}"`;
+    // RESTRICTIVE + FOR SELECT: AND-ed with the base lattice_sel, this is the
+    // READ isolation — a member can SELECT a chat row ONLY if it is theirs, and a
+    // NULL-owner row is readable by NO ONE (the orphaned/legacy leak). Scoped to
+    // SELECT on purpose: INSERT/UPDATE/DELETE ownership is already gated by the
+    // base owner-keyed policies + trigger, and a FOR ALL restrictive policy would
+    // (per Postgres, USING doubles as WITH CHECK) reject the owner's own inserts.
+    await runCloudBootstrapSql(
+      db,
+      `
+ALTER TABLE ${q} ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ${q} FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "lattice_chat_owner" ON ${q};
+CREATE POLICY "lattice_chat_owner" ON ${q} AS RESTRICTIVE FOR SELECT
+  USING ("owner_user_id" IS NOT NULL AND "owner_user_id" = session_user);
+`,
+    );
+  }
 }
 
 /**
