@@ -27,6 +27,7 @@ tagged BREAKING.
 
 ### Changed
 
+- **Internal — the GUI server request dispatch is now a single explicit ordered route registry (`src/gui/server.ts`).** The contiguous `if (await handleX(...)) return;` chain becomes an ordered `RouteEntry[]` iterated by a for-loop; dispatch order, per-entry bodies, prefix/method guards, and the post-loop 404 fallback are unchanged. No behavior change.
 - **Internal — the changelog write-half is extracted into `ChangelogWriter` (`src/changelog/writer.ts`).** The table-existence check, create/additive-migrate DDL, the gated + ungated changelog INSERTs, and the retention prune move out of the `Lattice` facade into a focused collaborator (mirroring the existing read-half `ChangelogService`). The facade keeps each private method as a thin delegator to a lazily-constructed `ChangelogWriter` (deps injected, so the collaborator never reaches into `Lattice` internals). No public API change; behavior is byte-identical.
 - **BREAKING — the legacy `files.path` and `files.kind` columns are removed.**
   The native `files` entity no longer declares them; file resolution now flows

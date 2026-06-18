@@ -23,7 +23,7 @@ import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
-import { createGuiRequestContext } from './request-context.js';
+import { createGuiRequestContext, type GuiRequestContext } from './request-context.js';
 import { upsertTableMeta } from './column-descriptions.js';
 import {
   createFileJunction,
@@ -419,6 +419,23 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
   const databasesDeps: DatabasesRoutesDeps = { host, autoRender };
 
+  /**
+   * One entry in the ordered dispatch registry built per request. `handle`
+   * returns true when it handled the request (the dispatch loop short-circuits)
+   * and false when its prefix/method guard doesn't match (the loop falls through
+   * to the next entry) — folding the old `if (pathname.startsWith(...))` guards
+   * into each closure. The prefix-match guards are part of `handle`; there is no
+   * separate matcher, which keeps the chain behavior-identical to the prior
+   * `if (...) return;` sequence.
+   */
+  type RouteEntry = {
+    handle: (
+      req: IncomingMessage,
+      res: ServerResponse,
+      ctx: GuiRequestContext,
+    ) => boolean | Promise<boolean>;
+  };
+
   const server = createServer((req, res) => {
     void (async () => {
       try {
@@ -483,173 +500,201 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sessionId,
         });
 
-        // ── HTML + read-only data routes ──────────────────────────────────
-        if (await handleReadRoutes(req, res, ctx, readDeps)) return;
+        // ── Ordered route registry ────────────────────────────────────────
+        // The request dispatch is a single explicit, ORDERED list iterated by the
+        // for-loop below. Each entry's `handle` self-filters: it returns true when
+        // it handled the request (the loop then short-circuits, exactly like the
+        // old `if (await handleX(...)) return;` chain) and false when its
+        // prefix/method guard doesn't match (the loop falls through to the next
+        // entry, exactly like the old `if (pathname.startsWith(...))` guard). The
+        // order here IS the dispatch order — do not reorder.
+        //
+        // Each entry closes over THIS request's `ctx` and the per-request `active`
+        // local. A route earlier in the list can swap the active workspace (schema
+        // edit, dbconfig reopen) via `ctx.swapActive`, which reassigns the same
+        // `active` `let` these closures read — so a later entry reading `active.db`
+        // sees the post-swap value, identical to the prior inline chain.
+        //
+        // Realtime change events, the activity feed, and background-render progress
+        // are NOT routes here: they are multiplexed onto ONE WebSocket
+        // (`/api/stream`, handled via the HTTP `upgrade` path below) so a browser
+        // tab holds a single persistent connection instead of three. Three SSE
+        // streams per tab consumed the whole HTTP/1.1 6-connections-per-host budget
+        // after just two tabs, which starved every data request (entities/rows/
+        // switch) and froze the UI; a WebSocket lives in a separate, far larger
+        // connection pool, so data requests always keep the full HTTP budget free.
+        // See `handleEventStream`.
+        const routes: RouteEntry[] = [
+          // ── HTML + read-only data routes ──
+          { handle: (req, res, ctx) => handleReadRoutes(req, res, ctx, readDeps) },
+          // ── Schema create/alter/delete (extracted leaf — schema-routes.ts) ──
+          { handle: (req, res, ctx) => handleSchemaRoutes(req, res, ctx, schemaDeps) },
+          // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
+          { handle: (req, res, ctx) => handleHistoryRoutes(req, res, ctx, historyDeps) },
+          // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
+          { handle: (req, res, ctx) => handleWorkspacesRoutes(req, res, ctx, workspacesDeps) },
+          // ── Databases: list / switch / create / delete (extracted leaf — databases-routes.ts) ──
+          { handle: (req, res, ctx) => handleDatabasesRoutes(req, res, ctx, databasesDeps) },
+          // ── GUI-only metadata (per-entity icon overrides) ──
+          {
+            handle: async (req, res) => {
+              if (!(method === 'PUT' && pathname.startsWith('/api/gui-meta/'))) return false;
+              const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
+              if (!active.validTables.has(entityName)) {
+                sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
+                return true;
+              }
+              const body = (await readJson<unknown>(req)) as {
+                icon?: unknown;
+                description?: unknown;
+              };
+              const settingIcon = 'icon' in body;
+              const settingDescription = 'description' in body;
+              if (settingIcon && typeof body.icon !== 'string') {
+                sendJson(res, { error: 'icon must be a string' }, 400);
+                return true;
+              }
+              if (!settingIcon && !settingDescription) {
+                sendJson(res, { error: 'nothing to update (expected icon or description)' }, 400);
+                return true;
+              }
+              // Consolidated find-or-insert, shared with the set_definition AI tool.
+              await upsertTableMeta(active.db, entityName, {
+                ...(settingIcon ? { icon: body.icon as string } : {}),
+                ...(settingDescription
+                  ? { description: typeof body.description === 'string' ? body.description : null }
+                  : {}),
+              });
+              sendJson(res, { ok: true });
+              return true;
+            },
+          },
+          // ── Row CRUD + junction link/unlink (extracted leaf — tables-routes.ts) ──
+          { handle: (req, res, ctx) => handleTablesRoutes(req, res, ctx, tablesDeps) },
+          // ── User Config routes ──
+          // Reads + writes machine-local user identity and the saved
+          // cloud-DB credential catalog. Localhost-trust dev-tool routes.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/userconfig/')) return false;
+              return await dispatchUserConfigRoute(req, res, {
+                db: active.db,
+                configPath: active.configPath,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── AI assistant: credentials, OAuth, voice transcription ──
+          // Local-only: the assistant rail is a single-user dev tool.
+          // Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/assistant/')) return false;
+              return await dispatchAssistantRoute(req, res, {
+                db: active.db,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── Chat route ──
+          // POST /api/chat — assistant tool loop, streamed as SSE. Executes
+          // tool calls against the active DB via the shared mutation chokepoint.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/chat')) return false;
+              return await dispatchChatRoute(req, res, {
+                db: active.db,
+                feed: active.feed,
+                validTables: active.validTables,
+                junctionTables: active.junctionTables,
+                softDeletable: active.softDeletable,
+                // The assistant can create tables + relationships on request — same
+                // audited, no-reopen primitives the Context Constructor uses.
+                createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
+                addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
+                createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
+                // Guarded, reversible table delete — empty tables go immediately;
+                // non-empty ones come back as `needsResolution` so the assistant asks.
+                deleteEntity: (name: string, resolution?: DeleteResolution) =>
+                  aiDeleteEntity(active, name, resolution, sessionId),
+                configPath: active.configPath,
+                outputDir: active.outputDir,
+                // Stamp this GUI session so the assistant's writes share the user's
+                // undo/redo stack (the user can undo what they asked it to do).
+                sessionId,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── Ingest routes ──
+          // Reference a local file / pasted text as a native `files` row and
+          // summarize it. Writes via the shared mutation chokepoint (source=ingest).
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/ingest/')) return false;
+              return await dispatchIngestRoute(req, res, {
+                db: active.db,
+                feed: active.feed,
+                softDeletable: active.softDeletable,
+                fileJunctions: fileJunctions(active.configPath, active.outputDir),
+                entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
+                createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
+                createEntity: (entity, columns) =>
+                  createUserEntity(active, entity, columns, sessionId),
+                aggressiveness: getAggressiveness(),
 
-        // Realtime change events, the activity feed, and background-render
-        // progress are no longer three separate Server-Sent-Event streams. They
-        // are multiplexed onto ONE WebSocket (`/api/stream`, handled via the HTTP
-        // `upgrade` path below) so a browser tab holds a single persistent
-        // connection instead of three. Three SSE streams per tab consumed the
-        // whole HTTP/1.1 6-connections-per-host budget after just two tabs, which
-        // starved every data request (entities/rows/switch) and froze the UI; a
-        // WebSocket lives in a separate, far larger connection pool, so data
-        // requests always keep the full HTTP budget free. See `handleEventStream`.
+                latticeRoot: dirname(active.configPath),
+                configPath: active.configPath,
+                outputDir: active.outputDir,
+                sessionId,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── Files: blob serving + open-in-finder ──
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/files/')) return false;
+              return await dispatchFilesRoute(req, res, {
+                db: active.db,
+                latticeRoot: dirname(active.configPath),
+                configPath: active.configPath,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── DB Config routes ──
+          // Project Config "Database" panel — read / save / connect / test.
+          // The `swap` callback re-opens the active configPath so the
+          // YAML rewrite written by `/save` takes effect.
+          {
+            handle: async (req, res) => {
+              if (!(pathname.startsWith('/api/dbconfig') || pathname.startsWith('/api/cloud')))
+                return false;
+              return await dispatchDbConfigRoute(req, res, {
+                db: active.db,
+                configPath: active.configPath,
+                pathname,
+                method,
+                convergeWarnings: active.convergeWarnings,
+                // Reopen the active config after an in-place edit; join a cloud as a
+                // NEW workspace. Both go through the shared closures so the swap is
+                // reflected in `activeRef` for the next request (not just the local
+                // `active`), and so the same logic serves the virgin onboarding path.
+                swap: reopenActive,
+                createCloudWorkspace,
+              });
+            },
+          },
+        ];
 
-        // ── Schema create/alter/delete (extracted leaf — schema-routes.ts) ──
-        if (await handleSchemaRoutes(req, res, ctx, schemaDeps)) return;
-
-        // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
-        if (await handleHistoryRoutes(req, res, ctx, historyDeps)) return;
-
-        // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
-        if (await handleWorkspacesRoutes(req, res, ctx, workspacesDeps)) return;
-
-        // ── Databases: list / switch / create / delete (extracted leaf — databases-routes.ts) ──
-        if (await handleDatabasesRoutes(req, res, ctx, databasesDeps)) return;
-
-        // ── GUI-only metadata (per-entity icon overrides) ─────────────────
-        if (method === 'PUT' && pathname.startsWith('/api/gui-meta/')) {
-          const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
-          if (!active.validTables.has(entityName)) {
-            sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
-            return;
-          }
-          const body = (await readJson<unknown>(req)) as { icon?: unknown; description?: unknown };
-          const settingIcon = 'icon' in body;
-          const settingDescription = 'description' in body;
-          if (settingIcon && typeof body.icon !== 'string') {
-            sendJson(res, { error: 'icon must be a string' }, 400);
-            return;
-          }
-          if (!settingIcon && !settingDescription) {
-            sendJson(res, { error: 'nothing to update (expected icon or description)' }, 400);
-            return;
-          }
-          // Consolidated find-or-insert, shared with the set_definition AI tool.
-          await upsertTableMeta(active.db, entityName, {
-            ...(settingIcon ? { icon: body.icon as string } : {}),
-            ...(settingDescription
-              ? { description: typeof body.description === 'string' ? body.description : null }
-              : {}),
-          });
-          sendJson(res, { ok: true });
-          return;
-        }
-
-        // ── Row CRUD + junction link/unlink (extracted leaf — tables-routes.ts) ──
-        if (await handleTablesRoutes(req, res, ctx, tablesDeps)) return;
-
-        // ── User Config routes ───────────────────────────────────────────
-        // Reads + writes machine-local user identity and the saved
-        // cloud-DB credential catalog. Localhost-trust dev-tool routes.
-        if (pathname.startsWith('/api/userconfig/')) {
-          const handled = await dispatchUserConfigRoute(req, res, {
-            db: active.db,
-            configPath: active.configPath,
-            pathname,
-            method,
-          });
-          if (handled) return;
-        }
-
-        // ── AI assistant: credentials, OAuth, voice transcription ─────────
-        // Local-only: the assistant rail is a single-user dev tool.
-        // Subscription OAuth stays inert until ANTHROPIC_OAUTH_* is set.
-        if (pathname.startsWith('/api/assistant/')) {
-          const handled = await dispatchAssistantRoute(req, res, {
-            db: active.db,
-            pathname,
-            method,
-          });
-          if (handled) return;
-        }
-
-        // ── Chat route ────────────────────────────────────────────────────
-        // POST /api/chat — assistant tool loop, streamed as SSE. Executes
-        // tool calls against the active DB via the shared mutation chokepoint.
-        if (pathname.startsWith('/api/chat')) {
-          const handled = await dispatchChatRoute(req, res, {
-            db: active.db,
-            feed: active.feed,
-            validTables: active.validTables,
-            junctionTables: active.junctionTables,
-            softDeletable: active.softDeletable,
-            // The assistant can create tables + relationships on request — same
-            // audited, no-reopen primitives the Context Constructor uses.
-            createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
-            addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
-            createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
-            // Guarded, reversible table delete — empty tables go immediately;
-            // non-empty ones come back as `needsResolution` so the assistant asks.
-            deleteEntity: (name: string, resolution?: DeleteResolution) =>
-              aiDeleteEntity(active, name, resolution, sessionId),
-            configPath: active.configPath,
-            outputDir: active.outputDir,
-            // Stamp this GUI session so the assistant's writes share the user's
-            // undo/redo stack (the user can undo what they asked it to do).
-            sessionId,
-            pathname,
-            method,
-          });
-          if (handled) return;
-        }
-
-        // ── Ingest routes ─────────────────────────────────────────────────
-        // Reference a local file / pasted text as a native `files` row and
-        // summarize it. Writes via the shared mutation chokepoint (source=ingest).
-        if (pathname.startsWith('/api/ingest/')) {
-          const handled = await dispatchIngestRoute(req, res, {
-            db: active.db,
-            feed: active.feed,
-            softDeletable: active.softDeletable,
-            fileJunctions: fileJunctions(active.configPath, active.outputDir),
-            entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
-            createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
-            createEntity: (entity, columns) => createUserEntity(active, entity, columns, sessionId),
-            aggressiveness: getAggressiveness(),
-
-            latticeRoot: dirname(active.configPath),
-            configPath: active.configPath,
-            outputDir: active.outputDir,
-            sessionId,
-            pathname,
-            method,
-          });
-          if (handled) return;
-        }
-
-        // ── Files: blob serving + open-in-finder ──────────────────────────
-        if (pathname.startsWith('/api/files/')) {
-          const handled = await dispatchFilesRoute(req, res, {
-            db: active.db,
-            latticeRoot: dirname(active.configPath),
-            configPath: active.configPath,
-            pathname,
-            method,
-          });
-          if (handled) return;
-        }
-
-        // ── DB Config routes ─────────────────────────────────────────────
-        // Project Config "Database" panel — read / save / connect / test.
-        // The `swap` callback re-opens the active configPath so the
-        // YAML rewrite written by `/save` takes effect.
-        if (pathname.startsWith('/api/dbconfig') || pathname.startsWith('/api/cloud')) {
-          const handled = await dispatchDbConfigRoute(req, res, {
-            db: active.db,
-            configPath: active.configPath,
-            pathname,
-            method,
-            convergeWarnings: active.convergeWarnings,
-            // Reopen the active config after an in-place edit; join a cloud as a
-            // NEW workspace. Both go through the shared closures so the swap is
-            // reflected in `activeRef` for the next request (not just the local
-            // `active`), and so the same logic serves the virgin onboarding path.
-            swap: reopenActive,
-            createCloudWorkspace,
-          });
-          if (handled) return;
+        for (const route of routes) {
+          if (await route.handle(req, res, ctx)) return;
         }
 
         sendJson(res, { error: 'Not found' }, 404);
