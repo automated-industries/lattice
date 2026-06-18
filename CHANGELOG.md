@@ -18,6 +18,29 @@ tagged BREAKING.
 
 ### Added
 
+- **Opt-in incremental writeback file reads (`WritebackDefinition.incrementalRead`).**
+  Default (`undefined`/`false`) is byte-for-byte the prior behavior: the pipeline
+  reads the WHOLE file every tick (`readFileSync`) and parses from the absolute
+  byte offset. Set `incrementalRead: true` and the pipeline reads ONLY the bytes
+  at/after the stored offset (one `readSync` of `currentSize - offset` bytes),
+  passing that slice to the parser with `fromOffset = 0`; the parser's
+  slice-relative `nextOffset` is translated back to an absolute byte offset
+  before it is stored. This avoids re-reading (and re-billing the egress of) the
+  whole file every tick on an append-only log. The slice is decoded with an
+  incremental `StringDecoder`, so a multi-byte UTF-8 codepoint straddling the
+  trailing edge is never split into a replacement char — its incomplete trailing
+  bytes are held back and consumed on the next tick. HARD PRECONDITION: the
+  parser must operate purely on the byte-slice (no reliance on bytes before the
+  offset). The deferred offset-advance ordering invariant is preserved in both
+  modes — the offset is stored only after the whole batch persists, so a
+  mid-batch persist throw leaves it un-advanced.
+- **Opt-in bounded dedupe set on `InMemoryStateStore` (`{ maxSeenPerFile }`).**
+  Default is `Infinity` — unbounded, exactly the prior behavior. Pass a finite
+  cap and the per-file seen-set retains only the most recent N keys (oldest
+  evicted first, by insertion order), bounding memory for long-running daemons
+  tailing append-only logs. The cap is a memory-safety guard, NOT a durability
+  substitute (an evicted key could re-process if it reappears); the class JSDoc
+  recommends the durable `SQLiteStateStore` for long-running daemons instead.
 - **`getActive` and `queryTable` accept an optional `{ limit, offset }` bound.**
   Omitting it is byte-identical to the prior unbounded read (every existing caller
   is unchanged); a bound appends a parameterized `LIMIT ? [OFFSET ?]` (validated as
