@@ -155,6 +155,16 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
  */
 const NOT_DELETED = 'deleted_at IS NULL';
 
+/**
+ * Cap on the changelog rows the render-time per-viewer fold ({@link Lattice.foldRenderRows})
+ * reads in one pass. Deliberately large — a workspace is not expected to exceed it,
+ * and the fold reverts cleanly to ground truth for any older change beyond the cap.
+ * Named (rather than an inline literal) so the bound is explicit + tunable. (The
+ * single-row fold, {@link Lattice.foldForViewer}, reads only ONE row's audit chain
+ * and is naturally bounded by that row's history — it needs no separate cap.)
+ */
+const RENDER_FOLD_MAX_CHANGES = 100_000;
+
 export class Lattice {
   private readonly _adapter: StorageAdapter;
   private _changelogService?: ChangelogService;
@@ -1853,7 +1863,7 @@ export class Lattice {
     if (!(await this._changelogTableExists())) return rows;
     // recentChanges reads via THIS adapter (RLS-filtered for a member); a member
     // sees no owner-only ground-truth rows, so only derived observations return.
-    const changes = await this.recentChanges({ table, limit: 100_000 });
+    const changes = await this.recentChanges({ table, limit: RENDER_FOLD_MAX_CHANGES });
     const obsByRow = new Map<string, Observation[]>();
     for (const h of changes) {
       if (h.changeKind !== 'derived') continue;
