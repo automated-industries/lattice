@@ -120,6 +120,12 @@ describe.skipIf(!PG_URL)('3.3.3 cloud member provisioning grants', () => {
     expect(await memberHasTablePriv(o, '_lattice_gui_meta', 'INSERT')).toBe(true);
     expect(await memberHasTablePriv(o, '_lattice_gui_column_meta', 'UPDATE')).toBe(true);
     expect(await memberHasTablePriv(o, '_lattice_gui_audit', 'INSERT')).toBe(true);
+    // The audit table needs UPDATE (undo/redo/revert flips `undone`) and DELETE
+    // (the redo-stack purge on a new mutation) too — gated by enableGuiAuditRls's
+    // per-op RLS USING clauses. Without these the member's undo/redo + new-edit
+    // paths fail with "permission denied for table _lattice_gui_audit".
+    expect(await memberHasTablePriv(o, '_lattice_gui_audit', 'UPDATE')).toBe(true);
+    expect(await memberHasTablePriv(o, '_lattice_gui_audit', 'DELETE')).toBe(true);
     expect(await memberHasTablePriv(o, '__lattice_user_identity', 'UPDATE')).toBe(true);
 
     // Polyfills are EXECUTE-able by the member group.

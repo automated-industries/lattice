@@ -61,6 +61,18 @@ export interface RenderOptions {
    * Omitted → a full render of everything (initial open, explicit `render()`).
    */
   changedTables?: ReadonlySet<string>;
+  /**
+   * Open/restart staleness gate. When set, the render first compares the manifest's
+   * recorded template version + cursor to the live state (through the render's own
+   * scope); if nothing the tree depends on has advanced, it SKIPS the render
+   * entirely — reads no tables, emits no per-table progress, and fires a single
+   * terminal `done` so the GUI shows complete. Used ONLY by the GUI's open-time
+   * background render so a plain restart / version bump doesn't re-render an
+   * unchanged tree. The realtime eager-render and the mutation auto-render never
+   * set it (they must always re-render the table that actually changed). Fails
+   * OPEN: any uncertainty (missing/foreign manifest, unreadable cursor) renders.
+   */
+  gateOnOpen?: boolean;
 }
 
 /** Default per-table throttle window: at most one passthrough per 200 ms. */

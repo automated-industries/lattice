@@ -17,11 +17,14 @@ function tmp(prefix: string): string {
 }
 function pkgRoot(base: string, sub: string[]): string {
   const root = join(base, ...sub);
-  mkdirSync(root, { recursive: true });
+  mkdirSync(join(root, 'dist'), { recursive: true });
   writeFileSync(
     join(root, 'package.json'),
     JSON.stringify({ name: 'latticesql', version: '1.0.0' }),
   );
+  // A real entry file so realpathSync(<bin symlink>) resolves to it — detection
+  // resolves symlinks before deriving the package root.
+  writeFileSync(join(root, 'dist', 'cli.js'), '// cli\n');
   return root;
 }
 afterEach(() => {
@@ -65,26 +68,38 @@ describe('detectInstallContext', () => {
     expect(ctx.installable).toBe(false);
   });
 
-  it('detects a project-local dependency (npm install <pkg>@v in cwd)', () => {
+  it('detects a project-local dependency via the .bin SYMLINK with a symlinked cwd', () => {
+    // node_modules/.bin/lattice -> ../latticesql/dist/cli.js, with a cwd whose path
+    // contains a symlink component (mkdtemp on macOS lives under /var -> /private/var).
+    // Both the module path AND cwd must be realpath-resolved, or the local-vs-global
+    // compare diverges (/var vs /private/var) and this misdetects as 'unknown'.
     const cwd = tmp('lat-local-');
     const root = pkgRoot(cwd, ['node_modules', 'latticesql']);
-    const ctx = detectInstallContext({
-      modulePath: join(root, 'dist', 'cli.js'),
-      cwd,
-      env: {},
-    });
+    const binDir = join(cwd, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    const binLink = join(binDir, 'lattice');
+    symlinkSync(join(root, 'dist', 'cli.js'), binLink);
+    const ctx = detectInstallContext({ modulePath: binLink, cwd, env: {} });
     expect(ctx.kind).toBe('local');
     expect(ctx.installable).toBe(true);
     expect(installArgsFor(ctx, '2.0.0')).toEqual(['install', 'latticesql@2.0.0']);
   });
 
-  it('detects a global install (npm install -g <pkg>@v)', () => {
+  it('detects a global install via the real bin SYMLINK (the npm -g layout)', () => {
+    // Reproduce the real layout: <prefix>/bin/lattice -> ../lib/node_modules/
+    // latticesql/dist/cli.js. Node leaves argv[1] as the RAW symlink, so detection
+    // must realpath it; passing the symlink (not a pre-resolved path) is what makes
+    // this a genuine regression test for the silently-disabled-auto-update bug.
     const prefix = tmp('lat-global-');
     const root = pkgRoot(prefix, ['lib', 'node_modules', 'latticesql']);
+    const binDir = join(prefix, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const binLink = join(binDir, 'lattice');
+    symlinkSync(join(root, 'dist', 'cli.js'), binLink);
     const ctx = detectInstallContext({
-      modulePath: join(root, 'dist', 'cli.js'),
+      modulePath: binLink,
       cwd: tmp('lat-cwd-'),
-      execPath: join(prefix, 'bin', 'node'),
+      execPath: join(binDir, 'node'),
       env: {},
     });
     expect(ctx.kind).toBe('global');

@@ -842,6 +842,8 @@ export const css = `
     .grants-panel .grants-title { font-weight: 600; margin-bottom: 6px; }
     .grants-panel .grants-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
     .grants-panel .grants-row input { accent-color: var(--accent); }
+    .grants-panel .grants-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .grants-panel .grants-dirty { font-size: 12px; }
 
     /* Inline create-row at the bottom of every table */
     tr.create-row td { background: var(--surface-2); }
