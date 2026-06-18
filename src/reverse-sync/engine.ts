@@ -5,7 +5,7 @@ import type { StorageAdapter } from '../db/adapter.js';
 import type { ReverseSyncResult } from '../types.js';
 import type { LatticeManifest, EntityFileManifestInfo } from '../lifecycle/manifest.js';
 import { isV1EntityFiles, normalizeEntityFiles } from '../lifecycle/manifest.js';
-import { contentHash } from '../render/writer.js';
+import { contentHash, rowVersionHash } from '../render/writer.js';
 import type { ReverseSyncUpdate } from '../schema/entity-context.js';
 import type { Row } from '../types.js';
 import { deriveUpdatesFromFile } from './default-reverse-sync.js';
@@ -66,6 +66,7 @@ export class ReverseSyncEngine {
       filesChanged: 0,
       updatesApplied: 0,
       errors: [],
+      conflicts: [],
     };
 
     if (!prevManifest) return result;
@@ -137,6 +138,22 @@ export class ReverseSyncEngine {
 
           // File has been modified externally
           result.filesChanged++;
+
+          // Optimistic-concurrency gate: if the DB row changed since the render
+          // that produced this manifest entry, applying the file edit would
+          // silently overwrite that concurrent DB/cloud change. Reject + report
+          // it instead — never clobber. Skipped when the manifest predates
+          // rowVersion (older render), falling back to the prior apply behavior
+          // until the next render re-captures it.
+          if (fileInfo.rowVersion !== undefined && rowVersionHash(entityRow) !== fileInfo.rowVersion) {
+            result.conflicts.push({
+              table,
+              slug,
+              filename,
+              reason: 'db-row-changed-since-render',
+            });
+            continue;
+          }
 
           try {
             const updates: ReverseSyncUpdate[] = reverseSyncFn(currentContent, entityRow);

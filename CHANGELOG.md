@@ -8,6 +8,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reverse-sync no longer silently overwrites a concurrent change.** When an
+  external edit to a rendered context file is swept back into the database, the
+  engine now verifies the underlying row hasn't changed since it was rendered —
+  an optimistic-concurrency check against a row version captured in the manifest
+  at render time. If the row did change (a concurrent database/cloud edit), the
+  file edit is **rejected and reported as a conflict** instead of clobbering the
+  newer value, and the GUI file-loopback surfaces a notice so the edit can be
+  re-applied against the current record. Manifests written before this release
+  fall back to the prior behavior until their next render.
+
 ## [3.4.0] - 2026-06-17
 
 ### Added

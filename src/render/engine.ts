@@ -4,7 +4,7 @@ import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import type { RenderResult, Row } from '../types.js';
-import { atomicWrite, contentHash } from './writer.js';
+import { atomicWrite, contentHash, rowVersionHash } from './writer.js';
 import { applyTokenBudget } from './token-budget.js';
 import {
   resolveEntitySource,
@@ -609,6 +609,10 @@ export class RenderEngine {
 
           // v2 manifest: track per-file hashes
           const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
+          // Capture the source row's version ONCE per entity so reverse-sync can
+          // detect a concurrent DB change before applying a file edit (per-file
+          // info carries it; the row is the same for every file of the entity).
+          const rowVersion = rowVersionHash(entityRow);
 
           const protection: ProtectionContext | undefined =
             protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
@@ -655,7 +659,7 @@ export class RenderEngine {
             const renderFn = compileEntityRender(spec.render);
             const content = truncateContent(renderFn(rows), spec.budget);
             renderedFiles.set(filename, content);
-            entityFileHashes[filename] = { hash: contentHash(content) };
+            entityFileHashes[filename] = { hash: contentHash(content), rowVersion };
 
             const filePath = join(entityDir, filename);
             if (atomicWrite(filePath, content)) {
@@ -698,6 +702,7 @@ export class RenderEngine {
               renderedFiles.set(effectiveCombined.outputFile, combinedContent);
               entityFileHashes[effectiveCombined.outputFile] = {
                 hash: contentHash(combinedContent),
+                rowVersion,
               };
             }
           }

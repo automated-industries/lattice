@@ -1000,6 +1000,23 @@ export interface ReverseSyncError {
 }
 
 /**
+ * A reverse-sync update that was NOT applied because the database row changed
+ * since the render that produced the file's baseline — applying the file edit
+ * would have silently overwritten that concurrent change. Reported (never
+ * applied) so a human can re-resolve; the DB row is left intact.
+ */
+export interface ReverseSyncConflict {
+  /** Entity table the conflicting row belongs to. */
+  table: string;
+  /** Slug of the entity whose file changed. */
+  slug: string;
+  /** The changed file whose write was rejected. */
+  filename: string;
+  /** Why the write was rejected (e.g. the row changed since render). */
+  reason: string;
+}
+
+/**
  * Result of the reverse-sync phase in {@link Lattice.reconcile}.
  */
 export interface ReverseSyncResult {
@@ -1011,6 +1028,12 @@ export interface ReverseSyncResult {
   updatesApplied: number;
   /** Errors encountered (file-level — other files still processed). */
   errors: ReverseSyncError[];
+  /**
+   * Changed files whose write was REJECTED because the DB row changed since the
+   * render baseline (optimistic-concurrency conflict). Surfaced loudly, never
+   * applied — applying would have clobbered a concurrent DB/cloud edit.
+   */
+  conflicts: ReverseSyncConflict[];
 }
 
 // ---------------------------------------------------------------------------
