@@ -335,6 +335,12 @@ export async function dispatchCloudState(
           tablesCopied: result.tablesCopied,
           rowsCopied: result.rowsCopied,
           sourceBackupPath: backupPath,
+          blobsNotMigrated: result.blobsNotMigrated,
+          ...(result.blobsNotMigrated
+            ? {
+                warning: `${result.blobsNotMigrated.toString()} file(s) point at local bytes left behind on this machine and will not be reachable for cloud members.`,
+              }
+            : {}),
         });
       } catch (e) {
         try {
