@@ -194,20 +194,6 @@ export function resolveDbPath(raw: string, configDir: string): string {
   return resolve(configDir, raw);
 }
 
-// One-to-many `ref:` fields are deprecated in favor of many-to-many junction
-// tables (removed in 2.0). Warn once per unique entity.field per process so a
-// repeatedly-parsed config (every openConfig / re-render) doesn't spam.
-const warnedDeprecatedRefs = new Set<string>();
-function warnDeprecatedRef(entity: string, field: string, target: string): void {
-  const key = `${entity}.${field}`;
-  if (warnedDeprecatedRefs.has(key)) return;
-  warnedDeprecatedRefs.add(key);
-  console.warn(
-    `Lattice: one-to-many \`ref:\` on "${entity}.${field}" → "${target}" is deprecated ` +
-      `in favor of many-to-many junction tables and will be removed in 2.0.`,
-  );
-}
-
 function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDefinition {
   const rawFields = (entity as { fields?: unknown }).fields;
   if (!rawFields || typeof rawFields !== 'object' || Array.isArray(rawFields)) {
@@ -221,6 +207,20 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   let pkFromField: string | undefined;
 
   for (const [fieldName, field] of Object.entries(entity.fields)) {
+    // The per-field `ref:` shorthand was removed in 4.0. Fail loudly rather
+    // than silently dropping the relationship — declare the foreign key as a
+    // plain field and add an explicit entity-level `relations:` entry instead.
+    if ((field as { ref?: unknown }).ref !== undefined) {
+      throw new Error(
+        `Lattice: \`ref:\` on "${entityName}.${fieldName}" was removed in 4.0. Declare the ` +
+          `foreign key as a plain field and add an explicit \`relations:\` entry on entity ` +
+          `"${entityName}" instead — e.g. relations: { ${
+            fieldName.endsWith('_id') ? fieldName.slice(0, -3) : fieldName
+          }: { type: belongsTo, table: <target>, foreignKey: ${fieldName} } }. ` +
+          `See MIGRATING-4.0.md.`,
+      );
+    }
+
     columns[fieldName] = fieldToSqliteSpec(field);
     // Retain the canonical field type so the GUI can display it instead of the
     // lossy SQL spec (e.g. show `datetime`, not `TEXT NOT NULL DEFAULT …`).
@@ -236,16 +236,63 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     if (field.primaryKey) {
       pkFromField = fieldName;
     }
+  }
 
-    if (field.ref) {
-      // Derive relation name: strip trailing `_id` from the field name.
-      const relName = fieldName.endsWith('_id') ? fieldName.slice(0, -3) : fieldName;
+  // Explicit entity-level `relations:` block — the supported replacement for
+  // the removed per-field `ref:` shorthand. Each entry is a `belongsTo`
+  // relation declaring a foreign key on THIS entity. Validate loudly: a
+  // malformed entry must fail to parse rather than silently produce no
+  // relation (which would, e.g., let a junction table escape detection).
+  const rawRelations = (entity as { relations?: unknown }).relations;
+  if (rawRelations !== undefined) {
+    if (typeof rawRelations !== 'object' || rawRelations === null || Array.isArray(rawRelations)) {
+      throw new Error(
+        `Lattice: entity "${entityName}" has a "relations" value that must be an object mapping ` +
+          `relation names to belongsTo specs (got ${
+            Array.isArray(rawRelations) ? 'array' : typeof rawRelations
+          }).`,
+      );
+    }
+    for (const [relName, relRaw] of Object.entries(rawRelations as Record<string, unknown>)) {
+      if (typeof relRaw !== 'object' || relRaw === null || Array.isArray(relRaw)) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must be an object ` +
+            `{ type: belongsTo, table, foreignKey, references? }.`,
+        );
+      }
+      const rel = relRaw as Record<string, unknown>;
+      if (rel.type !== 'belongsTo') {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must have type "belongsTo" (got ${
+            typeof rel.type === 'string' ? `"${rel.type}"` : typeof rel.type
+          }). Only belongsTo relations are declared in config; other relations are derived.`,
+        );
+      }
+      if (typeof rel.table !== 'string' || rel.table.trim().length === 0) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must name a non-empty "table".`,
+        );
+      }
+      if (typeof rel.foreignKey !== 'string' || rel.foreignKey.trim().length === 0) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must name a non-empty "foreignKey".`,
+        );
+      }
+      if (
+        rel.references !== undefined &&
+        (typeof rel.references !== 'string' || rel.references.trim().length === 0)
+      ) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" has an invalid "references" — it must be ` +
+            `a non-empty column name when present.`,
+        );
+      }
       relations[relName] = {
         type: 'belongsTo',
-        table: field.ref,
-        foreignKey: fieldName,
+        table: rel.table,
+        foreignKey: rel.foreignKey,
+        ...(rel.references !== undefined ? { references: rel.references } : {}),
       };
-      warnDeprecatedRef(entityName, fieldName, field.ref);
     }
   }
 

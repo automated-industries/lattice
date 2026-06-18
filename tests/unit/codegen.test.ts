@@ -24,7 +24,10 @@ const FIXTURE_CONFIG: LatticeConfig = {
         id: { type: 'uuid', primaryKey: true },
         title: { type: 'text', required: true },
         status: { type: 'text', default: 'open' },
-        assignee_id: { type: 'uuid', ref: 'user' },
+        assignee_id: { type: 'uuid' },
+      },
+      relations: {
+        assignee: { type: 'belongsTo', table: 'user', foreignKey: 'assignee_id' },
       },
       render: 'default-list',
       outputFile: 'context/TICKETS.md',
@@ -69,11 +72,6 @@ describe('generateTypes()', () => {
   it('maps integer type to number', () => {
     const output = generateTypes(FIXTURE_CONFIG);
     expect(output).toMatch(/score\?: number;/);
-  });
-
-  it('maps ref field with a relation comment', () => {
-    const output = generateTypes(FIXTURE_CONFIG);
-    expect(output).toContain('assignee_id?: string;  // → user');
   });
 
   it('maps all scalar types correctly', () => {
@@ -171,9 +169,10 @@ describe('generateMigration()', () => {
     expect(output).toContain('"score" INTEGER DEFAULT 0');
   });
 
-  it('generates plain TEXT for uuid ref field (no FK constraint in SQLite)', () => {
+  it('generates plain TEXT for a uuid FK field (no FK constraint in SQLite)', () => {
     const output = generateMigration(FIXTURE_CONFIG);
-    // assignee_id has ref: user but no extra FK syntax needed for SQLite
+    // assignee_id is the foreign key for the `assignee` belongsTo relation, but
+    // no extra FK syntax is needed for SQLite.
     expect(output).toContain('"assignee_id" TEXT');
   });
 

@@ -1,8 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { parseConfigFile } from '../../src/config/parser.js';
+import { getGuiEntities, isJunctionTable } from '../../src/gui/data.js';
 
 /**
  * Editing many-to-many relationships from the Data Model: POST a junction to
@@ -94,9 +97,12 @@ async function bootWithTasks(): Promise<GuiServerHandle> {
       '      id: { type: uuid, primaryKey: true }',
       '      title: { type: text }',
       '      status: { type: text }',
-      '      assignee_id: { type: uuid, ref: people }',
-      '      articles_id: { type: uuid, ref: articles }',
+      '      assignee_id: { type: uuid }',
+      '      articles_id: { type: uuid }',
       '      updated_at: { type: datetime }',
+      '    relations:',
+      '      assignee: { type: belongsTo, table: people, foreignKey: assignee_id }',
+      '      articles: { type: belongsTo, table: articles, foreignKey: articles_id }',
       '    outputFile: tasks.md',
       '',
     ].join('\n'),
@@ -174,6 +180,84 @@ describe('Data Model — junction relationships', () => {
     // The linked entities are untouched.
     expect(graph.nodes.some((n) => n.id === 'table:articles')).toBe(true);
     expect(graph.nodes.some((n) => n.id === 'table:tags')).toBe(true);
+  });
+
+  it('materializes a junction with an explicit relations: map (no per-field ref) that re-opens and is detected as a junction', async () => {
+    // Junction materialization (schema-ops.materializeJunction) must emit the
+    // 4.0 explicit-relations shape — exactly two belongsTo relations, NO
+    // per-field `ref:` — so the in-request reopen does not throw and the
+    // saved config is still recognized as an m2m junction. This is the
+    // lockstep guard for the parser-throw / writer migration.
+    const root = mkdtempSync(join(tmpdir(), 'lattice-junc-relshape-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  articles:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '    outputFile: articles.md',
+        '  tags:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: tags.md',
+        '',
+      ].join('\n'),
+    );
+    const outputDir = join(root, 'context');
+    const s = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(s);
+
+    const created = await fetch(`${s.url}/api/schema/junctions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ left: 'articles', right: 'tags' }),
+    });
+    expect(created.status).toBe(200);
+
+    // (a) Saved config: the junction entity carries an entity-level relations:
+    // map with exactly two belongsTo entries and NO per-field `ref:`.
+    const savedRaw = readFileSync(configPath, 'utf-8');
+    const saved = parse(savedRaw) as {
+      entities: Record<
+        string,
+        {
+          fields: Record<string, { type: string; ref?: string }>;
+          relations?: Record<string, { type: string; table: string; foreignKey: string }>;
+        }
+      >;
+    };
+    const junction = saved.entities.articles_tags;
+    expect(junction).toBeTruthy();
+    const belongsTo = Object.values(junction!.relations ?? {}).filter(
+      (r) => r.type === 'belongsTo',
+    );
+    expect(belongsTo).toHaveLength(2);
+    expect(Object.keys(junction!.relations ?? {})).toHaveLength(2);
+    // FK columns map to the relation foreignKeys; the relation names are the
+    // `_id`-stripped column names the old ref path produced.
+    expect(new Set(belongsTo.map((r) => r.foreignKey))).toEqual(
+      new Set(['articles_id', 'tags_id']),
+    );
+    expect(new Set(Object.keys(junction!.relations ?? {}))).toEqual(new Set(['articles', 'tags']));
+    // No per-field `ref:` survives anywhere in the saved junction.
+    for (const f of Object.values(junction!.fields)) expect(f.ref).toBeUndefined();
+
+    // (b) Re-opening the saved config via parseConfigFile does NOT throw.
+    expect(() => parseConfigFile(configPath)).not.toThrow();
+
+    // (c) isJunctionTable still recognizes it (exactly two belongsTo + two keys).
+    const guiTables = getGuiEntities(configPath, outputDir).tables;
+    const junctionSummary = guiTables.find((t) => t.name === 'articles_tags');
+    expect(junctionSummary).toBeTruthy();
+    expect(isJunctionTable(junctionSummary!)).toBe(true);
   });
 
   it('cannot drop a 2-FK entity that has data columns as a "relationship" (data-loss regression)', async () => {

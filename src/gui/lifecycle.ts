@@ -811,6 +811,14 @@ async function syncUserIdentityRow(db: Lattice): Promise<void> {
 
 type EntityPayload = { entity: string; entityDef: unknown };
 type FieldPayload = { entity: string; column: string; fieldDef: unknown };
+/**
+ * add_link / delete_link carry the belongsTo relation alongside the FK field,
+ * because a link is the entity-level `relations:` entry (the per-field `ref:`
+ * shorthand was removed in 4.0). Both the field and the relation must be added
+ * or removed together on revert/redo so a link is never half-present (a field
+ * with no relation, or a relation pointing at a missing column).
+ */
+type LinkPayload = FieldPayload & { relationName?: string; relation?: unknown };
 type RenameEntityPayload = { entity: string };
 type RenameColumnPayload = { entity: string; column: string };
 
@@ -861,6 +869,14 @@ export async function applySchemaConfig(
   const removeField = (entity: string, col: string): void => {
     doc.deleteIn(['entities', entity, 'fields', col]);
   };
+  const addRelation = (entity: string, name: string | undefined, rel: unknown): void => {
+    if (name === undefined || rel === undefined) return;
+    doc.setIn(['entities', entity, 'relations', name], rel);
+  };
+  const removeRelation = (entity: string, name: string | undefined): void => {
+    if (name === undefined) return;
+    doc.deleteIn(['entities', entity, 'relations', name]);
+  };
   const renameEntity = (from: string, to: string): void => {
     const def: unknown = doc.getIn(['entities', from]);
     if (def === undefined) throw new Error(`Cannot rename "${from}": not found`);
@@ -893,17 +909,32 @@ export async function applySchemaConfig(
       else removeEntity(p.entity);
       break;
     }
-    case 'schema.add_column':
-    case 'schema.add_link': {
+    case 'schema.add_column': {
       const p = after as unknown as FieldPayload;
       if (inv) removeField(p.entity, p.column);
       else await reAddField(p.entity, p.column, p.fieldDef);
       break;
     }
+    case 'schema.add_link': {
+      const p = after as unknown as LinkPayload;
+      if (inv) {
+        removeField(p.entity, p.column);
+        removeRelation(p.entity, p.relationName);
+      } else {
+        await reAddField(p.entity, p.column, p.fieldDef);
+        addRelation(p.entity, p.relationName, p.relation);
+      }
+      break;
+    }
     case 'schema.delete_link': {
-      const p = before as unknown as FieldPayload;
-      if (inv) await reAddField(p.entity, p.column, p.fieldDef);
-      else removeField(p.entity, p.column);
+      const p = before as unknown as LinkPayload;
+      if (inv) {
+        await reAddField(p.entity, p.column, p.fieldDef);
+        addRelation(p.entity, p.relationName, p.relation);
+      } else {
+        removeField(p.entity, p.column);
+        removeRelation(p.entity, p.relationName);
+      }
       break;
     }
     case 'schema.rename_entity': {

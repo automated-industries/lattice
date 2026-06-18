@@ -193,17 +193,19 @@ entities:
   });
 
   // -------------------------------------------------------------------------
-  // Relations from ref
+  // Relations from explicit relations
   // -------------------------------------------------------------------------
 
-  it('creates belongsTo relation from ref field, stripping _id suffix', () => {
+  it('creates a belongsTo relation from an explicit relations block', () => {
     const yaml = `
 db: ./app.db
 entities:
   ticket:
     fields:
       id: { type: uuid, primaryKey: true }
-      assignee_id: { type: uuid, ref: user }
+      assignee_id: { type: uuid }
+    relations:
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
     render: default-list
     outputFile: tickets.md
 `;
@@ -216,19 +218,78 @@ entities:
     });
   });
 
-  it('keeps full field name as relation name when no _id suffix', () => {
+  it('uses the relation name as declared, independent of the field name', () => {
     const yaml = `
 db: ./app.db
 entities:
   comment:
     fields:
       id: { type: uuid, primaryKey: true }
-      post: { type: text, ref: posts }
+      post: { type: text }
+    relations:
+      post: { type: belongsTo, table: posts, foreignKey: post }
     render: default-list
     outputFile: comments.md
 `;
     const { tables } = parseConfigString(yaml, configDir);
     expect(tables[0]!.definition.relations?.post).toMatchObject({ table: 'posts' });
+  });
+
+  it('preserves an explicit `references` column on a belongsTo relation', () => {
+    const yaml = `
+db: ./app.db
+entities:
+  comment:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      post_slug: { type: text }
+    relations:
+      post: { type: belongsTo, table: posts, foreignKey: post_slug, references: slug }
+    outputFile: comments.md
+`;
+    const { tables } = parseConfigString(yaml, configDir);
+    expect(tables[0]!.definition.relations?.post).toMatchObject({
+      type: 'belongsTo',
+      table: 'posts',
+      foreignKey: 'post_slug',
+      references: 'slug',
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ref: shorthand removed in 4.0 — must fail loudly
+  // -------------------------------------------------------------------------
+
+  it('rejects a leftover `ref:` field with a clear 4.0 error', () => {
+    const yaml = `
+db: ./app.db
+entities:
+  books:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      author_id: { type: uuid, ref: authors }
+    outputFile: books.md
+`;
+    expect(() => parseConfigString(yaml, configDir)).toThrow(
+      /`ref:`.*"books\.author_id".*removed in 4\.0/,
+    );
+  });
+
+  it('rejects a malformed `relations:` entry (missing required keys)', () => {
+    const yaml = `
+db: ./app.db
+entities:
+  ticket:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      assignee_id: { type: uuid }
+    relations:
+      assignee: { type: belongsTo, table: user }
+    outputFile: tickets.md
+`;
+    expect(() => parseConfigString(yaml, configDir)).toThrow(
+      /relation "ticket\.assignee".*foreignKey/,
+    );
   });
 
   // -------------------------------------------------------------------------
