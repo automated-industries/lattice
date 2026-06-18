@@ -663,7 +663,13 @@ export async function handleSchemaRoutes(
       'schema.add_link',
       entityName,
       null,
-      { entity: entityName, column: colName, fieldDef: linkFieldDef, relationName: relName, relation },
+      {
+        entity: entityName,
+        column: colName,
+        fieldDef: linkFieldDef,
+        relationName: relName,
+        relation,
+      },
       `Added link ${entityName} → ${target}`,
       sessionId,
     );

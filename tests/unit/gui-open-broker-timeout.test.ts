@@ -46,6 +46,8 @@ describe('startBrokerWithinTimeout', () => {
   it('propagates a genuine connect rejection unchanged (not a timeout)', async () => {
     const b = fakeBroker(() => Promise.reject(new Error('connect refused')));
     await expect(startBrokerWithinTimeout(b, 1000)).rejects.toThrow('connect refused');
-    await expect(startBrokerWithinTimeout(b, 1000)).rejects.not.toBeInstanceOf(BrokerConnectTimeoutError);
+    await expect(startBrokerWithinTimeout(b, 1000)).rejects.not.toBeInstanceOf(
+      BrokerConnectTimeoutError,
+    );
   });
 });

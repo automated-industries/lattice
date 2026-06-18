@@ -4,7 +4,12 @@ import { handleRead } from './handlers/read.js';
 import { handleRowMutations } from './handlers/row-mutations.js';
 import { handleCollaboration } from './handlers/collaboration.js';
 import { handleHistory } from './handlers/history.js';
-import { NOT_HANDLED, type DispatchCtx, type DispatchResult, type HandlerDeps } from './handlers/types.js';
+import {
+  NOT_HANDLED,
+  type DispatchCtx,
+  type DispatchResult,
+  type HandlerDeps,
+} from './handlers/types.js';
 
 // Re-export the public surface so every existing `from './ai/dispatch.js'`
 // import keeps resolving unchanged after the switch was split into per-group
@@ -21,8 +26,18 @@ export {
 } from './handlers/types.js';
 export { visibilityDenialReason } from './handlers/permission.js';
 export { requireString, requireTable } from './handlers/helpers.js';
-export { SECRET_MASK, secretColumnsFor, redactRow, frameUntrustedFileContent } from './handlers/read.js';
-export { normalizeUrl, userProvidedUrl, parseBulkFilters, isWriteConflict } from './handlers/row-mutations.js';
+export {
+  SECRET_MASK,
+  secretColumnsFor,
+  redactRow,
+  frameUntrustedFileContent,
+} from './handlers/read.js';
+export {
+  normalizeUrl,
+  userProvidedUrl,
+  parseBulkFilters,
+  isWriteConflict,
+} from './handlers/row-mutations.js';
 
 /**
  * Registry function names the dispatcher can execute. This is the data-and-

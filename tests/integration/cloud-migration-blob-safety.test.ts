@@ -87,7 +87,7 @@ beforeEach(() => {
 });
 
 describe('isOwnedLocalBlob()', () => {
-  it("classifies the four ref_kinds + NULL-with-no-bytes correctly", () => {
+  it('classifies the four ref_kinds + NULL-with-no-bytes correctly', () => {
     // ref_kind === 'blob' → owned-local bytes under data/blobs/
     expect(isOwnedLocalBlob({ ref_kind: 'blob', blob_path: 'data/blobs/aaa', sha256: 'aaa' })).toBe(
       true,
@@ -219,7 +219,9 @@ describe('migrateLatticeData() — blob safety', () => {
           };
         }
         const value = Reflect.get(t, prop, receiver) as unknown;
-        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(t) : value;
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(t)
+          : value;
       },
     });
 

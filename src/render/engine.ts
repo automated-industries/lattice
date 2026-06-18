@@ -455,9 +455,7 @@ export class RenderEngine {
       const refCol = source.references ?? 'id';
       const keys = [...rawByKey.values()];
       const params: unknown[] = [...keys];
-      let sql = `SELECT * FROM "${from}" WHERE "${refCol}" IN (${keys
-        .map(() => '?')
-        .join(', ')})`;
+      let sql = `SELECT * FROM "${from}" WHERE "${refCol}" IN (${keys.map(() => '?').join(', ')})`;
       sql = appendQueryOptions(sql, params, source);
       const rows = await allAsyncOrSync(this._adapter, sql, params);
       for (const r of rows) {

@@ -50,8 +50,12 @@ describe('bounded reads — getActive / queryTable optional limit/offset', () =>
 
   it('rejects a non-integer / negative limit (no silent NaN/coercion)', async () => {
     const db = await makeDb();
-    await expect(db.getActive('items', 'name', { limit: -1 })).rejects.toThrow(/non-negative integer/);
-    await expect(db.getActive('items', 'name', { limit: 1.5 })).rejects.toThrow(/non-negative integer/);
+    await expect(db.getActive('items', 'name', { limit: -1 })).rejects.toThrow(
+      /non-negative integer/,
+    );
+    await expect(db.getActive('items', 'name', { limit: 1.5 })).rejects.toThrow(
+      /non-negative integer/,
+    );
     db.close();
   });
 

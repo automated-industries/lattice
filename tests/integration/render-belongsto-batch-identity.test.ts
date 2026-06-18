@@ -26,14 +26,7 @@
  *     masked column's value never reaches disk; an unshared row is absent).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import {
-  mkdtempSync,
-  mkdirSync,
-  rmSync,
-  readdirSync,
-  readFileSync,
-  existsSync,
-} from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
@@ -383,8 +376,16 @@ describe('SAFE-SUBSET belongsTo→PK render batch — identity', () => {
       await owner.init();
       await secureCloud(owner);
 
-      await owner.insert('widgets', { id: 'n1', body: 'VISIBLE_BODY_N1', secret_note: 'EYES_ONLY_N1' });
-      await owner.insert('widgets', { id: 'n2', body: 'PRIVATE_BODY_N2', secret_note: 'EYES_ONLY_N2' });
+      await owner.insert('widgets', {
+        id: 'n1',
+        body: 'VISIBLE_BODY_N1',
+        secret_note: 'EYES_ONLY_N1',
+      });
+      await owner.insert('widgets', {
+        id: 'n2',
+        body: 'PRIVATE_BODY_N2',
+        secret_note: 'EYES_ONLY_N2',
+      });
       await setRowVisibility(owner, 'widgets', 'n1', 'everyone');
       await setColumnAudience(
         owner,
@@ -403,7 +404,9 @@ describe('SAFE-SUBSET belongsTo→PK render batch — identity', () => {
 
       // Owner GUI once so the GUI-meta tables exist + member group is granted.
       {
-        const ownerTmp = mkdtempSync(join(tmpdir(), `b2pk-owner-${randomBytes(3).toString('hex')}-`));
+        const ownerTmp = mkdtempSync(
+          join(tmpdir(), `b2pk-owner-${randomBytes(3).toString('hex')}-`),
+        );
         dirs.push(ownerTmp);
         const ownerRoot = join(ownerTmp, '.lattice');
         const ownerWs = addWorkspace(ownerRoot, {
@@ -430,7 +433,9 @@ describe('SAFE-SUBSET belongsTo→PK render batch — identity', () => {
         if (mode === '0') process.env.LATTICE_RENDER_BELONGSTO_BATCH = '0';
         else delete process.env.LATTICE_RENDER_BELONGSTO_BATCH;
 
-        const tmp = mkdtempSync(join(tmpdir(), `b2pk-m-${mode}-${randomBytes(3).toString('hex')}-`));
+        const tmp = mkdtempSync(
+          join(tmpdir(), `b2pk-m-${mode}-${randomBytes(3).toString('hex')}-`),
+        );
         dirs.push(tmp);
         const root = join(tmp, '.lattice');
         const ws = addWorkspace(root, {

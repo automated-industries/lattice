@@ -11,7 +11,11 @@ import { dirname } from 'node:path';
 import { parseDocument } from 'yaml';
 import { randomUUID } from 'node:crypto';
 import { sendJson, readJson, tryHandler } from '../http.js';
-import { getDbCredential, saveDbCredential, getOrCreateMasterKey } from '../../framework/user-config.js';
+import {
+  getDbCredential,
+  saveDbCredential,
+  getOrCreateMasterKey,
+} from '../../framework/user-config.js';
 import {
   probeCloud,
   cloudRlsInstalled,

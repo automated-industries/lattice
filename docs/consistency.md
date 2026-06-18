@@ -42,7 +42,7 @@ is **rejected and reported as a conflict**, never applied over the newer value.
 The reject is surfaced to the editor so the change can be re-applied against the
 current record.
 
-*Why it matters:* a file edit and a concurrent database edit to the same record
+_Why it matters:_ a file edit and a concurrent database edit to the same record
 can no longer race to a silent data loss — the database wins and the conflict is
 made visible.
 
@@ -52,12 +52,12 @@ The manifest is written **last**, as a single atomic file (temp + rename). It is
 the commit point: a render either completes and commits a manifest describing a
 fully-written tree, or it throws **before** committing — leaving the **prior**
 manifest as the truthful record. Before writing anything, a render probes that its
-target directories are writable (a disk-full or read-only mount throws *before* a
+target directories are writable (a disk-full or read-only mount throws _before_ a
 single live file is touched). A write failure mid-render is re-raised loudly, never
 swallowed; the next render reconciles (unchanged files are skipped, and orphan
 cleanup runs only against a committed manifest).
 
-*Guarantee level:* **manifest-atomic + tree-eventually-consistent.** A render is
+_Guarantee level:_ **manifest-atomic + tree-eventually-consistent.** A render is
 not a single atomic multi-file swap (a file tree cannot offer one without orphaning
 user-edited and attached files the tree interleaves), but the manifest — the one
 unit that must be atomic for correctness — is, and a failed render is self-healing
@@ -108,10 +108,10 @@ re-sent) converges to the same state rather than double-applying.
 
 ## Where each invariant is enforced
 
-| Invariant | Enforced in |
-| --- | --- |
-| 1 — reverse-sync conflict gate | `src/reverse-sync/engine.ts` (row-version check), manifest `rowVersion` |
-| 2 — manifest-atomic render + writability probe | `src/render/engine.ts`, `src/render/writer.ts` |
-| 3 — single-owner render concurrency | `src/render/auto-render.ts` (single-flight) |
-| 4 — migration row-count + blob surfacing | `src/framework/cloud-migration.ts` |
-| 5 — offline replay idempotency | the edit-id dedup + client-timestamp ordering on replay |
+| Invariant                                      | Enforced in                                                             |
+| ---------------------------------------------- | ----------------------------------------------------------------------- |
+| 1 — reverse-sync conflict gate                 | `src/reverse-sync/engine.ts` (row-version check), manifest `rowVersion` |
+| 2 — manifest-atomic render + writability probe | `src/render/engine.ts`, `src/render/writer.ts`                          |
+| 3 — single-owner render concurrency            | `src/render/auto-render.ts` (single-flight)                             |
+| 4 — migration row-count + blob surfacing       | `src/framework/cloud-migration.ts`                                      |
+| 5 — offline replay idempotency                 | the edit-id dedup + client-timestamp ordering on replay                 |

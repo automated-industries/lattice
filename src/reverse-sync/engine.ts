@@ -145,7 +145,10 @@ export class ReverseSyncEngine {
           // it instead — never clobber. Skipped when the manifest predates
           // rowVersion (older render), falling back to the prior apply behavior
           // until the next render re-captures it.
-          if (fileInfo.rowVersion !== undefined && rowVersionHash(entityRow) !== fileInfo.rowVersion) {
+          if (
+            fileInfo.rowVersion !== undefined &&
+            rowVersionHash(entityRow) !== fileInfo.rowVersion
+          ) {
             result.conflicts.push({
               table,
               slug,

@@ -1449,7 +1449,11 @@ export class Lattice {
     const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
     const order = cols.has(orderBy) ? ` ORDER BY "${orderBy}"` : '';
     const page = pageClause(opts);
-    return allAsyncOrSync(this._adapter, `SELECT * FROM "${table}"${where}${order}${page.sql}`, page.params);
+    return allAsyncOrSync(
+      this._adapter,
+      `SELECT * FROM "${table}"${where}${order}${page.sql}`,
+      page.params,
+    );
   }
 
   /**

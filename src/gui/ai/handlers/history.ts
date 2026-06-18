@@ -31,8 +31,7 @@ export async function handleHistory(deps: HandlerDeps): Promise<GroupResult> {
         ? { ok: true, result: result.entry }
         : {
             ok: false,
-            error:
-              result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone',
+            error: result.reason === 'not_found' ? 'Audit entry not found' : 'Entry already undone',
           };
     }
     default:

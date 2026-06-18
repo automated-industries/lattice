@@ -134,8 +134,12 @@ describe('offline-replay ordering + interleaving', () => {
     const s = await boot();
     const a = randomUUID();
     const b = randomUUID();
-    const aId = ((await (await postRow(s, { title: 'A', status: 'todo' }, a)).json()) as { id: string }).id;
-    const bId = ((await (await postRow(s, { title: 'B', status: 'todo' }, b)).json()) as { id: string }).id;
+    const aId = (
+      (await (await postRow(s, { title: 'A', status: 'todo' }, a)).json()) as { id: string }
+    ).id;
+    const bId = (
+      (await (await postRow(s, { title: 'B', status: 'todo' }, b)).json()) as { id: string }
+    ).id;
     // Replay A then B (interleaved against the two committed rows).
     const a2 = await postRow(s, { title: 'A', status: 'todo' }, a);
     const b2 = await postRow(s, { title: 'B', status: 'todo' }, b);
@@ -162,7 +166,9 @@ describe('offline-replay ordering + interleaving', () => {
     const editId = randomUUID();
     const tOriginal = '2026-01-15T00:00:00.000Z';
     const tReplay = '2026-03-20T00:00:00.000Z';
-    expect((await postRow(s, { title: 'once', status: 'todo' }, editId, tOriginal)).status).toBe(201);
+    expect((await postRow(s, { title: 'once', status: 'todo' }, editId, tOriginal)).status).toBe(
+      201,
+    );
     const replay = await postRow(s, { title: 'once', status: 'todo' }, editId, tReplay);
     expect(replay.status).toBe(200); // idempotent — no second insert
     expect(await insertTimestamps(s)).toEqual([tOriginal]); // history keeps the ORIGINAL edit time
