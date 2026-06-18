@@ -13,10 +13,13 @@ import type {
 
 /**
  * Soft-delete filter fragment. Byte-identical to the NOT_DELETED const in
- * lattice.ts (line 147) so the batched IN(...) resolve read excludes the same
+ * lattice.ts so the batched IN(...) resolve read excludes the same
  * soft-deleted rows the old per-row getByNaturalKey did.
+ *
+ * v4.0 BREAKING: the legacy empty-string branch was removed; see lattice.ts
+ * NOT_DELETED for the rationale and the required consumer migration.
  */
-const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
+const NOT_DELETED = 'deleted_at IS NULL';
 
 /**
  * Thrown by Lattice.seed when onUnresolvedLink: 'throw' is set and one or more

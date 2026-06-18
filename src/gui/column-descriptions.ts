@@ -66,7 +66,7 @@ export const BUILTIN_SYSTEM_COLUMN_DESCRIPTIONS: Readonly<Record<string, string>
   id: 'Primary key — the unique identifier of this row.',
   created_at: 'When this row was created.',
   updated_at: 'When this row was last updated.',
-  deleted_at: 'When this row was soft-deleted (empty while the row is active).',
+  deleted_at: 'When this row was soft-deleted (NULL while the row is active).',
 };
 
 /** Built-in definitions for the user-facing native entities themselves. */
