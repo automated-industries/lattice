@@ -38,7 +38,9 @@ export function pageClause(opts: PageOptions): { sql: string; params: number[] }
     throw new Error(`queryTable: limit must be a non-negative integer, got ${String(opts.limit)}`);
   }
   if (opts.offset != null && (!Number.isInteger(opts.offset) || opts.offset < 0)) {
-    throw new Error(`queryTable: offset must be a non-negative integer, got ${String(opts.offset)}`);
+    throw new Error(
+      `queryTable: offset must be a non-negative integer, got ${String(opts.offset)}`,
+    );
   }
   if (opts.offset != null) return { sql: ' LIMIT ? OFFSET ?', params: [opts.limit, opts.offset] };
   return { sql: ' LIMIT ?', params: [opts.limit] };

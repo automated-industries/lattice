@@ -276,8 +276,7 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         if (ctx.db.getDialect() !== 'postgres') {
           return {
             ok: false,
-            error:
-              'Sharing settings only apply to a shared cloud workspace (this is a local one).',
+            error: 'Sharing settings only apply to a shared cloud workspace (this is a local one).',
           };
         }
         const pks = matched.map((r) => String(r[pkCol]));

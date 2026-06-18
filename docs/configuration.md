@@ -154,12 +154,12 @@ This generates:
 Each key under `relations:` is the **relation name**, and its value is a relation
 definition with these fields:
 
-| Field        | Type                  | Description                                                                                   |
-| ------------ | --------------------- | --------------------------------------------------------------------------------------------- |
-| `type`       | `'belongsTo'`         | **Required.** The relation kind. `belongsTo` points from the FK-holding table to its parent.  |
-| `table`      | string                | **Required.** The related (parent) entity/table name.                                          |
-| `foreignKey` | string                | **Required.** The column on this entity that holds the related row's key (e.g. `assignee_id`). |
-| `references` | string                | Optional. The column on the related table to match against. Defaults to that table's primary key. |
+| Field        | Type          | Description                                                                                       |
+| ------------ | ------------- | ------------------------------------------------------------------------------------------------- |
+| `type`       | `'belongsTo'` | **Required.** The relation kind. `belongsTo` points from the FK-holding table to its parent.      |
+| `table`      | string        | **Required.** The related (parent) entity/table name.                                             |
+| `foreignKey` | string        | **Required.** The column on this entity that holds the related row's key (e.g. `assignee_id`).    |
+| `references` | string        | Optional. The column on the related table to match against. Defaults to that table's primary key. |
 
 **Choosing the relation name:** The relation name is whatever key you put under
 `relations:` — you name it explicitly. (In earlier versions this name was derived

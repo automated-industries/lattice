@@ -40,7 +40,6 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-
 /**
  * Ordered, first-match dispatcher for the row-CRUD + link/unlink routes. Returns
  * true iff it handled the request; server.ts calls it right after

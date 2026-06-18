@@ -149,9 +149,7 @@ describe('deleted_at normalization — empty-string is no longer live', () => {
       expect(result.unresolvedLinks.map((u) => u.name)).toEqual(['alice']);
 
       // throw mode: the same hidden target makes seed() raise.
-      await expect(seedMeeting(['alice'], 'throw')).rejects.toBeInstanceOf(
-        SeedReconciliationError,
-      );
+      await expect(seedMeeting(['alice'], 'throw')).rejects.toBeInstanceOf(SeedReconciliationError);
     });
   });
 

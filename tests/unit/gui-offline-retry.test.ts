@@ -23,7 +23,8 @@ function loadDrainHelpers(): {
   // (which touches a module timer) begins.
   const start = appJs.indexOf('var MAX_DRAIN_ATTEMPTS');
   const end = appJs.indexOf('function clearDrainRetry');
-  if (start < 0 || end < 0 || end <= start) throw new Error('could not locate drain helpers in appJs');
+  if (start < 0 || end < 0 || end <= start)
+    throw new Error('could not locate drain helpers in appJs');
   const slice = appJs.slice(start, end);
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function(
@@ -97,7 +98,9 @@ describe('offline-retry drain orchestration wiring', () => {
     // drainNow is the connectivity-event path: clear the timer, reset backoff, drain.
     expect(appJs).toContain('function drainNow()');
     // The online listener and the cloud-reconnect path both supersede the backoff.
-    expect(appJs).toContain("window.addEventListener('online', function () { if (cloudConnected) drainNow(); })");
+    expect(appJs).toContain(
+      "window.addEventListener('online', function () { if (cloudConnected) drainNow(); })",
+    );
     expect(appJs).toContain('if (cloudConnected && !wasConnected) drainNow();');
   });
 

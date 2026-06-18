@@ -4,7 +4,12 @@ import { searchLatticeDocs } from '../lattice-docs.js';
 import { fullTextSearch } from '../../../search/fts.js';
 import { buildRowContextLocator, readRowContext } from '../../row-context.js';
 import { readManifest } from '../../../lifecycle/manifest.js';
-import { ASSISTANT_HIDDEN_TABLES, NOT_HANDLED, type HandlerDeps, type GroupResult } from './types.js';
+import {
+  ASSISTANT_HIDDEN_TABLES,
+  NOT_HANDLED,
+  type HandlerDeps,
+  type GroupResult,
+} from './types.js';
 import { requireString, requireTable } from './helpers.js';
 
 export const SECRET_MASK = '••••••••';

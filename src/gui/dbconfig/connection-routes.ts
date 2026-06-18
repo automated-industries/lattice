@@ -12,7 +12,11 @@ import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../../lattice.js';
 import { sendJson, readJson, tryHandler } from '../http.js';
-import { getDbCredential, saveDbCredential, listDbCredentials } from '../../framework/user-config.js';
+import {
+  getDbCredential,
+  saveDbCredential,
+  listDbCredentials,
+} from '../../framework/user-config.js';
 import { cloudRlsInstalled, canManageRoles } from '../../framework/cloud-connect.js';
 import { getCloudSetting, CLOUD_SETTING_WORKSPACE_LOGO_ETAG } from '../../cloud/settings.js';
 import { findLatticeRoot } from '../../framework/lattice-root.js';

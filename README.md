@@ -1934,13 +1934,14 @@ entities:
 
 **Field options**
 
-| Option       | Type               | Description                                                                                                                                           |
-| ------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `type`       | `LatticeFieldType` | Column data type (required)                                                                                                                           |
-| `primaryKey` | boolean            | Primary key column (`TEXT PRIMARY KEY` for uuid/text)                                                                                                 |
-| `required`   | boolean            | `NOT NULL` constraint                                                                                                                                 |
-| `default`    | string/number/bool | SQL `DEFAULT` value                                                                                                                                   |
-| `ref`        | string             | Foreign-key reference to another entity. Creates a `belongsTo` relation; `_id` suffix is stripped from the relation name (`assignee_id` → `assignee`) |
+| Option       | Type               | Description                                           |
+| ------------ | ------------------ | ----------------------------------------------------- |
+| `type`       | `LatticeFieldType` | Column data type (required)                           |
+| `primaryKey` | boolean            | Primary key column (`TEXT PRIMARY KEY` for uuid/text) |
+| `required`   | boolean            | `NOT NULL` constraint                                 |
+| `default`    | string/number/bool | SQL `DEFAULT` value                                   |
+
+> Foreign-key relationships are declared at the **entity level** via `relations:` (see the entity-context examples above), not as a per-field option. The former per-field `ref:` shorthand was removed in 4.0 — a config that still uses it fails with a clear error pointing at `relations:`.
 
 **Entity-level options**
 

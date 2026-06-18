@@ -66,6 +66,7 @@ tagged BREAKING.
   must be migrated before they will open. See
   [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the before/after and the exact
   error string.
+
 - **BREAKING — the soft-delete predicate is simplified to `deleted_at IS NULL`.**
   Earlier versions treated a row as "live" when `deleted_at` was **either** NULL
   **or** the empty string (`''`), via a legacy `OR deleted_at = ''` back-compat
@@ -136,8 +137,8 @@ tagged BREAKING.
   is now bounded (default = the existing switch cap, `SWITCH_OPEN_TIMEOUT_MS`); on
   timeout it tears the half-open broker down in the background and throws loudly
   rather than wedge or silently degrade. **Behavior change:** a broker connect that
-  *hangs* at server boot now fails the boot loudly instead of eventually booting in
-  degraded local-mode — a genuine connect *rejection* still degrades to local mode as
+  _hangs_ at server boot now fails the boot loudly instead of eventually booting in
+  degraded local-mode — a genuine connect _rejection_ still degrades to local mode as
   before (only the previously-unhandled hang now surfaces).
 - **The GUI offline-edit queue now self-heals transient failures and ages out
   poison edits.** A queued edit that fails to replay with a 5xx or a network error

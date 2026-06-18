@@ -33,7 +33,7 @@ Each change is detailed below.
 > **Upgrading first will HIDE any live row whose `deleted_at` is the empty string
 > (`''`)** until you normalize it — and during that window a natural-key upsert
 > against a hidden row can **INSERT A DUPLICATE**. Normalize every `deleted_at`
-> table to `NULL`, verify zero empty-string rows, *then* upgrade. The numbered
+> table to `NULL`, verify zero empty-string rows, _then_ upgrade. The numbered
 > steps below are in mandatory order; do not reverse them.
 
 ### What changed
@@ -172,9 +172,9 @@ db: ./app.db
 entities:
   ticket:
     fields:
-      id:          { type: uuid, primaryKey: true }
-      title:       { type: text, required: true }
-      assignee_id: { type: uuid, ref: user }   # belongsTo derived automatically, relation named "assignee"
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
+      assignee_id: { type: uuid, ref: user } # belongsTo derived automatically, relation named "assignee"
     outputFile: tickets.md
 ```
 
@@ -185,11 +185,11 @@ db: ./app.db
 entities:
   ticket:
     fields:
-      id:          { type: uuid, primaryKey: true }
-      title:       { type: text, required: true }
-      assignee_id: { type: uuid }              # plain FK column
+      id: { type: uuid, primaryKey: true }
+      title: { type: text, required: true }
+      assignee_id: { type: uuid } # plain FK column
     relations:
-      assignee:                                # relation name you choose
+      assignee: # relation name you choose
         type: belongsTo
         table: user
         foreignKey: assignee_id
