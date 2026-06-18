@@ -8,6 +8,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **You can now delete a workspace from the welcome screen even when none is
+  active.** When a workspace's database failed to open at startup, the GUI fell
+  back to the zero-workspace welcome screen but still listed the workspace — yet
+  deleting it returned `409 No active workspace`, so it could never be removed.
+  Workspace deletion now works with no active database: it operates on the
+  registry rather than the open database, dropping the record and (for a local
+  workspace) removing its files; a cloud workspace's remote data is left
+  untouched. Switching workspaces from this state is a known follow-up.
+
 ## [3.4.2] - 2026-06-18
 
 ### Fixed
