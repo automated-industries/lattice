@@ -22,7 +22,6 @@ import type {
   WriteHookContext,
   SeedConfig,
   SeedResult,
-  UnresolvedLink,
   ReportConfig,
   ReportResult,
   EntityContextDefinition,
@@ -65,6 +64,7 @@ import type { CompiledTableDef } from './schema/manager.js';
 import { assertSafeIdentifier } from './schema/identifier.js';
 import { ChangelogService } from './changelog/service.js';
 import { ReportBuilder } from './report/builder.js';
+import { SeedEngine } from './crud/seed-engine.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine, NOOP_RENDER } from './render/engine.js';
 import type { RenderOptions } from './render/progress.js';
@@ -150,6 +150,7 @@ export class Lattice {
   private readonly _adapter: StorageAdapter;
   private _changelogService?: ChangelogService;
   private _reportBuilder?: ReportBuilder;
+  private _seedEngine?: SeedEngine;
   private readonly _schema: SchemaManager;
   private readonly _sanitizer: Sanitizer;
   private readonly _render: RenderEngine;
@@ -1538,187 +1539,19 @@ export class Lattice {
     const notInit = this._notInitError<SeedResult>();
     if (notInit) return notInit;
 
-    let upserted = 0;
-    let linked = 0;
-    let softDeleted = 0;
-    const keys: string[] = [];
-    const unresolvedLinks: UnresolvedLink[] = [];
-
-    // Batch all junction-link target lookups up front. The previous
-    // implementation issued one point-read per (record × link field × name),
-    // an N×M round-trip storm against the same few resolve tables on every boot
-    // seed. Here we collect every distinct (resolveTable, resolveBy) → {names}
-    // the data references, issue ONE `IN (...)` read per group, and resolve from
-    // an in-memory map. Pure lookup-by-natural-key, so which names resolve and
-    // which surface as unresolved is identical — only the DB egress changes.
-    // Built only when `linkTo` is configured. The lookup key is built the SAME
-    // way here and at the build site via `_seedResolveKey`, so there is no
-    // separator-character drift between the two.
-    const resolveMaps = config.linkTo
-      ? await this._buildSeedResolveMaps(config.data, config.linkTo)
-      : new Map<string, Map<string, string>>();
-
-    for (const record of config.data) {
-      const rawKey = record[config.naturalKey];
-      const naturalKeyVal =
-        typeof rawKey === 'string' ? rawKey : typeof rawKey === 'number' ? String(rawKey) : '';
-      if (!naturalKeyVal) continue;
-
-      keys.push(naturalKeyVal);
-
-      // Upsert the record
-      const upsertOpts: import('./types.js').UpsertByNaturalKeyOptions = {};
-      if (config.sourceFile) upsertOpts.sourceFile = config.sourceFile;
-      if (config.sourceHash) upsertOpts.sourceHash = config.sourceHash;
-      if (config.orgId) upsertOpts.orgId = config.orgId;
-      // upsertByNaturalKey already returns the canonical id (existing.id on
-      // update, the generated/provided uuid on insert) — use it directly instead
-      // of re-SELECTing the whole row just to recover the id.
-      const id = await this.upsertByNaturalKey(
-        config.table,
-        config.naturalKey,
-        naturalKeyVal,
-        record as Row,
-        upsertOpts,
-      );
-      upserted++;
-
-      // Process links
-      if (config.linkTo) {
-        if (!id) continue;
-
-        for (const [field, spec] of Object.entries(config.linkTo)) {
-          const names = record[field] as string[] | undefined;
-          if (!Array.isArray(names)) continue;
-
-          const resolveTable = spec.resolveTable ?? field;
-          const targetIds = resolveMaps.get(this._seedResolveKey(resolveTable, spec.resolveBy));
-          for (const name of names) {
-            const targetId = targetIds?.get(name);
-            if (targetId === undefined) {
-              // Reconciliation point: the link's target doesn't exist. Surface
-              // it instead of silently dropping (Rule: no silent failures) —
-              // otherwise the source row cites a relationship in text but has
-              // no link in the graph.
-              unresolvedLinks.push({
-                record: naturalKeyVal,
-                field,
-                name,
-                junction: spec.junction,
-                resolveTable,
-                resolveBy: spec.resolveBy,
-              });
-              continue;
-            }
-
-            const linkData: Row = {
-              [this._inferFk(config.table)]: id,
-              [spec.foreignKey]: targetId,
-              ...(spec.extras ?? {}),
-            };
-            await this.link(spec.junction, linkData);
-            linked++;
-          }
-        }
-      }
-    }
-
-    // Soft-delete missing
-    if (config.softDeleteMissing && config.sourceFile && keys.length > 0) {
-      softDeleted = await this.softDeleteMissing(
-        config.table,
-        config.naturalKey,
-        config.sourceFile,
-        keys,
-      );
-    }
-
-    if (config.onUnresolvedLink === 'throw' && unresolvedLinks.length > 0) {
-      throw new SeedReconciliationError(config.table, unresolvedLinks);
-    }
-
-    return { upserted, linked, softDeleted, unresolvedLinks };
+    return this._seed.seed(config);
   }
 
-  /**
-   * Stable lookup key for a (resolveTable, resolveBy) group in {@link seed}'s
-   * batched resolve maps. Built via `JSON.stringify` of a tuple so the build
-   * site and the consume site cannot diverge on separator characters.
-   */
-  private _seedResolveKey(resolveTable: string, resolveBy: string): string {
-    return JSON.stringify([resolveTable, resolveBy]);
-  }
-
-  /**
-   * Pre-resolve every junction-link target referenced by a {@link seed} batch.
-   *
-   * Walks the records once to collect, per (resolveTable, resolveBy) group, the
-   * distinct set of target names, then issues ONE
-   * `SELECT id, "<resolveBy>" FROM "<resolveTable>" WHERE "<resolveBy>" IN (...) AND NOT_DELETED`
-   * per group and returns a `key → (name → id)` lookup. This replaces the old
-   * per-name `getByNaturalKey` call (N×M point reads) with one read per group
-   * while preserving the exact resolution semantics:
-   * - same `NOT_DELETED` soft-delete predicate the per-row read used;
-   * - first row wins on duplicate natural keys (mirrors `getAsyncOrSync`);
-   * - null/empty/non-string names are skipped (they never matched before either)
-   *   and a name absent from the map surfaces as unresolved at the call site (no
-   *   silent drop — Rule: no silent failures);
-   * - an empty distinct-name set skips the query entirely (no invalid `IN ()`).
-   *
-   * Both identifiers are validated with `_assertIdent`, exactly as
-   * `getByNaturalKey` did on every per-row call.
-   */
-  private async _buildSeedResolveMaps(
-    data: Record<string, unknown>[],
-    linkTo: Record<string, import('./types.js').SeedLinkSpec>,
-  ): Promise<Map<string, Map<string, string>>> {
-    // Phase 1: collect distinct names per (resolveTable, resolveBy) group.
-    const wanted = new Map<
-      string,
-      { resolveTable: string; resolveBy: string; names: Set<string> }
-    >();
-    for (const [field, spec] of Object.entries(linkTo)) {
-      const resolveTable = spec.resolveTable ?? field;
-      const groupKey = this._seedResolveKey(resolveTable, spec.resolveBy);
-      let group = wanted.get(groupKey);
-      if (!group) {
-        group = { resolveTable, resolveBy: spec.resolveBy, names: new Set<string>() };
-        wanted.set(groupKey, group);
-      }
-      for (const record of data) {
-        const names = record[field];
-        if (!Array.isArray(names)) continue;
-        for (const name of names) {
-          // Only string names resolve via natural key; skip null/empty so the
-          // batched IN(...) never receives a non-matching/blank key.
-          if (typeof name === 'string' && name.length > 0) group.names.add(name);
-        }
-      }
-    }
-
-    // Phase 2: one batched read per group.
-    const maps = new Map<string, Map<string, string>>();
-    for (const [groupKey, group] of wanted) {
-      const map = new Map<string, string>();
-      maps.set(groupKey, map);
-      if (group.names.size === 0) continue; // empty IN → no query
-      this._assertIdent(group.resolveTable, group.resolveBy);
-      const names = [...group.names];
-      const placeholders = names.map(() => '?').join(', ');
-      const rows = await allAsyncOrSync(
-        this._adapter,
-        `SELECT id, "${group.resolveBy}" FROM "${group.resolveTable}" WHERE "${group.resolveBy}" IN (${placeholders}) AND ${NOT_DELETED}`,
-        names,
-      );
-      for (const row of rows) {
-        const key = row[group.resolveBy];
-        if (typeof key !== 'string') continue;
-        // First row wins, mirroring getByNaturalKey's single-row read on
-        // duplicate natural keys.
-        if (!map.has(key)) map.set(key, row.id as string);
-      }
-    }
-    return maps;
+  /** Lazily-constructed seeding collaborator (see src/crud/seed-engine.ts). */
+  private get _seed(): SeedEngine {
+    this._seedEngine ??= new SeedEngine({
+      adapter: this._adapter,
+      upsertByNaturalKey: (t, c, v, d, o) => this.upsertByNaturalKey(t, c, v, d, o),
+      link: (j, d, o) => this.link(j, d, o),
+      softDeleteMissing: (t, c, f, k) => this.softDeleteMissing(t, c, f, k),
+      inferFk: (t) => this._inferFk(t),
+    });
+    return this._seedEngine;
   }
 
   /** Infer FK column name from table name (e.g., 'rule' → 'rule_id'). */
@@ -2925,28 +2758,7 @@ export class Lattice {
   }
 }
 
-/**
- * Thrown by {@link Lattice.seed} when `onUnresolvedLink: 'throw'` is set and
- * one or more junction links could not be created because their target rows
- * did not resolve. Carries the full list so the caller can report or
- * reconcile every missing target at once rather than discovering them one
- * silent drop at a time.
- */
-export class SeedReconciliationError extends Error {
-  constructor(
-    public readonly table: string,
-    public readonly unresolvedLinks: UnresolvedLink[],
-  ) {
-    const detail = unresolvedLinks
-      .map((u) => `${u.field}="${u.name}" (→ ${u.resolveTable}.${u.resolveBy})`)
-      .join(', ');
-    super(
-      `seed("${table}"): ${String(unresolvedLinks.length)} unresolved link(s) — ` +
-        `target row(s) not found: ${detail}. Create the missing target(s) and re-seed.`,
-    );
-    this.name = 'SeedReconciliationError';
-  }
-}
+export { SeedReconciliationError } from './crud/seed-engine.js';
 
 // ---------------------------------------------------------------------------
 // Module-level helpers
