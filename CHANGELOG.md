@@ -8,6 +8,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the soft-delete predicate is simplified to `deleted_at IS NULL`.**
+  Earlier versions treated a row as "live" when `deleted_at` was **either** NULL
+  **or** the empty string (`''`), via a legacy `OR deleted_at = ''` back-compat
+  branch. That branch is removed from the three read paths that still carried it:
+  the natural-key lookup family (`getByNaturalKey` / `upsertByNaturalKey` /
+  `enrichByNaturalKey` / `softDeleteMissing`), the seed link resolver, and
+  full-text search (both the indexed and the LIKE-fallback paths). The main
+  `query` read path, `getActive` / `countActive`, the report builder, and the
+  structured `{ col: 'deleted_at', op: 'isNull' }` filter family already used
+  bare `deleted_at IS NULL`, so they are unchanged — this release makes the
+  predicate consistent everywhere.
+
+  The library only ever writes a timestamp (on delete) or NULL (on
+  insert/restore), never `''`, so a database that has only ever used this library
+  to soft-delete is unaffected. But any row whose `deleted_at` holds `''` (legacy
+  or externally inserted data) will now read as **deleted**, and a natural-key
+  upsert against such a hidden row can insert a duplicate. **Consumers MUST
+  normalize every `deleted_at = ''` row to NULL on every `deleted_at` table
+  BEFORE upgrading.** See [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the
+  required, ordered migration (normalize → verify zero empty-string rows → then
+  upgrade).
+
 ### Fixed
 
 - **A failed render no longer leaves new files on disk under the prior manifest,

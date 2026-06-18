@@ -141,11 +141,19 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
 }
 
 /**
- * Soft-delete filter fragment. A row is "live" when `deleted_at` is NULL or the
- * empty string (legacy rows used `''`). Interpolated into the WHERE clause of
- * natural-key lookups so a soft-deleted row never satisfies a uniqueness probe.
+ * Soft-delete filter fragment. A row is "live" only when `deleted_at IS NULL`.
+ * Interpolated into the WHERE clause of natural-key lookups so a soft-deleted
+ * row never satisfies a uniqueness probe.
+ *
+ * v4.0 BREAKING: the legacy empty-string branch (`OR deleted_at = ''`) was
+ * removed. The library only ever writes a timestamp (on delete) or NULL (on
+ * insert/restore), never `''`, so this is a no-op for any DB that has only used
+ * this library to soft-delete. Consumers with legacy/externally-inserted rows
+ * MUST normalize every `deleted_at = ''` row to NULL BEFORE upgrading (see
+ * MIGRATING-4.0.md) — otherwise those live rows will read as deleted, and a
+ * natural-key upsert against a hidden row can insert a duplicate.
  */
-const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
+const NOT_DELETED = 'deleted_at IS NULL';
 
 export class Lattice {
   private readonly _adapter: StorageAdapter;
