@@ -8,6 +8,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.4.4] - 2026-06-18
+
+### Fixed
+
+- **Cloud: a member can now add/edit/delete through the GUI assistant.** Three
+  member-write failures on a shared cloud are fixed: the audit log's INSERT policy
+  rejected the entry a hard delete writes for an already-removed row (now written in
+  the same transaction, before the row is gone); undo/redo/revert and the redo-stack
+  purge need UPDATE/DELETE on the audit log (granted, scoped by the existing per-op
+  RLS so a member only touches audit rows for entities it can see); and adding a row
+  with a brand-new field needs DDL a scoped member can't run (routed through an
+  owner-side `SECURITY DEFINER` helper that validates the table, rejects internal
+  tables, and whitelists the column type).
+- **Cloud: private uploads stay private end-to-end.** A file uploaded with the
+  "private" toggle (and everything derived from it — enrichment entity rows, the
+  fallback note, and the file↔entity junction links) is now stamped private at
+  insert, instead of inheriting a shared table default and leaking to the workspace.
+- **Cloud: the API key no longer breaks an OAuth session, and Clear is
+  authoritative.** When connected with Claude (OAuth), the client now sends only the
+  bearer token and never an `x-api-key` (previously the SDK defaulted the key from
+  the environment and sent both, which the API rejected as invalid). OAuth always
+  takes precedence over a stored/env key, and clicking Clear now persists — it
+  suppresses both the stored key and the environment fallback until a new key is
+  saved — so the settings UI reflects reality.
+- **GUI: opening (or auto-updating) no longer re-renders the whole context tree.**
+  The open-time render is now gated on a manifest-recorded change cursor (template
+  version + the change-log high-water mark + a sharing-graph digest, read through the
+  current viewer's scope). When nothing the tree depends on has changed, the render
+  is skipped entirely; otherwise a content-hash backstop suppresses work for unchanged
+  entities. Fails open (re-renders on any uncertainty) and is per-viewer correct (a
+  member-visible edit, a new observation, or an owner un-share each still re-render).
+- **GUI: "share with specific people" is now one save for many people.** The picker
+  stages a multi-person selection and commits it in a single batch instead of
+  applying (and collapsing the panel) on every checkbox, and the open panel survives
+  a background refresh.
+- **Background auto-upgrade now activates for real global/local installs.**
+  Install-context detection resolved the package root from the raw launch path, which
+  for a global/local install is an unresolved bin symlink — so it fell back to
+  "unknown" and silently disabled the self-update supervisor. Both the module path and
+  the working directory are now symlink-resolved.
+
 ## [3.4.3] - 2026-06-18
 
 ### Fixed
