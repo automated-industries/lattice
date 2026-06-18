@@ -63,8 +63,27 @@ const ALLOWED_COLUMN_TYPES = new Set(['text', 'integer', 'real', 'boolean']);
 
 /** The entity a column references (a foreign-key "link"), or null. */
 function columnRefTarget(configPath: string, entity: string, col: string): string | null {
-  const ref: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'fields', col, 'ref']);
-  return typeof ref === 'string' && ref ? ref : null;
+  // A "link" is now an entity-level `relations:` belongsTo entry whose
+  // foreignKey is this column (the per-field `ref:` shorthand was removed in
+  // 4.0). Find the belongsTo pointing at `col` and return its target table.
+  const relsNode: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'relations']);
+  if (!relsNode || typeof relsNode !== 'object') return null;
+  const rels =
+    typeof (relsNode as { toJSON?: unknown }).toJSON === 'function'
+      ? (relsNode as { toJSON: () => Record<string, unknown> }).toJSON()
+      : (relsNode as Record<string, unknown>);
+  for (const rel of Object.values(rels)) {
+    if (
+      rel &&
+      typeof rel === 'object' &&
+      (rel as { type?: unknown }).type === 'belongsTo' &&
+      (rel as { foreignKey?: unknown }).foreignKey === col
+    ) {
+      const table = (rel as { table?: unknown }).table;
+      return typeof table === 'string' && table ? table : null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -627,9 +646,15 @@ export async function handleSchemaRoutes(
     while (existingCols.has(colName)) colName = `${target}_id_${String(n++)}`;
     const linkType = fieldToSqliteBaseType('uuid');
     await execSql(active.db, `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${linkType}`);
-    const linkFieldDef = { type: 'uuid', ref: target };
+    // Write a plain FK field plus an explicit entity-level belongsTo relation
+    // (the per-field `ref:` shorthand was removed in 4.0). The relation name
+    // mirrors the old derivation: the column with a trailing `_id` stripped.
+    const linkFieldDef = { type: 'uuid' };
+    const relName = colName.endsWith('_id') ? colName.slice(0, -3) : colName;
+    const relation = { type: 'belongsTo', table: target, foreignKey: colName };
     const doc = loadConfigDoc(active.configPath);
     doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
+    doc.setIn(['entities', entityName, 'relations', relName], relation);
     saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
@@ -638,7 +663,7 @@ export async function handleSchemaRoutes(
       'schema.add_link',
       entityName,
       null,
-      { entity: entityName, column: colName, fieldDef: linkFieldDef },
+      { entity: entityName, column: colName, fieldDef: linkFieldDef, relationName: relName, relation },
       `Added link ${entityName} → ${target}`,
       sessionId,
     );
@@ -665,14 +690,37 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Not a link column: ${colName}` }, 400);
       return true;
     }
-    // SOFT delete: remove the FK field from the config (hiding the link)
-    // but DO NOT drop the SQL column — its values stay, so revert restores
-    // them with no snapshot. Capture the field def first for revert.
+    // SOFT delete: remove the FK field AND its belongsTo relation from the
+    // config (hiding the link) but DO NOT drop the SQL column — its values
+    // stay, so revert restores them with no snapshot. The relation is now a
+    // separate entity-level entry (the per-field `ref:` shorthand was removed
+    // in 4.0), so deleting the field alone would leave an orphaned relation
+    // pointing at a missing column — both must go, and both come back on
+    // revert. Capture the field def + relation (name + spec) first.
     const doc = loadConfigDoc(active.configPath);
-    const deletedFieldDef = (
-      doc.toJS() as { entities?: Record<string, { fields?: Record<string, unknown> }> }
-    ).entities?.[entityName]?.fields?.[colName];
+    const entityJs = (
+      doc.toJS() as {
+        entities?: Record<
+          string,
+          { fields?: Record<string, unknown>; relations?: Record<string, unknown> }
+        >;
+      }
+    ).entities?.[entityName];
+    const deletedFieldDef = entityJs?.fields?.[colName];
+    const relationEntries = Object.entries(entityJs?.relations ?? {});
+    const deletedRelation = relationEntries.find(
+      ([, rel]) =>
+        rel != null &&
+        typeof rel === 'object' &&
+        (rel as { type?: unknown }).type === 'belongsTo' &&
+        (rel as { foreignKey?: unknown }).foreignKey === colName,
+    );
+    const deletedRelationName = deletedRelation?.[0];
+    const deletedRelationDef = deletedRelation?.[1];
     doc.deleteIn(['entities', entityName, 'fields', colName]);
+    if (deletedRelationName !== undefined) {
+      doc.deleteIn(['entities', entityName, 'relations', deletedRelationName]);
+    }
     saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
@@ -680,7 +728,14 @@ export async function handleSchemaRoutes(
       active,
       'schema.delete_link',
       entityName,
-      { entity: entityName, column: colName, fieldDef: deletedFieldDef },
+      {
+        entity: entityName,
+        column: colName,
+        fieldDef: deletedFieldDef,
+        ...(deletedRelationName !== undefined
+          ? { relationName: deletedRelationName, relation: deletedRelationDef }
+          : {}),
+      },
       null,
       `Deleted link ${entityName} → ${target}`,
       sessionId,

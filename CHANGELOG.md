@@ -10,6 +10,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **BREAKING — the per-field `ref:` shorthand is removed; declare relationships
+  with an explicit entity-level `relations:` block.** Previously a field could
+  carry `ref: <table>` to auto-create a `belongsTo` relation, with the relation
+  name derived by stripping a trailing `_id` from the field name. That shorthand
+  is gone. Declare the foreign key as a plain field and add a `relations:` map on
+  the entity instead:
+
+  ```yaml
+  ticket:
+    fields:
+      assignee_id: { type: uuid }
+    relations:
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
+  ```
+
+  The relation name is now whatever you choose (no `_id` derivation). A config
+  that still uses `ref:` fails to parse with a clear error naming the offending
+  `entity.field` — there is no silent fallback. A malformed `relations:` entry
+  (not an object, missing `type`/`table`/`foreignKey`, a non-`belongsTo` `type`,
+  or an empty `references`) also fails loudly. The GUI's "Add link" and
+  junction-creation flows already emit the explicit `relations:` shape, so
+  GUI-managed workspaces need no change; on-disk configs authored with `ref:`
+  must be migrated before they will open. See
+  [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the before/after and the exact
+  error string.
 - **BREAKING — the soft-delete predicate is simplified to `deleted_at IS NULL`.**
   Earlier versions treated a row as "live" when `deleted_at` was **either** NULL
   **or** the empty string (`''`), via a legacy `OR deleted_at = ''` back-compat

@@ -41,8 +41,10 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       url: { type: text, required: true }
-      project_id: { type: uuid, ref: projects }
+      project_id: { type: uuid }
       deleted_at: { type: text }
+    relations:
+      project: { type: belongsTo, table: projects, foreignKey: project_id }
     outputFile: REPOS.md
 
   # `files` and `secrets` are framework-native entities registered by the
@@ -55,32 +57,47 @@ entities:
   meeting_people:
     fields:
       id: { type: uuid, primaryKey: true }
-      meeting_id: { type: uuid, ref: meetings }
-      person_id: { type: uuid, ref: people }
+      meeting_id: { type: uuid }
+      person_id: { type: uuid }
+    relations:
+      meeting: { type: belongsTo, table: meetings, foreignKey: meeting_id }
+      person: { type: belongsTo, table: people, foreignKey: person_id }
 
   meeting_projects:
     fields:
       id: { type: uuid, primaryKey: true }
-      meeting_id: { type: uuid, ref: meetings }
-      project_id: { type: uuid, ref: projects }
+      meeting_id: { type: uuid }
+      project_id: { type: uuid }
+    relations:
+      meeting: { type: belongsTo, table: meetings, foreignKey: meeting_id }
+      project: { type: belongsTo, table: projects, foreignKey: project_id }
 
   project_people:
     fields:
       id: { type: uuid, primaryKey: true }
-      project_id: { type: uuid, ref: projects }
-      person_id: { type: uuid, ref: people }
+      project_id: { type: uuid }
+      person_id: { type: uuid }
+    relations:
+      project: { type: belongsTo, table: projects, foreignKey: project_id }
+      person: { type: belongsTo, table: people, foreignKey: person_id }
 
   message_people:
     fields:
       id: { type: uuid, primaryKey: true }
-      message_id: { type: uuid, ref: messages }
-      person_id: { type: uuid, ref: people }
+      message_id: { type: uuid }
+      person_id: { type: uuid }
+    relations:
+      message: { type: belongsTo, table: messages, foreignKey: message_id }
+      person: { type: belongsTo, table: people, foreignKey: person_id }
 
   project_files:
     fields:
       id: { type: uuid, primaryKey: true }
-      project_id: { type: uuid, ref: projects }
-      file_id: { type: uuid, ref: files }
+      project_id: { type: uuid }
+      file_id: { type: uuid }
+    relations:
+      project: { type: belongsTo, table: projects, foreignKey: project_id }
+      file: { type: belongsTo, table: files, foreignKey: file_id }
   Invoices:
     fields:
       id:

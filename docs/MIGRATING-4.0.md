@@ -130,3 +130,69 @@ created by any natural-key upsert that ran during the hidden window: for each
 affected table, group by the natural key and look for more than one live row per
 key. Duplicates created in that window are **not** auto-reconciled — you must
 merge or remove them by hand.
+
+---
+
+## 4.0.0 — `ref:` field shorthand removed (BREAKING)
+
+The per-field `ref:` shorthand for declaring a `belongsTo` relationship has been
+removed in 4.0. Declare the foreign key as a plain field and add an explicit
+`relations:` block on the entity. A config that still uses `ref:` now fails to
+parse with a clear error naming the offending `entity.field` — there is no silent
+fallback.
+
+The relation name is no longer derived for you (previously the field name had its
+trailing `_id` stripped) — you name it explicitly in `relations:`.
+
+**Before (3.x — removed):**
+
+```yaml
+db: ./app.db
+entities:
+  ticket:
+    fields:
+      id:          { type: uuid, primaryKey: true }
+      title:       { type: text, required: true }
+      assignee_id: { type: uuid, ref: user }   # belongsTo derived automatically, relation named "assignee"
+    outputFile: tickets.md
+```
+
+**After (4.0):**
+
+```yaml
+db: ./app.db
+entities:
+  ticket:
+    fields:
+      id:          { type: uuid, primaryKey: true }
+      title:       { type: text, required: true }
+      assignee_id: { type: uuid }              # plain FK column
+    relations:
+      assignee:                                # relation name you choose
+        type: belongsTo
+        table: user
+        foreignKey: assignee_id
+        # references: id   # optional; defaults to the target's primary key
+    outputFile: tickets.md
+```
+
+**Error on a leftover `ref:`** — parsing the "Before" config in 4.0 now throws an
+error of this form (the exact `entity.field` and suggested relation name are
+filled in for the offending field):
+
+```
+Lattice: `ref:` on "ticket.assignee_id" was removed in 4.0. Declare the foreign
+key as a plain field and add an explicit `relations:` entry on entity "ticket"
+instead — e.g. relations: { assignee: { type: belongsTo, table: <target>,
+foreignKey: assignee_id } }. See MIGRATING-4.0.md.
+```
+
+A malformed `relations:` entry (not an object, missing `type`/`table`/`foreignKey`,
+a non-`belongsTo` `type`, or an empty `references`) also fails loudly rather than
+silently producing no relation.
+
+The GUI's "Add link" and junction-creation flows already write the explicit
+`relations:` shape, so workspaces created or edited through the GUI need no manual
+change. Existing on-disk `lattice.config.yml` files authored with `ref:` will fail
+to open after upgrade until migrated to the shape above — this is intentional
+(fail loud, no auto-migration).

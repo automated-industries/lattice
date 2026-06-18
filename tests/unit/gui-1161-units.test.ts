@@ -1,36 +1,28 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { parseConfigString } from '../../src/config/parser.js';
 import { updateRow, type MutationCtx } from '../../src/gui/mutations.js';
 
 /**
  * 1.16.1 unit coverage:
- *  E — a deprecated one-to-many `ref:` field warns but still parses.
+ *  E — the per-field `ref:` shorthand was removed in 4.0; a config that still
+ *      uses it must fail to parse with a clear error (no silent fallback).
  *  F — updateRow throws when a requested change leaves the row byte-identical
  *      (the read-only/blocked-write signature). The no-false-positive cases
  *      (real edit + same-value edit) are covered by the integration test.
  */
 
-describe('1.16.1 — E: one-to-many ref: deprecation warning', () => {
-  it('warns on a `ref:` field but still parses the belongsTo relation', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+describe('4.0 — E: per-field ref: shorthand is rejected', () => {
+  it('throws on a `ref:` field with a clear 4.0 error', () => {
     const cfg = [
       'db: ./x.db',
       'entities:',
-      '  authors:',
-      '    fields:',
-      '      id: { type: uuid, primaryKey: true }',
       '  books:',
       '    fields:',
       '      id: { type: uuid, primaryKey: true }',
       '      author_id: { type: uuid, ref: authors }',
       '',
     ].join('\n');
-    const parsed = parseConfigString(cfg, '/tmp');
-    const calls = warn.mock.calls.flat().join(' ');
-    warn.mockRestore();
-    expect(calls).toMatch(/one-to-many|deprecat/i);
-    const books = parsed.tables.find((t) => t.name === 'books');
-    expect(books?.definition.relations?.author).toBeTruthy();
+    expect(() => parseConfigString(cfg, '/tmp')).toThrow(/`ref:`.*removed in 4\.0/i);
   });
 });
 

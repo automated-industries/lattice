@@ -2,6 +2,8 @@
 // Lattice YAML config schema types
 // ---------------------------------------------------------------------------
 
+import type { BelongsToRelation } from '../types.js';
+
 /**
  * Scalar types recognised in `lattice.config.yml` field definitions.
  *
@@ -40,7 +42,7 @@ export type LatticeFieldType =
  * id:          { type: uuid,    primaryKey: true }
  * title:       { type: text,    required: true }
  * status:      { type: text,    default: open }
- * assignee_id: { type: uuid,    ref: user }
+ * assignee_id: { type: uuid }
  * score:       { type: integer, default: 0 }
  * ```
  */
@@ -53,13 +55,6 @@ export interface LatticeFieldDef {
   required?: boolean;
   /** SQL DEFAULT value */
   default?: string | number | boolean;
-  /**
-   * Foreign-key reference to another entity (table name).
-   * Creates a `belongsTo` relation automatically.
-   * The relation name is derived from the field name — `_id` suffix is stripped
-   * (e.g. `assignee_id: { ref: user }` → relation name `assignee`).
-   */
-  ref?: string;
   /**
    * Per-column audience (Stage-0 scaffolding for the per-viewer enrichment
    * model). Names who may see this column's value in a cloud. Omitted ⇒
@@ -93,8 +88,14 @@ export interface LatticeEntityRenderSpec {
  * ```yaml
  * ticket:
  *   fields:
- *     id:    { type: uuid, primaryKey: true }
- *     title: { type: text, required: true }
+ *     id:          { type: uuid, primaryKey: true }
+ *     title:       { type: text, required: true }
+ *     assignee_id: { type: uuid }
+ *   relations:
+ *     assignee:
+ *       type: belongsTo
+ *       table: user
+ *       foreignKey: assignee_id
  *   render: default-list
  *   outputFile: context/TICKETS.md
  * ```
@@ -102,6 +103,27 @@ export interface LatticeEntityRenderSpec {
 export interface LatticeEntityDef {
   /** Column definitions */
   fields: Record<string, LatticeFieldDef>;
+  /**
+   * Explicit `belongsTo` relations for this entity, keyed by relation name.
+   *
+   * Each entry declares a foreign key on THIS entity pointing at another
+   * table: `{ type: belongsTo, table, foreignKey, references? }`. The
+   * `foreignKey` names a plain field on this entity; `references` is the
+   * column on the related table (defaults to its primary key). The relation
+   * name (the map key) is whatever you choose — it is not derived from the
+   * field name.
+   *
+   * @example
+   * ```yaml
+   * relations:
+   *   assignee:
+   *     type: belongsTo
+   *     table: user
+   *     foreignKey: assignee_id
+   *     # references: id   # optional; defaults to the target's primary key
+   * ```
+   */
+  relations?: Record<string, BelongsToRelation>;
   /**
    * How to render rows into context text.
    * Accepts the same forms as `TableDefinition.render`:
