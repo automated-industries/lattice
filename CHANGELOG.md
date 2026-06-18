@@ -8,6 +8,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.4.3] - 2026-06-18
+
+### Fixed
+
+- **A bulk file drop no longer freezes the GUI.** Dropping many files on the
+  assistant rail at once fired one upload request per file in parallel. A browser
+  allows only ~6 HTTP/1.1 connections per host, so a large batch consumed the
+  whole connection budget with multi-minute upload requests, and every other
+  request — entity lists, rows, navigation — queued behind them with no recovery,
+  leaving the app unresponsive until the batch finished (the middle pane stuck on
+  a loading spinner). Uploads now drain through a small bounded-concurrency queue
+  (a few at a time), so the connection budget stays free for the rest of the GUI
+  no matter how many files are dropped. The realtime/feed streams already share a
+  single WebSocket off this budget; uncapped bulk uploads were the last way to
+  exhaust it. Holding uploads to a few at a time also eases the AI rate limit each
+  ingest hits server-side, so large imports finish more reliably.
+
+### Added
+
+- **Batch-upload progress bar.** A multi-file drop now shows an "Analyzing N of M…"
+  bar pinned to the top of the assistant feed, alongside the per-file cards, so the
+  overall progress of a large import is visible at a glance.
+
 ## [3.4.2] - 2026-06-18
 
 ### Fixed
