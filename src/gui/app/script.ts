@@ -7203,13 +7203,21 @@ export const appJs = `
     }
     function uploadFile(file) {
       var done = pendingIngestItem(file.name || 'file');
+      // Carry the composer's "Private mode" intent so an upload made while the
+      // box is checked is stamped private at insert, instead of inheriting the
+      // files-table default (which can be shared-to-everyone on a cloud). Read
+      // the checkbox defensively — it may not be rendered. On a local workspace
+      // the box is checked+disabled, so this is '1' there too; forced visibility
+      // is a harmless no-op on the single-user SQLite path.
+      var pv = document.getElementById('chat-private');
+      var priv = pv && pv.checked ? '1' : '0';
       return fetch('/api/ingest/upload', {
         method: 'POST',
         // Percent-encode the filename: HTTP header values must be ISO-8859-1,
         // so a Unicode filename (emoji, smart quote, accent, em-dash) would
         // otherwise make fetch() throw "String contains non ISO-8859-1 code
         // point". The server decodeURIComponent()s it back.
-        headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'file') },
+        headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'file'), 'x-lattice-private': priv },
         body: file,
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })

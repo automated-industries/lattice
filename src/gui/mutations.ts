@@ -637,8 +637,34 @@ async function hardDelete(
   publishMutationFeed(ctx.feed, table, id, 'delete', before, null, ctx.source);
 }
 
-export async function linkRows(ctx: MutationCtx, table: string, body: Row): Promise<void> {
-  await ctx.db.link(table, body);
+/**
+ * Insert a junction row to link two records, audited + feed-published.
+ *
+ * `forceVisibility` stamps the junction row's cloud visibility atomically at
+ * insert (via the same `insertForcingVisibility` primitive {@link createRow}
+ * uses), instead of letting it inherit the junction table's default. Callers
+ * pass `'private'` when the link encodes a relationship that must stay private —
+ * e.g. an enrichment link from a PRIVATE source file: even if it points at a
+ * SHARED entity, the link row itself would otherwise leak the private file's
+ * association under an 'everyone'-default junction. Omit it for ordinary links
+ * (the prior behaviour — inherit the table default). On SQLite / non-cloud it
+ * degrades to the plain link insert (single-user, no cross-viewer leak).
+ */
+export async function linkRows(
+  ctx: MutationCtx,
+  table: string,
+  body: Row,
+  forceVisibility?: 'private' | 'everyone',
+): Promise<void> {
+  if (forceVisibility !== undefined) {
+    // Route through the GUC-scoped insert so the junction row carries the forced
+    // visibility from the moment it exists (no create-then-demote window). A
+    // failure propagates — a link that couldn't be forced private is reported,
+    // not silently left shared.
+    await ctx.db.insertForcingVisibility(table, body, forceVisibility);
+  } else {
+    await ctx.db.link(table, body);
+  }
   await appendAudit(ctx.db, ctx.feed, table, null, 'link', null, body, ctx.source, ctx.sessionId);
 }
 
