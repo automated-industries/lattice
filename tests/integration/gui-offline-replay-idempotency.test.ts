@@ -55,9 +55,15 @@ async function boot(): Promise<GuiServerHandle> {
   return s;
 }
 
-function postRow(s: GuiServerHandle, body: unknown, editId?: string): Promise<Response> {
+function postRow(
+  s: GuiServerHandle,
+  body: unknown,
+  editId?: string,
+  clientTs?: string,
+): Promise<Response> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (editId) headers['x-lattice-edit-id'] = editId;
+  if (clientTs) headers['x-lattice-client-ts'] = clientTs;
   return fetch(`${s.url}/api/tables/tasks/rows`, {
     method: 'POST',
     headers,
@@ -70,6 +76,14 @@ async function rowCount(s: GuiServerHandle): Promise<number> {
     rows: unknown[];
   };
   return j.rows.length;
+}
+
+/** Audit timestamps of every recorded insert, in history order. */
+async function insertTimestamps(s: GuiServerHandle): Promise<string[]> {
+  const h = (await (await fetch(`${s.url}/api/history?limit=50`)).json()) as {
+    entries: { ts: string; operation: string }[];
+  };
+  return h.entries.filter((e) => e.operation === 'insert').map((e) => e.ts);
 }
 
 describe('#3.6 offline-replay idempotency', () => {
@@ -105,5 +119,53 @@ describe('#3.6 offline-replay idempotency', () => {
     const b = await postRow(s, { title: 'no-id', status: 'todo' });
     expect(b.status).toBe(201);
     expect(await rowCount(s)).toBe(2); // no edit-id → no dedup, two rows
+  });
+});
+
+/**
+ * Extended replay guards: dedup is per-edit and survives INTERLEAVING, and the
+ * audit/history timestamp is keyed to each edit's true client time — so neither
+ * arrival order nor a replay carrying a different client-ts can rewrite history.
+ * (deriveRowIdFromEditId makes a replay resolve to the same row, so the second
+ * POST no-ops before any change is written — its client-ts is never applied.)
+ */
+describe('offline-replay ordering + interleaving', () => {
+  it('interleaved replays of distinct edit-ids each dedup independently', async () => {
+    const s = await boot();
+    const a = randomUUID();
+    const b = randomUUID();
+    const aId = ((await (await postRow(s, { title: 'A', status: 'todo' }, a)).json()) as { id: string }).id;
+    const bId = ((await (await postRow(s, { title: 'B', status: 'todo' }, b)).json()) as { id: string }).id;
+    // Replay A then B (interleaved against the two committed rows).
+    const a2 = await postRow(s, { title: 'A', status: 'todo' }, a);
+    const b2 = await postRow(s, { title: 'B', status: 'todo' }, b);
+    expect(a2.status).toBe(200); // idempotent no-op
+    expect(b2.status).toBe(200);
+    expect(((await a2.json()) as { id: string }).id).toBe(aId); // each resolves to its own row
+    expect(((await b2.json()) as { id: string }).id).toBe(bId);
+    expect(await rowCount(s)).toBe(2); // exactly two rows despite four POSTs
+  });
+
+  it('out-of-order arrival records each edit at its true client time, not arrival/server time', async () => {
+    const s = await boot();
+    const tLate = '2026-02-01T00:00:00.000Z';
+    const tEarly = '2026-01-01T00:00:00.000Z';
+    // A was edited LATER but arrives FIRST; B was edited EARLIER but arrives SECOND.
+    await postRow(s, { title: 'A', status: 'todo' }, randomUUID(), tLate);
+    await postRow(s, { title: 'B', status: 'todo' }, randomUUID(), tEarly);
+    // Both true edit times are recorded — not the (≈now) arrival order.
+    expect((await insertTimestamps(s)).sort()).toEqual([tEarly, tLate].sort());
+  });
+
+  it('a replay carrying a different client-ts does not rewrite the original audit time', async () => {
+    const s = await boot();
+    const editId = randomUUID();
+    const tOriginal = '2026-01-15T00:00:00.000Z';
+    const tReplay = '2026-03-20T00:00:00.000Z';
+    expect((await postRow(s, { title: 'once', status: 'todo' }, editId, tOriginal)).status).toBe(201);
+    const replay = await postRow(s, { title: 'once', status: 'todo' }, editId, tReplay);
+    expect(replay.status).toBe(200); // idempotent — no second insert
+    expect(await insertTimestamps(s)).toEqual([tOriginal]); // history keeps the ORIGINAL edit time
+    expect(await rowCount(s)).toBe(1);
   });
 });
