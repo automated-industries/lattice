@@ -101,10 +101,12 @@ describe('isOwnedLocalBlob()', () => {
     expect(
       isOwnedLocalBlob({ ref_kind: 'cloud_ref', ref_uri: 's3://b/k', blob_path: 'data/blobs/ccc' }),
     ).toBe(false);
-    // NULL ref_kind with NO blob_path and NO path → nothing owned-local
+    // NULL ref_kind with NO blob_path → nothing owned-local
     expect(isOwnedLocalBlob({ ref_kind: null })).toBe(false);
-    // legacy `path`-only row → owned-local
-    expect(isOwnedLocalBlob({ ref_kind: null, path: '/data/old/file.txt' })).toBe(true);
+    // A row whose only local indicator was the removed `path` column is NO LONGER
+    // owned-local — file resolution routes through the reference columns now, and
+    // a NULL-ref_kind row with no blob_path owns no local bytes.
+    expect(isOwnedLocalBlob({ ref_kind: null, path: '/data/old/file.txt' })).toBe(false);
   });
 });
 

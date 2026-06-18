@@ -73,14 +73,13 @@ function isMigratable(tableName: string): boolean {
  *
  * A `local_ref` row's `ref_uri` is a machine-local absolute path. Any
  * other row (legacy NULL `ref_kind`, or `ref_kind === 'blob'`) owns
- * local bytes when it has a `blob_path` (under `data/blobs/`) or a
- * legacy `path`.
+ * local bytes when it has a `blob_path` (under `data/blobs/`).
  */
 export function isOwnedLocalBlob(row: Record<string, unknown>): boolean {
   const refKind = row.ref_kind as string | null | undefined;
   if (refKind === 'cloud_ref') return false; // not owned-local: S3 or external URL; the cloud_ref's opportunistic blob_path is excluded on purpose
   if (refKind === 'local_ref') return true; // ref_uri is a machine-local absolute path
-  return Boolean(row.blob_path) || Boolean(row.path);
+  return Boolean(row.blob_path);
 }
 
 /**

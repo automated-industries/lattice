@@ -196,3 +196,71 @@ The GUI's "Add link" and junction-creation flows already write the explicit
 change. Existing on-disk `lattice.config.yml` files authored with `ref:` will fail
 to open after upgrade until migrated to the shape above — this is intentional
 (fail loud, no auto-migration).
+
+---
+
+## 4.0.0 — `files.path` and `files.kind` columns removed (BREAKING)
+
+### What changed
+
+The native `files` entity no longer declares the legacy `path` and `kind`
+columns. File resolution now flows entirely through the content-addressed and
+reference columns that have shipped alongside them since 2.0:
+
+- **`sha256` / `blob_path`** — for files whose bytes Lattice owns (a
+  content-addressed copy under `<lattice-root>/data/blobs/`).
+- **`ref_kind` / `ref_uri` / `ref_provider`** — the reference model, for files
+  that live elsewhere. `ref_kind` is the single discriminator:
+  - `'blob'` — an owned local copy (bytes under `data/blobs/`, resolved via
+    `blob_path`).
+  - `'local_ref'` — a file referenced **in place** on this machine; `ref_uri` is
+    its absolute OS path, served straight from disk (no copy made).
+  - `'cloud_ref'` — a file that lives remotely (an `s3://bucket/key` object or an
+    external URL in `ref_uri`).
+
+What `path` and `kind` used to carry now maps to the reference model: an ingested
+local file is recorded as a `local_ref` whose `ref_uri` is the absolute path
+(previously stored in `path`), and an owned copy is identified by `sha256` /
+`blob_path` rather than a free-form `kind`.
+
+### Breaking behavior
+
+- Reads and writes against `files.path` or `files.kind` no longer resolve to a
+  declared native column. Any consumer code that read `row.path` / `row.kind` on
+  a native `files` row must read `ref_uri` (for a `local_ref`) or `blob_path` (for
+  an owned blob) instead.
+- For an existing row that only ever populated the legacy `path` column, file
+  resolution now falls back to the reference columns: a row with no `ref_kind`
+  and no `blob_path` resolves as unavailable rather than reading `path`. Backfill
+  such rows into the reference model before upgrading (see below).
+
+### Migration
+
+If your physical `files` table still carries the legacy columns, drop them:
+
+```sql
+ALTER TABLE files DROP COLUMN path;
+ALTER TABLE files DROP COLUMN kind;
+```
+
+> **`DROP COLUMN` support:** SQLite added `ALTER TABLE … DROP COLUMN` in
+> **3.35.0** (March 2021) — make sure your SQLite build is at least that version.
+> PostgreSQL has supported it for far longer, so no version concern there.
+
+Before dropping `path`, backfill any rows that relied on it into the reference
+model so their bytes stay resolvable — a row whose only on-disk pointer was
+`path` should become a `local_ref`:
+
+```sql
+UPDATE files
+   SET ref_kind     = 'local_ref',
+       ref_uri      = path,
+       ref_provider = 'fs'
+ WHERE path IS NOT NULL
+   AND ref_kind IS NULL
+   AND blob_path IS NULL;
+```
+
+(Adjust for rows whose `path` already pointed inside `data/blobs/` — those are
+owned blobs and should instead set `ref_kind = 'blob'`, `blob_path = path`.) After
+the backfill verifies clean, run the `DROP COLUMN` statements above.

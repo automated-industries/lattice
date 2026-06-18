@@ -1781,7 +1781,7 @@ export const appJs = `
 
     function displayNameFor(row) {
       if (!row) return '';
-      return row.name || row.title || row.url || row.path || row.id || '';
+      return row.name || row.title || row.url || row.id || '';
     }
 
     /**
@@ -2177,11 +2177,10 @@ export const appJs = `
       return String(s);
     }
 
-    // A row is backed by a streamable local file when it has the legacy path
-    // column (deprecated) or a v2.0 local_ref (ref_uri). Cloud refs aren't served.
+    // A row is backed by a streamable local file when it has a local_ref
+    // (ref_uri) or an owned blob (blob_path). Cloud refs aren't served.
     function hasLocalFile(row) {
       return !!(
-        row.path ||
         (row.ref_kind === 'local_ref' && row.ref_uri) ||
         (row.ref_kind === 'blob' && row.blob_path)
       );
@@ -2196,11 +2195,10 @@ export const appJs = `
       return row.ref_kind === 'cloud_ref' && row.ref_provider === 's3' && !!(row.ref_uri || row.blob_path);
     }
     // True when the row's bytes are reachable on THIS machine's disk (so "Open in
-    // Finder" is meaningful). Mirrors the server's localPathOf: a legacy path, a
-    // local_ref, or a blob/cloud_ref whose blob_path was kept locally.
+    // Finder" is meaningful). Mirrors the server's localPathOf: a local_ref, or a
+    // blob/cloud_ref whose blob_path was kept locally.
     function hasLocalBytes(row) {
       return !!(
-        row.path ||
         (row.ref_kind === 'local_ref' && row.ref_uri) ||
         ((row.ref_kind === 'blob' || row.ref_kind === 'cloud_ref') && row.blob_path)
       );
@@ -2269,8 +2267,9 @@ export const appJs = `
           .then(function (r) { return r.json(); })
           .then(function (j) {
             if (j && j.enabled === false) {
-              if (row.path && navigator.clipboard) {
-                navigator.clipboard.writeText(row.path).then(function () {
+              var localPath = row.ref_kind === 'local_ref' ? row.ref_uri : null;
+              if (localPath && navigator.clipboard) {
+                navigator.clipboard.writeText(localPath).then(function () {
                   showToast('Path copied — set LATTICE_LOCAL_OPEN=1 to open directly', {});
                 });
               } else {
@@ -2706,7 +2705,7 @@ export const appJs = `
       if (!row) return '';
       var primary = row.name || row.title || row.label || row.original_name || row.subject;
       if (primary) return String(primary);
-      var secondary = row.summary || row.description || row.body || row.content || row.url || row.path;
+      var secondary = row.summary || row.description || row.body || row.content || row.url;
       if (secondary) return truncate(String(secondary).replace(/\\s+/g, ' '), 60);
       // No conventional label column — fall back to the first meaningful cell
       // value (skip id / timestamp / foreign-key columns) so an inferred entity
