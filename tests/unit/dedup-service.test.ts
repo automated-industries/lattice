@@ -150,6 +150,137 @@ describe('dedup service (real config, SQLite)', () => {
     expect(res).toEqual({ merged: 0, relinked: 0 });
   });
 
+  it('links survivor BEFORE removing any source edge (no half-merge on mid-merge failure)', async () => {
+    // Survivor (t1) + two dups (t2, t3), each linked to a DISTINCT tag.
+    await db.insert('things', { id: 't1', name: 'Acme', created_at: '2026-01-01T00:00:00Z' });
+    await db.insert('things', { id: 't2', name: 'Acme', created_at: '2026-01-02T00:00:00Z' });
+    await db.insert('things', { id: 't3', name: 'Acme', created_at: '2026-01-03T00:00:00Z' });
+    await db.insert('tags', { id: 'g1', name: 'red' });
+    await db.insert('tags', { id: 'g2', name: 'blue' });
+    await db.insert('thing_tags', { id: 'l2', thing_id: 't2', tag_id: 'g1' });
+    await db.insert('thing_tags', { id: 'l3', thing_id: 't3', tag_id: 'g2' });
+
+    // Inject a fault that fires AFTER phase 1 (link-all) has completed — the next
+    // mutation that touches the junction throws. We stub `unlink` (phase 2's tool)
+    // so phase 1's links all land, then the very first unlink blows up.
+    const realUnlink = db.unlink.bind(db);
+    let unlinkCalls = 0;
+    db.unlink = (..._args: Parameters<typeof realUnlink>): Promise<void> => {
+      unlinkCalls++;
+      return Promise.reject(new Error('injected unlink fault'));
+    };
+
+    await expect(mergeDuplicates(ctx, 'things', 't1', ['t2', 't3'])).rejects.toThrow(
+      /mergeDuplicates failed mid-merge/,
+    );
+    // The fault hit during phase 2 (unlink), not phase 1.
+    expect(unlinkCalls).toBe(1);
+
+    db.unlink = realUnlink;
+
+    const links = (await db.query('thing_tags', {})) as {
+      thing_id: string;
+      tag_id: string;
+      deleted_at?: string | null;
+    }[];
+    const live = links.filter((l) => !l.deleted_at);
+    const edge = (thing: string, tag: string): boolean =>
+      live.some((l) => l.thing_id === thing && l.tag_id === tag);
+
+    // PHASE 1 already wrote BOTH survivor edges before anything was removed.
+    expect(edge('t1', 'g1')).toBe(true);
+    expect(edge('t1', 'g2')).toBe(true);
+    // No source edge was orphaned/half-removed — the originals are still present.
+    // The state is an over-linked SUPERSET (consistent + re-runnable), never a
+    // half-merge where a source edge is gone but the survivor's copy never landed.
+    expect(edge('t2', 'g1')).toBe(true);
+    expect(edge('t3', 'g2')).toBe(true);
+    // The sources have NOT been soft-deleted yet (delete is the last phase).
+    const t2 = (await db.get('things', 't2')) as { deleted_at?: string | null } | null;
+    const t3 = (await db.get('things', 't3')) as { deleted_at?: string | null } | null;
+    expect(t2?.deleted_at).toBeFalsy();
+    expect(t3?.deleted_at).toBeFalsy();
+  });
+
+  it('re-running after a simulated partial completes idempotently to the same end state as an uninterrupted merge', async () => {
+    // Scope the snapshot to ONE group's id-prefix so the reference run and the
+    // interrupted run (both live in the same shared table) are measured in
+    // isolation. The normalizer below maps the prefix away to compare the two.
+    async function endState(prefix: string): Promise<{
+      liveEdges: string[];
+      deletedSources: string[];
+    }> {
+      const links = (await db.query('thing_tags', {})) as {
+        thing_id: string;
+        tag_id: string;
+        deleted_at?: string | null;
+      }[];
+      const liveEdges = links
+        .filter((l) => !l.deleted_at && l.thing_id.startsWith(prefix))
+        .map((l) => `${l.thing_id}:${l.tag_id}`)
+        .sort();
+      const things = (await db.query('things', {})) as {
+        id: string;
+        deleted_at?: string | null;
+      }[];
+      const deletedSources = things
+        .filter((t) => t.deleted_at && t.id.startsWith(prefix))
+        .map((t) => t.id)
+        .sort();
+      return { liveEdges, deletedSources };
+    }
+
+    // --- Reference run: one clean, uninterrupted merge in a fresh group. ---
+    await db.insert('things', { id: 'r1', name: 'Ref', created_at: '2026-01-01T00:00:00Z' });
+    await db.insert('things', { id: 'r2', name: 'Ref', created_at: '2026-01-02T00:00:00Z' });
+    await db.insert('things', { id: 'r3', name: 'Ref', created_at: '2026-01-03T00:00:00Z' });
+    await db.insert('tags', { id: 'rg1', name: 'redref' });
+    await db.insert('tags', { id: 'rg2', name: 'blueref' });
+    await db.insert('thing_tags', { id: 'rl2', thing_id: 'r2', tag_id: 'rg1' });
+    await db.insert('thing_tags', { id: 'rl3', thing_id: 'r3', tag_id: 'rg2' });
+    await mergeDuplicates(ctx, 'things', 'r1', ['r2', 'r3']);
+    const clean = await endState('r');
+
+    // --- Interrupted run: identical shape, but phase 2 throws partway. ---
+    await db.insert('things', { id: 's1', name: 'Sim', created_at: '2026-01-01T00:00:00Z' });
+    await db.insert('things', { id: 's2', name: 'Sim', created_at: '2026-01-02T00:00:00Z' });
+    await db.insert('things', { id: 's3', name: 'Sim', created_at: '2026-01-03T00:00:00Z' });
+    await db.insert('tags', { id: 'sg1', name: 'redsim' });
+    await db.insert('tags', { id: 'sg2', name: 'bluesim' });
+    await db.insert('thing_tags', { id: 'sl2', thing_id: 's2', tag_id: 'sg1' });
+    await db.insert('thing_tags', { id: 'sl3', thing_id: 's3', tag_id: 'sg2' });
+
+    const realUnlink = db.unlink.bind(db);
+    db.unlink = (): Promise<void> => Promise.reject(new Error('injected unlink fault'));
+    await expect(mergeDuplicates(ctx, 'things', 's1', ['s2', 's3'])).rejects.toThrow(
+      /mergeDuplicates failed mid-merge/,
+    );
+    db.unlink = realUnlink;
+
+    // Re-run to completion — must finish idempotently.
+    const res = await mergeDuplicates(ctx, 'things', 's1', ['s2', 's3']);
+    expect(res.merged).toBe(2);
+
+    const recovered = await endState('s');
+    // Map each group's id-prefix away so the two end states are directly
+    // comparable. Compare the live edges as a SET of logical (survivor,target)
+    // pairs: the `thing_tags` junction has no UNIQUE(thing_id, tag_id) constraint,
+    // so a phase-1 re-link of an edge already present can leave a second physical
+    // row for the SAME logical edge — harmless (it points at the survivor), and
+    // the survivor still carries every edge exactly as a clean merge does.
+    const norm = (s: { liveEdges: string[]; deletedSources: string[] }) => ({
+      liveEdges: [
+        ...new Set(s.liveEdges.map((e) => e.replace(/^[rs]/, 'X').replace(/:[rs]g/, ':Xg'))),
+      ].sort(),
+      deletedSources: [...new Set(s.deletedSources.map((d) => d.replace(/^[rs]/, 'X')))].sort(),
+    });
+    expect(norm(recovered)).toEqual(norm(clean));
+    // And the survivor carries BOTH targets, with both sources soft-deleted —
+    // the same logical end state an uninterrupted merge produces.
+    expect(norm(recovered).liveEdges).toEqual(['X1:Xg1', 'X1:Xg2']);
+    expect(norm(recovered).deletedSources).toEqual(['X2', 'X3']);
+  });
+
   describe('files content groups', () => {
     async function addFile(
       id: string,
