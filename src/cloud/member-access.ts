@@ -38,7 +38,7 @@ export const MEMBER_READABLE_BOOKKEEPING: readonly MemberReadableEntry[] = [
   {
     name: '_lattice_gui_audit',
     privs: 'SELECT, INSERT',
-    why: "the member's own GUI undo/redo log (session-scoped)",
+    why: 'GUI undo/redo + version history; RLS (enableGuiAuditRls) scopes reads to entries whose underlying row the member can see',
   },
   {
     name: '__lattice_user_identity',
@@ -49,6 +49,11 @@ export const MEMBER_READABLE_BOOKKEEPING: readonly MemberReadableEntry[] = [
     name: '__lattice_changelog',
     privs: 'SELECT, INSERT',
     why: 'per-viewer-RLS-filtered change history for observe()/history (the policy filters reads, so the base grant is safe)',
+  },
+  {
+    name: '__lattice_shared_schema',
+    privs: 'SELECT',
+    why: 'owner-published entity/render layout (entities + entityContexts) a joined member hydrates its config from so render produces the full context tree',
   },
 ];
 
