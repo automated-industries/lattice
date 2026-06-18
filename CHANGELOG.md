@@ -91,6 +91,11 @@ tagged BREAKING.
 
 ### Fixed
 
+- **Report builder hardens its SQL identifiers + bounds unbounded sections.** `buildReport`
+  interpolates a section's table, filter columns, and orderBy column into SQL; each is now
+  validated with `assertSafeIdentifier` (rejected loudly if not a plain identifier), and a
+  section with no explicit `limit` is capped at a 50k-row safety ceiling that **warns** when
+  it truncates rather than silently returning a partial section or reading a whole large table.
 - **Security: a column masked at runtime is no longer re-exposed to cloud members.**
   Marking a column secret in the GUI (or any runtime `setColumnAudience`) masks it via
   the `<t>_v` view + `__lattice_column_policy`, but the in-memory schema audience
