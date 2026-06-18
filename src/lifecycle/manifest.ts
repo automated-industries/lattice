@@ -30,14 +30,10 @@ export interface EntityContextManifestEntry {
   declaredFiles: string[];
   protectedFiles: string[];
   /**
-   * Key = entity slug.
-   *
-   * **v2 format:** value is `Record<string, EntityFileManifestInfo>` (filename → info with hash).
-   * **v1 format (legacy):** value is `string[]` (bare filename list, no hashes).
-   *
-   * Use {@link normalizeEntityFiles} to convert v1 entries.
+   * Key = entity slug. Value = `Record<string, EntityFileManifestInfo>`
+   * (filename → info with content hash). This is the only shape we WRITE.
    */
-  entities: Record<string, Record<string, EntityFileManifestInfo> | string[]>;
+  entities: Record<string, Record<string, EntityFileManifestInfo>>;
 }
 
 export interface LatticeManifest {
@@ -47,32 +43,23 @@ export interface LatticeManifest {
 }
 
 // ---------------------------------------------------------------------------
-// v1 → v2 helpers
+// Entity files accessor
 // ---------------------------------------------------------------------------
 
-/** Type guard: is the entity files entry in v1 format (string[])? */
-export function isV1EntityFiles(val: unknown): val is string[] {
-  return Array.isArray(val);
-}
-
 /**
- * Convert a v1 entity files entry (string[]) to v2 format (Record with empty hashes).
- * Reverse-sync skips entries with empty hashes (no baseline to compare against).
+ * Get the filenames from an entity files entry.
+ *
+ * We only ever WRITE the v2 `Record<filename, info>` shape, but an OLD manifest
+ * already on disk may still carry a bare `string[]` entry (the pre-hash format).
+ * This accessor tolerates that legacy shape at the read boundary — a stale
+ * manifest is upgraded silently on the next render, never crashed over — and
+ * still returns the filenames so cleanup can detect orphaned files for it.
  */
-export function normalizeEntityFiles(
-  val: Record<string, EntityFileManifestInfo> | string[],
-): Record<string, EntityFileManifestInfo> {
-  if (!Array.isArray(val)) return val;
-  const result: Record<string, EntityFileManifestInfo> = {};
-  for (const f of val) result[f] = { hash: '' };
-  return result;
-}
-
-/**
- * Get the filenames from an entity files entry (works for both v1 and v2).
- */
-export function entityFileNames(val: Record<string, EntityFileManifestInfo> | string[]): string[] {
-  return Array.isArray(val) ? val : Object.keys(val);
+export function entityFileNames(
+  val: Record<string, EntityFileManifestInfo> | readonly string[],
+): string[] {
+  if (Array.isArray(val)) return (val as readonly string[]).slice();
+  return Object.keys(val);
 }
 
 // ---------------------------------------------------------------------------

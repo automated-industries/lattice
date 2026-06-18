@@ -108,6 +108,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   newer value, and the GUI file-loopback surfaces a notice so the edit can be
   re-applied against the current record. Manifests written before this release
   fall back to the prior behavior until their next render.
+- **BREAKING — the render manifest is now v2-only.** The legacy v1 entity-files
+  shape (a bare `string[]` filename list, no content hashes) is no longer written,
+  and the `isV1EntityFiles` / `normalizeEntityFiles` helpers are removed from the
+  public API. Manifests are always the hashed `{ filename: { hash, ... } }` map.
+  An old v1 `.lattice/manifest.json` on disk is still handled gracefully — its
+  filenames are read so cleanup can detect orphans, write-back treats it as
+  having no baseline (skips it), and the first render regenerates it in the v2
+  shape — so no action is required on upgrade.
 
 ## [3.4.0] - 2026-06-17
 
