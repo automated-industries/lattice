@@ -9,6 +9,7 @@ import {
   MEMBER_READABLE_BOOKKEEPING,
   OWNER_ONLY_BOOKKEEPING,
   grantMemberTableAccessSql,
+  grantMemberTableAccessBatchSql,
   grantMemberBookkeepingSql,
   grantMemberExecuteSql,
 } from '../../src/cloud/member-access.js';
@@ -53,6 +54,18 @@ describe('member-access registry', () => {
       'GRANT SELECT ON "people_v" TO lattice_members',
       'GRANT INSERT, UPDATE, DELETE ON "people" TO lattice_members',
     ]);
+  });
+
+  it('grantMemberTableAccessBatchSql: joins the statements into one multi-statement string', () => {
+    // Exactly the join of the array above — one round-trip per table (the masked
+    // case batches its 2 GRANTs); pg's simple-query protocol runs both at once.
+    expect(grantMemberTableAccessBatchSql('people', { masked: false })).toBe(
+      'GRANT SELECT, INSERT, UPDATE, DELETE ON "people" TO lattice_members',
+    );
+    expect(grantMemberTableAccessBatchSql('people', { masked: true })).toBe(
+      'GRANT SELECT ON "people_v" TO lattice_members; ' +
+        'GRANT INSERT, UPDATE, DELETE ON "people" TO lattice_members',
+    );
   });
 
   it('grantMemberBookkeepingSql emits one to_regclass-guarded GRANT per readable entry', () => {

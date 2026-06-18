@@ -106,6 +106,23 @@ export function grantMemberTableAccessSql(table: string, opts: { masked: boolean
 }
 
 /**
+ * The {@link grantMemberTableAccessSql} statements for a table joined into a single
+ * multi-statement string, so the reconcile loop can grant a table in ONE round-trip
+ * instead of one per statement (a masked table needs 2). Safe because these GRANTs
+ * bind no parameters: the Postgres adapter's param walker leaves them verbatim, and
+ * pg's simple-query protocol (selected when no values are bound) executes
+ * semicolon-separated statements in a single query.
+ *
+ * LOAD-BEARING: this relies on the GRANT SQL containing NO `?` placeholder. If a
+ * placeholder is ever introduced into {@link grantMemberTableAccessSql}, pg would
+ * switch to the extended protocol, which REJECTS multiple statements per query and
+ * would silently break every masked table's batch — keep the GRANT SQL parameterless.
+ */
+export function grantMemberTableAccessBatchSql(table: string, opts: { masked: boolean }): string {
+  return grantMemberTableAccessSql(table, opts).join('; ');
+}
+
+/**
  * `to_regclass`-guarded GRANT for each member-readable bookkeeping table, so a
  * library-only cloud (no GUI tables) is a no-op and an already-migrated cloud
  * self-heals on the owner's next open. Idempotent.
