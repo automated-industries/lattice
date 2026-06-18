@@ -68,6 +68,7 @@ import { SeedEngine } from './crud/seed-engine.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine, NOOP_RENDER } from './render/engine.js';
 import type { RenderOptions } from './render/progress.js';
+import { AutoRenderScheduler } from './render/auto-render.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
 import { ReverseSeedEngine } from './reverse-seed/engine.js';
 import { SyncLoop } from './sync/loop.js';
@@ -162,16 +163,13 @@ export class Lattice {
 
   // --- Auto-render: keep the SQL→markdown bridge current automatically. ---
   /**
-   * When set, insert/update/delete debounce-trigger a re-render into this dir.
-   * Configured by {@link enableAutoRender} / {@link Lattice.openWorkspace}.
-   * Undefined = inert: a bare `new Lattice(dbPath)` pays zero overhead and its
-   * behavior is unchanged.
+   * The debounce + single-flight auto-render scheduler (see
+   * {@link AutoRenderScheduler}). Lazily constructed by the {@link _autoRender}
+   * getter and configured by {@link enableAutoRender} / {@link Lattice.openWorkspace}.
+   * Undefined = inert: a bare `new Lattice(dbPath)` never constructs the
+   * scheduler and pays zero overhead, so its behavior is unchanged.
    */
-  private _autoRenderDir: string | undefined;
-  private _autoRenderTimer: ReturnType<typeof setTimeout> | undefined;
-  private _autoRenderPending = false;
-  private _autoRenderInFlight = false;
-  private _autoRenderDebounceMs = 250;
+  private _autoRenderScheduler?: AutoRenderScheduler;
 
   /** Cache of actual table columns (from PRAGMA), populated after init(). */
   private readonly _columnCache = new Map<string, Set<string>>();
@@ -597,13 +595,7 @@ export class Lattice {
   }
 
   close(): void {
-    this._autoRenderDir = undefined;
-    if (this._autoRenderTimer) {
-      clearTimeout(this._autoRenderTimer);
-      this._autoRenderTimer = undefined;
-    }
-    this._autoRenderPending = false;
-    this._autoRenderInFlight = false;
+    this._autoRenderScheduler?.dispose();
     this._adapter.close();
     this._columnCache.clear();
     this._encryptionLayer?.clear();
@@ -1505,7 +1497,7 @@ export class Lattice {
       Object.values(filtered),
     );
     // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh.
-    this._scheduleAutoRender();
+    this._autoRender.schedule();
   }
 
   /**
@@ -1523,7 +1515,7 @@ export class Lattice {
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
-    this._scheduleAutoRender();
+    this._autoRender.schedule();
   }
 
   // -------------------------------------------------------------------------
@@ -1581,6 +1573,23 @@ export class Lattice {
       ensureColumnCache: (table) => this._ensureColumnCache(table),
     });
     return this._reportBuilder;
+  }
+
+  /** Lazily-constructed auto-render scheduler (see src/render/auto-render.ts). */
+  private get _autoRender(): AutoRenderScheduler {
+    this._autoRenderScheduler ??= new AutoRenderScheduler({
+      render: (dir, opts) => this._render.render(dir, opts),
+      cleanup: (dir, prev, opts, next) => this._render.cleanup(dir, prev, opts, next),
+      readManifest,
+      emitRender: (r) => {
+        for (const h of this._renderHandlers) h(r);
+      },
+      emitError: (e) => {
+        for (const h of this._errorHandlers) h(e);
+      },
+      isInitialized: () => this._initialized,
+    });
+    return this._autoRenderScheduler;
   }
 
   // -------------------------------------------------------------------------
@@ -1756,12 +1765,12 @@ export class Lattice {
    * Render into `outputDir` through the shared single-flight guard, intended to
    * be called fire-and-forget (e.g. the GUI's instant-open background render).
    *
-   * The guard ({@link _renderGuarded}) holds {@link _autoRenderInFlight} for the
-   * render's duration, so a data mutation that lands while this render is in
-   * flight is deferred by {@link _runAutoRender} and coalesced — when this
-   * render settles, `finally` clears the flag and re-arms exactly one follow-up
-   * render via {@link _rearmAutoRenderIfPending}. Net invariant: at most one
-   * render to a given dir at a time.
+   * The guard ({@link AutoRenderScheduler.runGuarded}) holds the scheduler's
+   * in-flight flag for the render's duration, so a data mutation that lands while
+   * this render is in flight is deferred by the debounced auto-render path and
+   * coalesced — when this render settles, `finally` clears the flag and re-arms
+   * exactly one follow-up render. Net invariant: at most one render to a given
+   * dir at a time.
    *
    * Errors propagate to the caller (the GUI surfaces them, never silently swallowed); they are
    * not swallowed here.
@@ -1770,7 +1779,7 @@ export class Lattice {
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
-    return this._renderGuarded(outputDir, opts);
+    return this._autoRender.runGuarded(outputDir, opts);
   }
 
   /**
@@ -1804,7 +1813,7 @@ export class Lattice {
    * no-op when auto-render isn't enabled.
    */
   requestRender(): void {
-    this._scheduleAutoRender();
+    this._autoRender.schedule();
   }
 
   /**
@@ -1815,7 +1824,7 @@ export class Lattice {
    * OWN writes as spurious "file-edit" changes.
    */
   isRendering(): boolean {
-    return this._autoRenderInFlight;
+    return this._autoRender.isInFlight();
   }
 
   /**
@@ -2284,7 +2293,7 @@ export class Lattice {
     }
     // Every mutation schedules an auto-render when one is enabled (workspaces
     // enable it by default). No-op + zero overhead when disabled.
-    this._scheduleAutoRender();
+    this._autoRender.schedule();
   }
 
   /**
@@ -2295,115 +2304,14 @@ export class Lattice {
    * is unaffected unless it opts in.
    */
   enableAutoRender(outputDir: string, opts: { debounceMs?: number } = {}): this {
-    this._autoRenderDir = outputDir;
-    if (opts.debounceMs != null) this._autoRenderDebounceMs = opts.debounceMs;
+    this._autoRender.enable(outputDir, opts);
     return this;
   }
 
   /** Turn off automatic rendering and cancel any pending render. */
   disableAutoRender(): this {
-    this._autoRenderDir = undefined;
-    if (this._autoRenderTimer) {
-      clearTimeout(this._autoRenderTimer);
-      this._autoRenderTimer = undefined;
-    }
-    this._autoRenderPending = false;
+    this._autoRender.disable();
     return this;
-  }
-
-  private _scheduleAutoRender(): void {
-    if (!this._autoRenderDir) return;
-    this._autoRenderPending = true;
-    if (this._autoRenderTimer) return;
-    this._autoRenderTimer = setTimeout(() => {
-      this._autoRenderTimer = undefined;
-      void this._runAutoRender();
-    }, this._autoRenderDebounceMs);
-    // Don't keep the event loop alive solely for a pending auto-render.
-    this._autoRenderTimer.unref();
-  }
-
-  /**
-   * Shared single-flight render path used by {@link renderInBackground}.
-   *
-   * Holds {@link _autoRenderInFlight} for the render's duration so the
-   * mutation-driven {@link _runAutoRender} defers while this render runs (it
-   * sees the flag and marks itself pending instead of starting a second,
-   * overlapping render). On settle, `finally` clears the flag and re-arms a
-   * single coalesced follow-up render if any mutation arrived mid-flight.
-   * Errors propagate to the caller; the flag is always cleared.
-   */
-  private async _renderGuarded(outputDir: string, opts: RenderOptions): Promise<RenderResult> {
-    // If an auto-render is already in flight, wait for it to clear before
-    // claiming the guard so the two never overlap on the same dir.
-    while (this._autoRenderInFlight) {
-      await new Promise((r) => setImmediate(r));
-    }
-    this._autoRenderInFlight = true;
-    try {
-      const result = await this._render.render(outputDir, opts);
-      for (const h of this._renderHandlers) h(result);
-      return result;
-    } finally {
-      this._autoRenderInFlight = false;
-      // A mutation may have arrived during the render (hitting the in-flight
-      // guard in _runAutoRender without arming a timer); re-arm so exactly one
-      // coalesced follow-up render runs.
-      this._rearmAutoRenderIfPending();
-    }
-  }
-
-  private async _runAutoRender(): Promise<void> {
-    const dir = this._autoRenderDir;
-    if (!dir || !this._initialized) return;
-    if (this._autoRenderInFlight) {
-      // A render is mid-flight (auto-render OR a guarded background render);
-      // mark pending and re-arm when it finishes so we coalesce into exactly
-      // one follow-up render rather than overlapping.
-      this._autoRenderPending = true;
-      return;
-    }
-    if (!this._autoRenderPending) return;
-    this._autoRenderPending = false;
-    this._autoRenderInFlight = true;
-    try {
-      // Read the prior manifest BEFORE render so cleanup can detect orphans.
-      const prevManifest = readManifest(dir);
-      const result = await this._render.render(dir);
-      for (const h of this._renderHandlers) h(result);
-      // Prune stale files after render: a deleted row, or — for a cloud member —
-      // a row that was just un-shared (so it dropped out of the RLS-filtered read)
-      // must leave the rendered tree, not linger as a stale snapshot. cleanup uses
-      // the SAME per-viewer resolver the render did, so a member's own just-written
-      // files are kept and only genuinely-absent rows are removed. Without this an
-      // un-share would never prune the file (render only writes; it never deletes).
-      const newManifest = readManifest(dir);
-      await this._render.cleanup(dir, prevManifest, {}, newManifest);
-    } catch (err) {
-      // A render write failed (e.g. disk full / read-only mount). Surface it
-      // loudly through the existing error channel — never swallow it — carrying
-      // the original errno code and an actionable message. The prior rendered
-      // context + manifest are left intact as the record (the manifest is the
-      // last write, so it is never committed over a partial tree), and the next
-      // render self-heals once the cause clears.
-      const base = err instanceof Error ? err : new Error(String(err));
-      const code = (base as NodeJS.ErrnoException).code;
-      const error = new Error(
-        `render write failed${code ? ` (${code})` : ''}; the prior rendered context + manifest are left intact as the record, and the next render self-heals: ${base.message}`,
-      ) as NodeJS.ErrnoException;
-      if (code) error.code = code;
-      error.cause = base;
-      for (const h of this._errorHandlers) h(error);
-    } finally {
-      this._autoRenderInFlight = false;
-      // Mutations may have arrived while the render was in flight (and hit the
-      // in-flight guard above without arming a timer); re-arm if so.
-      this._rearmAutoRenderIfPending();
-    }
-  }
-
-  private _rearmAutoRenderIfPending(): void {
-    if (this._autoRenderPending) this._scheduleAutoRender();
   }
 
   /**
