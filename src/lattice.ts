@@ -15,7 +15,6 @@ import type {
   StopFn,
   AuditEvent,
   LatticeEvent,
-  Filter,
   RenderSpec,
   BuiltinTemplateName,
   WriteHook,
@@ -49,7 +48,6 @@ import type { StorageAdapter } from './db/adapter.js';
 import {
   runAsyncOrSync,
   getAsyncOrSync,
-  allAsyncOrSync,
   introspectColumnsAsyncOrSync,
   addColumnAsyncOrSync,
 } from './db/adapter.js';
@@ -59,12 +57,13 @@ import {
   serializeRowPk as _serializeRowPkCodec,
   serializePkLookup as _serializePkLookupCodec,
 } from './db/pk.js';
-import { SchemaManager, pageClause } from './schema/manager.js';
+import { SchemaManager } from './schema/manager.js';
 import type { CompiledTableDef, PageOptions } from './schema/manager.js';
 import { assertSafeIdentifier } from './schema/identifier.js';
 import { ChangelogService } from './changelog/service.js';
 import { ChangelogWriter } from './changelog/writer.js';
 import { ReportBuilder } from './report/builder.js';
+import { QueryCore } from './query/core.js';
 import { SeedEngine } from './crud/seed-engine.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine, NOOP_RENDER } from './render/engine.js';
@@ -171,6 +170,7 @@ export class Lattice {
   private _changelogService?: ChangelogService;
   private _changelogWriterInstance?: ChangelogWriter;
   private _reportBuilder?: ReportBuilder;
+  private _queryCoreInstance?: QueryCore;
   private _seedEngine?: SeedEngine;
   private readonly _schema: SchemaManager;
   private readonly _sanitizer: Sanitizer;
@@ -1260,12 +1260,7 @@ export class Lattice {
   async get(table: string, id: PkLookup): Promise<Row | null> {
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
-
-    const { clause, params } = this._pkWhere(table, id);
-    const row =
-      (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
-      null;
-    return row ? this._encryption.decryptRow(table, row) : null;
+    return this._queryCore.get(table, id);
   }
 
   // -------------------------------------------------------------------------
@@ -1443,17 +1438,7 @@ export class Lattice {
   async getActive(table: string, orderBy = 'name', opts: PageOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
-
-    const cols = this._ensureColumnCache(table);
-    const hasDeletedAt = cols.has('deleted_at');
-    const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
-    const order = cols.has(orderBy) ? ` ORDER BY "${orderBy}"` : '';
-    const page = pageClause(opts);
-    return allAsyncOrSync(
-      this._adapter,
-      `SELECT * FROM "${table}"${where}${order}${page.sql}`,
-      page.params,
-    );
+    return this._queryCore.getActive(table, orderBy, opts);
   }
 
   /**
@@ -1462,17 +1447,7 @@ export class Lattice {
   async countActive(table: string): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
-
-    const cols = this._ensureColumnCache(table);
-    const hasDeletedAt = cols.has('deleted_at');
-    const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
-    const row = await getAsyncOrSync(
-      this._adapter,
-      `SELECT COUNT(*) as cnt FROM "${table}"${where}`,
-    );
-    // Postgres returns COUNT(*) as a string; SQLite returns a number. Coerce
-    // so the public Promise<number> contract holds across dialects.
-    return Number(row?.cnt ?? 0);
+    return this._queryCore.countActive(table);
   }
 
   /**
@@ -1485,15 +1460,7 @@ export class Lattice {
   ): Promise<Row | null> {
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
-    this._assertIdent(table, naturalKeyCol);
-
-    return (
-      (await getAsyncOrSync(
-        this._adapter,
-        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
-        [naturalKeyVal],
-      )) ?? null
-    );
+    return this._queryCore.getByNaturalKey(table, naturalKeyCol, naturalKeyVal);
   }
 
   /**
@@ -1601,6 +1568,25 @@ export class Lattice {
     return this._reportBuilder;
   }
 
+  /** Lazily-constructed generic-read collaborator (see src/query/core.ts). The
+   *  decrypt deps are wired through `_encryption`, so the query/get decryption
+   *  asymmetry is preserved: only query/get invoke them. */
+  private get _queryCore(): QueryCore {
+    this._queryCoreInstance ??= new QueryCore({
+      adapter: this._adapter,
+      assertIdent: (table, ...cols) => {
+        this._assertIdent(table, ...cols);
+      },
+      ensureColumnCache: (table) => this._ensureColumnCache(table),
+      pkWhere: (table, id) => this._pkWhere(table, id),
+      invalidColumnError: <T>(table: string, cols: string[]) =>
+        this._invalidColumnError<T>(table, cols),
+      decryptRow: (table, row) => this._encryption.decryptRow(table, row),
+      decryptRows: (table, rows) => this._encryption.decryptRows(table, rows),
+    });
+    return this._queryCoreInstance;
+  }
+
   /** Lazily-constructed auto-render scheduler (see src/render/auto-render.ts). */
   private get _autoRender(): AutoRenderScheduler {
     this._autoRenderScheduler ??= new AutoRenderScheduler({
@@ -1691,87 +1677,13 @@ export class Lattice {
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
-    this._assertIdent(table);
-
-    const colErr = this._invalidColumnError<Row[]>(table, [
-      ...Object.keys(opts.where ?? {}),
-      ...(opts.filters ?? []).map((f) => f.col),
-      ...(opts.orderBy ? [opts.orderBy] : []),
-    ]);
-    if (colErr) return colErr;
-
-    let sql = `SELECT * FROM "${table}"`;
-    const params: unknown[] = [];
-    const whereClauses: string[] = [];
-
-    // Equality where (backward compat shorthand)
-    if (opts.where && Object.keys(opts.where).length > 0) {
-      for (const [col, val] of Object.entries(opts.where)) {
-        whereClauses.push(`"${col}" = ?`);
-        params.push(val);
-      }
-    }
-
-    // Advanced filters with full operator support
-    if (opts.filters && opts.filters.length > 0) {
-      const { clauses, params: fp } = this._buildFilters(opts.filters);
-      whereClauses.push(...clauses);
-      params.push(...fp);
-    }
-
-    if (whereClauses.length > 0) {
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
-    }
-    if (opts.orderBy) {
-      const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
-      sql += ` ORDER BY "${opts.orderBy}" ${dir}`;
-    }
-    if (opts.limit !== undefined) {
-      sql += ` LIMIT ${opts.limit.toString()}`;
-    }
-    if (opts.offset !== undefined) {
-      if (opts.limit === undefined) sql += ' LIMIT -1';
-      sql += ` OFFSET ${opts.offset.toString()}`;
-    }
-
-    const rows = await allAsyncOrSync(this._adapter, sql, params);
-    return this._encryption.decryptRows(table, rows);
+    return this._queryCore.query(table, opts);
   }
 
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
-    this._assertIdent(table);
-
-    const colErr = this._invalidColumnError<number>(table, [
-      ...Object.keys(opts.where ?? {}),
-      ...(opts.filters ?? []).map((f) => f.col),
-    ]);
-    if (colErr) return colErr;
-
-    let sql = `SELECT COUNT(*) as n FROM "${table}"`;
-    const params: unknown[] = [];
-    const whereClauses: string[] = [];
-
-    if (opts.where && Object.keys(opts.where).length > 0) {
-      for (const [col, val] of Object.entries(opts.where)) {
-        whereClauses.push(`"${col}" = ?`);
-        params.push(val);
-      }
-    }
-
-    if (opts.filters && opts.filters.length > 0) {
-      const { clauses, params: fp } = this._buildFilters(opts.filters);
-      whereClauses.push(...clauses);
-      params.push(...fp);
-    }
-
-    if (whereClauses.length > 0) {
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
-    }
-
-    const row = await getAsyncOrSync(this._adapter, sql, params);
-    return Number(row?.n ?? 0);
+    return this._queryCore.count(table, opts);
   }
 
   // -------------------------------------------------------------------------
@@ -2232,68 +2144,6 @@ export class Lattice {
    */
   private _serializePkLookup(table: string, id: PkLookup): string {
     return _serializePkLookupCodec(this._resolvedPkCols(table), id);
-  }
-
-  /**
-   * Convert Filter objects into SQL clause strings and bound params.
-   * An `in` filter with an empty array is silently ignored (produces no clause).
-   */
-  private _buildFilters(filters: Filter[]): {
-    clauses: string[];
-    params: unknown[];
-  } {
-    const clauses: string[] = [];
-    const params: unknown[] = [];
-
-    for (const f of filters) {
-      const col = `"${f.col}"`;
-      switch (f.op) {
-        case 'eq':
-          clauses.push(`${col} = ?`);
-          params.push(f.val);
-          break;
-        case 'ne':
-          clauses.push(`${col} != ?`);
-          params.push(f.val);
-          break;
-        case 'gt':
-          clauses.push(`${col} > ?`);
-          params.push(f.val);
-          break;
-        case 'gte':
-          clauses.push(`${col} >= ?`);
-          params.push(f.val);
-          break;
-        case 'lt':
-          clauses.push(`${col} < ?`);
-          params.push(f.val);
-          break;
-        case 'lte':
-          clauses.push(`${col} <= ?`);
-          params.push(f.val);
-          break;
-        case 'like':
-          clauses.push(`${col} LIKE ?`);
-          params.push(f.val);
-          break;
-        case 'in': {
-          const list = f.val as unknown[];
-          if (Array.isArray(list) && list.length > 0) {
-            clauses.push(`${col} IN (${list.map(() => '?').join(', ')})`);
-            params.push(...list);
-          }
-          break;
-        }
-        case 'isNull':
-          clauses.push(`${col} IS NULL`);
-          break;
-        case 'isNotNull':
-          clauses.push(`${col} IS NOT NULL`);
-          break;
-      }
-    }
-
-    return { clauses, params };
   }
 
   /** Returns a rejected Promise if not initialized; null if ready. */
