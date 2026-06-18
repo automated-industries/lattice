@@ -44,6 +44,12 @@ export async function openConfig(
   outputDir: string,
   autoRender = false,
   realtimeWatchdogMs?: number,
+  // Bound on the realtime-broker connect (the only unbounded awaited Postgres op
+  // after the instant-construct phase). Defaults to the outer switch cap so the
+  // inner bound can never silently drift below it; injectable for tests. The
+  // default is read at call time, after module init, so referencing the
+  // later-declared SWITCH_OPEN_TIMEOUT_MS here is safe.
+  brokerConnectTimeoutMs: number = SWITCH_OPEN_TIMEOUT_MS,
 ): Promise<ActiveDb> {
   // Heal a legacy config that still stores a RAW postgres:// URL (password in
   // cleartext on disk): move it into the encrypted credential store and rewrite
@@ -412,12 +418,20 @@ export async function openConfig(
   let realtime: RealtimeBroker | null = null;
   if (db.getDialect() === 'postgres') {
     try {
-      realtime = new RealtimeBroker(
+      const broker = new RealtimeBroker(
         parsed.dbPath,
         realtimeWatchdogMs !== undefined ? { watchdogIntervalMs: realtimeWatchdogMs } : {},
       );
-      await realtime.start();
+      // start() (client.connect + LISTEN) has no connectionTimeoutMillis, so a
+      // degraded Postgres that accepts the TCP connection but never completes the
+      // startup handshake can hang it forever — wedging EVERY open path (boot,
+      // switch, create, reopen), most of which the outer openWithinTimeout does not
+      // cover. Bound it like disposeActive bounds stop().
+      realtime = await startBrokerWithinTimeout(broker, brokerConnectTimeoutMs);
     } catch (e) {
+      // A connect HANG is surfaced loudly (no silent hang / local-mode fallback);
+      // a genuine connect rejection keeps its existing swallow-to-local-mode path.
+      if (e instanceof BrokerConnectTimeoutError) throw e;
       console.warn('[openConfig] realtime broker init failed:', (e as Error).message);
       realtime = null;
     }
@@ -629,6 +643,42 @@ function settleWithin<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
     }),
     timeout,
   ]);
+}
+
+/**
+ * Thrown by {@link startBrokerWithinTimeout} when a realtime-broker connect exceeds
+ * its cap. Distinct from a genuine connect rejection so callers can surface a hang
+ * loudly while still degrading gracefully on a real connect failure.
+ */
+export class BrokerConnectTimeoutError extends Error {
+  constructor(ms: number) {
+    super(
+      `Realtime broker connect exceeded ${String(ms)}ms — the database may be slow or unreachable`,
+    );
+    this.name = 'BrokerConnectTimeoutError';
+  }
+}
+
+/**
+ * Bound a realtime broker's connect (client.connect + LISTEN), which has no
+ * connectionTimeoutMillis and can otherwise hang forever on a degraded Postgres.
+ * On success returns the started broker; on timeout tears the half-open broker
+ * down in the background (best-effort — stop() is itself bounded) and throws
+ * {@link BrokerConnectTimeoutError}, so the open path fails fast + loud instead of
+ * wedging or silently degrading. A genuine connect rejection propagates unchanged.
+ */
+export async function startBrokerWithinTimeout(
+  broker: RealtimeBroker,
+  ms: number,
+): Promise<RealtimeBroker> {
+  const outcome = await settleWithin(broker.start(), ms);
+  if (outcome === 'timeout') {
+    void Promise.resolve()
+      .then(() => broker.stop())
+      .catch(() => undefined);
+    throw new BrokerConnectTimeoutError(ms);
+  }
+  return broker;
 }
 
 /**

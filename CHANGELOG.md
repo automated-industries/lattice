@@ -88,6 +88,16 @@ tagged BREAKING.
 
 ### Fixed
 
+- **Workspace open no longer hangs on a degraded Postgres.** `openConfig` awaited the
+  realtime broker's `start()` (connect + `LISTEN`) with no timeout; a backend that
+  accepts the TCP connection but never completes the startup handshake could hang
+  every open path (boot, workspace switch, create, reopen) indefinitely. The connect
+  is now bounded (default = the existing switch cap, `SWITCH_OPEN_TIMEOUT_MS`); on
+  timeout it tears the half-open broker down in the background and throws loudly
+  rather than wedge or silently degrade. **Behavior change:** a broker connect that
+  *hangs* at server boot now fails the boot loudly instead of eventually booting in
+  degraded local-mode — a genuine connect *rejection* still degrades to local mode as
+  before (only the previously-unhandled hang now surfaces).
 - **The GUI offline-edit queue now self-heals transient failures and ages out
   poison edits.** A queued edit that fails to replay with a 5xx or a network error
   no longer waits for the next `online`/reconnect event to retry — the drain
