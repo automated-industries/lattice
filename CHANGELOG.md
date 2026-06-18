@@ -6,7 +6,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [4.0.0] — unreleased
+
+Major release. The items tagged **BREAKING** below require migration — see
+[MIGRATING-4.0.md](docs/MIGRATING-4.0.md). **Before upgrading**, normalize legacy
+empty-string `deleted_at` values to `NULL` (the soft-delete change is data-safety
+critical; the guide leads with it). Internally this release also decomposes the
+three largest source files into focused modules and adds optimistic-concurrency,
+atomic-commit, and bounded-read hardening — behavior-preserving except where
+tagged BREAKING.
 
 ### Changed
 

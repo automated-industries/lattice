@@ -3,6 +3,27 @@
 This guide covers the breaking changes in the 4.0 release and the migration each
 one requires.
 
+## Order of operations
+
+Do these in order — the first step is data-safety-critical and must happen **before**
+you install 4.0:
+
+1. **BEFORE upgrading — normalize `deleted_at`.** On every table that has a
+   `deleted_at` column, set any empty-string value to `NULL`, and verify zero
+   empty-string rows remain. Skipping this can make live rows read as deleted (and
+   cause duplicate inserts). See the soft-delete section below.
+2. **Install `latticesql@4.0`.**
+3. **After upgrading — config + schema cleanups** (each is independent and can be
+   done when convenient):
+   - Rewrite any config that still uses the `ref:` field shorthand to an explicit
+     `relations:` block (a `ref:` config now fails to open).
+   - Optionally drop the now-unused `files.path` / `files.kind` columns from your
+     physical schema.
+   - No action needed for the manifest change — an old `.lattice/manifest.json`
+     regenerates itself on the first render.
+
+Each change is detailed below.
+
 ---
 
 ## 4.0.0 — Soft-delete predicate simplified to `deleted_at IS NULL` (BREAKING)
