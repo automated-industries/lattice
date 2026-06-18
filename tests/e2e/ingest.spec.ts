@@ -59,7 +59,10 @@ test('a multi-file drop caps concurrent uploads and shows batch progress', async
     await route.fulfill({
       status: 201,
       contentType: 'application/json',
-      body: JSON.stringify({ id: 'file-' + maxInFlight + '-' + inFlight, extraction_status: 'extracted' }),
+      body: JSON.stringify({
+        id: 'file-' + maxInFlight + '-' + inFlight,
+        extraction_status: 'extracted',
+      }),
     });
   });
 
@@ -73,7 +76,9 @@ test('a multi-file drop caps concurrent uploads and shows batch progress', async
     for (let i = 0; i < n; i++) {
       dt.items.add(new File(['hello ' + i], 'doc-' + i + '.md', { type: 'text/markdown' }));
     }
-    rail.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    rail.dispatchEvent(
+      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }),
+    );
   }, FILE_COUNT);
 
   // The batch progress bar appears while the queue drains…
