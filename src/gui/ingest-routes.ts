@@ -231,6 +231,7 @@ async function enrichOrFail(
   name: string,
   ctx: IngestContext,
   res: ServerResponse,
+  privateMode: boolean,
 ): Promise<ClassifyMatch[] | null> {
   try {
     return await enrichWithLlm(
@@ -244,6 +245,8 @@ async function enrichOrFail(
       ctx.createJunction,
       ctx.aggressiveness,
       ctx.createEntity,
+      false,
+      privateMode,
     );
   } catch (e) {
     const err = e as Error;
@@ -360,10 +363,19 @@ export async function dispatchIngestRoute(
     onColumnsAdded: columnDescriptionHook(ctx.db),
   };
 
+  // The GUI's "Private mode" intent for this ingest. The upload (raw-bytes)
+  // path carries it as an `x-lattice-private` header (the body is the file
+  // bytes, not JSON); the text/file JSON branches carry it as `body.private`
+  // (derived after the body is parsed below). When true, the file row AND every
+  // enrichment-derived row + junction link are forced private at insert, instead
+  // of inheriting the (possibly shared-to-everyone) files-table default.
+  const headerPrivate = req.headers['x-lattice-private'] === '1';
+
   // Raw-bytes upload (drag-drop / paperclip from the browser, which can't
   // expose a local path). Extract then discard the bytes — we keep the text +
   // description, not the file (path stays null, like a text paste).
   if (ctx.pathname === '/api/ingest/upload') {
+    const forcePrivate = headerPrivate;
     const rawName =
       (typeof req.headers['x-filename'] === 'string' && req.headers['x-filename']) || '';
     // The client percent-encodes the filename so a Unicode name survives the
@@ -499,10 +511,15 @@ export async function dispatchIngestRoute(
           ? { ref_kind: 'blob', blob_path: blob.blob_path }
           : {}),
     };
-    const { id } = await createRow(mctx, 'files', {
-      ...(await requiredFileDefaults(ctx.db, name, fileId, uploadRow)),
-      ...uploadRow,
-    });
+    const { id } = await createRow(
+      mctx,
+      'files',
+      {
+        ...(await requiredFileDefaults(ctx.db, name, fileId, uploadRow)),
+        ...uploadRow,
+      },
+      forcePrivate ? 'private' : undefined,
+    );
     // Seamless auto-dedup: a byte-identical re-upload is merged onto the OLDEST
     // existing copy (this just-created row is soft-deleted — recoverable from
     // Trash / Undo) and enrichment is skipped. The only signal is the 'system'
@@ -533,7 +550,7 @@ export async function dispatchIngestRoute(
     }
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
-      const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res);
+      const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res, forcePrivate);
       if (links === null) return true; // enrichment failed — already reported
       suggestedLinks = links;
     }
@@ -561,6 +578,9 @@ export async function dispatchIngestRoute(
     sendJson(res, { error: (e as Error).message }, 400);
     return true;
   }
+  // JSON branches: the private intent may arrive in the body (`private: true`)
+  // or, like the upload path, as the header — accept either.
+  const forcePrivate = headerPrivate || body.private === true;
 
   if (ctx.pathname === '/api/ingest/text') {
     const rawText = typeof body.text === 'string' ? body.text : '';
@@ -576,7 +596,7 @@ export async function dispatchIngestRoute(
     if (sourceUrl) {
       try {
         const result = await ingestUrlAsFile(
-          { db: ctx.db, mctx, enrich: enrichContext(ctx) },
+          { db: ctx.db, mctx, enrich: enrichContext(ctx), privateMode: forcePrivate },
           sourceUrl,
         );
         sendJson(
@@ -606,11 +626,25 @@ export async function dispatchIngestRoute(
       description: describe(content, mime, title),
       extraction_status: 'extracted',
     };
-    const { id } = await createRow(mctx, 'files', {
-      ...(await requiredFileDefaults(ctx.db, title, textFileId, textRow)),
-      ...textRow,
-    });
-    const suggestedLinks = await enrichOrFail(mctx, ctx.db, id, content, title, ctx, res);
+    const { id } = await createRow(
+      mctx,
+      'files',
+      {
+        ...(await requiredFileDefaults(ctx.db, title, textFileId, textRow)),
+        ...textRow,
+      },
+      forcePrivate ? 'private' : undefined,
+    );
+    const suggestedLinks = await enrichOrFail(
+      mctx,
+      ctx.db,
+      id,
+      content,
+      title,
+      ctx,
+      res,
+      forcePrivate,
+    );
     if (suggestedLinks === null) return true; // enrichment failed — already reported
     sendJson(res, { id, extraction_status: 'extracted', suggestedLinks }, 201);
     return true;
@@ -655,10 +689,15 @@ export async function dispatchIngestRoute(
     size_bytes: size,
     extraction_status: 'pending',
   };
-  const { id } = await createRow(mctx, 'files', {
-    ...(await requiredFileDefaults(ctx.db, name, localFileId, localRow)),
-    ...localRow,
-  });
+  const { id } = await createRow(
+    mctx,
+    'files',
+    {
+      ...(await requiredFileDefaults(ctx.db, name, localFileId, localRow)),
+      ...localRow,
+    },
+    forcePrivate ? 'private' : undefined,
+  );
 
   // Extract inline (the GUI is local; files are typically small). Failures are
   // recorded on the row, not swallowed.
@@ -682,6 +721,8 @@ export async function dispatchIngestRoute(
           ctx.createJunction,
           ctx.aggressiveness,
           ctx.createEntity,
+          false,
+          forcePrivate,
         );
     sendJson(
       res,

@@ -1404,7 +1404,15 @@ function startBackgroundRender(active: ActiveDb): void {
 
   // Fire-and-forget. The promise settling is handled below; the caller does NOT
   // await this, so the originating HTTP handler returns sub-second.
-  void db.renderInBackground(active.outputDir, { signal, onProgress }).then(
+  //
+  // `gateOnOpen`: this is the open/restart render. A plain restart and a version
+  // update both land here, and re-rendering an unchanged tree on every one is pure
+  // churn (per-table overlays + shared-quota egress for zero file changes). The
+  // gate skips the render when the manifest's recorded cursor (read through this
+  // open's own scope) shows nothing the tree depends on has advanced; it fails
+  // open, and the realtime + mutation render paths (which never set it) are
+  // unaffected, so a real cloud change still re-renders promptly.
+  void db.renderInBackground(active.outputDir, { signal, onProgress, gateOnOpen: true }).then(
     () => {
       // Normal completion is reported by the engine's `done` event handled in
       // onProgress; nothing more to do here.
