@@ -25,16 +25,26 @@ export class SyncLoop {
         .then(async (result: RenderResult) => {
           options.onRender?.(result);
           if (options.cleanup) {
+            // Pass the manifest render JUST wrote (4th arg) — every other cleanup()
+            // caller does. Without it, cleanup detected orphaned directories from the
+            // previous manifest but could not detect stale files in surviving entities
+            // (omitIfEmpty / removed files), leaving them on disk.
+            const newManifest = readManifest(outputDir);
             const cleanupResult = await this._engine.cleanup(
               outputDir,
               prevManifest,
               options.cleanup,
+              newManifest,
             );
             options.onCleanup?.(cleanupResult);
           }
         })
         .catch((err: unknown) => {
-          options.onError?.(err instanceof Error ? err : new Error(String(err)));
+          const error = err instanceof Error ? err : new Error(String(err));
+          // A render/cleanup failure in the watch loop must surface even when the
+          // consumer supplied no onError handler — never vanish silently.
+          if (options.onError) options.onError(error);
+          else console.error('[lattice watch] render/cleanup failed:', error);
         })
         .finally(() => {
           if (!stopped) {

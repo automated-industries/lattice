@@ -90,6 +90,15 @@ tagged BREAKING.
 
 ### Fixed
 
+- **The `db.watch()` loop no longer hides render failures or skips stale-file cleanup.**
+  A render/cleanup error now surfaces via `console.error` when no `onError` handler is
+  supplied (it was silently swallowed), and orphan cleanup now receives the post-render
+  manifest (4th arg) — matching every other `cleanup()` caller — so it can remove stale
+  files in surviving entities (`omitIfEmpty` / removed files), not just orphaned
+  directories.
+- **GUI auto-dedup on file ingest surfaces its failures.** The post-upload auto-dedup
+  block swallowed every error silently; it now logs the failure (still falling through
+  to normal enrichment so the upload lands) so a systematic dedup/merge bug is visible.
 - **Writeback no longer drops entries when a `persist` throws mid-batch.** The pipeline
   advanced the file offset (and marked entries seen) BEFORE calling `persist`, so a
   `persist` that threw partway through a batch left the offset past the un-persisted tail

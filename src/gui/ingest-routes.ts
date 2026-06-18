@@ -508,8 +508,14 @@ export async function dispatchIngestRoute(
         });
         return true;
       }
-    } catch {
-      /* dedup is best-effort — fall through to normal enrichment */
+    } catch (e) {
+      // Auto-dedup is best-effort: fall through to normal enrichment so the upload
+      // still lands. But surface the failure (don't swallow it silently) — otherwise
+      // a systematic dedup/merge bug stays invisible behind "everything ingested".
+      console.warn(
+        '[ingest] auto-dedup failed; falling through to normal enrichment:',
+        e instanceof Error ? e.message : String(e),
+      );
     }
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
