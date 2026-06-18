@@ -323,6 +323,15 @@ export class RenderEngine {
     // the previous manifest — leaving every untouched table's entry intact so the
     // orphan-cleanup pass doesn't see them as removed and prune their files.
     if (this._schema.getEntityContexts().size > 0) {
+      // LOAD-BEARING INVARIANT — keep this commit block fully SYNCHRONOUS (no await /
+      // setImmediate between the readManifest and the writeManifest). It is what makes
+      // two concurrent same-`outputDir` renders safe WITHOUT a per-dir lock: the
+      // read-merge-write can't interleave, so the last writer always commits a
+      // complete (full render) or superset (incremental, merged over the on-disk prev)
+      // manifest, and orphan-cleanup keys deletion off the LIVE DB (not this map), so a
+      // manifest that omits an entity only makes cleanup do less — it never prunes a
+      // live row's files. If this block ever needs an `await`, add a per-`outputDir`
+      // serialization (promise-chain keyed by the resolved dir) around it first.
       let entityContexts = entityContextManifest;
       if (opts.changedTables) {
         const prev = readManifest(outputDir);
