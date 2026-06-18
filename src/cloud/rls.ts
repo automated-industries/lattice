@@ -235,6 +235,18 @@ CREATE TABLE IF NOT EXISTS "__lattice_member_invites" (
 -- bootstrap is now run directly + idempotently, not version-gated).
 ALTER TABLE "__lattice_member_invites" ADD COLUMN IF NOT EXISTS "email" text;
 
+-- Owner-published entity/render LAYOUT (the entities + entityContexts config
+-- blocks), so a joined member — whose generated config has entities: {} — can
+-- hydrate the full render layout and produce a complete context tree. This holds
+-- schema CONFIG, not row data, so it is safe to share with members (granted
+-- SELECT). A shared singleton, like __lattice_user_identity: no per-row RLS.
+CREATE TABLE IF NOT EXISTS "__lattice_shared_schema" (
+  "id" TEXT PRIMARY KEY DEFAULT 'singleton',
+  "entities_json" TEXT,
+  "contexts_json" TEXT,
+  "updated_at" TEXT
+);
+
 -- #3.1 — one-time-use + revocation enforcement. After a member authenticates to
 -- the cloud with their minted credential, the join path calls this to CLAIM the
 -- invite. The single atomic UPDATE stamps redeemed_at and returns true ONLY when

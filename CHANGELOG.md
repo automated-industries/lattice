@@ -23,6 +23,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   column-masked, so a shared-on member could see an owner-only column's value in
   history — still strictly more private than the previous no-RLS state.)
 
+### Added
+
+- **Cloud members now render the full context tree.** The owner's entity/render
+  layout (entities + entityContexts) is published to a members-readable cloud
+  table on migrate + owner-open, and a joined member hydrates its local config
+  from it on open (CLI + GUI), keeping its own scoped `db:` credential. Members
+  previously got `entities: {}` and rendered an empty/degraded tree. A cloud
+  workspace with no published layout now surfaces a clear message instead of
+  silently rendering zero files.
+
 ## [3.4.1] - 2026-06-18
 
 ### Fixed
