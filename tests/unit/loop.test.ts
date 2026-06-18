@@ -73,6 +73,44 @@ describe('SyncLoop', () => {
     expect(errors[0]?.message).toBe('render failed');
   });
 
+  it('surfaces render errors via console.error when no onError handler is set', async () => {
+    // A watch-loop render failure must never vanish silently just because the
+    // consumer did not pass onError.
+    const engine = makeEngine(new Error('render boom'));
+    const loop = new SyncLoop(engine);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stop = loop.watch('/out', { interval: 20 }); // no onError handler
+    await vi.waitFor(
+      () => {
+        expect(spy).toHaveBeenCalled();
+      },
+      { timeout: 200 },
+    );
+    stop();
+    expect(
+      spy.mock.calls.some((c) => c.some((a) => a instanceof Error && a.message === 'render boom')),
+    ).toBe(true);
+    spy.mockRestore();
+  });
+
+  it('passes the post-render manifest to cleanup as the 4th arg', async () => {
+    const engine = makeEngine();
+    const cleanup = vi.fn().mockResolvedValue({});
+    (engine as unknown as { cleanup: typeof cleanup }).cleanup = cleanup;
+    const loop = new SyncLoop(engine);
+    const stop = loop.watch('/out', { interval: 20, cleanup: {} });
+    await vi.waitFor(
+      () => {
+        expect(cleanup).toHaveBeenCalled();
+      },
+      { timeout: 200 },
+    );
+    stop();
+    // cleanup now receives (outputDir, prevManifest, options, newManifest) — 4 args,
+    // not the prior 3 that omitted the post-render manifest.
+    expect(cleanup.mock.calls[0]?.length).toBe(4);
+  });
+
   it('stop() prevents further renders', async () => {
     const engine = makeEngine();
     const loop = new SyncLoop(engine);
