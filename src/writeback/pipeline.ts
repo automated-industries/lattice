@@ -1,4 +1,13 @@
-import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs';
+import {
+  readFileSync,
+  statSync,
+  existsSync,
+  readdirSync,
+  openSync,
+  readSync,
+  closeSync,
+} from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { join, dirname, basename } from 'node:path';
 import type { WritebackDefinition } from '../types.js';
 import { InMemoryStateStore } from './state-store.js';
@@ -45,8 +54,49 @@ export class WritebackPipeline {
 
       if (currentSize === offset) continue;
 
-      const content = readFileSync(filePath, 'utf8');
-      const { entries, nextOffset } = def.parse(content, offset);
+      // Resolve the parsed batch and the ABSOLUTE next byte offset to store once
+      // the whole batch has persisted. Two paths:
+      //  - default: read the whole file, parse from the absolute offset, store
+      //    the parser's nextOffset verbatim — byte-for-byte the original behavior.
+      //  - incremental (opt-in): read only the new tail, parse a slice from 0,
+      //    and translate the slice-relative nextOffset back to an absolute byte
+      //    offset before storing.
+      let entries: unknown[];
+      let nextAbsoluteOffset: number;
+
+      if (def.incrementalRead) {
+        const len = currentSize - offset;
+        const buf = Buffer.allocUnsafe(len);
+        const fd = openSync(filePath, 'r');
+        let bytesRead: number;
+        try {
+          bytesRead = readSync(fd, buf, 0, len, offset);
+        } finally {
+          closeSync(fd);
+        }
+        // Decode incrementally so a multi-byte codepoint straddling the trailing
+        // edge is not split into a replacement char: StringDecoder holds back the
+        // incomplete trailing bytes and emits only complete codepoints. Those
+        // held-back bytes are simply not consumed this tick — they arrive on the
+        // next tick once the rest is written, because the absolute offset only
+        // advances past the bytes actually consumed below.
+        const decoder = new StringDecoder('utf8');
+        const slice = decoder.write(buf.subarray(0, bytesRead));
+        const result = def.parse(slice, 0);
+        entries = result.entries;
+        // The parser's nextOffset is a string index into the slice. Map it back
+        // to bytes (the consumed prefix's UTF-8 byte length) and add the prior
+        // byte offset so the stored offset is always absolute. Any unconsumed
+        // tail (a partial trailing line, or codepoint bytes held back by the
+        // decoder) stays un-advanced and is re-read next tick.
+        const consumedBytes = Buffer.byteLength(slice.slice(0, result.nextOffset), 'utf8');
+        nextAbsoluteOffset = offset + consumedBytes;
+      } else {
+        const content = readFileSync(filePath, 'utf8');
+        const parsed = def.parse(content, offset);
+        entries = parsed.entries;
+        nextAbsoluteOffset = parsed.nextOffset;
+      }
 
       for (const entry of entries) {
         const key = def.dedupeKey ? def.dedupeKey(entry) : null;
@@ -77,8 +127,10 @@ export class WritebackPipeline {
 
       // Advance the offset only after the WHOLE batch persisted — a mid-batch throw
       // propagates before this line, so the next sync re-reads from the same offset
-      // (dedup skips the entries that already landed).
-      store.setOffset(filePath, nextOffset, currentSize);
+      // (dedup skips the entries that already landed). The offset is absolute in
+      // both modes: the parser's verbatim nextOffset in the default path, the
+      // slice-relative offset translated back to bytes in the incremental path.
+      store.setOffset(filePath, nextAbsoluteOffset, currentSize);
 
       // Lifecycle hook: onArchive
       if (def.onArchive && processed > 0) {

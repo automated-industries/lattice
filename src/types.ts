@@ -596,6 +596,34 @@ export interface WritebackDefinition {
   file: string;
   /** Parse new file content starting at fromOffset; return entries and next offset */
   parse: (content: string, fromOffset: number) => { entries: unknown[]; nextOffset: number };
+  /**
+   * Opt into incremental file reads. Default (`undefined` / `false`): the
+   * pipeline reads the WHOLE file every tick with `readFileSync` and calls
+   * `parse(wholeFileContent, absoluteByteOffset)` — byte-for-byte the original
+   * behavior. No change for existing consumers.
+   *
+   * When `true`: each tick the pipeline reads ONLY the bytes at/after the
+   * stored byte offset (one `readSync` of `currentSize - offset` bytes) and
+   * passes that slice as `content` with `fromOffset = 0`. The parser's returned
+   * `nextOffset` is therefore RELATIVE to the slice; the pipeline adds the prior
+   * byte offset back before storing, so the persisted offset is always absolute.
+   * This avoids re-reading the whole file (and re-billing its egress) every tick
+   * on an append-only log.
+   *
+   * HARD PRECONDITION: the parser MUST operate purely on the byte-slice it
+   * receives — it may NOT rely on any bytes before the stored offset (no
+   * back-references into earlier content, no whole-file state). If your parser
+   * needs the full file (e.g. it re-parses a header on every tick), leave this
+   * off.
+   *
+   * Multi-byte safety: the slice is decoded with an incremental UTF-8 decoder
+   * (`StringDecoder`), so a multi-byte codepoint that straddles the slice's
+   * trailing edge is not split into a replacement char — its trailing bytes are
+   * simply not yet consumed and arrive on the next tick once the rest is written.
+   *
+   * @default undefined (false)
+   */
+  incrementalRead?: boolean;
   /** Persist a single parsed entry; called exactly once per unique dedupeKey */
   persist: (entry: unknown, filePath: string) => Promise<void>;
   /** Optional dedup key — if omitted, every entry is processed */
