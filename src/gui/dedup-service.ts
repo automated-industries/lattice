@@ -24,6 +24,9 @@ export interface DedupServiceCtx {
   sessionId?: string | undefined;
 }
 
+/** Active-row ceiling above which the explicit dedup scan refuses to run (loudly) rather than truncating — truncating would silently miss duplicates. Tunable. */
+export const DEDUP_MAX_SCAN_ROWS = 50_000;
+
 const get = (r: Row, k: string): unknown => (r as Record<string, unknown>)[k];
 /** A row cell coerced to a string ('' when absent / non-string). */
 const cellStr = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -90,9 +93,36 @@ export async function findTableDuplicates(
   table: string,
   opts: { fuzzy?: boolean; threshold?: number; keyColumns?: string[] } = {},
 ): Promise<DedupGroup[]> {
-  const rows = (await ctx.db.query(table, {})).filter((r) => !get(r, 'deleted_at'));
-  if (table === 'files') return fileContentGroups(rows, opts.fuzzy ?? false, opts.threshold);
+  // One column lookup, reused by the count guard, the read's soft-delete
+  // filter, and the key-column selection below (hoisted above the files branch).
   const cols = ctx.db.getRegisteredColumns(table);
+  const hasDeletedAt = !!cols && 'deleted_at' in cols;
+
+  // SCALE GUARD — count the active rows IN SQL first (COUNT(*) reads no row
+  // bodies → near-zero egress). Duplicate detection inherently needs every
+  // candidate row, so we can NOT cap the read with a LIMIT — that would
+  // silently miss duplicates. Instead, refuse loudly above the ceiling.
+  const activeCount = hasDeletedAt
+    ? await ctx.db.count(table, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
+    : await ctx.db.count(table, {});
+  if (activeCount > DEDUP_MAX_SCAN_ROWS) {
+    throw new Error(
+      `dedup scan refused: table "${table}" has ${String(activeCount)} active rows, which ` +
+        `exceeds the scan cap of ${String(DEDUP_MAX_SCAN_ROWS)}. Duplicate detection must ` +
+        `compare every candidate row, so truncating the scan would silently miss duplicates. ` +
+        `Narrow the scope (dedup a smaller subset) or raise DEDUP_MAX_SCAN_ROWS.`,
+    );
+  }
+
+  // Push the soft-delete filter INTO the read (fewer bytes than loading all
+  // rows then dropping the trashed ones in JS). `deleted_at IS NULL` mirrors
+  // the prior `!deleted_at` JS filter for the timestamp column. Only add the
+  // filter when the column exists — querying an unknown column throws.
+  const rows = await ctx.db.query(
+    table,
+    hasDeletedAt ? { filters: [{ col: 'deleted_at', op: 'isNull' }] } : {},
+  );
+  if (table === 'files') return fileContentGroups(rows, opts.fuzzy ?? false, opts.threshold);
   const keyCols = opts.keyColumns ?? defaultKeyColumns(cols ? Object.keys(cols) : []);
   if (keyCols.length === 0) return [];
   const items: DedupItem[] = rows

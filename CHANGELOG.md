@@ -24,6 +24,18 @@ tagged BREAKING.
   non-negative integers; a bare `offset` without `limit` is ignored, since SQL
   `OFFSET` requires `LIMIT`). Lets a consumer cap a read instead of pulling a whole
   table. (The GUI's own list endpoints are already bounded at the route layer.)
+- **Scale-safety bound on the explicit dedup scan (`DEDUP_MAX_SCAN_ROWS`, default
+  50,000).** `findTableDuplicates` (the assistant `dedup` tool) compares every
+  candidate row, so it cannot cap its read with a `LIMIT` without silently missing
+  duplicates. Instead it now counts active rows **in SQL first** (`COUNT(*)` reads
+  no row bodies → near-zero egress) and **refuses loudly** — throwing an Error that
+  names the table, count, and cap — when the active count exceeds the ceiling,
+  rather than scanning the whole table or truncating. The thrown Error propagates
+  through the assistant dispatch into a structured tool result the model relays, so
+  the caller is told to narrow the scope or raise the cap (never a silent empty
+  result). The soft-delete filter is also pushed into the read
+  (`deleted_at IS NULL`) instead of loading every row and dropping trashed ones in
+  JS; results are identical, with fewer bytes read.
 
 ### Changed
 
