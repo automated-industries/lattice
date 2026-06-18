@@ -1186,6 +1186,25 @@ export const css = `
       animation: feedSpin 0.7s linear infinite; vertical-align: middle;
     }
     @keyframes feedSpin { to { transform: rotate(360deg); } }
+    /* Batch-upload progress bar — pinned to the top of the feed while a
+       multi-file drop drains through the bounded-concurrency queue. */
+    .ingest-progress {
+      position: sticky; top: 0; z-index: 3;
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 8px 10px; border-radius: 8px;
+      background: var(--surface); border: 1px solid rgba(190, 242, 100, 0.22);
+      box-shadow: var(--shadow-1), var(--glow-accent-soft);
+    }
+    .ingest-progress-label { font-size: 12px; font-weight: 500; color: var(--text); }
+    .ingest-progress-track {
+      height: 6px; border-radius: 999px; overflow: hidden; background: var(--border-strong);
+    }
+    .ingest-progress-fill {
+      height: 100%; width: 0%; border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+      box-shadow: 0 0 8px rgba(190, 242, 100, 0.5);
+      transition: width 0.3s ease;
+    }
     .assistant-rail {
       position: relative;
       background:
