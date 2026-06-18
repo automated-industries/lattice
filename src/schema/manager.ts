@@ -17,6 +17,33 @@ import type {
 import type { EntityContextDefinition } from './entity-context.js';
 import { assertSafeIdentifier } from './identifier.js';
 
+/** Optional bounds for a list read. Omitting both is the default (no cap). */
+export interface PageOptions {
+  /** Max rows to return. Must be a non-negative integer. */
+  limit?: number;
+  /** Rows to skip (only honored alongside `limit` — SQL OFFSET requires LIMIT). */
+  offset?: number;
+}
+
+/**
+ * Build a parameterized ` LIMIT ? [OFFSET ?]` fragment for a bounded read. When
+ * `limit` is omitted the fragment is empty + no params — byte-identical to an
+ * unbounded query, so every existing caller is unchanged. `offset` is honored
+ * only when `limit` is set (a bare SQL OFFSET is invalid). Values are validated
+ * as non-negative integers and passed as bound parameters (never interpolated).
+ */
+export function pageClause(opts: PageOptions): { sql: string; params: number[] } {
+  if (opts.limit == null) return { sql: '', params: [] };
+  if (!Number.isInteger(opts.limit) || opts.limit < 0) {
+    throw new Error(`queryTable: limit must be a non-negative integer, got ${String(opts.limit)}`);
+  }
+  if (opts.offset != null && (!Number.isInteger(opts.offset) || opts.offset < 0)) {
+    throw new Error(`queryTable: offset must be a non-negative integer, got ${String(opts.offset)}`);
+  }
+  if (opts.offset != null) return { sql: ' LIMIT ? OFFSET ?', params: [opts.limit, opts.offset] };
+  return { sql: ' LIMIT ?', params: [opts.limit] };
+}
+
 /**
  * Internal representation of a table definition where `render` has always
  * been compiled down to a plain function by `Lattice.define()`.
@@ -341,25 +368,23 @@ export class SchemaManager {
     adapter: StorageAdapter,
     name: string,
     readRel: (table: string) => string = (t) => t,
+    opts: PageOptions = {},
   ): Promise<Row[]> {
     const from = readRel(name);
+    const page = pageClause(opts);
     if (this._tables.has(name)) {
       // Auto-filter soft-deleted rows when the table has a deleted_at column
       const def = this._tables.get(name);
-      if (def?.columns && 'deleted_at' in def.columns) {
-        return allAsyncOrSync(adapter, `SELECT * FROM "${from}" WHERE deleted_at IS NULL`);
-      }
-      return allAsyncOrSync(adapter, `SELECT * FROM "${from}"`);
+      const where = def?.columns && 'deleted_at' in def.columns ? ' WHERE deleted_at IS NULL' : '';
+      return allAsyncOrSync(adapter, `SELECT * FROM "${from}"${where}${page.sql}`, page.params);
     }
     if (this._entityContexts.has(name)) {
       // Introspect the relation actually read (the view carries deleted_at when
       // the base does — audienceViewSql passes through every column).
       const cols = await introspectColumnsAsyncOrSync(adapter, from);
       const hasDeletedAt = cols.includes('deleted_at');
-      return allAsyncOrSync(
-        adapter,
-        `SELECT * FROM "${from}"${hasDeletedAt ? ' WHERE deleted_at IS NULL' : ''}`,
-      );
+      const where = hasDeletedAt ? ' WHERE deleted_at IS NULL' : '';
+      return allAsyncOrSync(adapter, `SELECT * FROM "${from}"${where}${page.sql}`, page.params);
     }
     throw new Error(`Unknown table: "${name}"`);
   }
