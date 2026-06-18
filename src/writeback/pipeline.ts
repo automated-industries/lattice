@@ -48,15 +48,11 @@ export class WritebackPipeline {
       const content = readFileSync(filePath, 'utf8');
       const { entries, nextOffset } = def.parse(content, offset);
 
-      store.setOffset(filePath, nextOffset, currentSize);
-
       for (const entry of entries) {
         const key = def.dedupeKey ? def.dedupeKey(entry) : null;
 
-        if (key !== null) {
-          if (store.isSeen(filePath, key)) continue;
-          store.markSeen(filePath, key);
-        }
+        // Skip an entry already persisted (or rejected) in a prior pass.
+        if (key !== null && store.isSeen(filePath, key)) continue;
 
         // Validation gate
         if (def.validate) {
@@ -64,13 +60,25 @@ export class WritebackPipeline {
           const threshold = def.rejectBelow ?? 0;
           if (!result.pass || result.score < threshold) {
             def.onReject?.(entry, result);
+            if (key !== null) store.markSeen(filePath, key); // a rejected entry is consumed
             continue;
           }
         }
 
         await def.persist(entry, filePath);
+        // Mark seen ONLY after a successful persist — so a persist throw leaves the
+        // entry un-seen and (with the deferred setOffset below) the batch is re-read
+        // on the next sync and the entry re-attempted, never silently dropped. This
+        // preserves persist's "called exactly once per unique dedupeKey" contract
+        // across a transient failure.
+        if (key !== null) store.markSeen(filePath, key);
         processed++;
       }
+
+      // Advance the offset only after the WHOLE batch persisted — a mid-batch throw
+      // propagates before this line, so the next sync re-reads from the same offset
+      // (dedup skips the entries that already landed).
+      store.setOffset(filePath, nextOffset, currentSize);
 
       // Lifecycle hook: onArchive
       if (def.onArchive && processed > 0) {

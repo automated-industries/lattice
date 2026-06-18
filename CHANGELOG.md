@@ -90,6 +90,14 @@ tagged BREAKING.
 
 ### Fixed
 
+- **Writeback no longer drops entries when a `persist` throws mid-batch.** The pipeline
+  advanced the file offset (and marked entries seen) BEFORE calling `persist`, so a
+  `persist` that threw partway through a batch left the offset past the un-persisted tail
+  and the failing entry marked seen — silently dropping it on the next sync. An entry is
+  now marked seen only after `persist` succeeds, and the offset advances only after the
+  whole batch lands, so a failed batch is re-read (dedup skips the entries that already
+  persisted) until every entry is written — honoring `persist`'s "exactly once per
+  dedupeKey" contract across a transient failure.
 - **Cloud member-access reconcile does fewer round-trips.** `reconcileCloudMemberAccess`
   (run on every cloud-owner workspace open) now grants each table in a single
   round-trip — a masked table batches its two GRANTs (`SELECT` on `<t>_v` + DML on the

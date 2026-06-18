@@ -132,4 +132,38 @@ describe('WritebackPipeline', () => {
     const count = await pipeline.process();
     expect(count).toBe(2);
   });
+
+  it('does not lose or duplicate entries when persist throws mid-batch', async () => {
+    // Regression: the offset advanced (and entries were marked seen) BEFORE persist,
+    // so a mid-batch persist throw left the offset past the un-persisted tail and the
+    // failing entry marked seen — silently dropping it on the next sync. The fix marks
+    // an entry seen only AFTER a successful persist and advances the offset only after
+    // the whole batch succeeds, so a failed batch is re-read (dedup skips the entries
+    // that already landed) until every entry persists. persist's contract is "called
+    // exactly once per unique dedupeKey" — that must survive a transient failure.
+    const dir = tempDir();
+    const file = join(dir, 'log.md');
+    writeFileSync(file, 'entry1\nentry2\n');
+
+    const pipeline = new WritebackPipeline();
+    const persisted: string[] = [];
+    let failOnEntry2 = true;
+    const persist = vi.fn(async (entry: unknown) => {
+      if (entry === 'entry2' && failOnEntry2) throw new Error('persist failed (transient)');
+      persisted.push(entry as string);
+    });
+    pipeline.define({ file, parse: lineParser, persist, dedupeKey: (e) => e as string });
+
+    // First sync: entry1 persists, entry2 throws → the batch fails LOUDLY (Rule 16).
+    await expect(pipeline.process()).rejects.toThrow('persist failed');
+    expect(persisted).toEqual(['entry1']); // entry1 done; entry2 not
+
+    // Recover: persist now succeeds. The offset must not have advanced past entry2 and
+    // entry2 must not have been marked seen, so the retry re-reads the batch, skips the
+    // already-persisted entry1 (dedup), and finally lands entry2 — no loss, no dup.
+    failOnEntry2 = false;
+    const count = await pipeline.process();
+    expect(persisted).toEqual(['entry1', 'entry2']); // entry2 recovered; entry1 NOT duplicated
+    expect(count).toBe(1); // only entry2 processed on the retry
+  });
 });
