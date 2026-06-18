@@ -12,7 +12,7 @@ import {
   tableNeedsAudienceView,
 } from './audience.js';
 import {
-  grantMemberTableAccessSql,
+  grantMemberTableAccessBatchSql,
   grantMemberBookkeepingSql,
   grantMemberExecuteSql,
 } from './member-access.js';
@@ -134,9 +134,11 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
     if (db.getPrimaryKey(table).length === 0) continue;
     const masked = tableNeedsAudienceView(db.getColumnAudience(table));
     await tryTable(table, async () => {
-      for (const sql of grantMemberTableAccessSql(table, { masked })) {
-        await runAsyncOrSync(db.adapter, sql);
-      }
+      // One round-trip per table (the masked case batches its 2 GRANTs) — the
+      // per-table tryTable wrapper still isolates a failure to this table + records
+      // it in skipped[], so batching changes only the round-trip count, not the
+      // fault isolation or reporting.
+      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, { masked }));
     });
   }
 

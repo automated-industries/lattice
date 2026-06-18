@@ -88,6 +88,12 @@ tagged BREAKING.
 
 ### Fixed
 
+- **Cloud member-access reconcile does fewer round-trips.** `reconcileCloudMemberAccess`
+  (run on every cloud-owner workspace open) now grants each table in a single
+  round-trip — a masked table batches its two GRANTs (`SELECT` on `<t>_v` + DML on the
+  base) into one multi-statement query instead of two. Per-table fault isolation and
+  the skipped-tables report are unchanged (each table is still its own try/catch); only
+  the round-trip count drops.
 - **Workspace open no longer hangs on a degraded Postgres.** `openConfig` awaited the
   realtime broker's `start()` (connect + `LISTEN`) with no timeout; a backend that
   accepts the TCP connection but never completes the startup handshake could hang
