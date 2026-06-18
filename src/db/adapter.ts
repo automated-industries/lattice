@@ -40,6 +40,33 @@ export interface StorageAdapter {
    */
   addColumn(table: string, column: string, typeSpec: string): void;
 
+  /**
+   * Optional cheap, complete change-probe for the watch-loop render gate.
+   *
+   * Returns a token that is GUARANTEED to differ whenever ANY data change has
+   * been committed to the database since the previous call — by this connection
+   * OR any other connection/process. A caller may safely skip a render only when
+   * two consecutive tokens are strictly equal: equal tokens prove zero
+   * intervening commits, so nothing a render reads could have changed.
+   *
+   * The completeness guarantee is the whole point — a token that misses a class
+   * of writes would let the gate skip a render that was actually needed, leaving
+   * the rendered context stale. An adapter that cannot expose such a complete,
+   * cheap signal MUST leave this undefined; the gate then falls through to a
+   * full render every tick (the default, never-stale behavior).
+   *
+   * Must be O(1) — no table scan. It runs on every watch tick.
+   *
+   * - SQLite: `PRAGMA data_version` (catches other-connection commits) combined
+   *   with `total_changes()` (catches this connection's own row mutations) — the
+   *   pair is complete because between them they observe every committed row
+   *   change regardless of which connection made it. See the SQLite adapter.
+   * - Postgres: there is no equally-cheap GLOBAL complete counter, so the
+   *   Postgres adapter does NOT implement this — Postgres watch renders run every
+   *   tick, unchanged.
+   */
+  changeProbe?(): string | undefined;
+
   // ── Async surface (optional) ────────────────────────────────────────
   // Adapters that can serve queries without blocking the Node main thread
   // implement these. The Postgres adapter implements them against `pg.Pool`;

@@ -18,6 +18,26 @@ tagged BREAKING.
 
 ### Added
 
+- **Change-detection gate for the `watch()` render loop (SQLite).** The poll loop
+  previously called `render()` unconditionally every tick (default 5s). `render()`
+  already skips unchanged files (manifest hash-diff) and is interval-throttled, so
+  the residual idle cost is the per-tick read of every table. The loop now consults
+  an OPTIONAL, O(1), GUARANTEED-COMPLETE change probe before rendering and skips the
+  tick's render (and its cleanup) when the database provably has not changed since
+  the last render. On SQLite the probe composes `PRAGMA data_version` (detects
+  commits by OTHER connections/processes) with `total_changes()` (detects this
+  connection's own row mutations, including trigger- and cascade-driven ones); the
+  pair is complete — the composite token moves on any committed row change from any
+  origin and is stable on a no-op statement or an idle DB. The probe token is
+  captured BEFORE each render reads and adopted as the baseline at that moment, so a
+  write committed mid-render differs from it and the next tick re-renders — the gate
+  can cost at most one extra render, never a skipped-but-needed one. The first tick
+  always renders. Postgres has no equally-cheap global complete counter, so its
+  adapter deliberately leaves the probe unimplemented and the Postgres watch loop
+  renders every tick exactly as before. Any adapter without the probe falls through
+  to the prior full-render-every-tick behavior. Exposed as the optional
+  `StorageAdapter.changeProbe()` seam (and `RenderEngine.changeProbe()`); leaving it
+  undefined is always safe.
 - **Opt-in incremental writeback file reads (`WritebackDefinition.incrementalRead`).**
   Default (`undefined`/`false`) is byte-for-byte the prior behavior: the pipeline
   reads the WHOLE file every tick (`readFileSync`) and parses from the absolute

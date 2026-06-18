@@ -119,6 +119,18 @@ export class RenderEngine {
       options?.batchBelongsTo ?? process.env.LATTICE_RENDER_BELONGSTO_BATCH !== '0';
   }
 
+  /**
+   * Cheap, complete change-probe for the watch-loop render gate. Delegates to
+   * the adapter's optional `changeProbe()` (SQLite implements it; Postgres does
+   * not). Returns a token guaranteed to change whenever ANY committed data
+   * change has occurred since the prior call, or `undefined` when the backend
+   * cannot expose a complete signal — in which case the loop renders every tick
+   * (never-stale default). See `StorageAdapter.changeProbe`.
+   */
+  changeProbe(): string | undefined {
+    return this._adapter.changeProbe?.();
+  }
+
   /** Install the per-viewer read-relation resolver (see `_readRel`). */
   setRenderReadRelation(fn: (table: string) => string): void {
     this._readRel = fn;

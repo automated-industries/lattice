@@ -94,6 +94,36 @@ export class SQLiteAdapter implements StorageAdapter {
     }
   }
 
+  /**
+   * Complete, O(1) change-probe for the watch-loop render gate (see
+   * `StorageAdapter.changeProbe`). Composes the two SQLite counters that, taken
+   * together, observe EVERY committed row change regardless of origin:
+   *
+   *   - `PRAGMA data_version`: a counter SQLite bumps whenever ANOTHER
+   *     connection (or process) commits a change to the database. It is
+   *     intentionally NOT bumped by commits on this same connection — so on its
+   *     own it would miss our own writes.
+   *   - `total_changes()` (`sqlite3_total_changes`): the cumulative count of
+   *     rows inserted/updated/deleted on THIS connection since it was opened,
+   *     INCLUDING rows changed indirectly by triggers and ON DELETE CASCADE. It
+   *     covers exactly the gap `data_version` leaves — our own connection's
+   *     writes.
+   *
+   * Neither counter moves on a no-op statement (an UPDATE matching zero rows,
+   * a bare SELECT), so an idle DB yields a stable token. The pair is therefore
+   * complete: the composite token changes if and only if at least one row was
+   * committed somewhere since the prior read. Both reads are single-value
+   * pragma/function lookups — no table scan, safe to call every tick.
+   *
+   * (DDL alone is not a watch-loop concern — the schema is fixed before watch
+   * starts — and any DATA a migration writes is counted by `total_changes()`.)
+   */
+  changeProbe(): string {
+    const dataVersion = this.db.pragma('data_version', { simple: true }) as number;
+    const totalChanges = (this.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+    return `${String(dataVersion)}:${String(totalChanges)}`;
+  }
+
   // ── Async surface ───────────────────────────────────────────────────
   // SQLite is fundamentally synchronous (better-sqlite3 by design), so the
   // async methods just wrap the sync versions in resolved Promises. They
