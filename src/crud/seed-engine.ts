@@ -12,16 +12,6 @@ import type {
 } from '../types.js';
 
 /**
- * Soft-delete filter fragment. Byte-identical to the NOT_DELETED const in
- * lattice.ts so the batched IN(...) resolve read excludes the same
- * soft-deleted rows the old per-row getByNaturalKey did.
- *
- * v4.0 BREAKING: the legacy empty-string branch was removed; see lattice.ts
- * NOT_DELETED for the rationale and the required consumer migration.
- */
-const NOT_DELETED = 'deleted_at IS NULL';
-
-/**
  * Thrown by Lattice.seed when onUnresolvedLink: 'throw' is set and one or more
  * junction links could not be created because their target rows did not
  * resolve. (Moved here from lattice.ts; re-exported from lattice.ts to
@@ -210,7 +200,7 @@ export class SeedEngine {
       const placeholders = names.map(() => '?').join(', ');
       const rows = await allAsyncOrSync(
         this._adapter,
-        `SELECT id, "${group.resolveBy}" FROM "${group.resolveTable}" WHERE "${group.resolveBy}" IN (${placeholders}) AND ${NOT_DELETED}`,
+        `SELECT id, "${group.resolveBy}" FROM "${group.resolveTable}" WHERE "${group.resolveBy}" IN (${placeholders}) AND deleted_at IS NULL`,
         names,
       );
       for (const row of rows) {
