@@ -162,6 +162,7 @@ export async function ingestUrlAsFile(
       ctx.enrich.aggressiveness,
       ctx.enrich.createEntity,
       true,
+      ctx.privateMode === true,
     );
   }
 

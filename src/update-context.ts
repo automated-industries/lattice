@@ -10,7 +10,7 @@
  * `installArgsFor` / `installLatest` centralize the (validated) npm invocation.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { analyticsEnabled } from './framework/user-config.js';
 
@@ -85,10 +85,32 @@ export interface DetectOptions {
  */
 export function detectInstallContext(opts: DetectOptions = {}): InstallContext {
   const pkgName = opts.pkgName ?? 'latticesql';
-  const cwd = opts.cwd ?? process.cwd();
   const env = opts.env ?? process.env;
   const execPath = opts.execPath ?? process.execPath;
-  const modulePath = opts.modulePath ?? process.argv[1] ?? cwd;
+  const rawCwd = opts.cwd ?? process.cwd();
+  const rawModulePath = opts.modulePath ?? process.argv[1] ?? rawCwd;
+
+  // Resolve symlinks BEFORE deriving any path. npm's global (and project-local)
+  // bin is a SYMLINK — e.g. `<prefix>/bin/lattice -> ../lib/node_modules/latticesql/
+  // dist/cli.js` — and Node leaves `process.argv[1]` as the raw symlink. Without
+  // resolving it, findPackageRoot walks up from `<prefix>/bin` (which has no
+  // package.json) and returns null, so detection falls through to `unknown`
+  // (installable:false) and SILENTLY disables auto-update on the most common
+  // surface (global install / desktop icon / CLI). Resolve BOTH the module path
+  // and cwd so (a) the package root is found and (b) the local-vs-global compare
+  // (`packageRoot === join(cwd, 'node_modules', pkg)`) stays symmetric — cwd can
+  // carry symlink components too (macOS `/var -> /private/var`, `/tmp`, symlinked
+  // project dirs). Keep the raw value when realpath fails (the path may not exist,
+  // e.g. an injected modulePath in tests).
+  const resolveReal = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const modulePath = resolveReal(rawModulePath);
+  const cwd = resolveReal(rawCwd);
 
   const packageRoot = findPackageRoot(dirname(modulePath), pkgName);
 

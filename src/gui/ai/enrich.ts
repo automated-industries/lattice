@@ -102,6 +102,13 @@ export async function enrichWithLlm(
   aggressiveness: number = DEFAULT_AGGRESSIVENESS,
   createEntity?: (entity: string, columns: string[]) => Promise<string | null>,
   untrusted = false,
+  // When the source file was ingested PRIVATE, every derived write must force
+  // itself private too: the forced-visibility GUC is transaction-local, so the
+  // file insert's stamp does NOT bleed into these separate writes — each derived
+  // entity row, junction link, and fallback note would otherwise fall back to
+  // its own table default (shared-to-everyone on a cloud) and leak the private
+  // file's contents + relationships.
+  privateMode = false,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
@@ -128,6 +135,9 @@ export async function enrichWithLlm(
     });
     return [];
   }
+  // Force private on derived writes when the source file is private (see the
+  // privateMode param doc). undefined ⇒ inherit the table default, as before.
+  const forceVis: 'private' | undefined = privateMode ? 'private' : undefined;
   const temperature = aggressivenessToTemperature(aggressiveness);
   let description = '';
   try {
@@ -182,11 +192,16 @@ export async function enrichWithLlm(
           // Always supply the junction PK explicitly: an auto-created junction
           // (defineLate, raw `id TEXT PRIMARY KEY`) has no DB-level uuid default,
           // and Postgres — unlike SQLite — rejects a NULL primary key.
-          await linkRows(mctx, jx.junction, {
-            id: crypto.randomUUID(),
-            [jx.fileFk]: fileId,
-            [jx.otherFk]: m.id,
-          });
+          await linkRows(
+            mctx,
+            jx.junction,
+            {
+              id: crypto.randomUUID(),
+              [jx.fileFk]: fileId,
+              [jx.otherFk]: m.id,
+            },
+            forceVis,
+          );
           linkedCount++;
           if (created) {
             mctx.feed.publish({
@@ -264,19 +279,28 @@ export async function enrichWithLlm(
             // createRow audits + publishes a name-aware bubble ("Added <label>
             // to <entity>") that persists to the activity log and backfills on
             // reload — so no extra, non-persisted feed event is published here.
-            const { id: rowId } = await createRow(mctx, entity, row);
+            const { id: rowId } = await createRow(mctx, entity, row, forceVis);
             createdCount++;
             // Link the source file to the new object (auto-create the junction).
+            // Force the junction private too when the source file is private:
+            // even when the extracted object REUSES an existing SHARED entity,
+            // the private-file↔entity association itself must not leak through an
+            // 'everyone'-default junction row.
             const ent = entity;
             const jx =
               junctions.find((j) => j.otherTable === ent) ??
               (createJunction ? await createJunction(ent) : null);
             if (jx) {
-              await linkRows(mctx, jx.junction, {
-                id: crypto.randomUUID(),
-                [jx.fileFk]: fileId,
-                [jx.otherFk]: rowId,
-              });
+              await linkRows(
+                mctx,
+                jx.junction,
+                {
+                  id: crypto.randomUUID(),
+                  [jx.fileFk]: fileId,
+                  [jx.otherFk]: rowId,
+                },
+                forceVis,
+              );
             }
           } catch (e) {
             console.warn(`[ingest] create ${entity} from document failed:`, (e as Error).message);
@@ -298,12 +322,17 @@ export async function enrichWithLlm(
       try {
         const title = name.replace(/\.[^./\\]+$/, '').trim() || 'Note';
         const body = description.length > 0 ? description : text.slice(0, 2000);
-        const { id: noteId } = await createRow(mctx, 'notes', {
-          id: crypto.randomUUID(),
-          title,
-          body,
-          source_file_id: fileId,
-        });
+        const { id: noteId } = await createRow(
+          mctx,
+          'notes',
+          {
+            id: crypto.randomUUID(),
+            title,
+            body,
+            source_file_id: fileId,
+          },
+          forceVis,
+        );
         mctx.feed.publish({
           table: 'notes',
           op: 'insert',

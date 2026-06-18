@@ -44,6 +44,7 @@ import {
 } from './cloud/shred.js';
 import { isEncrypted } from './security/encryption.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
+import { computeRenderCursor, cursorIsFresh } from './lifecycle/render-cursor.js';
 import { existsSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { StorageAdapter } from './db/adapter.js';
@@ -200,6 +201,15 @@ export class Lattice {
 
   /** Current task context string for relevance filtering. */
   private _taskContext = '';
+
+  /**
+   * True when this connection opened against an already-provisioned cloud as a
+   * SCOPED MEMBER (no role-management privilege → no CREATE/ALTER on the schema).
+   * Set during init() by the same probe that decides introspect-only. Drives
+   * {@link addColumn} to route DDL through the owner-side `lattice_member_add_column`
+   * SECURITY DEFINER helper instead of issuing a raw ALTER the member can't run.
+   */
+  private _cloudMemberOpen = false;
 
   private readonly _auditHandlers: EventHandler<AuditEvent>[] = [];
   private readonly _renderHandlers: EventHandler<RenderResult>[] = [];
@@ -521,7 +531,7 @@ export class Lattice {
     // still surfaces loudly — never a silent success. Inlined rather than calling
     // framework/cloud-connect to avoid a core↔framework import cycle.
     let introspectOnly = options.introspectOnly === true;
-    if (!introspectOnly && this.getDialect() === 'postgres') {
+    if (this.getDialect() === 'postgres') {
       try {
         const [marker, role] = await Promise.all([
           getAsyncOrSync(this._adapter, `SELECT to_regclass('__lattice_owners') AS reg`),
@@ -533,7 +543,16 @@ export class Lattice {
         const provisioned = !!marker && (marker as { reg?: unknown }).reg != null;
         const canCreateRoles =
           !!role && (role as { rolcreaterole?: unknown }).rolcreaterole === true;
-        introspectOnly = provisioned && !canCreateRoles;
+        const memberOpen = provisioned && !canCreateRoles;
+        // Auto-detect a scoped member even when the caller didn't ask for
+        // introspectOnly (CLI render/reconcile/watch + library callers don't), so
+        // DDL is skipped against an already-provisioned cloud this role can't ALTER.
+        introspectOnly = introspectOnly || memberOpen;
+        // Record the member case so addColumn routes a runtime ALTER through the
+        // owner-side SECURITY DEFINER helper (a member can't ALTER the schema
+        // directly). The probe runs even when introspectOnly was passed explicitly
+        // (e.g. the GUI member open), so the flag is set on that path too.
+        this._cloudMemberOpen = memberOpen;
       } catch {
         // Detection unavailable (transient / permission) — fall through to the
         // normal applySchema path, which fails loudly if the role truly can't DDL.
@@ -652,6 +671,28 @@ export class Lattice {
   }
 
   /**
+   * True when a table opts into the observation/changelog substrate
+   * (`def.changelog`). Callers that want to bypass the high-level {@link delete}
+   * with a transaction-scoped raw delete use this to know whether the table also
+   * needs the changelog / write-hook / embedding side effects that only
+   * `delete()` performs — so they can keep the high-level path for such tables.
+   */
+  isChangelogTracked(table: string): boolean {
+    return this._changelogTables.has(table);
+  }
+
+  /**
+   * True when this connection opened as a scoped cloud MEMBER (see
+   * {@link _cloudMemberOpen}). Callers use it to route DDL-bearing work through
+   * the owner-side SECURITY DEFINER helpers rather than issuing DDL the member's
+   * role can't run (e.g. {@link addColumn} regenerates the masking view inside
+   * `lattice_member_add_column`, so the caller must not also try to regenerate it).
+   */
+  isCloudMemberOpen(): boolean {
+    return this._cloudMemberOpen;
+  }
+
+  /**
    * Return the normalised primary-key column list for a registered
    * table. Falls back to `['id']` for tables registered via raw DDL
    * (without a corresponding `define()` call) — same as the
@@ -734,7 +775,20 @@ export class Lattice {
     assertSafeIdentifier(column, 'column');
     const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
     if (!existing.includes(column)) {
-      await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+      if (this._cloudMemberOpen) {
+        // Scoped cloud member: no CREATE/ALTER on the schema, so a raw ALTER would
+        // fail with "permission denied for schema public". Route the column add
+        // (and the masking-view regen) through the owner-side SECURITY DEFINER
+        // helper, which runs as the owner. A real error (bad type, missing table,
+        // helper absent on an older cloud) propagates — never silently swallowed.
+        await runAsyncOrSync(this._adapter, `SELECT lattice_member_add_column(?, ?, ?)`, [
+          table,
+          column,
+          typeSpec,
+        ]);
+      } else {
+        await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+      }
     }
     const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
     this._columnCache.set(table, new Set(cols));
@@ -1948,6 +2002,45 @@ export class Lattice {
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
+    // Open/restart staleness gate (opt-in, ONLY the GUI's open render sets it). If
+    // the manifest's recorded template version + cursor match the live state read
+    // through THIS connection's scope (a member's RLS connection on a member open),
+    // nothing the tree depends on has advanced — SKIP the render before touching a
+    // single table or emitting any per-table progress. This is what stops a plain
+    // restart / version bump from re-rendering an unchanged tree. Fails OPEN: any
+    // uncertainty falls through to a full render below.
+    if (opts.gateOnOpen && !opts.changedTables) {
+      const start = Date.now();
+      const recorded = readManifest(outputDir);
+      // A render that wrote no manifest (no entity contexts) has nothing to gate
+      // on — fall through and render. Otherwise compute the live cursor and skip
+      // only when the gate proves freshness.
+      if (recorded != null) {
+        const live = await computeRenderCursor(this._adapter);
+        if (cursorIsFresh(recorded, live)) {
+          // Skip path: no table reads, no per-table progress, just one terminal
+          // 'done' so the GUI shows complete.
+          opts.onProgress?.({
+            kind: 'done',
+            table: null,
+            entitiesRendered: 0,
+            entitiesTotal: 0,
+            tableIndex: 0,
+            tableCount: 0,
+            pct: 100,
+            durationMs: Date.now() - start,
+          });
+          const skipped: RenderResult = {
+            filesWritten: [],
+            filesSkipped: 0,
+            durationMs: Date.now() - start,
+          };
+          for (const h of this._renderHandlers) h(skipped);
+          return skipped;
+        }
+      }
+    }
+
     // A full background render (no `changedTables`) satisfies any queued render
     // scope, so clear it — this is what prevents the open render from being
     // followed by a redundant second full render. Changes that land DURING this
@@ -1958,7 +2051,10 @@ export class Lattice {
       this._autoRenderPending = false;
     }
 
-    return this._renderGuarded(outputDir, opts);
+    // `gateOnOpen` is a renderInBackground-only concern (decided above); never
+    // forward it into the engine, which has no such option.
+    const { gateOnOpen: _gateOnOpen, ...engineOpts } = opts;
+    return this._renderGuarded(outputDir, engineOpts);
   }
 
   /**
