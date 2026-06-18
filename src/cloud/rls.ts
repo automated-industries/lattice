@@ -535,6 +535,111 @@ LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
      AND g."pk" = ANY(p_pks)
      AND o."owner_role" = session_user;
 $fn$;
+
+-- Add a column to a user table AS THE OWNER, on behalf of a scoped member. A
+-- member's role has no CREATE/ALTER on the schema (the bootstrap REVOKEs CREATE
+-- from PUBLIC), so a member's GUI "add a field" write (createRow/updateRow with a
+-- field the table lacks) cannot run ALTER TABLE itself. This SECURITY DEFINER
+-- helper performs that ALTER — and the masking-view regen — with the owner's
+-- rights, so member-added columns behave identically to owner-added ones.
+--
+-- Injection-safe + minimal: p_table must be an existing BASE table in the current
+-- schema (rejected otherwise); p_type is whitelisted against the exact set the
+-- library's addColumn emits for an auto-added column (TEXT / INTEGER / REAL, plus
+-- BOOLEAN) — never interpolated raw; both identifiers go through %I (quote_ident).
+-- Member-callable (granted EXECUTE to the member group), but it can only widen the
+-- schema, never read or alter another member's data.
+CREATE OR REPLACE FUNCTION lattice_member_add_column(p_table text, p_column text, p_type text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+DECLARE
+  v_type      text;
+  v_view      text := p_table || '_v';
+  v_has_view  boolean;
+  v_pk_expr   text;
+  v_select    text;
+BEGIN
+  -- Never alter internal bookkeeping tables (names start with "_"). The GUI only
+  -- ever calls this for a user entity table; rejecting the rest is defense-in-depth
+  -- against a member invoking the function directly against ownership/audit/policy
+  -- tables.
+  IF left(p_table, 1) = '_' THEN
+    RAISE EXCEPTION 'lattice: cannot add a column to internal table "%"', p_table;
+  END IF;
+
+  -- p_table must be a real base table in THIS schema (search_path is pinned to the
+  -- cloud schema by pinDefinerSearchPath, so to_regclass resolves there).
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = current_schema() AND c.relname = p_table AND c.relkind = 'r'
+  ) THEN
+    RAISE EXCEPTION 'lattice: no such table "%"', p_table;
+  END IF;
+
+  -- Whitelist the column type. These are exactly the specs addColumn's
+  -- inferColumnType produces (TEXT / INTEGER / REAL); BOOLEAN is allowed too.
+  -- Anything else is rejected — the type is spliced as %s (NOT %I), so it must be
+  -- a known-safe literal and never caller-controlled SQL.
+  v_type := upper(btrim(p_type));
+  IF v_type NOT IN ('TEXT', 'INTEGER', 'REAL', 'BOOLEAN') THEN
+    RAISE EXCEPTION 'lattice: unsupported column type "%"', p_type;
+  END IF;
+
+  EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS %I %s', p_table, p_column, v_type);
+
+  -- If the table is cell-masked (a "<table>_v" view exists, because some column has
+  -- an audience), the view selects an explicit column list — so a new column is
+  -- invisible to members until the view is regenerated. Rebuild it the same way the
+  -- owner path (audienceViewSql / regenerateAudienceViewFromDb) does: pass every
+  -- column through except those with an 'owner' audience in __lattice_column_policy
+  -- (CASE WHEN lattice_is_owner(...) THEN col END), re-apply row visibility with
+  -- WHERE lattice_row_visible(table, pk), and keep the member SELECT grant on the
+  -- view. Unmasked tables need no regen — the member group's table-level base grant
+  -- already covers the new column.
+  SELECT EXISTS (
+    SELECT 1 FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = current_schema() AND c.relname = v_view AND c.relkind = 'v'
+  ) INTO v_has_view;
+
+  IF v_has_view THEN
+    -- Canonical pk expression: CAST("col" AS TEXT) joined by TAB (chr(9)) — the
+    -- same serialization the RLS policies + audienceViewSql use.
+    SELECT string_agg(format('CAST(%I AS TEXT)', a.attname), ' || chr(9) || '
+                      ORDER BY array_position(i.indkey, a.attnum))
+      INTO v_pk_expr
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+     WHERE n.nspname = current_schema() AND c.relname = p_table AND i.indisprimary;
+    IF v_pk_expr IS NULL THEN
+      RAISE EXCEPTION 'lattice: cannot regenerate mask view for "%": no primary key', p_table;
+    END IF;
+
+    -- Build the masked SELECT list in column order, applying the per-column policy.
+    SELECT string_agg(
+             CASE
+               WHEN cp."audience" = 'owner'
+                 THEN format('CASE WHEN lattice_is_owner(%L, %s) THEN %I END AS %I',
+                             p_table, v_pk_expr, cols.column_name, cols.column_name)
+               ELSE format('%I', cols.column_name)
+             END,
+             ', ' ORDER BY cols.ordinal_position)
+      INTO v_select
+      FROM information_schema.columns cols
+      LEFT JOIN "__lattice_column_policy" cp
+        ON cp."table_name" = p_table AND cp."column_name" = cols.column_name
+       AND cp."audience" NOT IN ('', 'everyone', 'row-audience')
+     WHERE cols.table_schema = current_schema() AND cols.table_name = p_table;
+
+    EXECUTE format(
+      'CREATE OR REPLACE VIEW %I AS SELECT %s FROM %I WHERE lattice_row_visible(%L, %s)',
+      v_view, v_select, p_table, p_table, v_pk_expr);
+    EXECUTE format('GRANT SELECT ON %I TO ${MEMBER_GROUP}', v_view);
+  END IF;
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${MEMBER_GROUP};
 `;
 
 /**

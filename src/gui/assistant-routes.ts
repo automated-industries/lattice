@@ -16,6 +16,9 @@ import {
   getAssistantCredential,
   setAssistantCredential,
   deleteAssistantCredential,
+  isAssistantCredentialCleared,
+  setAssistantCredentialCleared,
+  clearAssistantCredentialCleared,
   readPreferences,
   writePreferences,
 } from '../framework/user-config.js';
@@ -178,16 +181,29 @@ async function readMachineCredential(db: Lattice | null, kind: string): Promise<
 }
 
 /**
- * Resolve the Claude API token. Prefers the machine-local credential store
- * (persists across workspaces), then the workspace `secrets` row (back-compat),
- * then the `ANTHROPIC_API_KEY` env var. Server-side only.
+ * Resolve the anthropic API key, honoring the authoritative "cleared" sentinel.
+ * When the user has cleared the key, BOTH the stored read and the env fallback
+ * are skipped — so a clear stays cleared across reloads/restarts until a new key
+ * is saved (which clears the sentinel). Otherwise: machine store → workspace
+ * `secrets` (back-compat) → `ANTHROPIC_API_KEY` env var.
  */
-export async function getAnthropicApiKey(db: Lattice | null): Promise<string | null> {
+async function resolveAnthropicKey(db: Lattice | null): Promise<string | null> {
+  if (isAssistantCredentialCleared(CREDENTIALS.anthropic.kind)) return null;
   return (
     (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
     process.env.ANTHROPIC_API_KEY ??
     null
   );
+}
+
+/**
+ * Resolve the Claude API token. Prefers the machine-local credential store
+ * (persists across workspaces), then the workspace `secrets` row (back-compat),
+ * then the `ANTHROPIC_API_KEY` env var — unless the key was explicitly cleared,
+ * in which case it resolves to null. Server-side only.
+ */
+export async function getAnthropicApiKey(db: Lattice | null): Promise<string | null> {
+  return resolveAnthropicKey(db);
 }
 
 export interface VoiceCredential {
@@ -270,6 +286,9 @@ async function hasCredential(
   name: CredentialName,
   envVar: string,
 ): Promise<boolean> {
+  // An explicit clear is authoritative — it suppresses BOTH the stored read and
+  // the env fallback, so a cleared key reports absent until the user re-saves.
+  if (isAssistantCredentialCleared(CREDENTIALS[name].kind)) return false;
   return (
     Boolean(await readMachineCredential(db, CREDENTIALS[name].kind)) || Boolean(process.env[envVar])
   );
@@ -312,10 +331,8 @@ export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth 
       // Malformed token blob — fall through to the API-key path.
     }
   }
-  const apiKey =
-    (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
-    process.env.ANTHROPIC_API_KEY ??
-    null;
+  // No OAuth → fall back to the (non-cleared) stored-or-env API key.
+  const apiKey = await resolveAnthropicKey(db);
   return apiKey ? { apiKey } : null;
 }
 
@@ -461,6 +478,9 @@ export async function dispatchAssistantRoute(
     // table (pre-machine installs stored it there); the machine store is now
     // the source of truth.
     setAssistantCredential(cred.kind, key);
+    // Saving a new value un-clears the authoritative "cleared" sentinel, so the
+    // env fallback (and presence flags) resolve normally again.
+    clearAssistantCredentialCleared(cred.kind);
     // Retire any leftover pre-machine copy in the active workspace's secrets.
     // Nothing to retire in the virgin (no-workspace) state — db is null there.
     if (db) {
@@ -481,8 +501,11 @@ export async function dispatchAssistantRoute(
       return true;
     }
     // Clear the machine-level store AND any leftover copy in the active
-    // workspace's secrets table.
+    // workspace's secrets table. Then set the authoritative "cleared" sentinel
+    // so the env-var fallback is suppressed and the key STAYS cleared across
+    // reloads/restarts until the user saves a new one.
     deleteAssistantCredential(CREDENTIALS[name].kind);
+    setAssistantCredentialCleared(CREDENTIALS[name].kind);
     if (db) {
       for (const row of await liveSecretsOfKind(db, CREDENTIALS[name].kind)) {
         await db.update('secrets', row.id, { deleted_at: new Date().toISOString() });

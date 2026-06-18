@@ -560,7 +560,11 @@ export interface ClaudeAuth {
 }
 
 interface AnthropicClientConfig {
-  apiKey?: string;
+  // `null` is meaningful: passing it explicitly stops the SDK from falling back
+  // to its own `process.env.ANTHROPIC_API_KEY` default (its default only fires
+  // on `undefined`). That env default would otherwise add an `x-api-key` header
+  // alongside an OAuth Bearer token, and the API rejects a request carrying both.
+  apiKey?: string | null;
   authToken?: string;
   defaultHeaders?: Record<string, string>;
 }
@@ -604,16 +608,35 @@ function loadSdk(): AnthropicCtor {
 }
 
 /**
+ * Build the SDK constructor config from a {@link ClaudeAuth}. Exported as a pure
+ * test seam. The critical invariant: `apiKey` is ALWAYS set explicitly (to a key
+ * or to null), so the SDK never falls back to its own `process.env.ANTHROPIC_API_KEY`
+ * default — which, on the OAuth path, would add an `x-api-key` header alongside
+ * the Bearer token and get the request rejected.
+ */
+export function buildAnthropicConfig(auth: ClaudeAuth): AnthropicClientConfig {
+  const config: AnthropicClientConfig = {};
+  // OAuth (Bearer token) wins and sends no key; an explicit key is used as-is;
+  // with no auth we still pin apiKey to null so the env key isn't leaked.
+  if (auth.authToken) {
+    config.authToken = auth.authToken;
+    config.apiKey = null;
+  } else if (auth.apiKey) {
+    config.apiKey = auth.apiKey;
+  } else {
+    config.apiKey = null;
+  }
+  if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
+  return config;
+}
+
+/**
  * Build the real Anthropic-backed client. Lazy-loads the SDK at call time.
  * Accepts either a raw API key or an OAuth Bearer token (subscription).
  */
 export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
   const Anthropic = loadSdk();
-  const config: AnthropicClientConfig = {};
-  if (auth.authToken) config.authToken = auth.authToken;
-  else if (auth.apiKey) config.apiKey = auth.apiKey;
-  if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
-  const sdk = new Anthropic(config);
+  const sdk = new Anthropic(buildAnthropicConfig(auth));
   return {
     async runTurn(params: TurnParams): Promise<TurnResult> {
       const stream = sdk.messages.stream({

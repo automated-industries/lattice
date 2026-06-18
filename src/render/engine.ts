@@ -13,12 +13,90 @@ import type {
   LatticeManifest,
   EntityFileManifestInfo,
 } from '../lifecycle/manifest.js';
-import { writeManifest, readManifest } from '../lifecycle/manifest.js';
+import {
+  writeManifest,
+  readManifest,
+  normalizeEntityFiles,
+  TEMPLATE_VERSION,
+} from '../lifecycle/manifest.js';
+import { computeRenderCursor } from '../lifecycle/render-cursor.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
-import type { RenderOptions } from './progress.js';
+import type { RenderOptions, RenderProgress } from './progress.js';
 import { ProgressThrottle } from './progress.js';
 import { mapWithConcurrency } from '../concurrency.js';
+
+/**
+ * Per-table progress emitter that HOLDS BACK every event until the table is known
+ * to have actually changed — the content-hash backstop's no-churn guarantee.
+ *
+ * The open-time cursor gate skips an unchanged tree wholesale; this is the second
+ * layer for when the cursor is forced to render (it differs, or a field was
+ * unreadable) but a given table's rendered bytes turn out identical to the prior
+ * manifest. In that case the table must still be re-rendered (atomicWrite no-ops
+ * the writes), but we must NOT paint a "Rendering…%" card for it. So `table-start`
+ * is buffered and only flushed once {@link markChanged} fires for the first entity
+ * whose content hash differs from the recorded one; if no entity changes, NOTHING
+ * for this table reaches the GUI. Once flushed, it is a passthrough.
+ */
+class DeferredTableProgress {
+  private changed = false;
+  private pendingStart: RenderProgress | null = null;
+  constructor(private readonly throttle: ProgressThrottle) {}
+
+  /** Buffer the `table-start` event; emitted only if/when the table changes. */
+  start(event: RenderProgress): void {
+    if (this.changed) {
+      this.throttle.force(event);
+      return;
+    }
+    this.pendingStart = event;
+  }
+
+  /** Mark that an entity's content changed — flush the held `table-start` once. */
+  markChanged(): void {
+    if (this.changed) return;
+    this.changed = true;
+    if (this.pendingStart) {
+      this.throttle.force(this.pendingStart);
+      this.pendingStart = null;
+    }
+  }
+
+  /** Coalesced per-entity progress — dropped entirely until the table changed. */
+  tick(event: RenderProgress): void {
+    if (!this.changed) return;
+    this.throttle.tick(event);
+  }
+
+  /** Lifecycle event (`table-done`) — emitted only if the table changed. */
+  force(event: RenderProgress): void {
+    if (!this.changed) return;
+    this.throttle.force(event);
+  }
+}
+
+/**
+ * Did an entity's freshly-rendered per-file hashes differ from the prior
+ * manifest's recorded hashes for the same slug? True when any file is added,
+ * removed, or its hash changed (or a recorded hash is empty — a legacy v1 entry we
+ * can't compare against, treated as changed so progress is surfaced, never
+ * wrongly suppressed). The content-hash backstop's per-entity change test.
+ */
+function entityContentChanged(
+  fresh: Record<string, EntityFileManifestInfo>,
+  prior: Record<string, EntityFileManifestInfo>,
+): boolean {
+  const freshKeys = Object.keys(fresh);
+  const priorKeys = Object.keys(prior);
+  if (freshKeys.length !== priorKeys.length) return true;
+  for (const k of freshKeys) {
+    const p = prior[k];
+    if (p == null) return true; // a file this entity didn't have before
+    if (p.hash === '' || p.hash !== fresh[k]?.hash) return true;
+  }
+  return false;
+}
 
 /**
  * Yield back to the event loop every this-many entities during the per-entity
@@ -194,22 +272,28 @@ export class RenderEngine {
         ? applyTokenBudget(rows, def.render, def.tokenBudget, def.prioritizeBy)
         : def.render(rows);
       const filePath = join(outputDir, def.outputFile);
-      if (atomicWrite(filePath, content)) {
+      const wrote = atomicWrite(filePath, content);
+      if (wrote) {
         filesWritten.push(filePath);
       } else {
         counters.skipped++;
       }
       // Phase-1 tables are fast: emit a lightweight table-done only (no
-      // per-entity progress). The `force` path is never throttled.
-      throttle.force({
-        kind: 'table-done',
-        table: name,
-        entitiesRendered: rows.length,
-        entitiesTotal: rows.length,
-        tableIndex: 0,
-        tableCount: 0,
-        pct: 100,
-      });
+      // per-entity progress). The `force` path is never throttled. Content-hash
+      // backstop: emit ONLY when the file actually changed (atomicWrite wrote) so
+      // a forced-but-no-op render paints no per-table card. The terminal `done`
+      // still fires, so the GUI shows complete.
+      if (wrote) {
+        throttle.force({
+          kind: 'table-done',
+          table: name,
+          entitiesRendered: rows.length,
+          entitiesTotal: rows.length,
+          tableIndex: 0,
+          tableCount: 0,
+          pct: 100,
+        });
+      }
     }
 
     // Multi-table renders (phase 2 — fast; lightweight table-done only).
@@ -230,25 +314,36 @@ export class RenderEngine {
         }
       }
 
+      let wroteAny = false;
       for (const key of keys) {
         const content = def.render(key, tables);
         const filePath = join(outputDir, def.outputFile(key));
         if (atomicWrite(filePath, content)) {
           filesWritten.push(filePath);
+          wroteAny = true;
         } else {
           counters.skipped++;
         }
       }
-      throttle.force({
-        kind: 'table-done',
-        table: name,
-        entitiesRendered: keys.length,
-        entitiesTotal: keys.length,
-        tableIndex: 0,
-        tableCount: 0,
-        pct: 100,
-      });
+      // Content-hash backstop: emit only when at least one file actually changed,
+      // so a forced-but-no-op render of an unchanged multi paints no card.
+      if (wroteAny) {
+        throttle.force({
+          kind: 'table-done',
+          table: name,
+          entitiesRendered: keys.length,
+          entitiesTotal: keys.length,
+          tableIndex: 0,
+          tableCount: 0,
+          pct: 100,
+        });
+      }
     }
+
+    // Read the prior manifest ONCE so the content-hash backstop can compare each
+    // freshly-rendered file to its recorded hash and suppress per-table progress
+    // for tables whose bytes didn't change (no churn on a forced-but-no-op render).
+    const priorManifest = readManifest(outputDir);
 
     // Entity context renders — the heavy phase, with per-entity progress.
     const entityContextManifest = await this._renderEntityContexts(
@@ -258,6 +353,7 @@ export class RenderEngine {
       throttle,
       signal,
       opts.changedTables,
+      priorManifest,
     );
 
     // An abort during entity rendering surfaces as a null manifest; bail with
@@ -276,10 +372,21 @@ export class RenderEngine {
         const prev = readManifest(outputDir);
         entityContexts = { ...(prev?.entityContexts ?? {}), ...entityContextManifest };
       }
+      // Record the cursor this tree was rendered FROM, through the SAME scope the
+      // render used (the engine's `_readRel` / member RLS connection on a member
+      // open), so the open-time gate can later decide whether anything changed.
+      // Always a single top-level cursor reflecting the latest computation — even
+      // on an incremental render — so it advances to the newest observed state
+      // rather than being merged per-table. Best-effort: a field that can't be
+      // read is null and the gate fails open. `generated_at` is deliberately NOT
+      // part of the staleness key (it changes on every render).
+      const cursor = await computeRenderCursor(this._adapter);
       writeManifest(outputDir, {
         version: 2,
         generated_at: new Date().toISOString(),
         entityContexts,
+        templateVersion: TEMPLATE_VERSION,
+        cursor,
       });
     }
 
@@ -371,6 +478,7 @@ export class RenderEngine {
     throttle: ProgressThrottle,
     signal: AbortSignal | undefined,
     changedTables?: ReadonlySet<string>,
+    priorManifest?: LatticeManifest | null,
   ): Promise<Record<string, EntityContextManifestEntry> | null> {
     // Build set of protected table names for source filtering
     const protectedTables = new Set<string>();
@@ -404,10 +512,19 @@ export class RenderEngine {
         const allRows = this._foldRows ? await this._foldRows(table, baseRows) : baseRows;
         const directoryRoot = def.directoryRoot ?? table;
 
+        // Content-hash backstop: route every progress event for this table through
+        // a deferred emitter that stays silent until an entity's freshly-rendered
+        // bytes actually differ from the prior manifest's recorded hash. A forced
+        // (cursor said "maybe changed") render of an UNCHANGED table then re-reads +
+        // re-renders + no-op-writes silently, painting no "Rendering…%" card. The
+        // prior per-file hashes for this table (normalized from v1/v2 shape).
+        const deferred = new DeferredTableProgress(throttle);
+        const priorEntities = priorManifest?.entityContexts[table]?.entities ?? {};
+
         // `entitiesTotal` is the free denominator already read above — no
         // pre-count pass. Per-table % is exact: entitiesRendered / entitiesTotal.
         const entitiesTotal = allRows.length;
-        throttle.force({
+        deferred.start({
           kind: 'table-start',
           table,
           entitiesRendered: 0,
@@ -416,6 +533,10 @@ export class RenderEngine {
           tableCount,
           pct: 0,
         });
+        // A table whose entity SET shrank or grew vs the prior manifest changed,
+        // even if every surviving entity's bytes match — flag it so the deferred
+        // start flushes (the removed/added files are real changes the GUI tracks).
+        if (Object.keys(priorEntities).length !== entitiesTotal) deferred.markChanged();
 
         const manifestEntry: EntityContextManifestEntry = {
           directoryRoot,
@@ -594,9 +715,18 @@ export class RenderEngine {
           // Track what was written for this entity in the manifest (v2: with hashes)
           manifestEntry.entities[slug] = entityFileHashes;
 
+          // Content-hash backstop: did THIS entity's bytes change vs the prior
+          // manifest? Compare the freshly-computed per-file hashes to the recorded
+          // ones for the same slug. A new slug, a new/removed file, or any differing
+          // hash flags the table as changed (flushing the held progress). A missing
+          // prior hash ('' for a legacy v1 entry) counts as changed — we can't
+          // prove it matched, so we surface progress (fail toward showing work).
+          const priorHashes = normalizeEntityFiles(priorEntities[slug] ?? {});
+          if (entityContentChanged(entityFileHashes, priorHashes)) deferred.markChanged();
+
           // Per-entity progress, coalesced by the throttle to ≤ ~5/sec per table.
           const entitiesRendered = i + 1;
-          throttle.tick({
+          deferred.tick({
             kind: 'table-progress',
             table,
             entitiesRendered,
@@ -607,7 +737,7 @@ export class RenderEngine {
           });
         }
 
-        throttle.force({
+        deferred.force({
           kind: 'table-done',
           table,
           entitiesRendered: entitiesTotal,
