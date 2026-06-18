@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Migrate-to-cloud surfaces files whose local blob bytes were left behind, and
+  asserts per-table row counts.** `migrateLatticeData` copies `files` rows but not
+  their owned-local blob bytes (under `<root>/data/blobs/`), so after the source
+  is archived those rows are dangling references on the cloud. The migration now
+  counts such rows and reports `blobsNotMigrated` on the result, surfaced to the
+  operator as a warning, instead of leaving the loss silent. It also re-counts
+  each table on the target after copy (soft-delete-consistent) and aborts loudly
+  on a mismatch — defensive insurance against a future write path that could drop
+  rows. (Uploading the blob bytes to the cloud's object store during migration is
+  a deferred follow-up.)
 - **Reverse-sync no longer silently overwrites a concurrent change.** When an
   external edit to a rendered context file is swept back into the database, the
   engine now verifies the underlying row hasn't changed since it was rendered —
