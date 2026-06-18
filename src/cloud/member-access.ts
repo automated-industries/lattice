@@ -38,7 +38,7 @@ export const MEMBER_READABLE_BOOKKEEPING: readonly MemberReadableEntry[] = [
   {
     name: '_lattice_gui_audit',
     privs: 'SELECT, INSERT',
-    why: "the member's own GUI undo/redo log (session-scoped)",
+    why: 'GUI undo/redo + version history; RLS (enableGuiAuditRls) scopes reads to entries whose underlying row the member can see',
   },
   {
     name: '__lattice_user_identity',

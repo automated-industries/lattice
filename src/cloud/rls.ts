@@ -619,6 +619,58 @@ export async function ownPolyfillsByGroup(db: Lattice): Promise<void> {
   }
 }
 
+/**
+ * Scope the GUI audit log (`_lattice_gui_audit`) by ROW VISIBILITY. The log powers
+ * undo/redo + the version-history page and is granted to members, but its
+ * `before_json` / `after_json` carry the RAW row data of every mutation — every
+ * column in cleartext, including ones a member can't otherwise see. With only a
+ * member GRANT and no RLS, a member's version-history read returned EVERY member's
+ * edits, leaking that raw data (the same hazard the changelog policy guards).
+ *
+ * Visibility model (confirmed with the product owner): a member sees an audit entry
+ * for a row IFF they can currently SEE that row — `lattice_row_visible(table_name,
+ * row_id)` (shared/owned/everyone). This is NOT author-scoped (a member sees edits
+ * to a row they can see, even ones another member made) and NOT all-rows. Schema-
+ * level entries — `row_id IS NULL`, e.g. a table create/rename — carry no row data,
+ * so they are visible to all members. The cloud owner (a BYPASSRLS role) still sees
+ * the whole history. Idempotent → converges on every owner open. No-op off Postgres
+ * or when the table doesn't exist yet.
+ *
+ * KNOWN LIMITATION: for a SHARED row that has owner-only / secret columns, the
+ * before/after JSON is NOT column-masked, so a member the row is shared with could
+ * read those columns' values out of the history. A follow-up (column-masking the
+ * audit JSON to match the row's `<table>_v` mask view) is needed to close that gap.
+ * This is still strictly more private than the previous no-RLS state, which exposed
+ * every row's raw history to every member regardless of visibility.
+ */
+export async function enableGuiAuditRls(db: Lattice): Promise<void> {
+  if (!isPg(db)) return;
+  const reg = await getAsyncOrSync(db.adapter, `SELECT to_regclass($1) AS reg`, [
+    '_lattice_gui_audit',
+  ]);
+  if (reg?.reg == null) return;
+  await runCloudBootstrapSql(
+    db,
+    `
+ALTER TABLE "_lattice_gui_audit" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "_lattice_gui_audit" FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "lattice_gui_audit_owner" ON "_lattice_gui_audit";
+DROP POLICY IF EXISTS "lattice_gui_audit_sel" ON "_lattice_gui_audit";
+CREATE POLICY "lattice_gui_audit_sel" ON "_lattice_gui_audit" FOR SELECT
+  USING ("row_id" IS NULL OR lattice_row_visible("table_name", "row_id"));
+DROP POLICY IF EXISTS "lattice_gui_audit_ins" ON "_lattice_gui_audit";
+CREATE POLICY "lattice_gui_audit_ins" ON "_lattice_gui_audit" FOR INSERT
+  WITH CHECK ("row_id" IS NULL OR lattice_row_visible("table_name", "row_id"));
+DROP POLICY IF EXISTS "lattice_gui_audit_upd" ON "_lattice_gui_audit";
+CREATE POLICY "lattice_gui_audit_upd" ON "_lattice_gui_audit" FOR UPDATE
+  USING ("row_id" IS NULL OR lattice_row_visible("table_name", "row_id"));
+DROP POLICY IF EXISTS "lattice_gui_audit_del" ON "_lattice_gui_audit";
+CREATE POLICY "lattice_gui_audit_del" ON "_lattice_gui_audit" FOR DELETE
+  USING ("row_id" IS NULL OR lattice_row_visible("table_name", "row_id"));
+`,
+  );
+}
+
 /** Install the cloud RLS bootstrap (bookkeeping + helper functions). No-op on SQLite. */
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;

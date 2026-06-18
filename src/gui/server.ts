@@ -60,6 +60,7 @@ import {
   installCloudRls,
   enableChangelogRls,
   enableChatPrivacyRls,
+  enableGuiAuditRls,
   ownPolyfillsByGroup,
 } from '../cloud/rls.js';
 import { installCloudSettings } from '../cloud/settings.js';
@@ -982,6 +983,7 @@ export async function openConfig(
         await db.ensureObservationSubstrate();
         await enableChangelogRls(db); // converges the v3 fail-closed changelog policy
         await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables (fail-closed on NULL owner)
+        await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log (raw row data) — see row_id IS NULL OR lattice_row_visible
         // Converge per-table member access (ungated, no row scans): force the
         // private-only conversation/secret tables to never_share, and re-issue
         // member grants the version-gated per-table securing won't re-emit after
