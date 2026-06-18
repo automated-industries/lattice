@@ -20,7 +20,8 @@ import {
   setActiveWorkspace,
 } from './framework/workspace.js';
 import { importLegacyUserConfig } from './framework/migrate-to-root.js';
-import { analyticsEnabled } from './framework/user-config.js';
+import { analyticsEnabled, getOrCreateMasterKey } from './framework/user-config.js';
+import { hydrateMemberConfigFromCloud } from './cloud/shared-schema.js';
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -339,16 +340,27 @@ function runGenerate(args: ParsedArgs): void {
 
 async function runRender(args: ParsedArgs): Promise<void> {
   const outputDir = resolve(args.output);
+  const configPath = resolve(args.config);
 
   let parsed;
   try {
-    parsed = parseConfigFile(resolve(args.config));
+    parsed = parseConfigFile(configPath);
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
   }
 
-  const db = new Lattice({ config: resolve(args.config) });
+  // Native entities (`secrets`, `files`) carry encrypted columns, so a render that
+  // touches them needs the master key — resolve it once (env var or
+  // `~/.lattice/master.key`), the same source the GUI uses.
+  const encryptionKey = getOrCreateMasterKey();
+  // Cloud member: a scoped member's local config has no entities, so its render
+  // would produce an empty context tree. Hydrate the owner-published entity/render
+  // layout from the cloud BEFORE constructing the Lattice, keeping the member's own
+  // `db:` credential. No-op for a non-postgres config or when nothing was published.
+  await hydrateMemberConfigFromCloud(configPath, parsed.dbPath, encryptionKey);
+
+  const db = new Lattice({ config: configPath }, { encryptionKey });
 
   try {
     await db.init();
@@ -366,9 +378,6 @@ async function runRender(args: ParsedArgs): Promise<void> {
   } finally {
     db.close();
   }
-
-  // Suppress unused variable warning
-  void parsed;
 }
 
 async function runReconcile(args: ParsedArgs, isDryRun: boolean): Promise<void> {
