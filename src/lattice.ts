@@ -44,6 +44,7 @@ import {
 } from './cloud/shred.js';
 import { isEncrypted } from './security/encryption.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
+import { computeRenderCursor, cursorIsFresh } from './lifecycle/render-cursor.js';
 import { existsSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { StorageAdapter } from './db/adapter.js';
@@ -2001,6 +2002,45 @@ export class Lattice {
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
+    // Open/restart staleness gate (opt-in, ONLY the GUI's open render sets it). If
+    // the manifest's recorded template version + cursor match the live state read
+    // through THIS connection's scope (a member's RLS connection on a member open),
+    // nothing the tree depends on has advanced — SKIP the render before touching a
+    // single table or emitting any per-table progress. This is what stops a plain
+    // restart / version bump from re-rendering an unchanged tree. Fails OPEN: any
+    // uncertainty falls through to a full render below.
+    if (opts.gateOnOpen && !opts.changedTables) {
+      const start = Date.now();
+      const recorded = readManifest(outputDir);
+      // A render that wrote no manifest (no entity contexts) has nothing to gate
+      // on — fall through and render. Otherwise compute the live cursor and skip
+      // only when the gate proves freshness.
+      if (recorded != null) {
+        const live = await computeRenderCursor(this._adapter);
+        if (cursorIsFresh(recorded, live)) {
+          // Skip path: no table reads, no per-table progress, just one terminal
+          // 'done' so the GUI shows complete.
+          opts.onProgress?.({
+            kind: 'done',
+            table: null,
+            entitiesRendered: 0,
+            entitiesTotal: 0,
+            tableIndex: 0,
+            tableCount: 0,
+            pct: 100,
+            durationMs: Date.now() - start,
+          });
+          const skipped: RenderResult = {
+            filesWritten: [],
+            filesSkipped: 0,
+            durationMs: Date.now() - start,
+          };
+          for (const h of this._renderHandlers) h(skipped);
+          return skipped;
+        }
+      }
+    }
+
     // A full background render (no `changedTables`) satisfies any queued render
     // scope, so clear it — this is what prevents the open render from being
     // followed by a redundant second full render. Changes that land DURING this
@@ -2011,7 +2051,10 @@ export class Lattice {
       this._autoRenderPending = false;
     }
 
-    return this._renderGuarded(outputDir, opts);
+    // `gateOnOpen` is a renderInBackground-only concern (decided above); never
+    // forward it into the engine, which has no such option.
+    const { gateOnOpen: _gateOnOpen, ...engineOpts } = opts;
+    return this._renderGuarded(outputDir, engineOpts);
   }
 
   /**
