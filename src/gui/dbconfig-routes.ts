@@ -20,6 +20,7 @@ import {
   claimMemberInvite,
 } from '../framework/cloud-connect.js';
 import { secureCloud } from '../cloud/setup.js';
+import { publishSharedSchema } from '../cloud/shared-schema.js';
 import {
   installCloudSettings,
   getCloudSetting,
@@ -735,6 +736,10 @@ export async function dispatchDbConfigRoute(
         // history are isolated the same way; per-viewer enrichment observations
         // are gated by source visibility.
         await secureCloud(target);
+        // Publish the migrated config's entity/render layout so a joined member can
+        // hydrate the full context tree from it. ctx.configPath is the source config
+        // being migrated (target was opened against this same config's schema).
+        await publishSharedSchema(target, ctx.configPath);
         target.close();
         const sourceDbPath = parseConfigFile(ctx.configPath).dbPath;
         const backupPath = archiveLocalSqlite(sourceDbPath);
