@@ -524,3 +524,61 @@ describe('reverse-sync', () => {
     db.close();
   });
 });
+
+describe('reverse-sync — optimistic-concurrency conflict gate', () => {
+  it('rejects a file edit (reports a conflict) when the DB row changed since render — never clobbers the concurrent change', async () => {
+    const { db, outputDir } = await setupDb();
+
+    await db.insert('agents', { id: 'a1', name: 'Alpha', slug: 'alpha', role: 'Scout' });
+
+    // Render → the manifest captures the row's version (Alpha/Scout) + file hash.
+    await db.reconcile(outputDir);
+
+    // A concurrent DB/cloud edit changes the SAME field the file round-trips.
+    await db.update('agents', 'a1', { role: 'CloudRole' });
+
+    // Meanwhile an external file edit sets a different, stale-based role.
+    const agentFile = join(outputDir, 'agents', 'alpha', 'AGENT.md');
+    writeFileSync(agentFile, '# Alpha\n**Role:** FileRole\n');
+
+    // Reverse-sync must detect the row changed since render and REJECT the file
+    // write (report a conflict) instead of silently overwriting the cloud change.
+    const result = await db.reconcile(outputDir);
+
+    expect(result.reverseSync).not.toBeNull();
+    expect(result.reverseSync!.filesChanged).toBe(1); // the file did change on disk
+    expect(result.reverseSync!.updatesApplied).toBe(0); // ...but nothing was applied
+    expect(result.reverseSync!.conflicts.length).toBe(1);
+    expect(result.reverseSync!.conflicts[0]).toMatchObject({
+      table: 'agents',
+      slug: 'alpha',
+      filename: 'AGENT.md',
+    });
+
+    // The concurrent DB change survived — NOT clobbered by the rejected file edit.
+    const row = await db.get('agents', 'a1');
+    expect(row?.role).toBe('CloudRole');
+
+    db.close();
+  });
+
+  it('applies a file edit normally when the DB row is unchanged since render (no false conflict)', async () => {
+    const { db, outputDir } = await setupDb();
+
+    await db.insert('agents', { id: 'a1', name: 'Alpha', slug: 'alpha', role: 'Scout' });
+    await db.reconcile(outputDir);
+
+    // Only the file is edited; the DB row is untouched since the render.
+    const agentFile = join(outputDir, 'agents', 'alpha', 'AGENT.md');
+    writeFileSync(agentFile, '# Alpha\n**Role:** Commander\n');
+
+    const result = await db.reconcile(outputDir);
+
+    expect(result.reverseSync!.conflicts.length).toBe(0);
+    expect(result.reverseSync!.updatesApplied).toBe(1); // role applied, no conflict
+    const row = await db.get('agents', 'a1');
+    expect(row?.role).toBe('Commander');
+
+    db.close();
+  });
+});

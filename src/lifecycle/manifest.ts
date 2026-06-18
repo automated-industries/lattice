@@ -13,6 +13,15 @@ import { atomicWrite } from '../render/writer.js';
 export interface EntityFileManifestInfo {
   /** SHA-256 hex digest of the rendered content. */
   hash: string;
+  /**
+   * SHA-256 of the source entity row at render time (all columns, key-sorted).
+   * Reverse-sync compares this against the row's CURRENT version before applying
+   * a file edit: a mismatch means the DB row changed since this render, so the
+   * edit is rejected as a conflict instead of silently overwriting it. Optional
+   * for back-compat — manifests written before this field fall back to applying
+   * (the prior behavior) until the next render re-captures it.
+   */
+  rowVersion?: string;
 }
 
 export interface EntityContextManifestEntry {
