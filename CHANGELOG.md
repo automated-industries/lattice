@@ -121,6 +121,18 @@ tagged BREAKING.
 - **GUI auto-dedup on file ingest surfaces its failures.** The post-upload auto-dedup
   block swallowed every error silently; it now logs the failure (still falling through
   to normal enrichment so the upload lands) so a systematic dedup/merge bug is visible.
+- **Duplicate-merge can no longer leave a half-merge if it fails partway.** `mergeDuplicates`
+  previously interleaved per-source link/unlink and then deleted the sources, so a failure
+  mid-merge could relink some edges while having already removed others (and partly deleted
+  sources) — an inconsistent state with no clean recovery. A single composing DB transaction
+  is not available (each mutation runs the adapter plus changelog/render/audit hooks), so the
+  fix is ordered crash-safety, not rollback: the merge now runs in three strict phases —
+  link every survivor edge first (insert-or-ignore, additive), then unlink all source edges,
+  then soft-delete the sources. Because links are written to the survivor before anything is
+  removed, a crash at any point leaves a consistent, over-linked, re-runnable state — never a
+  half-merge. Any thrown error is re-thrown (never swallowed) annotated with the failed phase,
+  the survivor/source ids in flight, and that the merge is safe to re-run. The success-path
+  end state and return value are unchanged.
 - **Writeback no longer drops entries when a `persist` throws mid-batch.** The pipeline
   advanced the file offset (and marked entries seen) BEFORE calling `persist`, so a
   `persist` that threw partway through a batch left the offset past the un-persisted tail
