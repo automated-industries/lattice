@@ -13,7 +13,7 @@ import type {
   LatticeManifest,
   EntityFileManifestInfo,
 } from '../lifecycle/manifest.js';
-import { writeManifest } from '../lifecycle/manifest.js';
+import { writeManifest, readManifest } from '../lifecycle/manifest.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
 import type { RenderOptions } from './progress.js';
@@ -96,6 +96,45 @@ export class RenderEngine {
     this._foldRows = fn;
   }
 
+  /**
+   * Incremental scope: is this entity-context table affected by a change to one
+   * of `changed`? Affected when the table itself changed (its own rows / `self`
+   * source / index) OR any of its files SOURCES from a changed table (a cross-
+   * table dependent — e.g. an AGENT.md that lists the agent's tasks must re-render
+   * when `tasks` changes). A `custom` source runs an arbitrary query, so we can't
+   * prove independence — treat it as always-affected (conservative, never stale).
+   */
+  private _entityAffected(
+    table: string,
+    def: { files: Record<string, { source?: unknown }>; index?: unknown },
+    changed: ReadonlySet<string>,
+  ): boolean {
+    if (changed.has(table)) return true;
+    for (const spec of Object.values(def.files)) {
+      if (this._sourceTouches(spec.source, changed)) return true;
+    }
+    return false;
+  }
+
+  private _sourceTouches(source: unknown, changed: ReadonlySet<string>): boolean {
+    if (source == null || typeof source !== 'object') return false;
+    const s = source as {
+      type?: string;
+      table?: unknown;
+      junctionTable?: unknown;
+      sources?: unknown;
+    };
+    if (s.type === 'custom') return true; // arbitrary query — assume it can be affected
+    if (typeof s.table === 'string' && changed.has(s.table)) return true;
+    if (typeof s.junctionTable === 'string' && changed.has(s.junctionTable)) return true;
+    if (s.sources != null && typeof s.sources === 'object') {
+      for (const sub of Object.values(s.sources as Record<string, unknown>)) {
+        if (this._sourceTouches(sub, changed)) return true;
+      }
+    }
+    return false;
+  }
+
   async render(outputDir: string, opts: RenderOptions = {}): Promise<RenderResult> {
     const start = Date.now();
     const filesWritten: string[] = [];
@@ -113,6 +152,9 @@ export class RenderEngine {
       // avoiding pulling a whole (possibly large) table off the wire for an
       // empty file. Default-off path below is unchanged.
       if (this._skipEmpty && def.render === NOOP_RENDER) continue;
+      // Incremental: a single-table file renders from its OWN rows only, so it is
+      // affected iff that table changed.
+      if (opts.changedTables && !opts.changedTables.has(name)) continue;
       let rows = await this._schema.queryTable(this._adapter, name, this._readRel);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
@@ -173,6 +215,12 @@ export class RenderEngine {
     // Multi-table renders (phase 2 — fast; lightweight table-done only).
     for (const [name, def] of this._schema.getMultis()) {
       if (signal?.aborted) return this._abortedResult(filesWritten, counters, start);
+      // Incremental: a multi rolls up its declared source tables, so re-render it
+      // only when one of those changed. (A multi with no declared `tables` derives
+      // its keys from an opaque function — render it on any change, never stale.)
+      if (opts.changedTables && def.tables && !def.tables.some((t) => opts.changedTables?.has(t))) {
+        continue;
+      }
       const keys = await def.keys();
       const tables: Record<string, import('../types.js').Row[]> = {};
 
@@ -209,6 +257,7 @@ export class RenderEngine {
       counters,
       throttle,
       signal,
+      opts.changedTables,
     );
 
     // An abort during entity rendering surfaces as a null manifest; bail with
@@ -217,12 +266,20 @@ export class RenderEngine {
       return this._abortedResult(filesWritten, counters, start);
     }
 
-    // Write manifest if there are any entity contexts
+    // Write manifest if there are any entity contexts. On an INCREMENTAL render
+    // only the affected tables were rendered, so MERGE their fresh entries over
+    // the previous manifest — leaving every untouched table's entry intact so the
+    // orphan-cleanup pass doesn't see them as removed and prune their files.
     if (this._schema.getEntityContexts().size > 0) {
+      let entityContexts = entityContextManifest;
+      if (opts.changedTables) {
+        const prev = readManifest(outputDir);
+        entityContexts = { ...(prev?.entityContexts ?? {}), ...entityContextManifest };
+      }
       writeManifest(outputDir, {
         version: 2,
         generated_at: new Date().toISOString(),
-        entityContexts: entityContextManifest,
+        entityContexts,
       });
     }
 
@@ -313,6 +370,7 @@ export class RenderEngine {
     counters: { skipped: number },
     throttle: ProgressThrottle,
     signal: AbortSignal | undefined,
+    changedTables?: ReadonlySet<string>,
   ): Promise<Record<string, EntityContextManifestEntry> | null> {
     // Build set of protected table names for source filtering
     const protectedTables = new Set<string>();
@@ -320,7 +378,12 @@ export class RenderEngine {
       if (d.protected) protectedTables.add(t);
     }
 
-    const entityTables = [...this._schema.getEntityContexts()];
+    // Incremental: render only the entity contexts a change actually affects
+    // (the changed table + any context that sources from it). The rest keep their
+    // existing files + manifest entries (merged back in by the caller).
+    const entityTables = [...this._schema.getEntityContexts()].filter(
+      ([table, def]) => !changedTables || this._entityAffected(table, def, changedTables),
+    );
     const tableCount = entityTables.length;
     if (signal?.aborted) return null;
 

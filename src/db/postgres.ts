@@ -399,43 +399,57 @@ export const POSTGRES_POLYFILLS: readonly { warn: string; sql: string }[] = [
   },
   {
     warn: 'could not register json_extract polyfill:',
-    sql: `CREATE OR REPLACE FUNCTION json_extract(doc text, path text)
-         RETURNS text
-         LANGUAGE sql
-         IMMUTABLE
-         AS $fn$
-           SELECT doc::jsonb #>> string_to_array(regexp_replace(path, '^\\$\\.?', ''), '.')
-         $fn$;`,
+    // Create ONLY if absent. `CREATE OR REPLACE` on an existing function requires
+    // ownership, but on a cloud the function is owned by whichever single role
+    // created it first — so every OTHER member's per-connect replace raised "must
+    // be owner of function" and (sharing the render transaction) aborted it,
+    // yielding an empty render. The IF-absent guard makes a present function a
+    // clean no-op for everyone, regardless of who owns it.
+    sql: `DO $do$ BEGIN
+      IF to_regprocedure('json_extract(text, text)') IS NULL THEN
+        CREATE FUNCTION json_extract(doc text, path text)
+          RETURNS text
+          LANGUAGE sql
+          IMMUTABLE
+          AS $fn$
+            SELECT doc::jsonb #>> string_to_array(regexp_replace(path, '^\\$\\.?', ''), '.')
+          $fn$;
+      END IF;
+    END $do$;`,
   },
   {
     warn: 'could not register strftime polyfill:',
-    sql: `CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
-         RETURNS text
-         LANGUAGE plpgsql
-         IMMUTABLE
-         AS $fn$
-         DECLARE ts timestamptz;
-         BEGIN
-           IF modifier = 'now' THEN
-             ts := now();
-           ELSE
-             ts := modifier::timestamptz;
-           END IF;
-           RETURN to_char(
-             ts AT TIME ZONE 'UTC',
-             replace(replace(replace(replace(replace(replace(replace(replace(
-               format,
-               '%Y', 'YYYY'),
-               '%m', 'MM'),
-               '%d', 'DD'),
-               '%H', 'HH24'),
-               '%M', 'MI'),
-               '%S', 'SS'),
-               '%f', 'MS'),
-               'T', '"T"')
-           );
-         END;
-         $fn$;`,
+    sql: `DO $do$ BEGIN
+      IF to_regprocedure('strftime(text, text)') IS NULL THEN
+        CREATE FUNCTION strftime(format text, modifier text)
+          RETURNS text
+          LANGUAGE plpgsql
+          IMMUTABLE
+          AS $fn$
+          DECLARE ts timestamptz;
+          BEGIN
+            IF modifier = 'now' THEN
+              ts := now();
+            ELSE
+              ts := modifier::timestamptz;
+            END IF;
+            RETURN to_char(
+              ts AT TIME ZONE 'UTC',
+              replace(replace(replace(replace(replace(replace(replace(replace(
+                format,
+                '%Y', 'YYYY'),
+                '%m', 'MM'),
+                '%d', 'DD'),
+                '%H', 'HH24'),
+                '%M', 'MI'),
+                '%S', 'SS'),
+                '%f', 'MS'),
+                'T', '"T"')
+            );
+          END;
+          $fn$;
+      END IF;
+    END $do$;`,
   },
 ];
 
