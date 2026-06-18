@@ -11,8 +11,8 @@ import { appJs } from '../../src/gui/app/script.js';
 //
 // These constants were captured from the pre-split `appJs` value. If `appJs` is
 // ever changed intentionally, recapture the length + hash and update them here.
-const ORIGINAL_LENGTH = 384302;
-const ORIGINAL_SHA256 = 'a1da838020ebcf424156978e083c608d3197f02106ce9c10a6e07df17e5eb39b';
+const ORIGINAL_LENGTH = 387781;
+const ORIGINAL_SHA256 = 'b8978131a4f8f14fc0e02cc6903e1785f42b9496b408c85d2b4d09db798aeac1';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

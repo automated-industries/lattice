@@ -88,6 +88,17 @@ tagged BREAKING.
 
 ### Fixed
 
+- **The GUI offline-edit queue now self-heals transient failures and ages out
+  poison edits.** A queued edit that fails to replay with a 5xx or a network error
+  no longer waits for the next `online`/reconnect event to retry — the drain
+  re-arms itself on a bounded exponential backoff (2s, doubling, capped at 60s,
+  reset on a clean drain or a real connectivity event), so a cloud that stays
+  "connected" but 5xxes individual edits (or a blip that never fires `online`) can
+  no longer leave edits unsynced indefinitely and silently. Each edit now tracks a
+  persisted attempt count and is dead-lettered (marked `failed`, surfaced in
+  pending edits) once it has failed 8 times, so a poison edit can neither retry
+  forever nor be lost. An edit is still removed from IndexedDB only on a 2xx; a 4xx
+  still dead-letters immediately as before.
 - **A failed render no longer leaves new files on disk under the prior manifest,
   and a swallowed auto-render failure is surfaced.** Render now runs a pre-flight
   writability probe over its stable target directories (the output root, the

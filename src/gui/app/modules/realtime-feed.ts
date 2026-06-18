@@ -130,10 +130,41 @@ export const realtimeFeedJs = `    // ──────────────
       });
     }
     var draining = false;
+    // Bounded exponential-backoff retry for a drain that left edits pending on a
+    // transient failure. Mirrors the eventStreamBackoff style: start 2s, double
+    // per consecutive failed drain, cap 60s; reset on a fully clean drain or a
+    // real connectivity event. Without this, a cloud that stays "connected" but
+    // 5xxes individual edits (or a blip that never fires 'online') would leave
+    // queued edits unsynced indefinitely and silently.
+    var drainRetryTimer = null; // pending retry timer (or null)
+    var drainBackoff = 2000;    // retry delay, grows to a cap
+    var MAX_DRAIN_ATTEMPTS = 8; // per-edit attempt cap → age-out to dead-letter
+    // Pure decision helpers, factored out of the impure drainQueue so the retry
+    // logic is unit-testable without a browser (IDB/fetch/timers). Keep these
+    // first-class function declarations so a test can slice + eval them.
+    function classifyDrainResponse(status) {
+      // 2xx → done (delete). 4xx → permanent for a replay (dead-letter): 409
+      // (unshared / stale schema / row gone), 403 (RLS owner-only), 404 (row not
+      // visible), 400 (bad edit) won't succeed on retry. 5xx (and a network
+      // error, signalled by a non-numeric status) → transient, retry later.
+      if (status >= 200 && status < 300) return 'ok';
+      if (status >= 400 && status < 500) return 'deadletter';
+      return 'transient';
+    }
+    function nextBackoff(current) {
+      return Math.min(current * 2, 60000);
+    }
+    function shouldDeadLetter(attempts) {
+      return attempts >= MAX_DRAIN_ATTEMPTS;
+    }
+    function clearDrainRetry() {
+      if (drainRetryTimer) { clearTimeout(drainRetryTimer); drainRetryTimer = null; }
+    }
     /** Replay queued edits in edit-timestamp order once the cloud is back. */
     function drainQueue() {
       if (draining || !cloudConnected) return;
       draining = true;
+      var pendingRemains = false; // any edit still pending after this pass?
       idbAll().then(function (items) {
         var queue = pendingOrdered(items);
         function step(i) {
@@ -148,35 +179,75 @@ export const realtimeFeedJs = `    // ──────────────
             },
             body: it.body != null ? JSON.stringify(it.body) : undefined,
           }).then(function (r) {
-            if (r.ok) return idbDelete(it.editId);
-            // #4.5 — ANY 4xx is permanent for a replay: 409 (unshared / stale
-            // schema / row gone), 403 (RLS owner-only), 404 (row not visible),
-            // 400 (bad edit). Mark the edit failed + surface it (dead-letter)
-            // instead of retrying it forever; only 5xx / network errors are
-            // transient and left pending for the next drain. Previously only 409
-            // was caught, so an RLS-rejected edit retried endlessly, unseen.
-            if (r.status >= 400 && r.status < 500) {
+            var verdict = classifyDrainResponse(r.status);
+            // An edit is ONLY removed from IDB on a 2xx — never lost otherwise.
+            if (verdict === 'ok') return idbDelete(it.editId);
+            if (verdict === 'deadletter') {
               it.status = 'failed';
               return idbPut(it).then(function () {
                 showToast('An offline edit could not sync (the object changed or you lack access). See pending edits.', {});
               });
             }
-            // Transient server error (5xx) — leave pending, retry on the next drain.
-            return Promise.resolve();
+            // Transient server error (5xx) — count the attempt, and age out to
+            // dead-letter once a single edit has failed too many times so a poison
+            // edit can't retry forever (but is never silently lost — it becomes a
+            // visible 'failed' row). Below the cap, leave it pending for the next
+            // (backed-off) drain.
+            it.attempts = (it.attempts || 0) + 1;
+            if (shouldDeadLetter(it.attempts)) {
+              it.status = 'failed';
+              return idbPut(it).then(function () {
+                showToast('An offline edit could not sync after repeated attempts — see pending edits.', {});
+              });
+            }
+            pendingRemains = true;
+            return idbPut(it);
           }).then(function () { return step(i + 1); },
-          function () { return Promise.resolve(); /* network error — stop draining */ });
+          function () {
+            // Network error on this edit — count the attempt + persist, age out
+            // at the cap, then stop draining (the rest stay pending). The edit is
+            // not deleted, so nothing is lost; the retry timer re-drains it.
+            it.attempts = (it.attempts || 0) + 1;
+            if (shouldDeadLetter(it.attempts)) {
+              it.status = 'failed';
+              return idbPut(it).then(function () {
+                showToast('An offline edit could not sync after repeated attempts — see pending edits.', {});
+              });
+            }
+            pendingRemains = true;
+            return idbPut(it);
+          });
         }
         return step(0);
       }).then(function () {
         draining = false;
         refreshPendingPill();
         afterMutation().catch(function () { /* ignore */ });
+        if (pendingRemains) {
+          // Self-heal: schedule a bounded-backoff retry so a transient failure
+          // doesn't leave edits stranded until the next 'online'/reconnect event.
+          clearDrainRetry();
+          var t = setTimeout(drainQueue, drainBackoff);
+          if (t && t.unref) t.unref(); // defensive — never pin a process (browser timers ignore)
+          drainRetryTimer = t;
+          drainBackoff = nextBackoff(drainBackoff);
+        } else {
+          // Fully clean drain — reset backoff and drop any pending retry.
+          drainBackoff = 2000;
+          clearDrainRetry();
+        }
       }).catch(function () { draining = false; });
+    }
+    /** A real connectivity event supersedes the backoff — reset + drain now. */
+    function drainNow() {
+      clearDrainRetry();
+      drainBackoff = 2000;
+      drainQueue();
     }
     function initOffline() {
       refreshPendingPill();
       if (typeof window !== 'undefined' && window.addEventListener) {
-        window.addEventListener('online', function () { if (cloudConnected) drainQueue(); });
+        window.addEventListener('online', function () { if (cloudConnected) drainNow(); });
       }
     }
 
@@ -186,7 +257,7 @@ export const realtimeFeedJs = `    // ──────────────
       var wasConnected = cloudConnected;
       cloudMode = mode === 'cloud';
       cloudConnected = cloudMode && state === 'connected';
-      if (cloudConnected && !wasConnected) drainQueue();
+      if (cloudConnected && !wasConnected) drainNow();
       // Update the single workspace-switcher status dot to reflect live realtime.
       ['ws-status'].forEach(function (id) {
         var el = document.getElementById(id);
