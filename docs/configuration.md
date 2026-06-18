@@ -10,7 +10,7 @@ Complete reference for `lattice.config.yml` — the YAML schema config format in
 - [Top-level structure](#top-level-structure)
 - [Field types](#field-types)
 - [Field options](#field-options)
-- [Relationships (`ref`)](#relationships-ref)
+- [Relationships (`relations`)](#relationships-relations)
 - [Render specs](#render-specs)
 - [Primary keys](#primary-keys)
 - [Output file paths](#output-file-paths)
@@ -97,17 +97,22 @@ entities:
       title: { type: text, required: true }
       status: { type: text, default: open }
       priority: { type: integer, default: 1 }
-      assignee_id: { type: uuid, ref: user }
+      assignee_id: { type: uuid }
       deleted_at: { type: datetime }
+    relations:
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
 ```
 
-| Option       | Type                      | Description                                                                       |
-| ------------ | ------------------------- | --------------------------------------------------------------------------------- |
-| `type`       | `LatticeFieldType`        | **Required.** Column data type (see table above)                                  |
-| `primaryKey` | `boolean`                 | Mark this field as the primary key. Generates `TEXT PRIMARY KEY` (for uuid/text)  |
-| `required`   | `boolean`                 | Column is `NOT NULL`. Cannot be used together with `primaryKey`                   |
-| `default`    | string / number / boolean | SQL `DEFAULT` value. Strings are quoted; numbers are unquoted                     |
-| `ref`        | string                    | Foreign-key reference to another entity (see [Relationships](#relationships-ref)) |
+A foreign-key field is just a plain column (e.g. `assignee_id: { type: uuid }`). To
+turn it into a navigable `belongsTo` relationship, declare an entity-level
+`relations:` block (see [Relationships](#relationships-relations)).
+
+| Option       | Type                      | Description                                                                      |
+| ------------ | ------------------------- | -------------------------------------------------------------------------------- |
+| `type`       | `LatticeFieldType`        | **Required.** Column data type (see table above)                                 |
+| `primaryKey` | `boolean`                 | Mark this field as the primary key. Generates `TEXT PRIMARY KEY` (for uuid/text) |
+| `required`   | `boolean`                 | Column is `NOT NULL`. Cannot be used together with `primaryKey`                  |
+| `default`    | string / number / boolean | SQL `DEFAULT` value. Strings are quoted; numbers are unquoted                    |
 
 ### Generated SQL
 
@@ -121,16 +126,24 @@ notes:    { type: text }                         → "notes" TEXT
 
 ---
 
-## Relationships (`ref`)
+## Relationships (`relations`)
 
-Adding `ref: <entity>` to a field automatically creates a `belongsTo` relationship in the compiled `TableDefinition`.
+A `belongsTo` relationship is declared with an entity-level `relations:` block. The
+foreign-key column stays a plain field; the `relations:` entry wires it to the
+related table.
 
 ```yaml
 entities:
   ticket:
     fields:
       id: { type: uuid, primaryKey: true }
-      assignee_id: { type: uuid, ref: user }
+      assignee_id: { type: uuid } # plain FK column
+    relations:
+      assignee: # relation name — you choose it
+        type: belongsTo
+        table: user
+        foreignKey: assignee_id
+        # references: id   # optional; defaults to the related table's PK
 ```
 
 This generates:
@@ -138,18 +151,29 @@ This generates:
 - Column: `"assignee_id" TEXT`
 - Relation: `assignee: { type: 'belongsTo', table: 'user', foreignKey: 'assignee_id' }`
 
-**Relation name derivation:** If the field name ends with `_id`, the suffix is stripped to form the relation name. Otherwise the full field name is used:
+Each key under `relations:` is the **relation name**, and its value is a relation
+definition with these fields:
 
-| Field name    | Relation name |
-| ------------- | ------------- |
-| `assignee_id` | `assignee`    |
-| `project_id`  | `project`     |
-| `parent_id`   | `parent`      |
-| `author`      | `author`      |
+| Field        | Type                  | Description                                                                                   |
+| ------------ | --------------------- | --------------------------------------------------------------------------------------------- |
+| `type`       | `'belongsTo'`         | **Required.** The relation kind. `belongsTo` points from the FK-holding table to its parent.  |
+| `table`      | string                | **Required.** The related (parent) entity/table name.                                          |
+| `foreignKey` | string                | **Required.** The column on this entity that holds the related row's key (e.g. `assignee_id`). |
+| `references` | string                | Optional. The column on the related table to match against. Defaults to that table's primary key. |
 
-The relation name is used in `{{relationName.field}}` interpolation strings inside render templates.
+**Choosing the relation name:** The relation name is whatever key you put under
+`relations:` — you name it explicitly. (In earlier versions this name was derived
+automatically by stripping a trailing `_id` from the FK field; now you choose it.)
+By convention it is the FK column with any trailing `_id` removed — `assignee_id`
+→ `assignee`, `project_id` → `project`, `parent_id` → `parent` — but you are free
+to use any name.
 
-SQLite does not enforce foreign key constraints by default. Lattice stores `ref` as metadata for template rendering — no `FOREIGN KEY` constraint is added to the SQL schema.
+The relation name is used in `{{relationName.field}}` interpolation strings inside
+render templates (e.g. `{{assignee.name}}`).
+
+SQLite does not enforce foreign key constraints by default. Lattice stores the
+relation as metadata for template rendering — no `FOREIGN KEY` constraint is added
+to the SQL schema.
 
 ---
 
@@ -283,7 +307,9 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
-      owner_id: { type: uuid, ref: user }
+      owner_id: { type: uuid }
+    relations:
+      owner: { type: belongsTo, table: user, foreignKey: owner_id }
     render:
       template: default-list
       formatRow: '{{name}} (owner: {{owner.name}})'
@@ -295,8 +321,11 @@ entities:
       title: { type: text, required: true }
       status: { type: text, default: open }
       priority: { type: integer, default: 1 }
-      project_id: { type: uuid, ref: project }
-      assignee_id: { type: uuid, ref: user }
+      project_id: { type: uuid }
+      assignee_id: { type: uuid }
+    relations:
+      project: { type: belongsTo, table: project, foreignKey: project_id }
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
     render:
       template: default-list
       formatRow: '{{title}} [{{status}}] → {{assignee.name}}'
@@ -352,7 +381,9 @@ entities:
       id: { type: uuid, primaryKey: true }
       name: { type: text, required: true }
       status: { type: text, default: active }
-      owner_id: { type: uuid, ref: user }
+      owner_id: { type: uuid }
+    relations:
+      owner: { type: belongsTo, table: user, foreignKey: owner_id }
     render:
       template: default-list
       formatRow: '**{{name}}** [{{status}}] — {{owner.name}}'
@@ -366,10 +397,13 @@ entities:
       description: { type: text }
       status: { type: text, default: open }
       priority: { type: integer, default: 1 }
-      project_id: { type: uuid, ref: project }
-      assignee_id: { type: uuid, ref: user }
+      project_id: { type: uuid }
+      assignee_id: { type: uuid }
       created_at: { type: datetime }
       due_at: { type: datetime }
+    relations:
+      project: { type: belongsTo, table: project, foreignKey: project_id }
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
     render:
       template: default-list
       formatRow: '{{title}} [P{{priority}}/{{status}}] → {{assignee.name}}'
@@ -380,9 +414,12 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       body: { type: text, required: true }
-      task_id: { type: uuid, ref: task }
-      author_id: { type: uuid, ref: user }
+      task_id: { type: uuid }
+      author_id: { type: uuid }
       created_at: { type: datetime }
+    relations:
+      task: { type: belongsTo, table: task, foreignKey: task_id }
+      author: { type: belongsTo, table: user, foreignKey: author_id }
     render:
       template: default-list
       formatRow: '{{author.name}}: {{body}}'

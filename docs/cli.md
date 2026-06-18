@@ -389,8 +389,10 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       body: { type: text, required: true }
-      task_id: { type: uuid, ref: task }
+      task_id: { type: uuid }
       score: { type: integer, default: 0 }
+    relations:
+      task: { type: belongsTo, table: task, foreignKey: task_id }
 ```
 
 Generates:
