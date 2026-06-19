@@ -136,6 +136,13 @@ import {
   allComputedDeps,
 } from './schema/computed.js';
 import type { ComputedColumnSpec, MaterializedRollupSpec } from './schema/computed.js';
+import {
+  installFilePresigner,
+  setCloudS3Secret,
+  grantPresignerToMemberGroup,
+} from './cloud/file-presign.js';
+import type { CloudS3Secret } from './cloud/file-presign.js';
+import { cloudSchema, memberGroupFor } from './cloud/rls.js';
 import { evaluateRetrieval } from './search/eval.js';
 import type {
   EvalQuery,
@@ -2425,6 +2432,56 @@ export class Lattice {
       r.explain.final = b.boostedScore;
       return r;
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Seamless cloud file-byte access (P-CLOUDFILES) — Postgres cloud only
+  // -------------------------------------------------------------------------
+
+  /**
+   * Enable keyless cloud file-byte access cloud-wide (Postgres cloud only).
+   * Installs the in-database SigV4 presigner + `pgcrypto`, stores the owner's
+   * least-privilege S3 key in an **owner-only, member-unreadable** table, and
+   * grants the cloud's member group EXECUTE on `lattice_presign_file` — so every
+   * current + future member can presign GET/PUT URLs for the `files` rows they're
+   * allowed to see, holding no key themselves. One owner action turns it on for
+   * the whole cloud.
+   */
+  async enableCloudFilePresigning(
+    secret: CloudS3Secret,
+    opts: { memberGroup?: string } = {},
+  ): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    if (this._adapter.dialect !== 'postgres') {
+      throw new Error('enableCloudFilePresigning: requires a Postgres cloud (no-op on SQLite)');
+    }
+    const schema = await cloudSchema(this);
+    await installFilePresigner(this._adapter, schema);
+    await setCloudS3Secret(this._adapter, secret);
+    const group = opts.memberGroup ?? (await memberGroupFor(this));
+    await grantPresignerToMemberGroup(this._adapter, group);
+  }
+
+  /**
+   * Presign a GET/PUT URL for a `files` row, computed inside Postgres and gated
+   * on the caller's row-visibility (the keyless-member path). Requires the
+   * presigner to be installed + an S3 secret configured
+   * ({@link enableCloudFilePresigning}). TTL is capped at 60s server-side.
+   */
+  async presignFile(fileId: string, method: 'GET' | 'PUT', ttlSeconds = 60): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+    const row = await getAsyncOrSync(this._adapter, `SELECT lattice_presign_file(?, ?, ?) AS url`, [
+      fileId,
+      method,
+      ttlSeconds,
+    ]);
+    const url = row?.url;
+    if (typeof url !== 'string' || url.length === 0) {
+      throw new Error(`presignFile: no presigned URL returned for "${fileId}"`);
+    }
+    return url;
   }
 
   // -------------------------------------------------------------------------

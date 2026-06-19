@@ -494,6 +494,17 @@ export {
 export type { SourceKeyStore } from './cloud/shred.js';
 export { FoldCache } from './cloud/fold-cache.js';
 export { secureCloud } from './cloud/setup.js';
+// v4.1 — seamless cloud file-byte access: in-database SigV4 presigner so a keyless
+// member fetches/uploads bytes with zero config (Postgres cloud only).
+export {
+  installFilePresigner,
+  setCloudS3Secret,
+  grantPresignerToMemberGroup,
+  hasFilePresigner,
+  filePresignSql,
+  S3_SECRET_TABLE,
+} from './cloud/file-presign.js';
+export type { CloudS3Secret } from './cloud/file-presign.js';
 export {
   installCloudSettings,
   getCloudSetting,

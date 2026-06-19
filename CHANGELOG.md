@@ -111,6 +111,14 @@ method that is inert unless a table opts in.
 - **Materialized rollups (`TableDefinition.materializedRollups`).** Stored
   aggregates over a child table (e.g. `comment_count`), maintained incrementally
   as children change and recomputable in full via `refreshMaterializedRollups`.
+- **Seamless cloud file-byte access (`enableCloudFilePresigning`, cloud
+  Postgres).** An in-database SigV4 presigner: a keyless cloud member fetches /
+  uploads file bytes with zero config — `lattice_presign_file` computes a
+  short-lived presigned URL inside Postgres, gated on the member's row-visibility,
+  using the owner's key which never leaves the database. Enabling S3 on a cloud
+  turns it on for all current + future members; the GUI file-byte route uses it
+  automatically for keyless members. (SigV4 signing is verified against AWS's
+  published test vectors.)
 
 ### Changed
 
