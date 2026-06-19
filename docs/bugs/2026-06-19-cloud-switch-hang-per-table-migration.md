@@ -7,7 +7,7 @@
 
 Switching to a cloud (Postgres) workspace in the GUI hung and then failed with:
 
-> Switch failed: Opening "Automated Industries Lattice" timed out after 20s — the
+> Switch failed: Opening "<workspace>" timed out after 20s — the
 > database may be slow or unreachable. Staying on the current workspace.
 
 The database was **not** slow or unreachable.

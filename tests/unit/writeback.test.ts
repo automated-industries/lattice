@@ -157,7 +157,8 @@ describe('WritebackPipeline', () => {
     });
     pipeline.define({ file, parse: lineParser, persist, dedupeKey: (e) => e as string });
 
-    // First sync: entry1 persists, entry2 throws → the batch fails LOUDLY (Rule 16).
+    // First sync: entry1 persists, entry2 throws → the batch fails LOUDLY (a
+    // partial-batch failure surfaces; it is never swallowed into a silent success).
     await expect(pipeline.process()).rejects.toThrow('persist failed');
     expect(persisted).toEqual(['entry1']); // entry1 done; entry2 not
 

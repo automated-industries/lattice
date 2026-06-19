@@ -2627,7 +2627,7 @@ When several people open the GUI against the same shared cloud (Postgres) DB:
 ### Deprecated — `files.path` / `files.kind`
 
 - **`files.path` is deprecated in favor of the reference model.** GUI local-file ingestion (`/api/ingest/file`) now records a v2.0 `local_ref` (`ref_kind='local_ref'`, `ref_uri`) via `referenceLocalFile()` instead of writing `path`. The blob/open routes and the GUI preview fall back to `ref_uri` (`resolveSource` already did). `files.kind` is an orphaned column (superseded by `mime` + `ref_kind`). Both columns are retained for back-compat — **not dropped** — and carry deprecation notes.
-- **License metadata:** the Apache copyright holder now reads `Automated Industries (M-Flat Inc)` consistently across `LICENSE` + `NOTICE`; the `NOTICE` package label was corrected to `latticesql` and the placeholder URL to the project homepage.
+- **License metadata:** the Apache copyright holder is now consistent across `LICENSE` + `NOTICE`; the `NOTICE` package label was corrected to `latticesql` and the placeholder URL to the project homepage.
 
 ### Added — workspace model + auto-render (back end)
 
