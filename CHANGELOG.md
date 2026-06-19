@@ -8,6 +8,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.4.5] - 2026-06-19
+
+### Added
+
+- **"Update available — Upgrade" link next to the version indicator.** A manual
+  fallback to the automatic updater: it appears only when a newer, installable
+  version is published, and clicking it installs the latest and restarts the GUI
+  onto the new version (the same install + relaunch the background updater uses).
+  Normally unseen because auto-update handles it — this is the explicit escape
+  hatch to force an update.
+
+### Fixed
+
+- **A workspace with no active database can now be deleted.** Deletion operates on
+  the workspace registry rather than the open DB, so a workspace whose database
+  fails to open (or the last remaining workspace) can be removed — reverting the GUI
+  to the welcome screen — instead of being stranded and un-deletable. New
+  `POST /api/workspaces/delete` shares the same file-cleanup logic as the
+  active-DB delete path.
+
+### Removed
+
+- **Dropped the one-to-many `ref:` "removed in 2.0" deprecation warnings.** The 2.0
+  removal plan is superseded; one-to-many `ref:` fields remain fully supported, so
+  the per-field console warnings on every parse/re-render are gone.
+
 ## [3.4.4] - 2026-06-18
 
 ### Fixed
