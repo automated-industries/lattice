@@ -28,7 +28,7 @@ import { createFileLoopbackWatcher } from './file-watcher.js';
 import { RenderProgressBus } from './render-progress.js';
 import type { RenderProgress } from '../render/progress.js';
 import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest.js';
-import { isJunctionByColumns, getGuiEntities, isJunctionTable } from './data.js';
+import { isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
@@ -374,9 +374,15 @@ export async function openConfig(
     if (name.startsWith('__lattice_') || name.startsWith('_lattice_')) continue;
     validTables.add(name);
   }
+  // Derive junctions from the ALREADY-parsed config tables (reusing the exact
+  // isJunctionTable predicate via tableToSummary) instead of getGuiEntities →
+  // loadGuiData, which re-parses the whole config YAML AND disk-scans the rendered
+  // tree (existsSync/readFileSync per entity) — pure waste on the open hot path,
+  // O(entities) on a big cloud. The predicate (which has a client mirror that must
+  // stay in lockstep) is reused verbatim, not reimplemented.
   const junctionTables = new Set([
-    ...getGuiEntities(configPath, outputDir)
-      .tables.filter(isJunctionTable)
+    ...parsed.tables
+      .filter((t) => isJunctionTable(tableToSummary(t.name, t.definition)))
       .map((t) => t.name),
     // Member-discovered junctions (classified from the physical shape above);
     // empty for an owner/local open.
