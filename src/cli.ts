@@ -8,7 +8,8 @@ import { parseConfigFile } from './config/parser.js';
 import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { detectInstallContext } from './update-context.js';
-import { startGuiServer } from './gui/server.js';
+import { startGuiServer, openUrl } from './gui/server.js';
+import { probeRunningGui } from './gui/probe-running.js';
 import { superviseGui } from './gui/supervisor.js';
 import { ensureRootForGui } from './framework/gui-bootstrap.js';
 import { ensureLatticeRoot, findLatticeRoot, rootConfigDir } from './framework/lattice-root.js';
@@ -501,6 +502,27 @@ async function runWatch(args: ParsedArgs): Promise<void> {
 }
 
 async function runGui(args: ParsedArgs): Promise<void> {
+  const port = args.port;
+  // Singleton: never start a SECOND Lattice GUI when one is already serving this
+  // port. The server's port-fallback (bind the next free port if the requested one
+  // is busy) would otherwise run a DUPLICATE instance — its own browser tab, its
+  // own background auto-update supervisor. Repeated launches (the installer,
+  // double-clicking the app, dev testing) then pile up instances + tabs at drifting
+  // versions, which is what crashes the browser. If a Lattice GUI is already up on
+  // this port, just open it and exit. The supervised child (LATTICE_GUI_SUPERVISED)
+  // is spawned precisely to bind the port, and the supervisor frees the port before
+  // an in-place update restart — so the child must skip this check.
+  if (!process.env.LATTICE_GUI_SUPERVISED) {
+    const running = await probeRunningGui(port);
+    if (running) {
+      const url = `http://127.0.0.1:${String(port)}/`;
+      console.log(
+        `Lattice is already running at ${url}${running.version ? ` (v${running.version})` : ''} — opening it.`,
+      );
+      if (!args.noOpen) openUrl(url);
+      return;
+    }
+  }
   // A fresh, installable invocation becomes the supervisor: it silently installs
   // the latest version and respawns the server on a background update, so the GUI
   // self-updates with no manual refresh. The supervised child (and any
@@ -541,7 +563,7 @@ async function runGui(args: ParsedArgs): Promise<void> {
       configPath: boot.configPath,
       outputDir: boot.contextDir,
       latticeRoot: boot.root,
-      port: args.port,
+      port,
       openBrowser: !args.noOpen,
       autoRender: true,
       version: getVersion(),
