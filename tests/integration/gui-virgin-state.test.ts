@@ -4,11 +4,13 @@
  * route, and transitions into a normal workspace once one is created.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureRootForGui } from '../../src/framework/gui-bootstrap.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { addWorkspace, listWorkspaces } from '../../src/framework/workspace.js';
+import { workspaceDir } from '../../src/framework/lattice-root.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
@@ -191,5 +193,57 @@ describe('GUI virgin (zero-workspace) state', () => {
     };
     expect(ws.workspaces).toHaveLength(0);
     expect((await fetch(`${s.url}/api/entities`)).status).toBe(409);
+  });
+
+  it('deletes a registered-but-inactive workspace from the virgin state (DB never opened)', async () => {
+    // Regression: a workspace whose database fails to open at boot leaves the
+    // server with NO active DB (virgin), yet the welcome screen still lists it
+    // (the list is read from the registry). Deleting it 409'd "No active
+    // workspace" because the delete route sat behind the virgin gate — so the
+    // workspace was un-removable. It must be deletable with no active DB.
+    const base = mkdtempSync(join(tmpdir(), 'lattice-virgin-del-'));
+    dirs.push(base);
+    const boot = ensureRootForGui({
+      startDir: base,
+      configPath: join(base, 'lattice.config.yml'),
+      explicitConfig: false,
+    });
+    expect(boot.workspaceId).toBeNull();
+    const s = await startGuiServer({
+      configPath: boot.configPath,
+      outputDir: boot.contextDir,
+      latticeRoot: boot.root,
+      port: 0,
+      openBrowser: false,
+      autoRender: true,
+    });
+    servers.push(s);
+
+    // Register a workspace directly in the registry AFTER the virgin boot, so the
+    // server's in-memory state stays "no active DB" — mimicking a workspace whose
+    // database could not be opened.
+    const ws = addWorkspace(boot.root, { displayName: 'Unopenable', makeActive: true });
+    expect(existsSync(workspaceDir(boot.root, ws.dir))).toBe(true);
+
+    // Still virgin, but the welcome screen lists the registered workspace.
+    const listed = (await fetch(`${s.url}/api/workspaces`).then((r) => r.json())) as {
+      virgin?: boolean;
+      workspaces: { id: string }[];
+    };
+    expect(listed.virgin).toBe(true);
+    expect(listed.workspaces.map((w) => w.id)).toContain(ws.id);
+
+    // Delete must succeed (not 409 "No active workspace").
+    const del = await fetch(`${s.url}/api/workspaces/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: ws.id }),
+    });
+    expect(del.status).toBe(200);
+    expect((await del.json()) as { ok: boolean }).toMatchObject({ ok: true });
+
+    // Record dropped from the registry AND the local folder removed.
+    expect(listWorkspaces(boot.root).map((w) => w.id)).not.toContain(ws.id);
+    expect(existsSync(workspaceDir(boot.root, ws.dir))).toBe(false);
   });
 });

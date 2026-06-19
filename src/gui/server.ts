@@ -24,6 +24,7 @@ import {
   addWorkspace,
   removeWorkspace,
   resolveWorkspacePaths,
+  type WorkspaceRecord,
 } from '../framework/workspace.js';
 import type { LatticeFieldDef } from '../config/types.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
@@ -200,6 +201,13 @@ export interface StartGuiServerOptions {
    * `GET /api/version` + `GET /api/update/status` are served regardless.
    */
   selfUpdate?: boolean;
+  /**
+   * Test seam: supply the update service instead of building one from the real
+   * npm-backed install context. Lets tests exercise the update routes against a
+   * deterministic fake (no real registry check, no real npm install). When set,
+   * it overrides `selfUpdate`'s default factory.
+   */
+  updateServiceFactory?: (emit: (type: string, data: unknown) => void) => UpdateService;
 }
 
 export interface GuiServerHandle {
@@ -1993,6 +2001,38 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // create/join onboarding routes. Returns true when it handled the request.
   // Everything else 409s (the caller surfaces that). The Cloud-create path is
   // create-local-then-migrate on the client, so migrate-to-cloud is NOT here.
+  // Remove a workspace's owned files from disk after its registry record has
+  // been dropped. Loud on failure (the caller surfaces it as a 500). Scaffolded
+  // local workspace → delete its whole folder; cloud → forget only the LOCAL
+  // pointer (its managed config + the saved credential when no other workspace
+  // uses it) and never touch the shared remote; adopted-in-place local → leave
+  // the user's files alone (non-destructive). Shared by the active-DB delete
+  // handler and the virgin-state delete route so the two can never drift.
+  const cleanupWorkspaceFiles = (root: string, ws: WorkspaceRecord): void => {
+    if (!ws.configPath && ws.kind === 'local') {
+      rmSync(workspaceDir(root, ws.dir), { recursive: true, force: true });
+    } else if (ws.kind === 'cloud') {
+      if (ws.configPath && existsSync(ws.configPath)) {
+        rmSync(ws.configPath, { force: true });
+      }
+      const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
+      const label = labelMatch?.[1];
+      if (label) {
+        const stillUsed = listWorkspaces(root).some((w) =>
+          w.db.includes('${LATTICE_DB:' + label + '}'),
+        );
+        if (!stillUsed) {
+          try {
+            deleteDbCredential(label);
+          } catch {
+            // credential already gone — fine
+          }
+        }
+      }
+    }
+    // Adopted local workspaces: leave the user's files in place (non-destructive).
+  };
+
   const handleVirginRoute = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -2054,6 +2094,41 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       }
       return true;
     }
+    if (method === 'POST' && pathname === '/api/workspaces/delete') {
+      // Deletion operates on the registry, not the open DB, so it must work with
+      // no active workspace too. Otherwise a workspace whose database fails to
+      // open strands the GUI in the virgin state while the welcome screen still
+      // lists it — and it could never be removed (the delete route 409'd "No
+      // active workspace"). With nothing active there is no DB to switch away
+      // from: just drop the record, then its files.
+      if (!latticeRoot) {
+        sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
+        return true;
+      }
+      const body = (await readJson<unknown>(req)) as { id?: unknown };
+      if (typeof body.id !== 'string') {
+        sendJson(res, { error: 'id must be a string' }, 400);
+        return true;
+      }
+      const ws = getWorkspace(latticeRoot, body.id);
+      if (!ws) {
+        sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
+        return true;
+      }
+      removeWorkspace(latticeRoot, ws.id);
+      try {
+        cleanupWorkspaceFiles(latticeRoot, ws);
+      } catch (e) {
+        sendJson(
+          res,
+          { error: `Workspace unregistered but file cleanup failed: ${(e as Error).message}` },
+          500,
+        );
+        return true;
+      }
+      sendJson(res, { ok: true, switchedTo: null });
+      return true;
+    }
     if (method === 'POST' && pathname === '/api/cloud/redeem-invite') {
       await redeemInvite(createCloudWorkspace, req, res);
       return true;
@@ -2096,6 +2171,28 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               lastError: null,
             },
           );
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/update/apply') {
+          // Manual fallback to the automatic updater: force a check that, when a
+          // newer installable version exists, installs the latest and restarts
+          // the GUI onto it. The install is slow (an npm install), so kick it off
+          // without blocking the response — `checkNow(true)` logs/emits its own
+          // progress + errors (update-applied / update-error), which the client
+          // surfaces. When there is no update service (unsupervised or not
+          // installable) there is nothing to do: answer with a plain "can't",
+          // not a crash, so the client can tell the user how to upgrade by hand.
+          if (updateService) {
+            void updateService.checkNow(true);
+            sendJson(res, { ok: true, status: updateService.status() });
+          } else {
+            sendJson(res, {
+              ok: false,
+              error:
+                'Automatic update is not available for this install. ' +
+                'Reinstall from https://latticesql.com to get the latest version.',
+            });
+          }
           return;
         }
 
@@ -3484,32 +3581,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // Drop the registry record, then clean up files (loud on failure).
           removeWorkspace(latticeRoot, ws.id);
           try {
-            if (!ws.configPath && ws.kind === 'local') {
-              // Scaffolded local workspace: remove its whole folder (config+db+context).
-              rmSync(workspaceDir(latticeRoot, ws.dir), { recursive: true, force: true });
-            } else if (ws.kind === 'cloud') {
-              // Cloud workspace: forget the LOCAL pointer only — never touch the
-              // shared remote Postgres. Remove the managed sibling config (if any)
-              // and drop the saved credential when no other workspace uses it.
-              if (ws.configPath && existsSync(ws.configPath)) {
-                rmSync(ws.configPath, { force: true });
-              }
-              const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
-              const label = labelMatch?.[1];
-              if (label) {
-                const stillUsed = listWorkspaces(latticeRoot).some((w) =>
-                  w.db.includes('${LATTICE_DB:' + label + '}'),
-                );
-                if (!stillUsed) {
-                  try {
-                    deleteDbCredential(label);
-                  } catch {
-                    // credential already gone — fine
-                  }
-                }
-              }
-            }
-            // Adopted local workspaces: leave the user's files in place (non-destructive).
+            cleanupWorkspaceFiles(latticeRoot, ws);
           } catch (e) {
             sendJson(
               res,
@@ -4103,7 +4175,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     }
   };
 
-  if (options.selfUpdate && guiVersion) {
+  if (options.updateServiceFactory) {
+    updateService = options.updateServiceFactory(broadcast);
+  } else if (options.selfUpdate && guiVersion) {
     updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
   }
 
