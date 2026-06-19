@@ -304,6 +304,25 @@ behavior-preserving except where tagged BREAKING.
   only an out-of-band (DBA-created, never-invited) role needs a manual re-grant (see
   MIGRATING-4.0.md). Single-user / SQLite deployments are unaffected.
 
+## [3.4.7] - 2026-06-19
+
+### Fixed
+
+- **`lattice gui` is now a singleton — relaunching reuses the running instance
+  instead of starting a duplicate.** When a GUI was already serving the port, a new
+  launch (the installer, double-clicking the desktop app, or repeated `lattice gui`
+  runs) silently bound the _next_ free port and started a SECOND instance — its own
+  browser tab and its own background auto-update supervisor. Repeated launches piled
+  up instances and tabs at drifting versions, which could exhaust and crash the
+  browser. `lattice gui` now probes the target port first and, if a Lattice GUI is
+  already there, opens it and exits. (Reported: the one-line installer launched a
+  fresh GUI each run and crashed the browser.)
+- **The seamless-update auto-reload can no longer loop.** The page reloads when the
+  server reports a version different from the one it was served with (the auto-update
+  trigger). If that mismatch ever persisted, every fresh page reloaded again — an
+  unbounded loop. Auto-reloads are now capped (a few per minute) and then surface the
+  mismatch instead of spinning, as a hard backstop against any reload loop.
+
 ## [3.4.6] - 2026-06-19
 
 ### Fixed

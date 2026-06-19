@@ -31,9 +31,41 @@ export const offlineEditQueueJs = `    // ────────────�
     }
     function reloadForUpdate(label) {
       if (reloadingForUpdate) return;
+      // Guard against an infinite reload loop. Reloading when the server version
+      // changes is the seamless-update trigger — but if the version the page was
+      // SERVED with keeps disagreeing with /api/version (e.g. a stale or duplicate
+      // server is holding the port and reporting a different version), every fresh
+      // page would reload again. That unbounded loop pegs memory and crashes the
+      // browser. Cap reloads to MAX within WINDOW; past that, stop and surface the
+      // mismatch instead of spinning. A genuine update reloads once and then the
+      // versions agree, which clears the counter (see checkServerVersion).
+      var KEY = 'lattice:updateReloads',
+        MAX = 3,
+        WINDOW = 60000,
+        now = Date.now(),
+        recent = [];
+      try {
+        recent = (JSON.parse(sessionStorage.getItem(KEY) || '[]') || []).filter(function (t) {
+          return now - t < WINDOW;
+        });
+      } catch (_) {
+        /* sessionStorage blocked — degrade to a single best-effort reload below */
+      }
+      if (recent.length >= MAX) {
+        showUpdatePill('Version mismatch — stopped auto-reloading. Reload manually if needed.');
+        return;
+      }
+      recent.push(now);
+      try {
+        sessionStorage.setItem(KEY, JSON.stringify(recent));
+      } catch (_) {
+        /* best-effort */
+      }
       reloadingForUpdate = true;
       showUpdatePill(label || 'Updated — reloading…');
-      setTimeout(function () { location.reload(); }, 600);
+      setTimeout(function () {
+        location.reload();
+      }, 600);
     }
     // Manual upgrade fallback: show an "Update available — Upgrade" link next to
     // the version chip only when the server reports a newer, installable version.
@@ -65,7 +97,16 @@ export const offlineEditQueueJs = `    // ────────────�
           var v = d && d.version ? String(d.version).replace(/^v/, '').trim() : '';
           if (!v) return;
           if (v !== BOOT_VERSION) reloadForUpdate('Updated to v' + v + ' — reloading…');
-          else hideUpdatePill();
+          else {
+            hideUpdatePill();
+            // Versions agree — clear the reload-loop guard so a later genuine
+            // update can reload again from a clean slate.
+            try {
+              sessionStorage.removeItem('lattice:updateReloads');
+            } catch (_) {
+              /* best-effort */
+            }
+          }
         })
         .catch(function () { /* offline / mid-restart — the next reconnect retries */ });
       // Refresh the manual-upgrade link alongside the reconnect version check.

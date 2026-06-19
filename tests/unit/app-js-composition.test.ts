@@ -17,8 +17,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // "Update available — Upgrade" affordance: checkUpdateAvailable + wireUpdateLink,
 // wired at boot and refreshed on each reconnect version check). Recapture the
 // length + hash on any intended change.
-const ORIGINAL_LENGTH = 399402;
-const ORIGINAL_SHA256 = 'f2a01331941ef35442bee7b7d8eeca6ae7f4e94e214f7249b7df016603f26aa7';
+const ORIGINAL_LENGTH = 401093;
+const ORIGINAL_SHA256 = '3be04280b1d5a0aa8ac8e7d65ac034c8d5b50708128e2c950c2fb5b5968f5549';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {
