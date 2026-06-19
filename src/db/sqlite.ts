@@ -150,6 +150,28 @@ export class SQLiteAdapter implements StorageAdapter {
     return this.introspectColumns(table);
   }
 
+  // SQLite is local — no per-table round-trip cost — so the "batched"
+  // introspection is just an in-process loop over the same PRAGMA call. A table
+  // that does NOT exist must yield NO map entry, so callers can use "present in
+  // the map" as "physically exists" (matching the Postgres path, where
+  // information_schema simply omits absent tables). `PRAGMA table_info` returns
+  // an EMPTY result — not an error — for a missing table, so an empty column
+  // list is treated as "absent" and skipped. Every real SQL table has at least
+  // one column, so an empty list never means a real, columnless table.
+  // eslint-disable-next-line @typescript-eslint/require-await -- SQLite is sync; async surface kept for Postgres parity (see block comment above)
+  async introspectAllColumns(tables: string[]): Promise<Map<string, Set<string>>> {
+    const map = new Map<string, Set<string>>();
+    for (const t of tables) {
+      try {
+        const cols = this.introspectColumns(t);
+        if (cols.length > 0) map.set(t, new Set(cols));
+      } catch {
+        /* absent */
+      }
+    }
+    return map;
+  }
+
   // eslint-disable-next-line @typescript-eslint/require-await -- SQLite is sync; async surface kept for Postgres parity (see block comment above)
   async addColumnAsync(table: string, column: string, typeSpec: string): Promise<void> {
     this.addColumn(table, column, typeSpec);

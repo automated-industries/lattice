@@ -176,22 +176,47 @@ export class SchemaManager {
   /**
    * Apply schema: create missing tables, add missing columns.
    * Never drops tables or columns.
+   *
+   * When `preCols` is supplied (a table → column-set map from one whole-schema
+   * introspection), it is used to skip the per-table existence check and the
+   * per-table column-introspection round-trip: a table already present in the
+   * map needs no `CREATE TABLE` (the emitted DDL stays `CREATE TABLE IF NOT
+   * EXISTS` as belt-and-suspenders for when we do emit it), and missing-column
+   * diffing happens against the map instead of a fresh introspection. Omitting
+   * `preCols` preserves the prior per-table behavior exactly (back-compat for
+   * `applySchemaForAsync` and any non-batched caller).
+   *
+   * Returns whether any CREATE TABLE or ADD COLUMN DDL was emitted — a
+   * converged DB returns `false`, letting the boot path skip a redundant
+   * re-introspection.
    */
-  async applySchema(adapter: StorageAdapter): Promise<void> {
+  async applySchema(adapter: StorageAdapter, preCols?: Map<string, Set<string>>): Promise<boolean> {
+    let mutated = false;
     for (const name of this._tables.keys()) {
-      await this._applyOneTable(adapter, name);
+      if (await this._applyOneTable(adapter, name, preCols)) mutated = true;
     }
     // Internal migrations tracking table — uses TEXT version for both numeric
     // and string-based version identifiers (e.g. "1", "pkg:1.0.0").
-    await this._ensureTable(adapter, '__lattice_migrations', {
-      version: 'TEXT PRIMARY KEY',
-      applied_at: 'TEXT NOT NULL',
-    });
+    if (
+      await this._ensureTable(
+        adapter,
+        '__lattice_migrations',
+        {
+          version: 'TEXT PRIMARY KEY',
+          applied_at: 'TEXT NOT NULL',
+        },
+        undefined,
+        preCols,
+      )
+    ) {
+      mutated = true;
+    }
     // Per-viewer enrichment: column audiences (`this._columnAudience`) drive a
     // generated per-column cell-masking VIEW. That generation runs cloud-side as
     // part of the RLS setup (`enableAudienceView`, alongside `enableRlsForTable`),
     // not here — local SQLite has no RLS/views to mask. A table with only
     // row-audience columns (the default) generates nothing.
+    return mutated;
   }
 
   /**
@@ -230,9 +255,13 @@ export class SchemaManager {
     });
   }
 
-  private async _applyOneTable(adapter: StorageAdapter, name: string): Promise<void> {
+  private async _applyOneTable(
+    adapter: StorageAdapter,
+    name: string,
+    preCols?: Map<string, Set<string>>,
+  ): Promise<boolean> {
     const def = this._tables.get(name);
-    if (!def) return;
+    if (!def) return false;
     // For composite primary keys, inject a PRIMARY KEY(...) table constraint
     // if the caller hasn't already provided one.
     const pkCols = this._tablePK.get(name) ?? ['id'];
@@ -243,11 +272,12 @@ export class SchemaManager {
         constraints.unshift(`PRIMARY KEY (${pkCols.map((c) => `"${c}"`).join(', ')})`);
       }
     }
-    await this._ensureTable(
+    return this._ensureTable(
       adapter,
       name,
       def.columns,
       constraints.length ? constraints : undefined,
+      preCols,
     );
   }
 
@@ -396,35 +426,52 @@ export class SchemaManager {
     name: string,
     columns: Record<string, string>,
     tableConstraints?: string[],
-  ): Promise<void> {
+    preCols?: Map<string, Set<string>>,
+  ): Promise<boolean> {
+    let mutated = false;
     // Last-line defense: identifiers reach a SQL string here regardless of
     // caller, so reject any table/column name that could break out of the
     // double-quote quoting (see src/schema/identifier.ts).
     assertSafeIdentifier(name, 'table');
-    const colDefs = Object.entries(columns)
-      .map(([col, type]) => `"${assertSafeIdentifier(col, 'column')}" ${type}`)
-      .join(', ');
-    const constraintDefs =
-      tableConstraints && tableConstraints.length > 0 ? ', ' + tableConstraints.join(', ') : '';
-    await runAsyncOrSync(
-      adapter,
-      `CREATE TABLE IF NOT EXISTS "${name}" (${colDefs}${constraintDefs})`,
-    );
-    await this._addMissingColumns(adapter, name, columns);
+    // When a pre-fetched column map says the table already exists, skip the
+    // CREATE round-trip. The emitted DDL stays `CREATE TABLE IF NOT EXISTS`
+    // for the case we DO emit it, so idempotency holds either way.
+    const existingCols = preCols?.get(name);
+    if (!preCols?.has(name)) {
+      const colDefs = Object.entries(columns)
+        .map(([col, type]) => `"${assertSafeIdentifier(col, 'column')}" ${type}`)
+        .join(', ');
+      const constraintDefs =
+        tableConstraints && tableConstraints.length > 0 ? ', ' + tableConstraints.join(', ') : '';
+      await runAsyncOrSync(
+        adapter,
+        `CREATE TABLE IF NOT EXISTS "${name}" (${colDefs}${constraintDefs})`,
+      );
+      mutated = true;
+    }
+    if (await this._addMissingColumns(adapter, name, columns, existingCols)) mutated = true;
+    return mutated;
   }
 
   private async _addMissingColumns(
     adapter: StorageAdapter,
     table: string,
     columns: Record<string, string>,
-  ): Promise<void> {
-    const existing = await introspectColumnsAsyncOrSync(adapter, table);
+    existingCols?: Set<string>,
+  ): Promise<boolean> {
+    // When the caller supplied the existing column set (from the whole-schema
+    // pre-introspection), diff against it instead of paying a per-table
+    // introspection round-trip. Otherwise fall back to the per-table read.
+    const existing = existingCols ?? new Set(await introspectColumnsAsyncOrSync(adapter, table));
+    let mutated = false;
     for (const [col, type] of Object.entries(columns)) {
-      if (existing.includes(col)) continue;
+      if (existing.has(col)) continue;
       assertSafeIdentifier(col, 'column');
       // Adapter handles dialect-specific quirks (SQLite non-constant default
       // workarounds, Postgres native DEFAULT NOW(), PK skip, etc.).
       await addColumnAsyncOrSync(adapter, table, col, type);
+      mutated = true;
     }
+    return mutated;
   }
 }

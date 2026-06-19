@@ -89,6 +89,16 @@ export interface StorageAdapter {
   allAsync?(sql: string, params?: unknown[]): Promise<Row[]>;
   /** Async equivalent of introspectColumns(). Used by the boot-path schema apply. */
   introspectColumnsAsync?(table: string): Promise<string[]>;
+  /**
+   * Introspect columns for MANY tables in one shot (one query on Postgres).
+   *
+   * Collapses the per-table `information_schema` round-trips the boot path
+   * would otherwise issue into a single whole-schema query. Implementations
+   * MUST throw on query failure rather than return a partial/empty map — a
+   * degraded read that silently yields an empty map would make the caller
+   * believe every table is missing.
+   */
+  introspectAllColumns?(tables: string[]): Promise<Map<string, Set<string>>>;
   /** Async equivalent of addColumn(). Used by the boot-path schema apply. */
   addColumnAsync?(table: string, column: string, typeSpec: string): Promise<void>;
   /**
@@ -182,6 +192,27 @@ export async function introspectColumnsAsyncOrSync(
   return adapter.introspectColumnsAsync
     ? adapter.introspectColumnsAsync(table)
     : adapter.introspectColumns(table);
+}
+
+export async function introspectAllColumnsAsyncOrSync(
+  adapter: StorageAdapter,
+  tables: string[],
+): Promise<Map<string, Set<string>>> {
+  if (adapter.introspectAllColumns) return adapter.introspectAllColumns(tables);
+  const out = new Map<string, Set<string>>();
+  for (const t of tables) {
+    try {
+      // A table key in the map means "physically exists" — so an empty column
+      // list (e.g. SQLite's `PRAGMA table_info` returns no rows, not an error,
+      // for a missing table) is treated as absent and skipped, never recorded
+      // as an existing-but-columnless table.
+      const cols = await introspectColumnsAsyncOrSync(adapter, t);
+      if (cols.length > 0) out.set(t, new Set(cols));
+    } catch {
+      /* absent/invisible */
+    }
+  }
+  return out;
 }
 
 export async function addColumnAsyncOrSync(

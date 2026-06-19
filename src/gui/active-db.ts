@@ -93,6 +93,17 @@ export interface ActiveDb {
    * the user gets a specific, actionable message instead of a partial converge.
    */
   convergeWarnings: { table: string; reason: string }[];
+  /**
+   * Resolves when the owner-side cloud convergence (RLS / grants / native-entity
+   * adopt / schema publish) has finished. On a GUI open this convergence runs in
+   * the BACKGROUND so the workspace switch returns immediately (the owner is
+   * BYPASSRLS, so its own reads/writes/render never depend on convergence — that
+   * work is for members joining later + cross-release self-heal). The promise
+   * NEVER rejects: a failure is surfaced into {@link convergeWarnings} + logged,
+   * not thrown (it runs unawaited). Callers that need a fully-converged cloud
+   * before asserting (tests) `await active.converged`; the GUI ignores it.
+   */
+  converged: Promise<void>;
   /** Original db: connection string from the YAML, used to spin up the broker. */
   dbPath: string;
   /**

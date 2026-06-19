@@ -50,6 +50,7 @@ import {
   runAsyncOrSync,
   getAsyncOrSync,
   introspectColumnsAsyncOrSync,
+  introspectAllColumnsAsyncOrSync,
   addColumnAsyncOrSync,
 } from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
@@ -565,19 +566,25 @@ export class Lattice {
       // and RLS policy. This role can't DDL, so issue none — just introspect the
       // declared tables to seed the column cache (skip any this member can't see)
       // and finalize encryption. No migrations, FTS, changelog, or embeddings.
-      for (const tableName of this._schema.getTables().keys()) {
-        try {
-          const cols = await introspectColumnsAsyncOrSync(this._adapter, tableName);
-          this._columnCache.set(tableName, new Set(cols));
-        } catch {
-          // Table absent or not visible to this member — leave it uncached.
-        }
+      // One whole-schema introspection instead of a round-trip per table; a
+      // table absent from the map is one the member can't see, so it stays
+      // uncached — same semantics as the prior per-table try/catch-skip.
+      const declared = [...this._schema.getTables().keys()];
+      const preMap = await introspectAllColumnsAsyncOrSync(this._adapter, declared);
+      for (const tableName of declared) {
+        const cols = preMap.get(tableName);
+        if (cols) this._columnCache.set(tableName, cols);
       }
       await this._encryption.finalizeSetup();
       this._initialized = true;
       return;
     }
-    await this._schema.applySchema(this._adapter);
+    // One whole-schema introspection up front (one query on Postgres vs. a
+    // round-trip per declared table) feeds applySchema's create-only-missing
+    // diff so a converged DB issues no per-table DDL or introspection.
+    const declared = [...this._schema.getTables().keys()];
+    const preMap = await introspectAllColumnsAsyncOrSync(this._adapter, declared);
+    const mutated = await this._schema.applySchema(this._adapter, preMap);
     if (options.migrations?.length) {
       // applyMigrationsAsync uses adapter.withClient when available
       // (Postgres path acquires pg_advisory_xact_lock for concurrent-boot
@@ -587,10 +594,20 @@ export class Lattice {
     }
     // Snapshot actual columns post-migration: schema state only includes declared
     // columns, so migration-added columns would be stripped by _filterToSchemaColumns
-    // without this introspection-based cache.
-    for (const tableName of this._schema.getTables().keys()) {
-      const cols = await introspectColumnsAsyncOrSync(this._adapter, tableName);
-      this._columnCache.set(tableName, new Set(cols));
+    // without this introspection-based cache. When applySchema changed nothing AND
+    // no migrations ran, the DB is exactly what preMap already described — reuse it
+    // instead of paying the introspection again. Otherwise re-fetch the true state.
+    if (!mutated && !options.migrations?.length) {
+      for (const tableName of declared) {
+        const cols = preMap.get(tableName);
+        if (cols) this._columnCache.set(tableName, cols);
+      }
+    } else {
+      const postMap = await introspectAllColumnsAsyncOrSync(this._adapter, declared);
+      for (const tableName of declared) {
+        const cols = postMap.get(tableName);
+        if (cols) this._columnCache.set(tableName, cols);
+      }
     }
 
     // Resolve encrypted columns (needs introspectColumns to see post-migration schema)

@@ -330,74 +330,21 @@ export async function openConfig(
   // every open just upserts the single 'singleton' row.
   await syncUserIdentityRow(db);
 
-  // Owner-side maintenance — SKIP on a cloud MEMBER open. Both write DDL/rows in
-  // the schema (create native tables / soft-delete legacy secrets); a scoped
-  // member has no such grant (the bootstrap REVOKEs CREATE from PUBLIC), so
-  // running them would fail the open with "permission denied for schema public".
-  // The member's tables are already registered via discoverCloudTables above.
+  // Inline owner-data migration — SKIP on a cloud MEMBER open (a scoped member has
+  // no DDL/write grant; the bootstrap REVOKEs CREATE from PUBLIC). KEPT INLINE (not
+  // backgrounded with the rest of the convergence) because the OWNER reads this data
+  // the instant the switch returns: a legacy `deleted_at=''` row would otherwise read
+  // as deleted — and dup on a natural-key upsert — until it ran. It is once-per-DB
+  // sentinel-gated, so steady-state cost is ~one round-trip.
   if (!memberOpen) {
-    // Reconcile + record native-entity bindings (files, secrets). Labels a
-    // pre-existing files/secrets table as THE native object (merging the native
-    // column superset, non-destructively) rather than duplicating it, and
-    // guarantees the tables exist on freshly created DBs.
-    await adoptNativeEntities(db);
-    // Retire legacy per-workspace preference rows (voice provider + inference
-    // aggressiveness) older builds stored in `secrets`. They're machine-local
-    // preferences now, so soft-delete leftovers. Idempotent.
-    await retireLegacyPreferenceSecrets(db);
-    // Silently migrate 3.x row DATA forward to the 4.0 shape (normalize legacy
-    // deleted_at='' → NULL; backfill files.path → a local_ref). Once-per-DB via
-    // internal:upgrade:* sentinels; no-op on a 4.0-native DB. Owner/local only —
-    // a cloud member lacks the grants (this block is already member-skipped).
     await upgradeLegacyData(db);
   }
 
-  // Tables the open-time converge couldn't manage (e.g. owned by a different
-  // Postgres role), surfaced to the client via /api/dbconfig so the user sees a
-  // specific, actionable message instead of a silent partial converge.
-  let convergeWarnings: { table: string; reason: string }[] = [];
-  // Cloud OWNER open: converge the idempotent cloud bootstrap (RLS objects +
-  // settings + observation substrate) so objects ADDED to the bootstrap in a
-  // later release reach clouds already stamped at an earlier version — the class
-  // of bug where __lattice_member_invites never reached existing clouds and a
-  // version-gated `secure` no-op'd. Pure CREATE … IF NOT EXISTS / CREATE OR
-  // REPLACE — cheap, no row scans. The EXPENSIVE per-table ownership/RLS backfill
-  // stays gated in secureCloud (internal guideline — no whole-table scans on open).
-  if (db.getDialect() === 'postgres' && !memberOpen) {
-    try {
-      if ((await cloudRlsInstalled(db)) && (await canManageRoles(db))) {
-        // Ensure the SQLite-compat polyfills exist, created by the OWNER (who has
-        // CREATE) — so an already-secured cloud whose revoke ran before they were
-        // ever created gets them now, before any member connects. Idempotent.
-        await registerPostgresPolyfills((sql) => runAsyncOrSync(db.adapter, sql));
-        await installCloudRls(db);
-        await ownPolyfillsByGroup(db); // group-own polyfills so any member can upgrade them
-        await installCloudSettings(db);
-        await db.ensureObservationSubstrate();
-        await enableChangelogRls(db); // converges the v3 fail-closed changelog policy
-        await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables (fail-closed on NULL owner)
-        await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log (raw row data) — row_id IS NULL OR lattice_row_visible
-        // Converge per-table member access (ungated, no row scans): force the
-        // private-only conversation/secret tables to never_share, and re-issue
-        // member grants the version-gated per-table securing won't re-emit after
-        // a grant-dropping restore. Keeps "shows as shared" == "is readable".
-        // Per-table fault-isolated: a table this role can't manage (e.g. owned
-        // by a different role) is skipped + reported, never aborting the rest.
-        const access = await reconcileCloudMemberAccess(db);
-        convergeWarnings = access.skipped;
-        for (const s of convergeWarnings) {
-          console.warn(`[openConfig] cloud converge could not manage "${s.table}": ${s.reason}`);
-        }
-        // Republish the owner's current entity/render layout so a joined member can
-        // hydrate the full context tree from it (members-readable singleton).
-        await publishSharedSchema(db, configPath);
-      }
-    } catch (e) {
-      // internal guideline: never silently swallow. A converge failure must be visible, but
-      // shouldn't crash the GUI — the owner can still work; `secure` re-runs it.
-      console.error('[openConfig] cloud bootstrap converge failed:', (e as Error).message);
-    }
-  }
+  // Tables the owner-side converge couldn't manage (e.g. owned by a different
+  // Postgres role), surfaced via /api/dbconfig. Populated ASYNCHRONOUSLY by
+  // convergeOwnerCloud (kicked after the ActiveDb is built) and mutated IN PLACE,
+  // so the live ActiveDb reflects warnings as they land (eventually-consistent).
+  const convergeWarnings: { table: string; reason: string }[] = [];
 
   // Cloud MEMBER open with no entity layout: the owner hasn't published one yet
   // (hydrateMemberConfigFromCloud above found nothing, and the catalog synthesis
@@ -527,7 +474,7 @@ export async function openConfig(
     ? createFileLoopbackWatcher({ db, feed, softDeletable, outputDir })
     : null;
 
-  return {
+  const active: ActiveDb = {
     configPath,
     outputDir,
     db,
@@ -540,6 +487,7 @@ export async function openConfig(
     feed,
     fileWatcher,
     convergeWarnings,
+    converged: Promise.resolve(),
     dbPath: parsed.dbPath,
     autoRender,
     renderProgress: new RenderProgressBus(),
@@ -549,6 +497,91 @@ export async function openConfig(
     onColumnsAdded: columnDescriptionHook(db),
     generateTableDescription: tableDescriptionHook(db),
   };
+
+  // Owner-side convergence (native-entity adopt + the cloud RLS/grant/settings/
+  // publish bootstrap) runs in the BACKGROUND, off the switch's critical path:
+  // openConfig must return a usable ActiveDb instantly (it runs before disposeActive
+  // on every switch), and the owner is BYPASSRLS so its own reads/writes/render
+  // never depend on this work — it converges the cloud FOR members joining later +
+  // self-heals objects added in later releases. The promise is exposed as
+  // `active.converged` (tests await it; the GUI ignores it) and NEVER rejects —
+  // convergeOwnerCloud surfaces any failure into `active.convergeWarnings` + the log.
+  // SKIP on a cloud MEMBER open (no DDL/grant rights).
+  if (!memberOpen) {
+    active.converged = convergeOwnerCloud(active);
+  }
+  return active;
+}
+
+/**
+ * Owner-side cloud convergence, run in the background by {@link openConfig}: reconcile
+ * native entities, then (Postgres owner) converge the idempotent cloud bootstrap —
+ * RLS objects, settings, observation substrate, per-viewer changelog/chat/audit RLS,
+ * per-table member grants, and the published shared schema — so objects added in a
+ * later release reach already-stamped clouds and a member joining later sees a fully
+ * secured + granted cloud. NONE of this gates the OWNER's own usability (BYPASSRLS).
+ *
+ * Idempotent + fault-isolated. NEVER throws: it is awaited only by tests (via
+ * `active.converged`); in the GUI it runs unawaited, so a rejection would be an
+ * unhandledRejection. A failure is surfaced LOUDLY but non-fatally — pushed into
+ * `active.convergeWarnings` (shown via /api/dbconfig) and logged — and re-runs on the
+ * next owner open.
+ */
+export async function convergeOwnerCloud(active: ActiveDb): Promise<void> {
+  const { db, configPath, convergeWarnings } = active;
+  // The workspace was torn down (switched away / closed) before this background
+  // converge ran or between its phases. disposeActive aborts `renderAbort` BEFORE
+  // closing the db, so this signal is the "workspace is going away" cancel: bail
+  // quietly — the converge didn't fail, it was cancelled, and re-runs on next open.
+  const cancelled = (): boolean => active.renderAbort.signal.aborted;
+  try {
+    if (cancelled()) return;
+    // Reconcile native-entity bindings (files/secrets): merge the native column
+    // superset into a pre-existing table non-destructively. db.init already creates
+    // the native tables (registered entities), so for a normal cloud this is a no-op
+    // reconcile — safe to run after the switch returns.
+    await adoptNativeEntities(db);
+    // Soft-delete leftover legacy per-workspace preference rows. Idempotent.
+    await retireLegacyPreferenceSecrets(db);
+    if (cancelled()) return;
+    if (db.getDialect() === 'postgres') {
+      if ((await cloudRlsInstalled(db)) && (await canManageRoles(db))) {
+        await registerPostgresPolyfills((sql) => runAsyncOrSync(db.adapter, sql));
+        await installCloudRls(db);
+        await ownPolyfillsByGroup(db); // group-own polyfills so any member can upgrade them
+        await installCloudSettings(db);
+        await db.ensureObservationSubstrate();
+        await enableChangelogRls(db); // v3 fail-closed changelog policy
+        await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables
+        await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log
+        if (cancelled()) return;
+        const access = await reconcileCloudMemberAccess(db);
+        for (const s of access.skipped) {
+          convergeWarnings.push(s); // mutate IN PLACE — the live ActiveDb sees it
+          console.warn(
+            `[convergeOwnerCloud] cloud converge could not manage "${s.table}": ${s.reason}`,
+          );
+        }
+        // Republish the owner's entity/render layout so a joined member can hydrate
+        // the full context tree from it (members-readable singleton).
+        await publishSharedSchema(db, configPath);
+      }
+    }
+  } catch (e) {
+    // A db-call rejecting because the workspace was disposed mid-converge is a benign
+    // cancel, not a failure — stay quiet (the converge re-runs on the next open).
+    if (cancelled()) return;
+    // A genuine convergence failure: loud but non-fatal (never silent). The owner can
+    // work regardless, and the next open re-runs the idempotent converge. Surface via
+    // the warnings array (visible on /api/dbconfig) + the log. Do NOT rethrow — this
+    // runs unawaited in the GUI, so a throw would be an unhandledRejection.
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[convergeOwnerCloud] owner-side convergence failed:', msg);
+    convergeWarnings.push({
+      table: '(converge)',
+      reason: `Cloud convergence failed (the owner can still work; it retries on the next open): ${msg}`,
+    });
+  }
 }
 
 /**
