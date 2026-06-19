@@ -2,6 +2,7 @@ import type { StorageAdapter } from '../db/adapter.js';
 import { getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import { pageClause } from '../schema/manager.js';
 import type { PageOptions } from '../schema/manager.js';
+import { assertSafeIdentifier } from '../schema/identifier.js';
 import type {
   Row,
   QueryOptions,
@@ -52,6 +53,18 @@ export function collectFilterCols(filters: FilterExpr[] | undefined): string[] {
     else out.push(...collectFilterCols(f.and));
   }
   return out;
+}
+
+/**
+ * Grammar-guard a dynamic identifier (column, alias, or ORDER/GROUP key) before
+ * it is interpolated into a SQL string. Throws on anything outside the bare SQL
+ * identifier grammar. This is the UNCONDITIONAL floor: unlike the column-cache
+ * check (which passes an unregistered table straight through), it always runs —
+ * so every dynamic identifier, on registered AND unregistered tables alike, is
+ * constrained before it can reach a SQL string.
+ */
+function ident(name: string): string {
+  return assertSafeIdentifier(name, 'column');
 }
 
 /**
@@ -138,7 +151,7 @@ export class QueryCore {
     ]);
     if (colErr) return colErr;
 
-    const selectList = projectionCols ? projectionCols.map((c) => `"${c}"`).join(', ') : '*';
+    const selectList = projectionCols ? projectionCols.map((c) => `"${ident(c)}"`).join(', ') : '*';
     let sql = `SELECT ${selectList} FROM "${table}"`;
     const params: unknown[] = [];
     const whereClauses: string[] = [];
@@ -146,7 +159,7 @@ export class QueryCore {
     // Equality where (backward compat shorthand)
     if (opts.where && Object.keys(opts.where).length > 0) {
       for (const [col, val] of Object.entries(opts.where)) {
-        whereClauses.push(`"${col}" = ?`);
+        whereClauses.push(`"${ident(col)}" = ?`);
         params.push(val);
       }
     }
@@ -163,7 +176,7 @@ export class QueryCore {
     }
     if (opts.orderBy) {
       const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
-      sql += ` ORDER BY "${opts.orderBy}" ${dir}`;
+      sql += ` ORDER BY "${ident(opts.orderBy)}" ${dir}`;
     }
 
     // Bounded-read: when no explicit limit is given but a maxRows cap applies,
@@ -220,7 +233,7 @@ export class QueryCore {
     const params: unknown[] = [];
     if (where && Object.keys(where).length > 0) {
       for (const [c, v] of Object.entries(where)) {
-        clauses.push(`"${c}" = ?`);
+        clauses.push(`"${ident(c)}" = ?`);
         params.push(v);
       }
     }
@@ -257,11 +270,11 @@ export class QueryCore {
     const pkCol = [...this.ensureColumnCache(table)].includes('id')
       ? 'id'
       : (distinctCols[0] ?? 'id');
-    const tieCol = opts.orderBy ?? pkCol;
-    const selectList = projectionCols ? projectionCols.map((c) => `"${c}"`).join(', ') : '*';
+    const tieCol = ident(opts.orderBy ?? pkCol);
+    const selectList = projectionCols ? projectionCols.map((c) => `"${ident(c)}"`).join(', ') : '*';
     const { clauses, params } = this.composeWhere(opts.where, opts.filters);
     const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const distinctList = distinctCols.map((c) => `"${c}"`).join(', ');
+    const distinctList = distinctCols.map((c) => `"${ident(c)}"`).join(', ');
 
     let rows: Row[];
     if (this.adapter.dialect === 'postgres') {
@@ -275,7 +288,7 @@ export class QueryCore {
         `SELECT *, ROW_NUMBER() OVER (PARTITION BY ${distinctList} ORDER BY "${tieCol}" ${dir}) AS __rn ` +
         `FROM "${table}"${whereSql}`;
       let sql = `SELECT ${selectList} FROM (${inner}) WHERE __rn = 1`;
-      if (opts.orderBy) sql += ` ORDER BY "${opts.orderBy}" ${dir}`;
+      if (opts.orderBy) sql += ` ORDER BY "${ident(opts.orderBy)}" ${dir}`;
       if (opts.limit !== undefined) sql += ` LIMIT ${opts.limit.toString()}`;
       rows = await allAsyncOrSync(this.adapter, sql, params);
       // Strip the helper column when SELECT * surfaced it.
@@ -314,16 +327,18 @@ export class QueryCore {
     if (opts.cursor) {
       const cur = decodeCursor(opts.cursor);
       // (orderBy cmp ?) OR (orderBy = ? AND pk cmp ?) — total order via the pk tiebreak.
-      clauses.push(`("${orderBy}" ${cmp} ? OR ("${orderBy}" = ? AND "${pkColumn}" ${cmp} ?))`);
+      clauses.push(
+        `("${ident(orderBy)}" ${cmp} ? OR ("${ident(orderBy)}" = ? AND "${ident(pkColumn)}" ${cmp} ?))`,
+      );
       params.push(cur.o, cur.o, cur.p);
     }
 
     const selectList = projectionCols
-      ? [...new Set([...projectionCols, orderBy, pkColumn])].map((c) => `"${c}"`).join(', ')
+      ? [...new Set([...projectionCols, orderBy, pkColumn])].map((c) => `"${ident(c)}"`).join(', ')
       : '*';
     let sql = `SELECT ${selectList} FROM "${table}"`;
     if (clauses.length > 0) sql += ` WHERE ${clauses.join(' AND ')}`;
-    sql += ` ORDER BY "${orderBy}" ${dir}, "${pkColumn}" ${dir} LIMIT ${(limit + 1).toString()}`;
+    sql += ` ORDER BY "${ident(orderBy)}" ${dir}, "${ident(pkColumn)}" ${dir} LIMIT ${(limit + 1).toString()}`;
 
     const rows = await allAsyncOrSync(this.adapter, sql, params);
     const hasMore = rows.length > limit;
@@ -351,7 +366,7 @@ export class QueryCore {
 
     if (opts.where && Object.keys(opts.where).length > 0) {
       for (const [col, val] of Object.entries(opts.where)) {
-        whereClauses.push(`"${col}" = ?`);
+        whereClauses.push(`"${ident(col)}" = ?`);
         params.push(val);
       }
     }
@@ -371,6 +386,7 @@ export class QueryCore {
   }
 
   async get(table: string, id: PkLookup): Promise<Row | null> {
+    this.assertIdent(table);
     const { clause, params } = this.pkWhere(table, id);
     const row =
       (await getAsyncOrSync(this.adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
@@ -383,10 +399,11 @@ export class QueryCore {
    * Works on any table, not just defined ones.
    */
   async getActive(table: string, orderBy = 'name', opts: PageOptions = {}): Promise<Row[]> {
+    this.assertIdent(table);
     const cols = this.ensureColumnCache(table);
     const hasDeletedAt = cols.has('deleted_at');
     const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
-    const order = cols.has(orderBy) ? ` ORDER BY "${orderBy}"` : '';
+    const order = cols.has(orderBy) ? ` ORDER BY "${ident(orderBy)}"` : '';
     const page = pageClause(opts);
     return allAsyncOrSync(
       this.adapter,
@@ -399,6 +416,7 @@ export class QueryCore {
    * Count non-deleted rows in a table.
    */
   async countActive(table: string): Promise<number> {
+    this.assertIdent(table);
     const cols = this.ensureColumnCache(table);
     const hasDeletedAt = cols.has('deleted_at');
     const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
@@ -424,7 +442,7 @@ export class QueryCore {
     return (
       (await getAsyncOrSync(
         this.adapter,
-        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
+        `SELECT * FROM "${table}" WHERE "${ident(naturalKeyCol)}" = ? AND deleted_at IS NULL`,
         [naturalKeyVal],
       )) ?? null
     );
@@ -477,54 +495,67 @@ export class QueryCore {
     return { sql: `(${parts.join(` ${joiner} `)})`, params };
   }
 
-  /** The column reference for a clause, applying jsonPath extraction if present. */
-  private columnRef(f: Filter): string {
-    if (f.jsonPath === undefined) return `"${f.col}"`;
+  /**
+   * The column reference for a clause, applying jsonPath extraction if present,
+   * plus any bound parameters the reference introduces.
+   *
+   * The base column is grammar-guarded ({@link ident}). The jsonPath, by
+   * contrast, is a VALUE (a user-supplied path), not an identifier, so it is
+   * never interpolated — it is bound as a parameter (Postgres `#>> $n::text[]`,
+   * SQLite `json_extract(col, ?)`). That makes a hostile path segment inert: it
+   * cannot break out of a string literal, on either dialect.
+   */
+  private columnRef(f: Filter): { sql: string; params: unknown[] } {
+    const col = `"${ident(f.col)}"`;
+    if (f.jsonPath === undefined) return { sql: col, params: [] };
     const path = Array.isArray(f.jsonPath) ? f.jsonPath : [f.jsonPath];
     // A numeric comparison needs a numeric-typed extraction so it isn't compared
     // lexicographically: Postgres `#>>` always yields text, and casting keeps the
     // two dialects' jsonPath comparisons identical.
     const numeric = isNumericComparison(f);
     if (this.adapter.dialect === 'postgres') {
-      const pathLit = `{${path.join(',')}}`;
-      const extract = `("${f.col}" #>> '${pathLit}')`;
-      return numeric ? `(${extract})::numeric` : extract;
+      // Bind the path as a text[] parameter rather than building a `'{a,b}'`
+      // literal by string-join — the parameter cannot be SQL-injected.
+      const extract = `(${col} #>> ?::text[])`;
+      const sql = numeric ? `(${extract})::numeric` : extract;
+      return { sql, params: [path] };
     }
-    // SQLite json_extract(col, '$.a.b') — already returns typed JSON values; the
-    // explicit REAL cast keeps numeric comparisons consistent with Postgres.
+    // SQLite json_extract(col, '$.a.b') — bind the JSONPath string as a parameter.
+    // The explicit REAL cast keeps numeric comparisons consistent with Postgres.
     const jsonpath = `$.${path.join('.')}`;
-    const extract = `json_extract("${f.col}", '${jsonpath}')`;
-    return numeric ? `CAST(${extract} AS REAL)` : extract;
+    const extract = `json_extract(${col}, ?)`;
+    const sql = numeric ? `CAST(${extract} AS REAL)` : extract;
+    return { sql, params: [jsonpath] };
   }
 
   private buildClause(f: Filter): { sql: string; params: unknown[] } | null {
-    const col = this.columnRef(f);
+    const { sql: col, params: cp } = this.columnRef(f);
     switch (f.op) {
       case 'eq':
-        return { sql: `${col} = ?`, params: [f.val] };
+        return { sql: `${col} = ?`, params: [...cp, f.val] };
       case 'ne':
-        return { sql: `${col} != ?`, params: [f.val] };
+        return { sql: `${col} != ?`, params: [...cp, f.val] };
       case 'gt':
-        return { sql: `${col} > ?`, params: [f.val] };
+        return { sql: `${col} > ?`, params: [...cp, f.val] };
       case 'gte':
-        return { sql: `${col} >= ?`, params: [f.val] };
+        return { sql: `${col} >= ?`, params: [...cp, f.val] };
       case 'lt':
-        return { sql: `${col} < ?`, params: [f.val] };
+        return { sql: `${col} < ?`, params: [...cp, f.val] };
       case 'lte':
-        return { sql: `${col} <= ?`, params: [f.val] };
+        return { sql: `${col} <= ?`, params: [...cp, f.val] };
       case 'like':
-        return { sql: `${col} LIKE ?`, params: [f.val] };
+        return { sql: `${col} LIKE ?`, params: [...cp, f.val] };
       case 'in': {
         const list = f.val as unknown[];
         if (Array.isArray(list) && list.length > 0) {
-          return { sql: `${col} IN (${list.map(() => '?').join(', ')})`, params: [...list] };
+          return { sql: `${col} IN (${list.map(() => '?').join(', ')})`, params: [...cp, ...list] };
         }
         return null;
       }
       case 'isNull':
-        return { sql: `${col} IS NULL`, params: [] };
+        return { sql: `${col} IS NULL`, params: [...cp] };
       case 'isNotNull':
-        return { sql: `${col} IS NOT NULL`, params: [] };
+        return { sql: `${col} IS NOT NULL`, params: [...cp] };
     }
   }
 
@@ -551,8 +582,8 @@ export class QueryCore {
     if (colErr) return colErr;
 
     const selectParts: string[] = [];
-    for (const g of opts.groupBy ?? []) selectParts.push(`"${g}"`);
-    for (const a of opts.aggregates) selectParts.push(`${aggExpr(a)} AS "${a.as}"`);
+    for (const g of opts.groupBy ?? []) selectParts.push(`"${ident(g)}"`);
+    for (const a of opts.aggregates) selectParts.push(`${aggExpr(a)} AS "${ident(a.as)}"`);
 
     let sql = `SELECT ${selectParts.join(', ')} FROM "${table}"`;
     const params: unknown[] = [];
@@ -570,7 +601,7 @@ export class QueryCore {
     }
     if (whereClauses.length > 0) sql += ` WHERE ${whereClauses.join(' AND ')}`;
     if (opts.groupBy && opts.groupBy.length > 0) {
-      sql += ` GROUP BY ${opts.groupBy.map((g) => `"${g}"`).join(', ')}`;
+      sql += ` GROUP BY ${opts.groupBy.map((g) => `"${ident(g)}"`).join(', ')}`;
     }
     if (opts.having && opts.having.length > 0) {
       // HAVING must reference the aggregate EXPRESSION, not its SELECT alias —
@@ -595,7 +626,7 @@ export class QueryCore {
     }
     if (opts.orderBy) {
       const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
-      sql += ` ORDER BY "${opts.orderBy}" ${dir}`;
+      sql += ` ORDER BY "${ident(opts.orderBy)}" ${dir}`;
     }
     if (opts.limit !== undefined) sql += ` LIMIT ${opts.limit.toString()}`;
 
@@ -636,11 +667,21 @@ function isNumericComparison(f: Filter): boolean {
   return typeof f.val === 'number';
 }
 
-/** Build the SQL aggregate expression for a spec (validated columns only). */
+/** The only aggregate functions that may be interpolated as a SQL keyword. */
+const AGGREGATE_FUNCTIONS = new Set(['COUNT', 'SUM', 'AVG', 'MIN', 'MAX']);
+
+/** Build the SQL aggregate expression for a spec (whitelisted fn, guarded col). */
 function aggExpr(a: AggregateSpec): string {
   const fn = a.fn.toUpperCase();
-  if (a.fn === 'count' && !a.col) return 'COUNT(*)';
-  const inner = a.col ? `"${a.col}"` : '*';
+  // The function name is interpolated as a bare keyword, so it must be a known
+  // aggregate — never caller-supplied text (which would otherwise inject SQL).
+  if (!AGGREGATE_FUNCTIONS.has(fn)) {
+    throw new Error(
+      `aggregate: unsupported function ${JSON.stringify(a.fn)} — must be one of ${[...AGGREGATE_FUNCTIONS].join(', ')}`,
+    );
+  }
+  if (fn === 'COUNT' && !a.col) return 'COUNT(*)';
+  const inner = a.col ? `"${ident(a.col)}"` : '*';
   const distinct = a.distinct ? 'DISTINCT ' : '';
   return `${fn}(${distinct}${inner})`;
 }

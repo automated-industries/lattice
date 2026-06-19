@@ -30,12 +30,18 @@ import {
   introspectColumnsAsyncOrSync,
 } from '../db/adapter.js';
 import { EMBEDDINGS_TABLE } from './embeddings.js';
+import { assertSafeIdentifier } from '../schema/identifier.js';
 
 const VEC_PREFIX = '_lattice_vec_';
 
-/** Per-table native vector index name. */
+/**
+ * Per-table native vector index name. The table is grammar-guarded here because
+ * the returned name is interpolated into DDL (`CREATE TABLE "..."`, `DROP`,
+ * `INSERT`); every build/drop/search path derives the index name through this
+ * one function, so a single guard at the choke point covers them all.
+ */
 export function vectorIndexName(table: string): string {
-  return `${VEC_PREFIX}${table}`;
+  return `${VEC_PREFIX}${assertSafeIdentifier(table, 'table')}`;
 }
 
 export interface VectorHit {
@@ -114,6 +120,12 @@ export async function buildVectorIndex(
     return 0;
   }
   const idx = vectorIndexName(table);
+  // `dim` is interpolated into DDL (`vector(dim)` / `float[dim]`); coerce to a
+  // positive integer so a non-numeric value can never reach the SQL string.
+  const d = Math.trunc(dim);
+  if (!Number.isFinite(d) || d <= 0) {
+    throw new Error(`buildVectorIndex: invalid vector dimension ${JSON.stringify(dim)}`);
+  }
 
   if (adapter.dialect === 'postgres') {
     await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${idx}"`);
@@ -123,7 +135,7 @@ export async function buildVectorIndex(
          row_pk      TEXT NOT NULL,
          chunk_index INTEGER NOT NULL DEFAULT 0,
          content     TEXT,
-         embedding   vector(${String(dim)}) NOT NULL,
+         embedding   vector(${String(d)}) NOT NULL,
          PRIMARY KEY (row_pk, chunk_index)
        )`,
     );
@@ -145,7 +157,7 @@ export async function buildVectorIndex(
     await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${idx}"`);
     await runAsyncOrSync(
       adapter,
-      `CREATE VIRTUAL TABLE "${idx}" USING vec0(row_pk TEXT, chunk_index INTEGER, embedding float[${String(dim)}])`,
+      `CREATE VIRTUAL TABLE "${idx}" USING vec0(row_pk TEXT, chunk_index INTEGER, embedding float[${String(d)}])`,
     );
     const stored = await allAsyncOrSync(
       adapter,
