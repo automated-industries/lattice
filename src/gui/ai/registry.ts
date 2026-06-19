@@ -180,6 +180,22 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'create_secret',
+    description:
+      'Store a secret/credential — an API key, password, OAuth token, connection string, etc. — by name in the encrypted secrets store. Use this whenever the user gives you a credential to save or asks you to remember/store a secret. WRITE-ONLY: you can save a secret but you can NEVER read, list, echo, or retrieve existing secret values — they are hidden from you. The value is encrypted at rest.',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        name: str('A short label for the secret, e.g. "GitHub password" or "OpenAI API key".'),
+        value: str('The secret value to store.'),
+        kind: str('Optional kind, e.g. "password", "api_key", "token", "connection_string".'),
+        description: str('Optional note about what the secret is for.'),
+      },
+      ['name', 'value'],
+    ),
+  },
+  {
     name: 'create_artifact',
     description:
       'Create a markdown document and save it as a file artifact. Use this whenever the user asks you to create, write, draft, or make a document, note, write-up, summary, report, or file — you author the content as GitHub-flavored markdown and it is saved in the files entity as a markdown artifact, then opened in the viewer for them. Prefer this over create_row on files for any document the user wants to keep. It follows the same sharing rules as any file (private mode → private).',
