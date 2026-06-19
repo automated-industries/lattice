@@ -28,9 +28,13 @@ behavior-preserving except where tagged BREAKING.
   cleanly. (1) The config parser tolerates the legacy `ref:` field shorthand
   (converts it to a `belongsTo` in-memory) and `src/config/config-upgrade.ts`
   rewrites it on disk to an explicit `relations:` block. (2)
-  `src/framework/data-upgrade.ts` normalizes legacy `deleted_at = '' → NULL` (per
-  table) and backfills a legacy `files.path`-only row into a `local_ref`, each gated
-  once-per-database via `internal:upgrade:*` sentinels. (3) On a cloud owner open,
+  `src/framework/data-upgrade.ts` normalizes legacy `deleted_at = '' → NULL` and
+  backfills a legacy `files.path`-only row into a `local_ref`, each gated
+  once-per-database via `internal:upgrade:*` sentinels. The `deleted_at`
+  normalization runs as ONE server-side `DO`-block migration on Postgres (looping
+  the `deleted_at` tables in-database), not a per-table loop — a cloud with 100+
+  tables would otherwise issue one pooled transaction per table and stall the
+  workspace switch past its open timeout. (3) On a cloud owner open,
   `reconcileCloudMemberAccess` re-grants the per-cloud member group to the cloud's
   own members (scoped to its `__lattice_member_invites` registry — never the
   cluster-global legacy group). Each migration is idempotent and a no-op on a

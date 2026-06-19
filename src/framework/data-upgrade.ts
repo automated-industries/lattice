@@ -50,19 +50,40 @@ async function tablesWithDeletedAt(db: Lattice): Promise<string[]> {
  * there is nothing to do, so a clean DB doesn't re-introspect on every open.
  */
 async function normalizeEmptyDeletedAt(db: Lattice): Promise<void> {
-  // One single-statement migration per table (db.migrate rejects multi-statement
-  // SQL on the SQLite adapter), keyed per-table the same way the cloud per-table
-  // RLS migrations are. The UPDATE is itself idempotent ('' → NULL leaves an
-  // already-NULL row untouched), so even an un-stamped re-run is harmless.
-  for (const t of await tablesWithDeletedAt(db)) {
-    const q = t.replace(/"/g, '""');
+  if (db.getDialect() === 'postgres') {
+    // CRITICAL on a remote (pooled) cloud: do the WHOLE normalization in a single
+    // server-side DO block so it costs ONE migration transaction, not one per table.
+    // A per-table loop here means N pooler round-trips/transactions (a cloud with
+    // ~100+ tables stalled the workspace switch). The DO block loops the deleted_at
+    // tables and updates each in-database; one sentinel gates it once-per-DB.
     await db.migrate([
       {
-        version: `${DELETED_AT_SENTINEL}:${t}`,
-        sql: `UPDATE "${q}" SET deleted_at = NULL WHERE deleted_at = '';`,
+        version: `${DELETED_AT_SENTINEL}:all`,
+        sql: `DO $LATTICE_DAU$
+  DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT table_name FROM information_schema.columns
+     WHERE table_schema = current_schema() AND column_name = 'deleted_at'
+  LOOP
+    EXECUTE format('UPDATE %I SET deleted_at = NULL WHERE deleted_at = ''''', r.table_name);
+  END LOOP;
+END $LATTICE_DAU$;`,
       },
     ]);
+    return;
   }
+  // SQLite is local (no network/pooler cost) and its adapter rejects multi-statement
+  // migration SQL, so emit one single-statement migration per table and apply them
+  // in ONE pass (a single applyMigrations transaction). The UPDATE is idempotent.
+  const migrations = (await tablesWithDeletedAt(db)).map((t) => {
+    const q = t.replace(/"/g, '""');
+    return {
+      version: `${DELETED_AT_SENTINEL}:${t}`,
+      sql: `UPDATE "${q}" SET deleted_at = NULL WHERE deleted_at = '';`,
+    };
+  });
+  if (migrations.length > 0) await db.migrate(migrations);
 }
 
 /** Does the `files` table physically carry the legacy `path` column (3.x shape)? */
