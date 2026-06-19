@@ -111,6 +111,23 @@ import {
   ProvenanceImmutableError,
 } from './schema/governance.js';
 import type { TrustState } from './schema/governance.js';
+import {
+  addEdge,
+  addEdges,
+  removeEdge,
+  neighbors,
+  traverse,
+  extractEdgesFromColumn,
+  graphAdjacencyBoost,
+} from './search/graph.js';
+import type {
+  GraphEdge,
+  GraphNode,
+  TraversalOptions,
+  GraphTraversalResult,
+  ExtractEdgesSpec,
+  TraversalDirection,
+} from './search/graph.js';
 import { evaluateRetrieval } from './search/eval.js';
 import type {
   EvalQuery,
@@ -2121,6 +2138,97 @@ export class Lattice {
     this._assertTrust(table);
     return this._queryCore.query(table, {
       filters: [{ col: '_trust_state', op: 'eq', val: 'verified' }],
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Graph-augmented retrieval (P-GRAPH)
+  // -------------------------------------------------------------------------
+
+  /** Add (upsert) a typed edge between two rows. */
+  async addEdge(edge: GraphEdge): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    return addEdge(this._adapter, edge);
+  }
+
+  /** Add (upsert) many typed edges. */
+  async addEdges(edges: GraphEdge[]): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    return addEdges(this._adapter, edges);
+  }
+
+  /** Remove an edge (all types between the pair when `type` omitted). */
+  async removeEdge(edge: Omit<GraphEdge, 'weight' | 'type'> & { type?: string }): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    return removeEdge(this._adapter, edge);
+  }
+
+  /** Direct neighbors (one hop) of a node. */
+  async neighbors(
+    node: GraphNode,
+    opts: { direction?: TraversalDirection; edgeTypes?: string[] } = {},
+  ): Promise<GraphEdge[]> {
+    const notInit = this._notInitError<GraphEdge[]>();
+    if (notInit) return notInit;
+    return neighbors(this._adapter, node, opts);
+  }
+
+  /** Bounded BFS from a node (depth ≤ 5, node-count capped). */
+  async traverseGraph(
+    start: GraphNode,
+    opts: TraversalOptions = {},
+  ): Promise<GraphTraversalResult> {
+    const notInit = this._notInitError<GraphTraversalResult>();
+    if (notInit) return notInit;
+    return traverse(this._adapter, start, opts);
+  }
+
+  /** Zero-LLM edge extraction from a foreign-key column. Returns the edge count. */
+  async extractEdges(spec: ExtractEdgesSpec): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    return extractEdgesFromColumn(this._adapter, spec);
+  }
+
+  /**
+   * Graph-augmented hybrid search: run {@link hybridSearch}, then boost results
+   * that are graph-adjacent to the `anchors` (e.g. the user's current-context
+   * entities), so relationship-relevant rows rank higher. Returns the reranked
+   * hybrid results (the graph boost is folded into each score).
+   */
+  async graphSearch(
+    table: string,
+    query: string,
+    opts: Omit<HybridSearchOptions, 'embeddingsConfig' | 'pkColumn'> & {
+      anchors: GraphNode[];
+      graphWeight?: number;
+      graphDepth?: number;
+      graphDirection?: TraversalDirection;
+      graphEdgeTypes?: string[];
+    },
+  ): Promise<HybridSearchResult[]> {
+    const notInit = this._notInitError<HybridSearchResult[]>();
+    if (notInit) return notInit;
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const hybrid = await this.hybridSearch(table, query, opts);
+    if (opts.anchors.length === 0) return hybrid;
+    const scored = hybrid.map((r) => ({ id: String(r.row[pkCol]), score: r.score, _r: r }));
+    const boosted = await graphAdjacencyBoost(this._adapter, scored, {
+      anchors: opts.anchors,
+      resultTable: table,
+      ...(opts.graphWeight !== undefined ? { weight: opts.graphWeight } : {}),
+      ...(opts.graphDepth !== undefined ? { maxDepth: opts.graphDepth } : {}),
+      ...(opts.graphDirection ? { direction: opts.graphDirection } : {}),
+      ...(opts.graphEdgeTypes ? { edgeTypes: opts.graphEdgeTypes } : {}),
+    });
+    return boosted.map((b) => {
+      const r = b.item._r;
+      r.score = b.boostedScore;
+      r.explain.final = b.boostedScore;
+      return r;
     });
   }
 

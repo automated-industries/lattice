@@ -309,6 +309,31 @@ export type {
 export { applyReranker } from './search/rerank.js';
 export type { RerankerFn, RerankCandidate, RerankScore } from './search/rerank.js';
 
+// v4.1 — graph-augmented retrieval: typed-edge graph, bounded BFS, adjacency boost.
+export {
+  ensureEdgesTable,
+  addEdge,
+  addEdges,
+  removeEdge,
+  neighbors,
+  traverse,
+  extractEdgesFromColumn,
+  graphAdjacencyBoost,
+  MAX_TRAVERSAL_DEPTH,
+  DEFAULT_MAX_NODES,
+} from './search/graph.js';
+export type {
+  GraphNode,
+  GraphEdge,
+  TraversalDirection,
+  TraversalOptions,
+  TraversalNode,
+  GraphTraversalResult,
+  ExtractEdgesSpec,
+  GraphBoostOptions,
+  GraphBoostResult,
+} from './search/graph.js';
+
 // v4.1 — text chunking for higher-precision, lower-token embedding.
 export { semanticChunker, chunkText } from './search/chunking.js';
 export type { TextChunk, ChunkerFn, SemanticChunkerOptions } from './search/chunking.js';

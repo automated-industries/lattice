@@ -99,6 +99,11 @@ method that is inert unless a table opts in.
   new rows default to `unverified`; `markRowForReview` / `verifyRow` move them to
   `needs_review` / `verified`, and `rowsNeedingReview` / `verifiedRows` filter by
   state.
+- **Graph-augmented retrieval.** A typed-edge graph over rows (`addEdge` /
+  `neighbors` / `traverseGraph` with bounded BFS, `extractEdges` for zero-LLM
+  edge extraction from foreign keys) plus `graphSearch` — hybrid search re-ranked
+  by graph adjacency to anchor entities, so relationship-relevant rows rank
+  higher. Depth and visited-node hard caps prevent runaway traversal.
 
 ### Changed
 
