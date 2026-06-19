@@ -76,6 +76,14 @@ export const guiAppHtml = `<!doctype html>
     <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
     <span class="app-update" id="app-update" title="A new version is being applied" hidden></span>
     <span class="app-version" id="app-version" title="Lattice version"><!--LATTICE_VERSION--></span>
+    <button id="import-data-btn" class="import-data-btn" title="Import your dashboard's data into Lattice" aria-label="Import dashboard data">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <path d="M7 10l5 5 5-5"/>
+        <path d="M12 15V3"/>
+      </svg>
+      <span class="import-data-label">Import Dashboard Data</span>
+    </button>
     <button id="connect-dash-btn" class="connect-dash-btn" title="Connect your own dashboard" aria-label="Connect a dashboard">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -123,6 +131,7 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="connect">Dashboard</button>
+      <button class="drawer-tab" data-tab="import">Import</button>
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>

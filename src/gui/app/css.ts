@@ -1028,12 +1028,20 @@ export const css = `
     #settings-gear:hover { background: rgba(255, 255, 255, 0.06); }
     #settings-gear svg { width: 18px; height: 18px; display: block; }
 
-    /* ── Header dashboard buttons (right cluster: Connect/Go · gear) ── */
-    /* The connect button leads the right cluster, so it carries the auto-margin
+    /* ── Header dashboard buttons (right cluster: Import · Connect/Go · gear) ── */
+    /* The import button leads the right cluster, so it carries the auto-margin
        that pushes the whole group to the right edge. */
-    .connect-dash-btn {
+    .import-data-btn {
       display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
       height: 32px; padding: 0 12px; margin-left: auto;
+      background: transparent; color: #e6e8eb; border: 1px solid #2a2f36;
+      border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .import-data-btn:hover { background: rgba(255, 255, 255, 0.06); }
+    .import-data-btn svg { width: 16px; height: 16px; display: block; }
+    .connect-dash-btn {
+      display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+      height: 32px; padding: 0 12px; margin-left: 8px;
       background: #bef264; color: #0b0d10; border: 0; border-radius: 6px;
       cursor: pointer; font-size: 13px; font-weight: 600;
     }
@@ -1042,8 +1050,10 @@ export const css = `
     /* Keep the gear grouped at the right edge (it dropped its own auto-margin). */
     .connect-dash-btn + #settings-gear { margin-left: 8px; }
     @media (max-width: 720px) {
-      .connect-dash-btn .connect-dash-label { display: none; }
-      .connect-dash-btn { padding: 0 8px; }
+      .connect-dash-btn .connect-dash-label,
+      .import-data-btn .import-data-label { display: none; }
+      .connect-dash-btn,
+      .import-data-btn { padding: 0 8px; }
     }
 
     /* ── Connect-a-dashboard drawer panel ── */
@@ -1081,6 +1091,43 @@ export const css = `
     .cd-btn.cd-primary { background: #bef264; color: #0b0d10; border-color: #bef264; }
     .cd-btn.cd-primary:hover { filter: brightness(1.06); }
     .cd-hr { border: 0; border-top: 1px solid #2a2f36; margin: 18px 0; }
+    .cd-import-list { margin: 10px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+    .cd-import-list li { margin: 2px 0; }
+    /* Import: mode chooser + live pipeline log */
+    .imp-sub { margin: 16px 0 6px; font-size: 13px; color: var(--text, #e6e8eb); }
+    .imp-modes { display: flex; flex-direction: column; gap: 8px; margin: 0 0 6px; }
+    .imp-modes label {
+      display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.4;
+      padding: 8px 10px; border: 1px solid #2a2f36; border-radius: 6px; cursor: pointer;
+    }
+    .imp-modes label:hover { background: rgba(255, 255, 255, 0.04); }
+    .imp-modes input { margin-top: 2px; }
+    .imp-modes b { color: var(--text, #e6e8eb); }
+    .imp-percol {
+      display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.4;
+      margin: 8px 0 0; cursor: pointer; color: var(--text-dim, #aeb6c2);
+    }
+    .imp-percol input { margin-top: 2px; }
+    .imp-match { border-left: 3px solid var(--accent, #7dd3fc); font-weight: 500; }
+    /* Import file picker: a styled label wrapping a hidden <input type=file> */
+    .cd-or { margin: 8px 0; font-size: 12px; color: var(--text-muted, #9aa3ad); text-align: center; }
+    .imp-browse { display: inline-flex; align-items: center; cursor: pointer; }
+    /* Live import card in the assistant rail */
+    .feed-item.import-live .imp-card-log {
+      margin-top: 4px;
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      max-height: 200px; overflow-y: auto; color: var(--text-muted, #9aa3ad);
+    }
+    .imp-card-line { white-space: pre-wrap; word-break: break-word; }
+    .imp-card-line.imp-done { color: var(--accent, #bef264); }
+    .imp-card-line.imp-err { color: #f87171; }
+    /* Animated spinner so "Updating your objects…" never looks frozen */
+    .imp-card-line.imp-spin::after {
+      content: ''; display: inline-block; width: 10px; height: 10px; margin-left: 7px;
+      border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+      vertical-align: -1px; animation: imp-spin-kf 0.7s linear infinite;
+    }
+    @keyframes imp-spin-kf { to { transform: rotate(360deg); } }
 
     /* ── Slim / collapsible left sidebar ────────────────── */
     /* Advanced-mode toggle at the top of the sidebar. */

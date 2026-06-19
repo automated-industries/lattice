@@ -197,6 +197,16 @@ describe('connect: runtime /api/connect/dashboard', () => {
     const bad = await postPath(server.url, join(dirs[0]!, 'nope.html'));
     expect(bad.status).toBe(400);
 
+    // A real file that is NOT a web page (a data file) is refused with a 400 that
+    // points at Import — serving it raw would just download it.
+    const dataFile = join(dirs[0]!, 'book.xlsx');
+    writeFileSync(dataFile, 'fake', 'utf8');
+    const nonHtml = await postPath(server.url, dataFile);
+    expect(nonHtml.status).toBe(400);
+    expect(((await nonHtml.json()) as { error: string }).error).toContain('Import Dashboard Data');
+    // The data file is NOT served at / (no download trap).
+    expect(await (await fetch(`${server.url}/`)).text()).toContain(DASH_MARKER);
+
     // Disconnect with an empty path → / serves the shell again, store cleared.
     const off = (await (await postPath(server.url, '')).json()) as {
       ok: boolean;

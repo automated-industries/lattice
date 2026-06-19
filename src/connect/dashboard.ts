@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { configDir } from '../framework/user-config.js';
 
 /**
@@ -29,7 +29,18 @@ export function resolveDashboard(path: string): ResolvedDashboard {
   if (!trimmed) throw new Error('Dashboard path is empty.');
   const abs = resolve(trimmed);
   if (!existsSync(abs)) throw new Error('That path does not exist: ' + abs);
-  return statSync(abs).isDirectory() ? { path: abs, mode: 'dir' } : { path: abs, mode: 'file' };
+  if (statSync(abs).isDirectory()) return { path: abs, mode: 'dir' };
+  // A connected dashboard is served at `/` as a web page, so a single file must
+  // be HTML. A data file (.xlsx, .json, .csv, …) is not a dashboard — served
+  // raw, the browser would just download it. Point the user at import instead.
+  const ext = extname(abs).toLowerCase();
+  if (ext !== '.html' && ext !== '.htm') {
+    throw new Error(
+      'That looks like a data file, not a web page. To load its contents into Lattice, ' +
+        'use "Import Dashboard Data" instead of connecting it as a dashboard.',
+    );
+  }
+  return { path: abs, mode: 'file' };
 }
 
 /** The persisted connected-dashboard path (machine-local), or null when none. */

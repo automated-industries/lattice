@@ -381,6 +381,32 @@ export type {
 export { startGuiServer } from './gui/server.js';
 export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';
 
+// Structured-source import: infer a schema (entities, dimensions, linkages) from
+// a parsed JSON source, then materialize it into a workspace.
+export { inferSchema, inferFieldType, normalizeName, sourceRecords } from './import/infer.js';
+export { materializeImport } from './import/materialize.js';
+export { detectAsOf, detectAsOfCandidates, parseCellDate } from './import/asof.js';
+export type { AsOfCandidate, AsOfInputs } from './import/asof.js';
+export { detectAsOfColumns } from './import/asof-columns.js';
+export type { AsOfColumnCandidate } from './import/asof-columns.js';
+export { matchSchemaToExisting, renameEntities } from './import/match.js';
+export type { SchemaMatch, EntityMatch, ExistingTable } from './import/match.js';
+export type {
+  MaterializeCtx,
+  MaterializeResult,
+  MaterializeOptions,
+  ImportMode,
+  ImportProgress,
+} from './import/materialize.js';
+export type {
+  ProposedSchema,
+  InferredEntity,
+  InferredColumn,
+  InferredDimension,
+  InferredLinkage,
+  InferredType,
+} from './import/types.js';
+
 // Durable file-backed SourceKeyStore for production crypto-shred deployments.
 // The default InMemorySourceKeyStore is process-local — restart implicitly
 // shreds every key. This implementation persists keys to a single JSON file

@@ -13,12 +13,21 @@ import {
 } from 'node:fs';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, tryHandler } from './http.js';
 import {
   resolveDashboard,
   getConnectedDashboard,
   setConnectedDashboard,
 } from '../connect/dashboard.js';
+import { randomUUID } from 'node:crypto';
+import { inferSchema } from '../import/infer.js';
+import { materializeImport, type ImportMode } from '../import/materialize.js';
+import { detectAsOfCandidates } from '../import/asof.js';
+import { detectAsOfColumns } from '../import/asof-columns.js';
+import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
+import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
+import { asOfFromLlm } from './ai/asof-llm.js';
+import { referenceLocalFile } from '../framework/reference-store.js';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
 import { findLatticeRoot, workspaceDir } from '../framework/lattice-root.js';
@@ -296,6 +305,83 @@ function sendDashboardFile(res: ServerResponse, absPath: string): void {
     ? html.replace('</body>', `${LATTICE_BADGE}</body>`)
     : html + LATTICE_BADGE;
   sendText(res, html, 200, 'text/html; charset=utf-8');
+}
+
+/** A 400-carrying error so the request handler answers a client mistake with 400. */
+function badRequest(message: string): Error & { statusCode: number } {
+  const e = new Error(message) as Error & { statusCode: number };
+  e.statusCode = 400;
+  return e;
+}
+
+/**
+ * Read + parse a JSON source for the importer. Resolves the path absolutely, then
+ * (if not found) relative to the connected dashboard dir. Throws a 400 for a
+ * missing path / file / non-JSON / non-object — surfaced to the user, never a 500.
+ */
+function readImportJson(rawPath: string, dashboardDir: string | null): Record<string, unknown> {
+  if (!rawPath.trim()) throw badRequest('A JSON file path is required.');
+  let abs = resolve(rawPath);
+  if (!existsSync(abs) && dashboardDir) abs = resolve(dashboardDir, rawPath);
+  if (!existsSync(abs)) throw badRequest('File not found: ' + abs);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(abs, 'utf8'));
+  } catch {
+    throw badRequest('Not valid JSON: ' + abs);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw badRequest('Expected a JSON object whose keys are record arrays.');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** Read an import source for the importer (a JSON object whose keys are record arrays). */
+function readImportSource(rawPath: string, dashboardDir: string | null): Record<string, unknown> {
+  if (!rawPath.trim()) throw badRequest('A file path is required.');
+  return readImportJson(rawPath, dashboardDir);
+}
+
+/** The workspace's importable data tables (registered, non-native), for matching
+ *  a new upload against documents already imported. Native/system tables are
+ *  excluded; junctions/dimensions are harmless (their tiny signatures don't match
+ *  a real entity). */
+function existingDataTables(db: Lattice): ExistingTable[] {
+  const native = new Set<string>(NATIVE_ENTITY_NAMES);
+  const out: ExistingTable[] = [];
+  for (const t of db.getRegisteredTableNames()) {
+    if (native.has(t)) continue;
+    const columns = Object.keys(db.getRegisteredColumns(t) ?? {});
+    if (columns.length > 0) out.push({ name: t, columns });
+  }
+  return out;
+}
+
+/** Resolve an import path to an absolute path (absolute, else relative to the
+ *  connected dashboard dir), or null if it doesn't exist — used to reference the
+ *  source as a File after import. */
+function resolveImportPath(rawPath: string, dashboardDir: string | null): string | null {
+  if (!rawPath.trim()) return null;
+  let abs = resolve(rawPath);
+  if (!existsSync(abs) && dashboardDir) abs = resolve(dashboardDir, rawPath);
+  return existsSync(abs) ? abs : null;
+}
+
+/** Read the raw request body into a Buffer (for binary uploads). */
+function readRequestBuffer(req: IncomingMessage, maxBytes = 200_000_000): Promise<Buffer> {
+  return new Promise((resolveBuf, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > maxBytes) reject(badRequest('Upload too large.'));
+      else chunks.push(c);
+    });
+    req.on('end', () => {
+      resolveBuf(Buffer.concat(chunks));
+    });
+    req.on('error', reject);
+  });
 }
 
 function openUrl(url: string): void {
@@ -2297,6 +2383,189 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // Non-null for the entire normal handler below. Reassigned in lockstep
         // with `activeRef` at every swap site so the next request sees the swap.
         let active: ActiveDb = activeRef;
+
+        // ── Structured-source import (connect panel's "Import data model") ──
+        // analyze = infer a proposed schema (no writes); apply = materialize it
+        // into THIS workspace (tables + rows + junctions, deduped, persisted to
+        // config = canonical). sources = the JSON files in the connected dashboard.
+        if (method === 'GET' && pathname === '/api/connect/import/sources') {
+          const sources: string[] = [];
+          if (dashboardDir) {
+            try {
+              for (const f of readdirSync(dashboardDir)) {
+                if (/\.json$/i.test(f)) sources.push(join(dashboardDir, f));
+              }
+            } catch {
+              /* unreadable dir → no candidates */
+            }
+          }
+          sendJson(res, { sources });
+          return;
+        }
+        // Stage an uploaded file: a browser file picker can't hand over a path,
+        // so it uploads the bytes here; we save them under the workspace and
+        // return a server path the normal analyze/apply flow then reads.
+        if (method === 'POST' && pathname === '/api/connect/import/stage') {
+          await tryHandler(
+            res,
+            async () => {
+              const raw =
+                typeof req.headers['x-filename'] === 'string' ? req.headers['x-filename'] : 'upload';
+              let name = raw;
+              try {
+                name = decodeURIComponent(raw);
+              } catch {
+                /* keep raw if it isn't percent-encoded */
+              }
+              const buf = await readRequestBuffer(req);
+              const safe = basename(name).replace(/[^A-Za-z0-9._-]/g, '_') || 'upload';
+              const dir = join(dirname(active.configPath), 'import-staging');
+              mkdirSync(dir, { recursive: true });
+              const dest = join(dir, randomUUID().slice(0, 8) + '-' + safe);
+              writeFileSync(dest, buf);
+              sendJson(res, { path: dest, name: safe });
+            },
+            '/api/connect/import/stage',
+          );
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/connect/import/analyze') {
+          await tryHandler(
+            res,
+            async () => {
+              const body = await readJson<{ path?: unknown }>(req);
+              const rawPath = typeof body.path === 'string' ? body.path : '';
+              const data = readImportSource(rawPath, dashboardDir);
+              const plan = inferSchema(data);
+              // Detect the snapshot date from several signals, ranked with evidence:
+              // the file name (strip any staging prefix) + the source's top-level
+              // non-array values (meta / date keys like `asOf`, `reportDate`).
+              const abs = resolveImportPath(rawPath, dashboardDir);
+              const fname = abs ? basename(abs).replace(/^[0-9a-f]{8}-/, '') : '';
+              const texts: { label: string; text: string }[] = [];
+              for (const [k, v] of Object.entries(data)) {
+                if (!Array.isArray(v)) texts.push({ label: 'data', text: `${k}: ${JSON.stringify(v)}` });
+              }
+              let asOfCandidates = detectAsOfCandidates({ fileName: fname, texts });
+              // Fall back to Claude only when no confident in-content date was found
+              // (a strong "as of" cell scores 0.95; a bare filename date 0.6).
+              if (!asOfCandidates[0] || asOfCandidates[0].confidence < 0.7) {
+                const llm = await asOfFromLlm(active.db, texts.map((t) => t.text).join('\n'));
+                if (llm) asOfCandidates = [...asOfCandidates, llm].sort((a, b) => b.confidence - a.confidence);
+              }
+              // A per-row date COLUMN (one file → many periods), if the data has one.
+              const asOfColumns = detectAsOfColumns(data, plan);
+              // Is this a new period of a document already imported here?
+              const schemaMatch = matchSchemaToExisting(existingDataTables(active.db), plan);
+              sendJson(res, {
+                plan,
+                asOf: asOfCandidates[0]?.date ?? null,
+                asOfCandidates,
+                asOfColumns,
+                schemaMatch,
+              });
+            },
+            '/api/connect/import/analyze',
+          );
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/connect/import/apply') {
+          // Stream the pipeline as newline-delimited JSON so the UI shows it live.
+          const body: { path?: unknown; mode?: unknown; asOf?: unknown; asOfColumn?: unknown } =
+            await readJson<{
+              path?: unknown;
+              mode?: unknown;
+              asOf?: unknown;
+              asOfColumn?: unknown;
+            }>(req).catch(() => ({}));
+          const rawPath = typeof body.path === 'string' ? body.path : '';
+          const mode: ImportMode =
+            body.mode === 'schema' || body.mode === 'contents' ? body.mode : 'both';
+          // ISO YYYY-MM-DD snapshot date (optional). Stamps rows so a newer file
+          // is kept as a dated snapshot beside the prior one.
+          const asOf =
+            typeof body.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.asOf.trim())
+              ? body.asOf.trim()
+              : null;
+          // A per-row date column (optional): dates each row from its own value.
+          const asOfColumn =
+            typeof body.asOfColumn === 'string' && body.asOfColumn.trim() ? body.asOfColumn.trim() : null;
+          res.writeHead(200, {
+            'content-type': 'application/x-ndjson; charset=utf-8',
+            'cache-control': 'no-store',
+          });
+          const emit = (p: Record<string, unknown>): void => {
+            res.write(JSON.stringify(p) + '\n');
+          };
+          try {
+            emit({ phase: 'parse', message: 'Reading source…' });
+            const data = readImportSource(rawPath, dashboardDir);
+            emit({ phase: 'infer', message: 'Analyzing schema…' });
+            const inferred = inferSchema(data);
+            emit({
+              phase: 'infer',
+              message: `Found ${String(inferred.entities.length)} entities, ${String(inferred.dimensions.length)} dimensions, ${String(inferred.linkages.length)} links`,
+            });
+            // Recognize a re-import: route matching entities into the existing
+            // tables (a new dated snapshot) rather than creating parallel ones.
+            const match = matchSchemaToExisting(existingDataTables(active.db), inferred);
+            const { plan } = renameEntities(inferred, [], match.rename);
+            if (match.isKnownDocument) {
+              emit({
+                phase: 'detect',
+                message: `Recognized as a new period of an existing document — ${String(match.matchedCount)} of ${String(match.totalEntities)} tables matched`,
+              });
+            }
+            if (asOfColumn) emit({ phase: 'infer', message: `Dating each row by its "${asOfColumn}" column` });
+            else if (asOf) emit({ phase: 'infer', message: `Importing as a snapshot dated ${asOf}` });
+            const result = await materializeImport(
+              { db: active.db, configPath: active.configPath },
+              data,
+              plan,
+              [],
+              {
+                mode,
+                asOf,
+                asOfColumn,
+                onProgress: async (p) => {
+                  emit({ ...p });
+                  // Yield to the event loop so the chunk flushes to the socket
+                  // now. A synchronous SQLite import otherwise runs in one tick
+                  // and the whole stream arrives at the end (not live).
+                  await new Promise((resolve) => setImmediate(resolve));
+                },
+              },
+            );
+            // Make the new tables reachable through the HTTP data routes now.
+            for (const t of result.tablesCreated) {
+              active.validTables.add(t);
+              const cols = active.db.getRegisteredColumns(t);
+              if (cols && 'deleted_at' in cols) active.softDeletable.add(t);
+            }
+            // Ingest the source file itself as a File (so the workbook/JSON also
+            // shows up under Files), referencing it in place — no byte copy.
+            const srcPath = resolveImportPath(rawPath, dashboardDir);
+            if (srcPath) {
+              try {
+                const meta = referenceLocalFile(srcPath);
+                // Staged uploads are saved as "<uuid8>-<original>"; show the
+                // original filename, not the staging prefix.
+                if (/[/\\]import-staging[/\\]/.test(srcPath)) {
+                  meta.original_name = (meta.original_name ?? '').replace(/^[0-9a-f]{8}-/, '');
+                }
+                await active.db.insert('files', { id: randomUUID(), ...meta });
+                emit({ phase: 'file', message: `Saved ${meta.original_name ?? basename(srcPath)} to Files` });
+              } catch (e) {
+                emit({ phase: 'file', message: `Imported, but saving the file to Files failed: ${(e as Error).message}` });
+              }
+            }
+            emit({ phase: 'done', ok: true, result });
+          } catch (e) {
+            emit({ phase: 'error', message: (e as Error).message });
+          }
+          res.end();
+          return;
+        }
 
         // ── HTML + read-only data routes ──────────────────────────────────
         if (method === 'GET' && pathname === '/') {

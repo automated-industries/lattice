@@ -3305,6 +3305,282 @@ export const appJs = `
       }).catch(function () { /* no connection yet */ });
     }
 
+    // ── Import a data model (standalone — no connected dashboard required) ──
+    // Opened by the "Import Dashboard Data" button. Point it at a structured file
+    // (Excel .xlsx or JSON), Analyze to preview the proposed schema, choose what
+    // to bring in (data model / contents / both), then Import — which streams the
+    // pipeline live and refreshes the Objects nav in place (no page reload).
+    function renderImportData(body) {
+      body.innerHTML =
+        '<div class="cd-step">' +
+          '<h4>Import a data model</h4>' +
+          '<p>Pull a structured file (Excel <code>.xlsx</code> or JSON) into Lattice as real tables — entities, dimensions, and their links — so Lattice becomes the source of truth. This is separate from connecting a dashboard.</p>' +
+          '<div class="cd-row">' +
+            '<input class="cd-path" id="imp-path" type="text" placeholder="path to a .xlsx or .json file (e.g. C:/Users/you/data.xlsx)" aria-label="Import file path" />' +
+            '<button class="cd-btn" id="imp-analyze" type="button">Analyze</button>' +
+          '</div>' +
+          '<div class="cd-or">or</div>' +
+          '<label class="cd-btn imp-browse">Choose file&hellip;' +
+            '<input type="file" id="imp-file" accept=".xlsx,.xls,.json" hidden />' +
+          '</label>' +
+        '</div>' +
+        '<div id="imp-out"></div>';
+
+      var pathInput = document.getElementById('imp-path');
+      // Convenience prefill: if a dashboard FOLDER is connected, offer a file from it.
+      fetchJson('/api/connect/import/sources').then(function (s) {
+        if (s.sources && s.sources.length && pathInput && !pathInput.value) pathInput.value = s.sources[0];
+      }).catch(function () { /* no candidates */ });
+
+      var out = document.getElementById('imp-out');
+      var analyzeBtn = document.getElementById('imp-analyze');
+      if (analyzeBtn) analyzeBtn.addEventListener('click', function () {
+        var path = pathInput ? pathInput.value.trim() : '';
+        if (!path) { out.innerHTML = '<div class="cd-status err">Enter the path to a .xlsx or .json file, or choose one below.</div>'; return; }
+        withBusy(analyzeBtn, function () {
+          return fetchJson('/api/connect/import/analyze', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: path }),
+          }).then(function (r) {
+            renderImportPlan(path, r.plan || {}, r.asOf, r.asOfCandidates, r.asOfColumns, r.schemaMatch);
+          }).catch(function (err) {
+            out.innerHTML = '<div class="cd-status err">' + escapeHtml(err.message || 'Analyze failed.') + '</div>';
+          });
+        });
+      });
+
+      // "Choose file…": a browser can't hand the server a path, so upload the
+      // bytes to /stage (saved under the workspace), then run the normal
+      // path-based analyze on the returned server path.
+      var fileInput = document.getElementById('imp-file');
+      if (fileInput) fileInput.addEventListener('change', function () {
+        var f = fileInput.files && fileInput.files[0];
+        if (!f) return;
+        out.innerHTML = '<div class="cd-status">Uploading ' + escapeHtml(f.name) + '&hellip;</div>';
+        f.arrayBuffer().then(function (buf) {
+          return fetch('/api/connect/import/stage', {
+            method: 'POST',
+            headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent(f.name) },
+            body: buf,
+          });
+        }).then(function (res) { return res.json(); }).then(function (d) {
+          if (d && d.path) {
+            if (pathInput) pathInput.value = d.path;
+            if (analyzeBtn) analyzeBtn.click();
+          } else {
+            out.innerHTML = '<div class="cd-status err">' + escapeHtml((d && d.error) || 'Upload failed.') + '</div>';
+          }
+        }).catch(function (err) {
+          out.innerHTML = '<div class="cd-status err">' + escapeHtml(err.message || 'Upload failed.') + '</div>';
+        });
+      });
+
+      // Preview the proposed schema + let the user choose what to import.
+      function renderImportPlan(path, plan, asOf, candidates, asOfColumns, schemaMatch) {
+        candidates = candidates || [];
+        asOfColumns = asOfColumns || [];
+        var ents = plan.entities || [];
+        var dims = plan.dimensions || [];
+        var links = plan.linkages || [];
+        var parts = [];
+        // Recognized as a new period of a document already in this workspace.
+        if (schemaMatch && schemaMatch.isKnownDocument) {
+          parts.push('<div class="cd-status ok imp-match">Recognized as a new period of an existing document &mdash; ' +
+            schemaMatch.matchedCount + ' of ' + schemaMatch.totalEntities +
+            ' tables match what you already imported. It will be added as a dated snapshot.</div>');
+        }
+        parts.push('<div class="cd-status ok">Found ' + ents.length + ' entities, ' + dims.length +
+          ' dimensions, ' + links.length + ' links.</div><ul class="cd-import-list">');
+        ents.forEach(function (e) {
+          parts.push('<li><b>' + escapeHtml(e.name) + '</b> &mdash; ' + e.rowCount + ' rows, ' +
+            (e.columns ? e.columns.length : 0) + ' cols &middot; ' +
+            (e.naturalKey ? 'key ' + escapeHtml(e.naturalKey) : 'keyless') + '</li>');
+        });
+        dims.forEach(function (d) {
+          parts.push('<li><b>' + escapeHtml(d.name) + '</b> (dimension) &mdash; ' + d.distinctValues + ' values</li>');
+        });
+        parts.push('</ul>');
+        parts.push('<h4 class="imp-sub">As of date</h4>');
+        var best = candidates[0];
+        parts.push('<p class="cd-sub">' +
+          (best ? 'Detected from ' + escapeHtml(best.evidence) + ' &mdash; edit if wrong.'
+                : 'No date found in the file or its name &mdash; set the snapshot date, or leave blank to import undated.') +
+          ' A newer file is kept as a separate dated snapshot beside the prior one.</p>');
+        parts.push('<div class="cd-row"><input class="cd-path" id="imp-asof" type="date" value="' + escapeHtml(asOf || '') + '" aria-label="As of date" /></div>');
+        if (candidates.length > 1) {
+          parts.push('<div class="cd-sub">Other candidates: ' + candidates.slice(1, 5).map(function (c) {
+            return '<a href="#" class="imp-asof-alt" data-date="' + escapeHtml(c.date) + '" title="' + escapeHtml(c.evidence) + '">' + escapeHtml(c.date) + '</a>';
+          }).join(', ') + '</div>');
+        }
+        // Per-row date column: when the file has one, offer to date each row by it
+        // (one file → many periods) instead of one date for the whole file.
+        if (asOfColumns.length) {
+          var colOpts = asOfColumns.slice(0, 6).map(function (c) {
+            return '<option value="' + escapeHtml(c.column) + '" title="' + escapeHtml(c.evidence) + '">' +
+              escapeHtml(c.column) + ' (' + escapeHtml(c.entity) + ', ' + c.distinctDates +
+              ' date' + (c.distinctDates === 1 ? '' : 's') + ')</option>';
+          }).join('');
+          parts.push('<label class="imp-percol"><input type="checkbox" id="imp-asof-percol"> ' +
+            '<span>Date varies per row &mdash; use a date column instead (one file, many periods)</span></label>');
+          parts.push('<div class="cd-row" id="imp-asof-col-row" style="display:none"><select class="cd-path" id="imp-asof-col">' + colOpts + '</select></div>');
+        }
+        parts.push('<h4 class="imp-sub">What should Lattice bring in?</h4>');
+        parts.push('<div class="imp-modes">' +
+          '<label><input type="radio" name="imp-mode" value="both" checked> <span><b>Data model + contents</b> — the schema, the taxonomy, and all the rows.</span></label>' +
+          '<label><input type="radio" name="imp-mode" value="schema"> <span><b>Data model / schema only</b> — tables, dimension values (the dictionary), and views. No rows.</span></label>' +
+          '<label><input type="radio" name="imp-mode" value="contents"> <span><b>Contents only</b> — the rows and their links, into tables that already exist.</span></label>' +
+        '</div>');
+        parts.push('<div class="cd-row"><button class="cd-btn cd-primary" id="imp-do" type="button">Import into Lattice</button></div>');
+        parts.push('<div class="cd-sub">Progress streams into the activity panel on the right.</div>');
+        out.innerHTML = parts.join('');
+        // Click an alternative candidate to fill the as-of field with it.
+        out.querySelectorAll('.imp-asof-alt').forEach(function (a) {
+          a.addEventListener('click', function (e) {
+            e.preventDefault();
+            var input = document.getElementById('imp-asof');
+            if (input) input.value = a.getAttribute('data-date') || '';
+          });
+        });
+        // Toggle the per-row date column: reveal the column picker + grey out the
+        // single date field (which becomes the fallback for rows missing a date).
+        var perCol = document.getElementById('imp-asof-percol');
+        if (perCol) perCol.addEventListener('change', function () {
+          var row = document.getElementById('imp-asof-col-row');
+          var dateEl = document.getElementById('imp-asof');
+          if (row) row.style.display = perCol.checked ? '' : 'none';
+          if (dateEl) dateEl.disabled = perCol.checked;
+        });
+        var doBtn = document.getElementById('imp-do');
+        if (doBtn) doBtn.addEventListener('click', function () { runImport(path); });
+      }
+
+      // Stream the apply pipeline (NDJSON) into the assistant rail (the main side
+      // feed) so it's visible after the Settings drawer closes, then refresh the
+      // Objects nav in place — no full reload (which would hit a connected
+      // dashboard and download it).
+      function runImport(path) {
+        var sel = out.querySelector('input[name="imp-mode"]:checked');
+        var mode = sel ? sel.value : 'both';
+        var asofEl = document.getElementById('imp-asof');
+        var asOf = asofEl ? asofEl.value : '';
+        var perColEl = document.getElementById('imp-asof-percol');
+        var colSel = document.getElementById('imp-asof-col');
+        var asOfColumn = (perColEl && perColEl.checked && colSel) ? colSel.value : '';
+        var doBtn = document.getElementById('imp-do');
+        if (doBtn) doBtn.disabled = true;
+
+        // Move into the rail: close the drawer + open a live import card.
+        closeSettingsDrawer();
+        railEmptyGone();
+        var feedEl = railFeedEl();
+        var card = document.createElement('div');
+        card.className = 'feed-item import-live';
+        var icon = document.createElement('div');
+        icon.className = 'feed-icon';
+        icon.textContent = '⤓';
+        var bodyEl = document.createElement('div');
+        bodyEl.className = 'feed-body';
+        var title = document.createElement('div');
+        title.className = 'feed-summary';
+        title.textContent = 'Importing your data…';
+        var log = document.createElement('div');
+        log.className = 'imp-card-log';
+        bodyEl.appendChild(title);
+        bodyEl.appendChild(log);
+        card.appendChild(icon);
+        card.appendChild(bodyEl);
+        if (feedEl) { feedEl.appendChild(card); feedEl.scrollTop = feedEl.scrollHeight; }
+
+        function addLine(text, cls) {
+          var d = document.createElement('div');
+          d.className = 'imp-card-line' + (cls ? ' ' + cls : '');
+          d.textContent = text;
+          log.appendChild(d);
+          while (log.childNodes.length > 60) log.removeChild(log.firstChild);
+          // Follow the newest line: pin BOTH the inner log (its own scrollbar) and
+          // the rail to the bottom so streaming output never appears frozen.
+          log.scrollTop = log.scrollHeight;
+          if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+          return d;
+        }
+        addLine('Starting…');
+
+        streamNdjson('/api/connect/import/apply', { path: path, mode: mode, asOf: asOf, asOfColumn: asOfColumn }, function (evt) {
+          if (!evt) return;
+          if (evt.phase === 'done') {
+            var r = evt.result || {};
+            var rbt = r.rowsByTable || {};
+            var names = Object.keys(rbt);
+            var total = 0;
+            names.forEach(function (n) { total += (rbt[n] || 0); });
+            title.textContent = 'Imported ' + names.length + ' tables' +
+              (mode === 'schema' ? '' : ', ' + total + ' rows');
+            // The post-import refresh recounts every table; on a big import that
+            // takes a beat, so show an animated spinner (not a static line) and
+            // resolve it to a checkmark when the Objects list is actually updated.
+            var upd = addLine('Updating your objects…', 'imp-spin');
+            refreshEntities().then(function () {
+              renderSidebar();
+              renderRoute();
+              var count = (state.entities && state.entities.tables) ? state.entities.tables.length : names.length;
+              upd.className = 'imp-card-line imp-done';
+              upd.textContent = '✓ Done — ' + count + ' objects in your workspace';
+            }).catch(function () {
+              upd.className = 'imp-card-line imp-err';
+              upd.textContent = 'Imported, but refreshing the view failed — reload to see your objects.';
+            });
+          } else if (evt.phase === 'error') {
+            title.textContent = 'Import failed';
+            addLine('Error: ' + (evt.message || 'import failed'), 'imp-err');
+            if (doBtn) doBtn.disabled = false;
+          } else if (evt.message) {
+            addLine(evt.message);
+          }
+        });
+      }
+    }
+
+    // Read a newline-delimited-JSON response body, invoking onEvent(obj) per line.
+    function streamNdjson(url, payload, onEvent) {
+      fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(function (res) {
+        if (!res.body || !res.body.getReader) {
+          // No streaming support — fall back to a single parse of the whole body.
+          return res.text().then(function (t) {
+            t.split('\\n').forEach(function (line) {
+              if (line.trim()) { try { onEvent(JSON.parse(line)); } catch (e) { /* skip */ } }
+            });
+          });
+        }
+        var reader = res.body.getReader();
+        var dec = new TextDecoder();
+        var buf = '';
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) {
+              if (buf.trim()) { try { onEvent(JSON.parse(buf)); } catch (e) { /* skip */ } }
+              return;
+            }
+            buf += dec.decode(chunk.value, { stream: true });
+            var idx;
+            while ((idx = buf.indexOf('\\n')) >= 0) {
+              var line = buf.slice(0, idx);
+              buf = buf.slice(idx + 1);
+              if (line.trim()) { try { onEvent(JSON.parse(line)); } catch (e) { /* skip */ } }
+            }
+            return pump();
+          });
+        }
+        return pump();
+      }).catch(function (err) {
+        onEvent({ phase: 'error', message: err && err.message ? err.message : 'Request failed' });
+      });
+    }
+
     function selectDrawerTab(tab) {
       drawerTab = tab;
       document.querySelectorAll('.drawer-tab').forEach(function (b) {
@@ -3313,6 +3589,7 @@ export const appJs = `
       var body = document.getElementById('drawer-body');
       if (!body) return;
       if (tab === 'connect') renderConnectDashboard(body);
+      else if (tab === 'import') renderImportData(body);
       else if (tab === 'database') renderDatabaseSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);
@@ -3349,6 +3626,10 @@ export const appJs = `
       if (connectDashBtn) connectDashBtn.addEventListener('click', function () {
         if (dashboardConnected) window.open('/', '_blank', 'noopener');
         else openSettingsDrawer('connect');
+      });
+      var importDataBtn = document.getElementById('import-data-btn');
+      if (importDataBtn) importDataBtn.addEventListener('click', function () {
+        openSettingsDrawer('import');
       });
       var closeBtn = document.getElementById('drawer-close');
       if (closeBtn) closeBtn.addEventListener('click', closeSettingsDrawer);

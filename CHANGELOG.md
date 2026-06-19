@@ -35,6 +35,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   runtime (served in place, so your edits show up on refresh) and persist the
   choice across restarts; an invalid path returns a clear 400 rather than failing
   the server. Connecting loads the dashboard in the same window — no separate step.
+- **Import a data model into Lattice (Lattice as system of record).** A new
+  importer reconstructs a real schema from a structured JSON source: it infers
+  entities from record arrays (including columnar `<key>` + `<key>Cols` pairs),
+  infers column types, picks a natural key (or falls back to a surrogate id +
+  content-hash dedup for keyless entities), normalizes shared categorical fields
+  into deduped **dimension** tables, and infers **linkages** (array refs →
+  many-to-many, scalar refs → many-to-one) — skipping derived/rollup objects.
+  Import is a **standalone flow** (its own GUI panel, opened from the "Import
+  Dashboard Data" button — no dashboard needs to be connected): Analyze to preview
+  the proposed schema, **choose what to bring in** — the data model / schema only
+  (structure + the dimension taxonomy + views), the contents only (rows + links),
+  or both — then Import. `POST /api/connect/import/apply` **streams the pipeline
+  live** (newline-delimited JSON: parse → infer → entities → dimensions → links →
+  views → done) — shown live in the assistant rail (the activity panel) — and the
+  Objects list refreshes in place when it finishes. Choose a file with your OS
+  file dialog (uploaded to the workspace via `POST /api/connect/import/stage`) or
+  paste a path; either way the **source file is also saved under Files**. `GET
+  /api/connect/import/sources` lists candidate files; `POST
+  /api/connect/import/analyze` previews without writing. **Point-in-time
+  snapshots:** each import carries an **as-of date**, detected from layered signals
+  — an in-content "as of / period ended <date>" phrase or date key (highest
+  confidence), then the file name, then (when nothing confident is found) a
+  **Claude fallback** that reads the file's text to extract the date (best-effort;
+  skipped when no Claude key is configured) — ranked, shown **with its evidence**
+  and a list of alternative candidates to pick from, and always editable; a
+  newer file is kept as a **dated snapshot beside the prior one** (every entity +
+  link row is stamped with `as_of` and the row identity includes it, so re-import
+  appends rather than overwrites, and links resolve within each snapshot) while
+  dimensions/taxonomy stay shared. Re-importing the same date is idempotent.
+  **Per-row dates:** when a file holds many periods, a detected date column
+  ("Report Date", "As Of", …) can date each row individually — each row's `as_of`
+  comes from its own value and links resolve within each row's period (one file →
+  many snapshots). Connecting a dashboard now accepts only a web page (HTML file or
+  folder) — a data file is routed to import instead of being served as a download.
+  New library exports: `inferSchema`, `materializeImport`, `detectAsOf`,
+  `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`, `ImportMode`,
+  `ImportProgress` (+ types).
 
 ## [3.4.2] - 2026-06-18
 
