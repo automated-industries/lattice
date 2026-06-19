@@ -8,6 +8,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [3.4.6] - 2026-06-19
+
+### Fixed
+
+- **The GUI assistant can now store a secret.** Asked to save a credential, the
+  assistant previously declined ("I don't have a tool to create secrets") — the
+  `secrets` table is deliberately hidden from the assistant so it can never read a
+  decrypted credential, which also left it no way to create one. A new **write-only
+  `create_secret` tool** lets the assistant store a secret by name: it inserts
+  directly (so the cleartext value never enters the undo/redo audit log), the value
+  is encrypted at rest, and on a cloud the secret is owner-private. The assistant
+  still cannot read, list, or echo existing secret values.
+
 ## [3.4.5] - 2026-06-19
 
 ### Added
