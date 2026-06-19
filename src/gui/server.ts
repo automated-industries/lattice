@@ -7,12 +7,18 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { sendJson, readJson } from './http.js';
+import {
+  resolveDashboard,
+  getConnectedDashboard,
+  setConnectedDashboard,
+} from '../connect/dashboard.js';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
 import { findLatticeRoot, workspaceDir } from '../framework/lattice-root.js';
@@ -169,6 +175,15 @@ export interface StartGuiServerOptions {
    */
   host?: string;
   /**
+   * "Bring your own dashboard": serve a user-provided dashboard at `/` instead
+   * of the built-in app shell, which moves to `/lattice`. The value is either a
+   * single HTML file or a directory of static assets. Because the dashboard is
+   * served from the SAME origin as the data routes, its own upload / add-note
+   * controls can call `/api/ingest/*` and `/api/tables/*` directly with no
+   * cross-origin setup. Omitted ⇒ the built-in shell stays at `/` as usual.
+   */
+  dashboardPath?: string | null;
+  /**
    * Workspace mode: derive canonical entity contexts for tables without one
    * and keep the rendered Context/ tree synced via auto-render on every write.
    * Set by `lattice gui` when opening a `.lattice` workspace. Off for a plain
@@ -217,6 +232,70 @@ function sendText(
 ): void {
   res.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store' });
   res.end(body);
+}
+
+/**
+ * Content types for the static assets a "bring your own dashboard" folder may
+ * contain (see {@link StartGuiServerOptions.dashboardPath}). Anything not listed
+ * is served as `application/octet-stream` — the dashboard's own HTML/JS/CSS plus
+ * common image/font types are what matter here.
+ */
+const STATIC_MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+/** Serve a file from disk with an extension-derived content type. Throws (caught
+ *  by the request handler's try/catch → 500) if the file can't be read. */
+function sendFile(res: ServerResponse, absPath: string): void {
+  const body = readFileSync(absPath);
+  const type = STATIC_MIME[extname(absPath).toLowerCase()] ?? 'application/octet-stream';
+  res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+  res.end(body);
+}
+
+// A small always-on "back to Lattice" pill injected into a CONNECTED dashboard's
+// HTML so the admin shell (moved to `/lattice` when a dashboard takes over `/`)
+// is never a dead end. Fixed, semi-transparent, inline-styled (no collision with
+// the dashboard's own CSS), highest z-index. HTML only — never on JS/CSS/images.
+const LATTICE_BADGE =
+  '<a href="/lattice" title="Back to Lattice" ' +
+  'style="position:fixed;bottom:14px;right:14px;z-index:2147483647;' +
+  'font:600 12px/1 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;' +
+  'color:#fff;background:rgba(18,22,27,.74);border:1px solid rgba(255,255,255,.2);' +
+  'border-radius:999px;padding:8px 13px;text-decoration:none;-webkit-backdrop-filter:blur(6px);' +
+  'backdrop-filter:blur(6px);box-shadow:0 2px 10px rgba(0,0,0,.25);opacity:.6;' +
+  'transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.6">' +
+  '↩ Lattice</a>';
+
+/** Serve a connected-dashboard file. HTML gets the {@link LATTICE_BADGE} injected
+ *  (so the user can always get back to `/lattice`); other assets are sent as-is. */
+function sendDashboardFile(res: ServerResponse, absPath: string): void {
+  if (!/\.html?$/i.test(absPath)) {
+    sendFile(res, absPath);
+    return;
+  }
+  let html = readFileSync(absPath, 'utf8');
+  html = html.includes('</body>')
+    ? html.replace('</body>', `${LATTICE_BADGE}</body>`)
+    : html + LATTICE_BADGE;
+  sendText(res, html, 200, 'text/html; charset=utf-8');
 }
 
 function openUrl(url: string): void {
@@ -1855,6 +1934,43 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const host = options.host ?? '127.0.0.1';
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
+  // "Bring your own dashboard" (see StartGuiServerOptions.dashboardPath). The
+  // active dashboard can be changed at runtime via POST /api/connect/dashboard
+  // (the GUI's "Connect a dashboard" panel), so the file/dir targets are mutable;
+  // `setDashboard` re-points them and the request handler serves whichever is set.
+  // A `--dashboard` flag seeds it at boot (and throws if that explicit path is
+  // bad); otherwise a previously connected path is restored — and silently
+  // cleared if it has gone stale, so a deleted dashboard never crashes the GUI.
+  let dashboardFile: string | null = null;
+  let dashboardDir: string | null = null;
+  function setDashboard(path: string | null): { path: string | null; mode: 'file' | 'dir' | null } {
+    if (!path?.trim()) {
+      dashboardFile = null;
+      dashboardDir = null;
+      return { path: null, mode: null };
+    }
+    const r = resolveDashboard(path);
+    if (r.mode === 'dir') {
+      dashboardDir = r.path;
+      dashboardFile = null;
+    } else {
+      dashboardFile = r.path;
+      dashboardDir = null;
+    }
+    return r;
+  }
+  if (options.dashboardPath) {
+    setDashboard(options.dashboardPath); // explicit flag — throw loudly if it is bad
+  } else {
+    const persisted = getConnectedDashboard();
+    if (persisted) {
+      try {
+        setDashboard(persisted);
+      } catch {
+        setConnectedDashboard(null); // stale persisted path — clear, never crash the GUI
+      }
+    }
+  }
   // One id per GUI server process. Stamped on every audit entry so the header
   // undo/redo stack is scoped to THIS session's own actions (you undo what you
   // did, not another cloud user's edit). The per-entry Revert stays global.
@@ -2089,6 +2205,84 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             },
           );
           return;
+        }
+
+        // Connect-a-dashboard control plane (the GUI's "Connect a dashboard"
+        // panel). GET reports the currently connected dashboard; POST points
+        // Lattice at a file or folder ON THIS MACHINE (served in place at `/`),
+        // or disconnects when given a blank path. Local + FS-backed, so it is
+        // answered before the virgin gate and needs no active workspace.
+        if (pathname === '/api/connect/dashboard') {
+          if (method === 'GET') {
+            const mode = dashboardDir ? 'dir' : dashboardFile ? 'file' : null;
+            sendJson(res, { path: dashboardDir ?? dashboardFile, mode });
+            return;
+          }
+          if (method === 'POST') {
+            let body: { path?: unknown };
+            try {
+              body = await readJson<{ path?: unknown }>(req);
+            } catch (e) {
+              sendJson(res, { error: (e as Error).message }, 400);
+              return;
+            }
+            const raw = typeof body.path === 'string' ? body.path : '';
+            if (!raw.trim()) {
+              setDashboard(null);
+              setConnectedDashboard(null);
+              sendJson(res, { ok: true, path: null, mode: null });
+              return;
+            }
+            try {
+              const result = setDashboard(raw); // throws on a missing/blank path
+              setConnectedDashboard(result.path);
+              sendJson(res, { ok: true, path: result.path, mode: result.mode });
+            } catch (e) {
+              // A bad path is a client error, not a server fault — 400 with the
+              // exact reason so the panel can show it.
+              sendJson(res, { error: (e as Error).message }, 400);
+            }
+            return;
+          }
+        }
+
+        // "Bring your own dashboard": serve the user-provided dashboard at `/`
+        // (the built-in shell moves to `/lattice`). GET-only + static, and it
+        // never shadows `/api/*`, so the dashboard's own upload / add-note
+        // controls keep calling the data routes same-origin. Runs before the
+        // virgin gate so the page loads even while a workspace is still being set
+        // up (its API calls 409 until the workspace is ready).
+        if ((dashboardFile || dashboardDir) && method === 'GET' && !pathname.startsWith('/api/')) {
+          if (pathname === '/lattice' || pathname === '/lattice/') {
+            sendText(
+              res,
+              guiAppHtml.replace('<!--LATTICE_VERSION-->', guiVersion ? `v${guiVersion}` : ''),
+              200,
+              'text/html; charset=utf-8',
+            );
+            return;
+          }
+          if (dashboardFile && (pathname === '/' || pathname === '/index.html')) {
+            sendDashboardFile(res, dashboardFile);
+            return;
+          }
+          if (dashboardDir) {
+            // Map the URL path to a file under the dashboard dir, with a traversal
+            // guard: the resolved path must stay inside the dir. `/` → index.html.
+            const rel =
+              pathname === '/' ? 'index.html' : decodeURIComponent(pathname.replace(/^\/+/, ''));
+            const abs = resolve(dashboardDir, rel);
+            if (
+              (abs === dashboardDir || abs.startsWith(dashboardDir + sep)) &&
+              existsSync(abs) &&
+              statSync(abs).isFile()
+            ) {
+              sendDashboardFile(res, abs);
+              return;
+            }
+          }
+          // Unknown dashboard path falls through to the normal routes (which
+          // 404/409 appropriately) — we never blanket-200 every GET.
         }
 
         // Zero-workspace "virgin" state: no active DB. Serve only the shell +

@@ -1028,6 +1028,60 @@ export const css = `
     #settings-gear:hover { background: rgba(255, 255, 255, 0.06); }
     #settings-gear svg { width: 18px; height: 18px; display: block; }
 
+    /* ── Header dashboard buttons (right cluster: Connect/Go · gear) ── */
+    /* The connect button leads the right cluster, so it carries the auto-margin
+       that pushes the whole group to the right edge. */
+    .connect-dash-btn {
+      display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+      height: 32px; padding: 0 12px; margin-left: auto;
+      background: #bef264; color: #0b0d10; border: 0; border-radius: 6px;
+      cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .connect-dash-btn:hover { filter: brightness(1.06); }
+    .connect-dash-btn svg { width: 16px; height: 16px; display: block; }
+    /* Keep the gear grouped at the right edge (it dropped its own auto-margin). */
+    .connect-dash-btn + #settings-gear { margin-left: 8px; }
+    @media (max-width: 720px) {
+      .connect-dash-btn .connect-dash-label { display: none; }
+      .connect-dash-btn { padding: 0 8px; }
+    }
+
+    /* ── Connect-a-dashboard drawer panel ── */
+    .cd-step { margin: 0 0 18px; }
+    .cd-step h4 { margin: 0 0 6px; font-size: 13px; color: var(--text); }
+    .cd-step p { margin: 0 0 8px; font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+    .cd-prompt {
+      width: 100%; box-sizing: border-box; min-height: 132px; resize: vertical;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      padding: 8px; border-radius: 6px; border: 1px solid #2a2f36;
+      background: var(--panel, #0e1116); color: var(--text, #e6e8eb);
+    }
+    .cd-desc {
+      width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical;
+      font: 13px/1.5 inherit; padding: 8px; border-radius: 6px; border: 1px solid #2a2f36;
+      background: var(--panel, #0e1116); color: var(--text, #e6e8eb);
+    }
+    .cd-sub { margin: 10px 0 6px; font-size: 12px; color: var(--text-muted, #9aa3ad); }
+    .cd-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+    .cd-path {
+      flex: 1 1 220px; min-width: 0; box-sizing: border-box; height: 34px; padding: 0 10px;
+      border-radius: 6px; border: 1px solid #2a2f36;
+      background: var(--panel, #0e1116); color: var(--text, #e6e8eb); font-size: 13px;
+    }
+    .cd-status { margin-top: 12px; font-size: 13px; line-height: 1.5; }
+    .cd-status.ok { color: #bef264; }
+    .cd-status.err { color: #f87171; }
+    .cd-status a { color: var(--accent, #bef264); }
+    .cd-btn {
+      height: 34px; padding: 0 14px; border-radius: 6px; border: 1px solid #2a2f36;
+      background: transparent; color: var(--text, #e6e8eb); font-size: 13px;
+      font-weight: 600; cursor: pointer;
+    }
+    .cd-btn:hover { background: rgba(255, 255, 255, 0.06); }
+    .cd-btn.cd-primary { background: #bef264; color: #0b0d10; border-color: #bef264; }
+    .cd-btn.cd-primary:hover { filter: brightness(1.06); }
+    .cd-hr { border: 0; border-top: 1px solid #2a2f36; margin: 18px 0; }
+
     /* ── Slim / collapsible left sidebar ────────────────── */
     /* Advanced-mode toggle at the top of the sidebar. */
     .sidebar-advanced {

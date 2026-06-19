@@ -76,6 +76,13 @@ export const guiAppHtml = `<!doctype html>
     <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
     <span class="app-update" id="app-update" title="A new version is being applied" hidden></span>
     <span class="app-version" id="app-version" title="Lattice version"><!--LATTICE_VERSION--></span>
+    <button id="connect-dash-btn" class="connect-dash-btn" title="Connect your own dashboard" aria-label="Connect a dashboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+      <span class="connect-dash-label">Connect dashboard</span>
+    </button>
     <button id="settings-gear" title="Settings" aria-label="Open settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3"/>
@@ -115,6 +122,7 @@ export const guiAppHtml = `<!doctype html>
       <button class="drawer-close" id="drawer-close" title="Close" aria-label="Close settings">✕</button>
     </div>
     <div class="drawer-tabs" id="drawer-tabs">
+      <button class="drawer-tab" data-tab="connect">Dashboard</button>
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>

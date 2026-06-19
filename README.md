@@ -65,6 +65,7 @@ Lattice has no opinions about your schema, your agents, or your file format. You
   - [Config API](#config-api-programmatic)
 - [CLI — lattice generate](#cli--lattice-generate)
 - [CLI — lattice gui (v1.11+)](#cli--lattice-gui-v111)
+- [CLI — lattice connect](#cli--lattice-connect)
 - [Schema migrations](#schema-migrations)
 - [Security](#security)
 - [Pluggable backends (v1.6+)](#pluggable-backends-v16)
@@ -2319,6 +2320,33 @@ The browser's `EventSource` invalidates the entity cache on every `change` event
 **Sidebar system-tables toggle (v1.13.8+).** Internal `__lattice_*` and `_lattice_gui_*` tables are hidden from the sidebar by default. Enable the "Show system tables in sidebar" checkbox in User Settings → Preferences to surface them under a "System" section. Persisted to `~/.lattice/preferences.json`; exposed via `GET`/`POST /api/userconfig/preferences`.
 
 ---
+
+## CLI — `lattice connect`
+
+Put Lattice behind a dashboard you already have. `lattice connect` walks you through
+pasting your Claude API key, opens a local workspace, and serves **your own**
+dashboard at `/` (the built-in view moves to `/lattice`). Because your dashboard is
+served from the same origin as the data routes, an "upload files" button or "add
+notes" box in your page calls `/api/ingest/upload`, `/api/ingest/text`, and
+`/api/tables/files/rows` directly — no API key in the page, no CORS setup. Lattice
+reads each upload with your key and files it against your data.
+
+```bash
+# Serve a single HTML file…
+npx lattice connect --dashboard ./my-dashboard.html
+
+# …or a folder of static assets (with an index.html)
+npx lattice connect --dashboard ./site
+```
+
+The Claude key is stored encrypted on your machine only (never uploaded, never
+written into your database); skip it and files still upload but aren't auto-organized
+until you add one. A copy-paste starter dashboard ships at
+[`docs/examples/dashboard.html`](docs/examples/dashboard.html), and the three
+client calls (`latticeUpload` / `latticeAddNote` / `latticeListFiles`) are all you
+need to wire your own UI. Like `lattice gui`, this binds to `127.0.0.1`. See
+[docs/connect.md](docs/connect.md) for the non-coder walkthrough and
+[docs/cli.md](docs/cli.md#lattice-connect) for the reference.
 
 ## AI assistant & Context Constructor (v2.0+)
 

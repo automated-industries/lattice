@@ -8,6 +8,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **`lattice connect` — put Lattice behind your own dashboard.** A non-coder-friendly
+  command that walks you through pasting your Claude API key, opens a local
+  workspace, and serves your **own** dashboard (a single HTML file or a folder of
+  assets) at `/`, moving the built-in view to `/lattice`. A small "↩ Lattice" pill
+  is injected into the served dashboard (fixed corner, inline-styled) so the admin
+  view is always one click away — connecting a dashboard never traps you. Because
+  your dashboard is served from the same origin as the data routes, its own "upload
+  files" / "add notes" controls call `/api/ingest/*` and `/api/tables/*` directly —
+  no API key in the page, no CORS setup. New `startGuiServer` option `dashboardPath` powers the
+  serving; the Claude key is stored in the existing machine-local encrypted
+  credential store (never written into your database). A copy-paste starter
+  dashboard ships at `docs/examples/dashboard.html`; see `docs/connect.md` for the
+  step-by-step. If no key is configured, files still upload but are not
+  auto-organized until one is added.
+- **Connect a dashboard from the GUI — no command flags needed.** The built-in
+  GUI gains a "Connect dashboard" button (and a Dashboard tab in Settings) that
+  opens a slide-in panel walking you through pointing Lattice at your own
+  dashboard on disk — a single HTML file or a folder. It includes a copy-paste
+  prompt that asks Claude to find the dashboard's exact path on your computer, for
+  when you do not know it; you can describe or name your dashboard and that detail
+  is woven into the prompt (with a live preview of what Claude will see). New
+  endpoints `GET`/`POST /api/connect/dashboard` switch the served dashboard at
+  runtime (served in place, so your edits show up on refresh) and persist the
+  choice across restarts; an invalid path returns a clear 400 rather than failing
+  the server. Connecting loads the dashboard in the same window — no separate step.
+
 ## [3.4.2] - 2026-06-18
 
 ### Fixed

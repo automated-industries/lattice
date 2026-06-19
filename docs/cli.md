@@ -14,6 +14,7 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice status`](#lattice-status)
   - [`lattice watch`](#lattice-watch)
   - [`lattice gui`](#lattice-gui)
+  - [`lattice connect`](#lattice-connect)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -323,6 +324,60 @@ These tables are filtered out of `/api/entities`, the dashboard, and rendered
 context output. They are not part of your declared schema and do not affect any
 `Lattice` API calls. No fictional / demo rows are ever inserted — the GUI only
 shows the data already in your database.
+
+---
+
+### `lattice connect`
+
+Sets Lattice up behind **your own** dashboard. It walks you through pasting your
+Claude API key (the only thing you have to provide), opens a local workspace, and
+then serves your own dashboard HTML at `/` — so an "upload files" button or
+"add notes" box in **your** page can hand files to Lattice, which reads them and
+files them against your data. It's the same local HTTP surface as `lattice gui`,
+with your dashboard in front of it.
+
+```sh
+lattice connect [options]
+```
+
+**Options:**
+
+| Option                | Default                | Description                                                       |
+| --------------------- | ---------------------- | ----------------------------------------------------------------- |
+| `--dashboard <path>`  | –                      | Your dashboard: a single `.html` file **or** a folder of assets   |
+| `--config <path>`     | `./lattice.config.yml` | Path to the YAML config file                                      |
+| `--port <number>`     | `4317`                 | Localhost port; auto-increments when the port is busy             |
+| `--no-open`           | off                    | Print the URL without opening a browser                           |
+
+When `--dashboard` is set, your dashboard is served at `/` and Lattice's own
+built-in view moves to `/lattice`. Because your dashboard is served from the same
+origin as the data routes, its `fetch()` calls reach `/api/ingest/upload`,
+`/api/ingest/text`, and `/api/tables/files/rows` directly — no API key in the
+page, no CORS setup.
+
+```sh
+lattice connect --dashboard ./my-dashboard.html
+```
+
+```
+* Claude key already connected.
+
+Your dashboard is live at http://127.0.0.1:4317
+Lattice's own view is at http://127.0.0.1:4317/lattice
+Press Ctrl+C to stop.
+```
+
+The Claude key is stored encrypted on your computer only (never uploaded, never
+written into your database). If you skip it, files still upload but are **not**
+auto-organized until you add a key — re-run `lattice connect` any time to add it.
+
+A copy-paste starter dashboard lives at
+[`docs/examples/dashboard.html`](./examples/dashboard.html). See
+[docs/connect.md](./connect.md) for the full step-by-step.
+
+This command binds only to `127.0.0.1`, like `lattice gui`. Serving a dashboard to
+a **separate, already-hosted** site (cross-origin, with a key) is a planned
+follow-up, not part of this local flow.
 
 ---
 
