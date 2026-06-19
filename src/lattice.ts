@@ -93,6 +93,17 @@ import {
   searchByEmbedding,
 } from './search/embeddings.js';
 import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
+import { evaluateRetrieval } from './search/eval.js';
+import type {
+  EvalQuery,
+  Retriever,
+  RetrievalEvalOptions,
+  RetrievalEvalSummary,
+} from './search/eval.js';
+import { diagnoseRetrieval } from './search/doctor.js';
+import type { RetrievalHealthReport, RetrievalHealthSpec } from './search/doctor.js';
+import { benchmarkRetrieval } from './search/benchmark.js';
+import type { BenchmarkOptions, BenchmarkReport } from './search/benchmark.js';
 
 /**
  * Initialise Lattice from a YAML config file instead of an explicit path.
@@ -1743,6 +1754,61 @@ export class Lattice {
       opts.minScore ?? 0,
       pkCol,
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Retrieval evaluation + health (measurable, monitorable retrieval quality)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Evaluate a retriever against a labeled query set, returning the standard IR
+   * metrics (P@k / Recall@k / MRR / nDCG@k / MAP). The retriever is any
+   * `(query) => rankedRowIds` function, so this grades semantic search,
+   * full-text search, a hybrid fusion, or an external service — and can gate
+   * retrieval-quality regressions in CI.
+   */
+  async evaluateRetrieval(
+    queries: EvalQuery[],
+    retriever: Retriever,
+    opts: RetrievalEvalOptions = {},
+  ): Promise<RetrievalEvalSummary> {
+    const notInit = this._notInitError<RetrievalEvalSummary>();
+    if (notInit) return notInit;
+    return evaluateRetrieval(queries, retriever, opts);
+  }
+
+  /**
+   * Diagnose the database's retrieval health: extension availability plus
+   * per-table full-text and embedding coverage, with gaps/staleness surfaced as
+   * severity-ranked issues. Read-only. When `tables` is omitted, the expectations
+   * are derived from each registered table's `fts` / `embeddings` config.
+   */
+  async diagnoseRetrieval(
+    opts: { tables?: RetrievalHealthSpec[] } = {},
+  ): Promise<RetrievalHealthReport> {
+    const notInit = this._notInitError<RetrievalHealthReport>();
+    if (notInit) return notInit;
+    const specs =
+      opts.tables ??
+      [...this._schema.getTables().entries()]
+        .filter(([, def]) => Boolean(def.fts) || Boolean(def.embeddings))
+        .map(([table, def]) => ({
+          table,
+          expectFts: !!def.fts,
+          expectEmbeddings: !!def.embeddings,
+        }));
+    return diagnoseRetrieval(this._adapter, { tables: specs });
+  }
+
+  /**
+   * Run the reproducible retrieval benchmark against this connection and return
+   * latency percentiles + ingest throughput. Default scale is small (CI-fast);
+   * pass `scale` (or set LATTICE_BENCH_* env vars) to reproduce large-n numbers.
+   */
+  async benchmarkRetrieval(opts: BenchmarkOptions = {}): Promise<BenchmarkReport> {
+    const notInit = this._notInitError<BenchmarkReport>();
+    if (notInit) return notInit;
+    return benchmarkRetrieval(this._adapter, opts);
   }
 
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {

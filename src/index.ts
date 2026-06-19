@@ -240,6 +240,43 @@ export {
   autoFtsColumns,
 } from './search/fts.js';
 export type { FtsResult, FtsGroup, FtsHit, FtsOptions } from './search/fts.js';
+
+// v4.1 — retrieval evaluation: standard IR metrics over any ranked retriever,
+// plus a CI-friendly regression detector.
+export { evaluateRetrieval, detectRetrievalRegressions } from './search/eval.js';
+export type {
+  EvalQuery,
+  RelevanceLabel,
+  Retriever,
+  RetrievalEvalOptions,
+  PerQueryEval,
+  RetrievalEvalSummary,
+  EvalRegression,
+} from './search/eval.js';
+
+// v4.1 — retrieval health diagnostics (read-only `doctor`).
+export { diagnoseRetrieval, formatHealthReport } from './search/doctor.js';
+export type {
+  RetrievalHealthReport,
+  RetrievalHealthIssue,
+  RetrievalHealthSpec,
+  TableHealth,
+  ExtensionAvailability,
+  HealthSeverity,
+  HealthIssueKind,
+  DiagnoseOptions,
+} from './search/doctor.js';
+
+// v4.1 — reproducible retrieval benchmark harness + SLO gate.
+export { benchmarkRetrieval, latencyStats, percentile, checkSlos } from './search/benchmark.js';
+export type {
+  BenchmarkReport,
+  BenchmarkOptions,
+  BenchmarkScale,
+  LatencyStats,
+  RetrievalSlo,
+  SloViolation,
+} from './search/benchmark.js';
 export { ReferenceUnavailableError } from './sources/types.js';
 export type {
   RefKind,

@@ -6,6 +6,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.1.0] — unreleased
+
+Fast-follow feature release on 4.0. Turns latticesql into a measurable,
+production-grade retrieval substrate: a retrieval-eval + health + benchmark
+layer, indexed vector search with chunking, hybrid fusion + reranking, governance
+(provenance + trust), reliability (retry + resumable migrations), graph-augmented
+retrieval, declarative computed columns, and a fuller query surface. **Additive
+only** — every 4.0 caller runs unchanged; each feature is a new optional field or
+method that is inert unless a table opts in.
+
+### Added
+
+- **Retrieval evaluation (`evaluateRetrieval`).** Standard IR metrics —
+  Precision@k, Recall@k, MRR, nDCG@k (graded gains), MAP — over any ranked
+  retriever (`(query) => rankedRowIds`), with a per-query breakdown and optional
+  multi-cutoff report. `detectRetrievalRegressions(baseline, candidate, tolerance)`
+  turns it into a CI gate so a retrieval change can't silently lower quality.
+  Empty input / non-positive `k` throw rather than report a meaningless zero.
+- **Retrieval health doctor (`diagnoseRetrieval`, `lattice doctor`).** Read-only
+  diagnostics: per-table full-text and embedding coverage (soft-deleted rows
+  excluded), extension availability (FTS5, sqlite-vec, pgvector, pg_trgm), and
+  severity-ranked issues for missing/stale indexes or embeddings. The CLI
+  `lattice doctor [--json]` prints a report and exits non-zero on any error so it
+  can gate a deploy.
+- **Benchmark harness (`benchmarkRetrieval`, `checkSlos`).** Reproducible
+  speed-to-answer numbers — p50/p95/p99 for filtered query, full-text, vector, and
+  aggregate, plus ingest throughput and peak memory — on synthetic data at a
+  configurable scale, both dialects, exercising the real code paths. Ships in the
+  package so the same harness that gates CI SLOs can reproduce the published
+  numbers. Default scale is CI-fast; `LATTICE_BENCH_*` env vars scale it up.
+
+### Fixed
+
+- **Embedding writes on Postgres.** `storeEmbedding` used a SQLite-only
+  `INSERT OR REPLACE`, which the Postgres adapter refuses to translate — semantic
+  embedding writes therefore failed on Postgres. Now uses a portable
+  `INSERT ... ON CONFLICT DO UPDATE` upsert that both engines accept.
+
 ## [4.0.1] — 2026-06-19
 
 ### Fixed

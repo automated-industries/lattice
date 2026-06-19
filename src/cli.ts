@@ -59,6 +59,8 @@ interface ParsedArgs {
   host: string;
   /** --name <display> — workspace / user display name (workspace create, gui). */
   displayName?: string | undefined;
+  /** --json — emit machine-readable JSON instead of formatted text (doctor). */
+  json: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -83,6 +85,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let subcommand: string | undefined;
   let displayName: string | undefined;
   let root: string | undefined;
+  let json = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -150,6 +153,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--root' && i + 1 < argv.length) {
       i++;
       root = argv[i];
+    } else if (arg === '--json') {
+      json = true;
     }
     i++;
   }
@@ -176,6 +181,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     host,
     displayName,
     root,
+    json,
   };
 }
 
@@ -200,6 +206,7 @@ function printHelp(): void {
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
       '  gui         Start a local browser GUI for exploring Lattice context',
+      '  doctor      Report retrieval health (FTS/embedding coverage, extensions)',
       '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
@@ -373,6 +380,28 @@ async function runRender(args: ParsedArgs): Promise<void> {
     for (const f of result.filesWritten) {
       console.log(`  ✓ ${f}`);
     }
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
+async function runDoctor(args: ParsedArgs): Promise<void> {
+  const db = new Lattice({ config: resolve(args.config) });
+  try {
+    await db.init();
+    const report = await db.diagnoseRetrieval();
+    if (args.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      const { formatHealthReport } = await import('./search/doctor.js');
+      console.log(formatHealthReport(report));
+    }
+    // Exit non-zero when an error-severity issue exists, so `lattice doctor` can
+    // gate CI / a deploy on retrieval health.
+    if (!report.healthy) process.exitCode = 1;
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
@@ -731,6 +760,9 @@ function main(): void {
       break;
     case 'update':
       void runUpdate();
+      break;
+    case 'doctor':
+      void runDoctor(args);
       break;
     default:
       console.error(`Unknown command: ${args.command}`);

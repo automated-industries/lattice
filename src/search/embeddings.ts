@@ -2,7 +2,8 @@ import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import type { Row, EmbeddingsConfig, SearchResult } from '../types.js';
 
-const EMBEDDINGS_TABLE = '_lattice_embeddings';
+/** Internal table that stores one embedding vector per (table, row). */
+export const EMBEDDINGS_TABLE = '_lattice_embeddings';
 
 /**
  * Ensure the internal embeddings storage table exists.
@@ -43,9 +44,13 @@ export async function storeEmbedding(
   if (text.length === 0) return;
 
   const vector = await config.embed(text);
+  // Portable upsert: `INSERT OR REPLACE` is SQLite-only (the Postgres adapter
+  // refuses to translate it), so use the `ON CONFLICT ... DO UPDATE` form, which
+  // both engines accept and which keys on the (table_name, row_pk) primary key.
   await runAsyncOrSync(
     adapter,
-    `INSERT OR REPLACE INTO "${EMBEDDINGS_TABLE}" ("table_name", "row_pk", "embedding") VALUES (?, ?, ?)`,
+    `INSERT INTO "${EMBEDDINGS_TABLE}" ("table_name", "row_pk", "embedding") VALUES (?, ?, ?)
+     ON CONFLICT ("table_name", "row_pk") DO UPDATE SET "embedding" = excluded."embedding"`,
     [table, pk, JSON.stringify(vector)],
   );
 }
