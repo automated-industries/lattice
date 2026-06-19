@@ -37,8 +37,13 @@ export async function checkForUpdate(
   opts: { ttlMs?: number; force?: boolean } = {},
 ): Promise<string | null> {
   const ttlMs = opts.ttlMs ?? ONE_DAY_MS;
-  const cacheDir = join(homedir(), `.${pkgName}`);
-  const cachePath = join(cacheDir, 'update-check.json');
+  // The update-check cache lives in the shared `~/.lattice` home — the same dotdir
+  // the installer's managed Node, the legacy user-config, and the workspace root
+  // marker all use. A separate `~/.${pkgName}` (`~/.latticesql`) dotdir just for
+  // this one cache file was an inconsistency. The file is keyed by package name so
+  // a single home can cache more than one package without collisions.
+  const cacheDir = join(homedir(), '.lattice');
+  const cachePath = join(cacheDir, `update-check-${pkgName}.json`);
 
   // Check cache first (unless forced fresh)
   try {
