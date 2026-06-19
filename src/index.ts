@@ -391,6 +391,8 @@ export { detectAsOfColumns } from './import/asof-columns.js';
 export type { AsOfColumnCandidate } from './import/asof-columns.js';
 export { matchSchemaToExisting, renameEntities } from './import/match.js';
 export type { SchemaMatch, EntityMatch, ExistingTable } from './import/match.js';
+export { excelToRecords } from './import/excel.js';
+export { dedupeAndDetectViews } from './import/dedupe-views.js';
 export type {
   MaterializeCtx,
   MaterializeResult,
@@ -405,6 +407,7 @@ export type {
   InferredDimension,
   InferredLinkage,
   InferredType,
+  DetectedView,
 } from './import/types.js';
 
 // Durable file-backed SourceKeyStore for production crypto-shred deployments.

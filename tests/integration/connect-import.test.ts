@@ -330,4 +330,84 @@ describe('import: over the HTTP endpoints (connect panel flow)', () => {
     expect(files.rows.length).toBeGreaterThanOrEqual(1);
     expect(files.rows.some((r) => r.original_name === 'deals.json')).toBe(true);
   });
+
+  it('imports an .xlsx: per-fund tabs become read-only views of the master', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'lattice-xlsx-http-'));
+    dirs.push(base);
+    process.env.LATTICE_ROOT = join(base, '.lattice');
+    const root = ensureLatticeRoot(base);
+    const ws = addWorkspace(root, { displayName: 'Xlsx' });
+    (await Lattice.openWorkspace({ root, workspaceId: ws.id })).close();
+    const paths = resolveWorkspacePaths(root, ws);
+
+    const ExcelJS = await import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const regions = ['NA', 'EU', 'Asia'];
+    const master = wb.addWorksheet('Investments');
+    master.getRow(1).values = [null, 'Company', 'Fund', 'Region', 'Invested'];
+    const f1 = wb.addWorksheet('F1');
+    f1.getRow(1).values = [null, 'Company', 'Region', 'Invested'];
+    const f2 = wb.addWorksheet('F2');
+    f2.getRow(1).values = [null, 'Company', 'Region', 'Invested'];
+    let mr = 2;
+    const fr = { F1: 2, F2: 2 };
+    for (let i = 0; i < 12; i++) {
+      const fund = i % 2 === 0 ? 'F1' : 'F2';
+      const co = 'Co ' + i;
+      const region = regions[i % 3];
+      const inv = 10 + i;
+      master.getRow(mr++).values = [null, co, fund, region, inv];
+      const sheet = fund === 'F1' ? f1 : f2;
+      sheet.getRow(fr[fund]++).values = [null, co, region, inv];
+    }
+    const dashDir = join(base, 'dash');
+    mkdirSync(dashDir, { recursive: true });
+    writeFileSync(join(dashDir, 'index.html'), '<!doctype html><body>x</body>', 'utf8');
+    await wb.xlsx.writeFile(join(dashDir, 'book.xlsx'));
+
+    const server = await startGuiServer({
+      configPath: paths.configPath,
+      outputDir: paths.contextDir,
+      port: 0,
+      openBrowser: false,
+      dashboardPath: dashDir,
+    });
+    servers.push(server);
+
+    const analyzed = (await (
+      await fetch(`${server.url}/api/connect/import/analyze`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: 'book.xlsx' }),
+      })
+    ).json()) as { plan: { entities: { name: string }[] }; views: { name: string; master: string }[] };
+    expect(analyzed.views.map((v) => v.name).sort()).toEqual(['f1', 'f2']);
+    expect(analyzed.views.every((v) => v.master === 'investments')).toBe(true);
+    expect(analyzed.plan.entities.map((e) => e.name)).toContain('investments');
+    expect(analyzed.plan.entities.map((e) => e.name)).not.toContain('f1');
+
+    const applyText = await (
+      await fetch(`${server.url}/api/connect/import/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: 'book.xlsx', mode: 'both' }),
+      })
+    ).text();
+    const applyEvents = applyText
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { phase: string; ok?: boolean; result?: { views: { name: string; rows: number }[] } });
+    const applied = applyEvents.find((e) => e.phase === 'done' && e.ok);
+    expect(applied).toBeTruthy();
+    expect(applied?.result?.views.find((v) => v.name === 'f1')?.rows).toBe(6);
+
+    const all = (await (await fetch(`${server.url}/api/tables/investments/rows?limit=50`)).json()) as {
+      rows: unknown[];
+    };
+    expect(all.rows).toHaveLength(12);
+    const view = (await (await fetch(`${server.url}/api/tables/f1/rows?limit=50`)).json()) as {
+      rows: { fund?: string }[];
+    };
+    expect(view.rows).toHaveLength(6);
+  });
 });

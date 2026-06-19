@@ -22,12 +22,13 @@ import {
 import { randomUUID } from 'node:crypto';
 import { inferSchema } from '../import/infer.js';
 import { materializeImport, type ImportMode } from '../import/materialize.js';
-import { detectAsOfCandidates } from '../import/asof.js';
 import { detectAsOfColumns } from '../import/asof-columns.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
-import { asOfFromLlm } from './ai/asof-llm.js';
+import { detectImportAsOf } from './import-detect.js';
 import { referenceLocalFile } from '../framework/reference-store.js';
+import { excelToRecords } from '../import/excel.js';
+import { dedupeAndDetectViews } from '../import/dedupe-views.js';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
 import { findLatticeRoot, workspaceDir } from '../framework/lattice-root.js';
@@ -336,9 +337,18 @@ function readImportJson(rawPath: string, dashboardDir: string | null): Record<st
   return parsed as Record<string, unknown>;
 }
 
-/** Read an import source for the importer (a JSON object whose keys are record arrays). */
-function readImportSource(rawPath: string, dashboardDir: string | null): Record<string, unknown> {
+/** Read an import source by extension: `.xlsx`/`.xls` → sheets-as-records, else JSON. */
+async function readImportSource(
+  rawPath: string,
+  dashboardDir: string | null,
+): Promise<Record<string, unknown>> {
   if (!rawPath.trim()) throw badRequest('A file path is required.');
+  if (/\.xlsx?$/i.test(rawPath)) {
+    let abs = resolve(rawPath);
+    if (!existsSync(abs) && dashboardDir) abs = resolve(dashboardDir, rawPath);
+    if (!existsSync(abs)) throw badRequest('File not found: ' + abs);
+    return excelToRecords(abs);
+  }
   return readImportJson(rawPath, dashboardDir);
 }
 
@@ -2393,7 +2403,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           if (dashboardDir) {
             try {
               for (const f of readdirSync(dashboardDir)) {
-                if (/\.json$/i.test(f)) sources.push(join(dashboardDir, f));
+                if (/\.(json|xlsx?)$/i.test(f)) sources.push(join(dashboardDir, f));
               }
             } catch {
               /* unreadable dir → no candidates */
@@ -2435,24 +2445,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             async () => {
               const body = await readJson<{ path?: unknown }>(req);
               const rawPath = typeof body.path === 'string' ? body.path : '';
-              const data = readImportSource(rawPath, dashboardDir);
-              const plan = inferSchema(data);
-              // Detect the snapshot date from several signals, ranked with evidence:
-              // the file name (strip any staging prefix) + the source's top-level
-              // non-array values (meta / date keys like `asOf`, `reportDate`).
+              const data = await readImportSource(rawPath, dashboardDir);
+              const { plan, views } = dedupeAndDetectViews(inferSchema(data), data);
+              // Snapshot date from every signal (in-content + file name + Excel
+              // preamble + Claude fallback), ranked with evidence — shared with the
+              // assistant's auto-import so both doors detect the period identically.
               const abs = resolveImportPath(rawPath, dashboardDir);
-              const fname = abs ? basename(abs).replace(/^[0-9a-f]{8}-/, '') : '';
-              const texts: { label: string; text: string }[] = [];
-              for (const [k, v] of Object.entries(data)) {
-                if (!Array.isArray(v)) texts.push({ label: 'data', text: `${k}: ${JSON.stringify(v)}` });
-              }
-              let asOfCandidates = detectAsOfCandidates({ fileName: fname, texts });
-              // Fall back to Claude only when no confident in-content date was found
-              // (a strong "as of" cell scores 0.95; a bare filename date 0.6).
-              if (!asOfCandidates[0] || asOfCandidates[0].confidence < 0.7) {
-                const llm = await asOfFromLlm(active.db, texts.map((t) => t.text).join('\n'));
-                if (llm) asOfCandidates = [...asOfCandidates, llm].sort((a, b) => b.confidence - a.confidence);
-              }
+              const asOfCandidates = await detectImportAsOf(active.db, data, { abs });
               // A per-row date COLUMN (one file → many periods), if the data has one.
               const asOfColumns = detectAsOfColumns(data, plan);
               // Is this a new period of a document already imported here?
@@ -2463,6 +2462,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 asOfCandidates,
                 asOfColumns,
                 schemaMatch,
+                views,
               });
             },
             '/api/connect/import/analyze',
@@ -2499,17 +2499,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           };
           try {
             emit({ phase: 'parse', message: 'Reading source…' });
-            const data = readImportSource(rawPath, dashboardDir);
+            const data = await readImportSource(rawPath, dashboardDir);
             emit({ phase: 'infer', message: 'Analyzing schema…' });
-            const inferred = inferSchema(data);
+            const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
+              inferSchema(data),
+              data,
+            );
             emit({
               phase: 'infer',
-              message: `Found ${String(inferred.entities.length)} entities, ${String(inferred.dimensions.length)} dimensions, ${String(inferred.linkages.length)} links`,
+              message: `Found ${String(inferredPlan.entities.length)} entities, ${String(inferredPlan.dimensions.length)} dimensions, ${String(inferredPlan.linkages.length)} links`,
             });
             // Recognize a re-import: route matching entities into the existing
             // tables (a new dated snapshot) rather than creating parallel ones.
-            const match = matchSchemaToExisting(existingDataTables(active.db), inferred);
-            const { plan } = renameEntities(inferred, [], match.rename);
+            const match = matchSchemaToExisting(existingDataTables(active.db), inferredPlan);
+            const { plan, views } = renameEntities(inferredPlan, inferredViews, match.rename);
+            if (views.length > 0) {
+              emit({
+                phase: 'detect',
+                message: `Detected ${String(views.length)} reconstructable views (no duplicated rows)`,
+              });
+            }
             if (match.isKnownDocument) {
               emit({
                 phase: 'detect',
@@ -2522,7 +2531,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               { db: active.db, configPath: active.configPath },
               data,
               plan,
-              [],
+              views,
               {
                 mode,
                 asOf,

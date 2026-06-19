@@ -72,6 +72,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   New library exports: `inferSchema`, `materializeImport`, `detectAsOf`,
   `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`, `ImportMode`,
   `ImportProgress` (+ types).
+- **Import Excel workbooks (.xlsx) + reconstruct views (no duplicated data).** The
+  importer also accepts `.xlsx` (via the optional `exceljs` dependency): each sheet
+  becomes records by detecting the header row + data region (skipping title/
+  disclaimer preamble, navigation, and prose sheets — real workbooks rarely use
+  formal Excel Table objects), then flows through the same analyze → choose →
+  import pipeline. New **structural dedup + view detection** runs across the
+  inferred entities: when one entity is a per-value slice of another (e.g. a
+  per-fund tab whose rows are `master WHERE fund = X`, detected by tab-name +
+  identity-overlap, robust to renamed columns and drifting values), it is
+  materialized as a **read-only DB view** of the master — visible in the objects
+  tree with zero duplicated rows — instead of a redundant table. Dimension
+  detection excludes high-cardinality and mostly-numeric columns. New library
+  exports: `excelToRecords`, `dedupeAndDetectViews` (+ `DetectedView`).
+- **Recognize a re-upload as a new period of an existing document (auto-import).**
+  An uploaded file is fingerprinted by each entity's column set and matched to the
+  tables already in the workspace (containment-based, so it survives renamed sheets
+  and added columns). When it matches, the import routes into those tables as a new
+  dated snapshot instead of creating duplicates — the import panel shows a
+  "recognized as a new period" banner. **And it now works from the assistant too:**
+  dropping a `.xlsx`/`.json` into the chat that matches a known document imports it
+  as a snapshot automatically (date auto-detected), reported in the activity feed —
+  no questions asked. Conservative by design: an unrecognized structure is left as a
+  plain reference file, and a matched document with no detectable date is flagged
+  (never silently overwritten). New library exports: `matchSchemaToExisting`,
+  `renameEntities` (+ `SchemaMatch`, `EntityMatch`, `ExistingTable`).
 
 ## [3.4.2] - 2026-06-18
 

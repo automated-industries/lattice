@@ -3343,7 +3343,7 @@ export const appJs = `
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ path: path }),
           }).then(function (r) {
-            renderImportPlan(path, r.plan || {}, r.asOf, r.asOfCandidates, r.asOfColumns, r.schemaMatch);
+            renderImportPlan(path, r.plan || {}, r.views || [], r.asOf, r.asOfCandidates, r.asOfColumns, r.schemaMatch);
           }).catch(function (err) {
             out.innerHTML = '<div class="cd-status err">' + escapeHtml(err.message || 'Analyze failed.') + '</div>';
           });
@@ -3377,12 +3377,13 @@ export const appJs = `
       });
 
       // Preview the proposed schema + let the user choose what to import.
-      function renderImportPlan(path, plan, asOf, candidates, asOfColumns, schemaMatch) {
+      function renderImportPlan(path, plan, views, asOf, candidates, asOfColumns, schemaMatch) {
         candidates = candidates || [];
         asOfColumns = asOfColumns || [];
         var ents = plan.entities || [];
         var dims = plan.dimensions || [];
         var links = plan.linkages || [];
+        views = views || [];
         var parts = [];
         // Recognized as a new period of a document already in this workspace.
         if (schemaMatch && schemaMatch.isKnownDocument) {
@@ -3391,7 +3392,9 @@ export const appJs = `
             ' tables match what you already imported. It will be added as a dated snapshot.</div>');
         }
         parts.push('<div class="cd-status ok">Found ' + ents.length + ' entities, ' + dims.length +
-          ' dimensions, ' + links.length + ' links.</div><ul class="cd-import-list">');
+          ' dimensions, ' + links.length + ' links' +
+          (views.length ? ', ' + views.length + ' reconstructed views (no duplicated rows)' : '') +
+          '.</div><ul class="cd-import-list">');
         ents.forEach(function (e) {
           parts.push('<li><b>' + escapeHtml(e.name) + '</b> &mdash; ' + e.rowCount + ' rows, ' +
             (e.columns ? e.columns.length : 0) + ' cols &middot; ' +
@@ -3399,6 +3402,11 @@ export const appJs = `
         });
         dims.forEach(function (d) {
           parts.push('<li><b>' + escapeHtml(d.name) + '</b> (dimension) &mdash; ' + d.distinctValues + ' values</li>');
+        });
+        views.forEach(function (v) {
+          parts.push('<li><b>' + escapeHtml(v.name) + '</b> (view of ' + escapeHtml(v.master) + ' where ' +
+            escapeHtml(v.filterColumn) + ' = ' + escapeHtml(String(v.filterValue)) + ') &mdash; ' +
+            v.matchedRows + ' rows, not duplicated</li>');
         });
         parts.push('</ul>');
         parts.push('<h4 class="imp-sub">As of date</h4>');

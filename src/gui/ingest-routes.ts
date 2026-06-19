@@ -26,6 +26,9 @@ import { ingestUrlAsFile, type UrlIngestEnrich } from './ingest-url.js';
 import { fileIdentity, requiredFileDefaults } from './file-row.js';
 import { columnDescriptionHook } from './meta-gen.js';
 import { findExactFileDupesOf, mergeDuplicates, type DedupServiceCtx } from './dedup-service.js';
+// Smart structured import: a recognized re-upload of a known document is brought
+// in as a new dated snapshot automatically (the assistant "door" for import).
+import { autoImportStructured, type AutoImportResult } from './import-auto.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -391,9 +394,19 @@ export async function dispatchIngestRoute(
     const tmp = join(tmpdir(), `lattice-ingest-${crypto.randomUUID()}${extname(name)}`);
     let result;
     let blob: { blob_path: string; sha256: string } | null = null;
+    // When the drop is a recognized re-upload of a known data document, it's also
+    // imported as a new dated snapshot (in addition to being kept as a file).
+    let autoImport: AutoImportResult | null = null;
     try {
       await writeFile(tmp, buf);
       result = await extractSource(ctx.db, tmp, mime, name);
+      // Smart import while the bytes are still on disk (tmp is removed below).
+      // Best-effort: a structured-import failure never fails the file upload.
+      try {
+        autoImport = await autoImportStructured(ctx.db, ctx.configPath ?? null, tmp, name);
+      } catch (e) {
+        console.warn('[ingest] auto-import skipped:', (e as Error).message);
+      }
       // Retain a content-addressed blob for documents and media (images, PDFs,
       // office docs, text/data, audio, video). Browser drag-drops arrive as bytes
       // with no local path, so this is the only way the underlying file can be
@@ -531,6 +544,25 @@ export async function dispatchIngestRoute(
     } catch {
       /* dedup is best-effort — fall through to normal enrichment */
     }
+    // Auto-import outcome → a feed line so the snapshot is visible without any
+    // chat round-trip (the assistant "door" working automatically).
+    if (autoImport?.imported) {
+      ctx.feed.publish({
+        table: autoImport.tables[0] ?? 'files',
+        op: 'insert',
+        rowId: null,
+        source: 'system',
+        summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables`,
+      });
+    } else if (autoImport?.reason === 'no-date') {
+      ctx.feed.publish({
+        table: 'files',
+        op: 'update',
+        rowId: id,
+        source: 'system',
+        summary: `"${name}" matches an existing document, but no snapshot date was found — open Import Dashboard Data to set it.`,
+      });
+    }
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
       const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res);
@@ -543,6 +575,7 @@ export async function dispatchIngestRoute(
         id,
         extraction_status: result.skip ? 'skipped' : 'extracted',
         suggestedLinks,
+        ...(autoImport ? { autoImport } : {}),
         // Present only when S3 is enabled for this workspace. 'failed' tells the
         // uploader the bytes did NOT reach the shared bucket — other members would
         // 404 until it's re-uploaded — so the GUI can warn rather than imply a
