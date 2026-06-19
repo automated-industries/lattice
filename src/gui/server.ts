@@ -201,6 +201,13 @@ export interface StartGuiServerOptions {
    * `GET /api/version` + `GET /api/update/status` are served regardless.
    */
   selfUpdate?: boolean;
+  /**
+   * Test seam: supply the update service instead of building one from the real
+   * npm-backed install context. Lets tests exercise the update routes against a
+   * deterministic fake (no real registry check, no real npm install). When set,
+   * it overrides `selfUpdate`'s default factory.
+   */
+  updateServiceFactory?: (emit: (type: string, data: unknown) => void) => UpdateService;
 }
 
 export interface GuiServerHandle {
@@ -2164,6 +2171,28 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               lastError: null,
             },
           );
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/update/apply') {
+          // Manual fallback to the automatic updater: force a check that, when a
+          // newer installable version exists, installs the latest and restarts
+          // the GUI onto it. The install is slow (an npm install), so kick it off
+          // without blocking the response — `checkNow(true)` logs/emits its own
+          // progress + errors (update-applied / update-error), which the client
+          // surfaces. When there is no update service (unsupervised or not
+          // installable) there is nothing to do: answer with a plain "can't",
+          // not a crash, so the client can tell the user how to upgrade by hand.
+          if (updateService) {
+            void updateService.checkNow(true);
+            sendJson(res, { ok: true, status: updateService.status() });
+          } else {
+            sendJson(res, {
+              ok: false,
+              error:
+                'Automatic update is not available for this install. ' +
+                'Reinstall from https://latticesql.com to get the latest version.',
+            });
+          }
           return;
         }
 
@@ -4146,7 +4175,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     }
   };
 
-  if (options.selfUpdate && guiVersion) {
+  if (options.updateServiceFactory) {
+    updateService = options.updateServiceFactory(broadcast);
+  } else if (options.selfUpdate && guiVersion) {
     updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
   }
 
