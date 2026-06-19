@@ -45,8 +45,6 @@ export const BUILTIN_COLUMN_DESCRIPTIONS: Readonly<
     description: 'Short summary of what this file is (AI- or human-authored).',
     artifact_type:
       "Set to 'markdown' for an assistant-authored document artifact; otherwise empty.",
-    path: 'Legacy local path (deprecated — superseded by ref_kind/ref_uri).',
-    kind: 'Legacy type tag (deprecated — superseded by mime/ref_kind).',
   },
   notes: {
     title: 'Short title of the note.',
@@ -66,7 +64,7 @@ export const BUILTIN_SYSTEM_COLUMN_DESCRIPTIONS: Readonly<Record<string, string>
   id: 'Primary key — the unique identifier of this row.',
   created_at: 'When this row was created.',
   updated_at: 'When this row was last updated.',
-  deleted_at: 'When this row was soft-deleted (empty while the row is active).',
+  deleted_at: 'When this row was soft-deleted (NULL while the row is active).',
 };
 
 /** Built-in definitions for the user-facing native entities themselves. */

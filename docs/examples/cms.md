@@ -70,10 +70,12 @@ entities:
       title: { type: text, required: true }
       excerpt: { type: text }
       status: { type: text, default: draft }
-      author_id: { type: uuid, ref: author }
+      author_id: { type: uuid }
       word_count: { type: integer, default: 0 }
       published_at: { type: datetime }
       updated_at: { type: datetime }
+    relations:
+      author: { type: belongsTo, table: author, foreignKey: author_id }
     render:
       template: default-detail
       formatRow: '**{{title}}** [{{status}}] by {{author.name}} — {{word_count}} words'

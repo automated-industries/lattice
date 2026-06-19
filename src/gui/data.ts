@@ -121,7 +121,7 @@ interface GuiData {
   tables: GuiTableSummary[];
 }
 
-function tableToSummary(name: string, definition: TableDefinition): GuiTableSummary {
+export function tableToSummary(name: string, definition: TableDefinition): GuiTableSummary {
   return {
     name,
     columns: Object.keys(definition.columns),

@@ -79,8 +79,7 @@ export function generateTypes(config: LatticeConfig): string {
       const tsType = toTsType(field.type);
       const optional = !field.primaryKey && !field.required;
       const mark = optional ? '?' : '';
-      const comment = field.ref ? `  // → ${field.ref}` : '';
-      lines.push(`  ${fieldName}${mark}: ${tsType};${comment}`);
+      lines.push(`  ${fieldName}${mark}: ${tsType};`);
     }
 
     lines.push('}', '');

@@ -2,23 +2,28 @@ import { join, basename, isAbsolute, resolve, sep } from 'node:path';
 import { mkdirSync, existsSync, copyFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import { runAsyncOrSync } from '../db/adapter.js';
+import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 import type { RenderResult, Row } from '../types.js';
-import { atomicWrite, contentHash } from './writer.js';
+import { atomicWrite, contentHash, rowVersionHash, probeDirWritable } from './writer.js';
 import { applyTokenBudget } from './token-budget.js';
-import { resolveEntitySource, truncateContent, type ProtectionContext } from './entity-query.js';
+import {
+  resolveEntitySource,
+  truncateContent,
+  appendQueryOptions,
+  type ProtectionContext,
+} from './entity-query.js';
+import type {
+  EntityContextDefinition,
+  EntityFileSource,
+  BelongsToSource,
+} from '../schema/entity-context.js';
 import { compileEntityRender } from './entity-templates.js';
 import type {
   EntityContextManifestEntry,
   LatticeManifest,
   EntityFileManifestInfo,
 } from '../lifecycle/manifest.js';
-import {
-  writeManifest,
-  readManifest,
-  normalizeEntityFiles,
-  TEMPLATE_VERSION,
-} from '../lifecycle/manifest.js';
+import { writeManifest, readManifest, TEMPLATE_VERSION } from '../lifecycle/manifest.js';
 import { computeRenderCursor } from '../lifecycle/render-cursor.js';
 import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
 import { cleanupEntityContexts } from '../lifecycle/cleanup.js';
@@ -125,6 +130,17 @@ const RENDER_TABLE_CONCURRENCY = 4;
  */
 export const NOOP_RENDER = (): string => '';
 
+/**
+ * Scalar-key guard for the belongsTo batch. PK/FK cells used as Map keys must be
+ * primitives so `String(v)` is a stable, lossless normalization that matches
+ * SQL's `=` coercion. A non-scalar (object/array) cell is treated as no-match
+ * (an empty result, i.e. per-row-equivalent) rather than batched.
+ */
+function isScalarKey(v: unknown): v is string | number | bigint | boolean {
+  const t = typeof v;
+  return t === 'string' || t === 'number' || t === 'bigint' || t === 'boolean';
+}
+
 export class RenderEngine {
   private readonly _schema: SchemaManager;
   private readonly _adapter: StorageAdapter;
@@ -152,16 +168,40 @@ export class RenderEngine {
    */
   private _foldRows: ((table: string, rows: Row[]) => Promise<Row[]>) | undefined;
 
+  /**
+   * Batch the SAFE-SUBSET of `belongsTo` sources (reference == the target's
+   * single-column PK, no orderBy/limit, unprotected) into one
+   * `WHERE pk IN (...)` read per (target+filters+softDelete) group instead of
+   * one query per parent row. Default on; the identity test renders the same
+   * fixture off vs on in one process by toggling
+   * `LATTICE_RENDER_BELONGSTO_BATCH`.
+   */
+  private readonly _batchBelongsTo: boolean;
+
   constructor(
     schema: SchemaManager,
     adapter: StorageAdapter,
     getTaskContext?: () => string,
-    options?: { skipEmpty?: boolean },
+    options?: { skipEmpty?: boolean; batchBelongsTo?: boolean },
   ) {
     this._schema = schema;
     this._adapter = adapter;
     this._getTaskContext = getTaskContext ?? (() => '');
     this._skipEmpty = options?.skipEmpty ?? false;
+    this._batchBelongsTo =
+      options?.batchBelongsTo ?? process.env.LATTICE_RENDER_BELONGSTO_BATCH !== '0';
+  }
+
+  /**
+   * Cheap, complete change-probe for the watch-loop render gate. Delegates to
+   * the adapter's optional `changeProbe()` (SQLite implements it; Postgres does
+   * not). Returns a token guaranteed to change whenever ANY committed data
+   * change has occurred since the prior call, or `undefined` when the backend
+   * cannot expose a complete signal — in which case the loop renders every tick
+   * (never-stale default). See `StorageAdapter.changeProbe`.
+   */
+  changeProbe(): string | undefined {
+    return this._adapter.changeProbe?.();
   }
 
   /** Install the per-viewer read-relation resolver (see `_readRel`). */
@@ -219,6 +259,13 @@ export class RenderEngine {
     const counters = { skipped: 0 };
     const signal = opts.signal;
     const throttle = new ProgressThrottle(opts.onProgress);
+
+    // Convert a disk-full / read-only-mount failure into a clean throw BEFORE
+    // any live file is touched. On failure the prior rendered tree + manifest
+    // stay the record (the manifest is written last, so it is never committed
+    // over a partial tree) and the error is re-raised. No try/catch wraps the
+    // phases — the commit point stays the final writeManifest below.
+    this._preflightWritable(outputDir);
 
     // Single-table renders (phase 1 — fast; lightweight table-done only).
     for (const [name, def] of this._schema.getTables()) {
@@ -367,6 +414,15 @@ export class RenderEngine {
     // the previous manifest — leaving every untouched table's entry intact so the
     // orphan-cleanup pass doesn't see them as removed and prune their files.
     if (this._schema.getEntityContexts().size > 0) {
+      // LOAD-BEARING INVARIANT — keep this commit block fully SYNCHRONOUS (no await /
+      // setImmediate between the readManifest and the writeManifest). It is what makes
+      // two concurrent same-`outputDir` renders safe WITHOUT a per-dir lock: the
+      // read-merge-write can't interleave, so the last writer always commits a
+      // complete (full render) or superset (incremental, merged over the on-disk prev)
+      // manifest, and orphan-cleanup keys deletion off the LIVE DB (not this map), so a
+      // manifest that omits an entity only makes cleanup do less — it never prunes a
+      // live row's files. If this block ever needs an `await`, add a per-`outputDir`
+      // serialization (promise-chain keyed by the resolved dir) around it first.
       let entityContexts = entityContextManifest;
       if (opts.changedTables) {
         const prev = readManifest(outputDir);
@@ -409,6 +465,26 @@ export class RenderEngine {
     });
 
     return result;
+  }
+
+  /**
+   * Pre-flight writability check over the STABLE target directories before any
+   * live file is written: the output root, the `.lattice` manifest dir, and each
+   * entity context's directory root. Each is probed by writing + deleting a
+   * sentinel INSIDE the directory, which is what surfaces an output-volume
+   * disk-full or read-only mount up front. A failure here throws before a single
+   * live byte is touched, so the prior rendered tree + manifest stay the record
+   * and the error is re-raised to the caller. Per-row leaf directories are not
+   * enumerated (that would require reading the rows); a failure isolated to one
+   * leaf still re-raises loudly and leaves the prior manifest intact, it is just
+   * not pre-empted.
+   */
+  private _preflightWritable(outputDir: string): void {
+    const dirs = new Set<string>([outputDir, join(outputDir, '.lattice')]);
+    for (const [table, def] of this._schema.getEntityContexts()) {
+      dirs.add(join(outputDir, def.directoryRoot ?? table));
+    }
+    for (const dir of dirs) probeDirWritable(dir);
   }
 
   /**
@@ -464,6 +540,115 @@ export class RenderEngine {
   }
 
   /**
+   * Narrow a source to the SAFE batchable belongsTo subset, or return null.
+   * Batchable ⇔ belongsTo AND unprotected AND no orderBy/limit (per-parent
+   * semantics a global IN-query would misapply) AND the effective reference
+   * column equals the target's SINGLE-column primary key — so `WHERE pk IN (...)`
+   * yields ≤1 row per key, exactly what the per-row belongsTo returns.
+   * `filters`/`softDelete` ARE batched: they are row-local predicates and
+   * PK-uniqueness still bounds each key to ≤1 surviving row.
+   */
+  private _batchableBelongsTo(
+    source: EntityFileSource,
+    protectedTables: ReadonlySet<string>,
+  ): BelongsToSource | null {
+    if (!this._batchBelongsTo) return null;
+    if (source.type !== 'belongsTo') return null;
+    if (protectedTables.has(source.table)) return null;
+    if (source.orderBy !== undefined || source.limit !== undefined) return null;
+    const pk = this._schema.getPrimaryKey(source.table);
+    if (pk.length !== 1) return null;
+    const ref = source.references ?? 'id';
+    if (pk[0] !== ref) return null;
+    return source;
+  }
+
+  /** Group key: same target + reference + filters + softDelete ⇒ one IN-read. */
+  private _belongsToBatchKey(source: BelongsToSource): string {
+    return JSON.stringify([
+      source.table,
+      source.references ?? 'id',
+      source.filters ?? null,
+      !!source.softDelete,
+    ]);
+  }
+
+  /**
+   * Normalize a scalar key so the JS Map's SameValueZero equality matches SQL's
+   * `=` coercion (e.g. a number FK vs a number-valued PK). Used identically on
+   * both insert and lookup.
+   */
+  private static _normKey(v: string | number | bigint | boolean): string {
+    return String(v);
+  }
+
+  /**
+   * Prefetch the batchable belongsTo sources for one entity-context table.
+   * For each (target+filters+softDelete) group, issue exactly ONE
+   * `SELECT * FROM "<readRel(table)>" WHERE "<ref>" IN (?,...)` over the DISTINCT
+   * non-null parent FK values, then build `Map<normKey, Row>` (first-write-wins;
+   * ≤1 per key since ref == PK). Reads THROUGH `_readRel` so a masked target
+   * reads `<table>_v`. Abort-guarded; an empty key set issues no query.
+   * Returns `Map<groupKey, Map<normKey, Row>>`, or null if aborted.
+   */
+  private async _prefetchBelongsToBatches(
+    def: EntityContextDefinition,
+    entityRows: Row[],
+    protectedTables: ReadonlySet<string>,
+    signal: AbortSignal | undefined,
+  ): Promise<Map<string, Map<string, Row>> | null> {
+    const groups = new Map<string, BelongsToSource>();
+    for (const spec of Object.values(def.files)) {
+      const mergeDefaults =
+        def.sourceDefaults &&
+        spec.source.type !== 'self' &&
+        spec.source.type !== 'custom' &&
+        spec.source.type !== 'enriched';
+      const source = mergeDefaults
+        ? ({ ...def.sourceDefaults, ...spec.source } as EntityFileSource)
+        : spec.source;
+      const batchable = this._batchableBelongsTo(source, protectedTables);
+      if (!batchable) continue;
+      const key = this._belongsToBatchKey(batchable);
+      if (!groups.has(key)) groups.set(key, batchable);
+    }
+    if (groups.size === 0) return new Map();
+
+    const result = new Map<string, Map<string, Row>>();
+    for (const [groupKey, source] of groups) {
+      if (signal?.aborted) return null;
+      const keySet = new Set<string>();
+      const rawByKey = new Map<string, unknown>();
+      for (const row of entityRows) {
+        const fkVal = row[source.foreignKey];
+        if (fkVal == null || !isScalarKey(fkVal)) continue;
+        const k = RenderEngine._normKey(fkVal);
+        if (!keySet.has(k)) {
+          keySet.add(k);
+          rawByKey.set(k, fkVal);
+        }
+      }
+      const byKey = new Map<string, Row>();
+      result.set(groupKey, byKey);
+      if (keySet.size === 0) continue; // empty key set → no IN () query
+      const from = this._readRel(source.table);
+      const refCol = source.references ?? 'id';
+      const keys = [...rawByKey.values()];
+      const params: unknown[] = [...keys];
+      let sql = `SELECT * FROM "${from}" WHERE "${refCol}" IN (${keys.map(() => '?').join(', ')})`;
+      sql = appendQueryOptions(sql, params, source);
+      const rows = await allAsyncOrSync(this._adapter, sql, params);
+      for (const r of rows) {
+        const refVal = r[refCol];
+        if (refVal == null || !isScalarKey(refVal)) continue;
+        const k = RenderEngine._normKey(refVal);
+        if (!byKey.has(k)) byKey.set(k, r);
+      }
+    }
+    return result;
+  }
+
+  /**
    * Render all entity context definitions.
    * Mutates `filesWritten` and `counters` in place.
    * Returns manifest data for the entity contexts rendered this cycle, or
@@ -512,6 +697,17 @@ export class RenderEngine {
         const allRows = this._foldRows ? await this._foldRows(table, baseRows) : baseRows;
         const directoryRoot = def.directoryRoot ?? table;
 
+        // Prefetch the SAFE-SUBSET belongsTo reads for this table as one
+        // `WHERE pk IN (...)` per group (vs one query per parent row). Routed
+        // through `_readRel`, so a masked target reads `<table>_v`. A null
+        // return means the render was aborted — bail and discard the partial.
+        const belongsToBatches = await this._prefetchBelongsToBatches(
+          def,
+          allRows,
+          protectedTables,
+          signal,
+        );
+        if (belongsToBatches === null) return null;
         // Content-hash backstop: route every progress event for this table through
         // a deferred emitter that stays silent until an entity's freshly-rendered
         // bytes actually differ from the prior manifest's recorded hash. A forced
@@ -607,23 +803,23 @@ export class RenderEngine {
                 // No copy: write `<name>.ref.md` pointing at the durable location
                 // (works for local paths and cloud URLs alike).
                 const refPath = join(entityDir, `${basename(filePath)}.ref.md`);
-                try {
-                  atomicWrite(refPath, `# Reference\n\n- **location:** ${filePath}\n`);
+                // A write failure (disk space, permission) propagates out of
+                // render() — never swallowed — so the manifest is not committed
+                // over a tree with a missing attachment. The error is re-raised
+                // and the prior manifest stays the record.
+                if (atomicWrite(refPath, `# Reference\n\n- **location:** ${filePath}\n`)) {
                   filesWritten.push(refPath);
-                } catch {
-                  // Silently skip write failures (permission, disk space, etc.)
                 }
               } else {
                 const absPath = isAbsolute(filePath) ? filePath : resolve(outputDir, filePath);
                 if (existsSync(absPath)) {
                   const destPath = join(entityDir, basename(absPath));
                   if (!existsSync(destPath)) {
-                    try {
-                      copyFileSync(absPath, destPath);
-                      filesWritten.push(destPath);
-                    } catch {
-                      // Silently skip copy failures (permission, disk space, etc.)
-                    }
+                    // A copy failure (disk space, permission) propagates out of
+                    // render() — never swallowed — so the manifest is not
+                    // committed over a tree with a missing binary attachment.
+                    copyFileSync(absPath, destPath);
+                    filesWritten.push(destPath);
                   }
                 }
               }
@@ -637,6 +833,10 @@ export class RenderEngine {
 
           // v2 manifest: track per-file hashes
           const entityFileHashes: Record<string, EntityFileManifestInfo> = {};
+          // Capture the source row's version ONCE per entity so reverse-sync can
+          // detect a concurrent DB change before applying a file edit (per-file
+          // info carries it; the row is the same for every file of the entity).
+          const rowVersion = rowVersionHash(entityRow);
 
           const protection: ProtectionContext | undefined =
             protectedTables.size > 0 ? { protectedTables, currentTable: table } : undefined;
@@ -652,20 +852,38 @@ export class RenderEngine {
               spec.source.type !== 'custom' &&
               spec.source.type !== 'enriched';
             const source = mergeDefaults ? { ...def.sourceDefaults, ...spec.source } : spec.source;
-            const rows = await resolveEntitySource(
-              source,
-              entityRow,
-              entityPk,
-              this._adapter,
-              protection,
-            );
+            // Safe-subset belongsTo: serve from the per-table batched prefetch
+            // (one `WHERE pk IN (...)` already issued). Normalize the FK with the
+            // SAME `String(v)` coercion used when filling the map, so the Map's
+            // SameValueZero lookup matches SQL's `=`. A null FK or a missing key
+            // ⇒ `[]`, exactly the per-row belongsTo result. Anything outside the
+            // safe subset falls through to the unchanged per-row resolver.
+            const batchable = this._batchableBelongsTo(source, protectedTables);
+            let rows: Row[];
+            if (batchable) {
+              const byKey = belongsToBatches.get(this._belongsToBatchKey(batchable));
+              const fkVal = entityRow[batchable.foreignKey];
+              const hit =
+                fkVal == null || !isScalarKey(fkVal)
+                  ? undefined
+                  : byKey?.get(RenderEngine._normKey(fkVal));
+              rows = hit ? [hit] : [];
+            } else {
+              rows = await resolveEntitySource(
+                source,
+                entityRow,
+                entityPk,
+                this._adapter,
+                protection,
+              );
+            }
 
             if (spec.omitIfEmpty && rows.length === 0) continue;
 
             const renderFn = compileEntityRender(spec.render);
             const content = truncateContent(renderFn(rows), spec.budget);
             renderedFiles.set(filename, content);
-            entityFileHashes[filename] = { hash: contentHash(content) };
+            entityFileHashes[filename] = { hash: contentHash(content), rowVersion };
 
             const filePath = join(entityDir, filename);
             if (atomicWrite(filePath, content)) {
@@ -708,6 +926,7 @@ export class RenderEngine {
               renderedFiles.set(effectiveCombined.outputFile, combinedContent);
               entityFileHashes[effectiveCombined.outputFile] = {
                 hash: contentHash(combinedContent),
+                rowVersion,
               };
             }
           }
@@ -718,10 +937,10 @@ export class RenderEngine {
           // Content-hash backstop: did THIS entity's bytes change vs the prior
           // manifest? Compare the freshly-computed per-file hashes to the recorded
           // ones for the same slug. A new slug, a new/removed file, or any differing
-          // hash flags the table as changed (flushing the held progress). A missing
-          // prior hash ('' for a legacy v1 entry) counts as changed — we can't
-          // prove it matched, so we surface progress (fail toward showing work).
-          const priorHashes = normalizeEntityFiles(priorEntities[slug] ?? {});
+          // hash flags the table as changed (flushing the held progress). Manifests
+          // are v2-only here (the v1 string-array shape was retired), so the recorded
+          // entities are already per-file hash records — used directly.
+          const priorHashes = priorEntities[slug] ?? {};
           if (entityContentChanged(entityFileHashes, priorHashes)) deferred.markChanged();
 
           // Per-entity progress, coalesced by the throttle to ≤ ~5/sec per table.
