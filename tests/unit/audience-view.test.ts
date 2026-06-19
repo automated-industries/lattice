@@ -46,9 +46,13 @@ describe('audiencePredicate', () => {
 
 describe('audienceViewSql', () => {
   it('passes unmasked columns through and CASE-masks the owner secret column', () => {
-    const sql = audienceViewSql('person', ['id', 'name', 'comp', 'owner_role'], ['id'], {
-      comp: 'owner',
-    });
+    const sql = audienceViewSql(
+      'person',
+      ['id', 'name', 'comp', 'owner_role'],
+      ['id'],
+      { comp: 'owner' },
+      'lattice_members',
+    );
     expect(sql).toContain('CREATE OR REPLACE VIEW "person_v"');
     expect(sql).toContain('FROM "person"');
     expect(sql).toContain('GRANT SELECT ON "person_v" TO lattice_members');
@@ -65,13 +69,19 @@ describe('audienceViewSql', () => {
   });
 
   it('an everyone/row-audience column is not wrapped', () => {
-    const sql = audienceViewSql('t', ['id', 'a'], ['id'], { a: 'everyone' });
+    const sql = audienceViewSql('t', ['id', 'a'], ['id'], { a: 'everyone' }, 'lattice_members');
     expect(sql).not.toContain('CASE WHEN');
     expect(sql).toMatch(/SELECT "id", "a" FROM "t"/);
   });
 
   it('serializes a composite pk for the row filter (matches the RLS policy)', () => {
-    const sql = audienceViewSql('memo', ['a', 'b', 'secret'], ['a', 'b'], { secret: 'owner' });
+    const sql = audienceViewSql(
+      'memo',
+      ['a', 'b', 'secret'],
+      ['a', 'b'],
+      { secret: 'owner' },
+      'lattice_members',
+    );
     expect(sql).toContain(
       'WHERE lattice_row_visible(\'memo\', CAST("a" AS TEXT) || chr(9) || CAST("b" AS TEXT))',
     );

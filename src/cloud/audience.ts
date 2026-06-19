@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
-import { MEMBER_GROUP, pkSqlExpr } from './rls.js';
+import { memberGroupFor, pkSqlExpr } from './rls.js';
 import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 
 /**
@@ -88,6 +88,7 @@ export function audienceViewSql(
   columns: readonly string[],
   pkCols: readonly string[],
   columnAudience: Record<string, string>,
+  group: string,
 ): string {
   const view = quoteIdent(`${table}_v`);
   const base = quoteIdent(table);
@@ -103,8 +104,8 @@ export function audienceViewSql(
   return [
     `CREATE OR REPLACE VIEW ${view} AS SELECT ${selectCols.join(', ')} FROM ${base}` +
       ` WHERE lattice_row_visible(${lit}, ${pkSqlExpr(pkCols, '')});`,
-    `GRANT SELECT ON ${view} TO ${MEMBER_GROUP};`,
-    `REVOKE SELECT ON ${base} FROM ${MEMBER_GROUP};`,
+    `GRANT SELECT ON ${view} TO ${group};`,
+    `REVOKE SELECT ON ${base} FROM ${group};`,
   ].join('\n');
 }
 
@@ -148,9 +149,10 @@ export async function enableAudienceView(
   if (db.getDialect() !== 'postgres') return;
   if (!tableNeedsAudienceView(columnAudience)) return;
   if (pkCols.length === 0) return; // unkeyable table — no row filter possible
+  const group = await memberGroupFor(db);
   const migration: Migration = {
     version: `internal:audience:table:${table}:v1:${audienceVersionHash(columns, pkCols, columnAudience)}`,
-    sql: audienceViewSql(table, columns, pkCols, columnAudience),
+    sql: audienceViewSql(table, columns, pkCols, columnAudience, group),
   };
   await db.migrate([migration]);
 }
@@ -175,6 +177,31 @@ export async function loadColumnPolicy(
   )) as { column_name: string; audience: string }[];
   const out: Record<string, string> = {};
   for (const r of rows) out[r.column_name] = r.audience;
+  return out;
+}
+
+/**
+ * Read EVERY table's canonical column→audience map from __lattice_column_policy in a
+ * single query. This is the DB-canonical source the `<t>_v` masking views are built
+ * from, so a consumer deciding "is this table masked?" must read it here — NOT from
+ * the in-memory, config-derived schema audience, which never reflects a mask applied
+ * at runtime (e.g. the GUI "mark column secret" path). Returns an empty map on a
+ * non-Postgres DB.
+ */
+export async function loadAllColumnPolicy(
+  db: Lattice,
+): Promise<Map<string, Record<string, string>>> {
+  const out = new Map<string, Record<string, string>>();
+  if (db.getDialect() !== 'postgres') return out;
+  const rows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT "table_name", "column_name", "audience" FROM "__lattice_column_policy"`,
+  )) as { table_name: string; column_name: string; audience: string }[];
+  for (const r of rows) {
+    const m = out.get(r.table_name) ?? {};
+    m[r.column_name] = r.audience;
+    out.set(r.table_name, m);
+  }
   return out;
 }
 
@@ -228,17 +255,18 @@ export async function regenerateAudienceViewFromDb(
 ): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
   if (pkCols.length === 0) return;
+  const group = await memberGroupFor(db);
   const spec = await loadColumnPolicy(db, table);
   const view = quoteIdent(`${table}_v`);
   const base = quoteIdent(table);
   if (!tableNeedsAudienceView(spec)) {
     await runAsyncOrSync(
       db.adapter,
-      `DROP VIEW IF EXISTS ${view};\nGRANT SELECT ON ${base} TO ${MEMBER_GROUP};`,
+      `DROP VIEW IF EXISTS ${view};\nGRANT SELECT ON ${base} TO ${group};`,
     );
     return;
   }
-  await runAsyncOrSync(db.adapter, audienceViewSql(table, columns, pkCols, spec));
+  await runAsyncOrSync(db.adapter, audienceViewSql(table, columns, pkCols, spec, group));
 }
 
 /** Owner-only: set (or clear, with an empty spec) a column's audience in the DB and

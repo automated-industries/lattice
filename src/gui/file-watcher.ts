@@ -87,7 +87,24 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
     }
     running = true;
     try {
-      await deps.db.reverseSyncFromFiles(deps.outputDir, { useDefault: true, apply, onSkip });
+      const rs = await deps.db.reverseSyncFromFiles(deps.outputDir, {
+        useDefault: true,
+        apply,
+        onSkip,
+      });
+      // A rejected edit (the DB row changed since the file was rendered) must be
+      // surfaced, never silently dropped — the render that follows will overwrite
+      // the file with current DB state, so tell the editor their change was not
+      // imported and why, so they can re-apply it against the updated record.
+      for (const c of rs.conflicts) {
+        deps.feed.publish({
+          table: c.table,
+          op: 'update',
+          rowId: null,
+          source: 'file-edit',
+          summary: `Edited ${c.filename} on disk, but the record changed elsewhere since it was rendered — your file edit was NOT imported (it would have overwritten the newer change). Re-apply it against the updated record.`,
+        });
+      }
     } catch (err) {
       // A loopback hiccup must never take the server down — surface and continue.
       console.warn('[latticesql] file-loopback pass failed:', (err as Error).message);

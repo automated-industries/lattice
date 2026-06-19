@@ -2,6 +2,8 @@
 // Lattice YAML config schema types
 // ---------------------------------------------------------------------------
 
+import type { BelongsToRelation } from '../types.js';
+
 /**
  * Scalar types recognised in `lattice.config.yml` field definitions.
  *
@@ -40,7 +42,7 @@ export type LatticeFieldType =
  * id:          { type: uuid,    primaryKey: true }
  * title:       { type: text,    required: true }
  * status:      { type: text,    default: open }
- * assignee_id: { type: uuid,    ref: user }
+ * assignee_id: { type: uuid }
  * score:       { type: integer, default: 0 }
  * ```
  */
@@ -54,13 +56,6 @@ export interface LatticeFieldDef {
   /** SQL DEFAULT value */
   default?: string | number | boolean;
   /**
-   * Foreign-key reference to another entity (table name).
-   * Creates a `belongsTo` relation automatically.
-   * The relation name is derived from the field name — `_id` suffix is stripped
-   * (e.g. `assignee_id: { ref: user }` → relation name `assignee`).
-   */
-  ref?: string;
-  /**
    * Per-column audience (Stage-0 scaffolding for the per-viewer enrichment
    * model). Names who may see this column's value in a cloud. Omitted ⇒
    * `row-audience` — the value is visible to exactly whoever can see the row,
@@ -69,6 +64,15 @@ export interface LatticeFieldDef {
    * cell-masking view from it; Stage-0 only records the metadata.
    */
   audience?: string;
+  /**
+   * DEPRECATED (3.x) per-field foreign-key shorthand: `ref: <targetTable>` declared
+   * a `belongsTo` whose relation name is the field name with a trailing `_id`
+   * stripped. Superseded by the explicit entity-level `relations:` block. 4.0 still
+   * PARSES it (converted to a `belongsTo` in-memory) so existing 3.0+ configs keep
+   * working, and the GUI silently rewrites it to `relations:` on open so configs
+   * migrate forward. A future major may drop this once configs have upgraded.
+   */
+  ref?: string;
 }
 
 /**
@@ -93,8 +97,14 @@ export interface LatticeEntityRenderSpec {
  * ```yaml
  * ticket:
  *   fields:
- *     id:    { type: uuid, primaryKey: true }
- *     title: { type: text, required: true }
+ *     id:          { type: uuid, primaryKey: true }
+ *     title:       { type: text, required: true }
+ *     assignee_id: { type: uuid }
+ *   relations:
+ *     assignee:
+ *       type: belongsTo
+ *       table: user
+ *       foreignKey: assignee_id
  *   render: default-list
  *   outputFile: context/TICKETS.md
  * ```
@@ -102,6 +112,27 @@ export interface LatticeEntityRenderSpec {
 export interface LatticeEntityDef {
   /** Column definitions */
   fields: Record<string, LatticeFieldDef>;
+  /**
+   * Explicit `belongsTo` relations for this entity, keyed by relation name.
+   *
+   * Each entry declares a foreign key on THIS entity pointing at another
+   * table: `{ type: belongsTo, table, foreignKey, references? }`. The
+   * `foreignKey` names a plain field on this entity; `references` is the
+   * column on the related table (defaults to its primary key). The relation
+   * name (the map key) is whatever you choose — it is not derived from the
+   * field name.
+   *
+   * @example
+   * ```yaml
+   * relations:
+   *   assignee:
+   *     type: belongsTo
+   *     table: user
+   *     foreignKey: assignee_id
+   *     # references: id   # optional; defaults to the target's primary key
+   * ```
+   */
+  relations?: Record<string, BelongsToRelation>;
   /**
    * How to render rows into context text.
    * Accepts the same forms as `TableDefinition.render`:

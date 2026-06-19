@@ -1,14 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import { runAsyncOrSync, allAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
-import { MEMBER_GROUP } from './rls.js';
+import { memberGroupFor } from './rls.js';
 import { cloudRlsInstalled } from '../framework/cloud-connect.js';
 
 /**
  * Cloud member provisioning. A "member" is a scoped, non-superuser Postgres LOGIN
  * role that connects to the shared cloud database DIRECTLY — there is no server.
  * The member inherits schema / connect / table privileges from the {@link
- * MEMBER_GROUP} group, while Postgres RLS (see ./rls.ts) confines it to the rows
+ * per-cloud member group (see memberGroupFor), while Postgres RLS (see ./rls.ts) confines it to the rows
  * it owns or has been granted: even with its own `psql` it cannot read another
  * member's data.
  *
@@ -85,7 +85,8 @@ export async function provisionMemberRole(
        END IF;
      END $LATTICE$`,
   );
-  await runAsyncOrSync(db.adapter, `GRANT ${MEMBER_GROUP} TO "${role}"`);
+  const group = await memberGroupFor(db);
+  await runAsyncOrSync(db.adapter, `GRANT ${group} TO "${role}"`);
 }
 
 // Sharing levels a row owner may set, mirroring lattice_set_row_visibility's CHECK

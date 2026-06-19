@@ -15,7 +15,6 @@ export interface FilesRow {
   ref_uri?: string | null;
   ref_provider?: string | null;
   blob_path?: string | null;
-  path?: string | null;
   original_name?: string | null;
   mime?: string | null;
   size_bytes?: number | null;

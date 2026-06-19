@@ -25,6 +25,18 @@ export interface MigrationProgress {
 export interface MigrationResult {
   tablesCopied: string[];
   rowsCopied: number;
+  /**
+   * Count of copied `files` rows whose canonical bytes are OWNED-LOCAL
+   * (under `<source-root>/data/blobs/` or a machine-local absolute path)
+   * and were therefore NOT migrated — only the row (the pointer) was
+   * copied. After the source SQLite is archived those bytes are
+   * unreachable from the active cloud config, so the cloud `files` rows
+   * are dangling references. Present (and > 0) only when such rows exist;
+   * the caller surfaces it as an operator warning. Migrating the bytes
+   * themselves (S3 upload) is a deferred follow-up. Omitted (undefined)
+   * when every file is already cloud_ref or there are no files.
+   */
+  blobsNotMigrated?: number;
 }
 
 export interface MigrationOptions {
@@ -49,6 +61,28 @@ function isMigratable(tableName: string): boolean {
 }
 
 /**
+ * Classify a `files` row as owning local bytes that the migration does
+ * NOT carry to the cloud (only the row/pointer is copied).
+ *
+ * A `cloud_ref` row's bytes are NOT owned-local — they are S3-resident
+ * or live behind an external web/gdrive URL whose fetchability is
+ * auth/network-dependent, equally (un)reachable from any machine — so
+ * it is excluded. The `cloud_ref` check MUST come first: a `cloud_ref`
+ * row routinely carries an opportunistic local `blob_path`, and checking
+ * `blob_path` first would over-count it.
+ *
+ * A `local_ref` row's `ref_uri` is a machine-local absolute path. Any
+ * other row (legacy NULL `ref_kind`, or `ref_kind === 'blob'`) owns
+ * local bytes when it has a `blob_path` (under `data/blobs/`).
+ */
+export function isOwnedLocalBlob(row: Record<string, unknown>): boolean {
+  const refKind = row.ref_kind as string | null | undefined;
+  if (refKind === 'cloud_ref') return false; // not owned-local: S3 or external URL; the cloud_ref's opportunistic blob_path is excluded on purpose
+  if (refKind === 'local_ref') return true; // ref_uri is a machine-local absolute path
+  return Boolean(row.blob_path);
+}
+
+/**
  * Copy every migratable table (user-defined entities + native
  * `secrets` / `files`) from `source` into `target`. Both Lattices
  * must be initialized and must have the same schema registered for
@@ -67,6 +101,15 @@ function isMigratable(tableName: string): boolean {
  * differ, encrypted values land on the target as plaintext-of-the-
  * source-ciphertext (i.e. unreadable). Callers are expected to thread
  * the same key through to both sides.
+ *
+ * After each table copy, re-counts the target with the same unfiltered
+ * (soft-delete-consistent) semantic as the source read and throws on
+ * mismatch — defensive insurance against a future write path that
+ * swallows partial failures (the throw lands before the caller archives
+ * the source, so a mismatch leaves the operator on the original local
+ * DB). Reports `blobsNotMigrated` counting copied `files` rows whose
+ * owned-local bytes were not migrated; the bytes themselves are NOT
+ * uploaded — that is a deferred follow-up.
  */
 export async function migrateLatticeData(
   source: Lattice,
@@ -90,6 +133,7 @@ export async function migrateLatticeData(
   }
 
   const result: MigrationResult = { tablesCopied: [], rowsCopied: 0 };
+  let unreachableLocalBlobs = 0;
 
   for (const table of sourceTables) {
     const rows = await source.query(table, {});
@@ -103,6 +147,7 @@ export async function migrateLatticeData(
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
       for (const row of batch) {
+        if (table === 'files' && isOwnedLocalBlob(row)) unreachableLocalBlobs++;
         await target.upsert(table, row);
       }
       copied += batch.length;
@@ -111,7 +156,23 @@ export async function migrateLatticeData(
 
     result.tablesCopied.push(table);
     result.rowsCopied += rows.length;
+
+    // Defensive insurance against a FUTURE write path that could swallow a
+    // partial upsert failure. Re-count with the SAME unfiltered semantic the
+    // copy used — source.query(table, {}) includes soft-deleted rows, so count
+    // unfiltered too (countActive would exclude them and falsely mismatch).
+    // NOTE: today's awaited upserts throw on failure before reaching here, and
+    // migration is into-empty so no PK collision arises — this is belt-and-
+    // braces, not the primary safety net (that's blobsNotMigrated).
+    const targetCount = await target.count(table, {});
+    if (targetCount !== rows.length) {
+      throw new Error(
+        `Migration row-count mismatch for table "${table}": source had ${rows.length.toString()} rows but target has ${targetCount.toString()} after copy. Migration aborts; the source database is untouched.`,
+      );
+    }
   }
+
+  if (unreachableLocalBlobs > 0) result.blobsNotMigrated = unreachableLocalBlobs;
 
   return result;
 }

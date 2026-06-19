@@ -71,3 +71,31 @@ describe('#4.9 row-list page-param bounds', () => {
     expect((await rows(s, '')).status).toBe(200);
   });
 });
+
+// The /api/system-tables/:table/rows endpoint reads an internal table directly
+// (interpolating limit into the SELECT). It previously used `Number(limit ?? 500)`
+// with no clamp + no NaN guard, so a client could request an unbounded slice or
+// turn it into `LIMIT NaN`. It now shares parsePageParam with /api/tables/:t/rows.
+const sysRows = (s: GuiServerHandle, qs: string) =>
+  fetch(`${s.url}/api/system-tables/_lattice_gui_meta/rows${qs}`);
+
+describe('system-tables row read — bounded page params', () => {
+  it('rejects a non-numeric limit with 400 (not LIMIT NaN)', async () => {
+    const s = await boot();
+    expect((await sysRows(s, '?limit=abc')).status).toBe(400);
+    expect((await sysRows(s, '?limit=1.5')).status).toBe(400);
+  });
+
+  it('clamps an enormous limit instead of issuing an unbounded read', async () => {
+    const s = await boot();
+    const huge = await sysRows(s, '?limit=99999999');
+    expect(huge.status).toBe(200); // clamped server-side, not rejected
+    const body = (await huge.json()) as { rows: unknown[] };
+    expect(Array.isArray(body.rows)).toBe(true);
+  });
+
+  it('succeeds with no limit param (default page size)', async () => {
+    const s = await boot();
+    expect((await sysRows(s, '')).status).toBe(200);
+  });
+});

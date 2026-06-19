@@ -142,22 +142,28 @@ describe('framework native entities', () => {
   });
 
   describe('files table', () => {
-    it('accepts both legacy (path/kind) and content-addressed inserts', async () => {
-      const legacy = await db.insert('files', {
-        path: '/legacy/file.md',
-        kind: 'markdown',
-      });
-      const modern = await db.insert('files', {
+    it('accepts content-addressed (sha256/blob_path) and reference (ref_kind/ref_uri) inserts', async () => {
+      // Content-addressed: an owned blob, identified by its sha256 + relative blob_path.
+      const blob = await db.insert('files', {
         original_name: 'document.pdf',
         mime: 'application/pdf',
         size_bytes: 12345,
         sha256: 'a'.repeat(64),
         blob_path: 'data/blobs/' + 'a'.repeat(64),
       });
-      const legacyRow = await db.get('files', legacy);
-      const modernRow = await db.get('files', modern);
-      expect(legacyRow!.path).toBe('/legacy/file.md');
-      expect(modernRow!.sha256).toBe('a'.repeat(64));
+      // Reference: a local file indexed in place via the reference model.
+      const ref = await db.insert('files', {
+        original_name: 'file.md',
+        ref_kind: 'local_ref',
+        ref_uri: '/legacy/file.md',
+        ref_provider: 'fs',
+      });
+      const blobRow = await db.get('files', blob);
+      const refRow = await db.get('files', ref);
+      expect(blobRow!.sha256).toBe('a'.repeat(64));
+      expect(blobRow!.blob_path).toBe('data/blobs/' + 'a'.repeat(64));
+      expect(refRow!.ref_kind).toBe('local_ref');
+      expect(refRow!.ref_uri).toBe('/legacy/file.md');
     });
   });
 
