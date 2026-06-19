@@ -74,6 +74,15 @@ method that is inert unless a table opts in.
 - **SQL-side aggregation (`Lattice.aggregate`).** `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`
   (and `COUNT(DISTINCT)`) with `GROUP BY`/`HAVING`/`ORDER BY`, computed in the
   database so only the grouped result rows transfer — not the underlying rows.
+- **Keyset pagination (`Lattice.queryPage`).** Cursor-based paging ordered by
+  `(orderBy, pk)` with an opaque cursor — stays fast arbitrarily deep into a
+  result set, unlike OFFSET. Returns a page plus `nextCursor`/`hasMore`.
+- **`QueryOptions.distinctOn`.** One row per distinct value of the given
+  column(s) (Postgres `DISTINCT ON`, SQLite `ROW_NUMBER()` window), the survivor
+  chosen by `orderBy`.
+- **`QueryOptions.include`.** Expand declared relations on each row — `belongsTo`
+  attaches the related row, `hasMany` an array — each fetched in a single batched
+  `IN (...)` query (no N+1).
 
 ### Changed
 

@@ -13,6 +13,8 @@ import type {
   AggregateOptions,
   AggregateResult,
   AggregateSpec,
+  QueryPageOptions,
+  QueryPageResult,
 } from '../types.js';
 
 /** Structural shape of `Lattice`'s `PkLookup` (avoids a circular import). */
@@ -125,6 +127,8 @@ export class QueryCore {
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     this.assertIdent(table);
 
+    if (opts.distinctOn !== undefined) return this.queryDistinct(table, opts);
+
     const projectionCols = this.projectionColumns(table, opts.projection);
     const colErr = this.invalidColumnError<Row[]>(table, [
       ...Object.keys(opts.where ?? {}),
@@ -205,6 +209,131 @@ export class QueryCore {
     const exclude = new Set(projection.exclude);
     const cols = [...known].filter((c) => !exclude.has(c));
     return cols.length > 0 ? cols : null;
+  }
+
+  /** Shared WHERE composition (equality `where` AND-ed with advanced filters). */
+  private composeWhere(
+    where: Record<string, unknown> | undefined,
+    filters: FilterExpr[] | undefined,
+  ): { clauses: string[]; params: unknown[] } {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (where && Object.keys(where).length > 0) {
+      for (const [c, v] of Object.entries(where)) {
+        clauses.push(`"${c}" = ?`);
+        params.push(v);
+      }
+    }
+    if (filters && filters.length > 0) {
+      const built = this.buildFilters(filters);
+      clauses.push(...built.clauses);
+      params.push(...built.params);
+    }
+    return { clauses, params };
+  }
+
+  /**
+   * `distinctOn` path: one row per distinct value of the given column(s).
+   * Postgres uses `DISTINCT ON`; SQLite emulates it with a `ROW_NUMBER()` window
+   * (both pick the row determined by the order, then the primary key).
+   */
+  private async queryDistinct(table: string, opts: QueryOptions): Promise<Row[]> {
+    const distinctCols = Array.isArray(opts.distinctOn)
+      ? opts.distinctOn
+      : opts.distinctOn
+        ? [opts.distinctOn]
+        : [];
+    const projectionCols = this.projectionColumns(table, opts.projection);
+    const colErr = this.invalidColumnError<Row[]>(table, [
+      ...distinctCols,
+      ...Object.keys(opts.where ?? {}),
+      ...collectFilterCols(opts.filters),
+      ...(opts.orderBy ? [opts.orderBy] : []),
+      ...(projectionCols ?? []),
+    ]);
+    if (colErr) return colErr;
+
+    const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
+    const pkCol = [...this.ensureColumnCache(table)].includes('id')
+      ? 'id'
+      : (distinctCols[0] ?? 'id');
+    const tieCol = opts.orderBy ?? pkCol;
+    const selectList = projectionCols ? projectionCols.map((c) => `"${c}"`).join(', ') : '*';
+    const { clauses, params } = this.composeWhere(opts.where, opts.filters);
+    const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+    const distinctList = distinctCols.map((c) => `"${c}"`).join(', ');
+
+    let rows: Row[];
+    if (this.adapter.dialect === 'postgres') {
+      // DISTINCT ON requires the ORDER BY to lead with the distinct columns.
+      let sql = `SELECT DISTINCT ON (${distinctList}) ${selectList} FROM "${table}"${whereSql}`;
+      sql += ` ORDER BY ${distinctList}, "${tieCol}" ${dir}`;
+      if (opts.limit !== undefined) sql += ` LIMIT ${opts.limit.toString()}`;
+      rows = await allAsyncOrSync(this.adapter, sql, params);
+    } else {
+      const inner =
+        `SELECT *, ROW_NUMBER() OVER (PARTITION BY ${distinctList} ORDER BY "${tieCol}" ${dir}) AS __rn ` +
+        `FROM "${table}"${whereSql}`;
+      let sql = `SELECT ${selectList} FROM (${inner}) WHERE __rn = 1`;
+      if (opts.orderBy) sql += ` ORDER BY "${opts.orderBy}" ${dir}`;
+      if (opts.limit !== undefined) sql += ` LIMIT ${opts.limit.toString()}`;
+      rows = await allAsyncOrSync(this.adapter, sql, params);
+      // Strip the helper column when SELECT * surfaced it.
+      for (const r of rows) delete (r as Record<string, unknown>).__rn;
+    }
+    return this.decryptRows(table, rows);
+  }
+
+  /**
+   * Keyset (cursor) pagination: stable, index-friendly paging that stays O(log n)
+   * deep into a result set, unlike OFFSET. Orders by `(orderBy, pk)` for a total
+   * order and walks it with an opaque cursor.
+   */
+  async queryPage(
+    table: string,
+    opts: QueryPageOptions,
+    pkColumn: string,
+  ): Promise<QueryPageResult> {
+    this.assertIdent(table);
+    const limit = Math.max(1, opts.limit ?? 50);
+    const orderBy = opts.orderBy ?? pkColumn;
+    const desc = opts.orderDir === 'desc';
+    const dir = desc ? 'DESC' : 'ASC';
+    const cmp = desc ? '<' : '>';
+
+    const projectionCols = this.projectionColumns(table, opts.projection);
+    const colErr = this.invalidColumnError<QueryPageResult>(table, [
+      orderBy,
+      ...Object.keys(opts.where ?? {}),
+      ...collectFilterCols(opts.filters),
+      ...(projectionCols ?? []),
+    ]);
+    if (colErr) return colErr;
+
+    const { clauses, params } = this.composeWhere(opts.where, opts.filters);
+    if (opts.cursor) {
+      const cur = decodeCursor(opts.cursor);
+      // (orderBy cmp ?) OR (orderBy = ? AND pk cmp ?) — total order via the pk tiebreak.
+      clauses.push(`("${orderBy}" ${cmp} ? OR ("${orderBy}" = ? AND "${pkColumn}" ${cmp} ?))`);
+      params.push(cur.o, cur.o, cur.p);
+    }
+
+    const selectList = projectionCols
+      ? [...new Set([...projectionCols, orderBy, pkColumn])].map((c) => `"${c}"`).join(', ')
+      : '*';
+    let sql = `SELECT ${selectList} FROM "${table}"`;
+    if (clauses.length > 0) sql += ` WHERE ${clauses.join(' AND ')}`;
+    sql += ` ORDER BY "${orderBy}" ${dir}, "${pkColumn}" ${dir} LIMIT ${(limit + 1).toString()}`;
+
+    const rows = await allAsyncOrSync(this.adapter, sql, params);
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    let nextCursor: string | null = null;
+    const last = page[page.length - 1];
+    if (hasMore && last !== undefined) {
+      nextCursor = encodeCursor(last[orderBy], last[pkColumn]);
+    }
+    return { rows: this.decryptRows(table, page), nextCursor, hasMore };
   }
 
   async count(table: string, opts: CountOptions = {}): Promise<number> {
@@ -481,6 +610,23 @@ export class QueryCore {
       }
       return out;
     });
+  }
+}
+
+/** Encode a keyset cursor from the last row's (orderBy, pk) values. Opaque base64. */
+function encodeCursor(orderVal: unknown, pkVal: unknown): string {
+  const payload = JSON.stringify({ o: orderVal ?? null, p: pkVal ?? null });
+  return Buffer.from(payload, 'utf8').toString('base64url');
+}
+
+/** Decode a keyset cursor; throws on a malformed cursor (fail loud). */
+function decodeCursor(cursor: string): { o: unknown; p: unknown } {
+  try {
+    const json = Buffer.from(cursor, 'base64url').toString('utf8');
+    const obj = JSON.parse(json) as { o: unknown; p: unknown };
+    return { o: obj.o, p: obj.p };
+  } catch {
+    throw new Error(`queryPage: malformed cursor`);
   }
 }
 

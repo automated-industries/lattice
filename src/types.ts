@@ -800,6 +800,49 @@ export interface QueryOptions {
    * `limit` opts out (the caller has bounded the read themselves).
    */
   maxRows?: number;
+  /**
+   * Return one row per distinct value of these column(s) (4.1+). Compiles to
+   * Postgres `DISTINCT ON (...)` and an emulated SQLite `ROW_NUMBER()` window.
+   * Which row survives per group is determined by `orderBy`/`orderDir` (then the
+   * primary key as a deterministic tiebreak).
+   */
+  distinctOn?: string | string[];
+  /**
+   * Expand declared relations on each returned row (4.1+). Each name must be a
+   * key of the table's `relations`. A `belongsTo` relation attaches the single
+   * related row (or null); a `hasMany` relation attaches an array. Related rows
+   * are fetched in ONE batched `IN (...)` query per relation — no N+1.
+   */
+  include?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Keyset pagination (v4.1)
+// ---------------------------------------------------------------------------
+
+export interface QueryPageOptions {
+  /** Equality filters (same as QueryOptions.where). */
+  where?: Record<string, unknown>;
+  /** Advanced filters (same as QueryOptions.filters). */
+  filters?: FilterExpr[];
+  /** Sort column the cursor walks. Defaults to the primary key. */
+  orderBy?: string;
+  orderDir?: 'asc' | 'desc';
+  /** Page size. Default 50. */
+  limit?: number;
+  /** Opaque cursor from a prior page's `nextCursor`. Omit for the first page. */
+  cursor?: string;
+  /** Return only these columns (see {@link QueryProjection}). */
+  projection?: QueryProjection;
+}
+
+export interface QueryPageResult {
+  /** The page of rows. */
+  rows: Row[];
+  /** Opaque cursor for the next page, or null when this is the last page. */
+  nextCursor: string | null;
+  /** Whether more rows exist beyond this page. */
+  hasMore: boolean;
 }
 
 export interface CountOptions {

@@ -9,6 +9,8 @@ import type {
   CountOptions,
   AggregateOptions,
   AggregateResult,
+  QueryPageOptions,
+  QueryPageResult,
   InitOptions,
   Migration,
   WatchOptions,
@@ -1913,7 +1915,74 @@ export class Lattice {
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
-    return this._queryCore.query(table, opts);
+    const rows = await this._queryCore.query(table, opts);
+    if (opts.include && opts.include.length > 0) {
+      await this._expandRelations(table, rows, opts.include);
+    }
+    return rows;
+  }
+
+  /**
+   * Keyset (cursor) pagination — stable, index-friendly paging that stays fast
+   * arbitrarily deep into a result set (unlike OFFSET, which scans-and-discards).
+   * Returns a page plus an opaque `nextCursor` (null on the last page).
+   */
+  async queryPage(table: string, opts: QueryPageOptions = {}): Promise<QueryPageResult> {
+    const notInit = this._notInitError<QueryPageResult>();
+    if (notInit) return notInit;
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    return this._queryCore.queryPage(table, opts, pkCol);
+  }
+
+  /**
+   * Attach declared relations to each row in `rows` (mutates in place). Each
+   * relation is fetched in ONE batched `IN (...)` query — no N+1. `belongsTo`
+   * attaches a single row (or null); `hasMany` attaches an array.
+   */
+  private async _expandRelations(table: string, rows: Row[], includes: string[]): Promise<void> {
+    if (rows.length === 0) return;
+    const def = this._schema.getTables().get(table);
+    const relations = def?.relations;
+    for (const name of includes) {
+      const rel = relations?.[name];
+      if (!rel) {
+        throw new Error(`include: "${name}" is not a declared relation on "${table}"`);
+      }
+      if (rel.type === 'belongsTo') {
+        const fkCol = rel.foreignKey;
+        const refCol = rel.references ?? this._schema.getPrimaryKey(rel.table)[0] ?? 'id';
+        const fks = [...new Set(rows.map((r) => r[fkCol]).filter((v) => v != null))];
+        if (fks.length === 0) {
+          for (const r of rows) r[name] = null;
+          continue;
+        }
+        const related = await this._queryCore.query(rel.table, {
+          filters: [{ col: refCol, op: 'in', val: fks }],
+        });
+        const byKey = new Map(related.map((r) => [String(r[refCol]), r]));
+        for (const r of rows) r[name] = byKey.get(String(r[fkCol])) ?? null;
+      } else {
+        // hasMany: the related table holds the FK back to this table.
+        const fkCol = rel.foreignKey;
+        const refCol = rel.references ?? this._schema.getPrimaryKey(table)[0] ?? 'id';
+        const keys = [...new Set(rows.map((r) => r[refCol]).filter((v) => v != null))];
+        if (keys.length === 0) {
+          for (const r of rows) r[name] = [];
+          continue;
+        }
+        const related = await this._queryCore.query(rel.table, {
+          filters: [{ col: fkCol, op: 'in', val: keys }],
+        });
+        const grouped = new Map<string, Row[]>();
+        for (const rr of related) {
+          const k = String(rr[fkCol]);
+          const arr = grouped.get(k);
+          if (arr) arr.push(rr);
+          else grouped.set(k, [rr]);
+        }
+        for (const r of rows) r[name] = grouped.get(String(r[refCol])) ?? [];
+      }
+    }
   }
 
   async count(table: string, opts: CountOptions = {}): Promise<number> {

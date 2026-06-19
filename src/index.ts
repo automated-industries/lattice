@@ -48,6 +48,8 @@ export type {
   AggregateHaving,
   AggregateOptions,
   AggregateResult,
+  QueryPageOptions,
+  QueryPageResult,
   // v0.3 additions
   BuiltinTemplateName,
   RenderHooks,
