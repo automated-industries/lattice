@@ -64,7 +64,9 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(() => {
-  rmSync(scratch, { recursive: true, force: true });
+  // maxRetries/retryDelay: same Windows lazy-handle-release remedy as the per-test
+  // cleanup below (the esbuild output + spawned children can briefly hold handles).
+  rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 /** Spawn `script` against `configDir` with NO pinned key; resolve with stdout. */
@@ -103,7 +105,11 @@ describe('credential store — concurrent writers never lose updates', () => {
       const saved = JSON.parse(await run(configDir, listChild)) as string[];
       expect(saved.slice().sort()).toEqual(labels.slice().sort());
     } finally {
-      rmSync(configDir, { recursive: true, force: true });
+      // Windows releases a child process's file handles LAZILY after it exits, so an
+      // immediate recursive rmdir of the dir the spawned writers used can race that
+      // release and throw ENOTEMPTY. `force` does not retry; `maxRetries`/`retryDelay`
+      // do (Node's documented Windows EBUSY/ENOTEMPTY remedy). A no-op cost on POSIX.
+      rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }, 60_000);
 });

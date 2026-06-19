@@ -30,8 +30,12 @@ function effectiveFilters(opts: SourceQueryOptions): Filter[] {
  * @param params   - Mutable parameter array — new values are pushed
  * @param opts     - Source query options
  * @param tableAlias - Optional table alias prefix for filter columns (e.g. "r")
+ *
+ * Exported so the render engine's batched belongsTo prefetch can reuse the exact
+ * same WHERE/soft-delete clause builder it would have used per-row, rather than
+ * reimplementing it (which would risk drifting from the single-row path).
  */
-function appendQueryOptions(
+export function appendQueryOptions(
   baseSql: string,
   params: unknown[],
   opts: SourceQueryOptions,

@@ -4,7 +4,7 @@ import { isNativeEntity } from '../framework/native-entities.js';
 import { recordSchemaAudit, createRow, deleteRow, type MutationCtx } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { getGuiEntities, type FileJunction } from './data.js';
-import type { ActiveDb } from './server.js';
+import type { ActiveDb } from './active-db.js';
 import { secureNewCloudTable } from '../cloud/setup.js';
 import { regenerateAudienceViewFromDb } from '../cloud/audience.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
@@ -183,11 +183,21 @@ export async function materializeJunction(
   await active.db.defineLate(jName, {
     columns: { id: 'TEXT PRIMARY KEY', [colA]: 'TEXT', [colB]: 'TEXT' },
   });
+  // Relation names mirror what the removed `ref:` path derived: the FK column
+  // with a trailing `_id` stripped. Callers always pass `<table>_id` columns,
+  // so this reproduces the exact two relation keys that junction detection
+  // (isJunctionTable) expects — two belongsTo relations, no per-field ref.
+  const relA = colA.endsWith('_id') ? colA.slice(0, -3) : colA;
+  const relB = colB.endsWith('_id') ? colB.slice(0, -3) : colB;
   const entityDef = {
     fields: {
       id: { type: 'uuid', primaryKey: true },
-      [colA]: { type: 'uuid', ref: refA },
-      [colB]: { type: 'uuid', ref: refB },
+      [colA]: { type: 'uuid' },
+      [colB]: { type: 'uuid' },
+    },
+    relations: {
+      [relA]: { type: 'belongsTo', table: refA, foreignKey: colA },
+      [relB]: { type: 'belongsTo', table: refB, foreignKey: colB },
     },
     outputFile: jName.toUpperCase() + '.md',
   };

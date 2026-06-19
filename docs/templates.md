@@ -267,7 +267,8 @@ When rendering, Lattice:
 1. Executes `SELECT * FROM users WHERE id = assignee_id` for each ticket
 2. Makes all `users` columns available as `{{assignee.<column>}}`
 
-In YAML config, `ref: user` automatically creates the `belongsTo` relation:
+In YAML config, declare the `belongsTo` relation in an entity-level `relations:`
+block (the relation name — `assignee` here — is what you reference in the template):
 
 ```yaml
 entities:
@@ -275,7 +276,9 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       title: { type: text, required: true }
-      assignee_id: { type: uuid, ref: user }
+      assignee_id: { type: uuid }
+    relations:
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
     render:
       template: default-list
       formatRow: '{{title}} → {{assignee.name}}'

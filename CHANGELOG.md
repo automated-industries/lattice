@@ -6,7 +6,303 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [4.0.0] — unreleased
+
+Major release. **Most upgrades need no action** — the GUI silently migrates an
+existing 3.0+ config and its data forward on open (see "Silent backwards-compat
+auto-upgrade" below and [MIGRATING-4.0.md](docs/MIGRATING-4.0.md)). The items tagged
+**BREAKING** are breaking only for **library / non-GUI consumers** (who open via the
+library `init()` path and so don't get the on-open migrations) and for **API
+consumers** of a removed export; for them the most data-safety-critical step is
+normalizing legacy empty-string `deleted_at` to `NULL` before upgrading. Internally
+this release also decomposes the three largest source files into focused modules and
+adds optimistic-concurrency, atomic-commit, and bounded-read hardening —
+behavior-preserving except where tagged BREAKING.
+
+### Added
+
+- **Silent backwards-compat auto-upgrade on open.** Opening a 3.0+ workspace in the
+  GUI now silently migrates its config + data forward to the 4.0 shape, preserving
+  comments and data — so existing configs keep working without a manual migration,
+  and migrate forward on disk so a future major can drop the back-compat tolerance
+  cleanly. (1) The config parser tolerates the legacy `ref:` field shorthand
+  (converts it to a `belongsTo` in-memory) and `src/config/config-upgrade.ts`
+  rewrites it on disk to an explicit `relations:` block. (2)
+  `src/framework/data-upgrade.ts` normalizes legacy `deleted_at = '' → NULL` and
+  backfills a legacy `files.path`-only row into a `local_ref`, each gated
+  once-per-database via `internal:upgrade:*` sentinels. The `deleted_at`
+  normalization runs as ONE server-side `DO`-block migration on Postgres (looping
+  the `deleted_at` tables in-database), not a per-table loop — a cloud with 100+
+  tables would otherwise issue one pooled transaction per table and stall the
+  workspace switch past its open timeout. (3) On a cloud owner open,
+  `reconcileCloudMemberAccess` re-grants the per-cloud member group to the cloud's
+  own members (scoped to its `__lattice_member_invites` registry — never the
+  cluster-global legacy group). Each migration is idempotent and a no-op on a
+  4.0-native database. Library / non-GUI consumers apply the equivalents themselves
+  (documented in MIGRATING-4.0.md).
+
+- **Change-detection gate for the `watch()` render loop (SQLite).** The poll loop
+  previously called `render()` unconditionally every tick (default 5s). `render()`
+  already skips unchanged files (manifest hash-diff) and is interval-throttled, so
+  the residual idle cost is the per-tick read of every table. The loop now consults
+  an OPTIONAL, O(1), GUARANTEED-COMPLETE change probe before rendering and skips the
+  tick's render (and its cleanup) when the database provably has not changed since
+  the last render. On SQLite the probe composes `PRAGMA data_version` (detects
+  commits by OTHER connections/processes) with `total_changes()` (detects this
+  connection's own row mutations, including trigger- and cascade-driven ones); the
+  pair is complete — the composite token moves on any committed row change from any
+  origin and is stable on a no-op statement or an idle DB. The probe token is
+  captured BEFORE each render reads and adopted as the baseline at that moment, so a
+  write committed mid-render differs from it and the next tick re-renders — the gate
+  can cost at most one extra render, never a skipped-but-needed one. The first tick
+  always renders. Postgres has no equally-cheap global complete counter, so its
+  adapter deliberately leaves the probe unimplemented and the Postgres watch loop
+  renders every tick exactly as before. Any adapter without the probe falls through
+  to the prior full-render-every-tick behavior. Exposed as the optional
+  `StorageAdapter.changeProbe()` seam (and `RenderEngine.changeProbe()`); leaving it
+  undefined is always safe.
+- **Opt-in incremental writeback file reads (`WritebackDefinition.incrementalRead`).**
+  Default (`undefined`/`false`) is byte-for-byte the prior behavior: the pipeline
+  reads the WHOLE file every tick (`readFileSync`) and parses from the absolute
+  byte offset. Set `incrementalRead: true` and the pipeline reads ONLY the bytes
+  at/after the stored offset (one `readSync` of `currentSize - offset` bytes),
+  passing that slice to the parser with `fromOffset = 0`; the parser's
+  slice-relative `nextOffset` is translated back to an absolute byte offset
+  before it is stored. This avoids re-reading (and re-billing the egress of) the
+  whole file every tick on an append-only log. The slice is decoded with an
+  incremental `StringDecoder`, so a multi-byte UTF-8 codepoint straddling the
+  trailing edge is never split into a replacement char — its incomplete trailing
+  bytes are held back and consumed on the next tick. HARD PRECONDITION: the
+  parser must operate purely on the byte-slice (no reliance on bytes before the
+  offset). The deferred offset-advance ordering invariant is preserved in both
+  modes — the offset is stored only after the whole batch persists, so a
+  mid-batch persist throw leaves it un-advanced.
+- **Opt-in bounded dedupe set on `InMemoryStateStore` (`{ maxSeenPerFile }`).**
+  Default is `Infinity` — unbounded, exactly the prior behavior. Pass a finite
+  cap and the per-file seen-set retains only the most recent N keys (oldest
+  evicted first, by insertion order), bounding memory for long-running daemons
+  tailing append-only logs. The cap is a memory-safety guard, NOT a durability
+  substitute (an evicted key could re-process if it reappears); the class JSDoc
+  recommends the durable `SQLiteStateStore` for long-running daemons instead.
+- **`getActive` and `queryTable` accept an optional `{ limit, offset }` bound.**
+  Omitting it is byte-identical to the prior unbounded read (every existing caller
+  is unchanged); a bound appends a parameterized `LIMIT ? [OFFSET ?]` (validated as
+  non-negative integers; a bare `offset` without `limit` is ignored, since SQL
+  `OFFSET` requires `LIMIT`). Lets a consumer cap a read instead of pulling a whole
+  table. (The GUI's own list endpoints are already bounded at the route layer.)
+- **Scale-safety bound on the explicit dedup scan (`DEDUP_MAX_SCAN_ROWS`, default
+  50,000).** `findTableDuplicates` (the assistant `dedup` tool) compares every
+  candidate row, so it cannot cap its read with a `LIMIT` without silently missing
+  duplicates. Instead it now counts active rows **in SQL first** (`COUNT(*)` reads
+  no row bodies → near-zero egress) and **refuses loudly** — throwing an Error that
+  names the table, count, and cap — when the active count exceeds the ceiling,
+  rather than scanning the whole table or truncating. The thrown Error propagates
+  through the assistant dispatch into a structured tool result the model relays, so
+  the caller is told to narrow the scope or raise the cap (never a silent empty
+  result). The soft-delete filter is also pushed into the read
+  (`deleted_at IS NULL`) instead of loading every row and dropping trashed ones in
+  JS; results are identical, with fewer bytes read.
+
+### Changed
+
+- **Internal — the GUI server request dispatch is now a single explicit ordered route registry (`src/gui/server.ts`).** The contiguous `if (await handleX(...)) return;` chain becomes an ordered `RouteEntry[]` iterated by a for-loop; dispatch order, per-entry bodies, prefix/method guards, and the post-loop 404 fallback are unchanged. No behavior change.
+- **Internal — the changelog write-half is extracted into `ChangelogWriter` (`src/changelog/writer.ts`).** The table-existence check, create/additive-migrate DDL, the gated + ungated changelog INSERTs, and the retention prune move out of the `Lattice` facade into a focused collaborator (mirroring the existing read-half `ChangelogService`). The facade keeps each private method as a thin delegator to a lazily-constructed `ChangelogWriter` (deps injected, so the collaborator never reaches into `Lattice` internals). No public API change; behavior is byte-identical.
+- **Internal — the generic read surface is extracted into `QueryCore` (`src/query/core.ts`).** The six most-called read methods (`query`, `count`, `get`, `getActive`, `countActive`, `getByNaturalKey`) plus the private filter-clause builder they share move out of the `Lattice` facade into a focused collaborator. The facade keeps each public method as a thin delegator (it performs the `init()` guard, then forwards to a lazily-constructed `QueryCore`; deps are injected so the collaborator never reaches into `Lattice` internals). The load-bearing decryption asymmetry is preserved exactly — `query`/`get` decrypt sealed columns before returning, while `getActive`/`getByNaturalKey` return the raw stored row — and is now pinned by a characterization test. No public API change; behavior is byte-identical.
+- **BREAKING — the legacy `files.path` and `files.kind` columns are removed.**
+  The native `files` entity no longer declares them; file resolution now flows
+  through the content-addressed columns (`sha256` / `blob_path`) for owned bytes
+  and the reference model (`ref_kind` / `ref_uri` / `ref_provider`) for files that
+  live elsewhere. An ingested local file is recorded as a `local_ref` whose
+  `ref_uri` is its absolute OS path (previously stored in `path`); a browser drop
+  with no path is retained as an owned `blob`. Consumers that read `row.path` /
+  `row.kind` must read `ref_uri` (local_ref) or `blob_path` (owned blob) instead.
+  Drop the columns from a physical schema with
+  `ALTER TABLE files DROP COLUMN path; ALTER TABLE files DROP COLUMN kind;`
+  (SQLite ≥ 3.35 for `DROP COLUMN`; PostgreSQL unaffected). See
+  [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the backfill SQL.
+- **The per-field `ref:` shorthand is deprecated in favor of an explicit
+  entity-level `relations:` block — but still accepted (NOT a breaking change).**
+  A field carrying `ref: <table>` still auto-creates a `belongsTo` (relation name
+  derived by stripping a trailing `_id`), exactly as in 3.x — so an existing config
+  opens unchanged. Going forward, declare the foreign key as a plain field and add a
+  `relations:` map on the entity, naming the relation yourself:
+
+  ```yaml
+  ticket:
+    fields:
+      assignee_id: { type: uuid }
+    relations:
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
+  ```
+
+  The GUI silently rewrites a legacy `ref:` to this `relations:` form on open
+  (see the auto-upgrade entry above), so configs migrate forward and a future major
+  can drop the shorthand cleanly. A malformed _explicit_ `relations:` entry (not an
+  object, missing `type`/`table`/`foreignKey`, a non-`belongsTo` `type`, or an empty
+  `references`) still fails loudly — only the legacy `ref:` shorthand is tolerated.
+  See [MIGRATING-4.0.md](docs/MIGRATING-4.0.md).
+
+- **BREAKING — the soft-delete predicate is simplified to `deleted_at IS NULL`.**
+  Earlier versions treated a row as "live" when `deleted_at` was **either** NULL
+  **or** the empty string (`''`), via a legacy `OR deleted_at = ''` back-compat
+  branch. That branch is removed from the three read paths that still carried it:
+  the natural-key lookup family (`getByNaturalKey` / `upsertByNaturalKey` /
+  `enrichByNaturalKey` / `softDeleteMissing`), the seed link resolver, and
+  full-text search (both the indexed and the LIKE-fallback paths). The main
+  `query` read path, `getActive` / `countActive`, the report builder, and the
+  structured `{ col: 'deleted_at', op: 'isNull' }` filter family already used
+  bare `deleted_at IS NULL`, so they are unchanged — this release makes the
+  predicate consistent everywhere.
+
+  The library only ever writes a timestamp (on delete) or NULL (on
+  insert/restore), never `''`, so a database that has only ever used this library
+  to soft-delete is unaffected. But any row whose `deleted_at` holds `''` (legacy
+  or externally inserted data) will now read as **deleted**, and a natural-key
+  upsert against such a hidden row can insert a duplicate. **Consumers MUST
+  normalize every `deleted_at = ''` row to NULL on every `deleted_at` table
+  BEFORE upgrading.** See [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the
+  required, ordered migration (normalize → verify zero empty-string rows → then
+  upgrade).
+
+### Fixed
+
+- **Report builder hardens its SQL identifiers + bounds unbounded sections.** `buildReport`
+  interpolates a section's table, filter columns, and orderBy column into SQL; each is now
+  validated with `assertSafeIdentifier` (rejected loudly if not a plain identifier), and a
+  section with no explicit `limit` is capped at a 50k-row safety ceiling that **warns** when
+  it truncates rather than silently returning a partial section or reading a whole large table.
+- **Security: a column masked at runtime is no longer re-exposed to cloud members.**
+  Marking a column secret in the GUI (or any runtime `setColumnAudience`) masks it via
+  the `<t>_v` view + `__lattice_column_policy`, but the in-memory schema audience
+  (populated only from the declared config) stayed empty. `reconcileCloudMemberAccess`
+  read that stale in-memory source to decide whether a table was masked, so on the next
+  workspace open it saw a runtime-masked table as unmasked and re-GRANTed members
+  `SELECT` on the base table — letting a member read the hidden column directly off the
+  base, bypassing the masking view. reconcile now decides masked-ness from the
+  DB-canonical `__lattice_column_policy` (the same source the views are built from),
+  loaded in one query, so a runtime mask survives reconcile. Config-declared masking is
+  unchanged (it is seeded into the policy table before reconcile runs).
+- **SESSION.md write-apply targets the real primary key.** An `update`/`delete` on a
+  table with no `id` column guessed the primary key as the FIRST declared column, so
+  the `WHERE` could match the wrong column and update/delete the wrong rows (or none).
+  It now resolves the target column as `id` → the declared single-column primary key
+  (PRAGMA `pk`) → first column only as a last resort.
+- **The `db.watch()` loop no longer hides render failures or skips stale-file cleanup.**
+  A render/cleanup error now surfaces via `console.error` when no `onError` handler is
+  supplied (it was silently swallowed), and orphan cleanup now receives the post-render
+  manifest (4th arg) — matching every other `cleanup()` caller — so it can remove stale
+  files in surviving entities (`omitIfEmpty` / removed files), not just orphaned
+  directories.
+- **GUI auto-dedup on file ingest surfaces its failures.** The post-upload auto-dedup
+  block swallowed every error silently; it now logs the failure (still falling through
+  to normal enrichment so the upload lands) so a systematic dedup/merge bug is visible.
+- **Duplicate-merge can no longer leave a half-merge if it fails partway.** `mergeDuplicates`
+  previously interleaved per-source link/unlink and then deleted the sources, so a failure
+  mid-merge could relink some edges while having already removed others (and partly deleted
+  sources) — an inconsistent state with no clean recovery. A single composing DB transaction
+  is not available (each mutation runs the adapter plus changelog/render/audit hooks), so the
+  fix is ordered crash-safety, not rollback: the merge now runs in three strict phases —
+  link every survivor edge first (insert-or-ignore, additive), then unlink all source edges,
+  then soft-delete the sources. Because links are written to the survivor before anything is
+  removed, a crash at any point leaves a consistent, over-linked, re-runnable state — never a
+  half-merge. Any thrown error is re-thrown (never swallowed) annotated with the failed phase,
+  the survivor/source ids in flight, and that the merge is safe to re-run. The success-path
+  end state and return value are unchanged.
+- **Writeback no longer drops entries when a `persist` throws mid-batch.** The pipeline
+  advanced the file offset (and marked entries seen) BEFORE calling `persist`, so a
+  `persist` that threw partway through a batch left the offset past the un-persisted tail
+  and the failing entry marked seen — silently dropping it on the next sync. An entry is
+  now marked seen only after `persist` succeeds, and the offset advances only after the
+  whole batch lands, so a failed batch is re-read (dedup skips the entries that already
+  persisted) until every entry is written — honoring `persist`'s "exactly once per
+  dedupeKey" contract across a transient failure.
+- **Cloud member-access reconcile does fewer round-trips.** `reconcileCloudMemberAccess`
+  (run on every cloud-owner workspace open) now grants each table in a single
+  round-trip — a masked table batches its two GRANTs (`SELECT` on `<t>_v` + DML on the
+  base) into one multi-statement query instead of two. Per-table fault isolation and
+  the skipped-tables report are unchanged (each table is still its own try/catch); only
+  the round-trip count drops.
+- **Workspace open no longer hangs on a degraded Postgres.** `openConfig` awaited the
+  realtime broker's `start()` (connect + `LISTEN`) with no timeout; a backend that
+  accepts the TCP connection but never completes the startup handshake could hang
+  every open path (boot, workspace switch, create, reopen) indefinitely. The connect
+  is now bounded (default = the existing switch cap, `SWITCH_OPEN_TIMEOUT_MS`); on
+  timeout it tears the half-open broker down in the background and throws loudly
+  rather than wedge or silently degrade. **Behavior change:** a broker connect that
+  _hangs_ at server boot now fails the boot loudly instead of eventually booting in
+  degraded local-mode — a genuine connect _rejection_ still degrades to local mode as
+  before (only the previously-unhandled hang now surfaces).
+- **The GUI offline-edit queue now self-heals transient failures and ages out
+  poison edits.** A queued edit that fails to replay with a 5xx or a network error
+  no longer waits for the next `online`/reconnect event to retry — the drain
+  re-arms itself on a bounded exponential backoff (2s, doubling, capped at 60s,
+  reset on a clean drain or a real connectivity event), so a cloud that stays
+  "connected" but 5xxes individual edits (or a blip that never fires `online`) can
+  no longer leave edits unsynced indefinitely and silently. Each edit now tracks a
+  persisted attempt count and is dead-lettered (marked `failed`, surfaced in
+  pending edits) once it has failed 8 times, so a poison edit can neither retry
+  forever nor be lost. An edit is still removed from IndexedDB only on a 2xx; a 4xx
+  still dead-letters immediately as before.
+- **A failed render no longer leaves new files on disk under the prior manifest,
+  and a swallowed auto-render failure is surfaced.** Render now runs a pre-flight
+  writability probe over its stable target directories (the output root, the
+  `.lattice` manifest dir, and each entity-context directory root) before writing
+  any live file, by writing and deleting a sentinel inside each one. This converts
+  the common disk-full / read-only-mount failure into a clean pre-commit throw
+  with no live files touched. The manifest is written last and atomically, so it
+  is the single commit point: a render that throws never commits a new manifest
+  over a partially-written tree — the prior context + manifest stay the record and
+  the next render self-heals (unchanged files are skipped, the rest are completed,
+  cleanup reconciles). Auto-render failures are now re-raised through the existing
+  error channel carrying the underlying error code and an actionable message
+  instead of being lost. Attach-copy failures (the binary/reference attachment
+  step) are no longer silently swallowed — they propagate to the same commit gate.
+  The honest guarantee is manifest-atomic + tree-eventually-consistent, not full
+  multi-file tree atomicity: a crash between the first file write and the manifest
+  commit leaves the prior manifest describing a tree with some newer files, which
+  the next render reconciles.
+- **Migrate-to-cloud surfaces files whose local blob bytes were left behind, and
+  asserts per-table row counts.** `migrateLatticeData` copies `files` rows but not
+  their owned-local blob bytes (under `<root>/data/blobs/`), so after the source
+  is archived those rows are dangling references on the cloud. The migration now
+  counts such rows and reports `blobsNotMigrated` on the result, surfaced to the
+  operator as a warning, instead of leaving the loss silent. It also re-counts
+  each table on the target after copy (soft-delete-consistent) and aborts loudly
+  on a mismatch — defensive insurance against a future write path that could drop
+  rows. (Uploading the blob bytes to the cloud's object store during migration is
+  a deferred follow-up.)
+- **Reverse-sync no longer silently overwrites a concurrent change.** When an
+  external edit to a rendered context file is swept back into the database, the
+  engine now verifies the underlying row hasn't changed since it was rendered —
+  an optimistic-concurrency check against a row version captured in the manifest
+  at render time. If the row did change (a concurrent database/cloud edit), the
+  file edit is **rejected and reported as a conflict** instead of clobbering the
+  newer value, and the GUI file-loopback surfaces a notice so the edit can be
+  re-applied against the current record. Manifests written before this release
+  fall back to the prior behavior until their next render.
+- **BREAKING — the render manifest is now v2-only.** The legacy v1 entity-files
+  shape (a bare `string[]` filename list, no content hashes) is no longer written,
+  and the `isV1EntityFiles` / `normalizeEntityFiles` helpers are removed from the
+  public API. Manifests are always the hashed `{ filename: { hash, ... } }` map.
+  An old v1 `.lattice/manifest.json` on disk is still handled gracefully — its
+  filenames are read so cleanup can detect orphans, write-back treats it as
+  having no baseline (skips it), and the first render regenerates it in the v2
+  shape — so no action is required on upgrade.
+- **BREAKING (cloud + members only) — the member group role is now per-cloud.**
+  Postgres roles are cluster-global, so the old hard-coded `lattice_members` group
+  was shared by every cloud co-located on one Postgres cluster — co-mingling
+  unrelated clouds' members and contending on one role's catalog during concurrent
+  provisioning. The group name is now derived from the cloud's own
+  `(database, schema)` namespace (`lattice_m_<md5(db:schema)[:20]>`), so each cloud
+  has its own isolated group. The exported `MEMBER_GROUP` constant is removed,
+  replaced by `memberGroupFor(db)` (resolver) and `LEGACY_MEMBER_GROUP` (the old
+  name, for migration only). On the owner's next open the new group + its grants
+  self-heal AND the cloud's own members (from its `__lattice_member_invites`
+  registry) are automatically re-granted the new group — scoped to this cloud, never
+  the cluster-global legacy group, so members are never cross-pollinated between
+  clouds. So a cloud whose members were provisioned through Lattice needs no action;
+  only an out-of-band (DBA-created, never-invited) role needs a manual re-grant (see
+  MIGRATING-4.0.md). Single-user / SQLite deployments are unaffected.
 
 ## [3.4.7] - 2026-06-19
 
@@ -2331,7 +2627,7 @@ When several people open the GUI against the same shared cloud (Postgres) DB:
 ### Deprecated — `files.path` / `files.kind`
 
 - **`files.path` is deprecated in favor of the reference model.** GUI local-file ingestion (`/api/ingest/file`) now records a v2.0 `local_ref` (`ref_kind='local_ref'`, `ref_uri`) via `referenceLocalFile()` instead of writing `path`. The blob/open routes and the GUI preview fall back to `ref_uri` (`resolveSource` already did). `files.kind` is an orphaned column (superseded by `mime` + `ref_kind`). Both columns are retained for back-compat — **not dropped** — and carry deprecation notes.
-- **License metadata:** the Apache copyright holder now reads `Automated Industries (M-Flat Inc)` consistently across `LICENSE` + `NOTICE`; the `NOTICE` package label was corrected to `latticesql` and the placeholder URL to the project homepage.
+- **License metadata:** the Apache copyright holder is now consistent across `LICENSE` + `NOTICE`; the `NOTICE` package label was corrected to `latticesql` and the placeholder URL to the project homepage.
 
 ### Added — workspace model + auto-render (back end)
 

@@ -60,9 +60,11 @@ entities:
       description: { type: text }
       status: { type: text, default: pending }
       priority: { type: integer, default: 1 }
-      agent_id: { type: uuid, ref: agent }
+      agent_id: { type: uuid }
       created_at: { type: datetime }
       completed_at: { type: datetime }
+    relations:
+      agent: { type: belongsTo, table: agent, foreignKey: agent_id }
     render:
       template: default-list
       formatRow: '[{{status}}] {{title}} → {{agent.name}}'
@@ -72,9 +74,11 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       type: { type: text, required: true }
-      agent_id: { type: uuid, ref: agent }
+      agent_id: { type: uuid }
       payload: { type: text }
       created_at: { type: datetime }
+    relations:
+      agent: { type: belongsTo, table: agent, foreignKey: agent_id }
     render:
       template: default-list
       formatRow: '{{created_at}} [{{type}}] {{agent.name}}'

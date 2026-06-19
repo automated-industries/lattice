@@ -53,8 +53,21 @@ export function applyWriteEntry(db: Database.Database, entry: SessionWriteEntry)
   }
 
   // Load schema columns
-  const columnRows = db.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[];
+  const columnRows = db.prepare(`PRAGMA table_info("${table}")`).all() as {
+    name: string;
+    pk: number;
+  }[];
   const knownColumns = new Set(columnRows.map((r) => r.name));
+
+  // Column to match `target` on for update/delete: prefer an explicit `id`, else the
+  // table's DECLARED single-column primary key (PRAGMA pk === 1), and only as a last
+  // resort the first column. Guessing columnRows[0] (the first column) could target a
+  // non-PK column and update/delete the wrong rows.
+  const pkCol =
+    columnRows.find((r) => r.name === 'id')?.name ??
+    columnRows.find((r) => r.pk === 1)?.name ??
+    columnRows[0]?.name ??
+    'id';
 
   // Validate all field names against schema
   for (const fieldName of Object.keys(fields)) {
@@ -86,7 +99,14 @@ export function applyWriteEntry(db: Database.Database, entry: SessionWriteEntry)
       if (!target) {
         return { ok: false, reason: 'Field "target" is required for op "update"' };
       }
-      const pkCol = columnRows.find((r) => r.name === 'id') ? 'id' : (columnRows[0]?.name ?? 'id');
+      // Intentionally last-writer-wins: no optimistic-concurrency / version gate. This
+      // is the SESSION.md apply path — a single-writer, synchronous (better-sqlite3)
+      // ingestion of a write log the operator authored. A version gate would need an
+      // expected-version IN THE INPUT to compare against, and the SESSION.md write
+      // format carries none (it says "update row X set fields", not "...if version=N").
+      // Adding a gate would be dead code on the tables this writes (no version column)
+      // and changes nothing for a single writer. (Contrast the multi-writer cloud
+      // reverse-sync path, which DOES gate on a captured row hash.)
       const setCols = Object.keys(fields)
         .map((c) => `"${c}" = ?`)
         .join(', ');
@@ -100,7 +120,6 @@ export function applyWriteEntry(db: Database.Database, entry: SessionWriteEntry)
       if (!target) {
         return { ok: false, reason: 'Field "target" is required for op "delete"' };
       }
-      const pkCol = columnRows.find((r) => r.name === 'id') ? 'id' : (columnRows[0]?.name ?? 'id');
       if (knownColumns.has('deleted_at')) {
         db.prepare(`UPDATE "${table}" SET deleted_at = datetime('now') WHERE "${pkCol}" = ?`).run(
           target,
