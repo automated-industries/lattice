@@ -52,6 +52,20 @@ method that is inert unless a table opts in.
   re-embedding everything on any change.
 - `SearchResult` now carries `chunkIndex` + `matchedContent` for chunked
   embeddings (a precise, low-token snippet of the matching chunk).
+- **Hybrid search (`hybridSearch`, `Lattice.hybridSearch`).** Fuses semantic
+  (vector) and lexical (full-text) retrieval with Reciprocal Rank Fusion (k=60),
+  so results have both embeddings' recall and exact-term precision. Each result
+  carries a score breakdown for `--explain`. Full-text-only when a table has no
+  embeddings; soft-deleted rows excluded.
+- **Ranking signals (`RankingOptions`).** Deterministic, model-free boosts from
+  existing columns — recency (half-life decay), reward (saturating
+  `_reward_total`), and a custom signal — folded into the hybrid score.
+- **Reranking (`SearchOptions.reranker`, `HybridSearchOptions.reranker`).** An
+  optional bring-your-own second-stage reranker over the retrieved candidates,
+  with graceful fallback to the first-stage order if it throws or returns nothing
+  usable. Lattice never calls a model.
+- **`lattice search "<query>" --table <t> [--explain] [--topk N] [--json]`** — a
+  CLI hybrid search; `--explain` prints the per-result score breakdown.
 
 ### Changed
 
@@ -62,6 +76,10 @@ method that is inert unless a table opts in.
 - The internal `_lattice_embeddings` store is now chunk-aware
   (`chunk_index`/`content`/`embedding_model`/`embedded_at`/`vec_dim`); an older
   store is migrated forward automatically and idempotently on init.
+- **Indexed full-text search is now relevance-ranked.** `FtsHit.score` is
+  populated by the indexed tier (`ts_rank` on Postgres, `-bm25` on SQLite FTS5)
+  and results are ordered by relevance — previously indexed full-text results
+  came back in physical/rowid order.
 
 ### Fixed
 

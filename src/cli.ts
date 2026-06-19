@@ -61,6 +61,14 @@ interface ParsedArgs {
   displayName?: string | undefined;
   /** --json — emit machine-readable JSON instead of formatted text (doctor). */
   json: boolean;
+  /** Positional query text for `search`. */
+  query?: string | undefined;
+  /** --table <t> — target table for `search`. */
+  table?: string | undefined;
+  /** --topk <n> — result count for `search`. */
+  topK?: number | undefined;
+  /** --explain — print the hybrid-search score breakdown (`search`). */
+  explain: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -86,6 +94,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   let displayName: string | undefined;
   let root: string | undefined;
   let json = false;
+  let query: string | undefined;
+  let table: string | undefined;
+  let topK: number | undefined;
+  let explain = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -101,6 +113,11 @@ function parseArgs(argv: string[]): ParsedArgs {
         action = argv[2];
         i = 3;
       }
+    }
+    // `lattice search <query>` — the next positional is the query text.
+    if (command === 'search' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      query = argv[1];
+      i = 2;
     }
   }
 
@@ -155,6 +172,15 @@ function parseArgs(argv: string[]): ParsedArgs {
       root = argv[i];
     } else if (arg === '--json') {
       json = true;
+    } else if (arg === '--explain') {
+      explain = true;
+    } else if (arg === '--table' && i + 1 < argv.length) {
+      i++;
+      table = argv[i];
+    } else if (arg === '--topk' && i + 1 < argv.length) {
+      i++;
+      const parsed = parseInt(argv[i] ?? '10', 10);
+      if (!isNaN(parsed)) topK = parsed;
     }
     i++;
   }
@@ -182,6 +208,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     displayName,
     root,
     json,
+    query,
+    table,
+    topK,
+    explain,
   };
 }
 
@@ -207,6 +237,7 @@ function printHelp(): void {
       '  watch       Poll for changes and re-render on each cycle',
       '  gui         Start a local browser GUI for exploring Lattice context',
       '  doctor      Report retrieval health (FTS/embedding coverage, extensions)',
+      '  search      Hybrid search a table (--table <t> [--explain] [--topk N])',
       '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
@@ -402,6 +433,53 @@ async function runDoctor(args: ParsedArgs): Promise<void> {
     // Exit non-zero when an error-severity issue exists, so `lattice doctor` can
     // gate CI / a deploy on retrieval health.
     if (!report.healthy) process.exitCode = 1;
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
+async function runSearch(args: ParsedArgs): Promise<void> {
+  if (!args.query) {
+    console.error('Usage: lattice search "<query>" --table <table> [--explain] [--topk N]');
+    process.exit(1);
+  }
+  if (!args.table) {
+    console.error('Error: --table <table> is required for search');
+    process.exit(1);
+  }
+  const db = new Lattice({ config: resolve(args.config) });
+  try {
+    await db.init();
+    const results = await db.hybridSearch(args.table, args.query, { topK: args.topK ?? 10 });
+    if (args.json) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+    if (results.length === 0) {
+      console.log('No matches.');
+      return;
+    }
+    for (const r of results) {
+      const id =
+        typeof r.row.id === 'string' || typeof r.row.id === 'number' ? String(r.row.id) : '(no id)';
+      console.log(`${r.score.toFixed(4)}  ${id}`);
+      if (args.explain) {
+        const e = r.explain;
+        const v =
+          e.vectorRank === null
+            ? '—'
+            : `#${String(e.vectorRank)} (${(e.vectorScore ?? 0).toFixed(3)})`;
+        const f =
+          e.ftsRank === null ? '—' : `#${String(e.ftsRank)} (${(e.ftsScore ?? 0).toFixed(3)})`;
+        console.log(
+          `      vector ${v} | fts ${f} | rrf ${e.rrf.toFixed(5)} | boost ${e.rankingBoost.toFixed(3)}` +
+            (e.rerankerScore !== undefined ? ` | rerank ${e.rerankerScore.toFixed(3)}` : ''),
+        );
+      }
+    }
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
@@ -763,6 +841,9 @@ function main(): void {
       break;
     case 'doctor':
       void runDoctor(args);
+      break;
+    case 'search':
+      void runSearch(args);
       break;
     default:
       console.error(`Unknown command: ${args.command}`);

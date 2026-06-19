@@ -92,10 +92,14 @@ import {
   removeEmbedding,
   searchByEmbedding,
   refreshEmbeddings,
+  concatRowText,
 } from './search/embeddings.js';
 import type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
 import { buildVectorIndex } from './search/vector-index.js';
 import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
+import { hybridSearch } from './search/hybrid.js';
+import type { HybridSearchOptions, HybridSearchResult } from './search/hybrid.js';
+import { applyReranker } from './search/rerank.js';
 import { evaluateRetrieval } from './search/eval.js';
 import type {
   EvalQuery,
@@ -1748,15 +1752,50 @@ export class Lattice {
     }
 
     const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
-    return searchByEmbedding(
+    const topK = opts.topK ?? 10;
+    const embCfg = def.embeddings;
+    // With a reranker, retrieve a larger pool, rerank it, then slice to topK.
+    const pool = opts.reranker ? (opts.rerankPoolSize ?? Math.max(topK * 4, 20)) : topK;
+    const results = await searchByEmbedding(
       this._adapter,
       table,
       query,
-      def.embeddings,
-      opts.topK ?? 10,
+      embCfg,
+      pool,
       opts.minScore ?? 0,
       pkCol,
     );
+    if (!opts.reranker) return results;
+
+    const candidates = results.map((r) => ({
+      id: String(r.row[pkCol]),
+      content: r.matchedContent ?? concatRowText(r.row, embCfg.fields),
+      result: r,
+    }));
+    const { order, applied } = await applyReranker(query, candidates, opts.reranker);
+    const ordered = applied ? order.map((c) => c.result) : results;
+    return ordered.slice(0, topK);
+  }
+
+  /**
+   * Hybrid search — fuse semantic (vector) and full-text retrieval with
+   * Reciprocal Rank Fusion, with optional deterministic ranking signals
+   * (recency / reward / custom) and an optional reranker. Returns fused results
+   * with a per-result score breakdown (`explain`). The vector arm is enabled
+   * when the table has `embeddings` config; otherwise it is full-text only.
+   */
+  async hybridSearch(
+    table: string,
+    query: string,
+    opts: Omit<HybridSearchOptions, 'embeddingsConfig' | 'pkColumn'> = {},
+  ): Promise<HybridSearchResult[]> {
+    const notInit = this._notInitError<HybridSearchResult[]>();
+    if (notInit) return notInit;
+    const def = this._schema.getTables().get(table);
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const merged: HybridSearchOptions = { ...opts, pkColumn: pkCol };
+    if (def?.embeddings) merged.embeddingsConfig = def.embeddings;
+    return hybridSearch(this._adapter, table, query, merged);
   }
 
   /**

@@ -581,6 +581,20 @@ export interface SearchOptions {
    * score are excluded. Default: 0.
    */
   minScore?: number;
+  /**
+   * Optional second-stage reranker applied to the retrieved candidates before
+   * the top-K is returned. A cross-encoder reranker typically lifts precision
+   * over raw similarity. Bring your own — Lattice never calls a model. If it
+   * throws or returns nothing usable, the original similarity order is kept
+   * (graceful fallback). To rerank a larger pool than `topK`, set
+   * `rerankPoolSize`.
+   */
+  reranker?: import('./search/rerank.js').RerankerFn;
+  /**
+   * Number of candidates to retrieve and hand to the `reranker` before slicing
+   * to `topK`. Defaults to `max(topK * 4, 20)`. Ignored when no reranker is set.
+   */
+  rerankPoolSize?: number;
 }
 
 /**

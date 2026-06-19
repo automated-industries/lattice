@@ -241,6 +241,24 @@ export {
 } from './search/fts.js';
 export type { FtsResult, FtsGroup, FtsHit, FtsOptions } from './search/fts.js';
 
+// v4.1 — hybrid (vector + full-text) search via Reciprocal Rank Fusion, with
+// deterministic ranking signals and an optional bring-your-own reranker.
+export { hybridSearch } from './search/hybrid.js';
+export type {
+  HybridSearchOptions,
+  HybridSearchResult,
+  HybridScoreBreakdown,
+} from './search/hybrid.js';
+export { rankingBoost, recencyBoost, rewardBoost } from './search/ranking.js';
+export type {
+  RankingOptions,
+  RecencySignal,
+  RewardSignal,
+  CustomSignal,
+} from './search/ranking.js';
+export { applyReranker } from './search/rerank.js';
+export type { RerankerFn, RerankCandidate, RerankScore } from './search/rerank.js';
+
 // v4.1 — text chunking for higher-precision, lower-token embedding.
 export { semanticChunker, chunkText } from './search/chunking.js';
 export type { TextChunk, ChunkerFn, SemanticChunkerOptions } from './search/chunking.js';
