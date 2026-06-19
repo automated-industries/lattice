@@ -7,15 +7,17 @@ import {
   ownPolyfillsByGroup,
   enableRlsForTable,
   backfillOwnership,
+  memberGroupFor,
 } from './rls.js';
 import { installCloudSettings } from './settings.js';
 import {
   seedColumnPolicyFromYaml,
   regenerateAudienceViewFromDb,
   tableNeedsAudienceView,
+  loadAllColumnPolicy,
 } from './audience.js';
 import {
-  grantMemberTableAccessSql,
+  grantMemberTableAccessBatchSql,
   grantMemberBookkeepingSql,
   grantMemberExecuteSql,
 } from './member-access.js';
@@ -94,6 +96,10 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   const skipped: { table: string; reason: string }[] = [];
   if (db.getDialect() !== 'postgres') return { skipped };
   const registered = db.getRegisteredTableNames();
+  // This cloud's own member group (per (database, schema) — see memberGroupFor).
+  // Resolved once and threaded into every grant so install / provision / reconcile
+  // all converge on the SAME group for this cloud.
+  const group = await memberGroupFor(db);
 
   // Per-table fault isolation: a table the connecting role can't ALTER/GRANT
   // (e.g. owned by a different role) is recorded + skipped, never aborting the
@@ -131,15 +137,24 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   )) as { name: string }[];
   const rlsOn = new Set(rlsRows.map((r) => r.name));
 
+  // Decide masked-ness from the DB-canonical column policy (the source the <t>_v views
+  // are built from), NOT the in-memory config-derived schema audience. The in-memory
+  // map never reflects a column masked at RUNTIME (e.g. the GUI "mark secret" path), so
+  // reading it here would take the unmasked grant path and re-GRANT members base SELECT
+  // on a runtime-masked table — re-exposing the column the owner hid. One query for all.
+  const columnPolicy = await loadAllColumnPolicy(db);
+
   for (const table of registered) {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
-    const masked = tableNeedsAudienceView(db.getColumnAudience(table));
+    const masked = tableNeedsAudienceView(columnPolicy.get(table) ?? {});
     await tryTable(table, async () => {
-      for (const sql of grantMemberTableAccessSql(table, { masked })) {
-        await runAsyncOrSync(db.adapter, sql);
-      }
+      // One round-trip per table (the masked case batches its 2 GRANTs) — the
+      // per-table tryTable wrapper still isolates a failure to this table + records
+      // it in skipped[], so batching changes only the round-trip count, not the
+      // fault isolation or reporting.
+      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, { masked }, group));
     });
   }
 
@@ -152,7 +167,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // library-only cloud is a no-op and an already-migrated cloud self-heals on open.
   // OWNER_ONLY_BOOKKEEPING is intentionally NOT granted — those are reached only
   // through SECURITY DEFINER functions keyed on session_user.
-  for (const sql of grantMemberBookkeepingSql()) {
+  for (const sql of grantMemberBookkeepingSql(group)) {
     await runAsyncOrSync(db.adapter, sql);
   }
 
@@ -162,7 +177,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // post-revoke) CREATE them itself. Non-fatal: a library cloud that never
   // registered the polyfills simply has nothing to grant.
   try {
-    await runAsyncOrSync(db.adapter, grantMemberExecuteSql());
+    await runAsyncOrSync(db.adapter, grantMemberExecuteSql(group));
   } catch (err) {
     console.warn(
       '[reconcileCloudMemberAccess] could not grant EXECUTE on polyfills (will retry next open):',
@@ -192,6 +207,36 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // (`__lattice_changelog` is granted via the MEMBER_READABLE_BOOKKEEPING registry
   // in step (3) — its per-viewer RLS policy, installed by `enableChangelogRls`,
   // filters reads so the base grant is safe, not a leak.)
+
+  // (6) Backwards-compat: a cloud provisioned BEFORE per-cloud member groups has
+  // its members in the legacy CLUSTER-GLOBAL `lattice_members`, not this cloud's
+  // own group — so after upgrade they would lose access. Re-grant THIS cloud's
+  // group to each of its OWN members. Scoped to the cloud-local invite registry
+  // (`__lattice_member_invites`) JOINed to real roles — deliberately NOT the
+  // cluster-global legacy group, which is shared across clouds and would
+  // cross-pollinate members between unrelated clouds. Idempotent (GRANT to an
+  // existing member is a no-op); fault-isolated so one bad row never aborts the
+  // converge. `group` is a validated `lattice_m_<hex>` identifier; `format('%I')`
+  // safely quotes both it and each role name.
+  await tryTable('(member-regrant)', async () => {
+    await runAsyncOrSync(
+      db.adapter,
+      `DO $LATTICE_REGRANT$
+       DECLARE r record;
+       BEGIN
+         IF to_regclass('__lattice_member_invites') IS NULL THEN RETURN; END IF;
+         FOR r IN
+           SELECT DISTINCT i."role" AS role
+             FROM "__lattice_member_invites" i
+             JOIN pg_roles pr ON pr.rolname = i."role"
+            WHERE i."role" IS NOT NULL
+         LOOP
+           EXECUTE format('GRANT %I TO %I', '${group}', r.role);
+         END LOOP;
+       END $LATTICE_REGRANT$;`,
+    );
+  });
+
   return { skipped };
 }
 

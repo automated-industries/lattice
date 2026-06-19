@@ -8,10 +8,10 @@ import type { TableDefinition } from '../types.js';
  * file repository) that should not require every consumer to re-derive
  * the column shape from scratch.
  *
- * Columns are deliberately a *superset* of any earlier ad-hoc shapes
- * (e.g. older fixtures defined `files` with `path` + `kind` only). New
- * code should prefer the content-addressed columns (`sha256`, `blob_path`)
- * for files; legacy columns remain for backwards-compatibility.
+ * Columns are deliberately a *superset* of any earlier ad-hoc shapes. New
+ * code uses the content-addressed columns (`sha256`, `blob_path`) for owned
+ * bytes and the reference model (`ref_kind` / `ref_uri`) for files that live
+ * elsewhere.
  *
  * `secrets.value` is encrypted at rest. Registering native entities on a
  * Lattice without an `encryptionKey` configured will throw at init time
@@ -41,17 +41,6 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
   files: {
     columns: {
       id: 'TEXT PRIMARY KEY',
-      // Legacy columns (DEPRECATED v2.0 — retained for back-compat, NOT dropped).
-      //   path — superseded by the reference model below (`ref_kind`/`ref_uri`).
-      //          New local-file ingestion records a `local_ref` via
-      //          `referenceLocalFile()` rather than writing `path`; readers fall
-      //          back to `ref_uri`. Do not write `path` in new code.
-      //   kind — orphaned: superseded by `mime` (content type) and `ref_kind`
-      //          (the blob/local_ref/cloud_ref discriminator). Not read or
-      //          written by production code; kept only so existing rows retain
-      //          their value.
-      path: 'TEXT',
-      kind: 'TEXT',
       // Content-addressed storage. `sha256` is the canonical content
       // identifier; `blob_path` is the relative path under
       // `<lattice-root>/data/blobs/` written by attachBlob().

@@ -26,10 +26,34 @@ export interface WritebackStateStore {
 
 /**
  * In-memory state store (default). State is lost on process exit.
+ *
+ * The seen-set dedupe is UNBOUNDED by default — every key ever marked for a
+ * file is retained for the process lifetime, exactly as before. For a
+ * long-running daemon tailing an append-only log this grows without limit, so
+ * an optional `maxSeenPerFile` cap is available: when set, only the most recent
+ * N keys per file are retained (oldest evicted first, by insertion order).
+ *
+ * The cap is a MEMORY-SAFETY guard for bounded-lifetime processes, NOT a
+ * durability substitute: an evicted key has no record, so if that same key
+ * reappears in the file later it would be re-processed (re-persisted). For
+ * long-running daemons over append-only logs prefer the durable
+ * {@link SQLiteStateStore} — its `_lattice_writeback_seen` table is durable and
+ * disk-bounded, so dedupe survives restarts without an in-memory ceiling.
  */
 export class InMemoryStateStore implements WritebackStateStore {
   private readonly _offsets = new Map<string, { offset: number; size: number }>();
   private readonly _seen = new Map<string, Set<string>>();
+  private readonly _maxSeenPerFile: number;
+
+  /**
+   * @param opts.maxSeenPerFile Cap the per-file dedupe set to this many keys
+   *   (oldest evicted first). Default `Infinity` — unbounded, preserving the
+   *   original behavior exactly. Set a finite cap only when you understand the
+   *   re-processing tradeoff documented on the class.
+   */
+  constructor(opts?: { maxSeenPerFile?: number }) {
+    this._maxSeenPerFile = opts?.maxSeenPerFile ?? Infinity;
+  }
 
   getOffset(filePath: string): number {
     return this._offsets.get(filePath)?.offset ?? 0;
@@ -54,6 +78,14 @@ export class InMemoryStateStore implements WritebackStateStore {
       this._seen.set(filePath, seenSet);
     }
     seenSet.add(key);
+    // Evict oldest-first when a finite cap is exceeded. A JS Set preserves
+    // insertion order, so the first value is the oldest. Re-marking an existing
+    // key is idempotent (Set.add), so this only fires on genuine growth.
+    while (seenSet.size > this._maxSeenPerFile) {
+      const oldest = seenSet.values().next().value;
+      if (oldest === undefined) break;
+      seenSet.delete(oldest);
+    }
   }
 }
 

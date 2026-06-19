@@ -1,6 +1,15 @@
 import type { StorageAdapter } from '../db/adapter.js';
 import { allAsyncOrSync } from '../db/adapter.js';
+import { assertSafeIdentifier } from '../schema/identifier.js';
 import type { Row, ReportConfig, ReportResult, ReportSectionResult } from '../types.js';
+
+/**
+ * Safety ceiling for a report section that declares no explicit `limit`. A section
+ * builds `SELECT * FROM <table>`, so without a cap an unbounded section reads the
+ * whole table. This bounds the worst case; when it actually truncates we warn (never
+ * silently) so a report that genuinely needs more rows sets an explicit `limit`.
+ */
+const DEFAULT_REPORT_SECTION_LIMIT = 50_000;
 
 /**
  * Report generation extracted from the `Lattice` facade. The facade keeps the
@@ -38,6 +47,10 @@ export class ReportBuilder {
     let allEmpty = true;
 
     for (const section of config.sections) {
+      // Every identifier below is interpolated into SQL (the table, each filter
+      // column, the orderBy column), so validate them — reject anything that isn't a
+      // plain identifier loudly rather than letting it reach the query string.
+      assertSafeIdentifier(section.query.table, 'table');
       const cols = this.ensureColumnCache(section.query.table);
       const hasTimestamp = cols.has('timestamp');
       const conditions: string[] = [];
@@ -57,6 +70,7 @@ export class ReportBuilder {
       // User filters
       if (section.query.filters) {
         for (const f of section.query.filters) {
+          assertSafeIdentifier(f.col, 'column');
           switch (f.op) {
             case 'eq':
               conditions.push(`"${f.col}" = ?`);
@@ -105,16 +119,30 @@ export class ReportBuilder {
       }
 
       const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+      if (section.query.orderBy) assertSafeIdentifier(section.query.orderBy, 'column');
       const orderBy = section.query.orderBy
         ? ` ORDER BY "${section.query.orderBy}" ${section.query.orderDir === 'desc' ? 'DESC' : 'ASC'}`
         : '';
-      const limit = section.query.limit ? ` LIMIT ${String(section.query.limit)}` : '';
+      // An explicit `limit` wins; otherwise apply the safety ceiling so an unbounded
+      // section can't read a whole large table by accident.
+      const effectiveLimit = section.query.limit ?? DEFAULT_REPORT_SECTION_LIMIT;
+      const limit = ` LIMIT ${String(effectiveLimit)}`;
 
       const rows = await allAsyncOrSync(
         this.adapter,
         `SELECT * FROM "${section.query.table}"${where}${orderBy}${limit}`,
         params,
       );
+      // Truncation must be loud, never silent: if the section hit the default ceiling
+      // (no explicit limit) the report may be missing rows — tell the consumer to set
+      // an explicit limit rather than quietly returning a partial section.
+      if (section.query.limit == null && rows.length === DEFAULT_REPORT_SECTION_LIMIT) {
+        console.warn(
+          `[report] section "${section.query.table}" hit the default ${String(
+            DEFAULT_REPORT_SECTION_LIMIT,
+          )}-row ceiling and may be truncated; set an explicit query.limit to control it.`,
+        );
+      }
 
       if (rows.length > 0) allEmpty = false;
 

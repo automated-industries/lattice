@@ -284,6 +284,37 @@ export class PostgresAdapter implements StorageAdapter {
     return r.rows.map((row) => (row as { column_name: string }).column_name);
   }
 
+  /**
+   * Whole-schema column introspection in a single query — the batched
+   * equivalent of {@link introspectColumnsAsync}. The boot path uses this to
+   * collapse one `information_schema` round-trip per declared table into one,
+   * which on a high-RTT cloud is the difference between ~hundreds of serial
+   * round-trips and a single query.
+   *
+   * `tables` is accepted for interface symmetry but ignored: querying the
+   * whole `current_schema()` once is cheaper than constraining to a list, and
+   * the caller folds out tables it doesn't care about. Throws on query failure
+   * — a degraded read must never masquerade as "every table is missing".
+   */
+  async introspectAllColumns(_tables: string[]): Promise<Map<string, Set<string>>> {
+    const pool = await this._readyPool();
+    const r = await pool.query(
+      `SELECT table_name, column_name FROM information_schema.columns
+       WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position`,
+    );
+    const map = new Map<string, Set<string>>();
+    for (const row of r.rows) {
+      const { table_name, column_name } = row as { table_name: string; column_name: string };
+      let s = map.get(table_name);
+      if (!s) {
+        s = new Set();
+        map.set(table_name, s);
+      }
+      s.add(column_name);
+    }
+    return map;
+  }
+
   async addColumnAsync(table: string, column: string, typeSpec: string): Promise<void> {
     // Postgres accepts non-constant defaults (NOW(), random(), CURRENT_TIMESTAMP)
     // natively in ALTER TABLE ADD COLUMN. Skip PRIMARY KEY columns — same

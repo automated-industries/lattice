@@ -15,7 +15,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { installCloudRls, MEMBER_GROUP } from '../../src/cloud/rls.js';
+import { installCloudRls, memberGroupFor } from '../../src/cloud/rls.js';
 import { reconcileCloudMemberAccess } from '../../src/cloud/setup.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 import { registerPostgresPolyfills } from '../../src/db/postgres.js';
@@ -89,10 +89,11 @@ describe.skipIf(!PG_URL)('3.3.3 cloud member provisioning grants', () => {
   }
 
   async function memberHasTablePriv(db: Lattice, table: string, priv: string): Promise<boolean> {
+    const group = await memberGroupFor(db);
     const row = (await getAsyncOrSync(
       db.adapter,
       `SELECT has_table_privilege(?::text, format('%I.%I', current_schema(), ?::text), ?::text) AS ok`,
-      [MEMBER_GROUP, table, priv],
+      [group, table, priv],
     )) as { ok?: unknown } | undefined;
     return row?.ok === true || row?.ok === 't';
   }
@@ -109,6 +110,7 @@ describe.skipIf(!PG_URL)('3.3.3 cloud member provisioning grants', () => {
 
   it('grants the member group the GUI/identity tables, polyfill EXECUTE, and adds deleted_at', async () => {
     const o = await ownerCloud();
+    const group = await memberGroupFor(o);
     const member = `lm_${randomBytes(4).toString('hex')}`;
     roles.push(member);
     await provisionMemberRole(o, member, generateMemberPassword());
@@ -133,7 +135,7 @@ describe.skipIf(!PG_URL)('3.3.3 cloud member provisioning grants', () => {
       o.adapter,
       `SELECT has_function_privilege(?::text, 'json_extract(text,text)', 'EXECUTE') AS je,
               has_function_privilege(?::text, 'strftime(text,text)', 'EXECUTE') AS sf`,
-      [MEMBER_GROUP, MEMBER_GROUP],
+      [group, group],
     )) as { je?: unknown; sf?: unknown } | undefined;
     expect(fnRow?.je === true || fnRow?.je === 't').toBe(true);
     expect(fnRow?.sf === true || fnRow?.sf === 't').toBe(true);

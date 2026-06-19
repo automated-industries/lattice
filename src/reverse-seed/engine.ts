@@ -463,9 +463,12 @@ export class ReverseSeedEngine {
               continue;
             }
 
+            // Introspect the table's columns ONCE per table (the schema is stable
+            // for the life of the boot), not once per row.
+            const validColumns = new Set(await introspectColumnsAsyncOrSync(this._adapter, table));
             for (const row of rows) {
               if (Object.keys(row).length === 0) continue;
-              const inserted = await this._insertOrIgnore(tx, table, row);
+              const inserted = await this._insertOrIgnore(tx, table, row, validColumns);
               if (inserted) rowsRecovered++;
             }
           }
@@ -518,9 +521,11 @@ export class ReverseSeedEngine {
 
     try {
       await withClient(async (tx) => {
+        // Introspect the table's columns ONCE (the schema is stable), not per row.
+        const validColumns = new Set(await introspectColumnsAsyncOrSync(this._adapter, table));
         for (const row of rows) {
           if (Object.keys(row).length === 0) continue;
-          const inserted = await this._insertOrIgnore(tx, table, row);
+          const inserted = await this._insertOrIgnore(tx, table, row, validColumns);
           if (inserted) rowsRecovered++;
         }
       });
@@ -546,12 +551,10 @@ export class ReverseSeedEngine {
     tx: TxClient,
     table: string,
     row: Record<string, unknown>,
+    validColumns: ReadonlySet<string>,
   ): Promise<boolean> {
-    // Get actual columns from the table. introspectColumns is read-only
-    // metadata that does not need to participate in the transaction; the
-    // schema is stable for the life of the boot.
-    const validColumns = new Set(await introspectColumnsAsyncOrSync(this._adapter, table));
-
+    // validColumns is introspected ONCE per table by the caller (the schema is
+    // stable for the boot) — not re-read per row.
     // Filter row to valid columns only
     const filtered: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(row)) {

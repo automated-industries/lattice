@@ -9,8 +9,8 @@ import { resolveActiveS3Config } from '../framework/s3-config.js';
 
 /**
  * Serving + OS integration for ingested files. A `files` row points at a local
- * file — either the legacy `path` column (DEPRECATED) or a v2.0 `local_ref`
- * (`ref_uri`); ingest references files, it does not copy bytes — so the blob is
+ * file via a `local_ref` (`ref_uri`); ingest references files, it does not copy
+ * bytes — so the blob is
  * streamed straight from disk for inline preview, and "open in Finder" shells
  * the platform opener — gated behind LATTICE_LOCAL_OPEN since it only makes
  * sense when the GUI server shares the user's machine.
@@ -40,7 +40,6 @@ interface FilesContext {
 }
 
 interface FileRow {
-  path?: string | null;
   ref_kind?: string | null;
   ref_uri?: string | null;
   ref_provider?: string | null;
@@ -52,13 +51,13 @@ interface FileRow {
 }
 
 /**
- * The local filesystem path a row points at, for the two storage modes this
- * route can stream: a legacy `path` (DEPRECATED) or a v2.0 `local_ref`
- * (`ref_uri`). Cloud references (`ref_uri` holds a URL) and owned blobs are not
- * served from here, so they resolve to null.
+ * The local filesystem path a row points at, for the storage modes this route
+ * can stream: a `local_ref` (`ref_uri`) or a content-addressed blob/cloud_ref
+ * whose bytes are still on this disk (`blob_path`). Cloud references (`ref_uri`
+ * holds a URL) and remote-only blobs are not served from here, so they resolve
+ * to null.
  */
 function localPathOf(row: FileRow, latticeRoot?: string): string | null {
-  if (typeof row.path === 'string' && row.path) return row.path;
   if (row.ref_kind === 'local_ref' && typeof row.ref_uri === 'string' && row.ref_uri) {
     return row.ref_uri;
   }
@@ -97,7 +96,7 @@ const MIME_EXT: Record<string, string> = {
 
 /**
  * The on-disk path to REVEAL in the OS file browser for a files row. A row backed
- * by a named local original (legacy `path` or a `local_ref` `ref_uri`) is revealed
+ * by a named local original (a `local_ref` `ref_uri`) is revealed
  * as-is. But a content-addressed blob is stored at `data/blobs/<sha256>` — no name,
  * no extension — so revealing it shows a hash-named generic "Document" instead of
  * the user's image. For a blob we therefore materialize a named copy at
@@ -112,8 +111,7 @@ export function revealTargetFor(
   loc: string,
   id: string,
 ): string {
-  const isNamedOriginal =
-    (typeof row.path === 'string' && row.path) || row.ref_kind === 'local_ref';
+  const isNamedOriginal = row.ref_kind === 'local_ref';
   if (isNamedOriginal) return loc; // already a real, named file
   if (!latticeRoot) return loc;
   let name = sanitizeFilename(row.original_name ?? 'file');
