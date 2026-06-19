@@ -573,6 +573,19 @@ export interface TableDefinition {
    * / `verifiedRows`). Tables without this config are unaffected.
    */
   trust?: boolean | import('./schema/governance.js').TrustConfig;
+  /**
+   * Declarative computed columns (4.1+) — stored columns derived from other
+   * columns on the same row by a pure function, recomputed on every write (and
+   * via `refreshComputedColumns`). Lets you index / filter / sort on a derived
+   * value. A dependency cycle is rejected at init. See {@link ComputedColumnSpec}.
+   */
+  computed?: Record<string, import('./schema/computed.js').ComputedColumnSpec>;
+  /**
+   * Materialized rollups (4.1+) — stored aggregates over a child table (e.g.
+   * `comment_count`), recomputed when the child changes and via
+   * `refreshMaterializedRollups`. See {@link MaterializedRollupSpec}.
+   */
+  materializedRollups?: Record<string, import('./schema/computed.js').MaterializedRollupSpec>;
 }
 
 export interface MultiTableDefinition {

@@ -104,6 +104,13 @@ method that is inert unless a table opts in.
   edge extraction from foreign keys) plus `graphSearch` — hybrid search re-ranked
   by graph adjacency to anchor entities, so relationship-relevant rows rank
   higher. Depth and visited-node hard caps prevent runaway traversal.
+- **Computed columns (`TableDefinition.computed`).** Stored columns derived from
+  other columns by a pure function, computed on insert and recomputed when a
+  dependency changes (`refreshComputedColumns` for a full pass). Dependency
+  cycles are rejected at init.
+- **Materialized rollups (`TableDefinition.materializedRollups`).** Stored
+  aggregates over a child table (e.g. `comment_count`), maintained incrementally
+  as children change and recomputable in full via `refreshMaterializedRollups`.
 
 ### Changed
 

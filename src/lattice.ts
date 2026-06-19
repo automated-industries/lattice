@@ -128,6 +128,14 @@ import type {
   ExtractEdgesSpec,
   TraversalDirection,
 } from './search/graph.js';
+import {
+  computedColumnOrder,
+  computeColumns,
+  computedColumnDdl,
+  rollupColumnDdl,
+  allComputedDeps,
+} from './schema/computed.js';
+import type { ComputedColumnSpec, MaterializedRollupSpec } from './schema/computed.js';
 import { evaluateRetrieval } from './search/eval.js';
 import type {
   EvalQuery,
@@ -285,6 +293,18 @@ export class Lattice {
   private readonly _provenanceCols = new Map<string, string[]>();
   /** table → default trust state for new rows (governance: P-TRUST). */
   private readonly _trustDefault = new Map<string, TrustState>();
+  /** table → computed-column specs + recompute order + dep set (P-VIEW). */
+  private readonly _computed = new Map<
+    string,
+    { specs: Record<string, ComputedColumnSpec>; order: string[]; deps: Set<string> }
+  >();
+  /** table → materialized rollup specs (P-VIEW). */
+  private readonly _rollups = new Map<string, Record<string, MaterializedRollupSpec>>();
+  /** source table → parents whose rollup it feeds (for incremental recompute). */
+  private readonly _rollupSources = new Map<
+    string,
+    { parentTable: string; name: string; spec: MaterializedRollupSpec }[]
+  >();
 
   /**
    * Reject the row if its payload exceeds `_maxRowBytes`. Cost is dominated
@@ -495,6 +515,25 @@ export class Lattice {
     if (def.trust) {
       columns = { ...columns, ...TRUST_COLUMNS };
       this._trustDefault.set(table, resolveTrustDefault(def.trust) ?? 'unverified');
+    }
+    if (def.computed) {
+      // Validate dependency order (throws on a cycle) before adding columns.
+      const order = computedColumnOrder(table, def.computed);
+      columns = { ...columns, ...computedColumnDdl(def.computed) };
+      this._computed.set(table, {
+        specs: def.computed,
+        order,
+        deps: allComputedDeps(def.computed),
+      });
+    }
+    if (def.materializedRollups) {
+      columns = { ...columns, ...rollupColumnDdl(def.materializedRollups) };
+      this._rollups.set(table, def.materializedRollups);
+      for (const [name, spec] of Object.entries(def.materializedRollups)) {
+        const arr = this._rollupSources.get(spec.sourceTable) ?? [];
+        arr.push({ parentTable: table, name, spec });
+        this._rollupSources.set(spec.sourceTable, arr);
+      }
     }
 
     // Resolve the built-in template name (if any) for reverse-seed parsing
@@ -995,9 +1034,12 @@ export class Lattice {
     row: Row,
   ): { sql: string; values: unknown[]; pkValue: string; rowWithPk: Row } {
     this._assertIdent(table);
-    const sanitized = this._applyGovernanceDefaults(
+    const sanitized = this._applyComputedColumns(
       table,
-      this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+      this._applyGovernanceDefaults(
+        table,
+        this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+      ),
     );
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
@@ -1069,6 +1111,8 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
+    // If this table feeds a parent rollup, recompute the affected parent.
+    if (this._rollupSources.has(table)) await this._propagateRollupsFromRow(table, rowWithPk);
   }
 
   /**
@@ -1169,14 +1213,20 @@ export class Lattice {
     this._assertIdent(table);
     this._assertRowSize(table, row as Row);
 
-    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
+    const baseSanitized = this._filterToSchemaColumns(
+      table,
+      this._sanitizer.sanitizeRow(row as Row),
+    );
     // Provenance columns are immutable — reject any update that touches them.
     const provCols = this._provenanceCols.get(table);
     if (provCols) {
       for (const c of provCols) {
-        if (c in sanitized) throw new ProvenanceImmutableError(table, c);
+        if (c in baseSanitized) throw new ProvenanceImmutableError(table, c);
       }
     }
+    // Recompute any computed columns whose dependencies changed (merges the
+    // current row with the changes, then derives the computed values).
+    const sanitized = await this._recomputeComputedOnUpdate(table, id, baseSanitized);
     const encrypted = this._encryption.encryptRow(table, sanitized);
     const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
@@ -1234,6 +1284,146 @@ export class Lattice {
       );
       if (fullRow) this._syncEmbedding(table, 'update', fullRow, auditId);
     }
+    // If this table feeds a parent rollup, recompute the affected parent.
+    if (this._rollupSources.has(table)) await this._propagateRollups(table, id);
+  }
+
+  // -------------------------------------------------------------------------
+  // Computed columns + materialized rollups (P-VIEW)
+  // -------------------------------------------------------------------------
+
+  /** Compute a table's computed columns from a (full) row, returning the merged row. */
+  private _applyComputedColumns(table: string, row: Row): Row {
+    const c = this._computed.get(table);
+    if (!c) return row;
+    return { ...row, ...computeColumns(c.specs, c.order, row) };
+  }
+
+  /**
+   * On update, if the changed columns include any computed-column dependency,
+   * fetch + decrypt the current row, merge the changes, recompute the computed
+   * columns, and fold them into the update payload. No-op otherwise.
+   */
+  private async _recomputeComputedOnUpdate(
+    table: string,
+    id: PkLookup,
+    sanitized: Row,
+  ): Promise<Row> {
+    const c = this._computed.get(table);
+    if (!c) return sanitized;
+    const touchesDep = Object.keys(sanitized).some((k) => c.deps.has(k));
+    if (!touchesDep) return sanitized;
+    const { clause, params } = this._pkWhere(table, id);
+    const current = await getAsyncOrSync(
+      this._adapter,
+      `SELECT * FROM "${table}" WHERE ${clause}`,
+      params,
+    );
+    const merged: Row = {
+      ...(current ? this._encryption.decryptRow(table, current) : {}),
+      ...sanitized,
+    };
+    return { ...sanitized, ...computeColumns(c.specs, c.order, merged) };
+  }
+
+  /** Recompute parent rollup(s) for the FK values carried on a source row. */
+  private async _propagateRollupsFromRow(sourceTable: string, sourceRow: Row): Promise<void> {
+    const feeds = this._rollupSources.get(sourceTable);
+    if (!feeds) return;
+    for (const feed of feeds) {
+      const parentId = sourceRow[feed.spec.foreignKey];
+      if (typeof parentId !== 'string' && typeof parentId !== 'number') continue;
+      await this._recomputeRollupCell(feed.parentTable, feed.name, feed.spec, String(parentId));
+    }
+  }
+
+  /** Recompute the parent rollup(s) fed by a changed source row (fetched by id). */
+  private async _propagateRollups(sourceTable: string, sourceId: PkLookup): Promise<void> {
+    if (!this._rollupSources.has(sourceTable)) return;
+    const { clause, params } = this._pkWhere(sourceTable, sourceId);
+    const src = await getAsyncOrSync(
+      this._adapter,
+      `SELECT * FROM "${sourceTable}" WHERE ${clause}`,
+      params,
+    );
+    if (src) await this._propagateRollupsFromRow(sourceTable, src);
+  }
+
+  /** Recompute a single rollup cell for one parent row. */
+  private async _recomputeRollupCell(
+    parentTable: string,
+    name: string,
+    spec: MaterializedRollupSpec,
+    parentId: string,
+  ): Promise<void> {
+    const parentPk = this._schema.getPrimaryKey(parentTable)[0] ?? 'id';
+    const cols = await introspectColumnsAsyncOrSync(this._adapter, spec.sourceTable).catch(
+      () => [] as string[],
+    );
+    const srcDeleted = cols.includes('deleted_at') ? ` AND "deleted_at" IS NULL` : '';
+    const inner =
+      spec.fn === 'count'
+        ? 'COUNT(*)'
+        : `${spec.fn.toUpperCase()}("${spec.column ?? spec.foreignKey}")`;
+    const fallback = spec.fn === 'count' ? '0' : 'NULL';
+    await runAsyncOrSync(
+      this._adapter,
+      `UPDATE "${parentTable}" SET "${name}" = COALESCE(
+         (SELECT ${inner} FROM "${spec.sourceTable}" WHERE "${spec.foreignKey}" = ?${srcDeleted}), ${fallback})
+       WHERE "${parentPk}" = ?`,
+      [parentId, parentId],
+    );
+  }
+
+  /**
+   * Recompute all computed columns for every row of a table (a full pass). Use
+   * after a bulk import that bypassed the per-row recompute, or after changing a
+   * computed definition. Requires `computed` config.
+   */
+  async refreshComputedColumns(table: string): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    const c = this._computed.get(table);
+    if (!c) throw new Error(`Table "${table}" has no computed columns`);
+    const pk = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const rows = await this._queryCore.query(table, {});
+    let updated = 0;
+    for (const row of rows) {
+      const values = computeColumns(c.specs, c.order, row);
+      const setCols = Object.keys(values)
+        .map((col) => `"${col}" = ?`)
+        .join(', ');
+      if (setCols === '') continue;
+      await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE "${pk}" = ?`, [
+        ...Object.values(values),
+        row[pk],
+      ]);
+      updated++;
+    }
+    return updated;
+  }
+
+  /**
+   * Recompute all materialized rollups for every row of a table (a full,
+   * authoritative pass). Requires `materializedRollups` config.
+   */
+  async refreshMaterializedRollups(table: string): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    const rollups = this._rollups.get(table);
+    if (!rollups) throw new Error(`Table "${table}" has no materialized rollups`);
+    const pk = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const parents = await this._queryCore.query(table, { projection: [pk] });
+    let updated = 0;
+    for (const parent of parents) {
+      const parentId = parent[pk];
+      if (typeof parentId !== 'string' && typeof parentId !== 'number') continue;
+      for (const [name, spec] of Object.entries(rollups)) {
+        await this._recomputeRollupCell(table, name, spec, String(parentId));
+      }
+      updated++;
+    }
+    return updated;
   }
 
   /**
@@ -1255,15 +1445,20 @@ export class Lattice {
 
     const { clause, params } = this._pkWhere(table, id);
 
-    // Capture full row before deletion for changelog
+    // Capture full row before deletion for changelog and/or rollup propagation
+    // (a deleted child must be removed from its parent's rollup, which needs the
+    // child's FK that's about to be gone).
     let previousRow: Row | null = null;
-    if (this._changelogTables.has(table)) {
+    if (this._changelogTables.has(table) || this._rollupSources.has(table)) {
       previousRow =
         (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
         null;
     }
 
     await runAsyncOrSync(this._adapter, `DELETE FROM "${table}" WHERE ${clause}`, params);
+    if (previousRow && this._rollupSources.has(table)) {
+      await this._propagateRollupsFromRow(table, previousRow);
+    }
 
     // Canonical pk so a row addressed by composite lookup keys its
     // change-log entry the same way insert() keyed it.

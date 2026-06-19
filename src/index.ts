@@ -160,6 +160,21 @@ export { SQLiteAdapter } from './db/sqlite.js';
 export { PostgresAdapter } from './db/postgres.js';
 export type { PostgresAdapterOptions } from './db/postgres.js';
 
+// v4.1 — declarative computed columns + materialized rollups.
+export {
+  computedColumnOrder,
+  computeColumns,
+  computedColumnDdl,
+  rollupColumnDdl,
+  allComputedDeps,
+  ComputedColumnCycleError,
+} from './schema/computed.js';
+export type {
+  ComputedColumnSpec,
+  MaterializedRollupSpec,
+  RollupFunction,
+} from './schema/computed.js';
+
 // v4.1 — data governance: immutable provenance + trust/verification workflow.
 export {
   ProvenanceImmutableError,
