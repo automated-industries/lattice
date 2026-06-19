@@ -104,6 +104,13 @@ import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
 import { hybridSearch } from './search/hybrid.js';
 import type { HybridSearchOptions, HybridSearchResult } from './search/hybrid.js';
 import { applyReranker } from './search/rerank.js';
+import {
+  provenanceColumns,
+  resolveTrustDefault,
+  TRUST_COLUMNS,
+  ProvenanceImmutableError,
+} from './schema/governance.js';
+import type { TrustState } from './schema/governance.js';
 import { evaluateRetrieval } from './search/eval.js';
 import type {
   EvalQuery,
@@ -257,6 +264,10 @@ export class Lattice {
   private _maxRowBytes: number | undefined;
   /** Optional default bounded-read cap; see LatticeOptions.defaultMaxRows. */
   private _defaultMaxRows: number | undefined;
+  /** table → immutable provenance column names (governance: P-PROV). */
+  private readonly _provenanceCols = new Map<string, string[]>();
+  /** table → default trust state for new rows (governance: P-TRUST). */
+  private readonly _trustDefault = new Map<string, TrustState>();
 
   /**
    * Reject the row if its payload exceeds `_maxRowBytes`. Cost is dominated
@@ -455,10 +466,19 @@ export class Lattice {
   }
 
   private _registerTable(table: string, def: TableDefinition): void {
-    // Auto-inject reward tracking columns
-    const columns = def.rewardTracking
+    // Auto-inject reward tracking + governance (provenance / trust) columns.
+    let columns = def.rewardTracking
       ? { ...def.columns, _reward_total: 'REAL DEFAULT 0', _reward_count: 'INTEGER DEFAULT 0' }
       : def.columns;
+    if (def.provenance) {
+      const provCols = provenanceColumns(def.provenance);
+      columns = { ...columns, ...provCols };
+      this._provenanceCols.set(table, Object.keys(provCols));
+    }
+    if (def.trust) {
+      columns = { ...columns, ...TRUST_COLUMNS };
+      this._trustDefault.set(table, resolveTrustDefault(def.trust) ?? 'unverified');
+    }
 
     // Resolve the built-in template name (if any) for reverse-seed parsing
     const renderTemplateName = _resolveTemplateName(def.render);
@@ -958,7 +978,10 @@ export class Lattice {
     row: Row,
   ): { sql: string; values: unknown[]; pkValue: string; rowWithPk: Row } {
     this._assertIdent(table);
-    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
+    const sanitized = this._applyGovernanceDefaults(
+      table,
+      this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+    );
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
     // Auto-generate UUID only for the default 'id' PK when the field is absent.
@@ -987,6 +1010,25 @@ export class Lattice {
       pkValue,
       rowWithPk,
     };
+  }
+
+  /**
+   * Stamp governance defaults at insert time: auto-set `ingested_at` for a
+   * provenance table (when not supplied) and the default `_trust_state` for a
+   * trust table. Returns a shallow copy; a no-op for tables without governance.
+   */
+  private _applyGovernanceDefaults(table: string, row: Row): Row {
+    const provCols = this._provenanceCols.get(table);
+    const trustDefault = this._trustDefault.get(table);
+    if (!provCols && trustDefault === undefined) return row;
+    const out = { ...row };
+    if (provCols?.includes('ingested_at') && out.ingested_at == null) {
+      out.ingested_at = new Date().toISOString();
+    }
+    if (trustDefault !== undefined && out._trust_state == null) {
+      out._trust_state = trustDefault;
+    }
+    return out;
   }
 
   /** Post-insert side effects (changelog, audit, write hooks, embedding sync),
@@ -1111,6 +1153,13 @@ export class Lattice {
     this._assertRowSize(table, row as Row);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
+    // Provenance columns are immutable — reject any update that touches them.
+    const provCols = this._provenanceCols.get(table);
+    if (provCols) {
+      for (const c of provCols) {
+        if (c in sanitized) throw new ProvenanceImmutableError(table, c);
+      }
+    }
     const encrypted = this._encryption.encryptRow(table, sanitized);
     const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
@@ -2011,6 +2060,68 @@ export class Lattice {
     const notInit = this._notInitError<AggregateResult[]>();
     if (notInit) return notInit;
     return this._queryCore.aggregate(table, opts);
+  }
+
+  // -------------------------------------------------------------------------
+  // Trust / verification workflow (governance: P-TRUST)
+  // -------------------------------------------------------------------------
+
+  private _assertTrust(table: string): void {
+    if (!this._trustDefault.has(table)) {
+      throw new Error(`Table "${table}" does not have trust configured`);
+    }
+  }
+
+  /**
+   * Mark a row `verified` — sets `_trust_state='verified'`, `_verified_by`, and
+   * `_verified_at` (now). Requires `trust` config on the table.
+   */
+  async verifyRow(table: string, id: PkLookup, verifiedBy?: string): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._adapter,
+      `UPDATE "${table}" SET "_trust_state" = 'verified', "_verified_by" = ?, "_verified_at" = ?, "_review_reason" = NULL WHERE ${clause}`,
+      [verifiedBy ?? null, new Date().toISOString(), ...params],
+    );
+  }
+
+  /**
+   * Flag a row for human review — sets `_trust_state='needs_review'` and an
+   * optional `_review_reason`. Requires `trust` config on the table.
+   */
+  async markRowForReview(table: string, id: PkLookup, reason?: string): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._adapter,
+      `UPDATE "${table}" SET "_trust_state" = 'needs_review', "_review_reason" = ? WHERE ${clause}`,
+      [reason ?? null, ...params],
+    );
+  }
+
+  /** Rows currently in `needs_review` state (non-deleted). Requires `trust` config. */
+  async rowsNeedingReview(table: string): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    return this._queryCore.query(table, {
+      filters: [{ col: '_trust_state', op: 'eq', val: 'needs_review' }],
+    });
+  }
+
+  /** Rows currently in `verified` state (non-deleted). Requires `trust` config. */
+  async verifiedRows(table: string): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    return this._queryCore.query(table, {
+      filters: [{ col: '_trust_state', op: 'eq', val: 'verified' }],
+    });
   }
 
   // -------------------------------------------------------------------------

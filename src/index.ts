@@ -160,6 +160,22 @@ export { SQLiteAdapter } from './db/sqlite.js';
 export { PostgresAdapter } from './db/postgres.js';
 export type { PostgresAdapterOptions } from './db/postgres.js';
 
+// v4.1 — data governance: immutable provenance + trust/verification workflow.
+export {
+  ProvenanceImmutableError,
+  provenanceColumns,
+  resolveProvenanceFields,
+  resolveTrustDefault,
+  TRUST_COLUMNS,
+  ALL_PROVENANCE_FIELDS,
+} from './schema/governance.js';
+export type {
+  ProvenanceConfig,
+  ProvenanceField,
+  TrustConfig,
+  TrustState,
+} from './schema/governance.js';
+
 // v4.1 — durable retry for transient DB failures (idempotent ops only).
 export { withRetry, isRetryableDbError } from './db/retry.js';
 export type { RetryOptions } from './db/retry.js';

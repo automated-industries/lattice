@@ -91,6 +91,14 @@ method that is inert unless a table opts in.
   `revertMigration`).** Walks a table's primary key in batches — each a short
   transaction, no long table lock — checkpointing progress, so a killed
   migration resumes after the last checkpoint instead of restarting from zero.
+- **Immutable provenance (`TableDefinition.provenance`).** Opt a table into
+  `ingested_via` / `source_uri` / `ingested_at` columns stamped at creation;
+  `ingested_at` is auto-stamped and any `update()` that changes a provenance
+  column throws `ProvenanceImmutableError`, so lineage can't be rewritten.
+- **Trust / verification (`TableDefinition.trust`).** Gate untrusted ingest:
+  new rows default to `unverified`; `markRowForReview` / `verifyRow` move them to
+  `needs_review` / `verified`, and `rowsNeedingReview` / `verifiedRows` filter by
+  state.
 
 ### Changed
 

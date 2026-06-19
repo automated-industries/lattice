@@ -556,6 +556,23 @@ export interface TableDefinition {
    * @default false
    */
   encrypted?: boolean | { columns: string[] };
+  /**
+   * Record immutable provenance for each row (4.1+). `true` adds three columns —
+   * `ingested_via`, `source_uri`, `ingested_at` — or pass a {@link ProvenanceConfig}
+   * to choose a subset. `ingested_at` is auto-stamped on insert; an `update()`
+   * that tries to change any provenance column throws `ProvenanceImmutableError`,
+   * so lineage can't be silently rewritten. Tables without this config are
+   * unaffected.
+   */
+  provenance?: boolean | import('./schema/governance.js').ProvenanceConfig;
+  /**
+   * Gate untrusted ingest with a per-row trust state (4.1+). `true` (or a
+   * {@link TrustConfig}) adds `_trust_state` (default `'unverified'`) plus
+   * `_verified_by` / `_verified_at` / `_review_reason`, and enables the
+   * verification workflow (`markRowForReview` / `verifyRow` / `rowsNeedingReview`
+   * / `verifiedRows`). Tables without this config are unaffected.
+   */
+  trust?: boolean | import('./schema/governance.js').TrustConfig;
 }
 
 export interface MultiTableDefinition {
