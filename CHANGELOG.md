@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.0.1] — 2026-06-19
+
+### Fixed
+
+- **The update-check cache now lives in `~/.lattice`, not a separate `~/.latticesql`.**
+  `checkForUpdate` wrote its cache to `~/.${pkgName}` — the one path in the codebase
+  that didn't follow the `.lattice` convention everything else uses (the installer's
+  managed Node, the legacy user-config, the workspace root marker). It now writes to
+  `~/.lattice/update-check-<pkg>.json`.
+
 ## [4.0.0] — unreleased
 
 Major release. **Most upgrades need no action** — the GUI silently migrates an
