@@ -83,6 +83,14 @@ method that is inert unless a table opts in.
 - **`QueryOptions.include`.** Expand declared relations on each row — `belongsTo`
   attaches the related row, `hasMany` an array — each fetched in a single batched
   `IN (...)` query (no N+1).
+- **Durable retry (`withRetry`).** Re-runs an idempotent operation through
+  decorrelated-jitter backoff on transient DB failures (SQLite `SQLITE_BUSY`,
+  Postgres serialization/deadlock/connection errors, dropped sockets), with a
+  nested-retry guard so composed helpers don't multiply attempts.
+- **Online, resumable migrations (`applyChunkedMigration` / `resumeMigration` /
+  `revertMigration`).** Walks a table's primary key in batches — each a short
+  transaction, no long table lock — checkpointing progress, so a killed
+  migration resumes after the last checkpoint instead of restarting from zero.
 
 ### Changed
 

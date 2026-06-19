@@ -160,6 +160,26 @@ export { SQLiteAdapter } from './db/sqlite.js';
 export { PostgresAdapter } from './db/postgres.js';
 export type { PostgresAdapterOptions } from './db/postgres.js';
 
+// v4.1 — durable retry for transient DB failures (idempotent ops only).
+export { withRetry, isRetryableDbError } from './db/retry.js';
+export type { RetryOptions } from './db/retry.js';
+
+// v4.1 — online, resumable chunked migrations (no long lock; resume after kill).
+export {
+  applyChunkedMigration,
+  resumeMigration,
+  revertMigration,
+  listMigrationCheckpoints,
+  getMigrationCheckpoint,
+  ensureCheckpointTable,
+} from './schema/chunked-migration.js';
+export type {
+  ChunkedMigrationOptions,
+  ChunkedMigrationResult,
+  MigrationCheckpoint,
+  MigrationStatus,
+} from './schema/chunked-migration.js';
+
 // v1.12 additions — framework-shipped tables, machine-local user config,
 // content-addressed blob store, ed25519-style team auth client.
 export {
