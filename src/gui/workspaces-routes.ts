@@ -19,9 +19,44 @@ import {
   addWorkspace,
   removeWorkspace,
   resolveWorkspacePaths,
+  type WorkspaceRecord,
 } from '../framework/workspace.js';
 import { workspaceDir } from '../framework/lattice-root.js';
 import { deleteDbCredential } from '../framework/user-config.js';
+
+/**
+ * Remove a workspace's owned files from disk after its registry record has been
+ * dropped. Loud on failure (the caller surfaces it as a 500). Scaffolded local
+ * workspace → delete its whole folder; cloud → forget only the LOCAL pointer
+ * (its managed config + the saved credential when no other workspace uses it)
+ * and never touch the shared remote; adopted-in-place local → leave the user's
+ * files alone (non-destructive). Shared by the active-DB delete handler here and
+ * the virgin-state delete route in server.ts so the two can never drift.
+ */
+export function cleanupWorkspaceFiles(root: string, ws: WorkspaceRecord): void {
+  if (!ws.configPath && ws.kind === 'local') {
+    rmSync(workspaceDir(root, ws.dir), { recursive: true, force: true });
+  } else if (ws.kind === 'cloud') {
+    if (ws.configPath && existsSync(ws.configPath)) {
+      rmSync(ws.configPath, { force: true });
+    }
+    const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
+    const label = labelMatch?.[1];
+    if (label) {
+      const stillUsed = listWorkspaces(root).some((w) =>
+        w.db.includes('${LATTICE_DB:' + label + '}'),
+      );
+      if (!stillUsed) {
+        try {
+          deleteDbCredential(label);
+        } catch {
+          // credential already gone — fine
+        }
+      }
+    }
+  }
+  // Adopted local workspaces: leave the user's files in place (non-destructive).
+}
 
 /**
  * Workspace (header switcher) routes — list / switch / create / delete — extracted
@@ -237,32 +272,7 @@ export async function handleWorkspacesRoutes(
     // Drop the registry record, then clean up files (loud on failure).
     removeWorkspace(latticeRoot, ws.id);
     try {
-      if (!ws.configPath && ws.kind === 'local') {
-        // Scaffolded local workspace: remove its whole folder (config+db+context).
-        rmSync(workspaceDir(latticeRoot, ws.dir), { recursive: true, force: true });
-      } else if (ws.kind === 'cloud') {
-        // Cloud workspace: forget the LOCAL pointer only — never touch the
-        // shared remote Postgres. Remove the managed sibling config (if any)
-        // and drop the saved credential when no other workspace uses it.
-        if (ws.configPath && existsSync(ws.configPath)) {
-          rmSync(ws.configPath, { force: true });
-        }
-        const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
-        const label = labelMatch?.[1];
-        if (label) {
-          const stillUsed = listWorkspaces(latticeRoot).some((w) =>
-            w.db.includes('${LATTICE_DB:' + label + '}'),
-          );
-          if (!stillUsed) {
-            try {
-              deleteDbCredential(label);
-            } catch {
-              // credential already gone — fine
-            }
-          }
-        }
-      }
-      // Adopted local workspaces: leave the user's files in place (non-destructive).
+      cleanupWorkspaceFiles(latticeRoot, ws);
     } catch (e) {
       sendJson(
         res,

@@ -11,11 +11,14 @@ import { appJs } from '../../src/gui/app/script.js';
 //
 // These constants pin the composed `appJs`. They are re-captured whenever `appJs`
 // changes intentionally (the modules are edited together as the source of truth):
-// the offline-retry self-heal, and most recently the 3.4.1 merge's workspace-switch
-// logo refresh (the switch path now re-fetches /api/dbconfig + re-points the header
-// logo, matching the boot path). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 396921;
-const ORIGINAL_SHA256 = 'b717706b70f18fe23ab5968022e9fa69621fb8189138d9a37db78ebf69fa3beb';
+// the offline-retry self-heal, the 3.4.1 merge's workspace-switch logo refresh
+// (the switch path now re-fetches /api/dbconfig + re-points the header logo,
+// matching the boot path), and the manual-upgrade link (the version chip's
+// "Update available — Upgrade" affordance: checkUpdateAvailable + wireUpdateLink,
+// wired at boot and refreshed on each reconnect version check). Recapture the
+// length + hash on any intended change.
+const ORIGINAL_LENGTH = 399402;
+const ORIGINAL_SHA256 = 'f2a01331941ef35442bee7b7d8eeca6ae7f4e94e214f7249b7df016603f26aa7';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

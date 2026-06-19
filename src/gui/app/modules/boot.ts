@@ -24,6 +24,12 @@ export const bootJs = `    // ────────────────�
       // drag handle once the app has booted.
       var savedRail = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
       if (!isNaN(savedRail)) applyRailWidth(savedRail);
+      // The version chip + manual-upgrade link live in the static shell (present
+      // from first paint, in both the normal and virgin-state boots), so wire the
+      // click handler and run the first availability check here — independent of
+      // the async workspace bootstrap. checkServerVersion() refreshes it later.
+      wireUpdateLink();
+      checkUpdateAvailable();
       // Failsafe: never leave the overlay up forever if a fetch hangs without
       // rejecting, or a future early-return (e.g. the virgin-state screen)
       // bypasses the .then() tail. Idempotent, so a later real hide is a no-op.

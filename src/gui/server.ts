@@ -15,6 +15,7 @@ import {
   listWorkspaces,
   getActiveWorkspace,
   setActiveWorkspace,
+  getWorkspace,
   addWorkspace,
   removeWorkspace,
   resolveWorkspacePaths,
@@ -43,7 +44,11 @@ import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
-import { handleWorkspacesRoutes, type WorkspacesRoutesDeps } from './workspaces-routes.js';
+import {
+  handleWorkspacesRoutes,
+  cleanupWorkspaceFiles,
+  type WorkspacesRoutesDeps,
+} from './workspaces-routes.js';
 import { handleDatabasesRoutes, type DatabasesRoutesDeps } from './databases-routes.js';
 import {
   readIdentity,
@@ -108,6 +113,13 @@ export interface StartGuiServerOptions {
    * `GET /api/version` + `GET /api/update/status` are served regardless.
    */
   selfUpdate?: boolean;
+  /**
+   * Test seam: supply the update service instead of building one from the real
+   * npm-backed install context. Lets tests exercise the update routes against a
+   * deterministic fake (no real registry check, no real npm install). When set,
+   * it overrides `selfUpdate`'s default factory.
+   */
+  updateServiceFactory?: (emit: (type: string, data: unknown) => void) => UpdateService;
 }
 
 export interface GuiServerHandle {
@@ -395,6 +407,43 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       }
       return true;
     }
+    if (method === 'POST' && pathname === '/api/workspaces/delete') {
+      // Deletion operates on the registry, not the open DB, so it must work with
+      // no active workspace too. Otherwise a workspace whose database fails to
+      // open strands the GUI in the virgin state while the welcome screen still
+      // lists it — and it could never be removed (the active-DB delete route
+      // 409'd "No active workspace"). With nothing active there is no DB to
+      // switch away from: just drop the record, then its files. Uses the same
+      // cleanupWorkspaceFiles helper as the active-DB delete so the two can
+      // never drift.
+      if (!latticeRoot) {
+        sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
+        return true;
+      }
+      const body = (await readJson<unknown>(req)) as { id?: unknown };
+      if (typeof body.id !== 'string') {
+        sendJson(res, { error: 'id must be a string' }, 400);
+        return true;
+      }
+      const ws = getWorkspace(latticeRoot, body.id);
+      if (!ws) {
+        sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
+        return true;
+      }
+      removeWorkspace(latticeRoot, ws.id);
+      try {
+        cleanupWorkspaceFiles(latticeRoot, ws);
+      } catch (e) {
+        sendJson(
+          res,
+          { error: `Workspace unregistered but file cleanup failed: ${(e as Error).message}` },
+          500,
+        );
+        return true;
+      }
+      sendJson(res, { ok: true, switchedTo: null });
+      return true;
+    }
     if (method === 'POST' && pathname === '/api/cloud/redeem-invite') {
       await redeemInvite(createCloudWorkspace, req, res);
       return true;
@@ -464,6 +513,28 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               lastError: null,
             },
           );
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/update/apply') {
+          // Manual fallback to the automatic updater: force a check that, when a
+          // newer installable version exists, installs the latest and restarts
+          // the GUI onto it. The install is slow (an npm install), so kick it off
+          // without blocking the response — `checkNow(true)` logs/emits its own
+          // progress + errors (update-applied / update-error), which the client
+          // surfaces. When there is no update service (unsupervised or not
+          // installable) there is nothing to do: answer with a plain "can't",
+          // not a crash, so the client can tell the user how to upgrade by hand.
+          if (updateService) {
+            void updateService.checkNow(true);
+            sendJson(res, { ok: true, status: updateService.status() });
+          } else {
+            sendJson(res, {
+              ok: false,
+              error:
+                'Automatic update is not available for this install. ' +
+                'Reinstall from https://latticesql.com to get the latest version.',
+            });
+          }
           return;
         }
 
@@ -756,7 +827,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     }
   };
 
-  if (options.selfUpdate && guiVersion) {
+  if (options.updateServiceFactory) {
+    updateService = options.updateServiceFactory(broadcast);
+  } else if (options.selfUpdate && guiVersion) {
     updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
   }
 
