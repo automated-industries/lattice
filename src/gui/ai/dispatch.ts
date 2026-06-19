@@ -1,6 +1,7 @@
 import type { Lattice } from '../../lattice.js';
 import type { Row } from '../../types.js';
 import type { FeedBus } from '../feed.js';
+import { randomUUID } from 'node:crypto';
 import { getFunction } from './registry.js';
 import { searchLatticeDocs } from './lattice-docs.js';
 import { fullTextSearch } from '../../search/fts.js';
@@ -94,6 +95,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'get_history',
   'create_row',
   'create_artifact',
+  'create_secret',
   'ingest_url',
   'set_definition',
   'set_visibility',
@@ -538,6 +540,34 @@ export async function executeFunction(
           ctx.privateMode ? 'private' : undefined,
         );
         return { ok: true, result: { id } };
+      }
+      case 'create_secret': {
+        // The `secrets` table is in ASSISTANT_HIDDEN_TABLES, so the model can
+        // never READ a (decrypted) secret. This is the single WRITE-ONLY
+        // exception: it lets the user ask the assistant to STORE a credential
+        // without ever exposing existing secret values.
+        //
+        // Insert DIRECTLY via db.insert, NOT through createRow: createRow's audit
+        // log records the row's before/after JSON, which would persist the
+        // cleartext value in `_lattice_gui_audit`. db.insert encrypts the `value`
+        // column at rest (native `secrets.encrypted`) and writes no audit row, so
+        // the value never lands in cleartext anywhere. On a cloud, `secrets` is
+        // private-only (the per-table ownership trigger forces 'private'), so the
+        // secret is owner-scoped. We return only the id + name — never the value.
+        const secretName = requireString(args.name, 'name');
+        const secretValue = requireString(args.value, 'value');
+        const kind = typeof args.kind === 'string' && args.kind ? args.kind : null;
+        const description =
+          typeof args.description === 'string' && args.description ? args.description : null;
+        const id = randomUUID();
+        await ctx.db.insert('secrets', {
+          id,
+          name: secretName,
+          value: secretValue,
+          kind,
+          description,
+        });
+        return { ok: true, result: { id, name: secretName } };
       }
       case 'create_artifact': {
         // Save an assistant-authored markdown document as a `files` row (flagged
