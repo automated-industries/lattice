@@ -341,6 +341,12 @@ export const appJs = `
       // drag handle once the app has booted.
       var savedRail = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
       if (!isNaN(savedRail)) applyRailWidth(savedRail);
+      // The version chip + manual-upgrade link live in the static shell (present
+      // from first paint, in both the normal and virgin-state boots), so wire the
+      // click handler and run the first availability check here — independent of
+      // the async workspace bootstrap. checkServerVersion() refreshes it later.
+      wireUpdateLink();
+      checkUpdateAvailable();
       // Failsafe: never leave the overlay up forever if a fetch hangs without
       // rejecting, or a future early-return (e.g. the virgin-state screen)
       // bypasses the .then() tail. Idempotent, so a later real hide is a no-op.
@@ -825,6 +831,26 @@ export const appJs = `
       showUpdatePill(label || 'Updated — reloading…');
       setTimeout(function () { location.reload(); }, 600);
     }
+    // Manual upgrade fallback: show an "Update available — Upgrade" link next to
+    // the version chip only when the server reports a newer, installable version.
+    // The auto-updater installs in the background on its own cadence; this lets
+    // the user force it now. Best-effort; the link stays hidden on any failure.
+    function checkUpdateAvailable() {
+      var el = document.getElementById('app-update-link');
+      if (!el) return;
+      fetch('/api/update/status')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (s) {
+          if (s && s.latest && s.current && s.latest !== s.current && s.installable) {
+            el.textContent = 'Update available — Upgrade';
+            el.title = 'Install v' + s.latest + ' and restart';
+            el.hidden = false;
+          } else {
+            el.hidden = true;
+          }
+        })
+        .catch(function () { /* best-effort — keep the link hidden */ });
+    }
     // On every (re)connect, ask the server its version. A change vs BOOT_VERSION
     // means a relaunch onto new code → reload. Best-effort; never throws.
     function checkServerVersion() {
@@ -838,6 +864,31 @@ export const appJs = `
           else hideUpdatePill();
         })
         .catch(function () { /* offline / mid-restart — the next reconnect retries */ });
+      // Refresh the manual-upgrade link alongside the reconnect version check.
+      checkUpdateAvailable();
+    }
+    // Wire the manual-upgrade link's click: kick off the install (the server
+    // installs the latest and restarts onto it) and surface the progress. On
+    // success we do nothing else — the update-applied event + the reconnect
+    // version check land the page on the new version (no manual reload). A
+    // false ok means the install can't run (unsupervised) — toast why.
+    function wireUpdateLink() {
+      var el = document.getElementById('app-update-link');
+      if (!el) return;
+      el.addEventListener('click', function (e) {
+        e.preventDefault();
+        el.hidden = true;
+        showUpdatePill('Updating…');
+        fetch('/api/update/apply', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d && d.ok === false) {
+              hideUpdatePill();
+              showToast(d.error || 'Update unavailable', {});
+            }
+          })
+          .catch(function () { /* server may already be restarting */ });
+      });
     }
     function dispatchStreamMessage(type, data) {
       if (type === 'realtime-state') {
