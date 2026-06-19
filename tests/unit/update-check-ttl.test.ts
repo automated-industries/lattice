@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { rmSync } from 'node:fs';
+import { rmSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { checkForUpdate } from '../../src/update-check.js';
 
-// Use a throwaway package name so the cache lands in ~/.<pkg> and never touches
-// the real `latticesql` update-check cache. Cleaned up after each test.
+// Use a throwaway package name so the cache lands in ~/.lattice/update-check-<pkg>.json
+// and never touches the real `latticesql` update-check cache. Cleaned up after each test.
 function freshPkg(): string {
   return `lattice-ttltest-${Math.random().toString(36).slice(2)}`;
 }
@@ -14,7 +14,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const p of pkgs.splice(0))
-    rmSync(join(homedir(), `.${p}`), { recursive: true, force: true });
+    rmSync(join(homedir(), '.lattice', `update-check-${p}.json`), { force: true });
 });
 
 function mockFetch(version: string): ReturnType<typeof vi.fn> {
@@ -65,5 +65,14 @@ describe('checkForUpdate ttl/force', () => {
     pkgs.push(pkg);
     mockFetch('1.0.0');
     expect(await checkForUpdate(pkg, '1.0.0')).toBeNull();
+  });
+
+  it('caches under ~/.lattice (the shared home), not a separate ~/.<pkg> dir', async () => {
+    const pkg = freshPkg();
+    pkgs.push(pkg);
+    mockFetch('2.0.0');
+    await checkForUpdate(pkg, '1.0.0');
+    expect(existsSync(join(homedir(), '.lattice', `update-check-${pkg}.json`))).toBe(true);
+    expect(existsSync(join(homedir(), `.${pkg}`))).toBe(false);
   });
 });
