@@ -8,7 +8,6 @@
  * test asserts every readable object IS granted and every owner-only object is
  * NOT — so the omission class becomes structurally impossible.
  */
-import { MEMBER_GROUP } from './rls.js';
 
 export interface MemberReadableEntry {
   /** Bookkeeping table name. */
@@ -104,16 +103,38 @@ function quoteIdent(table: string): string {
  * the cell-masking view and keeps DML on the base (base SELECT stays revoked by
  * the audience-view SQL); otherwise full DML + SELECT on the base.
  */
-export function grantMemberTableAccessSql(table: string, opts: { masked: boolean }): string[] {
+export function grantMemberTableAccessSql(
+  table: string,
+  opts: { masked: boolean },
+  group: string,
+): string[] {
   const q = quoteIdent(table);
   if (opts.masked) {
     const v = quoteIdent(`${table}_v`);
-    return [
-      `GRANT SELECT ON ${v} TO ${MEMBER_GROUP}`,
-      `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`,
-    ];
+    return [`GRANT SELECT ON ${v} TO ${group}`, `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${group}`];
   }
-  return [`GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`];
+  return [`GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${group}`];
+}
+
+/**
+ * The {@link grantMemberTableAccessSql} statements for a table joined into a single
+ * multi-statement string, so the reconcile loop can grant a table in ONE round-trip
+ * instead of one per statement (a masked table needs 2). Safe because these GRANTs
+ * bind no parameters: the Postgres adapter's param walker leaves them verbatim, and
+ * pg's simple-query protocol (selected when no values are bound) executes
+ * semicolon-separated statements in a single query.
+ *
+ * LOAD-BEARING: this relies on the GRANT SQL containing NO `?` placeholder. If a
+ * placeholder is ever introduced into {@link grantMemberTableAccessSql}, pg would
+ * switch to the extended protocol, which REJECTS multiple statements per query and
+ * would silently break every masked table's batch — keep the GRANT SQL parameterless.
+ */
+export function grantMemberTableAccessBatchSql(
+  table: string,
+  opts: { masked: boolean },
+  group: string,
+): string {
+  return grantMemberTableAccessSql(table, opts, group).join('; ');
 }
 
 /**
@@ -121,18 +142,18 @@ export function grantMemberTableAccessSql(table: string, opts: { masked: boolean
  * library-only cloud (no GUI tables) is a no-op and an already-migrated cloud
  * self-heals on the owner's next open. Idempotent.
  */
-export function grantMemberBookkeepingSql(): string[] {
+export function grantMemberBookkeepingSql(group: string): string[] {
   return MEMBER_READABLE_BOOKKEEPING.map(
     (e) =>
       `DO $LATTICE$ BEGIN
          IF to_regclass('${e.name}') IS NOT NULL THEN
-           EXECUTE 'GRANT ${e.privs} ON "${e.name}" TO ${MEMBER_GROUP}';
+           EXECUTE 'GRANT ${e.privs} ON "${e.name}" TO ${group}';
          END IF;
        END $LATTICE$`,
   );
 }
 
 /** GRANT EXECUTE on the member-needed SQLite-compat polyfills. */
-export function grantMemberExecuteSql(): string {
-  return `GRANT EXECUTE ON FUNCTION ${MEMBER_EXECUTE_FUNCTIONS.join(', ')} TO ${MEMBER_GROUP}`;
+export function grantMemberExecuteSql(group: string): string {
+  return `GRANT EXECUTE ON FUNCTION ${MEMBER_EXECUTE_FUNCTIONS.join(', ')} TO ${group}`;
 }

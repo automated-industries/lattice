@@ -24,6 +24,8 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
 
+**New in 4.0 (major release — mostly drop-in):** a major version that decomposes the three largest internal modules and hardens the cloud path for many simultaneous users, while keeping the `Lattice` / GUI surface stable. **Existing 3.0+ configs and databases are migrated forward SILENTLY on open** — you usually need to do nothing. The breaking changes are auto-handled on open (or clearly documented): the per-field `ref:` shorthand is still parsed (and the GUI rewrites it to the explicit `relations:` block on disk); a legacy empty-string `deleted_at` is normalized to `NULL`; a legacy `files.path`-only row is backfilled into the reference model; the render manifest is v2-only and self-upgrades on first render. The one consumer-code change: the exported `MEMBER_GROUP` constant is replaced by **`memberGroupFor(db)`** (the member group role is now **per-cloud** — derived from the database/schema — so unrelated clouds on one Postgres cluster no longer share a group). Opening a cloud workspace is now **much faster** (one batched schema introspection instead of per-table round-trips; the owner-side RLS/grant convergence runs in the background since the owner is BYPASSRLS). See **[docs/MIGRATING-4.0.md](docs/MIGRATING-4.0.md)** for the (mostly no-op) migration and the manual steps for library/non-GUI consumers.
+
 **New in 3.4:** the browser GUI now **updates itself** — launched from an npm install it silently installs the latest published version and keeps checking in the background, relaunching on the same port while the open tab auto-reloads onto the new build (a git checkout / `npx` copy is left untouched); **file loopback** — editing a rendered `.md` context file on disk flows back into the database through the normal write path (changelog/versioned/undoable, live in the GUI), with a public [`reverseSyncFromFiles()`](docs/api-reference.md) for embedders; on a cloud, a member's **rendered context is now scoped to their own visibility** (rendered through their RLS connection + masking view, so their assistant only ever reads rows they may see); the assistant gains a **`get_row_context`** tool (reads a record's pre-joined rendered context in one call) and **`add_column`** (add a field to an existing table on request); and the cloud gets resilience + search fixes — the open-time converge is **per-table fault-isolated** (one un-manageable table no longer breaks the whole workspace), `migrate-to-cloud` now builds the full-text index (with a public [`rebuildFtsIndexes()`](docs/api-reference.md)), and a plaintext `postgres://` URL in a config is healed into an encrypted credential reference on open. New `GET /api/version`, `GET /api/update/status`, and `POST /api/workspaces/reload` endpoints. See [docs/workspaces.md](docs/workspaces.md), [docs/cloud.md](docs/cloud.md), and [docs/assistant.md](docs/assistant.md).
 
 **New in 2.1:** the GUI search box now asks the **assistant** (it answers using a full-text `search` tool) instead of running a plain text match; the assistant gains a **guarded, reversible `delete_entity`** (empty tables go immediately, non-empty tables ask what to do with the data first); new chat threads are named from a short AI summary; ingest failures are surfaced loudly instead of swallowed; and the activity feed, voice-note composer, upload timer, and live counts get a round of fixes. See [docs/assistant.md](docs/assistant.md).
@@ -1907,7 +1909,9 @@ entities:
       title: { type: text, required: true }
       status: { type: text, default: open }
       priority: { type: integer, default: 1 }
-      assignee_id: { type: uuid, ref: user } # creates belongsTo relation
+      assignee_id: { type: uuid } # plain FK column
+    relations:
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
     render:
       template: default-list
       formatRow: '{{title}} ({{status}}) — {{assignee.name}}'
@@ -1932,13 +1936,14 @@ entities:
 
 **Field options**
 
-| Option       | Type               | Description                                                                                                                                           |
-| ------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `type`       | `LatticeFieldType` | Column data type (required)                                                                                                                           |
-| `primaryKey` | boolean            | Primary key column (`TEXT PRIMARY KEY` for uuid/text)                                                                                                 |
-| `required`   | boolean            | `NOT NULL` constraint                                                                                                                                 |
-| `default`    | string/number/bool | SQL `DEFAULT` value                                                                                                                                   |
-| `ref`        | string             | Foreign-key reference to another entity. Creates a `belongsTo` relation; `_id` suffix is stripped from the relation name (`assignee_id` → `assignee`) |
+| Option       | Type               | Description                                           |
+| ------------ | ------------------ | ----------------------------------------------------- |
+| `type`       | `LatticeFieldType` | Column data type (required)                           |
+| `primaryKey` | boolean            | Primary key column (`TEXT PRIMARY KEY` for uuid/text) |
+| `required`   | boolean            | `NOT NULL` constraint                                 |
+| `default`    | string/number/bool | SQL `DEFAULT` value                                   |
+
+> Foreign-key relationships are declared at the **entity level** via `relations:` (see the entity-context examples above), not as a per-field option. The former per-field `ref:` shorthand was removed in 4.0 — a config that still uses it fails with a clear error pointing at `relations:`.
 
 **Entity-level options**
 
@@ -2120,10 +2125,11 @@ trail tracks the drill path. **Click any value to edit it in place** — the cha
 saves immediately via `PATCH` and is undoable. Native `files` rows show the inline
 file/markdown preview; their binary metadata stays read-only.
 
-Relationships come from the schema: a `belongsTo` (a field with `ref:`) renders as
-a parent link, while the reverse side (other entities that point here) plus
-many-to-many junctions become the drill-in sub-folders. Declare `ref:` on your
-foreign-key fields to get the nested file tree.
+Relationships come from the schema: a `belongsTo` (declared in an entity's
+`relations:` block) renders as a parent link, while the reverse side (other
+entities that point here) plus many-to-many junctions become the drill-in
+sub-folders. Declare a `belongsTo` relation for each foreign-key field to get the
+nested file tree.
 
 The header carries the logo, undo/redo, the **workspace switcher**, and a
 **settings gear** (top-right). The gear opens a slide-over drawer with **Workspace**,

@@ -15,14 +15,12 @@ import type {
   StopFn,
   AuditEvent,
   LatticeEvent,
-  Filter,
   RenderSpec,
   BuiltinTemplateName,
   WriteHook,
   WriteHookContext,
   SeedConfig,
   SeedResult,
-  UnresolvedLink,
   ReportConfig,
   ReportResult,
   EntityContextDefinition,
@@ -51,20 +49,28 @@ import type { StorageAdapter } from './db/adapter.js';
 import {
   runAsyncOrSync,
   getAsyncOrSync,
-  allAsyncOrSync,
   introspectColumnsAsyncOrSync,
+  introspectAllColumnsAsyncOrSync,
   addColumnAsyncOrSync,
 } from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
 import { PostgresAdapter } from './db/postgres.js';
+import {
+  serializeRowPk as _serializeRowPkCodec,
+  serializePkLookup as _serializePkLookupCodec,
+} from './db/pk.js';
 import { SchemaManager } from './schema/manager.js';
-import type { CompiledTableDef } from './schema/manager.js';
+import type { CompiledTableDef, PageOptions } from './schema/manager.js';
 import { assertSafeIdentifier } from './schema/identifier.js';
 import { ChangelogService } from './changelog/service.js';
+import { ChangelogWriter } from './changelog/writer.js';
 import { ReportBuilder } from './report/builder.js';
+import { QueryCore } from './query/core.js';
+import { SeedEngine } from './crud/seed-engine.js';
 import { Sanitizer } from './security/sanitize.js';
 import { RenderEngine, NOOP_RENDER } from './render/engine.js';
 import type { RenderOptions } from './render/progress.js';
+import { AutoRenderScheduler } from './render/auto-render.js';
 import { ReverseSyncEngine } from './reverse-sync/engine.js';
 import { ReverseSeedEngine } from './reverse-seed/engine.js';
 import { SyncLoop } from './sync/loop.js';
@@ -79,12 +85,7 @@ import {
   type WorkspaceRecord,
 } from './framework/workspace.js';
 import { deriveCanonicalContexts } from './framework/canonical-context.js';
-import {
-  deriveKey,
-  encrypt as encryptValue,
-  decrypt as decryptValue,
-  resolveEncryptedColumns,
-} from './security/encryption.js';
+import { EncryptionLayer } from './security/encryption-layer.js';
 import {
   ensureEmbeddingsTable,
   storeEmbedding,
@@ -142,16 +143,37 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
 }
 
 /**
- * Soft-delete filter fragment. A row is "live" when `deleted_at` is NULL or the
- * empty string (legacy rows used `''`). Interpolated into the WHERE clause of
- * natural-key lookups so a soft-deleted row never satisfies a uniqueness probe.
+ * Soft-delete convention: a row is "live" only when `deleted_at IS NULL`, and that
+ * exact predicate is written inline wherever a query must exclude soft-deleted rows
+ * (no indirection — it is a self-documenting SQL fragment, used identically here, in
+ * search/fts.ts, and in crud/seed-engine.ts).
+ *
+ * v4.0 BREAKING: the legacy empty-string branch (`OR deleted_at = ''`) was removed.
+ * The library only ever writes a timestamp (on delete) or NULL (on insert/restore),
+ * never `''`, so this is a no-op for any DB that has only used this library to
+ * soft-delete. Consumers with legacy/externally-inserted rows MUST normalize every
+ * `deleted_at = ''` row to NULL BEFORE upgrading (see MIGRATING-4.0.md) — otherwise
+ * those live rows read as deleted, and a natural-key upsert against a hidden row can
+ * insert a duplicate.
  */
-const NOT_DELETED = "(deleted_at IS NULL OR deleted_at = '')";
+
+/**
+ * Cap on the changelog rows the render-time per-viewer fold ({@link Lattice.foldRenderRows})
+ * reads in one pass. Deliberately large — a workspace is not expected to exceed it,
+ * and the fold reverts cleanly to ground truth for any older change beyond the cap.
+ * Named (rather than an inline literal) so the bound is explicit + tunable. (The
+ * single-row fold, {@link Lattice.foldForViewer}, reads only ONE row's audit chain
+ * and is naturally bounded by that row's history — it needs no separate cap.)
+ */
+const RENDER_FOLD_MAX_CHANGES = 100_000;
 
 export class Lattice {
   private readonly _adapter: StorageAdapter;
   private _changelogService?: ChangelogService;
+  private _changelogWriterInstance?: ChangelogWriter;
   private _reportBuilder?: ReportBuilder;
+  private _queryCoreInstance?: QueryCore;
+  private _seedEngine?: SeedEngine;
   private readonly _schema: SchemaManager;
   private readonly _sanitizer: Sanitizer;
   private readonly _render: RenderEngine;
@@ -163,36 +185,21 @@ export class Lattice {
 
   // --- Auto-render: keep the SQL→markdown bridge current automatically. ---
   /**
-   * When set, insert/update/delete debounce-trigger a re-render into this dir.
-   * Configured by {@link enableAutoRender} / {@link Lattice.openWorkspace}.
-   * Undefined = inert: a bare `new Lattice(dbPath)` pays zero overhead and its
-   * behavior is unchanged.
+   * The debounce + single-flight auto-render scheduler (see
+   * {@link AutoRenderScheduler}). Lazily constructed by the {@link _autoRender}
+   * getter and configured by {@link enableAutoRender} / {@link Lattice.openWorkspace}.
+   * Undefined = inert: a bare `new Lattice(dbPath)` never constructs the
+   * scheduler and pays zero overhead, so its behavior is unchanged.
    */
-  private _autoRenderDir: string | undefined;
-  private _autoRenderTimer: ReturnType<typeof setTimeout> | undefined;
-  private _autoRenderPending = false;
-  private _autoRenderInFlight = false;
-  private _autoRenderDebounceMs = 250;
-  /**
-   * Incremental auto-render scope, accumulated between debounced renders. A write
-   * or a remote (cloud) change records the AFFECTED table here, so the next
-   * auto-render re-renders only that entity (+ its cross-table dependents) instead
-   * of the whole tree. `_pendingRenderAll` forces a full render (the initial
-   * render, or a change with no known table). Captured + reset when a render
-   * starts, so changes during a render re-accumulate and re-trigger.
-   */
-  private _pendingRenderTables = new Set<string>();
-  private _pendingRenderAll = true;
+  private _autoRenderScheduler?: AutoRenderScheduler;
 
   /** Cache of actual table columns (from PRAGMA), populated after init(). */
   private readonly _columnCache = new Map<string, Set<string>>();
 
-  /** Derived encryption key (from options.encryptionKey via scrypt). */
-  private _encryptionKey?: Buffer;
-  /** Map of table → set of column names that should be encrypted at rest. */
-  private readonly _encryptedTableColumns = new Map<string, Set<string>>();
   /** Raw encryption key passphrase from constructor options. */
   private readonly _encryptionKeyRaw?: string;
+  /** Lazily-constructed column-encryption layer (see {@link _encryption}). */
+  private _encryptionLayer?: EncryptionLayer;
 
   /** Changelog retention options. */
   private readonly _changelogOptions?: ChangelogOptions;
@@ -395,17 +402,13 @@ export class Lattice {
     if (this._schema.getTables().has(table)) {
       return this;
     }
-    if (def.encrypted && !this._encryptionKeyRaw) {
-      throw new Error(
-        `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
-      );
-    }
+    this._encryption.validateTable(table, def);
     this._registerTable(table, def);
     await this._schema.applySchemaForAsync(this._adapter, table);
     const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
     this._columnCache.set(table, new Set(cols));
     if (def.encrypted) {
-      await this._registerEncryptedColumns(table, def.encrypted);
+      await this._encryption.registerColumns(table, def.encrypted);
     }
     return this;
   }
@@ -512,7 +515,7 @@ export class Lattice {
     this._adapter.open();
     // Throw-only encryption-key validation. Resolving encrypted columns moves
     // into the async tail (needs the schema to exist first).
-    this._validateEncryptionConfig();
+    this._encryption.validateConfig();
     return this._initAsync(options);
   }
 
@@ -563,19 +566,25 @@ export class Lattice {
       // and RLS policy. This role can't DDL, so issue none — just introspect the
       // declared tables to seed the column cache (skip any this member can't see)
       // and finalize encryption. No migrations, FTS, changelog, or embeddings.
-      for (const tableName of this._schema.getTables().keys()) {
-        try {
-          const cols = await introspectColumnsAsyncOrSync(this._adapter, tableName);
-          this._columnCache.set(tableName, new Set(cols));
-        } catch {
-          // Table absent or not visible to this member — leave it uncached.
-        }
+      // One whole-schema introspection instead of a round-trip per table; a
+      // table absent from the map is one the member can't see, so it stays
+      // uncached — same semantics as the prior per-table try/catch-skip.
+      const declared = [...this._schema.getTables().keys()];
+      const preMap = await introspectAllColumnsAsyncOrSync(this._adapter, declared);
+      for (const tableName of declared) {
+        const cols = preMap.get(tableName);
+        if (cols) this._columnCache.set(tableName, cols);
       }
-      await this._finalizeEncryptionSetup();
+      await this._encryption.finalizeSetup();
       this._initialized = true;
       return;
     }
-    await this._schema.applySchema(this._adapter);
+    // One whole-schema introspection up front (one query on Postgres vs. a
+    // round-trip per declared table) feeds applySchema's create-only-missing
+    // diff so a converged DB issues no per-table DDL or introspection.
+    const declared = [...this._schema.getTables().keys()];
+    const preMap = await introspectAllColumnsAsyncOrSync(this._adapter, declared);
+    const mutated = await this._schema.applySchema(this._adapter, preMap);
     if (options.migrations?.length) {
       // applyMigrationsAsync uses adapter.withClient when available
       // (Postgres path acquires pg_advisory_xact_lock for concurrent-boot
@@ -585,14 +594,24 @@ export class Lattice {
     }
     // Snapshot actual columns post-migration: schema state only includes declared
     // columns, so migration-added columns would be stripped by _filterToSchemaColumns
-    // without this introspection-based cache.
-    for (const tableName of this._schema.getTables().keys()) {
-      const cols = await introspectColumnsAsyncOrSync(this._adapter, tableName);
-      this._columnCache.set(tableName, new Set(cols));
+    // without this introspection-based cache. When applySchema changed nothing AND
+    // no migrations ran, the DB is exactly what preMap already described — reuse it
+    // instead of paying the introspection again. Otherwise re-fetch the true state.
+    if (!mutated && !options.migrations?.length) {
+      for (const tableName of declared) {
+        const cols = preMap.get(tableName);
+        if (cols) this._columnCache.set(tableName, cols);
+      }
+    } else {
+      const postMap = await introspectAllColumnsAsyncOrSync(this._adapter, declared);
+      for (const tableName of declared) {
+        const cols = postMap.get(tableName);
+        if (cols) this._columnCache.set(tableName, cols);
+      }
     }
 
     // Resolve encrypted columns (needs introspectColumns to see post-migration schema)
-    await this._finalizeEncryptionSetup();
+    await this._encryption.finalizeSetup();
 
     // Create embeddings table if any table uses embeddings
     const hasEmbeddings = [...this._schema.getTables().values()].some((d) => d.embeddings);
@@ -632,17 +651,10 @@ export class Lattice {
   }
 
   close(): void {
-    this._autoRenderDir = undefined;
-    if (this._autoRenderTimer) {
-      clearTimeout(this._autoRenderTimer);
-      this._autoRenderTimer = undefined;
-    }
-    this._autoRenderPending = false;
-    this._autoRenderInFlight = false;
+    this._autoRenderScheduler?.dispose();
     this._adapter.close();
     this._columnCache.clear();
-    this._encryptedTableColumns.clear();
-    delete this._encryptionKey;
+    this._encryptionLayer?.clear();
     this._initialized = false;
   }
 
@@ -822,107 +834,18 @@ export class Lattice {
   // -------------------------------------------------------------------------
 
   /**
-   * Throw-only validation of encryption-key configuration. Runs in the
-   * synchronous prefix of `init()` so `expect(() => db.init()).toThrow(...)`
-   * still observes the throw — moving this check into the async tail would
-   * convert the throw into a rejected Promise and break those tests.
-   * Column resolution happens later in {@link _finalizeEncryptionSetup} once
-   * the schema has been applied.
+   * Lazily-constructed column-encryption layer. Field-backed `??= new` getter
+   * mirrors `_report`/`_changelog`; the layer defers its scrypt key derivation
+   * to the first column registration, so merely touching this getter is cheap.
    */
-  private _validateEncryptionConfig(): void {
-    for (const [table, def] of this._schema.getEntityContexts()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) {
-        throw new Error(
-          `Entity context "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
-        );
-      }
-    }
-    for (const [table, def] of this._schema.getTables()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) {
-        throw new Error(
-          `Table "${table}" has encrypted: true but no encryptionKey was provided in Lattice options`,
-        );
-      }
-    }
-  }
-
-  /**
-   * Resolve which columns to encrypt per table, using introspectColumns to
-   * see the post-migration schema. Runs in the async tail of init() after
-   * applySchema/applyMigrationsAsync.
-   */
-  private async _finalizeEncryptionSetup(): Promise<void> {
-    for (const [table, def] of this._schema.getEntityContexts()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) continue; // already validated above
-      await this._registerEncryptedColumns(table, def.encrypted);
-    }
-    for (const [table, def] of this._schema.getTables()) {
-      if (!def.encrypted) continue;
-      if (!this._encryptionKeyRaw) continue;
-      // Entity-context encryption for this table (if any) was already
-      // resolved in the first loop — skip to avoid clobbering with a
-      // narrower table-level spec.
-      if (this._encryptedTableColumns.has(table)) continue;
-      await this._registerEncryptedColumns(table, def.encrypted);
-    }
-  }
-
-  /**
-   * Shared helper: derive the encryption key on first use, introspect the
-   * table's current columns, resolve which to encrypt, and record the set
-   * in `_encryptedTableColumns`. Called from both `_finalizeEncryptionSetup`
-   * (boot path) and `defineLate` (post-init table registration).
-   */
-  private async _registerEncryptedColumns(
-    table: string,
-    encrypted: true | { columns: string[] },
-  ): Promise<void> {
-    if (!this._encryptionKeyRaw) {
-      throw new Error(
-        `Cannot register encrypted columns for "${table}": no encryptionKey was provided`,
-      );
-    }
-    this._encryptionKey ??= deriveKey(this._encryptionKeyRaw);
-    const allCols = await introspectColumnsAsyncOrSync(this._adapter, table);
-    const encCols = resolveEncryptedColumns(encrypted, allCols);
-    this._encryptedTableColumns.set(table, encCols);
-  }
-
-  /** Encrypt applicable columns in a row before writing. Returns a new row. */
-  private _encryptRow(table: string, row: Row): Row {
-    const encCols = this._encryptedTableColumns.get(table);
-    if (!encCols || !this._encryptionKey) return row;
-    const result = { ...row };
-    for (const col of encCols) {
-      const val = result[col];
-      if (typeof val === 'string' && val.length > 0) {
-        result[col] = encryptValue(val, this._encryptionKey);
-      }
-    }
-    return result;
-  }
-
-  /** Decrypt applicable columns in a row after reading. Mutates in place. */
-  private _decryptRow(table: string, row: Row): Row {
-    const encCols = this._encryptedTableColumns.get(table);
-    if (!encCols || !this._encryptionKey) return row;
-    for (const col of encCols) {
-      const val = row[col];
-      if (typeof val === 'string' && val.length > 0) {
-        row[col] = decryptValue(val, this._encryptionKey);
-      }
-    }
-    return row;
-  }
-
-  /** Decrypt applicable columns in multiple rows. Mutates in place. */
-  private _decryptRows(table: string, rows: Row[]): Row[] {
-    if (!this._encryptedTableColumns.has(table)) return rows;
-    for (const row of rows) this._decryptRow(table, row);
-    return rows;
+  private get _encryption(): EncryptionLayer {
+    this._encryptionLayer ??= new EncryptionLayer({
+      encryptionKeyRaw: this._encryptionKeyRaw,
+      getEntityContexts: () => this._schema.getEntityContexts(),
+      getTables: () => this._schema.getTables(),
+      introspectColumns: (table) => introspectColumnsAsyncOrSync(this._adapter, table),
+    });
+    return this._encryptionLayer;
   }
 
   // -------------------------------------------------------------------------
@@ -1021,7 +944,7 @@ export class Lattice {
     } else {
       rowWithPk = sanitized;
     }
-    const encrypted = this._encryptRow(table, rowWithPk);
+    const encrypted = this._encryption.encryptRow(table, rowWithPk);
     const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
       .join(', ');
@@ -1094,7 +1017,7 @@ export class Lattice {
       rowWithPk = sanitized;
     }
 
-    const encrypted = this._encryptRow(table, rowWithPk);
+    const encrypted = this._encryption.encryptRow(table, rowWithPk);
 
     const cols = Object.keys(encrypted)
       .map((c) => `"${c}"`)
@@ -1163,7 +1086,7 @@ export class Lattice {
     this._assertRowSize(table, row as Row);
 
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
-    const encrypted = this._encryptRow(table, sanitized);
+    const encrypted = this._encryption.encryptRow(table, sanitized);
     const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
       .join(', ');
@@ -1408,12 +1331,7 @@ export class Lattice {
   async get(table: string, id: PkLookup): Promise<Row | null> {
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
-
-    const { clause, params } = this._pkWhere(table, id);
-    const row =
-      (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
-      null;
-    return row ? this._decryptRow(table, row) : null;
+    return this._queryCore.get(table, id);
   }
 
   // -------------------------------------------------------------------------
@@ -1448,13 +1366,13 @@ export class Lattice {
     // Check if record exists
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
 
     if (existing) {
       // Update existing
-      const encUpdated = this._encryptRow(table, withConventions);
+      const encUpdated = this._encryption.encryptRow(table, withConventions);
       const entries = Object.entries(encUpdated).filter(([k]) => k !== 'id');
       if (entries.length === 0) return existing.id as string;
       const setCols = entries.map(([k]) => `"${k}" = ?`).join(', ');
@@ -1481,7 +1399,7 @@ export class Lattice {
       insertData.created_at = new Date().toISOString();
 
     const filtered = this._filterToSchemaColumns(table, insertData);
-    const encInserted = this._encryptRow(table, filtered);
+    const encInserted = this._encryption.encryptRow(table, filtered);
     const colNames = Object.keys(encInserted)
       .map((c) => `"${c}"`)
       .join(', ');
@@ -1513,7 +1431,7 @@ export class Lattice {
 
     const existing = await getAsyncOrSync(
       this._adapter,
-      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
+      `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
     if (!existing) return false;
@@ -1565,7 +1483,7 @@ export class Lattice {
       this._adapter,
       `SELECT COUNT(*) as cnt FROM "${table}"
        WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-       AND ${NOT_DELETED}`,
+       AND deleted_at IS NULL`,
       [sourceFile, ...currentKeys],
     );
     // Postgres returns COUNT(*) as a string; SQLite returns a number. Coerce
@@ -1577,7 +1495,7 @@ export class Lattice {
         this._adapter,
         `UPDATE "${table}" SET deleted_at = datetime('now'), updated_at = datetime('now')
          WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
-         AND ${NOT_DELETED}`,
+         AND deleted_at IS NULL`,
         [sourceFile, ...currentKeys],
       );
     }
@@ -1588,15 +1506,10 @@ export class Lattice {
    * Get all non-deleted rows from a table, ordered by the given column.
    * Works on any table, not just defined ones.
    */
-  async getActive(table: string, orderBy = 'name'): Promise<Row[]> {
+  async getActive(table: string, orderBy = 'name', opts: PageOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
-
-    const cols = this._ensureColumnCache(table);
-    const hasDeletedAt = cols.has('deleted_at');
-    const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
-    const order = cols.has(orderBy) ? ` ORDER BY "${orderBy}"` : '';
-    return allAsyncOrSync(this._adapter, `SELECT * FROM "${table}"${where}${order}`);
+    return this._queryCore.getActive(table, orderBy, opts);
   }
 
   /**
@@ -1605,17 +1518,7 @@ export class Lattice {
   async countActive(table: string): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
-
-    const cols = this._ensureColumnCache(table);
-    const hasDeletedAt = cols.has('deleted_at');
-    const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
-    const row = await getAsyncOrSync(
-      this._adapter,
-      `SELECT COUNT(*) as cnt FROM "${table}"${where}`,
-    );
-    // Postgres returns COUNT(*) as a string; SQLite returns a number. Coerce
-    // so the public Promise<number> contract holds across dialects.
-    return Number(row?.cnt ?? 0);
+    return this._queryCore.countActive(table);
   }
 
   /**
@@ -1628,15 +1531,7 @@ export class Lattice {
   ): Promise<Row | null> {
     const notInit = this._notInitError<Row | null>();
     if (notInit) return notInit;
-    this._assertIdent(table, naturalKeyCol);
-
-    return (
-      (await getAsyncOrSync(
-        this._adapter,
-        `SELECT * FROM "${table}" WHERE "${naturalKeyCol}" = ? AND ${NOT_DELETED}`,
-        [naturalKeyVal],
-      )) ?? null
-    );
+    return this._queryCore.getByNaturalKey(table, naturalKeyCol, naturalKeyVal);
   }
 
   /**
@@ -1666,7 +1561,7 @@ export class Lattice {
     );
     // Relation rollups (e.g. PROJECTS.md / FILES.md) are link-driven — refresh
     // every entity context that sources THROUGH this junction (manyToMany).
-    this._scheduleAutoRender(junctionTable);
+    this._autoRender.schedule(junctionTable);
   }
 
   /**
@@ -1684,7 +1579,7 @@ export class Lattice {
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
-    this._scheduleAutoRender(junctionTable);
+    this._autoRender.schedule(junctionTable);
   }
 
   // -------------------------------------------------------------------------
@@ -1700,90 +1595,19 @@ export class Lattice {
     const notInit = this._notInitError<SeedResult>();
     if (notInit) return notInit;
 
-    let upserted = 0;
-    let linked = 0;
-    let softDeleted = 0;
-    const keys: string[] = [];
-    const unresolvedLinks: UnresolvedLink[] = [];
+    return this._seed.seed(config);
+  }
 
-    for (const record of config.data) {
-      const rawKey = record[config.naturalKey];
-      const naturalKeyVal =
-        typeof rawKey === 'string' ? rawKey : typeof rawKey === 'number' ? String(rawKey) : '';
-      if (!naturalKeyVal) continue;
-
-      keys.push(naturalKeyVal);
-
-      // Upsert the record
-      const upsertOpts: import('./types.js').UpsertByNaturalKeyOptions = {};
-      if (config.sourceFile) upsertOpts.sourceFile = config.sourceFile;
-      if (config.sourceHash) upsertOpts.sourceHash = config.sourceHash;
-      if (config.orgId) upsertOpts.orgId = config.orgId;
-      await this.upsertByNaturalKey(
-        config.table,
-        config.naturalKey,
-        naturalKeyVal,
-        record as Row,
-        upsertOpts,
-      );
-      upserted++;
-
-      // Process links
-      if (config.linkTo) {
-        const recordId = await this.getByNaturalKey(config.table, config.naturalKey, naturalKeyVal);
-        if (!recordId) continue;
-        const id = recordId.id as string;
-
-        for (const [field, spec] of Object.entries(config.linkTo)) {
-          const names = record[field] as string[] | undefined;
-          if (!Array.isArray(names)) continue;
-
-          const resolveTable = spec.resolveTable ?? field;
-          for (const name of names) {
-            const target = await this.getByNaturalKey(resolveTable, spec.resolveBy, name);
-            if (!target) {
-              // Reconciliation point: the link's target doesn't exist. Surface
-              // it instead of silently dropping (Rule: no silent failures) —
-              // otherwise the source row cites a relationship in text but has
-              // no link in the graph.
-              unresolvedLinks.push({
-                record: naturalKeyVal,
-                field,
-                name,
-                junction: spec.junction,
-                resolveTable,
-                resolveBy: spec.resolveBy,
-              });
-              continue;
-            }
-
-            const linkData: Row = {
-              [this._inferFk(config.table)]: id,
-              [spec.foreignKey]: target.id,
-              ...(spec.extras ?? {}),
-            };
-            await this.link(spec.junction, linkData);
-            linked++;
-          }
-        }
-      }
-    }
-
-    // Soft-delete missing
-    if (config.softDeleteMissing && config.sourceFile && keys.length > 0) {
-      softDeleted = await this.softDeleteMissing(
-        config.table,
-        config.naturalKey,
-        config.sourceFile,
-        keys,
-      );
-    }
-
-    if (config.onUnresolvedLink === 'throw' && unresolvedLinks.length > 0) {
-      throw new SeedReconciliationError(config.table, unresolvedLinks);
-    }
-
-    return { upserted, linked, softDeleted, unresolvedLinks };
+  /** Lazily-constructed seeding collaborator (see src/crud/seed-engine.ts). */
+  private get _seed(): SeedEngine {
+    this._seedEngine ??= new SeedEngine({
+      adapter: this._adapter,
+      upsertByNaturalKey: (t, c, v, d, o) => this.upsertByNaturalKey(t, c, v, d, o),
+      link: (j, d, o) => this.link(j, d, o),
+      softDeleteMissing: (t, c, f, k) => this.softDeleteMissing(t, c, f, k),
+      inferFk: (t) => this._inferFk(t),
+    });
+    return this._seedEngine;
   }
 
   /** Infer FK column name from table name (e.g., 'rule' → 'rule_id'). */
@@ -1813,6 +1637,42 @@ export class Lattice {
       ensureColumnCache: (table) => this._ensureColumnCache(table),
     });
     return this._reportBuilder;
+  }
+
+  /** Lazily-constructed generic-read collaborator (see src/query/core.ts). The
+   *  decrypt deps are wired through `_encryption`, so the query/get decryption
+   *  asymmetry is preserved: only query/get invoke them. */
+  private get _queryCore(): QueryCore {
+    this._queryCoreInstance ??= new QueryCore({
+      adapter: this._adapter,
+      assertIdent: (table, ...cols) => {
+        this._assertIdent(table, ...cols);
+      },
+      ensureColumnCache: (table) => this._ensureColumnCache(table),
+      pkWhere: (table, id) => this._pkWhere(table, id),
+      invalidColumnError: <T>(table: string, cols: string[]) =>
+        this._invalidColumnError<T>(table, cols),
+      decryptRow: (table, row) => this._encryption.decryptRow(table, row),
+      decryptRows: (table, rows) => this._encryption.decryptRows(table, rows),
+    });
+    return this._queryCoreInstance;
+  }
+
+  /** Lazily-constructed auto-render scheduler (see src/render/auto-render.ts). */
+  private get _autoRender(): AutoRenderScheduler {
+    this._autoRenderScheduler ??= new AutoRenderScheduler({
+      render: (dir, opts) => this._render.render(dir, opts),
+      cleanup: (dir, prev, opts, next) => this._render.cleanup(dir, prev, opts, next),
+      readManifest,
+      emitRender: (r) => {
+        for (const h of this._renderHandlers) h(r);
+      },
+      emitError: (e) => {
+        for (const h of this._errorHandlers) h(e);
+      },
+      isInitialized: () => this._initialized,
+    });
+    return this._autoRenderScheduler;
   }
 
   // -------------------------------------------------------------------------
@@ -1888,87 +1748,13 @@ export class Lattice {
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
-    this._assertIdent(table);
-
-    const colErr = this._invalidColumnError<Row[]>(table, [
-      ...Object.keys(opts.where ?? {}),
-      ...(opts.filters ?? []).map((f) => f.col),
-      ...(opts.orderBy ? [opts.orderBy] : []),
-    ]);
-    if (colErr) return colErr;
-
-    let sql = `SELECT * FROM "${table}"`;
-    const params: unknown[] = [];
-    const whereClauses: string[] = [];
-
-    // Equality where (backward compat shorthand)
-    if (opts.where && Object.keys(opts.where).length > 0) {
-      for (const [col, val] of Object.entries(opts.where)) {
-        whereClauses.push(`"${col}" = ?`);
-        params.push(val);
-      }
-    }
-
-    // Advanced filters with full operator support
-    if (opts.filters && opts.filters.length > 0) {
-      const { clauses, params: fp } = this._buildFilters(opts.filters);
-      whereClauses.push(...clauses);
-      params.push(...fp);
-    }
-
-    if (whereClauses.length > 0) {
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
-    }
-    if (opts.orderBy) {
-      const dir = opts.orderDir === 'desc' ? 'DESC' : 'ASC';
-      sql += ` ORDER BY "${opts.orderBy}" ${dir}`;
-    }
-    if (opts.limit !== undefined) {
-      sql += ` LIMIT ${opts.limit.toString()}`;
-    }
-    if (opts.offset !== undefined) {
-      if (opts.limit === undefined) sql += ' LIMIT -1';
-      sql += ` OFFSET ${opts.offset.toString()}`;
-    }
-
-    const rows = await allAsyncOrSync(this._adapter, sql, params);
-    return this._decryptRows(table, rows);
+    return this._queryCore.query(table, opts);
   }
 
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
-    this._assertIdent(table);
-
-    const colErr = this._invalidColumnError<number>(table, [
-      ...Object.keys(opts.where ?? {}),
-      ...(opts.filters ?? []).map((f) => f.col),
-    ]);
-    if (colErr) return colErr;
-
-    let sql = `SELECT COUNT(*) as n FROM "${table}"`;
-    const params: unknown[] = [];
-    const whereClauses: string[] = [];
-
-    if (opts.where && Object.keys(opts.where).length > 0) {
-      for (const [col, val] of Object.entries(opts.where)) {
-        whereClauses.push(`"${col}" = ?`);
-        params.push(val);
-      }
-    }
-
-    if (opts.filters && opts.filters.length > 0) {
-      const { clauses, params: fp } = this._buildFilters(opts.filters);
-      whereClauses.push(...clauses);
-      params.push(...fp);
-    }
-
-    if (whereClauses.length > 0) {
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
-    }
-
-    const row = await getAsyncOrSync(this._adapter, sql, params);
-    return Number(row?.n ?? 0);
+    return this._queryCore.count(table, opts);
   }
 
   // -------------------------------------------------------------------------
@@ -1988,12 +1774,12 @@ export class Lattice {
    * Render into `outputDir` through the shared single-flight guard, intended to
    * be called fire-and-forget (e.g. the GUI's instant-open background render).
    *
-   * The guard ({@link _renderGuarded}) holds {@link _autoRenderInFlight} for the
-   * render's duration, so a data mutation that lands while this render is in
-   * flight is deferred by {@link _runAutoRender} and coalesced — when this
-   * render settles, `finally` clears the flag and re-arms exactly one follow-up
-   * render via {@link _rearmAutoRenderIfPending}. Net invariant: at most one
-   * render to a given dir at a time.
+   * The guard ({@link AutoRenderScheduler.runGuarded}) holds the scheduler's
+   * in-flight flag for the render's duration, so a data mutation that lands while
+   * this render is in flight is deferred by the debounced auto-render path and
+   * coalesced — when this render settles, `finally` clears the flag and re-arms
+   * exactly one follow-up render. Net invariant: at most one render to a given
+   * dir at a time.
    *
    * Errors propagate to the caller (the GUI surfaces them, never silently swallowed); they are
    * not swallowed here.
@@ -2008,7 +1794,7 @@ export class Lattice {
     // nothing the tree depends on has advanced — SKIP the render before touching a
     // single table or emitting any per-table progress. This is what stops a plain
     // restart / version bump from re-rendering an unchanged tree. Fails OPEN: any
-    // uncertainty falls through to a full render below.
+    // uncertainty falls through to a full render.
     if (opts.gateOnOpen && !opts.changedTables) {
       const start = Date.now();
       const recorded = readManifest(outputDir);
@@ -2041,20 +1827,11 @@ export class Lattice {
       }
     }
 
-    // A full background render (no `changedTables`) satisfies any queued render
-    // scope, so clear it — this is what prevents the open render from being
-    // followed by a redundant second full render. Changes that land DURING this
-    // render re-accumulate below and trigger an incremental follow-up instead.
-    if (!opts.changedTables) {
-      this._pendingRenderAll = false;
-      this._pendingRenderTables = new Set();
-      this._autoRenderPending = false;
-    }
-
-    // `gateOnOpen` is a renderInBackground-only concern (decided above); never
-    // forward it into the engine, which has no such option.
+    // `gateOnOpen` is a renderInBackground-only concern (handled above) — don't forward
+    // it into the scheduler/engine. The scheduler's runGuarded owns the
+    // scope-clearing-on-full-render that older inline versions did here.
     const { gateOnOpen: _gateOnOpen, ...engineOpts } = opts;
-    return this._renderGuarded(outputDir, engineOpts);
+    return this._autoRender.runGuarded(outputDir, engineOpts);
   }
 
   /**
@@ -2091,7 +1868,7 @@ export class Lattice {
    * re-rendered instead of the whole tree; omit it to force a full render.
    */
   requestRender(table?: string): void {
-    this._scheduleAutoRender(table);
+    this._autoRender.schedule(table);
   }
 
   /**
@@ -2102,7 +1879,7 @@ export class Lattice {
    * OWN writes as spurious "file-edit" changes.
    */
   isRendering(): boolean {
-    return this._autoRenderInFlight;
+    return this._autoRender.isInFlight();
   }
 
   /**
@@ -2122,7 +1899,7 @@ export class Lattice {
     if (!(await this._changelogTableExists())) return rows;
     // recentChanges reads via THIS adapter (RLS-filtered for a member); a member
     // sees no owner-only ground-truth rows, so only derived observations return.
-    const changes = await this.recentChanges({ table, limit: 100_000 });
+    const changes = await this.recentChanges({ table, limit: RENDER_FOLD_MAX_CHANGES });
     const obsByRow = new Map<string, Observation[]>();
     for (const h of changes) {
       if (h.changeKind !== 'derived') continue;
@@ -2457,8 +2234,6 @@ export class Lattice {
   // truth for both. A single-column key serializes to the bare value (so all
   // pre-2.2.1 single-`id` data stays valid).
 
-  private static readonly _PK_SEP = '\t';
-
   /**
    * The primary-key columns of `table` that PHYSICALLY exist, in declared
    * order. Empty when the table has no Lattice-addressable key — e.g. a table
@@ -2471,16 +2246,9 @@ export class Lattice {
     return this._schema.getPrimaryKey(table).filter((c) => cols.has(c));
   }
 
-  /** Canonical ACL / change-log `pk` string for a row. Matches {@link _pkSqlExpr}. */
+  /** Canonical ACL / change-log `pk` string for a row. Matches `db/pk.ts` `pkSqlExpr`. */
   private _serializeRowPk(table: string, row: Row): string {
-    const pkCols = this._resolvedPkCols(table);
-    const cols = pkCols.length > 0 ? pkCols : ['id'];
-    return cols
-      .map((c) => {
-        const v = row[c];
-        return v != null ? String(v as string | number) : '';
-      })
-      .join(Lattice._PK_SEP);
+    return _serializeRowPkCodec(this._resolvedPkCols(table), row);
   }
 
   /**
@@ -2489,92 +2257,7 @@ export class Lattice {
    * {@link _serializeRowPk} keyed it at insert time.
    */
   private _serializePkLookup(table: string, id: PkLookup): string {
-    if (typeof id === 'string') return id; // single-column key — the bare value
-    const pkCols = this._resolvedPkCols(table);
-    if (pkCols.length === 0) return JSON.stringify(id);
-    return pkCols
-      .map((c) => {
-        const v = id[c];
-        return v != null ? String(v as string | number) : '';
-      })
-      .join(Lattice._PK_SEP);
-  }
-
-  /**
-   * SQL expression reconstructing {@link _serializeRowPk} from a row aliased
-   * `t`. Returns null when the table is unkeyable (no pk columns present) — the
-   * caller must then avoid referencing a pk column at all. Dialect-aware tab
-   * separator: SQLite `char(9)`, Postgres `chr(9)` (both = U+0009), matching
-   * {@link _PK_SEP}.
-   */
-  private _pkSqlExpr(pkCols: string[]): string | null {
-    if (pkCols.length === 0) return null;
-    // A single column joins to itself (no separator) — identical to the
-    // pre-2.2.1 `CAST(t."id" AS TEXT)`, preserving all existing single-key data.
-    const sep = this.getDialect() === 'postgres' ? 'chr(9)' : 'char(9)';
-    return pkCols.map((c) => `CAST(t."${c}" AS TEXT)`).join(` || ${sep} || `);
-  }
-
-  /**
-   * Convert Filter objects into SQL clause strings and bound params.
-   * An `in` filter with an empty array is silently ignored (produces no clause).
-   */
-  private _buildFilters(filters: Filter[]): {
-    clauses: string[];
-    params: unknown[];
-  } {
-    const clauses: string[] = [];
-    const params: unknown[] = [];
-
-    for (const f of filters) {
-      const col = `"${f.col}"`;
-      switch (f.op) {
-        case 'eq':
-          clauses.push(`${col} = ?`);
-          params.push(f.val);
-          break;
-        case 'ne':
-          clauses.push(`${col} != ?`);
-          params.push(f.val);
-          break;
-        case 'gt':
-          clauses.push(`${col} > ?`);
-          params.push(f.val);
-          break;
-        case 'gte':
-          clauses.push(`${col} >= ?`);
-          params.push(f.val);
-          break;
-        case 'lt':
-          clauses.push(`${col} < ?`);
-          params.push(f.val);
-          break;
-        case 'lte':
-          clauses.push(`${col} <= ?`);
-          params.push(f.val);
-          break;
-        case 'like':
-          clauses.push(`${col} LIKE ?`);
-          params.push(f.val);
-          break;
-        case 'in': {
-          const list = f.val as unknown[];
-          if (Array.isArray(list) && list.length > 0) {
-            clauses.push(`${col} IN (${list.map(() => '?').join(', ')})`);
-            params.push(...list);
-          }
-          break;
-        }
-        case 'isNull':
-          clauses.push(`${col} IS NULL`);
-          break;
-        case 'isNotNull':
-          clauses.push(`${col} IS NOT NULL`);
-          break;
-      }
-    }
-
-    return { clauses, params };
+    return _serializePkLookupCodec(this._resolvedPkCols(table), id);
   }
 
   /** Returns a rejected Promise if not initialized; null if ready. */
@@ -2604,7 +2287,7 @@ export class Lattice {
     // Every mutation schedules an auto-render when one is enabled (workspaces
     // enable it by default). Scoped to the written table so only that entity
     // (+ its cross-table dependents) re-renders. No-op when disabled.
-    this._scheduleAutoRender(table);
+    this._autoRender.schedule(table);
   }
 
   /**
@@ -2615,124 +2298,14 @@ export class Lattice {
    * is unaffected unless it opts in.
    */
   enableAutoRender(outputDir: string, opts: { debounceMs?: number } = {}): this {
-    this._autoRenderDir = outputDir;
-    if (opts.debounceMs != null) this._autoRenderDebounceMs = opts.debounceMs;
+    this._autoRender.enable(outputDir, opts);
     return this;
   }
 
   /** Turn off automatic rendering and cancel any pending render. */
   disableAutoRender(): this {
-    this._autoRenderDir = undefined;
-    if (this._autoRenderTimer) {
-      clearTimeout(this._autoRenderTimer);
-      this._autoRenderTimer = undefined;
-    }
-    this._autoRenderPending = false;
+    this._autoRender.disable();
     return this;
-  }
-
-  private _scheduleAutoRender(table?: string): void {
-    if (!this._autoRenderDir) return;
-    // Record the render scope: a specific changed table → incremental; no table →
-    // a full render. (A later full request never narrows a pending one.)
-    if (table === undefined) this._pendingRenderAll = true;
-    else this._pendingRenderTables.add(table);
-    this._autoRenderPending = true;
-    this._armAutoRenderTimer();
-  }
-
-  /** Arm the debounce timer if not already armed. Does NOT change the render
-   *  scope — used both by `_scheduleAutoRender` and the post-render re-arm so a
-   *  re-arm never escalates a pending incremental render to a full one. */
-  private _armAutoRenderTimer(): void {
-    if (!this._autoRenderDir || this._autoRenderTimer) return;
-    this._autoRenderTimer = setTimeout(() => {
-      this._autoRenderTimer = undefined;
-      void this._runAutoRender();
-    }, this._autoRenderDebounceMs);
-    // Don't keep the event loop alive solely for a pending auto-render.
-    this._autoRenderTimer.unref();
-  }
-
-  /**
-   * Shared single-flight render path used by {@link renderInBackground}.
-   *
-   * Holds {@link _autoRenderInFlight} for the render's duration so the
-   * mutation-driven {@link _runAutoRender} defers while this render runs (it
-   * sees the flag and marks itself pending instead of starting a second,
-   * overlapping render). On settle, `finally` clears the flag and re-arms a
-   * single coalesced follow-up render if any mutation arrived mid-flight.
-   * Errors propagate to the caller; the flag is always cleared.
-   */
-  private async _renderGuarded(outputDir: string, opts: RenderOptions): Promise<RenderResult> {
-    // If an auto-render is already in flight, wait for it to clear before
-    // claiming the guard so the two never overlap on the same dir.
-    while (this._autoRenderInFlight) {
-      await new Promise((r) => setImmediate(r));
-    }
-    this._autoRenderInFlight = true;
-    try {
-      const result = await this._render.render(outputDir, opts);
-      for (const h of this._renderHandlers) h(result);
-      return result;
-    } finally {
-      this._autoRenderInFlight = false;
-      // A mutation may have arrived during the render (hitting the in-flight
-      // guard in _runAutoRender without arming a timer); re-arm so exactly one
-      // coalesced follow-up render runs.
-      this._rearmAutoRenderIfPending();
-    }
-  }
-
-  private async _runAutoRender(): Promise<void> {
-    const dir = this._autoRenderDir;
-    if (!dir || !this._initialized) return;
-    if (this._autoRenderInFlight) {
-      // A render is mid-flight (auto-render OR a guarded background render);
-      // mark pending and re-arm when it finishes so we coalesce into exactly
-      // one follow-up render rather than overlapping.
-      this._autoRenderPending = true;
-      return;
-    }
-    if (!this._autoRenderPending) return;
-    this._autoRenderPending = false;
-    // Capture + reset the render scope NOW so changes that land during this
-    // render re-accumulate and re-trigger a follow-up render.
-    const renderAll = this._pendingRenderAll;
-    const changed = this._pendingRenderTables;
-    this._pendingRenderAll = false;
-    this._pendingRenderTables = new Set();
-    this._autoRenderInFlight = true;
-    try {
-      // Read the prior manifest BEFORE render so cleanup can detect orphans.
-      const prevManifest = readManifest(dir);
-      // Incremental when we know exactly which tables changed; full otherwise.
-      const renderOpts: RenderOptions =
-        renderAll || changed.size === 0 ? {} : { changedTables: changed };
-      const result = await this._render.render(dir, renderOpts);
-      for (const h of this._renderHandlers) h(result);
-      // Prune stale files after render: a deleted row, or — for a cloud member —
-      // a row that was just un-shared (so it dropped out of the RLS-filtered read)
-      // must leave the rendered tree, not linger as a stale snapshot. cleanup uses
-      // the SAME per-viewer resolver the render did, so a member's own just-written
-      // files are kept and only genuinely-absent rows are removed. Without this an
-      // un-share would never prune the file (render only writes; it never deletes).
-      const newManifest = readManifest(dir);
-      await this._render.cleanup(dir, prevManifest, {}, newManifest);
-    } catch (err) {
-      for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      this._autoRenderInFlight = false;
-      // Mutations may have arrived while the render was in flight (and hit the
-      // in-flight guard above without arming a timer); re-arm if so.
-      this._rearmAutoRenderIfPending();
-    }
-  }
-
-  private _rearmAutoRenderIfPending(): void {
-    // Re-arm the timer only — the pending render SCOPE is already recorded, so a
-    // re-arm must not call _scheduleAutoRender() (which would force a full render).
-    if (this._autoRenderPending) this._armAutoRenderTimer();
   }
 
   /**
@@ -2785,90 +2358,11 @@ export class Lattice {
    *  scoped member can decide there are no observations without trying to create
    *  the table. */
   private async _changelogTableExists(): Promise<boolean> {
-    if (this.getDialect() === 'postgres') {
-      const row = (await getAsyncOrSync(
-        this._adapter,
-        `SELECT to_regclass('__lattice_changelog') AS reg`,
-      )) as { reg?: string | null } | undefined;
-      return !!row && row.reg != null;
-    }
-    const row = (await getAsyncOrSync(
-      this._adapter,
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='__lattice_changelog'`,
-    )) as { name?: string } | undefined;
-    return !!row;
+    return this._changelogWriter.tableExists();
   }
 
   private async _ensureChangelogTable(): Promise<void> {
-    // `created_at` default is dialect-specific: SQLite's `strftime` isn't valid
-    // Postgres, and a cloud change-log (the per-viewer observation substrate)
-    // must create cleanly on Postgres. Both produce a sortable ISO-8601 string;
-    // every write also passes `created_at` explicitly (see _writeChangelogRow),
-    // so the default only matters for any out-of-band insert.
-    const createdAtDefault =
-      this.getDialect() === 'postgres'
-        ? `to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
-        : `(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
-    await runAsyncOrSync(
-      this._adapter,
-      `
-      CREATE TABLE IF NOT EXISTS __lattice_changelog (
-        id TEXT PRIMARY KEY,
-        table_name TEXT NOT NULL,
-        row_id TEXT NOT NULL,
-        operation TEXT NOT NULL,
-        changes TEXT,
-        previous TEXT,
-        source TEXT,
-        reason TEXT,
-        created_at TEXT NOT NULL DEFAULT ${createdAtDefault},
-        source_ref TEXT,
-        change_kind TEXT,
-        superseded_by TEXT,
-        audience TEXT,
-        source_sensitive INTEGER NOT NULL DEFAULT 0
-      )
-    `,
-    );
-    // Idempotent additive migration for change-logs created before 3.0:
-    // introspect the live columns and ALTER in any provenance column that is
-    // missing. Each is nullable or defaulted, so existing rows + readers are
-    // unaffected. (CREATE TABLE IF NOT EXISTS above only covers fresh DBs.)
-    const existing = new Set(
-      await introspectColumnsAsyncOrSync(this._adapter, '__lattice_changelog'),
-    );
-    const additive: [string, string][] = [
-      ['source_ref', 'TEXT'],
-      ['change_kind', 'TEXT'],
-      ['superseded_by', 'TEXT'],
-      ['audience', 'TEXT'],
-      ['source_sensitive', 'INTEGER NOT NULL DEFAULT 0'],
-    ];
-    for (const [col, type] of additive) {
-      if (!existing.has(col)) {
-        await runAsyncOrSync(
-          this._adapter,
-          `ALTER TABLE __lattice_changelog ADD COLUMN ${col} ${type}`,
-        );
-      }
-    }
-    // Monotonic insertion order. SQLite has `rowid` natively; Postgres needs an
-    // explicit identity column — ordering by `created_at` alone ties when two
-    // entries land in the same millisecond (the uuid `id` is no tiebreak), which
-    // corrupts history/replay order. The change feed uses the same pattern.
-    if (this.getDialect() === 'postgres' && !existing.has('seq')) {
-      await runAsyncOrSync(
-        this._adapter,
-        `ALTER TABLE __lattice_changelog ADD COLUMN seq BIGINT GENERATED ALWAYS AS IDENTITY`,
-      );
-    }
-    await runAsyncOrSync(
-      this._adapter,
-      `
-      CREATE INDEX IF NOT EXISTS idx_changelog_row
-      ON __lattice_changelog (table_name, row_id, created_at)
-    `,
-    );
+    return this._changelogWriter.ensureTable();
   }
 
   /** Append a changelog entry if the table has changelog enabled. The optional
@@ -2884,8 +2378,16 @@ export class Lattice {
     reason?: string,
     prov?: ChangeProvenance,
   ): Promise<void> {
-    if (!this._changelogTables.has(table)) return;
-    await this._writeChangelogRow(table, rowId, operation, changes, previous, source, reason, prov);
+    return this._changelogWriter.append(
+      table,
+      rowId,
+      operation,
+      changes,
+      previous,
+      source,
+      reason,
+      prov,
+    );
   }
 
   /** The ungated change-log INSERT. `_appendChangelog` wraps it with the
@@ -2902,76 +2404,21 @@ export class Lattice {
     reason?: string,
     prov?: ChangeProvenance,
   ): Promise<void> {
-    const id = uuidv4();
-    // Normalize the source-set to a JSON array string for the source_ref column.
-    const sourceRef =
-      prov?.sourceRef == null
-        ? null
-        : JSON.stringify(Array.isArray(prov.sourceRef) ? prov.sourceRef : [prov.sourceRef]);
-    // Stamp created_at explicitly so the value + ordering are identical on SQLite
-    // and Postgres (the column default differs per dialect; see _ensureChangelogTable).
-    const createdAt = new Date().toISOString();
-    await runAsyncOrSync(
-      this._adapter,
-      `INSERT INTO __lattice_changelog
-         (id, table_name, row_id, operation, changes, previous, source, reason,
-          source_ref, change_kind, superseded_by, audience, source_sensitive, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        table,
-        rowId,
-        operation,
-        changes ? JSON.stringify(changes) : null,
-        previous ? JSON.stringify(previous) : null,
-        source ?? null,
-        reason ?? prov?.reason ?? null,
-        sourceRef,
-        prov?.changeKind ?? null,
-        prov?.supersededBy ?? null,
-        prov?.audience ?? null,
-        prov?.sourceSensitive ? 1 : 0,
-        createdAt,
-      ],
+    return this._changelogWriter.writeRow(
+      table,
+      rowId,
+      operation,
+      changes,
+      previous,
+      source,
+      reason,
+      prov,
     );
   }
 
   /** Prune changelog entries based on retention policy. */
   private async _pruneChangelog(): Promise<void> {
-    const opts = this._changelogOptions;
-    if (!opts) return;
-
-    if (opts.retentionDays != null && opts.retentionDays > 0) {
-      await runAsyncOrSync(
-        this._adapter,
-        `DELETE FROM __lattice_changelog
-         WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)`,
-        [`-${String(opts.retentionDays)} days`],
-      );
-    }
-
-    if (opts.maxEntriesPerRow != null && opts.maxEntriesPerRow > 0) {
-      // Delete entries beyond the max per (table_name, row_id), keeping the newest
-      await runAsyncOrSync(
-        this._adapter,
-        `DELETE FROM __lattice_changelog WHERE id IN (
-           SELECT c.id FROM __lattice_changelog c
-           INNER JOIN (
-             SELECT table_name, row_id, COUNT(*) as cnt
-             FROM __lattice_changelog
-             GROUP BY table_name, row_id
-             HAVING cnt > ?
-           ) g ON c.table_name = g.table_name AND c.row_id = g.row_id
-           WHERE c.created_at <= (
-             SELECT created_at FROM __lattice_changelog c2
-             WHERE c2.table_name = c.table_name AND c2.row_id = c.row_id
-             ORDER BY c2.created_at DESC
-             LIMIT 1 OFFSET ?
-           )
-         )`,
-        [opts.maxEntriesPerRow, opts.maxEntriesPerRow],
-      );
-    }
+    return this._changelogWriter.prune();
   }
 
   /** Parse a raw changelog DB row into a ChangeEntry. */
@@ -2984,6 +2431,17 @@ export class Lattice {
         this._appendChangelog(table, rowId, operation, changes, previous, source, reason),
     });
     return this._changelogService;
+  }
+
+  /** Lazily-constructed changelog write/DDL collaborator (see src/changelog/writer.js). */
+  private get _changelogWriter(): ChangelogWriter {
+    this._changelogWriterInstance ??= new ChangelogWriter({
+      adapter: this._adapter,
+      dialect: () => this.getDialect(),
+      isChangelogTable: (t) => this._changelogTables.has(t),
+      changelogOptions: this._changelogOptions,
+    });
+    return this._changelogWriterInstance;
   }
 
   // -------------------------------------------------------------------------
@@ -3100,28 +2558,7 @@ export class Lattice {
   }
 }
 
-/**
- * Thrown by {@link Lattice.seed} when `onUnresolvedLink: 'throw'` is set and
- * one or more junction links could not be created because their target rows
- * did not resolve. Carries the full list so the caller can report or
- * reconcile every missing target at once rather than discovering them one
- * silent drop at a time.
- */
-export class SeedReconciliationError extends Error {
-  constructor(
-    public readonly table: string,
-    public readonly unresolvedLinks: UnresolvedLink[],
-  ) {
-    const detail = unresolvedLinks
-      .map((u) => `${u.field}="${u.name}" (→ ${u.resolveTable}.${u.resolveBy})`)
-      .join(', ');
-    super(
-      `seed("${table}"): ${String(unresolvedLinks.length)} unresolved link(s) — ` +
-        `target row(s) not found: ${detail}. Create the missing target(s) and re-seed.`,
-    );
-    this.name = 'SeedReconciliationError';
-  }
-}
+export { SeedReconciliationError } from './crud/seed-engine.js';
 
 // ---------------------------------------------------------------------------
 // Module-level helpers

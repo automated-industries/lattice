@@ -59,10 +59,13 @@ entities:
       description: { type: text }
       status: { type: text, default: open }
       priority: { type: integer, default: 2 }
-      reporter_id: { type: uuid, ref: user }
-      assignee_id: { type: uuid, ref: user }
+      reporter_id: { type: uuid }
+      assignee_id: { type: uuid }
       created_at: { type: datetime }
       closed_at: { type: datetime }
+    relations:
+      reporter: { type: belongsTo, table: user, foreignKey: reporter_id }
+      assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
     render:
       template: default-list
       formatRow: '[{{status}}] P{{priority}} {{title}} — {{assignee.name}}'
@@ -72,9 +75,12 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       body: { type: text, required: true }
-      ticket_id: { type: uuid, ref: ticket }
-      author_id: { type: uuid, ref: user }
+      ticket_id: { type: uuid }
+      author_id: { type: uuid }
       created_at: { type: datetime }
+    relations:
+      ticket: { type: belongsTo, table: ticket, foreignKey: ticket_id }
+      author: { type: belongsTo, table: user, foreignKey: author_id }
     render:
       template: default-list
       formatRow: '{{author.name}} ({{created_at}}): {{body}}'

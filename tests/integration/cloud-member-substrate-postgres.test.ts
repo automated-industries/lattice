@@ -25,7 +25,7 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { secureCloud } from '../../src/cloud/setup.js';
-import { MEMBER_GROUP } from '../../src/cloud/rls.js';
+import { memberGroupFor } from '../../src/cloud/rls.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../../src/db/adapter.js';
 import { addWorkspace, resolveWorkspacePaths } from '../../src/framework/workspace.js';
@@ -122,11 +122,12 @@ describe.skipIf(!PG_URL)('3.3.4 member substrate', () => {
     const { dbname } = await ownerCloudWithMember();
     const admin = new Lattice(dbUrl(dbname));
     await admin.init();
+    const group = await memberGroupFor(admin);
     const can = async (table: string, priv: string): Promise<boolean> => {
       const row = (await getAsyncOrSync(
         admin.adapter,
         `SELECT has_table_privilege(?::text, format('%I.%I', current_schema(), ?::text), ?::text) AS ok`,
-        [MEMBER_GROUP, table, priv],
+        [group, table, priv],
       )) as { ok?: unknown } | undefined;
       return row?.ok === true || row?.ok === 't';
     };

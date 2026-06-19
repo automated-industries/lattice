@@ -228,16 +228,18 @@ describe('ingest routes', () => {
     expect(row.path).toBe('Quarterly-Review.md'); // filled from the filename
   });
 
-  it('records the real OS path on upload when a client supplies x-filepath', async () => {
+  it('records the real OS path as a local_ref when a client supplies x-filepath', async () => {
     // A non-browser/desktop client that knows the dropped file's path sends it;
-    // the upload route then records the real path instead of the filename fallback.
+    // the upload route then records a local_ref (ref_kind='local_ref', ref_uri =
+    // the real path) instead of falling back to the filename, so the file is
+    // served straight from disk.
     const root = mkdtempSync(join(tmpdir(), 'lattice-ingest-xpath-'));
     dirs.push(root);
     mkdirSync(join(root, 'data'), { recursive: true });
     const seed = new Lattice(join(root, 'data', 'test.db'));
     await seed.init();
     await seed.adapter.runAsync(
-      'CREATE TABLE files (id TEXT PRIMARY KEY, path TEXT NOT NULL, original_name TEXT, mime TEXT, size_bytes INTEGER, extracted_text TEXT, description TEXT, extraction_status TEXT, deleted_at TEXT)',
+      'CREATE TABLE files (id TEXT PRIMARY KEY, original_name TEXT, mime TEXT, size_bytes INTEGER, sha256 TEXT, blob_path TEXT, ref_kind TEXT, ref_uri TEXT, ref_provider TEXT, extracted_text TEXT, description TEXT, extraction_status TEXT, deleted_at TEXT)',
     );
     seed.close();
     const configPath = join(root, 'lattice.config.yml');
@@ -275,7 +277,9 @@ describe('ingest routes', () => {
     expect(res.status).toBe(201);
     const { id } = (await res.json()) as { id: string };
     const row = await getFile(server.url, id);
-    expect(row.path).toBe(realPath);
+    expect(row.ref_kind).toBe('local_ref');
+    expect(row.ref_uri).toBe(realPath);
+    expect(row.ref_provider).toBe('fs');
   });
 
   it('ingests a local text file by path and extracts its content', async () => {
@@ -297,7 +301,10 @@ describe('ingest routes', () => {
     };
     expect(extraction_status).toBe('extracted');
     const row = await getFile(server.url, id);
-    expect(row.path).toBe(docPath);
+    // Referenced in place via the reference model — ref_uri is the absolute path.
+    expect(row.ref_kind).toBe('local_ref');
+    expect(row.ref_uri).toBe(docPath);
+    expect(row.ref_provider).toBe('fs');
     expect(row.mime).toBe('text/markdown');
     expect(String(row.extracted_text)).toContain('quick brown fox');
   });
@@ -320,11 +327,13 @@ describe('ingest routes', () => {
     };
     expect(extraction_status).toBe('skipped');
     const row = await getFile(server.url, id);
-    expect(row.path).toBe(binPath);
+    // Still referenced (local_ref) even though extraction was skipped.
+    expect(row.ref_kind).toBe('local_ref');
+    expect(row.ref_uri).toBe(binPath);
     expect(String(row.description)).toMatch(/binary file/i);
   });
 
-  it('ingests raw uploaded bytes, extracting text and leaving path null on the native schema', async () => {
+  it('ingests raw uploaded bytes (browser drop, no OS path), serving from the retained blob', async () => {
     const { server: sp } = boot();
     const server = await sp;
     servers.push(server);
@@ -342,11 +351,12 @@ describe('ingest routes', () => {
     expect(extraction_status).toBe('extracted');
     const row = await getFile(server.url, id);
     expect(row.original_name).toBe('dropped.md');
-    // The native `files.path` is nullable, so a browser drop (no OS path) leaves
-    // it null and is served via the retained blob/ref — NOT a filename shoved into
-    // `path`, which would shadow the blob. requiredFileDefaults only fills `path`
-    // when the physical schema declares it NOT NULL (see the path-required test).
-    expect(row.path == null).toBe(true);
+    // A browser drop has no OS path to reference, so the bytes are retained as a
+    // content-addressed blob (ref_kind='blob', blob_path under data/blobs/) and
+    // the file is served from there. No local_ref is recorded.
+    expect(row.ref_kind).toBe('blob');
+    expect(String(row.blob_path)).toContain('data/blobs/');
+    expect(row.ref_uri == null).toBe(true);
     expect(String(row.extracted_text)).toContain('lazy dog');
   });
 

@@ -207,6 +207,18 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   let pkFromField: string | undefined;
 
   for (const [fieldName, field] of Object.entries(entity.fields)) {
+    // Backwards-compat: the 3.x per-field `ref:` shorthand is still accepted and
+    // converted to a `belongsTo` in-memory (relation name = field name with a
+    // trailing `_id` stripped), so an existing 3.0+ config keeps opening. This is
+    // SILENT — the GUI's open-time heal (see config-upgrade) rewrites the on-disk
+    // YAML to the explicit `relations:` form so configs migrate forward; a future
+    // major may then drop this conversion. An explicit `relations:` entry below
+    // takes precedence over a shorthand-derived one on a name collision.
+    if (typeof field.ref === 'string' && field.ref.length > 0) {
+      const relName = fieldName.endsWith('_id') ? fieldName.slice(0, -3) : fieldName;
+      relations[relName] = { type: 'belongsTo', table: field.ref, foreignKey: fieldName };
+    }
+
     columns[fieldName] = fieldToSqliteSpec(field);
     // Retain the canonical field type so the GUI can display it instead of the
     // lossy SQL spec (e.g. show `datetime`, not `TEXT NOT NULL DEFAULT …`).
@@ -222,14 +234,62 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     if (field.primaryKey) {
       pkFromField = fieldName;
     }
+  }
 
-    if (field.ref) {
-      // Derive relation name: strip trailing `_id` from the field name.
-      const relName = fieldName.endsWith('_id') ? fieldName.slice(0, -3) : fieldName;
+  // Explicit entity-level `relations:` block — the supported replacement for
+  // the removed per-field `ref:` shorthand. Each entry is a `belongsTo`
+  // relation declaring a foreign key on THIS entity. Validate loudly: a
+  // malformed entry must fail to parse rather than silently produce no
+  // relation (which would, e.g., let a junction table escape detection).
+  const rawRelations = (entity as { relations?: unknown }).relations;
+  if (rawRelations !== undefined) {
+    if (typeof rawRelations !== 'object' || rawRelations === null || Array.isArray(rawRelations)) {
+      throw new Error(
+        `Lattice: entity "${entityName}" has a "relations" value that must be an object mapping ` +
+          `relation names to belongsTo specs (got ${
+            Array.isArray(rawRelations) ? 'array' : typeof rawRelations
+          }).`,
+      );
+    }
+    for (const [relName, relRaw] of Object.entries(rawRelations as Record<string, unknown>)) {
+      if (typeof relRaw !== 'object' || relRaw === null || Array.isArray(relRaw)) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must be an object ` +
+            `{ type: belongsTo, table, foreignKey, references? }.`,
+        );
+      }
+      const rel = relRaw as Record<string, unknown>;
+      if (rel.type !== 'belongsTo') {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must have type "belongsTo" (got ${
+            typeof rel.type === 'string' ? `"${rel.type}"` : typeof rel.type
+          }). Only belongsTo relations are declared in config; other relations are derived.`,
+        );
+      }
+      if (typeof rel.table !== 'string' || rel.table.trim().length === 0) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must name a non-empty "table".`,
+        );
+      }
+      if (typeof rel.foreignKey !== 'string' || rel.foreignKey.trim().length === 0) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" must name a non-empty "foreignKey".`,
+        );
+      }
+      if (
+        rel.references !== undefined &&
+        (typeof rel.references !== 'string' || rel.references.trim().length === 0)
+      ) {
+        throw new Error(
+          `Lattice: relation "${entityName}.${relName}" has an invalid "references" — it must be ` +
+            `a non-empty column name when present.`,
+        );
+      }
       relations[relName] = {
         type: 'belongsTo',
-        table: field.ref,
-        foreignKey: fieldName,
+        table: rel.table,
+        foreignKey: rel.foreignKey,
+        ...(rel.references !== undefined ? { references: rel.references } : {}),
       };
     }
   }

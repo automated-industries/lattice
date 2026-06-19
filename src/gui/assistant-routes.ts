@@ -22,6 +22,7 @@ import {
   readPreferences,
   writePreferences,
 } from '../framework/user-config.js';
+import { sendJson, readJson } from './http.js';
 
 const CLAUDE_OAUTH_KIND = 'claude_oauth';
 
@@ -61,37 +62,6 @@ interface SecretRow {
   kind?: string | null;
   value?: string | null;
   deleted_at?: string | null;
-}
-
-function sendJson(res: ServerResponse, body: unknown, status = 200): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  res.end(JSON.stringify(body));
-}
-
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk: string) => {
-      raw += chunk;
-      if (raw.length > 1_000_000) reject(new Error('payload too large'));
-    });
-    req.on('end', () => {
-      if (!raw) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(raw) as Record<string, unknown>);
-      } catch {
-        reject(new Error('invalid JSON body'));
-      }
-    });
-    req.on('error', reject);
-  });
 }
 
 function readBuffer(req: IncomingMessage, maxBytes = 25_000_000): Promise<Buffer> {

@@ -8,7 +8,12 @@
  * if the Stage-0 audience helper predicates go missing or stop being DEFINER.
  */
 import { describe, it, expect } from 'vitest';
-import { CLOUD_RLS_BOOTSTRAP_SQL, tableRlsSql } from '../../src/cloud/rls.js';
+import { cloudRlsBootstrapSql, tableRlsSql } from '../../src/cloud/rls.js';
+
+// The bootstrap SQL is now built per-cloud (the member group role is derived from
+// the cloud's database+schema). These structural / security invariants are
+// independent of the group NAME, so a representative group is fine here.
+const CLOUD_RLS_BOOTSTRAP_SQL = cloudRlsBootstrapSql('lattice_members');
 
 /** The header of a CREATE FUNCTION block (name → its `$fn$` body opener), where
  *  the LANGUAGE / SECURITY clauses live. */
@@ -62,8 +67,8 @@ describe('cloud RLS — session_user / SECURITY DEFINER identity invariant', () 
   });
 
   it('per-table policy SQL never uses current_user', () => {
-    const single = code(tableRlsSql('demo', ['id']));
-    const composite = code(tableRlsSql('memo', ['a', 'b']));
+    const single = code(tableRlsSql('demo', ['id'], 'lattice_members'));
+    const composite = code(tableRlsSql('memo', ['a', 'b'], 'lattice_members'));
     expect(single).not.toMatch(/\bcurrent_user\b/);
     expect(composite).not.toMatch(/\bcurrent_user\b/);
     // The policies route through the session_user-keyed visibility function.
