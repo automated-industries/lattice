@@ -257,10 +257,10 @@ entities:
   });
 
   // -------------------------------------------------------------------------
-  // ref: shorthand removed in 4.0 — must fail loudly
+  // ref: shorthand is accepted in 4.0 — auto-upgraded to a belongsTo relation
   // -------------------------------------------------------------------------
 
-  it('rejects a leftover `ref:` field with a clear 4.0 error', () => {
+  it('accepts a leftover `ref:` field and derives a belongsTo relation', () => {
     const yaml = `
 db: ./app.db
 entities:
@@ -270,9 +270,14 @@ entities:
       author_id: { type: uuid, ref: authors }
     outputFile: books.md
 `;
-    expect(() => parseConfigString(yaml, configDir)).toThrow(
-      /`ref:`.*"books\.author_id".*removed in 4\.0/,
-    );
+    const { tables } = parseConfigString(yaml, configDir);
+    const def = tables[0]!.definition;
+    // Relation name = field name with a trailing `_id` stripped (author_id → author).
+    expect(def.relations?.author).toMatchObject({
+      type: 'belongsTo',
+      table: 'authors',
+      foreignKey: 'author_id',
+    });
   });
 
   it('rejects a malformed `relations:` entry (missing required keys)', () => {

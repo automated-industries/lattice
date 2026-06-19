@@ -207,6 +207,36 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // (`__lattice_changelog` is granted via the MEMBER_READABLE_BOOKKEEPING registry
   // in step (3) — its per-viewer RLS policy, installed by `enableChangelogRls`,
   // filters reads so the base grant is safe, not a leak.)
+
+  // (6) Backwards-compat: a cloud provisioned BEFORE per-cloud member groups has
+  // its members in the legacy CLUSTER-GLOBAL `lattice_members`, not this cloud's
+  // own group — so after upgrade they would lose access. Re-grant THIS cloud's
+  // group to each of its OWN members. Scoped to the cloud-local invite registry
+  // (`__lattice_member_invites`) JOINed to real roles — deliberately NOT the
+  // cluster-global legacy group, which is shared across clouds and would
+  // cross-pollinate members between unrelated clouds. Idempotent (GRANT to an
+  // existing member is a no-op); fault-isolated so one bad row never aborts the
+  // converge. `group` is a validated `lattice_m_<hex>` identifier; `format('%I')`
+  // safely quotes both it and each role name.
+  await tryTable('(member-regrant)', async () => {
+    await runAsyncOrSync(
+      db.adapter,
+      `DO $LATTICE_REGRANT$
+       DECLARE r record;
+       BEGIN
+         IF to_regclass('__lattice_member_invites') IS NULL THEN RETURN; END IF;
+         FOR r IN
+           SELECT DISTINCT i."role" AS role
+             FROM "__lattice_member_invites" i
+             JOIN pg_roles pr ON pr.rolname = i."role"
+            WHERE i."role" IS NOT NULL
+         LOOP
+           EXECUTE format('GRANT %I TO %I', '${group}', r.role);
+         END LOOP;
+       END $LATTICE_REGRANT$;`,
+    );
+  });
+
   return { skipped };
 }
 

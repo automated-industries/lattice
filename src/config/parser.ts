@@ -207,18 +207,16 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   let pkFromField: string | undefined;
 
   for (const [fieldName, field] of Object.entries(entity.fields)) {
-    // The per-field `ref:` shorthand was removed in 4.0. Fail loudly rather
-    // than silently dropping the relationship — declare the foreign key as a
-    // plain field and add an explicit entity-level `relations:` entry instead.
-    if ((field as { ref?: unknown }).ref !== undefined) {
-      throw new Error(
-        `Lattice: \`ref:\` on "${entityName}.${fieldName}" was removed in 4.0. Declare the ` +
-          `foreign key as a plain field and add an explicit \`relations:\` entry on entity ` +
-          `"${entityName}" instead — e.g. relations: { ${
-            fieldName.endsWith('_id') ? fieldName.slice(0, -3) : fieldName
-          }: { type: belongsTo, table: <target>, foreignKey: ${fieldName} } }. ` +
-          `See MIGRATING-4.0.md.`,
-      );
+    // Backwards-compat: the 3.x per-field `ref:` shorthand is still accepted and
+    // converted to a `belongsTo` in-memory (relation name = field name with a
+    // trailing `_id` stripped), so an existing 3.0+ config keeps opening. This is
+    // SILENT — the GUI's open-time heal (see config-upgrade) rewrites the on-disk
+    // YAML to the explicit `relations:` form so configs migrate forward; a future
+    // major may then drop this conversion. An explicit `relations:` entry below
+    // takes precedence over a shorthand-derived one on a name collision.
+    if (typeof field.ref === 'string' && field.ref.length > 0) {
+      const relName = fieldName.endsWith('_id') ? fieldName.slice(0, -3) : fieldName;
+      relations[relName] = { type: 'belongsTo', table: field.ref, foreignKey: fieldName };
     }
 
     columns[fieldName] = fieldToSqliteSpec(field);

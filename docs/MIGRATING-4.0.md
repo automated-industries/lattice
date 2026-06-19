@@ -1,45 +1,59 @@
 # Migrating to 4.0
 
-This guide covers the breaking changes in the 4.0 release and the migration each
-one requires.
+**Most upgrades need no action — the GUI silently migrates an existing 3.0+ config
+and its data forward on open.** This guide documents what each upgrade does, plus
+the manual SQL for library/non-GUI consumers who want explicit control.
 
-## Order of operations
+## Auto-upgrade on open (the common case)
 
-Do these in order — the first step is data-safety-critical and must happen **before**
-you install 4.0:
+When the GUI opens a workspace, it silently brings a 3.0+ config + database to the
+4.0 shape, preserving comments and data:
 
-1. **BEFORE upgrading — normalize `deleted_at`.** On every table that has a
-   `deleted_at` column, set any empty-string value to `NULL`, and verify zero
-   empty-string rows remain. Skipping this can make live rows read as deleted (and
-   cause duplicate inserts). See the soft-delete section below.
-2. **Install `latticesql@4.0`.**
-3. **After upgrading — config + schema cleanups** (each is independent and can be
-   done when convenient):
-   - Rewrite any config that still uses the `ref:` field shorthand to an explicit
-     `relations:` block (a `ref:` config now fails to open).
-   - Optionally drop the now-unused `files.path` / `files.kind` columns from your
-     physical schema.
-   - No action needed for the manifest change — an old `.lattice/manifest.json`
-     regenerates itself on the first render.
-   - **Cloud (Postgres) deployments with members only:** the member group role is
-     now per-cloud, not the shared `lattice_members`. Open the cloud once as the
-     owner (the new group + its grants self-heal), then re-add existing members to
-     it. See the member-group section below. Single-user / SQLite deployments are
-     unaffected.
+- **`ref:` config shorthand** → rewritten in place to an explicit `relations:` block
+  (and the parser accepts `ref:` regardless, so a config opens whether or not the
+  rewrite has run yet).
+- **`deleted_at = ''`** → normalized to `NULL` across every table that has the
+  column (so a live row never reads as deleted).
+- **`files.path`-only rows** → backfilled into the reference model
+  (`ref_kind='local_ref'`, `ref_uri=path`) so their bytes stay resolvable. The
+  legacy `path` / `kind` columns are left in place (dropping them is optional).
+- **Cloud (Postgres) member group** → the per-cloud group + its grants self-heal,
+  and the cloud's own members (from its invite registry) are re-granted the new
+  group on the owner's next open.
 
-Each change is detailed below.
+Each on-open migration is **idempotent** and gated once-per-database, so reopening
+is cheap and a database created by 4.0 is untouched. Render manifests also
+self-upgrade on the first render (an old v1 `manifest.json` is read for cleanup,
+then rewritten in the v2 shape).
+
+These on-disk rewrites let real-world configs migrate forward, so a **future major**
+can cleanly drop the back-compat tolerance once configs have upgraded.
+
+## Manual migration (library / non-GUI consumers)
+
+If you use `latticesql` as a library WITHOUT the GUI open path, the on-open
+migrations above don't run automatically — apply the equivalent SQL yourself (or
+ship it in your consumer's migrations). The most data-safety-critical is
+normalizing `deleted_at = ''` BEFORE upgrading; the rest can be done when
+convenient. Each is detailed below.
 
 ---
 
-## 4.0.0 — Soft-delete predicate simplified to `deleted_at IS NULL` (BREAKING)
+## 4.0.0 — Soft-delete predicate simplified to `deleted_at IS NULL`
 
-### STOP — RUN THE NORMALIZATION MIGRATION BEFORE YOU `npm install latticesql@4.0`
+> **GUI users: no action needed.** The GUI normalizes `deleted_at = '' → NULL` on
+> open (once per database, before anything reads the data), so a live row never
+> reads as deleted. The rest of this section is for **library / non-GUI consumers**,
+> who should run the normalization themselves.
 
-> **Upgrading first will HIDE any live row whose `deleted_at` is the empty string
-> (`''`)** until you normalize it — and during that window a natural-key upsert
-> against a hidden row can **INSERT A DUPLICATE**. Normalize every `deleted_at`
-> table to `NULL`, verify zero empty-string rows, _then_ upgrade. The numbered
-> steps below are in mandatory order; do not reverse them.
+### Library consumers — normalize BEFORE upgrading
+
+> If you open the database WITHOUT the GUI (the library `init()` path), upgrading
+> first will HIDE any live row whose `deleted_at` is the empty string (`''`) until
+> you normalize it — and during that window a natural-key upsert against a hidden
+> row can **INSERT A DUPLICATE**. Normalize every `deleted_at` table to `NULL`,
+> verify zero empty-string rows, _then_ upgrade. The numbered steps below are in
+> mandatory order; do not reverse them.
 
 ### What changed
 
@@ -159,18 +173,20 @@ merge or remove them by hand.
 
 ---
 
-## 4.0.0 — `ref:` field shorthand removed (BREAKING)
+## 4.0.0 — `ref:` field shorthand deprecated (auto-upgraded, not removed)
 
-The per-field `ref:` shorthand for declaring a `belongsTo` relationship has been
-removed in 4.0. Declare the foreign key as a plain field and add an explicit
-`relations:` block on the entity. A config that still uses `ref:` now fails to
-parse with a clear error naming the offending `entity.field` — there is no silent
-fallback.
+> **No action needed.** 4.0 still parses the per-field `ref:` shorthand (it derives
+> the same `belongsTo` it always did — relation name = the field name with a trailing
+> `_id` stripped), so an existing config opens unchanged. When the GUI opens the
+> config it **silently rewrites** `ref:` to the explicit `relations:` block below,
+> preserving comments — so configs migrate forward and a **future major** can drop
+> the shorthand cleanly.
 
-The relation name is no longer derived for you (previously the field name had its
-trailing `_id` stripped) — you name it explicitly in `relations:`.
+The explicit `relations:` form is the going-forward shape (and lets you name the
+relation yourself instead of relying on the `_id`-stripping rule). The GUI writes it
+for any link you create; the auto-upgrade rewrites legacy `ref:` into it on open.
 
-**Before (3.x — removed):**
+**Before (3.x shorthand — still accepted, auto-rewritten on open):**
 
 ```yaml
 db: ./app.db
@@ -202,30 +218,27 @@ entities:
     outputFile: tickets.md
 ```
 
-**Error on a leftover `ref:`** — parsing the "Before" config in 4.0 now throws an
-error of this form (the exact `entity.field` and suggested relation name are
-filled in for the offending field):
+A malformed _explicit_ `relations:` entry (not an object, missing
+`type`/`table`/`foreignKey`, a non-`belongsTo` `type`, or an empty `references`)
+still fails loudly rather than silently producing no relation — only the legacy
+`ref:` shorthand is tolerated, not a broken `relations:` block.
 
-```
-Lattice: `ref:` on "ticket.assignee_id" was removed in 4.0. Declare the foreign
-key as a plain field and add an explicit `relations:` entry on entity "ticket"
-instead — e.g. relations: { assignee: { type: belongsTo, table: <target>,
-foreignKey: assignee_id } }. See MIGRATING-4.0.md.
-```
-
-A malformed `relations:` entry (not an object, missing `type`/`table`/`foreignKey`,
-a non-`belongsTo` `type`, or an empty `references`) also fails loudly rather than
-silently producing no relation.
-
-The GUI's "Add link" and junction-creation flows already write the explicit
-`relations:` shape, so workspaces created or edited through the GUI need no manual
-change. Existing on-disk `lattice.config.yml` files authored with `ref:` will fail
-to open after upgrade until migrated to the shape above — this is intentional
-(fail loud, no auto-migration).
+**Library / non-GUI consumers:** a `ref:` config parses fine, but the on-disk
+rewrite only happens through the GUI open path. If you never open the config in the
+GUI and want to retire `ref:` before a future major drops it, rewrite it to the
+`relations:` form above yourself (the conversion is exactly the `_id`-stripping rule
+shown).
 
 ---
 
-## 4.0.0 — `files.path` and `files.kind` columns removed (BREAKING)
+## 4.0.0 — `files.path` and `files.kind` no longer native columns
+
+> **GUI users: no action needed.** On open the GUI backfills any legacy
+> `path`-only file row into the reference model (`ref_kind='local_ref'`,
+> `ref_uri=path`) so its bytes stay resolvable. The legacy `path` / `kind` columns
+> are left in place (dropping them is optional + destructive, so it is never
+> automatic — see the manual step below). Library / non-GUI consumers should run the
+> backfill themselves.
 
 ### What changed
 
@@ -349,29 +362,34 @@ owner connection installs and reconciles against the **new per-cloud group** —
 
 - The new per-cloud group and all of its table / view / bookkeeping / EXECUTE grants
   are recreated automatically on the owner's next open (install + reconcile are
-  idempotent and run on every owner open). This part self-heals.
-- **Existing member roles are NOT automatically re-added to the new group.** Until
-  they are, they remain only in the now-unused `lattice_members` and lose access.
+  idempotent and run on every owner open).
+- The cloud's **own members are automatically re-added** to the new group on that
+  same owner open — `reconcileCloudMemberAccess` re-grants the per-cloud group to
+  every role in the cloud's invite registry (`__lattice_member_invites`). It is
+  deliberately scoped to the cloud's OWN members, never the cluster-global legacy
+  group, so members are never cross-pollinated between unrelated clouds on one
+  cluster.
 
-### Migration
+So a cloud whose members were provisioned through Lattice fully self-heals on the
+owner's next open — **no action needed.**
 
-**Step 1 — Open the cloud once as the owner** (e.g. open it in the GUI, or call
-`installCloudRls` + `reconcileCloudMemberAccess`). This creates the per-cloud group
-and grants it every privilege members need.
+### Migration (manual fallback — only if a member isn't in the invite registry)
 
-**Step 2 — Re-add existing members to the new group.** Connected to the cloud
-(same database + schema as the cloud), grant the new group to everyone still in the
-legacy group. With `psql`'s `\gexec`:
+A member role created out-of-band (e.g. by a DBA, never recorded in
+`__lattice_member_invites`) won't be picked up by the automatic re-grant. Add it
+explicitly. Open the cloud once as the owner so the per-cloud group + grants exist,
+then, connected to the cloud, scope the grant to the cloud's OWN members — NOT the
+cluster-global `lattice_members` (which would pull in other clouds' members):
 
 ```sql
+-- Re-grant the per-cloud group to THIS cloud's own members (its invite registry).
 SELECT format(
   'GRANT %I TO %I',
   'lattice_m_' || substr(md5(current_database() || ':' || current_schema()), 1, 20),
-  m.rolname
+  i."role"
 )
-FROM pg_auth_members am
-JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = 'lattice_members'
-JOIN pg_roles m ON m.oid = am.member
+FROM "__lattice_member_invites" i
+JOIN pg_roles r ON r.rolname = i."role"
 \gexec
 ```
 

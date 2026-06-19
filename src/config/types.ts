@@ -64,6 +64,15 @@ export interface LatticeFieldDef {
    * cell-masking view from it; Stage-0 only records the metadata.
    */
   audience?: string;
+  /**
+   * DEPRECATED (3.x) per-field foreign-key shorthand: `ref: <targetTable>` declared
+   * a `belongsTo` whose relation name is the field name with a trailing `_id`
+   * stripped. Superseded by the explicit entity-level `relations:` block. 4.0 still
+   * PARSES it (converted to a `belongsTo` in-memory) so existing 3.0+ configs keep
+   * working, and the GUI silently rewrites it to `relations:` on open so configs
+   * migrate forward. A future major may drop this once configs have upgraded.
+   */
+  ref?: string;
 }
 
 /**

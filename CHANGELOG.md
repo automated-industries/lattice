@@ -8,15 +8,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [4.0.0] — unreleased
 
-Major release. The items tagged **BREAKING** below require migration — see
-[MIGRATING-4.0.md](docs/MIGRATING-4.0.md). **Before upgrading**, normalize legacy
-empty-string `deleted_at` values to `NULL` (the soft-delete change is data-safety
-critical; the guide leads with it). Internally this release also decomposes the
-three largest source files into focused modules and adds optimistic-concurrency,
-atomic-commit, and bounded-read hardening — behavior-preserving except where
-tagged BREAKING.
+Major release. **Most upgrades need no action** — the GUI silently migrates an
+existing 3.0+ config and its data forward on open (see "Silent backwards-compat
+auto-upgrade" below and [MIGRATING-4.0.md](docs/MIGRATING-4.0.md)). The items tagged
+**BREAKING** are breaking only for **library / non-GUI consumers** (who open via the
+library `init()` path and so don't get the on-open migrations) and for **API
+consumers** of a removed export; for them the most data-safety-critical step is
+normalizing legacy empty-string `deleted_at` to `NULL` before upgrading. Internally
+this release also decomposes the three largest source files into focused modules and
+adds optimistic-concurrency, atomic-commit, and bounded-read hardening —
+behavior-preserving except where tagged BREAKING.
 
 ### Added
+
+- **Silent backwards-compat auto-upgrade on open.** Opening a 3.0+ workspace in the
+  GUI now silently migrates its config + data forward to the 4.0 shape, preserving
+  comments and data — so existing configs keep working without a manual migration,
+  and migrate forward on disk so a future major can drop the back-compat tolerance
+  cleanly. (1) The config parser tolerates the legacy `ref:` field shorthand
+  (converts it to a `belongsTo` in-memory) and `src/config/config-upgrade.ts`
+  rewrites it on disk to an explicit `relations:` block. (2)
+  `src/framework/data-upgrade.ts` normalizes legacy `deleted_at = '' → NULL` (per
+  table) and backfills a legacy `files.path`-only row into a `local_ref`, each gated
+  once-per-database via `internal:upgrade:*` sentinels. (3) On a cloud owner open,
+  `reconcileCloudMemberAccess` re-grants the per-cloud member group to the cloud's
+  own members (scoped to its `__lattice_member_invites` registry — never the
+  cluster-global legacy group). Each migration is idempotent and a no-op on a
+  4.0-native database. Library / non-GUI consumers apply the equivalents themselves
+  (documented in MIGRATING-4.0.md).
 
 - **Change-detection gate for the `watch()` render loop (SQLite).** The poll loop
   previously called `render()` unconditionally every tick (default 5s). `render()`
@@ -97,12 +116,12 @@ tagged BREAKING.
   `ALTER TABLE files DROP COLUMN path; ALTER TABLE files DROP COLUMN kind;`
   (SQLite ≥ 3.35 for `DROP COLUMN`; PostgreSQL unaffected). See
   [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the backfill SQL.
-- **BREAKING — the per-field `ref:` shorthand is removed; declare relationships
-  with an explicit entity-level `relations:` block.** Previously a field could
-  carry `ref: <table>` to auto-create a `belongsTo` relation, with the relation
-  name derived by stripping a trailing `_id` from the field name. That shorthand
-  is gone. Declare the foreign key as a plain field and add a `relations:` map on
-  the entity instead:
+- **The per-field `ref:` shorthand is deprecated in favor of an explicit
+  entity-level `relations:` block — but still accepted (NOT a breaking change).**
+  A field carrying `ref: <table>` still auto-creates a `belongsTo` (relation name
+  derived by stripping a trailing `_id`), exactly as in 3.x — so an existing config
+  opens unchanged. Going forward, declare the foreign key as a plain field and add a
+  `relations:` map on the entity, naming the relation yourself:
 
   ```yaml
   ticket:
@@ -112,16 +131,12 @@ tagged BREAKING.
       assignee: { type: belongsTo, table: user, foreignKey: assignee_id }
   ```
 
-  The relation name is now whatever you choose (no `_id` derivation). A config
-  that still uses `ref:` fails to parse with a clear error naming the offending
-  `entity.field` — there is no silent fallback. A malformed `relations:` entry
-  (not an object, missing `type`/`table`/`foreignKey`, a non-`belongsTo` `type`,
-  or an empty `references`) also fails loudly. The GUI's "Add link" and
-  junction-creation flows already emit the explicit `relations:` shape, so
-  GUI-managed workspaces need no change; on-disk configs authored with `ref:`
-  must be migrated before they will open. See
-  [MIGRATING-4.0.md](docs/MIGRATING-4.0.md) for the before/after and the exact
-  error string.
+  The GUI silently rewrites a legacy `ref:` to this `relations:` form on open
+  (see the auto-upgrade entry above), so configs migrate forward and a future major
+  can drop the shorthand cleanly. A malformed _explicit_ `relations:` entry (not an
+  object, missing `type`/`table`/`foreignKey`, a non-`belongsTo` `type`, or an empty
+  `references`) still fails loudly — only the legacy `ref:` shorthand is tolerated.
+  See [MIGRATING-4.0.md](docs/MIGRATING-4.0.md).
 
 - **BREAKING — the soft-delete predicate is simplified to `deleted_at IS NULL`.**
   Earlier versions treated a row as "live" when `deleted_at` was **either** NULL
@@ -277,10 +292,13 @@ tagged BREAKING.
   `(database, schema)` namespace (`lattice_m_<md5(db:schema)[:20]>`), so each cloud
   has its own isolated group. The exported `MEMBER_GROUP` constant is removed,
   replaced by `memberGroupFor(db)` (resolver) and `LEGACY_MEMBER_GROUP` (the old
-  name, for migration only). On upgrade the new group + its grants self-heal on the
-  owner's next open; existing member roles must be re-added to it (open as owner,
-  then re-grant — see MIGRATING-4.0.md). Single-user / SQLite deployments are
-  unaffected.
+  name, for migration only). On the owner's next open the new group + its grants
+  self-heal AND the cloud's own members (from its `__lattice_member_invites`
+  registry) are automatically re-granted the new group — scoped to this cloud, never
+  the cluster-global legacy group, so members are never cross-pollinated between
+  clouds. So a cloud whose members were provisioned through Lattice needs no action;
+  only an out-of-band (DBA-created, never-invited) role needs a manual re-grant (see
+  MIGRATING-4.0.md). Single-user / SQLite deployments are unaffected.
 
 ## [3.4.4] - 2026-06-18
 

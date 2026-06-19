@@ -4,15 +4,16 @@ import { updateRow, type MutationCtx } from '../../src/gui/mutations.js';
 
 /**
  * 1.16.1 unit coverage:
- *  E — the per-field `ref:` shorthand was removed in 4.0; a config that still
- *      uses it must fail to parse with a clear error (no silent fallback).
+ *  E — the per-field `ref:` shorthand is accepted again in 4.0; a config that
+ *      still uses it parses cleanly and is auto-upgraded to a belongsTo relation
+ *      in-memory (relation name = field name minus a trailing `_id`).
  *  F — updateRow throws when a requested change leaves the row byte-identical
  *      (the read-only/blocked-write signature). The no-false-positive cases
  *      (real edit + same-value edit) are covered by the integration test.
  */
 
-describe('4.0 — E: per-field ref: shorthand is rejected', () => {
-  it('throws on a `ref:` field with a clear 4.0 error', () => {
+describe('4.0 — E: per-field ref: shorthand is accepted (auto-upgraded)', () => {
+  it('parses a `ref:` field and derives a belongsTo relation', () => {
     const cfg = [
       'db: ./x.db',
       'entities:',
@@ -22,7 +23,14 @@ describe('4.0 — E: per-field ref: shorthand is rejected', () => {
       '      author_id: { type: uuid, ref: authors }',
       '',
     ].join('\n');
-    expect(() => parseConfigString(cfg, '/tmp')).toThrow(/`ref:`.*removed in 4\.0/i);
+    const { tables } = parseConfigString(cfg, '/tmp');
+    const def = tables[0]!.definition;
+    // Relation name = field name with a trailing `_id` stripped (author_id → author).
+    expect(def.relations?.author).toMatchObject({
+      type: 'belongsTo',
+      table: 'authors',
+      foreignKey: 'author_id',
+    });
   });
 });
 

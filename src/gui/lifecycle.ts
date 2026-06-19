@@ -3,6 +3,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { Lattice } from '../lattice.js';
 import type { TableDefinition } from '../types.js';
 import { parseConfigFile } from '../config/parser.js';
+import { upgradeConfigShape } from '../config/config-upgrade.js';
+import { upgradeLegacyData } from '../framework/data-upgrade.js';
 import { readIdentity, getOrCreateMasterKey, healRawDbUrl } from '../framework/user-config.js';
 import { registerNativeEntities, adoptNativeEntities } from '../framework/native-entities.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
@@ -65,6 +67,19 @@ export async function openConfig(
   // the new reference. parsed.dbPath is the same URL either way, so the open is
   // unaffected — only the at-rest secret is removed.
   healRawDbUrl(configPath);
+  // Silently migrate a 3.x config shape forward on disk (e.g. the per-field `ref:`
+  // shorthand → an explicit `relations:` block), preserving comments. The parser
+  // also tolerates the old shape, so the open does not depend on this — a rewrite
+  // failure is surfaced (not swallowed) but never aborts the open.
+  try {
+    upgradeConfigShape(configPath);
+  } catch (e) {
+    console.warn(
+      `[openConfig] config shape migrate-forward failed (open continues — parser still accepts the old shape): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
   const parsed = parseConfigFile(configPath);
   // Only ensure a parent directory for real filesystem DB paths. When `db:` is
   // a connection string (postgres://…), a `file:` URL, or `:memory:`,
@@ -330,6 +345,11 @@ export async function openConfig(
     // aggressiveness) older builds stored in `secrets`. They're machine-local
     // preferences now, so soft-delete leftovers. Idempotent.
     await retireLegacyPreferenceSecrets(db);
+    // Silently migrate 3.x row DATA forward to the 4.0 shape (normalize legacy
+    // deleted_at='' → NULL; backfill files.path → a local_ref). Once-per-DB via
+    // internal:upgrade:* sentinels; no-op on a 4.0-native DB. Owner/local only —
+    // a cloud member lacks the grants (this block is already member-skipped).
+    await upgradeLegacyData(db);
   }
 
   // Tables the open-time converge couldn't manage (e.g. owned by a different
