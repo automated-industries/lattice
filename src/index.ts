@@ -276,7 +276,8 @@ export {
   enableRlsForTable,
   enableChangelogRls,
   backfillOwnership,
-  MEMBER_GROUP,
+  memberGroupFor,
+  LEGACY_MEMBER_GROUP,
 } from './cloud/rls.js';
 export {
   provisionMemberRole,

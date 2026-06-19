@@ -21,6 +21,11 @@ you install 4.0:
      physical schema.
    - No action needed for the manifest change — an old `.lattice/manifest.json`
      regenerates itself on the first render.
+   - **Cloud (Postgres) deployments with members only:** the member group role is
+     now per-cloud, not the shared `lattice_members`. Open the cloud once as the
+     owner (the new group + its grants self-heal), then re-add existing members to
+     it. See the member-group section below. Single-user / SQLite deployments are
+     unaffected.
 
 Each change is detailed below.
 
@@ -306,3 +311,79 @@ re-render — it will be regenerated from scratch:
 ```sh
 rm .lattice/manifest.json
 ```
+
+---
+
+## 4.0.0 — Cloud member group is now per-cloud (BREAKING, cloud + members only)
+
+**Applies only to a Postgres cloud that has provisioned members.** Single-user /
+SQLite deployments, and clouds with no members, need no action.
+
+### What changed
+
+Postgres roles and role membership are **cluster-global** — shared by every
+database and schema on a Postgres cluster. Prior versions put every cloud's members
+in one hard-coded group role, `lattice_members`. Two unrelated Lattice clouds that
+happened to share a Postgres cluster therefore shared one members group, and
+concurrent member provisioning across them contended on that single role's catalog.
+
+In 4.0 the group name is **derived from the cloud's own `(database, schema)`
+namespace**:
+
+```
+lattice_m_<first 20 hex of md5(current_database() || ':' || current_schema())>
+```
+
+Each cloud gets its own group — genuine cross-cloud isolation, and no shared-catalog
+contention. The name is deterministic and stable: the same cloud always resolves the
+same group, so install / provision / reconcile all agree. The library exposes
+`memberGroupFor(db)` (the resolver) and `LEGACY_MEMBER_GROUP` (the old `'lattice_members'`
+constant, kept only to recognize a pre-4.0 cloud). The previously exported
+`MEMBER_GROUP` constant is **removed**.
+
+### Breaking behavior
+
+A cloud provisioned before 4.0 has its members in `lattice_members`, and its table /
+view / bookkeeping privileges granted to `lattice_members`. After upgrading, the
+owner connection installs and reconciles against the **new per-cloud group** — so:
+
+- The new per-cloud group and all of its table / view / bookkeeping / EXECUTE grants
+  are recreated automatically on the owner's next open (install + reconcile are
+  idempotent and run on every owner open). This part self-heals.
+- **Existing member roles are NOT automatically re-added to the new group.** Until
+  they are, they remain only in the now-unused `lattice_members` and lose access.
+
+### Migration
+
+**Step 1 — Open the cloud once as the owner** (e.g. open it in the GUI, or call
+`installCloudRls` + `reconcileCloudMemberAccess`). This creates the per-cloud group
+and grants it every privilege members need.
+
+**Step 2 — Re-add existing members to the new group.** Connected to the cloud
+(same database + schema as the cloud), grant the new group to everyone still in the
+legacy group. With `psql`'s `\gexec`:
+
+```sql
+SELECT format(
+  'GRANT %I TO %I',
+  'lattice_m_' || substr(md5(current_database() || ':' || current_schema()), 1, 20),
+  m.rolname
+)
+FROM pg_auth_members am
+JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = 'lattice_members'
+JOIN pg_roles m ON m.oid = am.member
+\gexec
+```
+
+Equivalently, re-running your provisioning flow for each member (which issues
+`GRANT <per-cloud group> TO <member>`) achieves the same result.
+
+**Step 3 — (optional) retire the legacy group.** Once every cloud on the cluster
+has migrated its members and `lattice_members` has no members left, you may drop it:
+
+```sql
+DROP OWNED BY lattice_members;  -- removes any stale grants it still holds
+DROP ROLE IF EXISTS lattice_members;
+```
+
+Leave it in place if any un-migrated cloud on the same cluster still relies on it.

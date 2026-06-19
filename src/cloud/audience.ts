@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
-import { MEMBER_GROUP, pkSqlExpr } from './rls.js';
+import { memberGroupFor, pkSqlExpr } from './rls.js';
 import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 
 /**
@@ -88,6 +88,7 @@ export function audienceViewSql(
   columns: readonly string[],
   pkCols: readonly string[],
   columnAudience: Record<string, string>,
+  group: string,
 ): string {
   const view = quoteIdent(`${table}_v`);
   const base = quoteIdent(table);
@@ -103,8 +104,8 @@ export function audienceViewSql(
   return [
     `CREATE OR REPLACE VIEW ${view} AS SELECT ${selectCols.join(', ')} FROM ${base}` +
       ` WHERE lattice_row_visible(${lit}, ${pkSqlExpr(pkCols, '')});`,
-    `GRANT SELECT ON ${view} TO ${MEMBER_GROUP};`,
-    `REVOKE SELECT ON ${base} FROM ${MEMBER_GROUP};`,
+    `GRANT SELECT ON ${view} TO ${group};`,
+    `REVOKE SELECT ON ${base} FROM ${group};`,
   ].join('\n');
 }
 
@@ -148,9 +149,10 @@ export async function enableAudienceView(
   if (db.getDialect() !== 'postgres') return;
   if (!tableNeedsAudienceView(columnAudience)) return;
   if (pkCols.length === 0) return; // unkeyable table — no row filter possible
+  const group = await memberGroupFor(db);
   const migration: Migration = {
     version: `internal:audience:table:${table}:v1:${audienceVersionHash(columns, pkCols, columnAudience)}`,
-    sql: audienceViewSql(table, columns, pkCols, columnAudience),
+    sql: audienceViewSql(table, columns, pkCols, columnAudience, group),
   };
   await db.migrate([migration]);
 }
@@ -253,17 +255,18 @@ export async function regenerateAudienceViewFromDb(
 ): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
   if (pkCols.length === 0) return;
+  const group = await memberGroupFor(db);
   const spec = await loadColumnPolicy(db, table);
   const view = quoteIdent(`${table}_v`);
   const base = quoteIdent(table);
   if (!tableNeedsAudienceView(spec)) {
     await runAsyncOrSync(
       db.adapter,
-      `DROP VIEW IF EXISTS ${view};\nGRANT SELECT ON ${base} TO ${MEMBER_GROUP};`,
+      `DROP VIEW IF EXISTS ${view};\nGRANT SELECT ON ${base} TO ${group};`,
     );
     return;
   }
-  await runAsyncOrSync(db.adapter, audienceViewSql(table, columns, pkCols, spec));
+  await runAsyncOrSync(db.adapter, audienceViewSql(table, columns, pkCols, spec, group));
 }
 
 /** Owner-only: set (or clear, with an empty spec) a column's audience in the DB and

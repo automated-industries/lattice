@@ -8,7 +8,6 @@
  * test asserts every readable object IS granted and every owner-only object is
  * NOT — so the omission class becomes structurally impossible.
  */
-import { MEMBER_GROUP } from './rls.js';
 
 export interface MemberReadableEntry {
   /** Bookkeeping table name. */
@@ -104,16 +103,17 @@ function quoteIdent(table: string): string {
  * the cell-masking view and keeps DML on the base (base SELECT stays revoked by
  * the audience-view SQL); otherwise full DML + SELECT on the base.
  */
-export function grantMemberTableAccessSql(table: string, opts: { masked: boolean }): string[] {
+export function grantMemberTableAccessSql(
+  table: string,
+  opts: { masked: boolean },
+  group: string,
+): string[] {
   const q = quoteIdent(table);
   if (opts.masked) {
     const v = quoteIdent(`${table}_v`);
-    return [
-      `GRANT SELECT ON ${v} TO ${MEMBER_GROUP}`,
-      `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`,
-    ];
+    return [`GRANT SELECT ON ${v} TO ${group}`, `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${group}`];
   }
-  return [`GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP}`];
+  return [`GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${group}`];
 }
 
 /**
@@ -129,8 +129,12 @@ export function grantMemberTableAccessSql(table: string, opts: { masked: boolean
  * switch to the extended protocol, which REJECTS multiple statements per query and
  * would silently break every masked table's batch — keep the GRANT SQL parameterless.
  */
-export function grantMemberTableAccessBatchSql(table: string, opts: { masked: boolean }): string {
-  return grantMemberTableAccessSql(table, opts).join('; ');
+export function grantMemberTableAccessBatchSql(
+  table: string,
+  opts: { masked: boolean },
+  group: string,
+): string {
+  return grantMemberTableAccessSql(table, opts, group).join('; ');
 }
 
 /**
@@ -138,18 +142,18 @@ export function grantMemberTableAccessBatchSql(table: string, opts: { masked: bo
  * library-only cloud (no GUI tables) is a no-op and an already-migrated cloud
  * self-heals on the owner's next open. Idempotent.
  */
-export function grantMemberBookkeepingSql(): string[] {
+export function grantMemberBookkeepingSql(group: string): string[] {
   return MEMBER_READABLE_BOOKKEEPING.map(
     (e) =>
       `DO $LATTICE$ BEGIN
          IF to_regclass('${e.name}') IS NOT NULL THEN
-           EXECUTE 'GRANT ${e.privs} ON "${e.name}" TO ${MEMBER_GROUP}';
+           EXECUTE 'GRANT ${e.privs} ON "${e.name}" TO ${group}';
          END IF;
        END $LATTICE$`,
   );
 }
 
 /** GRANT EXECUTE on the member-needed SQLite-compat polyfills. */
-export function grantMemberExecuteSql(): string {
-  return `GRANT EXECUTE ON FUNCTION ${MEMBER_EXECUTE_FUNCTIONS.join(', ')} TO ${MEMBER_GROUP}`;
+export function grantMemberExecuteSql(group: string): string {
+  return `GRANT EXECUTE ON FUNCTION ${MEMBER_EXECUTE_FUNCTIONS.join(', ')} TO ${group}`;
 }

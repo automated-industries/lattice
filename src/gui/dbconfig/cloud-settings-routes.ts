@@ -15,7 +15,7 @@ import {
   CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from '../../cloud/settings.js';
 import { setRowVisibility, grantRow, revokeRow, batchRowGrants } from '../../cloud/members.js';
-import { MEMBER_GROUP } from '../../cloud/rls.js';
+import { memberGroupFor } from '../../cloud/rls.js';
 import { getAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
 
 /** Generous upper bound on the stored chat system prompt — well past any real
@@ -173,7 +173,8 @@ export async function dispatchCloudSettings(
         return;
       }
       // Member-group roles — EXCLUDING the owner (it was double-counted: prepended
-      // AND listed again from the group).
+      // AND listed again from the group). Scoped to THIS cloud's own member group.
+      const group = await memberGroupFor(ctx.db);
       const rows = (await allAsyncOrSync(
         ctx.db.adapter,
         `SELECT m.rolname AS role
@@ -182,7 +183,7 @@ export async function dispatchCloudSettings(
            JOIN pg_roles m ON m.oid = am.member
           WHERE m.rolname <> ?
           ORDER BY m.rolname`,
-        [MEMBER_GROUP, ownerRole],
+        [group, ownerRole],
       )) as { role: string }[];
       // role → its latest non-revoked invite (email + whether it's been redeemed)
       // for human-readable display + accurate status. An invite with redeemed_at

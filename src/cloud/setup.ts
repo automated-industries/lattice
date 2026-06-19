@@ -7,6 +7,7 @@ import {
   ownPolyfillsByGroup,
   enableRlsForTable,
   backfillOwnership,
+  memberGroupFor,
 } from './rls.js';
 import { installCloudSettings } from './settings.js';
 import {
@@ -95,6 +96,10 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   const skipped: { table: string; reason: string }[] = [];
   if (db.getDialect() !== 'postgres') return { skipped };
   const registered = db.getRegisteredTableNames();
+  // This cloud's own member group (per (database, schema) — see memberGroupFor).
+  // Resolved once and threaded into every grant so install / provision / reconcile
+  // all converge on the SAME group for this cloud.
+  const group = await memberGroupFor(db);
 
   // Per-table fault isolation: a table the connecting role can't ALTER/GRANT
   // (e.g. owned by a different role) is recorded + skipped, never aborting the
@@ -149,7 +154,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
       // per-table tryTable wrapper still isolates a failure to this table + records
       // it in skipped[], so batching changes only the round-trip count, not the
       // fault isolation or reporting.
-      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, { masked }));
+      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, { masked }, group));
     });
   }
 
@@ -162,7 +167,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // library-only cloud is a no-op and an already-migrated cloud self-heals on open.
   // OWNER_ONLY_BOOKKEEPING is intentionally NOT granted — those are reached only
   // through SECURITY DEFINER functions keyed on session_user.
-  for (const sql of grantMemberBookkeepingSql()) {
+  for (const sql of grantMemberBookkeepingSql(group)) {
     await runAsyncOrSync(db.adapter, sql);
   }
 
@@ -172,7 +177,7 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // post-revoke) CREATE them itself. Non-fatal: a library cloud that never
   // registered the polyfills simply has nothing to grant.
   try {
-    await runAsyncOrSync(db.adapter, grantMemberExecuteSql());
+    await runAsyncOrSync(db.adapter, grantMemberExecuteSql(group));
   } catch (err) {
     console.warn(
       '[reconcileCloudMemberAccess] could not grant EXECUTE on polyfills (will retry next open):',

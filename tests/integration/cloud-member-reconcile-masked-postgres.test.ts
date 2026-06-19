@@ -17,7 +17,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { MEMBER_GROUP } from '../../src/cloud/rls.js';
+import { memberGroupFor } from '../../src/cloud/rls.js';
 import { reconcileCloudMemberAccess, secureCloud } from '../../src/cloud/setup.js';
 import { setColumnAudience } from '../../src/cloud/audience.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
@@ -52,10 +52,11 @@ afterEach(async () => {
 
 describe.skipIf(!PG_URL)('reconcile batching — masked table 2-GRANT batch', () => {
   async function memberHasTablePriv(db: Lattice, table: string, priv: string): Promise<boolean> {
+    const group = await memberGroupFor(db);
     const row = (await getAsyncOrSync(
       db.adapter,
       `SELECT has_table_privilege(?::text, format('%I.%I', current_schema(), ?::text), ?::text) AS ok`,
-      [MEMBER_GROUP, table, priv],
+      [group, table, priv],
     )) as { ok?: unknown } | undefined;
     return row?.ok === true || row?.ok === 't';
   }

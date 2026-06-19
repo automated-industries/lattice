@@ -44,13 +44,13 @@ describe('member-access registry', () => {
   });
 
   it('grantMemberTableAccessSql: an unmasked table gets full DML + SELECT on the base', () => {
-    expect(grantMemberTableAccessSql('people', { masked: false })).toEqual([
+    expect(grantMemberTableAccessSql('people', { masked: false }, 'lattice_members')).toEqual([
       'GRANT SELECT, INSERT, UPDATE, DELETE ON "people" TO lattice_members',
     ]);
   });
 
   it('grantMemberTableAccessSql: a masked table reads the _v view; base SELECT stays withheld', () => {
-    expect(grantMemberTableAccessSql('people', { masked: true })).toEqual([
+    expect(grantMemberTableAccessSql('people', { masked: true }, 'lattice_members')).toEqual([
       'GRANT SELECT ON "people_v" TO lattice_members',
       'GRANT INSERT, UPDATE, DELETE ON "people" TO lattice_members',
     ]);
@@ -59,17 +59,17 @@ describe('member-access registry', () => {
   it('grantMemberTableAccessBatchSql: joins the statements into one multi-statement string', () => {
     // Exactly the join of the array above — one round-trip per table (the masked
     // case batches its 2 GRANTs); pg's simple-query protocol runs both at once.
-    expect(grantMemberTableAccessBatchSql('people', { masked: false })).toBe(
+    expect(grantMemberTableAccessBatchSql('people', { masked: false }, 'lattice_members')).toBe(
       'GRANT SELECT, INSERT, UPDATE, DELETE ON "people" TO lattice_members',
     );
-    expect(grantMemberTableAccessBatchSql('people', { masked: true })).toBe(
+    expect(grantMemberTableAccessBatchSql('people', { masked: true }, 'lattice_members')).toBe(
       'GRANT SELECT ON "people_v" TO lattice_members; ' +
         'GRANT INSERT, UPDATE, DELETE ON "people" TO lattice_members',
     );
   });
 
   it('grantMemberBookkeepingSql emits one to_regclass-guarded GRANT per readable entry', () => {
-    const sql = grantMemberBookkeepingSql();
+    const sql = grantMemberBookkeepingSql('lattice_members');
     expect(sql).toHaveLength(MEMBER_READABLE_BOOKKEEPING.length);
     for (const e of MEMBER_READABLE_BOOKKEEPING) {
       expect(
@@ -80,7 +80,7 @@ describe('member-access registry', () => {
   });
 
   it('grantMemberExecuteSql grants EXECUTE on the SQLite-compat polyfills only', () => {
-    const sql = grantMemberExecuteSql();
+    const sql = grantMemberExecuteSql('lattice_members');
     expect(sql).toContain('json_extract(text, text)');
     expect(sql).toContain('strftime(text, text)');
     expect(sql).toContain('lattice_members');

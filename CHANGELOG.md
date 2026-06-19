@@ -269,6 +269,18 @@ tagged BREAKING.
   filenames are read so cleanup can detect orphans, write-back treats it as
   having no baseline (skips it), and the first render regenerates it in the v2
   shape — so no action is required on upgrade.
+- **BREAKING (cloud + members only) — the member group role is now per-cloud.**
+  Postgres roles are cluster-global, so the old hard-coded `lattice_members` group
+  was shared by every cloud co-located on one Postgres cluster — co-mingling
+  unrelated clouds' members and contending on one role's catalog during concurrent
+  provisioning. The group name is now derived from the cloud's own
+  `(database, schema)` namespace (`lattice_m_<md5(db:schema)[:20]>`), so each cloud
+  has its own isolated group. The exported `MEMBER_GROUP` constant is removed,
+  replaced by `memberGroupFor(db)` (resolver) and `LEGACY_MEMBER_GROUP` (the old
+  name, for migration only). On upgrade the new group + its grants self-heal on the
+  owner's next open; existing member roles must be re-added to it (open as owner,
+  then re-grant — see MIGRATING-4.0.md). Single-user / SQLite deployments are
+  unaffected.
 
 ## [3.4.4] - 2026-06-18
 

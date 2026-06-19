@@ -17,7 +17,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { MEMBER_GROUP } from '../../src/cloud/rls.js';
+import { memberGroupFor } from '../../src/cloud/rls.js';
 import { secureCloud, reconcileCloudMemberAccess } from '../../src/cloud/setup.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 
@@ -145,6 +145,7 @@ describe.skipIf(!PG_URL)('cloud member access reconcile', () => {
     schemas.push(schema);
     roles.push(member);
     const { o, ownerPool } = await ownerCloud(schema);
+    const group = await memberGroupFor(o);
     await o.upsert('note', { id: 'n1', body: 'shared' });
     await ownerPool.query(`SELECT lattice_set_row_visibility('note', 'n1', 'everyone')`);
 
@@ -157,7 +158,7 @@ describe.skipIf(!PG_URL)('cloud member access reconcile', () => {
 
     // Drop the grant the way a `pg_dump --no-privileges` restore would (policy +
     // RLS remain, GRANT gone) → the member can no longer read the table.
-    await ownerPool.query(`REVOKE ALL ON "note" FROM ${MEMBER_GROUP}`);
+    await ownerPool.query(`REVOKE ALL ON "note" FROM ${group}`);
     await expect(M.query('SELECT id FROM note')).rejects.toThrow(/permission denied/i);
 
     // Owner open converges access → grant re-issued, shared row readable again.

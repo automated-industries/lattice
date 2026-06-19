@@ -81,7 +81,13 @@ function isPg(db: Lattice): boolean {
  * filters rows per individual login role (`session_user`). The group grants
  * *access*, never *visibility*.
  */
-export const MEMBER_GROUP = 'lattice_members';
+/**
+ * The role name a PRE-per-cloud-group cloud used for its member group. Postgres
+ * roles are cluster-global, so this single name was SHARED by every cloud on one
+ * Postgres cluster. Retained only so a legacy cloud can be recognized + migrated
+ * (see docs/MIGRATING-4.0.md) — never used to grant access on the live paths.
+ */
+export const LEGACY_MEMBER_GROUP = 'lattice_members';
 
 /**
  * Pin `search_path` on every `SECURITY DEFINER` function in a cloud SQL blob.
@@ -126,6 +132,41 @@ export async function cloudSchema(db: Lattice): Promise<string> {
 }
 
 /**
+ * The per-cloud member group role name.
+ *
+ * Postgres roles + role membership are CLUSTER-GLOBAL (shared by every database
+ * and schema on one cluster). A single hard-coded group would therefore be shared
+ * by every cloud co-located on one cluster — putting unrelated clouds' members in
+ * ONE group, and making concurrent member provisioning across them contend on that
+ * one shared role's catalog (pg_authid / pg_auth_members). Deriving the group from
+ * the cloud's own (database, schema) namespace gives each cloud its OWN group:
+ * genuine cross-cloud isolation, and no shared-catalog contention.
+ *
+ * Deterministic + stable: the same (database, schema) always yields the same name,
+ * so install / provision / reconcile / audience all agree with no coordination.
+ * `lattice_m_` + 20 hex of md5 = 30 chars — well under the 63-byte identifier limit,
+ * always a legal role name, and md5() is core Postgres (no pgcrypto dependency).
+ * Cached per Lattice (one connection = one (database, schema)).
+ */
+const _memberGroupCache = new WeakMap<object, string>();
+const MEMBER_GROUP_RE = /^lattice_m_[0-9a-f]{20}$/;
+
+export async function memberGroupFor(db: Lattice): Promise<string> {
+  const cached = _memberGroupCache.get(db);
+  if (cached) return cached;
+  const row = (await getAsyncOrSync(
+    db.adapter,
+    `SELECT 'lattice_m_' || substr(md5(current_database() || ':' || current_schema()), 1, 20) AS grp`,
+  )) as { grp?: string | null } | undefined;
+  const grp = row?.grp;
+  if (typeof grp !== 'string' || !MEMBER_GROUP_RE.test(grp)) {
+    throw new Error('cloud RLS: could not resolve a stable per-cloud member group name');
+  }
+  _memberGroupCache.set(db, grp);
+  return grp;
+}
+
+/**
  * Defense-in-depth companion to the `search_path` pin: revoke the schema-level
  * `CREATE` that (pre-PG15) `public` grants to `PUBLIC` by default, so a member
  * cannot plant a PERMANENT object to shadow the bookkeeping either. Best-effort —
@@ -143,16 +184,17 @@ END $LATTICE_REVOKE$;
 `;
 }
 
-export const CLOUD_RLS_BOOTSTRAP_SQL = `
+export function cloudRlsBootstrapSql(group: string): string {
+  return `
 -- Member group (NOLOGIN). Members inherit schema/connect/table privileges from it;
 -- RLS filters per the individual member's login role, so the group never widens
 -- what a member can see. Idempotent.
 DO $LATTICE$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${MEMBER_GROUP}') THEN
-    CREATE ROLE ${MEMBER_GROUP} NOLOGIN;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${group}') THEN
+    CREATE ROLE ${group} NOLOGIN;
   END IF;
-  EXECUTE format('GRANT USAGE ON SCHEMA %I TO ${MEMBER_GROUP}', current_schema());
-  EXECUTE format('GRANT CONNECT ON DATABASE %I TO ${MEMBER_GROUP}', current_database());
+  EXECUTE format('GRANT USAGE ON SCHEMA %I TO ${group}', current_schema());
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO ${group}', current_database());
 END $LATTICE$;
 
 CREATE TABLE IF NOT EXISTS "__lattice_owners" (
@@ -630,11 +672,12 @@ BEGIN
     EXECUTE format(
       'CREATE OR REPLACE VIEW %I AS SELECT %s FROM %I WHERE lattice_row_visible(%L, %s)',
       v_view, v_select, p_table, p_table, v_pk_expr);
-    EXECUTE format('GRANT SELECT ON %I TO ${MEMBER_GROUP}', v_view);
+    EXECUTE format('GRANT SELECT ON %I TO ${group}', v_view);
   END IF;
 END $fn$;
-GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${MEMBER_GROUP};
+GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${group};
 `;
+}
 
 /**
  * Per-table RLS setup: a dedicated ownership trigger (pk baked in so it matches the
@@ -643,7 +686,7 @@ GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${MEMBE
  * EXISTS`). `pkCols` is the table's primary-key column list (`Lattice` resolves it
  * via its pk utilities); throws for an unkeyable table.
  */
-export function tableRlsSql(table: string, pkCols: readonly string[]): string {
+export function tableRlsSql(table: string, pkCols: readonly string[], group: string): string {
   const q = `"${table.replace(/"/g, '""')}"`;
   const lit = `'${table.replace(/'/g, "''")}'`;
   const pkNew = pkSqlExpr(pkCols, 'NEW.');
@@ -689,7 +732,7 @@ END $fn$;
 
 ALTER TABLE ${q} ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ${q} FORCE ROW LEVEL SECURITY;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${MEMBER_GROUP};
+GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${group};
 
 DROP POLICY IF EXISTS "lattice_sel" ON ${q};
 CREATE POLICY "lattice_sel" ON ${q} FOR SELECT USING (lattice_row_visible(${lit}, ${pkRow}));
@@ -719,11 +762,12 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
  */
 export async function ownPolyfillsByGroup(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
+  const group = await memberGroupFor(db);
   for (const sig of ['json_extract(text, text)', 'strftime(text, text)']) {
     try {
       const reg = await getAsyncOrSync(db.adapter, `SELECT to_regprocedure($1) AS reg`, [sig]);
       if (reg?.reg == null) continue; // not created yet — nothing to reassign
-      await runAsyncOrSync(db.adapter, `ALTER FUNCTION ${sig} OWNER TO "${MEMBER_GROUP}"`);
+      await runAsyncOrSync(db.adapter, `ALTER FUNCTION ${sig} OWNER TO "${group}"`);
     } catch {
       // best-effort hygiene — the create-if-absent guard is the actual fix
     }
@@ -786,6 +830,7 @@ CREATE POLICY "lattice_gui_audit_del" ON "_lattice_gui_audit" FOR DELETE
 export async function installCloudRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const schema = await cloudSchema(db);
+  const group = await memberGroupFor(db);
   // Run the bootstrap DIRECTLY — NOT via a version-gated migration. Every object
   // here is CREATE … IF NOT EXISTS / CREATE OR REPLACE / DROP POLICY IF EXISTS +
   // CREATE POLICY / REVOKE, so re-running is cheap and, crucially, CONVERGES.
@@ -793,7 +838,8 @@ export async function installCloudRls(db: Lattice): Promise<void> {
   // ADDED to the bootstrap in a later release — e.g. __lattice_member_invites —
   // never reached clouds already stamped at that version, and `secure` no-op'd.
   // Running it directly on every owner open (see openConfig) closes that gap.
-  const sql = pinDefinerSearchPath(CLOUD_RLS_BOOTSTRAP_SQL, schema) + revokeSchemaCreateSql(schema);
+  const sql =
+    pinDefinerSearchPath(cloudRlsBootstrapSql(group), schema) + revokeSchemaCreateSql(schema);
   await runCloudBootstrapSql(db, sql);
 }
 
@@ -821,6 +867,7 @@ export async function installCloudRls(db: Lattice): Promise<void> {
  */
 export async function enableChangelogRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
+  const group = await memberGroupFor(db);
   // v3: a derived observation with an EMPTY source_ref array must FAIL CLOSED
   // (not visible). v2's `NOT EXISTS` over an empty array was vacuously true, so a
   // derived row with no sources leaked to every member — mirror fold.ts
@@ -832,7 +879,7 @@ export async function enableChangelogRls(db: Lattice): Promise<void> {
     `
 ALTER TABLE "__lattice_changelog" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "__lattice_changelog" FORCE ROW LEVEL SECURITY;
-GRANT SELECT, INSERT ON "__lattice_changelog" TO ${MEMBER_GROUP};
+GRANT SELECT, INSERT ON "__lattice_changelog" TO ${group};
 
 DROP POLICY IF EXISTS "lattice_changelog_sel" ON "__lattice_changelog";
 CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING (
@@ -911,9 +958,10 @@ export async function enableRlsForTable(
 ): Promise<void> {
   if (!isPg(db)) return;
   const schema = await cloudSchema(db);
+  const group = await memberGroupFor(db);
   const migration: Migration = {
     version: `internal:cloud-rls:table:${table}:v3`,
-    sql: pinDefinerSearchPath(tableRlsSql(table, pkCols), schema),
+    sql: pinDefinerSearchPath(tableRlsSql(table, pkCols, group), schema),
   };
   await db.migrate([migration]);
 }

@@ -11,7 +11,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { installCloudRls, MEMBER_GROUP } from '../../src/cloud/rls.js';
+import { installCloudRls, memberGroupFor } from '../../src/cloud/rls.js';
 import {
   provisionMemberRole,
   revokeMemberRole,
@@ -93,10 +93,11 @@ describe.skipIf(!PG_URL)('#H cloud members (invite/revoke)', () => {
 
   it('D: member enumeration excludes the owner (no double-count)', async () => {
     const o = await owner();
+    const group = await memberGroupFor(o);
     const m1 = memberRole();
     await provisionMemberRole(o, m1, generateMemberPassword());
     // Simulate the reported double-count: the owner is ALSO in the member group.
-    await runAsyncOrSync(o.adapter, `GRANT ${MEMBER_GROUP} TO CURRENT_USER`);
+    await runAsyncOrSync(o.adapter, `GRANT ${group} TO CURRENT_USER`);
     try {
       const me = (await getAsyncOrSync(o.adapter, `SELECT session_user AS u`)) as { u?: string };
       const ownerRole = me?.u ?? '';
@@ -109,15 +110,13 @@ describe.skipIf(!PG_URL)('#H cloud members (invite/revoke)', () => {
            JOIN pg_roles m ON m.oid = am.member
           WHERE m.rolname <> ?
           ORDER BY m.rolname`,
-        [MEMBER_GROUP, ownerRole],
+        [group, ownerRole],
       )) as { role: string }[];
       const names = rows.map((r) => r.role);
       expect(names).toContain(m1);
       expect(names).not.toContain(ownerRole); // owner is NOT listed as a member
     } finally {
-      await runAsyncOrSync(o.adapter, `REVOKE ${MEMBER_GROUP} FROM CURRENT_USER`).catch(
-        () => undefined,
-      );
+      await runAsyncOrSync(o.adapter, `REVOKE ${group} FROM CURRENT_USER`).catch(() => undefined);
     }
   });
 
