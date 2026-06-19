@@ -36,6 +36,32 @@ method that is inert unless a table opts in.
   configurable scale, both dialects, exercising the real code paths. Ships in the
   package so the same harness that gates CI SLOs can reproduce the published
   numbers. Default scale is CI-fast; `LATTICE_BENCH_*` env vars scale it up.
+- **Text chunking for embeddings (`semanticChunker`, `EmbeddingsConfig.chunker`).**
+  A dependency-free, boundary-aware splitter (paragraph → sentence → word) with
+  optional overlap, so a row is embedded as several small, coherent chunks instead
+  of one blurred whole-row vector — higher precision@k and fewer tokens to a
+  correct answer. `EmbeddingsConfig.contextPrefix(row)` prepends per-row context
+  (e.g. a title) to every chunk; `modelId` is stored with each vector.
+- **Indexed vector search (`buildVectorIndex`).** An opt-in per-table native
+  approximate-nearest-neighbor index — pgvector HNSW on Postgres, sqlite-vec on
+  SQLite — built from the stored embeddings, turning the O(n) in-process scan into
+  an indexed ~O(log n) lookup; semantic search uses it automatically when present
+  and falls back to the in-process scan (reported by `lattice doctor`) otherwise.
+- **Incremental embedding refresh (`refreshEmbeddings`).** Backfill missing,
+  re-embed model-stale or changed rows, and sweep orphaned embeddings — instead of
+  re-embedding everything on any change.
+- `SearchResult` now carries `chunkIndex` + `matchedContent` for chunked
+  embeddings (a precise, low-token snippet of the matching chunk).
+
+### Changed
+
+- **Semantic search now respects `deleted_at`** — soft-deleted rows are excluded
+  from `Lattice.search` results (they could previously be returned), and a stored
+  vector whose dimensionality differs from the query's now throws
+  `EmbeddingDimensionMismatchError` instead of silently mis-scoring.
+- The internal `_lattice_embeddings` store is now chunk-aware
+  (`chunk_index`/`content`/`embedding_model`/`embedded_at`/`vec_dim`); an older
+  store is migrated forward automatically and idempotently on init.
 
 ### Fixed
 

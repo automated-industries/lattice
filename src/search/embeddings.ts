@@ -1,36 +1,115 @@
 import type { StorageAdapter } from '../db/adapter.js';
-import { runAsyncOrSync, getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
+import { runAsyncOrSync, allAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
 import type { Row, EmbeddingsConfig, SearchResult } from '../types.js';
+import { chunkText } from './chunking.js';
+import { vectorIndexAvailable, hasVectorIndex, searchVectorIndex } from './vector-index.js';
 
-/** Internal table that stores one embedding vector per (table, row). */
+/** Internal table that stores one embedding vector per (table, row, chunk). */
 export const EMBEDDINGS_TABLE = '_lattice_embeddings';
 
 /**
- * Ensure the internal embeddings storage table exists.
+ * Ensure the internal embeddings storage table exists with the chunk-aware
+ * schema, migrating an older two-key (table_name, row_pk) layout forward.
+ *
+ * The embeddings table is a DERIVED cache — every vector can be recomputed from
+ * its source row — so when an older schema is detected it is rebuilt rather than
+ * preserved bit-for-bit. The migration is idempotent: once `chunk_index` exists
+ * the function is a no-op.
  */
 export async function ensureEmbeddingsTable(adapter: StorageAdapter): Promise<void> {
+  let cols: string[] = [];
+  try {
+    cols = await introspectColumnsAsyncOrSync(adapter, EMBEDDINGS_TABLE);
+  } catch {
+    cols = [];
+  }
+
+  if (cols.length === 0) {
+    // Fresh — create with the full chunk-aware schema.
+    await runAsyncOrSync(
+      adapter,
+      `CREATE TABLE IF NOT EXISTS "${EMBEDDINGS_TABLE}" (
+         "table_name"      TEXT NOT NULL,
+         "row_pk"          TEXT NOT NULL,
+         "chunk_index"     INTEGER NOT NULL DEFAULT 0,
+         "content"         TEXT,
+         "embedding"       TEXT NOT NULL,
+         "embedding_model" TEXT,
+         "embedded_at"     TEXT,
+         "vec_dim"         INTEGER,
+         PRIMARY KEY ("table_name", "row_pk", "chunk_index")
+       )`,
+    );
+    return;
+  }
+
+  if (cols.includes('chunk_index')) return; // already migrated
+
+  // Migrate the legacy (table_name, row_pk, embedding) layout forward.
+  if (adapter.dialect === 'postgres') {
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${EMBEDDINGS_TABLE}" ADD COLUMN IF NOT EXISTS "chunk_index" INTEGER NOT NULL DEFAULT 0`,
+    );
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${EMBEDDINGS_TABLE}" ADD COLUMN IF NOT EXISTS "content" TEXT`,
+    );
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${EMBEDDINGS_TABLE}" ADD COLUMN IF NOT EXISTS "embedding_model" TEXT`,
+    );
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${EMBEDDINGS_TABLE}" ADD COLUMN IF NOT EXISTS "embedded_at" TEXT`,
+    );
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${EMBEDDINGS_TABLE}" ADD COLUMN IF NOT EXISTS "vec_dim" INTEGER`,
+    );
+    // Repoint the primary key to include chunk_index (existing rows default to 0,
+    // so the (table_name,row_pk,chunk_index) triple stays unique).
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${EMBEDDINGS_TABLE}" DROP CONSTRAINT IF EXISTS "${EMBEDDINGS_TABLE}_pkey"`,
+    );
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${EMBEDDINGS_TABLE}" ADD PRIMARY KEY ("table_name", "row_pk", "chunk_index")`,
+    );
+    return;
+  }
+
+  // SQLite can't repoint a primary key in place — rebuild the (derived) table.
   await runAsyncOrSync(
     adapter,
-    `CREATE TABLE IF NOT EXISTS "${EMBEDDINGS_TABLE}" (
-    "table_name" TEXT NOT NULL,
-    "row_pk"     TEXT NOT NULL,
-    "embedding"  TEXT NOT NULL,
-    PRIMARY KEY ("table_name", "row_pk")
-  )`,
+    `CREATE TABLE "${EMBEDDINGS_TABLE}_v2" (
+       "table_name"      TEXT NOT NULL,
+       "row_pk"          TEXT NOT NULL,
+       "chunk_index"     INTEGER NOT NULL DEFAULT 0,
+       "content"         TEXT,
+       "embedding"       TEXT NOT NULL,
+       "embedding_model" TEXT,
+       "embedded_at"     TEXT,
+       "vec_dim"         INTEGER,
+       PRIMARY KEY ("table_name", "row_pk", "chunk_index")
+     )`,
+  );
+  await runAsyncOrSync(
+    adapter,
+    `INSERT INTO "${EMBEDDINGS_TABLE}_v2" ("table_name", "row_pk", "chunk_index", "embedding")
+       SELECT "table_name", "row_pk", 0, "embedding" FROM "${EMBEDDINGS_TABLE}"`,
+  );
+  await runAsyncOrSync(adapter, `DROP TABLE "${EMBEDDINGS_TABLE}"`);
+  await runAsyncOrSync(
+    adapter,
+    `ALTER TABLE "${EMBEDDINGS_TABLE}_v2" RENAME TO "${EMBEDDINGS_TABLE}"`,
   );
 }
 
-/**
- * Compute and store an embedding for a row.
- */
-export async function storeEmbedding(
-  adapter: StorageAdapter,
-  table: string,
-  pk: string,
-  row: Row,
-  config: EmbeddingsConfig,
-): Promise<void> {
-  const text = config.fields
+/** Concatenate the configured fields of a row into a single embeddable string. */
+export function concatRowText(row: Row, fields: string[]): string {
+  return fields
     .map((f) => {
       const v = row[f];
       if (v == null) return '';
@@ -40,24 +119,54 @@ export async function storeEmbedding(
     })
     .filter((s) => s.length > 0)
     .join(' ');
-
-  if (text.length === 0) return;
-
-  const vector = await config.embed(text);
-  // Portable upsert: `INSERT OR REPLACE` is SQLite-only (the Postgres adapter
-  // refuses to translate it), so use the `ON CONFLICT ... DO UPDATE` form, which
-  // both engines accept and which keys on the (table_name, row_pk) primary key.
-  await runAsyncOrSync(
-    adapter,
-    `INSERT INTO "${EMBEDDINGS_TABLE}" ("table_name", "row_pk", "embedding") VALUES (?, ?, ?)
-     ON CONFLICT ("table_name", "row_pk") DO UPDATE SET "embedding" = excluded."embedding"`,
-    [table, pk, JSON.stringify(vector)],
-  );
 }
 
 /**
- * Remove a stored embedding.
+ * Compute and store the embedding(s) for a row. When the config supplies a
+ * `chunker`, the row text is split and each chunk is embedded + stored under its
+ * own `chunk_index`; otherwise the whole text is one chunk (index 0). The row's
+ * prior chunks are replaced atomically-per-row (delete then insert).
  */
+export async function storeEmbedding(
+  adapter: StorageAdapter,
+  table: string,
+  pk: string,
+  row: Row,
+  config: EmbeddingsConfig,
+): Promise<void> {
+  const text = concatRowText(row, config.fields);
+  if (text.length === 0) {
+    await removeEmbedding(adapter, table, pk);
+    return;
+  }
+
+  const prefix = config.contextPrefix?.(row);
+  const chunks = chunkText(text, config.chunker, prefix);
+  const at = new Date().toISOString();
+  const model = config.modelId ?? null;
+
+  // Replace this row's chunks wholesale so a shrinking chunk count never leaves
+  // stale higher-index chunks behind.
+  await removeEmbedding(adapter, table, pk);
+  for (const ch of chunks) {
+    const vector = await config.embed(ch.content);
+    await runAsyncOrSync(
+      adapter,
+      `INSERT INTO "${EMBEDDINGS_TABLE}"
+         ("table_name", "row_pk", "chunk_index", "content", "embedding", "embedding_model", "embedded_at", "vec_dim")
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT ("table_name", "row_pk", "chunk_index")
+         DO UPDATE SET "content" = excluded."content",
+                       "embedding" = excluded."embedding",
+                       "embedding_model" = excluded."embedding_model",
+                       "embedded_at" = excluded."embedded_at",
+                       "vec_dim" = excluded."vec_dim"`,
+      [table, pk, ch.chunkIndex, ch.content, JSON.stringify(vector), model, at, vector.length],
+    );
+  }
+}
+
+/** Remove all stored embedding chunks for a row. */
 export async function removeEmbedding(
   adapter: StorageAdapter,
   table: string,
@@ -70,10 +179,13 @@ export async function removeEmbedding(
   );
 }
 
-/**
- * Cosine similarity between two vectors.
- */
-function cosineSimilarity(a: number[], b: number[]): number {
+/** Coerce a primary-key cell to a string, or null when it isn't a scalar. */
+function pkToString(v: unknown): string | null {
+  return typeof v === 'string' || typeof v === 'number' ? String(v) : null;
+}
+
+/** Cosine similarity between two vectors. */
+export function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
   let dot = 0;
   let magA = 0;
@@ -89,13 +201,37 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
+interface RankedChunk {
+  pk: string;
+  score: number;
+  chunkIndex: number;
+  content: string | null;
+}
+
 /**
- * Search for rows by semantic similarity.
- *
- * 1. Embed the query text
- * 2. Load all stored embeddings for the table
- * 3. Compute cosine similarity
- * 4. Return top-K results above minScore
+ * Error thrown when a stored vector's dimensionality does not match the query
+ * vector's — almost always a sign the embedding model changed without a
+ * re-embed. Surfaced loudly rather than silently scoring mismatched vectors.
+ */
+export class EmbeddingDimensionMismatchError extends Error {
+  constructor(
+    readonly table: string,
+    readonly expected: number,
+    readonly found: number,
+  ) {
+    super(
+      `Embedding dimension mismatch on "${table}": query is ${String(expected)}-d but a stored vector is ${String(found)}-d. ` +
+        `Re-embed the table (refreshEmbeddings) after changing the embedding model.`,
+    );
+    this.name = 'EmbeddingDimensionMismatchError';
+  }
+}
+
+/**
+ * Search rows by semantic similarity. Uses a native vector index (pgvector) when
+ * one exists for the table; otherwise an in-process cosine scan over the stored
+ * chunk vectors. Either way results respect `deleted_at IS NULL` on the base
+ * table and are de-duplicated to the best-scoring chunk per row.
  */
 export async function searchByEmbedding(
   adapter: StorageAdapter,
@@ -108,34 +244,223 @@ export async function searchByEmbedding(
 ): Promise<SearchResult[]> {
   const queryVector = await config.embed(queryText);
 
+  // Native-index fast path (pgvector). Returns ranked (pk, chunk_index, score).
+  let ranked: RankedChunk[];
+  if ((await vectorIndexAvailable(adapter)) && (await hasVectorIndex(adapter, table))) {
+    const hits = await searchVectorIndex(adapter, table, queryVector, topK * 4, minScore);
+    ranked = hits.map((h) => ({
+      pk: h.pk,
+      score: h.score,
+      chunkIndex: h.chunkIndex,
+      content: h.content,
+    }));
+  } else {
+    ranked = await scanChunks(adapter, table, queryVector, minScore);
+  }
+
+  // Best chunk per row, then sort rows by their best score.
+  const bestByRow = new Map<string, RankedChunk>();
+  for (const r of ranked) {
+    const cur = bestByRow.get(r.pk);
+    if (!cur || r.score > cur.score) bestByRow.set(r.pk, r);
+  }
+  const rankedRows = [...bestByRow.values()].sort((a, b) => b.score - a.score);
+  if (rankedRows.length === 0) return [];
+
+  // Fetch the candidate rows, excluding soft-deleted ones, then assemble the
+  // top-K in ranked order from the live set.
+  const live = await fetchLiveRows(
+    adapter,
+    table,
+    rankedRows.map((r) => r.pk),
+    pkColumn,
+  );
+  const results: SearchResult[] = [];
+  for (const r of rankedRows) {
+    const row = live.get(r.pk);
+    if (!row) continue;
+    const result: SearchResult = { row, score: r.score };
+    if (r.chunkIndex > 0 || r.content !== null) {
+      result.chunkIndex = r.chunkIndex;
+      if (r.content !== null) result.matchedContent = r.content;
+    }
+    results.push(result);
+    if (results.length >= topK) break;
+  }
+  return results;
+}
+
+/** In-process cosine scan over the stored chunk vectors for a table. */
+async function scanChunks(
+  adapter: StorageAdapter,
+  table: string,
+  queryVector: number[],
+  minScore: number,
+): Promise<RankedChunk[]> {
   const stored = await allAsyncOrSync(
     adapter,
-    `SELECT "row_pk", "embedding" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+    `SELECT "row_pk", "chunk_index", "content", "embedding", "vec_dim" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
     [table],
   );
-
-  const scored: { pk: string; score: number }[] = [];
+  const out: RankedChunk[] = [];
   for (const entry of stored) {
     const vec = JSON.parse(entry.embedding as string) as number[];
+    if (vec.length !== queryVector.length) {
+      throw new EmbeddingDimensionMismatchError(table, queryVector.length, vec.length);
+    }
     const score = cosineSimilarity(queryVector, vec);
     if (score >= minScore) {
-      scored.push({ pk: entry.row_pk as string, score });
+      out.push({
+        pk: entry.row_pk as string,
+        score,
+        chunkIndex: Number(entry.chunk_index ?? 0),
+        content: (entry.content as string | null) ?? null,
+      });
+    }
+  }
+  return out;
+}
+
+/** Fetch the given pks that are not soft-deleted, keyed by pk. */
+async function fetchLiveRows(
+  adapter: StorageAdapter,
+  table: string,
+  pks: string[],
+  pkColumn: string,
+): Promise<Map<string, Row>> {
+  const out = new Map<string, Row>();
+  if (pks.length === 0) return out;
+  let cols: string[] = [];
+  try {
+    cols = await introspectColumnsAsyncOrSync(adapter, table);
+  } catch {
+    cols = [];
+  }
+  const hasDeletedAt = cols.includes('deleted_at');
+  const placeholders = pks.map(() => '?').join(', ');
+  const where = `"${pkColumn}" IN (${placeholders})${hasDeletedAt ? ' AND "deleted_at" IS NULL' : ''}`;
+  const rows = await allAsyncOrSync(adapter, `SELECT * FROM "${table}" WHERE ${where}`, pks);
+  for (const row of rows) {
+    const key = pkToString(row[pkColumn]);
+    if (key !== null) out.set(key, row);
+  }
+  return out;
+}
+
+export interface RefreshEmbeddingsOptions {
+  /** Only re-embed rows whose stored model differs from `config.modelId`. */
+  staleModelOnly?: boolean;
+  /** Embed rows that have no stored embedding. Default true. */
+  backfillMissing?: boolean;
+  /** Re-embed rows whose source changed since `embedded_at` (caller decides via `changedSince`). */
+  changedSince?: string;
+  /** Page size for the base-table scan. Default 500. */
+  batchSize?: number;
+}
+
+export interface EmbeddingRefreshResult {
+  /** Rows that were (re-)embedded. */
+  embedded: number;
+  /** Rows skipped because they were already current. */
+  skipped: number;
+  /** Orphaned embeddings removed (their source row no longer exists). */
+  removed: number;
+}
+
+/**
+ * Backfill / re-embed a table's vectors incrementally — embed only what's
+ * missing or stale, rather than re-embedding everything. Honors `deleted_at`
+ * and sweeps embeddings whose source row is gone.
+ */
+export async function refreshEmbeddings(
+  adapter: StorageAdapter,
+  table: string,
+  config: EmbeddingsConfig,
+  pkColumn = 'id',
+  opts: RefreshEmbeddingsOptions = {},
+): Promise<EmbeddingRefreshResult> {
+  await ensureEmbeddingsTable(adapter);
+  const batchSize = opts.batchSize ?? 500;
+  const backfillMissing = opts.backfillMissing ?? true;
+
+  let cols: string[] = [];
+  try {
+    cols = await introspectColumnsAsyncOrSync(adapter, table);
+  } catch {
+    cols = [];
+  }
+  const hasDeletedAt = cols.includes('deleted_at');
+
+  // Existing embedding metadata per row (one entry per row — chunk 0 suffices
+  // for model/timestamp).
+  const meta = new Map<string, { model: string | null; at: string | null }>();
+  const metaRows = await allAsyncOrSync(
+    adapter,
+    `SELECT "row_pk", "embedding_model", "embedded_at" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "chunk_index" = 0`,
+    [table],
+  );
+  for (const r of metaRows) {
+    meta.set(r.row_pk as string, {
+      model: (r.embedding_model as string | null) ?? null,
+      at: (r.embedded_at as string | null) ?? null,
+    });
+  }
+
+  let embedded = 0;
+  let skipped = 0;
+  const livePks = new Set<string>();
+
+  // Page through the base table.
+  let offset = 0;
+  for (;;) {
+    const where = hasDeletedAt ? `WHERE "deleted_at" IS NULL` : '';
+    const rows = await allAsyncOrSync(
+      adapter,
+      `SELECT * FROM "${table}" ${where} ORDER BY "${pkColumn}" LIMIT ${String(batchSize)} OFFSET ${String(offset)}`,
+    );
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const pk = pkToString(row[pkColumn]);
+      if (pk === null) continue;
+      livePks.add(pk);
+
+      const existing = meta.get(pk);
+      const needsBackfill = backfillMissing && !existing;
+      const staleModel =
+        opts.staleModelOnly && existing ? existing.model !== (config.modelId ?? null) : false;
+      const staleByTime =
+        opts.changedSince && existing?.at ? existing.at < opts.changedSince : false;
+
+      if (
+        needsBackfill ||
+        staleModel ||
+        staleByTime ||
+        (!opts.staleModelOnly && !opts.changedSince && !existing)
+      ) {
+        await storeEmbedding(adapter, table, pk, row, config);
+        embedded++;
+      } else {
+        skipped++;
+      }
+    }
+    if (rows.length < batchSize) break;
+    offset += batchSize;
+  }
+
+  // Sweep orphaned embeddings (source row deleted/absent).
+  let removed = 0;
+  const embeddedPks = await allAsyncOrSync(
+    adapter,
+    `SELECT DISTINCT "row_pk" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+    [table],
+  );
+  for (const r of embeddedPks) {
+    const pk = r.row_pk as string;
+    if (!livePks.has(pk)) {
+      await removeEmbedding(adapter, table, pk);
+      removed++;
     }
   }
 
-  scored.sort((a, b) => b.score - a.score);
-  const topResults = scored.slice(0, topK);
-
-  // Fetch full rows using the table's primary key column
-  const results: SearchResult[] = [];
-  for (const { pk, score } of topResults) {
-    const row = await getAsyncOrSync(adapter, `SELECT * FROM "${table}" WHERE "${pkColumn}" = ?`, [
-      pk,
-    ]);
-    if (row) {
-      results.push({ row, score });
-    }
-  }
-
-  return results;
+  return { embedded, skipped, removed };
 }

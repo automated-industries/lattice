@@ -91,7 +91,10 @@ import {
   storeEmbedding,
   removeEmbedding,
   searchByEmbedding,
+  refreshEmbeddings,
 } from './search/embeddings.js';
+import type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
+import { buildVectorIndex } from './search/vector-index.js';
 import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
 import { evaluateRetrieval } from './search/eval.js';
 import type {
@@ -1754,6 +1757,57 @@ export class Lattice {
       opts.minScore ?? 0,
       pkCol,
     );
+  }
+
+  /**
+   * Backfill / re-embed a table's vectors incrementally — embed only rows that
+   * are missing, model-stale, or changed since a timestamp, sweeping embeddings
+   * whose source row is gone. Honors `deleted_at`. Requires `embeddings` config.
+   */
+  async refreshEmbeddings(
+    table: string,
+    opts: RefreshEmbeddingsOptions = {},
+  ): Promise<EmbeddingRefreshResult> {
+    const notInit = this._notInitError<EmbeddingRefreshResult>();
+    if (notInit) return notInit;
+    const def = this._schema.getTables().get(table);
+    if (!def?.embeddings) {
+      return Promise.reject(new Error(`Table "${table}" does not have embeddings configured`));
+    }
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    return refreshEmbeddings(this._adapter, table, def.embeddings, pkCol, opts);
+  }
+
+  /**
+   * Build (or rebuild) a native vector index (pgvector / sqlite-vec) for `table`
+   * from the stored embeddings, so semantic search uses an indexed
+   * approximate-nearest-neighbor lookup instead of an in-process scan. Returns
+   * the number of vectors indexed; a no-op (returns 0) when no native vector
+   * extension is available, unless `requireExtension` is set. Requires
+   * `embeddings` config (to determine the vector dimension).
+   */
+  async buildVectorIndex(table: string, requireExtension = false): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    const def = this._schema.getTables().get(table);
+    if (!def?.embeddings) {
+      return Promise.reject(new Error(`Table "${table}" does not have embeddings configured`));
+    }
+    // Determine the dimension from a stored vector.
+    const sample = await getAsyncOrSync(
+      this._adapter,
+      `SELECT "vec_dim" AS d FROM "_lattice_embeddings" WHERE "table_name" = ? AND "vec_dim" IS NOT NULL LIMIT 1`,
+      [table],
+    );
+    const dim = Number(sample?.d ?? 0);
+    if (dim <= 0) {
+      return Promise.reject(
+        new Error(
+          `buildVectorIndex: no embeddings stored for "${table}" — embed rows first (insert or refreshEmbeddings).`,
+        ),
+      );
+    }
+    return buildVectorIndex(this._adapter, table, dim, requireExtension);
   }
 
   // -------------------------------------------------------------------------

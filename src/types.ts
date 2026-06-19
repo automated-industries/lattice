@@ -547,6 +547,27 @@ export interface EmbeddingsConfig {
    * Bring your own model — Lattice does not bundle an embedding provider.
    */
   embed: (text: string) => Promise<number[]>;
+  /**
+   * Optional text splitter. When set, each row's concatenated text is split
+   * into chunks and every chunk is embedded separately, so semantic search
+   * matches the most relevant *part* of a row rather than the blurred average
+   * of the whole. Omit for the historical whole-row behavior (one vector/row).
+   * See `semanticChunker` for a dependency-free boundary-aware default.
+   */
+  chunker?: import('./search/chunking.js').ChunkerFn;
+  /**
+   * Optional per-row context prefix prepended to every chunk before embedding
+   * (e.g. a title or breadcrumb), so each chunk carries enough context to be
+   * retrieved well on its own. Receives the full row.
+   */
+  contextPrefix?: (row: Row) => string;
+  /**
+   * Optional identifier of the embedding model, stored alongside each vector.
+   * Lets `refreshEmbeddings` detect and re-embed rows produced by a different
+   * model, and lets the doctor report mixed-model coverage. Purely advisory —
+   * Lattice never calls a model itself.
+   */
+  modelId?: string;
 }
 
 /**
@@ -570,6 +591,17 @@ export interface SearchResult {
   row: Row;
   /** Cosine similarity score (0–1). */
   score: number;
+  /**
+   * For a chunked embedding, the index of the chunk that produced the best
+   * score for this row. Absent for whole-row (unchunked) embeddings.
+   */
+  chunkIndex?: number;
+  /**
+   * For a chunked embedding, the text of the best-matching chunk — useful as a
+   * precise, low-token snippet to hand to a model. Absent for whole-row
+   * embeddings or when chunk content was not stored.
+   */
+  matchedContent?: string;
 }
 
 /**

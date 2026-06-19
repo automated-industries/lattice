@@ -241,6 +241,36 @@ export {
 } from './search/fts.js';
 export type { FtsResult, FtsGroup, FtsHit, FtsOptions } from './search/fts.js';
 
+// v4.1 — text chunking for higher-precision, lower-token embedding.
+export { semanticChunker, chunkText } from './search/chunking.js';
+export type { TextChunk, ChunkerFn, SemanticChunkerOptions } from './search/chunking.js';
+
+// v4.1 — chunk-aware embedding store + incremental refresh + dim-mismatch guard.
+export {
+  ensureEmbeddingsTable,
+  storeEmbedding,
+  removeEmbedding,
+  searchByEmbedding,
+  refreshEmbeddings,
+  concatRowText,
+  cosineSimilarity,
+  EmbeddingDimensionMismatchError,
+  EMBEDDINGS_TABLE,
+} from './search/embeddings.js';
+export type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
+
+// v4.1 — native indexed vector search (pgvector / sqlite-vec), opt-in accelerator
+// over the portable JSON store.
+export {
+  buildVectorIndex,
+  dropVectorIndex,
+  hasVectorIndex,
+  vectorIndexAvailable,
+  vectorIndexName,
+  searchVectorIndex,
+} from './search/vector-index.js';
+export type { VectorHit } from './search/vector-index.js';
+
 // v4.1 — retrieval evaluation: standard IR metrics over any ranked retriever,
 // plus a CI-friendly regression detector.
 export { evaluateRetrieval, detectRetrievalRegressions } from './search/eval.js';
