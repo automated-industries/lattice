@@ -109,6 +109,87 @@ function sessionUndoneFilters(undone: 0 | 1, sessionId?: string) {
   return filters;
 }
 
+/** Columns of a `_lattice_gui_audit` row, in insert order. */
+const AUDIT_COLUMNS = [
+  'id',
+  'ts',
+  'table_name',
+  'row_id',
+  'operation',
+  'before_json',
+  'after_json',
+  'undone',
+  'session_id',
+] as const;
+
+/**
+ * Build a fully-populated audit row. Shared by the high-level insert path and the
+ * transactional hard-delete path so both record IDENTICAL columns. The explicit
+ * `ts` (rather than the column DEFAULT) avoids the SQLite-only `strftime(...)`
+ * default that yields a non-parseable timestamp on Postgres (cloud history then
+ * rendered "Invalid Date"); the originating client's validated edit time is
+ * honored when present (an offline edit replayed later records when it was MADE,
+ * not when it synced), else now().
+ */
+function buildAuditRow(
+  table: string,
+  rowId: string | null,
+  op: AuditOp,
+  before: unknown,
+  after: unknown,
+  sessionId: string | undefined,
+  editTs: string | undefined,
+): Record<string, unknown> {
+  return {
+    id: crypto.randomUUID(),
+    ts: sanitizeEditTs(editTs) ?? new Date().toISOString(),
+    table_name: table,
+    row_id: rowId,
+    operation: op,
+    before_json: before ? JSON.stringify(before) : null,
+    after_json: after ? JSON.stringify(after) : null,
+    undone: 0,
+    session_id: sessionId ?? null,
+  };
+}
+
+/** Publish a mutation's feed event. Names the row in the bubble: insert/update
+ *  read the post-image, delete the pre-image (the row is gone); link/unlink carry
+ *  the junction body, which has no human label so feedSummary falls back to the
+ *  generic phrasing. */
+function publishMutationFeed(
+  feed: FeedBus,
+  table: string,
+  rowId: string | null,
+  op: AuditOp,
+  before: unknown,
+  after: unknown,
+  source: FeedSource,
+): void {
+  const labelRow = op === 'delete' ? before : after;
+  feed.publish({
+    table,
+    op: op as FeedOp,
+    rowId,
+    source,
+    summary: feedSummary(op, table, labelRow),
+  });
+}
+
+/**
+ * Purge THIS session's redo stack (a new edit invalidates pending redos). The
+ * DELETEs hit the session's own undone entries, which the connected member can
+ * already see (RLS scopes the audit log by row visibility / NULL row_id), so the
+ * member's `SELECT, INSERT, UPDATE, DELETE` grant + the audit table's per-op
+ * DELETE policy permit them.
+ */
+async function purgeRedoStack(db: Lattice, sessionId?: string): Promise<void> {
+  const undone = (await db.query('_lattice_gui_audit', {
+    filters: sessionUndoneFilters(1, sessionId),
+  })) as { id: string }[];
+  for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
+}
+
 /**
  * Append an audit-log entry for a mutation and publish it to the activity
  * feed. `source` tags who triggered it (defaults to the GUI). AuditOp is a
@@ -126,38 +207,12 @@ export async function appendAudit(
   sessionId?: string,
   editTs?: string,
 ): Promise<void> {
-  // Purge THIS session's redo stack (a new edit invalidates pending redos).
-  const undone = (await db.query('_lattice_gui_audit', {
-    filters: sessionUndoneFilters(1, sessionId),
-  })) as { id: string }[];
-  for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
-  await db.insert('_lattice_gui_audit', {
-    id: crypto.randomUUID(),
-    // Set ts explicitly (don't rely on the column DEFAULT — it uses the
-    // SQLite-only `strftime(...)`, which doesn't yield a parseable ISO string
-    // on Postgres, so cloud history rendered "Invalid Date"). #4.6 — honor the
-    // originating client's validated edit time when present (an offline edit
-    // replayed later records when it was MADE, not when it synced), else now().
-    ts: sanitizeEditTs(editTs) ?? new Date().toISOString(),
-    table_name: table,
-    row_id: rowId,
-    operation: op,
-    before_json: before ? JSON.stringify(before) : null,
-    after_json: after ? JSON.stringify(after) : null,
-    undone: 0,
-    session_id: sessionId ?? null,
-  });
-  // Name the row in the bubble: insert/update read the post-image, delete the
-  // pre-image (the row is gone). link/unlink carry the junction body, which has
-  // no human label — feedSummary falls back to the generic phrasing.
-  const labelRow = op === 'delete' ? before : after;
-  feed.publish({
-    table,
-    op: op as FeedOp,
-    rowId,
-    source,
-    summary: feedSummary(op, table, labelRow),
-  });
+  await purgeRedoStack(db, sessionId);
+  await db.insert(
+    '_lattice_gui_audit',
+    buildAuditRow(table, rowId, op, before, after, sessionId, editTs),
+  );
+  publishMutationFeed(feed, table, rowId, op, before, after, source);
 }
 
 /** All schema-op operation strings carry this prefix (see recordSchemaAudit). */
@@ -188,13 +243,10 @@ export async function recordSchemaAudit(
   source: FeedSource = 'gui',
   sessionId?: string,
 ): Promise<void> {
-  const undone = (await db.query('_lattice_gui_audit', {
-    filters: sessionUndoneFilters(1, sessionId),
-  })) as { id: string }[];
-  for (const r of undone) await db.delete('_lattice_gui_audit', r.id);
+  await purgeRedoStack(db, sessionId);
   await db.insert('_lattice_gui_audit', {
     id: crypto.randomUUID(),
-    // Explicit ISO ts — see appendAudit (the SQLite-only strftime DEFAULT
+    // Explicit ISO ts — see buildAuditRow (the SQLite-only strftime DEFAULT
     // rendered "Invalid Date" on the Postgres/cloud path).
     ts: new Date().toISOString(),
     table_name: table,
@@ -302,8 +354,12 @@ async function ensureColumns(db: Lattice, table: string, values: Row): Promise<s
   if (added.length === 0) return [];
   for (const col of added) await db.addColumn(table, col, inferColumnType(values[col]));
   // Cloud: the masked audience view selects an explicit column list, so a newly
-  // added column is invisible to members until the view is regenerated.
-  if (db.getDialect() === 'postgres' && (await cloudRlsInstalled(db))) {
+  // added column is invisible to members until the view is regenerated. A scoped
+  // member can't run that DDL, so its addColumn already regenerated the view inside
+  // the owner-side SECURITY DEFINER helper — don't regenerate again here (the
+  // member's role would fail the CREATE OR REPLACE VIEW). The owner path rebuilds
+  // it here as before.
+  if (!db.isCloudMemberOpen() && db.getDialect() === 'postgres' && (await cloudRlsInstalled(db))) {
     const cols = db.getRegisteredColumns(table);
     const pk = db.getPrimaryKey(table);
     if (cols && pk.length > 0) await regenerateAudienceViewFromDb(db, table, Object.keys(cols), pk);
@@ -511,7 +567,45 @@ export async function deleteRow(
       ctx.clientTs,
     );
   } else {
-    await ctx.db.delete(table, id);
+    await hardDelete(ctx, table, id, before);
+  }
+}
+
+/**
+ * Hard-delete a row AND record its delete-audit entry so the audit INSERT lands
+ * BEFORE the base row (and its cloud ownership record) are removed.
+ *
+ * Ordering is load-bearing on a cloud: the audit table's INSERT policy WITH CHECK
+ * is `row_id IS NULL OR lattice_row_visible(table_name, row_id)`, and the base
+ * table's AFTER DELETE trigger removes the row's `__lattice_owners` record — after
+ * which `lattice_row_visible` is false and the audit INSERT would be rejected. So
+ * the audit row must be written while the ownership record still exists.
+ *
+ * When the adapter supports a transaction (cloud Postgres), the audit INSERT and
+ * the base DELETE run in ONE transaction as raw statements, so they commit
+ * together or not at all — no orphaned audit row if the delete fails, and the
+ * trigger that drops the ownership record fires only at the (single) COMMIT. The
+ * feed event is published after a successful commit. Tables that opt into the
+ * changelog substrate keep the full high-level delete path (so their changelog /
+ * write-hook / embedding side effects still fire); the audit row is written first
+ * there too, which is the part the WITH CHECK depends on.
+ */
+async function hardDelete(
+  ctx: MutationCtx,
+  table: string,
+  id: string,
+  before: Row | null,
+): Promise<void> {
+  const withClient = ctx.db.adapter.withClient?.bind(ctx.db.adapter);
+  const pkCols = ctx.db.getPrimaryKey(table);
+  const pkCol = pkCols.length === 1 ? pkCols[0] : undefined;
+  // The atomic raw path keys the base DELETE on a single-column primary key. Keep
+  // the high-level path for: no transaction support (SQLite / older adapters),
+  // changelog-tracked tables (their substrate / write-hook / embedding side
+  // effects must still fire), and composite/keyless PKs (the high-level
+  // db.delete resolves those). In every fallback the audit INSERT runs FIRST —
+  // the ordering the cloud audit WITH CHECK depends on.
+  if (!withClient || ctx.db.isChangelogTracked(table) || pkCol === undefined) {
     await appendAudit(
       ctx.db,
       ctx.feed,
@@ -524,11 +618,53 @@ export async function deleteRow(
       ctx.sessionId,
       ctx.clientTs,
     );
+    await ctx.db.delete(table, id);
+    return;
   }
+  const auditRow = buildAuditRow(table, id, 'delete', before, null, ctx.sessionId, ctx.clientTs);
+  await purgeRedoStack(ctx.db, ctx.sessionId);
+  const auditCols = AUDIT_COLUMNS.map((c) => `"${c}"`).join(', ');
+  const auditPlaceholders = AUDIT_COLUMNS.map(() => '?').join(', ');
+  const auditValues = AUDIT_COLUMNS.map((c) => auditRow[c]);
+  const pkColQuoted = pkCol.replace(/"/g, '""');
+  await withClient(async (tx) => {
+    await tx.run(
+      `INSERT INTO "_lattice_gui_audit" (${auditCols}) VALUES (${auditPlaceholders})`,
+      auditValues,
+    );
+    await tx.run(`DELETE FROM "${table.replace(/"/g, '""')}" WHERE "${pkColQuoted}" = ?`, [id]);
+  });
+  publishMutationFeed(ctx.feed, table, id, 'delete', before, null, ctx.source);
 }
 
-export async function linkRows(ctx: MutationCtx, table: string, body: Row): Promise<void> {
-  await ctx.db.link(table, body);
+/**
+ * Insert a junction row to link two records, audited + feed-published.
+ *
+ * `forceVisibility` stamps the junction row's cloud visibility atomically at
+ * insert (via the same `insertForcingVisibility` primitive {@link createRow}
+ * uses), instead of letting it inherit the junction table's default. Callers
+ * pass `'private'` when the link encodes a relationship that must stay private —
+ * e.g. an enrichment link from a PRIVATE source file: even if it points at a
+ * SHARED entity, the link row itself would otherwise leak the private file's
+ * association under an 'everyone'-default junction. Omit it for ordinary links
+ * (the prior behaviour — inherit the table default). On SQLite / non-cloud it
+ * degrades to the plain link insert (single-user, no cross-viewer leak).
+ */
+export async function linkRows(
+  ctx: MutationCtx,
+  table: string,
+  body: Row,
+  forceVisibility?: 'private' | 'everyone',
+): Promise<void> {
+  if (forceVisibility !== undefined) {
+    // Route through the GUC-scoped insert so the junction row carries the forced
+    // visibility from the moment it exists (no create-then-demote window). A
+    // failure propagates — a link that couldn't be forced private is reported,
+    // not silently left shared.
+    await ctx.db.insertForcingVisibility(table, body, forceVisibility);
+  } else {
+    await ctx.db.link(table, body);
+  }
   await appendAudit(ctx.db, ctx.feed, table, null, 'link', null, body, ctx.source, ctx.sessionId);
 }
 

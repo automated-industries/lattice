@@ -231,70 +231,151 @@ export const dashboardJs = `    // ───────────────
           }).catch(function (e) { showToast('Visibility update failed: ' + e.message, {}); });
         });
       });
-      var detailVisManage = content.querySelector('#detail-vis-manage');
-      if (detailVisManage) detailVisManage.addEventListener('click', function () {
+      var access = row._access || {};
+
+      // Render the staged member checklist + a single "Save sharing" / "Cancel"
+      // into the panel. Checkbox toggles mutate ONLY the local desired map —
+      // NO network call per toggle (the old design auto-saved live, one POST per
+      // checkbox, and each grant's pg_notify collapsed the panel). A single batch
+      // request fires on Save. members is the already-fetched list; desired
+      // seeds from the row's current grantees (or a caller-supplied staged map
+      // when re-opening after a soft re-render).
+      function populateGrantsPanel(panel, members, desired) {
+        // Snapshot the CURRENT (committed) grantees so Save can diff desired-vs-
+        // current into adds/removes. effectiveVisibility decides whether we're
+        // actually switching INTO specific-people mode (custom-0 reads as private).
+        var current = {};
+        (access.grantees || []).forEach(function (g) { current[g] = true; });
+        if (members.length === 0) {
+          panel.innerHTML = '<div class="muted">No other members in this workspace yet.</div>';
+          panel.hidden = false;
+          return;
+        }
+        function dirtyCount() {
+          var n = 0;
+          members.forEach(function (m) {
+            if (!!desired[m.role] !== !!current[m.role]) n++;
+          });
+          return n;
+        }
+        function render() {
+          var changed = dirtyCount();
+          panel.innerHTML = '<div class="grants-title">Who can see this</div>' +
+            members.map(function (m) {
+              var label = m.name || m.email || m.role;
+              return '<label class="grants-row"><input type="checkbox" data-grant-role="' + escapeHtml(m.role) + '"' +
+                (desired[m.role] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
+            }).join('') +
+            '<div class="grants-actions">' +
+              '<button class="btn primary" id="grants-save"' + (changed ? '' : ' disabled') + '>Save sharing</button>' +
+              '<button class="btn" id="grants-cancel">Cancel</button>' +
+              '<span class="grants-dirty muted">' + (changed ? (changed === 1 ? '1 change' : changed + ' changes') : 'No changes') + '</span>' +
+            '</div>';
+          panel.querySelectorAll('[data-grant-role]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var role = cb.getAttribute('data-grant-role');
+              if (cb.checked) desired[role] = true; else delete desired[role];
+              render(); // re-render to refresh the dirty indicator + Save state
+            });
+          });
+          var cancelBtn = panel.querySelector('#grants-cancel');
+          if (cancelBtn) cancelBtn.addEventListener('click', function () { closeGrantsPanel(panel); });
+          var saveBtn = panel.querySelector('#grants-save');
+          if (saveBtn) saveBtn.addEventListener('click', function () {
+            var toAdd = [];
+            var toRemove = [];
+            members.forEach(function (m) {
+              var want = !!desired[m.role];
+              var have = !!current[m.role];
+              if (want && !have) toAdd.push(m.role);
+              if (!want && have) toRemove.push(m.role);
+            });
+            if (toAdd.length === 0 && toRemove.length === 0) { closeGrantsPanel(panel); return; }
+            // Confirm the mode change ONCE, here — only when actually switching
+            // INTO specific-people mode (effective vis isn't already custom AND we
+            // are adding at least one grantee). Never per checkbox.
+            if (effectiveVisibility(access) !== 'custom' && toAdd.length > 0) {
+              if (!confirm('Sharing this with specific people switches it off "everyone"/"private". The chosen people will be able to see it. Continue?')) return;
+            }
+            withBusy(saveBtn, function () {
+              return fetchJson('/api/cloud/row-grants', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ table: tableName, pk: id, grant: toAdd, revoke: toRemove }),
+              }).then(function () {
+                // Mirror the committed state locally so the re-render's indicator
+                // is correct. The first grant flips the row to custom server-side;
+                // revoking the last leaves custom-0, which effectiveVisibility
+                // renders as private.
+                var list = [];
+                members.forEach(function (m) { if (desired[m.role]) list.push(m.role); });
+                access.grantees = list;
+                if (list.length > 0) access.visibility = 'custom';
+                openGrantsPanel = null; // a successful save closes the staging session
+                invalidate(tableName);
+                showToast('Sharing updated', {});
+                reRender();
+              }).catch(function (e) {
+                // Surface loudly + leave the staged selection intact so the user
+                // can retry; no silent partial-success.
+                showToast('Sharing update failed: ' + e.message, {});
+              });
+            });
+          });
+          panel.hidden = false;
+        }
+        render();
+      }
+
+      function closeGrantsPanel(panel) {
+        if (panel) panel.hidden = true;
+        openGrantsPanel = null;
+      }
+
+      // Open (or toggle shut) the manage-access panel. Fetches the member list,
+      // then stages from the row's current grantees. Opening must NOT pre-flip
+      // the row to 'custom' — that left a never-shared row stuck at "custom (0)".
+      function openManagePanel(triggerBtn) {
         var panel = content.querySelector('#grants-panel');
         if (!panel) return;
-        if (!panel.hidden) { panel.hidden = true; return; }
-        var access = row._access || {};
-        // Opening the panel must NOT pre-flip the row to 'custom' — that left a
-        // row the user never actually shared stuck at "custom (0)". The first
-        // grant flips it to custom server-side (lattice_grant_row); revoking the
-        // last leaves it custom-with-0-grantees, which now reads as private. So
-        // just load the member checklist.
-        var ensure = Promise.resolve();
-        withBusy(detailVisManage, function () {
-          return ensure.then(function () {
-            return fetchJson('/api/cloud/members');
-          }).then(function (d) {
+        if (!panel.hidden) { closeGrantsPanel(panel); return; }
+        withBusy(triggerBtn, function () {
+          return fetchJson('/api/cloud/members').then(function (d) {
             // The grant target is a member ROLE: lattice_grant_row keys on the
             // role, and _access.grantees holds role names. List every member
             // except the owner (you don't grant the owner their own row).
             var members = ((d && d.members) || []).filter(function (m) { return !m.isYou && m.status !== 'owner'; });
-            var granted = {};
-            (access.grantees || []).forEach(function (g) { granted[g] = true; });
-            if (members.length === 0) {
-              panel.innerHTML = '<div class="muted">No other members in this workspace yet.</div>';
-            } else {
-              panel.innerHTML = '<div class="grants-title">Who can see this</div>' + members.map(function (m) {
-                var label = m.name || m.email || m.role;
-                return '<label class="grants-row"><input type="checkbox" data-grant-role="' + escapeHtml(m.role) + '"' +
-                  (granted[m.role] ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
-              }).join('');
-            }
-            panel.hidden = false;
-            panel.querySelectorAll('[data-grant-role]').forEach(function (cb) {
-              cb.addEventListener('change', function () {
-                var role = cb.getAttribute('data-grant-role');
-                cb.disabled = true;
-                fetchJson('/api/cloud/row-grant', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ table: tableName, pk: id, grantee: role, revoke: !cb.checked }),
-                }).then(function () {
-                  var list = access.grantees || (access.grantees = []);
-                  var at = list.indexOf(role);
-                  if (cb.checked && at === -1) list.push(role);
-                  if (!cb.checked && at !== -1) list.splice(at, 1);
-                  // The first grant flips the row to custom server-side; mirror
-                  // that locally so the indicator updates. Revoking the last leaves
-                  // visibility 'custom' but effectiveVisibility renders custom-0 as
-                  // private, so the label flips back to "Private to you".
-                  if (list.length > 0) access.visibility = 'custom';
-                  var infoEl = content.querySelector('#detail-vis-info');
-                  if (infoEl) infoEl.textContent = visInfoLabel(access);
-                  invalidate(tableName);
-                }).catch(function (e) {
-                  cb.checked = !cb.checked; // revert the failed change
-                  showToast('Access update failed: ' + e.message, {});
-                }).then(function () { cb.disabled = false; });
-              });
-            });
-            var infoEl = content.querySelector('#detail-vis-info');
-            if (infoEl) infoEl.textContent = visInfoLabel(access);
+            var desired = {};
+            (access.grantees || []).forEach(function (g) { desired[g] = true; });
+            openGrantsPanel = { table: tableName, pk: id };
+            populateGrantsPanel(panel, members, desired);
           }).catch(function (e) { showToast('Could not load members: ' + e.message, {}); });
         });
+      }
+
+      var detailVisManage = content.querySelector('#detail-vis-manage');
+      if (detailVisManage) detailVisManage.addEventListener('click', function () {
+        openManagePanel(detailVisManage);
       });
+
+      // Preserve an open panel across a soft re-render: if the tracked panel
+      // matches the row this view just repainted, re-open it and re-populate the
+      // checklist from the freshly-fetched row._access WITHOUT any network call,
+      // so a concurrent edit by another client doesn't lose a staged selection.
+      if (openGrantsPanel && openGrantsPanel.table === tableName && openGrantsPanel.pk === id) {
+        var rpanel = content.querySelector('#grants-panel');
+        if (rpanel) {
+          fetchJson('/api/cloud/members').then(function (d) {
+            // Only re-populate if THIS panel is still the tracked-open one (a
+            // newer navigation/save may have cleared it while members loaded).
+            if (!openGrantsPanel || openGrantsPanel.table !== tableName || openGrantsPanel.pk !== id) return;
+            var members = ((d && d.members) || []).filter(function (m) { return !m.isYou && m.status !== 'owner'; });
+            var desired = {};
+            (access.grantees || []).forEach(function (g) { desired[g] = true; });
+            populateGrantsPanel(rpanel, members, desired);
+          }).catch(function () { /* best-effort restore; a click reopens it */ });
+        }
+      }
     }
     function renderDetail(content, tableName, id) {
       var myGen = renderGen;

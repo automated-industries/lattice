@@ -161,6 +161,15 @@ export const routerJs = `    // ────────────────
     // Per-table view state: 'live' (default) or 'trash' (soft-deleted rows).
     var tableViewMode = {};
 
+    // The (table, pk) of the per-row "Manage access" grants panel that is
+    // currently open, or null when none is. A soft re-render (a concurrent edit
+    // by another client fires pg_notify → realtime refresh → renderRoute({soft})
+    // → renderDetail/renderFsItem repaint) would otherwise re-create the detail
+    // view with the panel collapsed, dropping a staged multi-select mid-edit.
+    // wireRowSharing reads this after each repaint and re-opens + re-populates the
+    // panel WITHOUT any network call, so the staged selection survives.
+    var openGrantsPanel = null;
+
     function renderTable(content, tableName) {
       var myGen = renderGen;
       clearUnseen(tableName);

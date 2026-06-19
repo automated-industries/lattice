@@ -14,7 +14,7 @@ import {
   CLOUD_SETTING_WORKSPACE_LOGO,
   CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from '../../cloud/settings.js';
-import { setRowVisibility, grantRow, revokeRow } from '../../cloud/members.js';
+import { setRowVisibility, grantRow, revokeRow, batchRowGrants } from '../../cloud/members.js';
 import { MEMBER_GROUP } from '../../cloud/rls.js';
 import { getAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
 
@@ -258,6 +258,37 @@ export async function dispatchCloudSettings(
       if (revoke) await revokeRow(ctx.db, table, pk, grantee);
       else await grantRow(ctx.db, table, pk, grantee);
       sendJson(res, { ok: true, table, pk, grantee, revoked: revoke });
+    });
+    return true;
+  }
+
+  // POST /api/cloud/row-grants — BATCH "share with specific people". The row
+  // owner stages a multi-select in the GUI and commits ONCE: grant access to
+  // every role in `grant`, revoke it from every role in `revoke`, against one
+  // row (table + pk). Each subject goes through the same owner-only, idempotent
+  // SECURITY DEFINER path as the single-grantee route, so a non-owner caller is
+  // rejected by the database (surfaced here as an error). The first grant flips
+  // the row to `custom` server-side. The single-grantee route above stays for
+  // any other caller.
+  if (pathname === '/api/cloud/row-grants' && method === 'POST') {
+    await tryHandler(res, async () => {
+      const body = await readJson(req);
+      const table = typeof body.table === 'string' ? body.table : '';
+      const pk = typeof body.pk === 'string' ? body.pk : '';
+      const strList = (v: unknown): string[] =>
+        Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+      const grant = strList(body.grant);
+      const revoke = strList(body.revoke);
+      if (!table || !pk) {
+        sendJson(res, { error: 'table and pk are required' }, 400);
+        return;
+      }
+      if (ctx.db.getDialect() !== 'postgres') {
+        sendJson(res, { error: 'Per-row sharing requires a cloud (Postgres) database' }, 400);
+        return;
+      }
+      await batchRowGrants(ctx.db, table, pk, grant, revoke);
+      sendJson(res, { ok: true, table, pk, granted: grant, revoked: revoke });
     });
     return true;
   }

@@ -12,8 +12,10 @@ import {
   installCloudRls,
   enableChangelogRls,
   enableChatPrivacyRls,
+  enableGuiAuditRls,
   ownPolyfillsByGroup,
 } from '../cloud/rls.js';
+import { publishSharedSchema, hydrateMemberConfigFromCloud } from '../cloud/shared-schema.js';
 import { installCloudSettings } from '../cloud/settings.js';
 import { reconcileCloudMemberAccess } from '../cloud/setup.js';
 import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
@@ -83,6 +85,14 @@ export async function openConfig(
   // into the Lattice options so the encryption-key validation is happy
   // at init() time.
   const encryptionKey = getOrCreateMasterKey();
+  // Cloud member: if this scoped member's local config has no entities, hydrate the
+  // owner-published entity/render layout from the cloud BEFORE constructing the Lattice,
+  // so both the CLI and GUI render the full context tree. Best-effort — falls back to
+  // catalog synthesis below if nothing was published. (Needs the encryption key to open
+  // a short-lived peek connection.)
+  if (/^postgres(ql)?:\/\//i.test(parsed.dbPath)) {
+    await hydrateMemberConfigFromCloud(configPath, parsed.dbPath, encryptionKey);
+  }
   const db = new Lattice({ config: configPath }, { encryptionKey });
   registerNativeEntities(db);
   // GUI-only meta table: per-entity icon overrides edited from the browser.
@@ -346,6 +356,7 @@ export async function openConfig(
         await db.ensureObservationSubstrate();
         await enableChangelogRls(db); // converges the v3 fail-closed changelog policy
         await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables (fail-closed on NULL owner)
+        await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log (raw row data) — row_id IS NULL OR lattice_row_visible
         // Converge per-table member access (ungated, no row scans): force the
         // private-only conversation/secret tables to never_share, and re-issue
         // member grants the version-gated per-table securing won't re-emit after
@@ -357,11 +368,31 @@ export async function openConfig(
         for (const s of convergeWarnings) {
           console.warn(`[openConfig] cloud converge could not manage "${s.table}": ${s.reason}`);
         }
+        // Republish the owner's current entity/render layout so a joined member can
+        // hydrate the full context tree from it (members-readable singleton).
+        await publishSharedSchema(db, configPath);
       }
     } catch (e) {
       // internal guideline: never silently swallow. A converge failure must be visible, but
       // shouldn't crash the GUI — the owner can still work; `secure` re-runs it.
       console.error('[openConfig] cloud bootstrap converge failed:', (e as Error).message);
+    }
+  }
+
+  // Cloud MEMBER open with no entity layout: the owner hasn't published one yet
+  // (hydrateMemberConfigFromCloud above found nothing, and the catalog synthesis
+  // discovered no user tables either). Surface a clear, actionable message rather
+  // than silently rendering zero context files.
+  if (memberOpen) {
+    const userTables = db
+      .getRegisteredTableNames()
+      .filter((t) => !t.startsWith('_') && !discoveredJunctions.has(t));
+    if (userTables.length === 0) {
+      convergeWarnings.push({
+        table: '(schema)',
+        reason:
+          'No entity layout is configured for this cloud workspace yet — ask the cloud owner to open the workspace once so it publishes the schema, then reopen. Until then, render produces no context files.',
+      });
     }
   }
 
@@ -619,7 +650,15 @@ export function startBackgroundRender(active: ActiveDb): void {
 
   // Fire-and-forget. The promise settling is handled below; the caller does NOT
   // await this, so the originating HTTP handler returns sub-second.
-  void db.renderInBackground(active.outputDir, { signal, onProgress }).then(
+  //
+  // `gateOnOpen`: this is the open/restart render. A plain restart and a version
+  // update both land here, and re-rendering an unchanged tree on every one is pure
+  // churn (per-table overlays + shared-quota egress for zero file changes). The gate
+  // skips the render when the manifest's recorded cursor (read through this open's own
+  // scope) shows nothing the tree depends on has advanced; it fails open, and the
+  // realtime + mutation render paths (which never set it) are unaffected, so a real
+  // cloud change still re-renders promptly.
+  void db.renderInBackground(active.outputDir, { signal, onProgress, gateOnOpen: true }).then(
     () => {
       // Normal completion is reported by the engine's `done` event handled in
       // onProgress; nothing more to do here.

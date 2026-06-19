@@ -8,18 +8,20 @@ import { guiAppHtml } from '../../src/gui/app.js';
  *
  * Two parts, both asserted against the served SPA:
  *  1. Opening the share panel no longer eagerly persists `visibility='custom'`
- *     (that left the row stuck at custom-0). The first grant flips it to custom
- *     server-side; opening the panel is now a no-op.
+ *     (that left the row stuck at custom-0). The batch Save flips it to custom
+ *     server-side on the first grant; opening the panel performs no write.
  *  2. A shared `effectiveVisibility` helper renders an owner's custom-with-0-
  *     grantees row as private everywhere the sharing state is shown.
  */
 describe('row sharing display — custom-with-0-grantees reads as private', () => {
   it('opening the share panel does not pre-flip the row to custom', () => {
-    expect(guiAppHtml).toContain('var ensure = Promise.resolve();');
     // the old eager pre-flip is gone
     expect(guiAppHtml).not.toContain(
       "postVisibility('custom').then(function () { access.visibility = 'custom'; })",
     );
+    // Opening only fetches the member list to stage from — no row-visibility or
+    // row-grant write happens on open (the write is deferred to batch Save).
+    expect(guiAppHtml).toContain('function openManagePanel');
   });
 
   it('defines a shared effectiveVisibility helper that collapses owner custom-0 to private', () => {

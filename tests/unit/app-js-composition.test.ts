@@ -14,8 +14,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // the offline-retry self-heal, and most recently the 3.4.1 merge's workspace-switch
 // logo refresh (the switch path now re-fetches /api/dbconfig + re-points the header
 // logo, matching the boot path). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 388149;
-const ORIGINAL_SHA256 = 'be2ae5c987bcbdef32ce3245af34ba1069876c8ace3a67a3720636aba778332a';
+const ORIGINAL_LENGTH = 396921;
+const ORIGINAL_SHA256 = 'b717706b70f18fe23ab5968022e9fa69621fb8189138d9a37db78ebf69fa3beb';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

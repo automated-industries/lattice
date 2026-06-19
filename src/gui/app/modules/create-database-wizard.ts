@@ -5,6 +5,63 @@ export const createDatabaseWizardJs = `    // ───────────�
     // Browsers can't expose the local path, so we POST the bytes; the
     // server extracts + summarizes, then discards them (path stays null).
     // ────────────────────────────────────────────────────────────
+    // Cap how many uploads are in flight at once. A browser allows only ~6
+    // HTTP/1.1 connections per host, so a bulk drop of N files would fire N
+    // upload POSTs in parallel and saturate that budget — every other data
+    // request (entities, rows, navigation) then queues for minutes behind the
+    // multi-minute ingests and the GUI looks frozen. Holding uploads to a few
+    // at a time leaves connections free for the rest of the app (and eases the
+    // AI rate limit each ingest hits server-side). The realtime/feed streams are
+    // already off this budget — they share one WebSocket — so this is the last
+    // place a big batch could starve the connection pool.
+    var INGEST_MAX_CONCURRENCY = 3;
+    // Run a batch of upload thunks with at most \`limit\` in flight, calling
+    // onProgress(done, total) as each settles. One failure never stalls the
+    // batch — uploadFile surfaces its own error and resolves.
+    function runIngestBatch(thunks, limit, onProgress) {
+      return new Promise(function (resolve) {
+        var total = thunks.length, idx = 0, done = 0;
+        function startNext() {
+          if (idx >= total) return;
+          var thunk = thunks[idx++];
+          Promise.resolve().then(thunk).catch(function () { /* already surfaced */ }).then(function () {
+            done++;
+            if (onProgress) onProgress(done, total);
+            if (done === total) resolve(); else startNext();
+          });
+        }
+        for (var i = 0; i < Math.min(limit, total); i++) startNext();
+      });
+    }
+    // A batch-upload progress bar pinned to the top of the rail feed
+    // ("Analyzing N of M…"). The per-file "Analyzing <name>…" cards still
+    // appear, but only INGEST_MAX_CONCURRENCY at a time; this gives the
+    // whole-batch view that the individual cards can't. Returns
+    // { update(done, total), done() }.
+    function ingestProgress(total) {
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return { update: function () {}, done: function () {} };
+      railEmptyGone();
+      var wrap = document.createElement('div');
+      wrap.className = 'ingest-progress';
+      wrap.innerHTML =
+        '<div class="ingest-progress-label">Analyzing 0 of ' + total + '…</div>' +
+        '<div class="ingest-progress-track"><div class="ingest-progress-fill"></div></div>';
+      feedEl.insertBefore(wrap, feedEl.firstChild);
+      var label = wrap.querySelector('.ingest-progress-label');
+      var fill = wrap.querySelector('.ingest-progress-fill');
+      return {
+        update: function (n, t) {
+          if (label) label.textContent = 'Analyzing ' + n + ' of ' + t + '…';
+          if (fill) fill.style.width = Math.round((n / t) * 100) + '%';
+        },
+        done: function () {
+          if (fill) fill.style.width = '100%';
+          if (label) label.textContent = 'Analyzed ' + total + ' file' + (total === 1 ? '' : 's');
+          setTimeout(function () { if (wrap.parentNode) wrap.parentNode.removeChild(wrap); }, 2500);
+        },
+      };
+    }
     // Append a transient "Analyzing <file>…" row to the feed so the user sees
     // the ingest is processing in the background; returns a disposer. The real
     // create/link feed events stream in over SSE as the server materializes them.
@@ -40,13 +97,21 @@ export const createDatabaseWizardJs = `    // ───────────�
     }
     function uploadFile(file) {
       var done = pendingIngestItem(file.name || 'file');
+      // Carry the composer's "Private mode" intent so an upload made while the
+      // box is checked is stamped private at insert, instead of inheriting the
+      // files-table default (which can be shared-to-everyone on a cloud). Read
+      // the checkbox defensively — it may not be rendered. On a local workspace
+      // the box is checked+disabled, so this is '1' there too; forced visibility
+      // is a harmless no-op on the single-user SQLite path.
+      var pv = document.getElementById('chat-private');
+      var priv = pv && pv.checked ? '1' : '0';
       return fetch('/api/ingest/upload', {
         method: 'POST',
         // Percent-encode the filename: HTTP header values must be ISO-8859-1,
         // so a Unicode filename (emoji, smart quote, accent, em-dash) would
         // otherwise make fetch() throw "String contains non ISO-8859-1 code
         // point". The server decodeURIComponent()s it back.
-        headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'file') },
+        headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'file'), 'x-lattice-private': priv },
         body: file,
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
@@ -64,7 +129,14 @@ export const createDatabaseWizardJs = `    // ───────────�
         });
         return;
       }
-      for (var i = 0; i < files.length; i++) uploadFile(files[i]);
+      // Multi-file: drain through the bounded-concurrency queue (so a big drop
+      // can't saturate the connection budget) with a batch progress bar.
+      var bar = ingestProgress(files.length);
+      var thunks = [];
+      for (var i = 0; i < files.length; i++) {
+        (function (f) { thunks.push(function () { return uploadFile(f); }); })(files[i]);
+      }
+      runIngestBatch(thunks, INGEST_MAX_CONCURRENCY, bar.update).then(bar.done);
     }
     // Mobile: tapping the handle expands/collapses the bottom drawer.
     function initRailDrawer() {

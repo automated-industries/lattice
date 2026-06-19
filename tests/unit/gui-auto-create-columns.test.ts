@@ -19,6 +19,7 @@ function makeCtx(existing: Record<string, string>) {
       getRegisteredColumns: () => cols,
       getDialect: () => 'sqlite',
       getPrimaryKey: () => ['id'],
+      isCloudMemberOpen: () => false,
       addColumn,
       get: () => Promise.resolve({ ...stored }),
       update: (_t: string, _id: string, vals: Record<string, unknown>) => {

@@ -37,8 +37,14 @@ export const MEMBER_READABLE_BOOKKEEPING: readonly MemberReadableEntry[] = [
   },
   {
     name: '_lattice_gui_audit',
-    privs: 'SELECT, INSERT',
-    why: "the member's own GUI undo/redo log (session-scoped)",
+    // UPDATE + DELETE are needed by undo/redo/revert (flips an entry's `undone`)
+    // and the redo-stack purge on a new mutation (deletes the session's undone
+    // entries). Safe because enableGuiAuditRls installs per-op UPDATE and DELETE
+    // policies whose USING is `row_id IS NULL OR lattice_row_visible(table_name,
+    // row_id)` — so a member can only update/delete audit rows for entities it can
+    // already see (or schema-level entries that carry no row data).
+    privs: 'SELECT, INSERT, UPDATE, DELETE',
+    why: 'GUI undo/redo/revert + redo-stack purge + version history; RLS (enableGuiAuditRls) scopes every op to entries whose underlying row the member can see',
   },
   {
     name: '__lattice_user_identity',
@@ -49,6 +55,11 @@ export const MEMBER_READABLE_BOOKKEEPING: readonly MemberReadableEntry[] = [
     name: '__lattice_changelog',
     privs: 'SELECT, INSERT',
     why: 'per-viewer-RLS-filtered change history for observe()/history (the policy filters reads, so the base grant is safe)',
+  },
+  {
+    name: '__lattice_shared_schema',
+    privs: 'SELECT',
+    why: 'owner-published entity/render layout (entities + entityContexts) a joined member hydrates its config from so render produces the full context tree',
   },
 ];
 

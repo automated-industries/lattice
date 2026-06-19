@@ -235,6 +235,32 @@ export async function revokeRow(
 }
 
 /**
+ * Batch per-row "share with specific people": grant access to every role in
+ * `grant` and revoke it from every role in `revoke`, against ONE row (table +
+ * pk), in a single call. This backs the GUI's staged multi-select Save — the
+ * owner checks several members and commits once, instead of one live POST per
+ * checkbox (which auto-saved live and forced reopening the panel per person).
+ *
+ * Each subject still goes through the SAME owner-gated, idempotent SECURITY
+ * DEFINER path as {@link grantRow} / {@link revokeRow}: the first grant flips the
+ * row to `custom` server-side, and a non-owner caller is rejected by the function
+ * (so the batch path is owner-only by construction, not by a duplicated check).
+ * Grants run before revokes so an add+remove in the same batch settles
+ * deterministically. Any per-subject error propagates — nothing is swallowed.
+ */
+export async function batchRowGrants(
+  db: Lattice,
+  table: string,
+  pk: string,
+  grant: readonly string[],
+  revoke: readonly string[],
+): Promise<void> {
+  assertPg(db);
+  for (const grantee of grant) await grantRow(db, table, pk, grantee);
+  for (const grantee of revoke) await revokeRow(db, table, pk, grantee);
+}
+
+/**
  * Remove a member: clear its privileges and drop the role. NOTE: rows the member
  * owned remain in their tables but become unreachable (their `owner_role` no
  * longer matches any login role, and RLS shows a row only to its owner / grantees
