@@ -38,6 +38,16 @@ export type {
   Relation,
   FilterOp,
   Filter,
+  // v4.1 query primitives
+  FilterExpr,
+  FilterOr,
+  FilterAnd,
+  QueryProjection,
+  AggregateFunction,
+  AggregateSpec,
+  AggregateHaving,
+  AggregateOptions,
+  AggregateResult,
   // v0.3 additions
   BuiltinTemplateName,
   RenderHooks,
@@ -90,6 +100,8 @@ export type {
   ChangelogOptions,
   ChangeEntry,
 } from './types.js';
+// v4.1 — bounded-read guard error (QueryOptions.maxRows / defaultMaxRows).
+export { BoundedReadError } from './query/core.js';
 export { contentHash } from './render/writer.js';
 export { estimateTokens, applyTokenBudget } from './render/token-budget.js';
 export {

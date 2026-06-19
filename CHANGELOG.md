@@ -66,6 +66,14 @@ method that is inert unless a table opts in.
   usable. Lattice never calls a model.
 - **`lattice search "<query>" --table <t> [--explain] [--topk N] [--json]`** — a
   CLI hybrid search; `--explain` prints the per-result score breakdown.
+- **Query primitives.** `QueryOptions.projection` (`string[]` / `{include}` /
+  `{exclude}`) returns only the columns you need; `QueryOptions.maxRows` +
+  `LatticeOptions.defaultMaxRows` + `BoundedReadError` guard against accidental
+  unbounded full-table reads; `filters` now accept recursive `or`/`and` groups
+  and per-clause `jsonPath` extraction into JSON/JSONB columns.
+- **SQL-side aggregation (`Lattice.aggregate`).** `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`
+  (and `COUNT(DISTINCT)`) with `GROUP BY`/`HAVING`/`ORDER BY`, computed in the
+  database so only the grouped result rows transfer — not the underlying rows.
 
 ### Changed
 

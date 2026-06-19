@@ -45,6 +45,14 @@ export interface LatticeOptions {
    * ...")` on violation, so callers can catch it.
    */
   maxRowBytes?: number;
+  /**
+   * Default bounded-read cap for `query()` (4.1+). When set, a `query()` with no
+   * explicit `limit` and no per-call `maxRows` returns at most this many rows and
+   * throws `BoundedReadError` if more match — a guardrail against an accidental
+   * unbounded full-table load on a hot path. A per-call `maxRows` or an explicit
+   * `limit` overrides it. Off by default (unbounded, preserving prior behavior).
+   */
+  defaultMaxRows?: number;
 }
 
 /**
@@ -221,7 +229,44 @@ export interface Filter {
    * For `in`, must be an array.
    */
   val?: unknown;
+  /**
+   * Extract a value from a JSON/JSONB column before comparing. A string like
+   * `'a.b'` or an array `['a', 'b']` addresses a nested key. Compiles to
+   * SQLite `json_extract(col, '$.a.b')` and Postgres `col #>> '{a,b}'`.
+   *
+   * @example
+   * ```ts
+   * { col: 'metadata_json', jsonPath: 'priority', op: 'gte', val: 3 }
+   * { col: 'data', jsonPath: ['address', 'city'], op: 'eq', val: 'NYC' }
+   * ```
+   */
+  jsonPath?: string | string[];
 }
+
+/** An OR group of filter expressions (any may match). */
+export interface FilterOr {
+  or: FilterExpr[];
+}
+
+/** An AND group of filter expressions (all must match). */
+export interface FilterAnd {
+  and: FilterExpr[];
+}
+
+/**
+ * A filter expression: a single {@link Filter} clause, or a recursive `or` / `and`
+ * group of expressions. A bare `Filter` (the pre-4.1 shape) is still a valid
+ * `FilterExpr`, so existing `filters: Filter[]` usage is unchanged.
+ *
+ * @example
+ * ```ts
+ * filters: [
+ *   { col: 'status', op: 'eq', val: 'open' },
+ *   { or: [ { col: 'priority', op: 'gte', val: 3 }, { col: 'pinned', op: 'eq', val: true } ] },
+ * ]
+ * ```
+ */
+export type FilterExpr = Filter | FilterOr | FilterAnd;
 
 // ---------------------------------------------------------------------------
 // Template rendering (v0.3+)
@@ -707,6 +752,16 @@ export interface WritebackDefinition {
 // Query / count options
 // ---------------------------------------------------------------------------
 
+/**
+ * Column projection for a query — return only the columns you need, so wide
+ * tables don't transfer (or decrypt) columns the caller will discard.
+ *
+ * - `string[]` — include exactly these columns.
+ * - `{ include }` — include exactly these columns.
+ * - `{ exclude }` — return all columns except these.
+ */
+export type QueryProjection = string[] | { include: string[] } | { exclude: string[] };
+
 export interface QueryOptions {
   /**
    * Equality filters — shorthand for `filters: [{ col, op: 'eq', val }]`.
@@ -714,31 +769,96 @@ export interface QueryOptions {
    */
   where?: Record<string, unknown>;
   /**
-   * Advanced filter clauses with full operator support.
-   * Combined with `where` using AND.
+   * Advanced filter clauses with full operator support. May include recursive
+   * `or` / `and` groups (4.1+) and per-clause `jsonPath` extraction. Combined
+   * with `where` using AND.
    *
    * @example
    * ```ts
    * filters: [
    *   { col: 'priority',   op: 'gte',    val: 3 },
    *   { col: 'deleted_at', op: 'isNull'          },
-   *   { col: 'tag',        op: 'in',     val: ['bug', 'feature'] },
+   *   { or: [ { col: 'tag', op: 'eq', val: 'bug' }, { col: 'tag', op: 'eq', val: 'feature' } ] },
    * ]
    * ```
    */
-  filters?: Filter[];
+  filters?: FilterExpr[];
   orderBy?: string;
   orderDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+  /**
+   * Return only these columns (4.1+). See {@link QueryProjection}. Omitted
+   * columns are never transferred or decrypted.
+   */
+  projection?: QueryProjection;
+  /**
+   * Bounded-read cap (4.1+). When set and no explicit `limit` is given, the
+   * query reads at most `maxRows` rows and **throws `BoundedReadError`** if more
+   * exist — forcing the caller to paginate rather than silently loading an
+   * unbounded result set. Overrides `LatticeOptions.defaultMaxRows`. An explicit
+   * `limit` opts out (the caller has bounded the read themselves).
+   */
+  maxRows?: number;
 }
 
 export interface CountOptions {
   /** Equality filters (same as QueryOptions.where) */
   where?: Record<string, unknown>;
   /** Advanced filter clauses (same as QueryOptions.filters) */
-  filters?: Filter[];
+  filters?: FilterExpr[];
 }
+
+// ---------------------------------------------------------------------------
+// Aggregation (v4.1)
+// ---------------------------------------------------------------------------
+
+/** SQL aggregate function. */
+export type AggregateFunction = 'count' | 'sum' | 'avg' | 'min' | 'max';
+
+/** One aggregate column in an {@link AggregateOptions}. */
+export interface AggregateSpec {
+  /** The aggregate function to apply. */
+  fn: AggregateFunction;
+  /**
+   * Column to aggregate. Omit for `count` to mean `COUNT(*)`. Required for
+   * `sum`/`avg`/`min`/`max`.
+   */
+  col?: string;
+  /** Output key for this aggregate in each result row. */
+  as: string;
+  /** Apply `DISTINCT` inside the aggregate (e.g. `COUNT(DISTINCT col)`). */
+  distinct?: boolean;
+}
+
+/** A HAVING clause on an aggregate output (post-grouping filter). */
+export interface AggregateHaving {
+  /** The `as` key of an aggregate in the same query. */
+  aggregate: string;
+  op: FilterOp;
+  val?: unknown;
+}
+
+export interface AggregateOptions {
+  /** Columns to GROUP BY. Omit for a single grand-total row. */
+  groupBy?: string[];
+  /** The aggregate columns to compute (at least one). */
+  aggregates: AggregateSpec[];
+  /** Row-level equality filters applied before grouping. */
+  where?: Record<string, unknown>;
+  /** Row-level advanced filters applied before grouping. */
+  filters?: FilterExpr[];
+  /** Post-grouping filters on aggregate outputs. */
+  having?: AggregateHaving[];
+  /** Order the grouped rows by a groupBy column or an aggregate `as` key. */
+  orderBy?: string;
+  orderDir?: 'asc' | 'desc';
+  /** Max grouped rows to return. */
+  limit?: number;
+}
+
+/** One row of {@link Lattice.aggregate} output: groupBy columns + aggregate keys. */
+export type AggregateResult = Record<string, unknown>;
 
 // ---------------------------------------------------------------------------
 // Remaining options / results / events

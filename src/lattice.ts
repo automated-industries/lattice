@@ -7,6 +7,8 @@ import type {
   WritebackDefinition,
   QueryOptions,
   CountOptions,
+  AggregateOptions,
+  AggregateResult,
   InitOptions,
   Migration,
   WatchOptions,
@@ -251,6 +253,8 @@ export class Lattice {
   private readonly _writeHooks: WriteHook[] = [];
   /** Optional cap on per-row payload bytes; see LatticeOptions.maxRowBytes. */
   private _maxRowBytes: number | undefined;
+  /** Optional default bounded-read cap; see LatticeOptions.defaultMaxRows. */
+  private _defaultMaxRows: number | undefined;
 
   /**
    * Reject the row if its payload exceeds `_maxRowBytes`. Cost is dominated
@@ -310,6 +314,7 @@ export class Lattice {
     if (options.encryptionKey) this._encryptionKeyRaw = options.encryptionKey;
     if (options.changelog) this._changelogOptions = options.changelog;
     if (options.maxRowBytes !== undefined) this._maxRowBytes = options.maxRowBytes;
+    if (options.defaultMaxRows !== undefined) this._defaultMaxRows = options.defaultMaxRows;
 
     this._sanitizer.onAudit((event) => {
       for (const h of this._auditHandlers) h(event);
@@ -1672,6 +1677,7 @@ export class Lattice {
         this._invalidColumnError<T>(table, cols),
       decryptRow: (table, row) => this._encryption.decryptRow(table, row),
       decryptRows: (table, rows) => this._encryption.decryptRows(table, rows),
+      defaultMaxRows: this._defaultMaxRows,
     });
     return this._queryCoreInstance;
   }
@@ -1914,6 +1920,28 @@ export class Lattice {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
     return this._queryCore.count(table, opts);
+  }
+
+  /**
+   * SQL-side aggregation — `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` with optional
+   * `GROUP BY` and `HAVING`, computed in the database so only the grouped result
+   * rows transfer (never the underlying rows). Returns one object per group with
+   * the groupBy columns and each aggregate under its `as` key.
+   *
+   * @example
+   * ```ts
+   * await db.aggregate('orders', {
+   *   groupBy: ['status'],
+   *   aggregates: [{ fn: 'count', as: 'n' }, { fn: 'sum', col: 'total', as: 'revenue' }],
+   *   having: [{ aggregate: 'n', op: 'gt', val: 10 }],
+   *   orderBy: 'revenue', orderDir: 'desc',
+   * });
+   * ```
+   */
+  async aggregate(table: string, opts: AggregateOptions): Promise<AggregateResult[]> {
+    const notInit = this._notInitError<AggregateResult[]>();
+    if (notInit) return notInit;
+    return this._queryCore.aggregate(table, opts);
   }
 
   // -------------------------------------------------------------------------
