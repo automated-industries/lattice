@@ -30,7 +30,7 @@ const DEFAULT_YAML = [
  * Each call gets its own ~/.lattice dir + encryption key so specs never share
  * credentials or saved databases. Call `close()` (return value) in afterEach.
  */
-export async function bootGui(opts: { yaml?: string } = {}): Promise<BootedGui> {
+export async function bootGui(opts: { yaml?: string; version?: string } = {}): Promise<BootedGui> {
   const dir = mkdtempSync(join(tmpdir(), 'lattice-e2e-'));
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-e2e-home-'));
   process.env.LATTICE_CONFIG_DIR = cfgDir;
@@ -48,6 +48,9 @@ export async function bootGui(opts: { yaml?: string } = {}): Promise<BootedGui> 
     host: '127.0.0.1',
     teamCloud: false,
     openBrowser: false,
+    // Optional: stamp a version so the page's version chip (and the reconnect
+    // version check) are exercised; defaults to empty (the prior behavior).
+    ...(opts.version ? { version: opts.version } : {}),
   });
 
   return {
