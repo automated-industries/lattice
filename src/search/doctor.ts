@@ -18,6 +18,7 @@ import type { StorageAdapter } from '../db/adapter.js';
 import { getAsyncOrSync, allAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
 import { ftsTableName } from './fts.js';
 import { EMBEDDINGS_TABLE } from './embeddings.js';
+import { hasVectorIndex, vectorIndexName } from './vector-index.js';
 
 export type HealthSeverity = 'info' | 'warning' | 'error';
 
@@ -28,7 +29,8 @@ export type HealthIssueKind =
   | 'embedding_missing'
   | 'embedding_stale'
   | 'extension_missing'
-  | 'dimension_mismatch';
+  | 'dimension_mismatch'
+  | 'index_stale';
 
 export interface RetrievalHealthIssue {
   /** Table the issue concerns, or undefined for a global/extension issue. */
@@ -289,6 +291,30 @@ async function diagnoseTable(
         severity: 'error',
         message: `"${spec.table}" embeddings are ${String(dims[0])}-d but the configured model expects ${String(spec.embeddingDim)}-d.`,
         hint: 'Re-embed the table after changing the embedding model.',
+      });
+    }
+  }
+
+  // --- Native vector index staleness --------------------------------------
+  // The ANN index is built FROM the embeddings and is not auto-maintained on
+  // write, so it can drift after new/changed embeddings. If an index exists and
+  // its row count disagrees with the stored embedding count, flag it for rebuild.
+  if (
+    embeddingCount !== null &&
+    embeddingCount > 0 &&
+    (await hasVectorIndex(adapter, spec.table))
+  ) {
+    const idxCount = await tryCount(
+      adapter,
+      `SELECT count(*) AS n FROM "${vectorIndexName(spec.table)}"`,
+    );
+    if (idxCount !== null && idxCount !== embeddingCount) {
+      issues.push({
+        table: spec.table,
+        kind: 'index_stale',
+        severity: 'warning',
+        message: `Native vector index for "${spec.table}" has ${String(idxCount)} rows but ${String(embeddingCount)} embeddings are stored — the index is stale.`,
+        hint: 'Rebuild the index (buildVectorIndex) so vector search reflects the latest embeddings.',
       });
     }
   }

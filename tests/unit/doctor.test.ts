@@ -120,6 +120,28 @@ describe('diagnoseRetrieval (SQLite)', () => {
     expect(report.healthy).toBe(false);
   });
 
+  it('flags a stale native vector index (row count disagrees with embeddings)', async () => {
+    const d = await setup();
+    await d.insert('notes', { id: 'n1', title: 'a', body: 'b' });
+    await d.insert('notes', { id: 'n2', title: 'c', body: 'd' }); // ≥ 2 embeddings stored
+    // Simulate a native index table built earlier from a SUBSET — now stale.
+    const { runAsyncOrSync } = await import('../../src/db/adapter.js');
+    await runAsyncOrSync(
+      d.adapter,
+      `CREATE TABLE "_lattice_vec_notes" (row_pk TEXT, chunk_index INTEGER, embedding TEXT)`,
+    );
+    await runAsyncOrSync(
+      d.adapter,
+      `INSERT INTO "_lattice_vec_notes" (row_pk, chunk_index, embedding) VALUES ('n1', 0, '[]')`,
+    );
+
+    const report = await d.diagnoseRetrieval();
+    const notes = report.tables.find((t) => t.table === 'notes')!;
+    const stale = notes.issues.find((i) => i.kind === 'index_stale');
+    expect(stale?.severity).toBe('warning');
+    expect(stale?.message).toMatch(/stale/);
+  });
+
   it('excludes soft-deleted rows from the row count denominator', async () => {
     const d = await setup();
     await d.insert('notes', { id: 'n1', title: 'budget', body: 'review' });
