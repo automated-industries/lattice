@@ -1162,16 +1162,25 @@ export class Lattice {
       .join(', ');
     // Conflict target uses all PK columns
     const conflictCols = pkCols.map((c) => `"${c}"`).join(', ');
-    // Exclude all PK columns from the UPDATE SET clause
+    // Exclude PK columns AND immutable provenance columns from the UPDATE SET: an
+    // upsert against an existing row must NOT rewrite its lineage (P-PROV), just as
+    // a plain update() rejects a provenance change — the first-insert provenance is
+    // preserved on conflict.
+    const keepOnConflict = new Set([...pkCols, ...(this._provenanceCols.get(table) ?? [])]);
     const updateCols = Object.keys(encrypted)
-      .filter((c) => !pkCols.includes(c))
+      .filter((c) => !keepOnConflict.has(c))
       .map((c) => `"${c}" = excluded."${c}"`)
       .join(', ');
     const values = Object.values(encrypted);
 
+    // If every non-PK column is provenance (nothing left to update), the conflict
+    // is a no-op rather than an invalid empty SET.
+    const onConflict = updateCols
+      ? `ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`
+      : `ON CONFLICT(${conflictCols}) DO NOTHING`;
     await runAsyncOrSync(
       this._adapter,
-      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`,
+      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ${onConflict}`,
       values,
     );
 
@@ -2198,8 +2207,8 @@ export class Lattice {
   async queryPage(table: string, opts: QueryPageOptions = {}): Promise<QueryPageResult> {
     const notInit = this._notInitError<QueryPageResult>();
     if (notInit) return notInit;
-    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
-    return this._queryCore.queryPage(table, opts, pkCol);
+    const pkCols = this._schema.getPrimaryKey(table);
+    return this._queryCore.queryPage(table, opts, pkCols.length > 0 ? pkCols : ['id']);
   }
 
   /**

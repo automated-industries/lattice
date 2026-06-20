@@ -51,6 +51,25 @@ describe('provenance (SQLite)', () => {
     expect((await d.get('docs', 'd1'))!.source_uri).toBe('a');
   });
 
+  it('an upsert against an existing row preserves its provenance (immutable lineage)', async () => {
+    const d = await setup();
+    await d.insert('docs', { id: 'd1', body: 'x', ingested_via: 'crawler', source_uri: 'orig' });
+    const firstStamp = (await d.get('docs', 'd1'))!.ingested_at;
+    // Upsert the same PK with a NEW body and a DIFFERENT provenance — the lineage
+    // must NOT be rewritten (the conflict-update excludes provenance columns).
+    await d.upsert('docs', {
+      id: 'd1',
+      body: 'updated',
+      ingested_via: 'attacker',
+      source_uri: 'evil',
+    });
+    const row = await d.get('docs', 'd1');
+    expect(row!.body).toBe('updated'); // data column updated
+    expect(row!.ingested_via).toBe('crawler'); // lineage preserved
+    expect(row!.source_uri).toBe('orig');
+    expect(row!.ingested_at).toBe(firstStamp);
+  });
+
   it('honors a fields subset', async () => {
     db = new Lattice(':memory:');
     db.define('t', {

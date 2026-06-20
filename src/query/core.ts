@@ -305,11 +305,12 @@ export class QueryCore {
   async queryPage(
     table: string,
     opts: QueryPageOptions,
-    pkColumn: string,
+    pkColumns: string[],
   ): Promise<QueryPageResult> {
     this.assertIdent(table);
     const limit = Math.max(1, opts.limit ?? 50);
-    const orderBy = opts.orderBy ?? pkColumn;
+    const pks = pkColumns.length > 0 ? pkColumns : ['id'];
+    const orderBy = opts.orderBy ?? pks[0] ?? 'id';
     const desc = opts.orderDir === 'desc';
     const dir = desc ? 'DESC' : 'ASC';
     const cmp = desc ? '<' : '>';
@@ -324,21 +325,33 @@ export class QueryCore {
     if (colErr) return colErr;
 
     const { clauses, params } = this.composeWhere(opts.where, opts.filters);
+    // Composite-PK-safe keyset: the tie-break compares ALL primary-key columns
+    // via a row-value comparison `(pk1, pk2) cmp (?, ?)` (a single PK degrades to
+    // the scalar form). Both SQLite (>= 3.15) and Postgres support row-value
+    // comparisons, so a table with a composite key paginates without skipping rows
+    // that share `(orderBy, pk1)` but differ in `pk2`. (PKs are non-null, so the
+    // tie-break has no NULL ambiguity; a nullable `orderBy` is the usual keyset
+    // caveat — order by a non-null column for exact paging.)
+    const pkRefs = pks.map((c) => `"${ident(c)}"`);
+    const pkLhs = pks.length === 1 ? pkRefs.join('') : `(${pkRefs.join(', ')})`;
+    const pkRhs = pks.length === 1 ? '?' : `(${pks.map(() => '?').join(', ')})`;
     if (opts.cursor) {
       const cur = decodeCursor(opts.cursor);
-      // (orderBy cmp ?) OR (orderBy = ? AND pk cmp ?) — total order via the pk tiebreak.
+      const pkVals: unknown[] = Array.isArray(cur.p) ? (cur.p as unknown[]) : [cur.p];
+      // (orderBy cmp ?) OR (orderBy = ? AND <all pk columns> cmp <cursor pk values>).
       clauses.push(
-        `("${ident(orderBy)}" ${cmp} ? OR ("${ident(orderBy)}" = ? AND "${ident(pkColumn)}" ${cmp} ?))`,
+        `("${ident(orderBy)}" ${cmp} ? OR ("${ident(orderBy)}" = ? AND ${pkLhs} ${cmp} ${pkRhs}))`,
       );
-      params.push(cur.o, cur.o, cur.p);
+      params.push(cur.o, cur.o, ...pkVals);
     }
 
     const selectList = projectionCols
-      ? [...new Set([...projectionCols, orderBy, pkColumn])].map((c) => `"${ident(c)}"`).join(', ')
+      ? [...new Set([...projectionCols, orderBy, ...pks])].map((c) => `"${ident(c)}"`).join(', ')
       : '*';
     let sql = `SELECT ${selectList} FROM "${table}"`;
     if (clauses.length > 0) sql += ` WHERE ${clauses.join(' AND ')}`;
-    sql += ` ORDER BY "${ident(orderBy)}" ${dir}, "${ident(pkColumn)}" ${dir} LIMIT ${(limit + 1).toString()}`;
+    const pkOrder = pks.map((c) => `"${ident(c)}" ${dir}`).join(', ');
+    sql += ` ORDER BY "${ident(orderBy)}" ${dir}, ${pkOrder} LIMIT ${(limit + 1).toString()}`;
 
     const rows = await allAsyncOrSync(this.adapter, sql, params);
     const hasMore = rows.length > limit;
@@ -346,7 +359,10 @@ export class QueryCore {
     let nextCursor: string | null = null;
     const last = page[page.length - 1];
     if (hasMore && last !== undefined) {
-      nextCursor = encodeCursor(last[orderBy], last[pkColumn]);
+      nextCursor = encodeCursor(
+        last[orderBy],
+        pks.map((c) => last[c]),
+      );
     }
     return { rows: this.decryptRows(table, page), nextCursor, hasMore };
   }
@@ -648,8 +664,8 @@ export class QueryCore {
 }
 
 /** Encode a keyset cursor from the last row's (orderBy, pk) values. Opaque base64. */
-function encodeCursor(orderVal: unknown, pkVal: unknown): string {
-  const payload = JSON.stringify({ o: orderVal ?? null, p: pkVal ?? null });
+function encodeCursor(orderVal: unknown, pkVals: unknown[]): string {
+  const payload = JSON.stringify({ o: orderVal ?? null, p: pkVals.map((v) => v ?? null) });
   return Buffer.from(payload, 'utf8').toString('base64url');
 }
 

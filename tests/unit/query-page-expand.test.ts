@@ -79,6 +79,42 @@ describe('p3 query primitives (SQLite)', () => {
       const d = await setup(3);
       await expect(d.queryPage('items', { cursor: 'not-base64-json!!' })).rejects.toThrow(/cursor/);
     });
+
+    it('paginates a COMPOSITE-PK table with no gaps or repeats', async () => {
+      db = new Lattice(':memory:');
+      db.define('events', {
+        columns: { tenant: 'TEXT', seq: 'INTEGER', score: 'INTEGER', name: 'TEXT' },
+        primaryKey: ['tenant', 'seq'],
+        render: () => '',
+        outputFile: 'e.md',
+      });
+      await db.init();
+      // Many rows share the SAME orderBy value (score) but differ in the composite
+      // PK — exactly what a single-column tie-break would skip or duplicate.
+      const rows: { tenant: string; seq: number; score: number; name: string }[] = [];
+      let k = 0;
+      for (const tenant of ['a', 'b', 'c']) {
+        for (let seq = 0; seq < 5; seq++) {
+          rows.push({ tenant, seq, score: k % 3, name: `r${String(k)}` });
+          k++;
+        }
+      }
+      for (const r of rows) await db.insert('events', r);
+
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      for (let guard = 0; guard < 50; guard++) {
+        const page = await db.queryPage('events', { orderBy: 'score', limit: 4, cursor });
+        for (const row of page.rows) {
+          const key = `${String(row.tenant)}/${String(row.seq)}`;
+          expect(seen.has(key)).toBe(false); // no duplicate across pages
+          seen.add(key);
+        }
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+      expect(seen.size).toBe(rows.length); // every row returned exactly once — no gaps
+    });
   });
 
   // --- P-DEDUP ------------------------------------------------------------
