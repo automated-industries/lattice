@@ -22,7 +22,9 @@ method that is inert unless a table opts in.
   Precision@k, Recall@k, MRR, nDCG@k (graded gains), MAP — over any ranked
   retriever (`(query) => rankedRowIds`), with a per-query breakdown and optional
   multi-cutoff report. `detectRetrievalRegressions(baseline, candidate, tolerance)`
-  turns it into a CI gate so a retrieval change can't silently lower quality.
+  powers a regression gate that runs in the test suite — a golden set evaluated
+  against the real `search()` and compared to a committed baseline — so a change
+  that lowers retrieval quality below tolerance fails the build.
   Empty input / non-positive `k` throw rather than report a meaningless zero.
 - **Retrieval health doctor (`diagnoseRetrieval`, `lattice doctor`).** Read-only
   diagnostics: per-table full-text and embedding coverage (soft-deleted rows
@@ -33,9 +35,13 @@ method that is inert unless a table opts in.
 - **Benchmark harness (`benchmarkRetrieval`, `checkSlos`).** Reproducible
   speed-to-answer numbers — p50/p95/p99 for filtered query, full-text, vector, and
   aggregate, plus ingest throughput and peak memory — on synthetic data at a
-  configurable scale, both dialects, exercising the real code paths. Ships in the
-  package so the same harness that gates CI SLOs can reproduce the published
-  numbers. Default scale is CI-fast; `LATTICE_BENCH_*` env vars scale it up.
+  configurable scale, both dialects, exercising the real code paths. The vector
+  phase builds the native index first, and the report's `vectorIndexed` flag marks
+  whether the vector numbers reflect the index or the in-process-scan fallback —
+  so a published number is never the scan masquerading as the index. `checkSlos`
+  flags latency-SLO violations against thresholds you set for your own hardware
+  (shared-runner latency is too noisy to gate a build on by default). Default
+  scale is CI-fast; `LATTICE_BENCH_*` env vars scale it up.
 - **Text chunking for embeddings (`semanticChunker`, `EmbeddingsConfig.chunker`).**
   A dependency-free, boundary-aware splitter (paragraph → sentence → word) with
   optional overlap, so a row is embedded as several small, coherent chunks instead
@@ -43,10 +49,12 @@ method that is inert unless a table opts in.
   correct answer. `EmbeddingsConfig.contextPrefix(row)` prepends per-row context
   (e.g. a title) to every chunk; `modelId` is stored with each vector.
 - **Indexed vector search (`buildVectorIndex`).** An opt-in per-table native
-  approximate-nearest-neighbor index — pgvector HNSW on Postgres, sqlite-vec on
-  SQLite — built from the stored embeddings, turning the O(n) in-process scan into
-  an indexed ~O(log n) lookup; semantic search uses it automatically when present
-  and falls back to the in-process scan (reported by `lattice doctor`) otherwise.
+  approximate-nearest-neighbor index — pgvector HNSW on Postgres (auto-enabled via
+  `CREATE EXTENSION IF NOT EXISTS vector`), sqlite-vec on SQLite (when the extension
+  is loaded into the connection) — built from the stored embeddings, turning the
+  O(n) in-process scan into an indexed ~O(log n) lookup; semantic search uses it
+  automatically when present and falls back to the in-process scan (reported by
+  `lattice doctor`) otherwise.
 - **Incremental embedding refresh (`refreshEmbeddings`).** Backfill missing,
   re-embed model-stale or changed rows, and sweep orphaned embeddings — instead of
   re-embedding everything on any change.
@@ -112,13 +120,16 @@ method that is inert unless a table opts in.
   aggregates over a child table (e.g. `comment_count`), maintained incrementally
   as children change and recomputable in full via `refreshMaterializedRollups`.
 - **Seamless cloud file-byte access (`enableCloudFilePresigning`, cloud
-  Postgres).** An in-database SigV4 presigner: a keyless cloud member fetches /
-  uploads file bytes with zero config — `lattice_presign_file` computes a
-  short-lived presigned URL inside Postgres, gated on the member's row-visibility,
-  using the owner's key which never leaves the database. Enabling S3 on a cloud
-  turns it on for all current + future members; the GUI file-byte route uses it
-  automatically for keyless members. (SigV4 signing is verified against AWS's
-  published test vectors.)
+  Postgres).** An in-database SigV4 presigner: a keyless cloud member fetches file
+  bytes with zero config — `lattice_presign_file` computes a short-lived (≤ 60 s)
+  presigned URL inside Postgres, gated on the member's row-visibility, using the
+  owner's key which never leaves the database (a member-role test asserts the
+  secret table is not member-readable). Enabling S3 on a cloud turns it on for all
+  current + future members (re-granted on every reconcile); the GUI file-byte route
+  uses it automatically for keyless member fetches. SigV4 signing is verified
+  against AWS's published GET test vector plus an independent reference for PUT.
+  Keyless **upload** (presigned PUT) is forthcoming in a 4.1.x follow-up — the
+  signer supports it; the ingest-route wiring lands separately.
 
 ### Changed
 
