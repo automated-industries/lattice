@@ -144,6 +144,29 @@ method that is inert unless a table opts in.
   populated by the indexed tier (`ts_rank` on Postgres, `-bm25` on SQLite FTS5)
   and results are ordered by relevance — previously indexed full-text results
   came back in physical/rowid order.
+- **`lattice connect` — put Lattice behind your own dashboard, and import data into it.**
+  A non-coder-friendly command (and GUI flow) that pastes your Claude key, opens a
+  local workspace, and serves your own dashboard (a single HTML file or a folder)
+  at `/` — the built-in view moves to `/lattice`, and a small "↩ Lattice" pill is
+  injected into the served page so you're never trapped. Same-origin, so the
+  dashboard's own upload/notes controls call the data routes directly (no key in
+  the page, no CORS). New `startGuiServer` option `dashboardPath`; the connected
+  dashboard persists across restarts.
+- **Structured-source importer.** Turn a JSON or `.xlsx` source into a Lattice
+  schema (entities, dimensions, junctions), reviewed before anything is written,
+  then materialized into the workspace (deduped, persisted to config). Excel sheets
+  become records by detecting the header row + data region; per-fund-style tabs
+  that are a slice of a master become read-only **views** (no duplicated rows).
+  **Point-in-time snapshots:** an as-of date is detected from the file's contents,
+  name, Excel preamble, then a Claude fallback — or per-row from a date column — so
+  re-importing a newer period keeps a dated snapshot beside the prior one.
+  **Re-import recognition:** a new upload is fingerprinted and matched to the tables
+  already in the workspace, so it lands as a new snapshot instead of duplicate
+  tables. And it works from the **assistant**: dropping a recognized `.xlsx`/`.json`
+  into the chat auto-imports it as a dated snapshot, reported in the activity feed.
+  New library exports: `inferSchema`, `materializeImport`, `detectAsOf`,
+  `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`, `matchSchemaToExisting`,
+  `renameEntities`, `excelToRecords`, `dedupeAndDetectViews` (+ types).
 
 ### Fixed
 

@@ -43,6 +43,7 @@ export default defineConfig([
       'word-extractor',
       'unpdf',
       'ws',
+      'exceljs',
     ],
   },
 
@@ -79,6 +80,7 @@ export default defineConfig([
       'word-extractor',
       'unpdf',
       'ws',
+      'exceljs',
     ],
   },
 ]);

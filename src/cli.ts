@@ -1,5 +1,5 @@
 import { resolve, dirname } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { parse } from 'yaml';
 import type { LatticeConfig } from './config/types.js';
@@ -21,6 +21,7 @@ import {
   setActiveWorkspace,
 } from './framework/workspace.js';
 import { importLegacyUserConfig } from './framework/migrate-to-root.js';
+import { onboardClaudeKey, createReadlineIo } from './connect/onboarding.js';
 import { analyticsEnabled, getOrCreateMasterKey } from './framework/user-config.js';
 import { hydrateMemberConfigFromCloud } from './cloud/shared-schema.js';
 
@@ -69,6 +70,8 @@ interface ParsedArgs {
   topK?: number | undefined;
   /** --explain — print the hybrid-search score breakdown (`search`). */
   explain: boolean;
+  /** --dashboard <file|dir> — a user-provided dashboard served at `/` by `connect`. */
+  dashboard?: string | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -98,6 +101,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let table: string | undefined;
   let topK: number | undefined;
   let explain = false;
+  let dashboard: string | undefined;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -181,6 +185,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       i++;
       const parsed = parseInt(argv[i] ?? '10', 10);
       if (!isNaN(parsed)) topK = parsed;
+    } else if (arg === '--dashboard' && i + 1 < argv.length) {
+      i++;
+      dashboard = argv[i];
     }
     i++;
   }
@@ -212,6 +219,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     table,
     topK,
     explain,
+    dashboard,
   };
 }
 
@@ -238,6 +246,7 @@ function printHelp(): void {
       '  gui         Start a local browser GUI for exploring Lattice context',
       '  doctor      Report retrieval health (FTS/embedding coverage, extensions)',
       '  search      Hybrid search a table (--table <t> [--explain] [--topk N])',
+      '  connect     Set up Lattice behind your own dashboard (paste your Claude key, then go)',
       '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
@@ -273,6 +282,12 @@ function printHelp(): void {
       'Options (gui):',
       '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
       '  --output <dir>         Output directory for rendered context (default: ./context)',
+      '  --port <number>        Localhost port (default: 4317; auto-increments if busy)',
+      '  --no-open              Do not open the browser automatically',
+      '',
+      'Options (connect):',
+      '  --dashboard <path>     A local HTML file or folder to serve at / (Lattice moves to /lattice)',
+      '  --root <dir>           The .lattice root location (default: discovered or ./.lattice)',
       '  --port <number>        Localhost port (default: 4317; auto-increments if busy)',
       '  --no-open              Do not open the browser automatically',
       '',
@@ -694,6 +709,90 @@ async function runGui(args: ParsedArgs): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// connect — non-coder onboarding + "bring your own dashboard"
+// ---------------------------------------------------------------------------
+
+async function runConnect(args: ParsedArgs): Promise<void> {
+  // Step 1 — Claude key (the one thing a non-coder must provide). Stored
+  // encrypted on this machine only; never written into the connected database.
+  const io = createReadlineIo();
+  let connected: boolean;
+  try {
+    connected = await onboardClaudeKey(io);
+  } finally {
+    io.close?.();
+  }
+
+  try {
+    // Step 2 — ensure a .lattice root + workspace, reusing the GUI bootstrap.
+    if (args.root) process.env.LATTICE_ROOT = args.root;
+    const boot = ensureRootForGui({
+      startDir: args.root ?? process.cwd(),
+      configPath: resolve(args.config),
+      explicitConfig: args.config !== './lattice.config.yml',
+    });
+
+    // Connect must open INTO a workspace. If the root has none, create a default
+    // + make it active so we never land on the "no active workspace" screen.
+    let connectConfigPath = boot.configPath;
+    let connectContextDir = boot.contextDir;
+    if (!boot.workspaceId) {
+      const ws = addWorkspace(boot.root, { displayName: args.displayName ?? 'My Data' });
+      const seedDb = await Lattice.openWorkspace({ root: boot.root, workspaceId: ws.id });
+      seedDb.close();
+      setActiveWorkspace(boot.root, ws.id);
+      const paths = resolveWorkspacePaths(boot.root, ws);
+      connectConfigPath = paths.configPath;
+      connectContextDir = paths.contextDir;
+      console.log(`Created workspace "${ws.displayName}".`);
+    }
+
+    // Step 3 — resolve the dashboard to serve (a single HTML file or a folder).
+    const dashboardPath = args.dashboard ? resolve(args.dashboard) : null;
+    if (dashboardPath && !existsSync(dashboardPath)) {
+      console.error(`Error: dashboard path not found: ${dashboardPath}`);
+      process.exit(1);
+    }
+
+    const handle = await startGuiServer({
+      configPath: connectConfigPath,
+      outputDir: connectContextDir,
+      latticeRoot: boot.root,
+      port: args.port,
+      openBrowser: !args.noOpen,
+      // Connect serves the dashboard + the data API; it does NOT need the per-row
+      // rendered markdown tree. Auto-render ON would kick off a render-per-row on a
+      // big import and (better-sqlite3 is synchronous) block the event loop — the
+      // GUI hangs on "Loading…". Off keeps it responsive after a large import.
+      autoRender: false,
+      version: getVersion(),
+      ...(dashboardPath ? { dashboardPath } : {}),
+    });
+
+    if (dashboardPath) {
+      console.log(`\nYour dashboard is live at ${handle.url}`);
+      console.log(`Lattice's own view is at ${handle.url}/lattice`);
+    } else {
+      console.log(`\nLattice is live at ${handle.url}`);
+      console.log('Tip: pass --dashboard <file.html | folder> to serve your own dashboard here.');
+    }
+    if (!connected) {
+      console.log('Note: no Claude key yet — uploads are saved but not auto-categorized.');
+    }
+    console.log('Press Ctrl+C to stop.');
+
+    const shutdown = (): void => {
+      void handle.close().finally(() => process.exit(0));
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // init / workspace
 // ---------------------------------------------------------------------------
 
@@ -829,6 +928,9 @@ function main(): void {
       break;
     case 'gui':
       void runGui(args);
+      break;
+    case 'connect':
+      void runConnect(args);
       break;
     case 'init':
       void runInit(args);
