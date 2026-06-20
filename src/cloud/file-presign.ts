@@ -164,14 +164,19 @@ BEGIN
     RAISE EXCEPTION 'cloud S3 not configured';
   END IF;
 
-  -- Resolve the object key from the files row (ref_uri holds the S3 key/url).
-  SELECT coalesce(ref_uri, id) INTO object_key FROM files WHERE id = p_file_id;
+  -- Resolve the VERBATIM S3 object key from the files row. The key was finalized
+  -- at upload time (it already includes any configured prefix) and is stored in
+  -- the row''s s3://bucket/<key> ref_uri, so the owner read path and this presigner
+  -- both use it as-is. The prefix is NEVER re-prepended here -- doing so would
+  -- double it (e.g. <prefix>/<prefix>/<sha>) and 404 on the default config.
+  SELECT ref_uri INTO object_key FROM files WHERE id = p_file_id;
   IF object_key IS NULL THEN
-    RAISE EXCEPTION 'no object key for file %', p_file_id;
+    RAISE EXCEPTION 'no object reference for file %', p_file_id;
   END IF;
-  -- Strip a leading s3://bucket/ or bucket prefix already applied.
-  object_key := regexp_replace(object_key, '^s3://[^/]+/', '');
-  object_key := s.prefix || object_key;
+  object_key := substring(object_key from '^s3://[^/]+/(.+)$');
+  IF object_key IS NULL OR object_key = '' THEN
+    RAISE EXCEPTION 'file % is not an s3:// reference', p_file_id;
+  END IF;
 
   host := coalesce(s.endpoint, s.bucket || '.s3.' || s.region || '.amazonaws.com');
   amz_date := to_char(now() AT TIME ZONE 'UTC', 'YYYYMMDD"T"HH24MISS"Z"');
@@ -255,13 +260,12 @@ export async function grantPresignerToMemberGroup(
 /** Whether the presigner function is installed in the current schema. */
 export async function hasFilePresigner(adapter: StorageAdapter): Promise<boolean> {
   if (adapter.dialect !== 'postgres') return false;
-  try {
-    const row = await getAsyncOrSync(
-      adapter,
-      `SELECT count(*) AS n FROM pg_proc WHERE proname = 'lattice_presign_file'`,
-    );
-    return Number(row?.n ?? 0) > 0;
-  } catch {
-    return false;
-  }
+  // `pg_proc` always exists, so a query failure here is a real connection/auth
+  // error — let it surface rather than masquerading as "presigner not installed"
+  // (which would trigger a misleading reinstall instead of reporting the fault).
+  const row = await getAsyncOrSync(
+    adapter,
+    `SELECT count(*) AS n FROM pg_proc WHERE proname = 'lattice_presign_file'`,
+  );
+  return Number(row?.n ?? 0) > 0;
 }
