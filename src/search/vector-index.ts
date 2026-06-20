@@ -35,6 +35,18 @@ import { assertSafeIdentifier } from '../schema/identifier.js';
 const VEC_PREFIX = '_lattice_vec_';
 
 /**
+ * Unit-normalize a vector (L2). `sqlite-vec` ranks by L2 distance; for that to be
+ * cosine-equivalent (`cos = 1 − d²/2`) the stored AND query vectors must be unit
+ * length. Postgres `<=>` is cosine distance directly, so it needs no normalize.
+ */
+function normalizeVector(v: number[]): number[] {
+  let mag = 0;
+  for (const x of v) mag += x * x;
+  mag = Math.sqrt(mag);
+  return mag === 0 ? v : v.map((x) => x / mag);
+}
+
+/**
  * Per-table native vector index name. The table is grammar-guarded here because
  * the returned name is interpolated into DDL (`CREATE TABLE "..."`, `DROP`,
  * `INSERT`); every build/drop/search path derives the index name through this
@@ -110,6 +122,18 @@ export async function buildVectorIndex(
   dim: number,
   requireExtension = false,
 ): Promise<number> {
+  // Postgres: pgvector's type/operators don't exist until the extension is
+  // enabled in this database. Attempt it idempotently (a server that doesn't ship
+  // pgvector throws, which we treat as "unavailable" below); invalidate the
+  // availability cache so the freshly-created extension is seen.
+  if (adapter.dialect === 'postgres') {
+    try {
+      await runAsyncOrSync(adapter, `CREATE EXTENSION IF NOT EXISTS vector`);
+      availabilityCache.delete(adapter);
+    } catch {
+      /* pgvector not installed on this server — falls through to no-op/throw */
+    }
+  }
   if (!(await vectorIndexAvailable(adapter))) {
     if (requireExtension) {
       throw new Error(
@@ -165,10 +189,12 @@ export async function buildVectorIndex(
       [table],
     );
     for (const r of stored) {
+      // Unit-normalize so the vec0 L2 distance is cosine-equivalent at query time.
+      const vec = normalizeVector(JSON.parse(String(r.embedding)) as number[]);
       await runAsyncOrSync(
         adapter,
         `INSERT INTO "${idx}" (row_pk, chunk_index, embedding) VALUES (?, ?, ?)`,
-        [r.row_pk, r.chunk_index, r.embedding],
+        [r.row_pk, r.chunk_index, JSON.stringify(vec)],
       );
     }
   }
@@ -227,7 +253,8 @@ export async function searchVectorIndex(
          ON e."table_name" = ? AND e."row_pk" = v.row_pk AND e."chunk_index" = v.chunk_index
       WHERE v.embedding MATCH ? AND k = ${String(limit)}
       ORDER BY v.distance`,
-    [table, qjson],
+    // Normalize the query to match the unit-normalized stored vectors (cosine).
+    [table, JSON.stringify(normalizeVector(queryVector))],
   );
   return rows
     .map((r) => {

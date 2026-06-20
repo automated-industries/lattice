@@ -22,6 +22,7 @@ import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, allAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
 import { ensureFtsIndex, fullTextSearch } from './fts.js';
 import { ensureEmbeddingsTable, storeEmbedding, searchByEmbedding } from './embeddings.js';
+import { buildVectorIndex, hasVectorIndex, dropVectorIndex } from './vector-index.js';
 import type { EmbeddingsConfig } from '../types.js';
 
 export interface LatencyStats {
@@ -53,6 +54,13 @@ export interface BenchmarkReport {
   aggregate: LatencyStats;
   /** Peak resident-set bytes observed during the vector-search phase. */
   peakRssBytes: number;
+  /**
+   * Whether the `vector` numbers reflect the NATIVE index (pgvector/sqlite-vec)
+   * or the in-process O(n) scan fallback. `false` means no extension was present,
+   * so `vector.p95` is the scan baseline — not the indexed number. Surfaced so a
+   * published benchmark can never present the scan as the index.
+   */
+  vectorIndexed: boolean;
 }
 
 export interface BenchmarkOptions {
@@ -224,6 +232,12 @@ export async function benchmarkRetrieval(
 
   await ensureFtsIndex(adapter, table, ['title', 'body']);
 
+  // Build the native vector index so the vector phase times the INDEXED path when
+  // an extension is available (else it no-ops and the scan baseline is timed). The
+  // report's `vectorIndexed` flag records which one the numbers reflect.
+  await buildVectorIndex(adapter, table, scale.dim);
+  const vectorIndexed = await hasVectorIndex(adapter, table);
+
   // Build a fixed pool of query strings.
   const queryStrings: string[] = [];
   for (let i = 0; i < scale.queries; i++) queryStrings.push(sentence(rng, 3));
@@ -271,6 +285,7 @@ export async function benchmarkRetrieval(
     aggSamples.push(now() - t0);
   }
 
+  await dropVectorIndex(adapter, table);
   await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${table}"`);
   await runAsyncOrSync(adapter, `DELETE FROM "_lattice_embeddings" WHERE table_name = ?`, [table]);
 
@@ -283,6 +298,7 @@ export async function benchmarkRetrieval(
     vector: latencyStats(vectorSamples),
     aggregate: latencyStats(aggSamples),
     peakRssBytes: peakRss,
+    vectorIndexed,
   };
 }
 

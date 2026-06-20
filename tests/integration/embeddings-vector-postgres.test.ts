@@ -11,7 +11,7 @@ import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { Lattice } from '../../src/lattice.js';
 import { runAsyncOrSync, allAsyncOrSync } from '../../src/db/adapter.js';
-import { vectorIndexAvailable } from '../../src/search/vector-index.js';
+import { vectorIndexAvailable, hasVectorIndex } from '../../src/search/vector-index.js';
 import { semanticChunker } from '../../src/search/chunking.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -93,16 +93,19 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
     expect(hits.map((h) => h.row.id)).toContain('x2');
   });
 
-  it('buildVectorIndex no-ops without pgvector (and reports unavailable)', async () => {
-    const hasPgvector = await vectorIndexAvailable(db.adapter);
-    if (!hasPgvector) {
-      expect(await db.buildVectorIndex(table)).toBe(0);
-    } else {
-      // Real pgvector present (LATTICE_TEST_PGVECTOR env): index builds + search works.
-      const n = await db.buildVectorIndex(table);
+  it('builds the native index when pgvector is installable, else reports a no-op', async () => {
+    // buildVectorIndex now auto-enables pgvector (CREATE EXTENSION IF NOT EXISTS),
+    // so availability is checked AFTER the build: on a pgvector image (CI) the index
+    // builds + native search works; on a vanilla cluster it stays a reported no-op.
+    const n = await db.buildVectorIndex(table);
+    if (await vectorIndexAvailable(db.adapter)) {
       expect(n).toBeGreaterThan(0);
+      expect(await hasVectorIndex(db.adapter, table)).toBe(true);
       const hits = await db.search(table, 'logistics', { topK: 1 });
       expect(hits.length).toBeGreaterThan(0);
+      expect(hits[0]!.row.id).toBe('d1');
+    } else {
+      expect(n).toBe(0);
     }
   });
 });
