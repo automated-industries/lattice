@@ -15,7 +15,7 @@
  */
 
 import type { StorageAdapter } from '../db/adapter.js';
-import { getAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
+import { getAsyncOrSync, allAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
 import { ftsTableName } from './fts.js';
 import { EMBEDDINGS_TABLE } from './embeddings.js';
 
@@ -248,6 +248,49 @@ async function diagnoseTable(
       message: `Table "${spec.table}" is configured for embeddings but the embeddings store is unavailable.`,
       hint: 'Ensure init() ran so the embeddings table exists.',
     });
+  }
+
+  // --- Embedding dimension consistency ------------------------------------
+  // A model change without a full re-embed leaves mixed-dimension vectors that
+  // score wrong (or throw `EmbeddingDimensionMismatchError`) at query time. Detect
+  // it proactively: more than one stored dimension, or a single dimension that
+  // disagrees with the configured model's expected `embeddingDim`.
+  if (embeddingCount !== null && embeddingCount > 0) {
+    let dims: number[] = [];
+    try {
+      const rows = await allAsyncOrSync(
+        adapter,
+        `SELECT DISTINCT vec_dim FROM "${EMBEDDINGS_TABLE}" WHERE table_name = ? AND vec_dim IS NOT NULL`,
+        [spec.table],
+      );
+      dims = rows
+        .map((r) => Number(r.vec_dim))
+        .filter((n) => Number.isFinite(n) && n > 0)
+        .sort((a, b) => a - b);
+    } catch {
+      dims = [];
+    }
+    if (dims.length > 1) {
+      issues.push({
+        table: spec.table,
+        kind: 'dimension_mismatch',
+        severity: 'error',
+        message: `"${spec.table}" has mixed embedding dimensions (${dims.join(', ')}) — a model change without a full re-embed.`,
+        hint: 'Re-embed the table (refreshEmbeddings) so every stored vector shares one dimension.',
+      });
+    } else if (
+      spec.embeddingDim !== undefined &&
+      dims.length === 1 &&
+      dims[0] !== spec.embeddingDim
+    ) {
+      issues.push({
+        table: spec.table,
+        kind: 'dimension_mismatch',
+        severity: 'error',
+        message: `"${spec.table}" embeddings are ${String(dims[0])}-d but the configured model expects ${String(spec.embeddingDim)}-d.`,
+        hint: 'Re-embed the table after changing the embedding model.',
+      });
+    }
   }
 
   return health;

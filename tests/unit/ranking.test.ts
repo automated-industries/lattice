@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { recencyBoost, rewardBoost, rankingBoost } from '../../src/search/ranking.js';
+import {
+  recencyBoost,
+  rewardBoost,
+  backlinkBoost,
+  rankingBoost,
+} from '../../src/search/ranking.js';
 
 const NOW = Date.parse('2026-01-30T00:00:00Z');
 
@@ -52,6 +57,28 @@ describe('rewardBoost', () => {
   it('honors a custom column and ignores negatives', () => {
     expect(rewardBoost({ score: 1 }, { column: 'score', weight: 1 })).toBeCloseTo(0.5, 6);
     expect(rewardBoost({ _reward_total: -5 }, { weight: 1 })).toBe(0);
+  });
+});
+
+describe('backlinkBoost', () => {
+  it('saturates on the inbound-reference count: 0 → 0, 1 → 0.5, 3 → 0.75', () => {
+    expect(backlinkBoost({ _backlink_count: 0 }, { weight: 1 })).toBe(0);
+    expect(backlinkBoost({ _backlink_count: 1 }, { weight: 1 })).toBeCloseTo(0.5, 6);
+    expect(backlinkBoost({ _backlink_count: 3 }, { weight: 1 })).toBeCloseTo(0.75, 6);
+  });
+
+  it('honors a custom column and ignores negatives/missing', () => {
+    expect(backlinkBoost({ refs: 1 }, { column: 'refs', weight: 1 })).toBeCloseTo(0.5, 6);
+    expect(backlinkBoost({ _backlink_count: -2 }, { weight: 1 })).toBe(0);
+    expect(backlinkBoost({}, { weight: 1 })).toBe(0);
+  });
+
+  it('folds into the combined rankingBoost', () => {
+    const boost = rankingBoost(
+      { _backlink_count: 3 },
+      { backlink: { weight: 2 }, now: NOW }, // 2 * 0.75 = 1.5
+    );
+    expect(boost).toBeCloseTo(1.5, 6);
   });
 });
 

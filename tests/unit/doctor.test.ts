@@ -84,6 +84,42 @@ describe('diagnoseRetrieval (SQLite)', () => {
     expect(report.healthy).toBe(true);
   });
 
+  it('flags mixed embedding dimensions as a dimension_mismatch error', async () => {
+    const d = await setup();
+    const { runAsyncOrSync } = await import('../../src/db/adapter.js');
+    await runAsyncOrSync(d.adapter, `INSERT INTO "notes" (id, title, body) VALUES ('n1','a','b')`);
+    await runAsyncOrSync(d.adapter, `INSERT INTO "notes" (id, title, body) VALUES ('n2','c','d')`);
+    // Two embeddings of DIFFERENT dimension for the same table — what a model
+    // change without a full re-embed leaves behind. The doctor must surface it.
+    await storeEmbedding(
+      d.adapter,
+      'notes',
+      'n1',
+      { id: 'n1', title: 'a', body: 'b' },
+      {
+        fields: ['title', 'body'],
+        embed: () => Promise.resolve([0.1, 0.2, 0.3]),
+      },
+    );
+    await storeEmbedding(
+      d.adapter,
+      'notes',
+      'n2',
+      { id: 'n2', title: 'c', body: 'd' },
+      {
+        fields: ['title', 'body'],
+        embed: () => Promise.resolve([0.1, 0.2, 0.3, 0.4]),
+      },
+    );
+
+    const report = await d.diagnoseRetrieval();
+    const notes = report.tables.find((t) => t.table === 'notes')!;
+    const mismatch = notes.issues.find((i) => i.kind === 'dimension_mismatch');
+    expect(mismatch?.severity).toBe('error');
+    expect(mismatch?.message).toMatch(/mixed embedding dimensions/);
+    expect(report.healthy).toBe(false);
+  });
+
   it('excludes soft-deleted rows from the row count denominator', async () => {
     const d = await setup();
     await d.insert('notes', { id: 'n1', title: 'budget', body: 'review' });

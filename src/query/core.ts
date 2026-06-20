@@ -514,9 +514,12 @@ export class QueryCore {
     // two dialects' jsonPath comparisons identical.
     const numeric = isNumericComparison(f);
     if (this.adapter.dialect === 'postgres') {
-      // Bind the path as a text[] parameter rather than building a `'{a,b}'`
-      // literal by string-join — the parameter cannot be SQL-injected.
-      const extract = `(${col} #>> ?::text[])`;
+      // Cast the column to jsonb so jsonPath works whether it was declared `jsonb`
+      // or `TEXT`-holding-JSON — `#>>` has no `text` overload, so without this a
+      // TEXT column errors on Postgres while SQLite's json_extract accepts it
+      // (a dialect-portability gap the cross-dialect parity test catches). Bind the
+      // path as a text[] parameter rather than a string-joined literal (no injection).
+      const extract = `((${col})::jsonb #>> ?::text[])`;
       const sql = numeric ? `(${extract})::numeric` : extract;
       return { sql, params: [path] };
     }

@@ -57,6 +57,7 @@ exports[`public API surface (additive-only) > exports only grow — no removal/r
   "autoFtsColumns",
   "autoUpdate",
   "backfillOwnership",
+  "backlinkBoost",
   "benchmarkRetrieval",
   "buildVectorIndex",
   "canManageRoles",

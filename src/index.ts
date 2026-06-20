@@ -314,11 +314,12 @@ export type {
   HybridSearchResult,
   HybridScoreBreakdown,
 } from './search/hybrid.js';
-export { rankingBoost, recencyBoost, rewardBoost } from './search/ranking.js';
+export { rankingBoost, recencyBoost, rewardBoost, backlinkBoost } from './search/ranking.js';
 export type {
   RankingOptions,
   RecencySignal,
   RewardSignal,
+  BacklinkSignal,
   CustomSignal,
 } from './search/ranking.js';
 export { applyReranker } from './search/rerank.js';

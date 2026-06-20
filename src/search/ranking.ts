@@ -29,6 +29,17 @@ export interface RewardSignal {
   weight: number;
 }
 
+/**
+ * Backlink signal: a saturating boost from an inbound-reference-count column. A
+ * row referenced by many others is more central/authoritative, so it ranks higher.
+ */
+export interface BacklinkSignal {
+  /** Column holding the inbound reference count. Default `_backlink_count`. */
+  column?: string;
+  /** Weight of this signal in the combined boost. */
+  weight: number;
+}
+
 /** A custom per-row signal returning a value in [0, 1]. */
 export interface CustomSignal {
   fn: (row: Row) => number;
@@ -38,6 +49,7 @@ export interface CustomSignal {
 export interface RankingOptions {
   recency?: RecencySignal;
   reward?: RewardSignal;
+  backlink?: BacklinkSignal;
   custom?: CustomSignal;
   /**
    * Reference time (epoch ms) for recency decay. Defaults to `Date.now()`.
@@ -74,6 +86,15 @@ export function rewardBoost(row: Row, signal: RewardSignal): number {
   return r / (1 + r);
 }
 
+/** Saturating backlink boost in [0, 1): b / (1 + b) for a non-negative count. */
+export function backlinkBoost(row: Row, signal: BacklinkSignal): number {
+  const col = signal.column ?? '_backlink_count';
+  const raw = row[col];
+  const b = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(b) || b <= 0) return 0;
+  return b / (1 + b);
+}
+
 /**
  * Combined, weighted ranking boost for a row (≥ 0). Multiply a base relevance
  * score by `(1 + rankingBoost(...))` to apply it.
@@ -83,6 +104,7 @@ export function rankingBoost(row: Row, opts: RankingOptions): number {
   let boost = 0;
   if (opts.recency) boost += opts.recency.weight * recencyBoost(row, opts.recency, now);
   if (opts.reward) boost += opts.reward.weight * rewardBoost(row, opts.reward);
+  if (opts.backlink) boost += opts.backlink.weight * backlinkBoost(row, opts.backlink);
   if (opts.custom) {
     const v = opts.custom.fn(row);
     if (Number.isFinite(v)) boost += opts.custom.weight * Math.max(0, Math.min(1, v));
