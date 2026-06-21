@@ -145,6 +145,7 @@ RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS $pf$
 DECLARE
   s ${S3_SECRET_TABLE}%ROWTYPE;
   object_key text;
+  object_path text;
   host text;
   amz_date text;
   datestamp text;
@@ -178,12 +179,22 @@ BEGIN
     RAISE EXCEPTION 'file % is not an s3:// reference', p_file_id;
   END IF;
 
-  host := coalesce(s.endpoint, s.bucket || '.s3.' || s.region || '.amazonaws.com');
+  -- AWS uses VIRTUAL-HOSTED style (bucket in the host). A custom endpoint — an
+  -- S3-compatible store such as MinIO — uses PATH style: the bucket goes in the
+  -- URL path, not the host. The path is exactly what gets signed, so the SigV4
+  -- signature stays valid either way; only the host/path split differs.
+  IF s.endpoint IS NOT NULL THEN
+    host := s.endpoint;
+    object_path := '/' || s.bucket || '/' || object_key;
+  ELSE
+    host := s.bucket || '.s3.' || s.region || '.amazonaws.com';
+    object_path := '/' || object_key;
+  END IF;
   amz_date := to_char(now() AT TIME ZONE 'UTC', 'YYYYMMDD"T"HH24MISS"Z"');
   datestamp := to_char(now() AT TIME ZONE 'UTC', 'YYYYMMDD');
 
   RETURN lattice_aws_sigv4_presign(
-    upper(p_method), host, s.region, 's3', '/' || object_key,
+    upper(p_method), host, s.region, 's3', object_path,
     s.access_key, s.secret_key, ttl, amz_date, datestamp);
 END;
 $pf$;
