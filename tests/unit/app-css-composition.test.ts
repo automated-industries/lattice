@@ -12,9 +12,9 @@ import { css } from '../../src/gui/app/css.js';
 //
 // These constants were captured from the pre-split `css` value. If `css` is
 // ever changed intentionally, recapture the length + hash and update them here.
-// Most recently grown by the manual-upgrade link's two #app-update-link rules.
-const ORIGINAL_LENGTH = 75013;
-const ORIGINAL_SHA256 = 'eae06ad7302bd0799d292a824c5b724abae85559dd540b9f89fa8bb19dfc6fca';
+// Most recently grown by the connect-import segment (top-bar buttons + modal).
+const ORIGINAL_LENGTH = 81194;
+const ORIGINAL_SHA256 = '527e24f07cb62a4ea2beb2e9182f82ebc0dab85c32376455a77df8f1fdf0e906';
 
 describe('css composition', () => {
   it('matches the original length exactly', () => {

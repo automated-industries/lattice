@@ -17,8 +17,10 @@ import { appJs } from '../../src/gui/app/script.js';
 // "Update available — Upgrade" affordance: checkUpdateAvailable + wireUpdateLink,
 // wired at boot and refreshed on each reconnect version check). Recapture the
 // length + hash on any intended change.
-const ORIGINAL_LENGTH = 401093;
-const ORIGINAL_SHA256 = '3be04280b1d5a0aa8ac8e7d65ac034c8d5b50708128e2c950c2fb5b5968f5549';
+// Recaptured after adding the connect-import segment (the "Connect dashboard" +
+// "Import Dashboard Data" top-bar buttons and their modal panels).
+const ORIGINAL_LENGTH = 424639;
+const ORIGINAL_SHA256 = '917d5e5453abdd08d8680bc778c4b87ec6468727e839e378d616660ca281eb8c';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {
