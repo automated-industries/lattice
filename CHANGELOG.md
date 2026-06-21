@@ -147,6 +147,16 @@ method that is inert unless a table opts in.
 
 ### Fixed
 
+- **Rendered-file body edits were silently not imported.** The default
+  entity-context render writes each field as a bold bullet — `- **key:** value`,
+  with the colon _inside_ the bold — but the reverse-sync body parser only
+  recognized `**key**: value` / plain `key: value`. So an edit to a rendered
+  file's body parsed to zero fields and was reported "not auto-importable
+  (custom/computed render)", even for a plain structured record. (Latent until the
+  reverse-sync starvation above was fixed, which is when file edits started
+  running at all.) The parser now also reads the render's own
+  colon-inside-the-bold format; a new test renders-then-parses the real on-disk
+  shape rather than a hand-written one.
 - **Spurious full re-renders driven by chat / bookkeeping writes.** The GUI's
   eager per-viewer re-render fired on _every_ realtime change, including writes to
   internal tables (the assistant's `chat_messages`/`chat_threads`, every
