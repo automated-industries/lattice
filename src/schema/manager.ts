@@ -68,6 +68,28 @@ export class SchemaManager {
    *  only tables with at least one explicit per-column audience appear. */
   private readonly _columnAudience = new Map<string, Record<string, string>>();
 
+  /**
+   * Per-viewer read-relation resolver. When set (a cloud MEMBER open), a table
+   * read routes through `_readRel(table)` — mapping a masked table to its
+   * `<table>_v` view so the rows returned are already row-filtered + cell-masked
+   * by Postgres. It lives HERE, on the read layer, so EVERY reader inherits it
+   * uniformly: the render engine AND the reverse-sync engine (a member's
+   * file→DB writeback must read the masked view, not the REVOKE'd base table).
+   * There is one resolver, applied per access rights — not a per-engine copy.
+   * Unset (owner / SQLite) → identity → byte-identical to prior behavior.
+   */
+  private _readRel: (table: string) => string = (t) => t;
+
+  /** Install the per-viewer read-relation resolver (see `_readRel`). */
+  setReadRelation(fn: (table: string) => string): void {
+    this._readRel = fn;
+  }
+
+  /** The active per-viewer read-relation resolver (identity for owner / SQLite). */
+  get readRel(): (table: string) => string {
+    return this._readRel;
+  }
+
   define(table: string, def: CompiledTableDef): void {
     if (this._tables.has(table)) {
       throw new Error(`Table "${table}" is already defined`);
@@ -399,7 +421,7 @@ export class SchemaManager {
   async queryTable(
     adapter: StorageAdapter,
     name: string,
-    readRel: (table: string) => string = (t) => t,
+    readRel: (table: string) => string = this._readRel,
     opts: PageOptions = {},
   ): Promise<Row[]> {
     const from = readRel(name);

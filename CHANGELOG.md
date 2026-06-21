@@ -147,6 +147,29 @@ method that is inert unless a table opts in.
 
 ### Fixed
 
+- **Spurious full re-renders driven by chat / bookkeeping writes.** The GUI's
+  eager per-viewer re-render fired on _every_ realtime change, including writes to
+  internal tables (the assistant's `chat_messages`/`chat_threads`, every
+  `_lattice*` table). On a cloud workspace, each assistant message wrote a
+  `chat_messages` row → change-feed `NOTIFY` → a full background render — so an
+  ongoing conversation re-rendered the whole workspace every turn, wasting egress.
+  It also starved the file-loopback reverse-sync, which is deferred while a render
+  is in flight: with renders firing constantly, a user's on-disk `.md` edit never
+  got written back. The eager re-render now filters out feed-hidden tables (the
+  same `isFeedHiddenTable` guard the activity feed uses), so only changes to the
+  rendered entity tree trigger a re-render.
+- **Member-cloud file edits silently dropped.** On a masked member open, base-table
+  `SELECT` is revoked and granted only on the per-viewer masking view. The render
+  engine read through that view, but the reverse-sync engine read the base table
+  directly — hitting a permission error that was swallowed, so a member's `.md`
+  edit was never written back to the database or recorded in history. The
+  per-viewer read-relation resolver now lives on the shared read layer
+  (`SchemaManager`), so render **and** reverse-sync read through the same relation
+  — one resolver, routed by access rights, rather than a second read path.
+- **Loading-frame flash on background in-place re-renders.** The advanced-mode
+  toggle (same hash) and the workspace-switch reload (already on `#/`) re-rendered
+  the content pane with a bare call that synchronously painted the loading frame,
+  flashing during background activity. Both now request a soft (in-place) refresh.
 - **Embedding writes on Postgres.** `storeEmbedding` used a SQLite-only
   `INSERT OR REPLACE`, which the Postgres adapter refuses to translate — semantic
   embedding writes therefore failed on Postgres. Now uses a portable
