@@ -416,14 +416,19 @@ describe('SAFE-SUBSET belongsTo→PK render batch — identity', () => {
         });
         const ownerPaths = resolveWorkspacePaths(ownerRoot, ownerWs);
         mkdirSync(ownerPaths.contextDir, { recursive: true });
-        servers.push(
-          await startGuiServer({
-            configPath: ownerPaths.configPath,
-            outputDir: ownerPaths.contextDir,
-            port: 0,
-            openBrowser: false,
-          }),
-        );
+        const ownerGui = await startGuiServer({
+          configPath: ownerPaths.configPath,
+          outputDir: ownerPaths.contextDir,
+          port: 0,
+          openBrowser: false,
+        });
+        servers.push(ownerGui);
+        // Opening a cloud workspace returns immediately and the owner-side
+        // convergence (which grants `_lattice_gui_meta` to the member group) runs
+        // in the background. Rendering AS the member before that grant lands races
+        // it — under parallel load the member render intermittently fails with
+        // "permission denied for _lattice_gui_meta". Wait for convergence first.
+        await ownerGui.whenConverged();
       }
 
       // Render the member tree twice (off, then on), each into its own dir.
