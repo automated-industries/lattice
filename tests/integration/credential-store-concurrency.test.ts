@@ -63,10 +63,22 @@ beforeAll(async () => {
   );
 }, 60_000);
 
+/**
+ * Recursively remove a temp dir, tolerating Windows' lazy post-exit handle release.
+ * The retries cover the common case; a residual ENOTEMPTY on an ephemeral CI runner
+ * is swallowed — leaving a temp dir behind must never fail a test whose assertions
+ * already passed (the OS reclaims tmpdir() regardless). A no-op cost on POSIX.
+ */
+function rmBestEffort(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  } catch {
+    /* best-effort temp cleanup — never fail a passing test on teardown */
+  }
+}
+
 afterAll(() => {
-  // maxRetries/retryDelay: same Windows lazy-handle-release remedy as the per-test
-  // cleanup below (the esbuild output + spawned children can briefly hold handles).
-  rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  rmBestEffort(scratch);
 });
 
 /** Spawn `script` against `configDir` with NO pinned key; resolve with stdout. */
@@ -107,9 +119,9 @@ describe('credential store — concurrent writers never lose updates', () => {
     } finally {
       // Windows releases a child process's file handles LAZILY after it exits, so an
       // immediate recursive rmdir of the dir the spawned writers used can race that
-      // release and throw ENOTEMPTY. `force` does not retry; `maxRetries`/`retryDelay`
-      // do (Node's documented Windows EBUSY/ENOTEMPTY remedy). A no-op cost on POSIX.
-      rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      // release and throw ENOTEMPTY. Retry, and on a residual failure leave the temp
+      // dir for the OS — a passing test must not fail on best-effort teardown.
+      rmBestEffort(configDir);
     }
   }, 60_000);
 });
