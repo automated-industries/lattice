@@ -45,7 +45,7 @@ describe('SchemaManager.readRel — one resolver, every reader (render + reverse
     expect(rows[0]?.secret).toBe('EYES_ONLY');
   });
 
-  it('member (resolver set) → a no-arg queryTable (reverse-sync\'s exact call) reads the MASKING VIEW, not the base table', async () => {
+  it("member (resolver set) → a no-arg queryTable (reverse-sync's exact call) reads the MASKING VIEW, not the base table", async () => {
     const { adapter, mgr } = setup();
     mgr.setReadRelation((t) => (t === 'widgets' ? 'widgets_v' : t));
 

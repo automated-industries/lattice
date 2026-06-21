@@ -39,7 +39,7 @@ function makeActive(): {
     realtime: {
       subscribePayload: (h: RealtimePayloadHandler): (() => void) => {
         handler = h;
-        return () => {};
+        return () => undefined; // unsubscribe — unused by the test
       },
     },
     db: { requestRender },
