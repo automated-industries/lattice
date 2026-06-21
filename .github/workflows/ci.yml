@@ -16,7 +16,9 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        # pgvector image so the native indexed-vector path (CREATE EXTENSION vector
+        # + HNSW) is actually exercised by the integration suite, not just skipped.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: lattice
           POSTGRES_PASSWORD: lattice
@@ -48,6 +50,9 @@ jobs:
 
       - name: Format check
         run: npm run format:check
+
+      - name: Leak scan (generic public-repo guard)
+        run: npm run check:generic
 
       - name: Typecheck
         run: npm run typecheck
