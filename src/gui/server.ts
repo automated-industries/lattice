@@ -135,6 +135,16 @@ export interface GuiServerHandle {
   port: number;
   url: string;
   close: () => Promise<void>;
+  /**
+   * Resolves when the active workspace's background owner-side convergence (cloud
+   * RLS / member grants, incl. the `_lattice_gui_meta` read-grant) has settled.
+   * Opening a cloud workspace returns immediately and convergence runs unawaited
+   * (see {@link ActiveDb.converged}); a test that acts AS A MEMBER right after the
+   * owner opens MUST await this, or the member render can race the grant and fail
+   * with "permission denied for table _lattice_gui_meta". The GUI never needs it;
+   * resolves immediately for a non-cloud / virgin workspace.
+   */
+  whenConverged: () => Promise<void>;
 }
 
 function sendText(
@@ -222,6 +232,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const bootOutputDir = options.outputDir ? resolve(options.outputDir) : null;
   const startPort = options.port ?? 4317;
   const host = options.host ?? '127.0.0.1';
+  // The data routes (rows, ingest, connect/import) are UNAUTHENTICATED — that is
+  // the accepted trust model only because the server defaults to loopback. Binding
+  // to a non-loopback address (e.g. 0.0.0.0) exposes read/write/import to the
+  // network with no auth layer, so say so loudly at startup. We do not block it —
+  // an operator may do it deliberately behind their own network controls.
+  const isLoopbackHost = host === 'localhost' || host === '::1' || host.startsWith('127.');
+  if (!isLoopbackHost) {
+    console.warn(
+      `[lattice] GUI is binding to a non-loopback address (${host}); its data ` +
+        `routes are UNAUTHENTICATED and will be reachable from the network.`,
+    );
+  }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
   // One id per GUI server process. Stamped on every audit entry so the header
@@ -1010,6 +1032,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     server,
     port,
     url,
+    whenConverged: () => activeRef?.converged ?? Promise.resolve(),
     close: () =>
       new Promise<void>((resolveClose, reject) => {
         // Stop the update poll first so its interval can't fire mid-teardown.

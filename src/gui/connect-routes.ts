@@ -1,5 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
@@ -121,11 +129,31 @@ async function tryHandler(
   }
 }
 
+/**
+ * Upper bound on an operator-supplied import file we read whole into memory.
+ * The streaming upload path (`readRequestBuffer`) already caps the request body
+ * at this size; the `path`-based reads (analyze/apply/sources re-read a server-
+ * side file) must apply the SAME guard or a crafted multi-GB JSON/xlsx OOMs the
+ * GUI process (an availability hole, not a confidentiality one — but still loud).
+ */
+const MAX_IMPORT_BYTES = 200_000_000;
+
+function assertImportSize(abs: string): void {
+  const size = statSync(abs).size;
+  if (size > MAX_IMPORT_BYTES) {
+    const mb = (n: number): string => String(Math.round(n / 1e6));
+    throw badRequest(
+      `Import file too large: ${mb(size)} MB exceeds the ${mb(MAX_IMPORT_BYTES)} MB limit.`,
+    );
+  }
+}
+
 function readImportJson(rawPath: string, dashboardDir: string | null): Record<string, unknown> {
   if (!rawPath.trim()) throw badRequest('A JSON file path is required.');
   let abs = resolve(rawPath);
   if (!existsSync(abs) && dashboardDir) abs = resolve(dashboardDir, rawPath);
   if (!existsSync(abs)) throw badRequest('File not found: ' + abs);
+  assertImportSize(abs);
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(abs, 'utf8'));
@@ -148,6 +176,7 @@ async function readImportSource(
     let abs = resolve(rawPath);
     if (!existsSync(abs) && dashboardDir) abs = resolve(dashboardDir, rawPath);
     if (!existsSync(abs)) throw badRequest('File not found: ' + abs);
+    assertImportSize(abs);
     return excelToRecords(abs);
   }
   return readImportJson(rawPath, dashboardDir);
@@ -290,13 +319,24 @@ export function createConnectRouter(deps: ConnectRouterDeps): ConnectRouter {
         const rel =
           pathname === '/' ? 'index.html' : decodeURIComponent(pathname.replace(/^\/+/, ''));
         const abs = resolve(dashboardDir, rel);
-        if (
-          (abs === dashboardDir || abs.startsWith(dashboardDir + sep)) &&
-          existsSync(abs) &&
-          statSync(abs).isFile()
-        ) {
-          sendDashboardFile(res, abs);
-          return true;
+        // The lexical containment check blocks `../` and `%2e%2e` (resolve()
+        // normalizes before the startsWith). But statSync + sendDashboardFile
+        // FOLLOW symlinks, so a symlink placed inside the dashboard dir could
+        // point anywhere on disk (e.g. the workspace DB or a secrets file) and
+        // be served verbatim. Re-check containment against the REAL, symlink-
+        // resolved path before serving; a missing file or broken/escaping
+        // symlink throws or fails the check → fall through to 404.
+        if (abs === dashboardDir || abs.startsWith(dashboardDir + sep)) {
+          try {
+            const realDir = realpathSync(dashboardDir);
+            const real = realpathSync(abs);
+            if ((real === realDir || real.startsWith(realDir + sep)) && statSync(real).isFile()) {
+              sendDashboardFile(res, real);
+              return true;
+            }
+          } catch {
+            /* missing / broken / escaping symlink → fall through to 404 */
+          }
         }
       }
       // Unknown dashboard path → fall through to the normal routes (404/409).

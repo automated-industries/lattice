@@ -37,6 +37,21 @@ Lattice behind your own dashboard, and import structured data into it.
   `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`, `matchSchemaToExisting`,
   `renameEntities`, `excelToRecords`, `dedupeAndDetectViews` (+ types).
 
+### Security
+
+- **Connected-dashboard serving is real-path contained.** A folder dashboard is
+  served only for files that resolve (after following symlinks) to inside the
+  dashboard directory, so a symlink placed in the folder can't escape it to serve
+  arbitrary files elsewhere on disk. (`../` / percent-encoded traversal was
+  already blocked.)
+- **Non-loopback bind warning.** The GUI's data routes are unauthenticated by
+  design for localhost; binding to a non-loopback address (e.g. `0.0.0.0`) now
+  logs a clear startup warning that the routes will be reachable from the network.
+- **Import file-size cap.** A `path`-based import (`analyze`/`apply`/the
+  dashboard's source scan) caps the source file at 200 MB before reading it,
+  matching the streaming-upload cap, so an oversized JSON/`.xlsx` can't exhaust
+  memory.
+
 ## [4.1.0] — 2026-06-22
 
 Fast-follow feature release on 4.0. Turns latticesql into a measurable,

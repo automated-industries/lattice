@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
@@ -112,6 +112,47 @@ describe('connect: dashboard serving', () => {
     expect(css.headers.get('content-type')).toContain('text/css');
     expect(await css.text()).toContain('color:red');
   });
+
+  // Symlinks need elevation on Windows; this vector is a Unix-server concern.
+  it.skipIf(process.platform === 'win32')(
+    'refuses a symlink that escapes the dashboard folder (no arbitrary host-file read)',
+    async () => {
+      const { configPath, contextDir } = await freshWorkspace('lattice-cd-symlink-');
+      const dashDir = join(dirs[0]!, 'site');
+      mkdirSync(dashDir, { recursive: true });
+      writeFileSync(
+        join(dashDir, 'index.html'),
+        `<!doctype html><body>${DASH_MARKER}</body>`,
+        'utf8',
+      );
+
+      // A secret OUTSIDE the dashboard dir (stands in for the workspace DB / a key
+      // file), and a symlink INSIDE the dir pointing at it. The path is lexically
+      // contained (`resolve(dashDir, 'leak')` stays under dashDir), so only a
+      // real-path (symlink-resolved) containment check can reject it.
+      const SECRET_MARKER = 'TOP_SECRET_OUTSIDE_THE_DASHBOARD_DIR';
+      const secret = join(dirs[0]!, 'secret.txt');
+      writeFileSync(secret, SECRET_MARKER, 'utf8');
+      symlinkSync(secret, join(dashDir, 'leak'));
+
+      const server = await startGuiServer({
+        configPath,
+        outputDir: contextDir,
+        port: 0,
+        openBrowser: false,
+        dashboardPath: dashDir,
+      });
+      servers.push(server);
+
+      // A real in-dir file still serves (the guard must not break normal serving).
+      expect((await fetch(`${server.url}/`)).status).toBe(200);
+
+      // The escaping symlink must NOT leak the secret. It falls through to the
+      // normal routes (the built-in shell / a 404) — never the file it points at.
+      const leak = await fetch(`${server.url}/leak`);
+      expect(await leak.text()).not.toContain(SECRET_MARKER);
+    },
+  );
 
   it('leaves the built-in shell at / when no dashboard is configured', async () => {
     const { configPath, contextDir } = await freshWorkspace('lattice-cd-default-');
