@@ -45,10 +45,40 @@ function freePort(): Promise<number> {
   });
 }
 
+/**
+ * Create the shared extensions in a STABLE schema (public) once, before any test
+ * connects. `CREATE EXTENSION IF NOT EXISTS` installs into the connection's
+ * current schema, so without this the first test to run it — possibly a cloud
+ * test whose search_path points at a fresh schema it later drops CASCADE — would
+ * plant pgcrypto there and then yank `digest`/`hmac` out from under every other
+ * connection. Pre-creating in public makes every later `IF NOT EXISTS` a no-op.
+ */
+async function ensureExtensions(url: string): Promise<void> {
+  let pg: typeof import('pg').default;
+  try {
+    pg = (await import('pg')).default;
+  } catch {
+    return; // pg unavailable — the Postgres suite will skip anyway
+  }
+  const client = new pg.Client(url);
+  await client.connect();
+  try {
+    await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    // pgvector only when the server ships it (the CI pgvector image); ignored otherwise.
+    await client.query('CREATE EXTENSION IF NOT EXISTS vector').catch(() => undefined);
+  } finally {
+    await client.end();
+  }
+}
+
 export default async function setup({
   provide,
 }: GlobalSetupContext): Promise<(() => Promise<void>) | undefined> {
-  if (process.env.LATTICE_TEST_PG_URL) return; // (1) an explicit cluster wins
+  if (process.env.LATTICE_TEST_PG_URL) {
+    // (1) an explicit cluster wins — but still pin the shared extensions to public.
+    await ensureExtensions(process.env.LATTICE_TEST_PG_URL);
+    return;
+  }
   if (process.env.CI) return; // (2) CI without a URL → leave the suite skipped
 
   // (3) Local run with no Postgres — provision a disposable one.
@@ -101,6 +131,7 @@ export default async function setup({
   }
 
   const url = `postgres://postgres:postgres@127.0.0.1:${String(port)}/lattice_test`;
+  await ensureExtensions(url); // pin pgcrypto (+ pgvector if present) to public first
   process.env.LATTICE_TEST_PG_URL = url; // forked workers inherit this at spawn
   provide('latticePgUrl', url); // and the setup file backfills it for the threads pool
   console.log(

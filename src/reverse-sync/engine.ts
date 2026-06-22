@@ -207,7 +207,15 @@ export class ReverseSyncEngine {
     }
     await this._adapter.withClient(async (tx) => {
       for (const update of updates) {
-        const setCols = Object.keys(update.set);
+        // Computed columns are DERIVED and immutable on the way back: an external
+        // edit to a rendered computed value must not overwrite the stored column
+        // (it is recomputed from its dependencies on the next write). Redact them
+        // from the reverse-sync write so the rendered file can show the value
+        // without it becoming a writable field.
+        const computed = new Set(
+          Object.keys(this._schema.getTables().get(update.table)?.computed ?? {}),
+        );
+        const setCols = Object.keys(update.set).filter((c) => !computed.has(c));
         if (setCols.length === 0) continue;
 
         const pkCols = Object.keys(update.pk);

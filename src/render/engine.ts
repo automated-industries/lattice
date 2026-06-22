@@ -148,17 +148,6 @@ export class RenderEngine {
   /** When true, skip the read + write for spec-less (no-op render) tables. */
   private readonly _skipEmpty: boolean;
   /**
-   * Per-viewer read-relation resolver. When set (a cloud MEMBER open), every
-   * table read during render is routed through `_readRel(table)` — mapping a
-   * masked table to its `<table>_v` view so the rows that reach disk are already
-   * row-filtered + cell-masked by Postgres. It is ENGINE STATE (not a render
-   * option) on purpose: the debounced auto-render path re-renders with no opts
-   * after every member write, so a resolver carried only on RenderOptions would
-   * silently revert post-write renders to the base table. Unset (owner / SQLite)
-   * → identity → byte-identical to the prior behavior.
-   */
-  private _readRel: (table: string) => string = (t) => t;
-  /**
    * Optional per-viewer fold applied to an entity-context table's rows after the
    * RLS-filtered read, before they are rendered. On a cloud MEMBER open it
    * overlays the viewer-visible DERIVED observations (the per-viewer enrichment
@@ -202,11 +191,6 @@ export class RenderEngine {
    */
   changeProbe(): string | undefined {
     return this._adapter.changeProbe?.();
-  }
-
-  /** Install the per-viewer read-relation resolver (see `_readRel`). */
-  setRenderReadRelation(fn: (table: string) => string): void {
-    this._readRel = fn;
   }
 
   /** Install the per-viewer fold applied to entity rows before render (see `_foldRows`). */
@@ -280,7 +264,7 @@ export class RenderEngine {
       // Incremental: a single-table file renders from its OWN rows only, so it is
       // affected iff that table changed.
       if (opts.changedTables && !opts.changedTables.has(name)) continue;
-      let rows = await this._schema.queryTable(this._adapter, name, this._readRel);
+      let rows = await this._schema.queryTable(this._adapter, name, this._schema.readRel);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
         rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
@@ -357,7 +341,7 @@ export class RenderEngine {
 
       if (def.tables) {
         for (const t of def.tables) {
-          tables[t] = await this._schema.queryTable(this._adapter, t, this._readRel);
+          tables[t] = await this._schema.queryTable(this._adapter, t, this._schema.readRel);
         }
       }
 
@@ -525,7 +509,7 @@ export class RenderEngine {
       // Thread the per-viewer resolver so the stale-file slug set is computed
       // from the SAME (member-visible) row set the render wrote — otherwise
       // cleanup would prune the member's own just-rendered files.
-      const rows = await this._schema.queryTable(this._adapter, table, this._readRel);
+      const rows = await this._schema.queryTable(this._adapter, table, this._schema.readRel);
       const slugs = new Set(rows.map((row) => def.slug(row)));
       currentSlugsByTable.set(table, slugs);
     }
@@ -631,7 +615,7 @@ export class RenderEngine {
       const byKey = new Map<string, Row>();
       result.set(groupKey, byKey);
       if (keySet.size === 0) continue; // empty key set → no IN () query
-      const from = this._readRel(source.table);
+      const from = this._schema.readRel(source.table);
       const refCol = source.references ?? 'id';
       const keys = [...rawByKey.values()];
       const params: unknown[] = [...keys];
@@ -691,7 +675,7 @@ export class RenderEngine {
         // Bail at the top of each entity-context table if aborted.
         if (signal?.aborted) return null;
         const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
-        const baseRows = await this._schema.queryTable(this._adapter, table, this._readRel);
+        const baseRows = await this._schema.queryTable(this._adapter, table, this._schema.readRel);
         // Per-viewer enrichment: overlay the viewer-visible derived observations
         // onto the RLS-filtered ground rows (no-op when no fold is installed).
         const allRows = this._foldRows ? await this._foldRows(table, baseRows) : baseRows;

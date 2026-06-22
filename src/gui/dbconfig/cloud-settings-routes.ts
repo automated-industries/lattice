@@ -345,6 +345,35 @@ export async function dispatchCloudSettings(
         return;
       }
       saveS3ConfigRaw(label, toSave);
+      // Auto-enable the in-database presigner so KEYLESS members (who have no
+      // local S3 config) can fetch/upload bytes for files they can see. One owner
+      // action turns it on cloud-wide. Best-effort: a failure (e.g. no privilege
+      // to CREATE EXTENSION pgcrypto) must not fail the owner's S3-config save.
+      const ak = typeof toSave.accessKeyId === 'string' ? toSave.accessKeyId : '';
+      const sk = typeof toSave.secretAccessKey === 'string' ? toSave.secretAccessKey : '';
+      if (
+        toSave.enabled &&
+        typeof toSave.bucket === 'string' &&
+        typeof toSave.region === 'string' &&
+        ak &&
+        sk
+      ) {
+        try {
+          await ctx.db.enableCloudFilePresigning({
+            bucket: toSave.bucket,
+            region: toSave.region,
+            accessKey: ak,
+            secretKey: sk,
+            ...(typeof toSave.prefix === 'string' ? { prefix: toSave.prefix } : {}),
+            ...(typeof toSave.endpoint === 'string' ? { endpoint: toSave.endpoint } : {}),
+          });
+        } catch (e) {
+          console.warn(
+            '[cloud s3-config] could not enable the in-database file presigner:',
+            (e as Error).message,
+          );
+        }
+      }
       sendJson(res, { ok: true, enabled: toSave.enabled, bucket: toSave.bucket || null });
     });
     return true;

@@ -45,6 +45,14 @@ export interface LatticeOptions {
    * ...")` on violation, so callers can catch it.
    */
   maxRowBytes?: number;
+  /**
+   * Default bounded-read cap for `query()` (4.1+). When set, a `query()` with no
+   * explicit `limit` and no per-call `maxRows` returns at most this many rows and
+   * throws `BoundedReadError` if more match — a guardrail against an accidental
+   * unbounded full-table load on a hot path. A per-call `maxRows` or an explicit
+   * `limit` overrides it. Off by default (unbounded, preserving prior behavior).
+   */
+  defaultMaxRows?: number;
 }
 
 /**
@@ -221,7 +229,44 @@ export interface Filter {
    * For `in`, must be an array.
    */
   val?: unknown;
+  /**
+   * Extract a value from a JSON/JSONB column before comparing. A string like
+   * `'a.b'` or an array `['a', 'b']` addresses a nested key. Compiles to
+   * SQLite `json_extract(col, '$.a.b')` and Postgres `col #>> '{a,b}'`.
+   *
+   * @example
+   * ```ts
+   * { col: 'metadata_json', jsonPath: 'priority', op: 'gte', val: 3 }
+   * { col: 'data', jsonPath: ['address', 'city'], op: 'eq', val: 'NYC' }
+   * ```
+   */
+  jsonPath?: string | string[];
 }
+
+/** An OR group of filter expressions (any may match). */
+export interface FilterOr {
+  or: FilterExpr[];
+}
+
+/** An AND group of filter expressions (all must match). */
+export interface FilterAnd {
+  and: FilterExpr[];
+}
+
+/**
+ * A filter expression: a single {@link Filter} clause, or a recursive `or` / `and`
+ * group of expressions. A bare `Filter` (the pre-4.1 shape) is still a valid
+ * `FilterExpr`, so existing `filters: Filter[]` usage is unchanged.
+ *
+ * @example
+ * ```ts
+ * filters: [
+ *   { col: 'status', op: 'eq', val: 'open' },
+ *   { or: [ { col: 'priority', op: 'gte', val: 3 }, { col: 'pinned', op: 'eq', val: true } ] },
+ * ]
+ * ```
+ */
+export type FilterExpr = Filter | FilterOr | FilterAnd;
 
 // ---------------------------------------------------------------------------
 // Template rendering (v0.3+)
@@ -511,6 +556,36 @@ export interface TableDefinition {
    * @default false
    */
   encrypted?: boolean | { columns: string[] };
+  /**
+   * Record immutable provenance for each row (4.1+). `true` adds three columns —
+   * `ingested_via`, `source_uri`, `ingested_at` — or pass a {@link ProvenanceConfig}
+   * to choose a subset. `ingested_at` is auto-stamped on insert; an `update()`
+   * that tries to change any provenance column throws `ProvenanceImmutableError`,
+   * so lineage can't be silently rewritten. Tables without this config are
+   * unaffected.
+   */
+  provenance?: boolean | import('./schema/governance.js').ProvenanceConfig;
+  /**
+   * Gate untrusted ingest with a per-row trust state (4.1+). `true` (or a
+   * {@link TrustConfig}) adds `_trust_state` (default `'unverified'`) plus
+   * `_verified_by` / `_verified_at` / `_review_reason`, and enables the
+   * verification workflow (`markRowForReview` / `verifyRow` / `rowsNeedingReview`
+   * / `verifiedRows`). Tables without this config are unaffected.
+   */
+  trust?: boolean | import('./schema/governance.js').TrustConfig;
+  /**
+   * Declarative computed columns (4.1+) — stored columns derived from other
+   * columns on the same row by a pure function, recomputed on every write (and
+   * via `refreshComputedColumns`). Lets you index / filter / sort on a derived
+   * value. A dependency cycle is rejected at init. See {@link ComputedColumnSpec}.
+   */
+  computed?: Record<string, import('./schema/computed.js').ComputedColumnSpec>;
+  /**
+   * Materialized rollups (4.1+) — stored aggregates over a child table (e.g.
+   * `comment_count`), recomputed when the child changes and via
+   * `refreshMaterializedRollups`. See {@link MaterializedRollupSpec}.
+   */
+  materializedRollups?: Record<string, import('./schema/computed.js').MaterializedRollupSpec>;
 }
 
 export interface MultiTableDefinition {
@@ -547,6 +622,27 @@ export interface EmbeddingsConfig {
    * Bring your own model — Lattice does not bundle an embedding provider.
    */
   embed: (text: string) => Promise<number[]>;
+  /**
+   * Optional text splitter. When set, each row's concatenated text is split
+   * into chunks and every chunk is embedded separately, so semantic search
+   * matches the most relevant *part* of a row rather than the blurred average
+   * of the whole. Omit for the historical whole-row behavior (one vector/row).
+   * See `semanticChunker` for a dependency-free boundary-aware default.
+   */
+  chunker?: import('./search/chunking.js').ChunkerFn;
+  /**
+   * Optional per-row context prefix prepended to every chunk before embedding
+   * (e.g. a title or breadcrumb), so each chunk carries enough context to be
+   * retrieved well on its own. Receives the full row.
+   */
+  contextPrefix?: (row: Row) => string;
+  /**
+   * Optional identifier of the embedding model, stored alongside each vector.
+   * Lets `refreshEmbeddings` detect and re-embed rows produced by a different
+   * model, and lets the doctor report mixed-model coverage. Purely advisory —
+   * Lattice never calls a model itself.
+   */
+  modelId?: string;
 }
 
 /**
@@ -560,6 +656,20 @@ export interface SearchOptions {
    * score are excluded. Default: 0.
    */
   minScore?: number;
+  /**
+   * Optional second-stage reranker applied to the retrieved candidates before
+   * the top-K is returned. A cross-encoder reranker typically lifts precision
+   * over raw similarity. Bring your own — Lattice never calls a model. If it
+   * throws or returns nothing usable, the original similarity order is kept
+   * (graceful fallback). To rerank a larger pool than `topK`, set
+   * `rerankPoolSize`.
+   */
+  reranker?: import('./search/rerank.js').RerankerFn;
+  /**
+   * Number of candidates to retrieve and hand to the `reranker` before slicing
+   * to `topK`. Defaults to `max(topK * 4, 20)`. Ignored when no reranker is set.
+   */
+  rerankPoolSize?: number;
 }
 
 /**
@@ -570,6 +680,17 @@ export interface SearchResult {
   row: Row;
   /** Cosine similarity score (0–1). */
   score: number;
+  /**
+   * For a chunked embedding, the index of the chunk that produced the best
+   * score for this row. Absent for whole-row (unchunked) embeddings.
+   */
+  chunkIndex?: number;
+  /**
+   * For a chunked embedding, the text of the best-matching chunk — useful as a
+   * precise, low-token snippet to hand to a model. Absent for whole-row
+   * embeddings or when chunk content was not stored.
+   */
+  matchedContent?: string;
 }
 
 /**
@@ -661,6 +782,16 @@ export interface WritebackDefinition {
 // Query / count options
 // ---------------------------------------------------------------------------
 
+/**
+ * Column projection for a query — return only the columns you need, so wide
+ * tables don't transfer (or decrypt) columns the caller will discard.
+ *
+ * - `string[]` — include exactly these columns.
+ * - `{ include }` — include exactly these columns.
+ * - `{ exclude }` — return all columns except these.
+ */
+export type QueryProjection = string[] | { include: string[] } | { exclude: string[] };
+
 export interface QueryOptions {
   /**
    * Equality filters — shorthand for `filters: [{ col, op: 'eq', val }]`.
@@ -668,31 +799,139 @@ export interface QueryOptions {
    */
   where?: Record<string, unknown>;
   /**
-   * Advanced filter clauses with full operator support.
-   * Combined with `where` using AND.
+   * Advanced filter clauses with full operator support. May include recursive
+   * `or` / `and` groups (4.1+) and per-clause `jsonPath` extraction. Combined
+   * with `where` using AND.
    *
    * @example
    * ```ts
    * filters: [
    *   { col: 'priority',   op: 'gte',    val: 3 },
    *   { col: 'deleted_at', op: 'isNull'          },
-   *   { col: 'tag',        op: 'in',     val: ['bug', 'feature'] },
+   *   { or: [ { col: 'tag', op: 'eq', val: 'bug' }, { col: 'tag', op: 'eq', val: 'feature' } ] },
    * ]
    * ```
    */
-  filters?: Filter[];
+  filters?: FilterExpr[];
   orderBy?: string;
   orderDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+  /**
+   * Return only these columns (4.1+). See {@link QueryProjection}. Omitted
+   * columns are never transferred or decrypted.
+   */
+  projection?: QueryProjection;
+  /**
+   * Bounded-read cap (4.1+). When set and no explicit `limit` is given, the
+   * query reads at most `maxRows` rows and **throws `BoundedReadError`** if more
+   * exist — forcing the caller to paginate rather than silently loading an
+   * unbounded result set. Overrides `LatticeOptions.defaultMaxRows`. An explicit
+   * `limit` opts out (the caller has bounded the read themselves).
+   */
+  maxRows?: number;
+  /**
+   * Return one row per distinct value of these column(s) (4.1+). Compiles to
+   * Postgres `DISTINCT ON (...)` and an emulated SQLite `ROW_NUMBER()` window.
+   * Which row survives per group is determined by `orderBy`/`orderDir` (then the
+   * primary key as a deterministic tiebreak).
+   */
+  distinctOn?: string | string[];
+  /**
+   * Expand declared relations on each returned row (4.1+). Each name must be a
+   * key of the table's `relations`. A `belongsTo` relation attaches the single
+   * related row (or null); a `hasMany` relation attaches an array. Related rows
+   * are fetched in ONE batched `IN (...)` query per relation — no N+1.
+   */
+  include?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Keyset pagination (v4.1)
+// ---------------------------------------------------------------------------
+
+export interface QueryPageOptions {
+  /** Equality filters (same as QueryOptions.where). */
+  where?: Record<string, unknown>;
+  /** Advanced filters (same as QueryOptions.filters). */
+  filters?: FilterExpr[];
+  /** Sort column the cursor walks. Defaults to the primary key. */
+  orderBy?: string;
+  orderDir?: 'asc' | 'desc';
+  /** Page size. Default 50. */
+  limit?: number;
+  /** Opaque cursor from a prior page's `nextCursor`. Omit for the first page. */
+  cursor?: string;
+  /** Return only these columns (see {@link QueryProjection}). */
+  projection?: QueryProjection;
+}
+
+export interface QueryPageResult {
+  /** The page of rows. */
+  rows: Row[];
+  /** Opaque cursor for the next page, or null when this is the last page. */
+  nextCursor: string | null;
+  /** Whether more rows exist beyond this page. */
+  hasMore: boolean;
 }
 
 export interface CountOptions {
   /** Equality filters (same as QueryOptions.where) */
   where?: Record<string, unknown>;
   /** Advanced filter clauses (same as QueryOptions.filters) */
-  filters?: Filter[];
+  filters?: FilterExpr[];
 }
+
+// ---------------------------------------------------------------------------
+// Aggregation (v4.1)
+// ---------------------------------------------------------------------------
+
+/** SQL aggregate function. */
+export type AggregateFunction = 'count' | 'sum' | 'avg' | 'min' | 'max';
+
+/** One aggregate column in an {@link AggregateOptions}. */
+export interface AggregateSpec {
+  /** The aggregate function to apply. */
+  fn: AggregateFunction;
+  /**
+   * Column to aggregate. Omit for `count` to mean `COUNT(*)`. Required for
+   * `sum`/`avg`/`min`/`max`.
+   */
+  col?: string;
+  /** Output key for this aggregate in each result row. */
+  as: string;
+  /** Apply `DISTINCT` inside the aggregate (e.g. `COUNT(DISTINCT col)`). */
+  distinct?: boolean;
+}
+
+/** A HAVING clause on an aggregate output (post-grouping filter). */
+export interface AggregateHaving {
+  /** The `as` key of an aggregate in the same query. */
+  aggregate: string;
+  op: FilterOp;
+  val?: unknown;
+}
+
+export interface AggregateOptions {
+  /** Columns to GROUP BY. Omit for a single grand-total row. */
+  groupBy?: string[];
+  /** The aggregate columns to compute (at least one). */
+  aggregates: AggregateSpec[];
+  /** Row-level equality filters applied before grouping. */
+  where?: Record<string, unknown>;
+  /** Row-level advanced filters applied before grouping. */
+  filters?: FilterExpr[];
+  /** Post-grouping filters on aggregate outputs. */
+  having?: AggregateHaving[];
+  /** Order the grouped rows by a groupBy column or an aggregate `as` key. */
+  orderBy?: string;
+  orderDir?: 'asc' | 'desc';
+  /** Max grouped rows to return. */
+  limit?: number;
+}
+
+/** One row of {@link Lattice.aggregate} output: groupBy columns + aggregate keys. */
+export type AggregateResult = Record<string, unknown>;
 
 // ---------------------------------------------------------------------------
 // Remaining options / results / events
