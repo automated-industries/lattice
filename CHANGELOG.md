@@ -60,7 +60,7 @@ security hardening (below).
   no longer request the whole audit table); semantic search clamps `topK` before
   the candidate over-fetch; and the no-index embedding scan takes an optional
   `maxScanChunks` that fails loudly (`EmbeddingScanTooLargeError`) rather than load
-  an unbounded vector set into memory — off by default, never silently truncated.
+  an unbounded vector set into memory — off by default, never silently truncated. These are bounding mechanisms in the library, not a fix for any particular egress bill — a large real-world overage is usually driven by a consumer application's sync/render patterns, and is addressed there.
 
 ## [4.1.0] — 2026-06-22
 
@@ -80,7 +80,11 @@ method that is inert unless a table opts in.
   multi-cutoff report. `detectRetrievalRegressions(baseline, candidate, tolerance)`
   powers a regression gate that runs in the test suite — a golden set evaluated
   against the real `search()` and compared to a committed baseline — so a change
-  that lowers retrieval quality below tolerance fails the build.
+  that lowers retrieval quality below tolerance fails the build. (Correction: as
+  first shipped the golden corpus was small and single-topic, so the baseline sat
+  at a perfect ceiling and only a large regression tripped the gate; 4.2 expands
+  the corpus and commits a generated, sub-perfect baseline so smaller regressions
+  are caught too.)
   Empty input / non-positive `k` throw rather than report a meaningless zero.
 - **Retrieval health doctor (`diagnoseRetrieval`, `lattice doctor`).** Read-only
   diagnostics: per-table full-text and embedding coverage (soft-deleted rows
@@ -94,7 +98,7 @@ method that is inert unless a table opts in.
   configurable scale, both dialects, exercising the real code paths. The vector
   phase builds the native index first, and the report's `vectorIndexed` flag marks
   whether the vector numbers reflect the index or the in-process-scan fallback —
-  so a published number is never the scan masquerading as the index. `checkSlos`
+  so you can tell whether a number reflects the index or the in-process-scan fallback (check the flag) rather than mistaking the scan for the index. (4.2 adds a test that asserts the index actually builds against a real pgvector service before the vector phase is timed.) `checkSlos`
   flags latency-SLO violations against thresholds you set for your own hardware
   (shared-runner latency is too noisy to gate a build on by default). Default
   scale is CI-fast; `LATTICE_BENCH_*` env vars scale it up.
