@@ -24,6 +24,37 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
 
+**New in 4.2 (additive — every 4.1 caller runs unchanged):** **import structured
+data by dropping a file into the assistant.** The **structured-source importer**
+turns a JSON or `.xlsx` source into a schema (entities / dimensions / junctions)
+and materializes it: Excel sheets become records (header + data-region detection),
+per-slice tabs become read-only **views** (no duplicated rows), an **as-of date**
+is detected (contents → name → Excel preamble → Claude fallback, or per-row from a
+date column) so re-importing a newer period keeps a **point-in-time snapshot**
+beside the prior one, and a re-upload is fingerprinted + matched to existing tables
+(new snapshot, not duplicate tables). It's reachable only by dropping a file in the
+assistant rail: a confident match + detected date imports silently; otherwise an
+**inline confirm card** proposes the schema, date, and mode before anything is
+written (applied via `POST /api/import/apply`). New exports: `inferSchema`,
+`inferFieldType`, `normalizeName`, `sourceRecords`, `materializeImport`,
+`detectAsOf`, `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`,
+`matchSchemaToExisting`, `renameEntities`, `excelToRecords`,
+`dedupeAndDetectViews` (+ types). See **[docs/importing.md](docs/importing.md)**.
+4.2 also tightens correctness and the read/egress posture: **retrieval bounding**
+(`/api/history` clamps its `limit`; semantic search clamps `topK` before the
+candidate fan-out; the no-index embedding scan takes an opt-in `maxScanChunks`
+that fails loudly with `EmbeddingScanTooLargeError` rather than silently truncate
+— off by default), an **import file-size cap enforced on BOTH the upload and the
+apply-time read** (50 MB), a **genuinely failable retrieval-quality gate**
+(cross-topic golden corpus + a generated sub-perfect committed baseline +
+`npm run eval:gate` in CI; the benchmark now asserts a real pgvector index before
+timing the vector phase; an advisory `npm run slo:gate`), **per-recipient scoping
+of realtime delete events** (a deleted row's pk/existence is no longer fanned out
+to members who couldn't read it), **symmetric many-to-many junction rendering**
+(both sides show the remote entity), and a **Windows credential-store fix** (the
+cross-process lock now retries transient `EPERM`/`EACCES`). All opt-in; absent the
+opt-in, behavior is byte-identical to 4.1.
+
 **New in 4.1 (additive — every 4.0 caller runs unchanged):** a measurable,
 production-grade **retrieval & data substrate**. Retrieval gets _measurable_:
 `evaluateRetrieval` reports the standard IR metrics (Precision@k / Recall@k / MRR /

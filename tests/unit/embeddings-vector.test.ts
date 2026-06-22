@@ -5,6 +5,7 @@ import {
   storeEmbedding,
   ensureEmbeddingsTable,
   EmbeddingDimensionMismatchError,
+  EmbeddingScanTooLargeError,
   type RefreshEmbeddingsOptions,
 } from '../../src/search/embeddings.js';
 import type { EmbeddingsConfig } from '../../src/types.js';
@@ -90,6 +91,44 @@ describe('chunk-aware embedding storage + search (SQLite)', () => {
 
     const hits = await d.search('docs', 'budget finance', { topK: 1 });
     expect(hits[0]!.row.id).toBe('d1');
+  });
+
+  it('refuses the no-index scan loudly when it would exceed maxScanChunks', async () => {
+    const d = await setup({
+      fields: ['title', 'body'],
+      embed: tokenEmbed(8),
+      modelId: 'test-v1',
+      maxScanChunks: 1,
+    });
+    await runAsyncOrSync(
+      d.adapter,
+      `INSERT INTO docs (id,title,body) VALUES ('d1','budget review','finance numbers')`,
+    );
+    await runAsyncOrSync(
+      d.adapter,
+      `INSERT INTO docs (id,title,body) VALUES ('d2','grocery list','milk eggs bread')`,
+    );
+    await d.refreshEmbeddings('docs');
+    // SQLite has no pgvector index, so search takes the in-process scan path; with
+    // 2 stored chunks and maxScanChunks=1 it must throw, not silently truncate.
+    await expect(d.search('docs', 'budget finance', { topK: 1 })).rejects.toThrow(
+      EmbeddingScanTooLargeError,
+    );
+  });
+
+  it('leaves the no-index scan unbounded when maxScanChunks is unset (default)', async () => {
+    const d = await setup(unchunkedConfig());
+    await runAsyncOrSync(
+      d.adapter,
+      `INSERT INTO docs (id,title,body) VALUES ('d1','budget review','finance numbers')`,
+    );
+    await runAsyncOrSync(
+      d.adapter,
+      `INSERT INTO docs (id,title,body) VALUES ('d2','grocery list','milk eggs bread')`,
+    );
+    await d.refreshEmbeddings('docs');
+    const hits = await d.search('docs', 'budget finance', { topK: 1 });
+    expect(hits[0]!.row.id).toBe('d1'); // unbounded by default — historical behavior
   });
 
   it('stores multiple chunks per row when a chunker is configured', async () => {

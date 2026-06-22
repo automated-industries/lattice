@@ -15,7 +15,7 @@ import { resolveActiveS3Config } from '../framework/s3-config.js';
 import { createHash } from 'node:crypto';
 import { resolveClaudeAuth } from './assistant-routes.js';
 import { type ClassifyMatch } from './ai/summarize.js';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 // LLM enrichment (description + auto-link + object extraction) is a shared leaf
 // module so both the ingest routes and the assistant's URL-ingest tool reuse it.
 import { enrichWithLlm } from './ai/enrich.js';
@@ -27,6 +27,9 @@ import { ingestUrlAsFile, type UrlIngestEnrich } from './ingest-url.js';
 import { fileIdentity, requiredFileDefaults } from './file-row.js';
 import { columnDescriptionHook } from './meta-gen.js';
 import { findExactFileDupesOf, mergeDuplicates, type DedupServiceCtx } from './dedup-service.js';
+// Smart structured import: a recognized re-upload of a known document is brought
+// in as a new dated snapshot automatically (the assistant "door" for import).
+import { autoImportStructured, type AutoImportResult } from './import-auto.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -298,9 +301,6 @@ function looksLikeUrl(s: string): boolean {
   return /^https?:\/\/\S+$/i.test(t) && !/\s/.test(t);
 }
 
-/** Max bytes ingested from a single source (upload body or referenced local file). */
-const MAX_INGEST_BYTES = 50_000_000;
-
 function readBuffer(req: IncomingMessage, maxBytes = MAX_INGEST_BYTES): Promise<Buffer> {
   return new Promise((resolve_, reject) => {
     const chunks: Buffer[] = [];
@@ -389,9 +389,19 @@ export async function dispatchIngestRoute(
     const tmp = join(tmpdir(), `lattice-ingest-${crypto.randomUUID()}${extname(name)}`);
     let result;
     let blob: { blob_path: string; sha256: string } | null = null;
+    // When the drop is a recognized re-upload of a known data document, it's also
+    // imported as a new dated snapshot (in addition to being kept as a file).
+    let autoImport: AutoImportResult | null = null;
     try {
       await writeFile(tmp, buf);
       result = await extractSource(ctx.db, tmp, mime, name);
+      // Smart import while the bytes are still on disk (tmp is removed below).
+      // Best-effort: a structured-import failure never fails the file upload.
+      try {
+        autoImport = await autoImportStructured(ctx.db, ctx.configPath ?? null, tmp, name);
+      } catch (e) {
+        console.warn('[ingest] auto-import skipped:', (e as Error).message);
+      }
       // Retain a content-addressed blob for documents and media (images, PDFs,
       // office docs, text/data, audio, video). Browser drag-drops arrive as bytes
       // with no local path, so this is the only way the underlying file can be
@@ -500,6 +510,10 @@ export async function dispatchIngestRoute(
       },
       forcePrivate ? 'private' : undefined,
     );
+    // Stamp the dropped file's row id onto a non-silent import proposal so the
+    // inline confirm card's Apply can resolve it (the apply route re-reads the
+    // file's bytes from this row's retained blob).
+    if (autoImport?.reason) autoImport.fileId = id;
     // Seamless auto-dedup: a byte-identical re-upload is merged onto the OLDEST
     // existing copy (this just-created row is soft-deleted — recoverable from
     // Trash / Undo) and enrichment is skipped. The only signal is the 'system'
@@ -534,6 +548,19 @@ export async function dispatchIngestRoute(
         e instanceof Error ? e.message : String(e),
       );
     }
+    // Auto-import outcome → a feed line so the snapshot is visible without any
+    // chat round-trip (the assistant "door" working automatically).
+    if (autoImport?.imported) {
+      ctx.feed.publish({
+        table: autoImport.tables[0] ?? 'files',
+        op: 'insert',
+        rowId: null,
+        source: 'system',
+        summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables`,
+      });
+    }
+    // A non-silent proposal (`reason` set) surfaces via the inline confirm card in
+    // the assistant rail (the `autoImport` proposal in the response below) — no pill.
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
       const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res, forcePrivate);
@@ -546,6 +573,7 @@ export async function dispatchIngestRoute(
         id,
         extraction_status: result.skip ? 'skipped' : 'extracted',
         suggestedLinks,
+        ...(autoImport ? { autoImport } : {}),
         // Present only when S3 is enabled for this workspace. 'failed' tells the
         // uploader the bytes did NOT reach the shared bucket — other members would
         // 404 until it's re-uploaded — so the GUI can warn rather than imply a
