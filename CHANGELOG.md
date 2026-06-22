@@ -38,6 +38,12 @@ security hardening (below).
   side shows the REMOTE entity (a contact shows its meetings, a meeting shows its
   contacts) instead of only the foreign key pointing back at the parent. A
   render-time invariant fails loudly if a junction would ever render one-sided.
+- **Credential store: a contended write no longer drops on Windows.** The
+  cross-process credential-store lock retried only on `EEXIST`; on Windows an
+  O_EXCL open racing another process mid-create/delete on the lockfile surfaces
+  transiently as `EPERM`/`EACCES`, which crashed the writer and lost its update.
+  Those transient codes are now retried (with the existing stale-reclaim + backoff,
+  bounded by the lock timeout); POSIX behavior is unchanged.
 
 ### Security
 
