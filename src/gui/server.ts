@@ -127,15 +127,6 @@ export interface GuiServerHandle {
   port: number;
   url: string;
   close: () => Promise<void>;
-  /**
-   * Resolves when the active workspace's background owner-side convergence (cloud
-   * RLS / member grants) has settled. Opening a cloud workspace returns
-   * immediately and convergence runs unawaited (see {@link ActiveDb.converged}),
-   * so a test that acts AS A MEMBER right after the owner opens must await this —
-   * otherwise the member can race the `_lattice_gui_meta` grant. The GUI itself
-   * never needs it. Resolves immediately for a non-cloud / virgin workspace.
-   */
-  whenConverged: () => Promise<void>;
 }
 
 function sendText(
@@ -996,7 +987,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     server,
     port,
     url,
-    whenConverged: () => activeRef?.converged ?? Promise.resolve(),
     close: () =>
       new Promise<void>((resolveClose, reject) => {
         // Stop the update poll first so its interval can't fire mid-teardown.
