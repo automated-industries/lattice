@@ -149,27 +149,37 @@ export interface ActiveDb {
 }
 
 /**
- * #4.3 — should a realtime change envelope be forwarded to the role THIS server
- * is connected as? The NOTIFY fan-out is global (every change on the whole cloud),
- * so without this gate a member's realtime/feed stream would leak the pk +
- * existence + editor (`owner_role`) of rows the member cannot read. For an
- * `upsert` we probe the row's visibility through the SAME SECURITY-DEFINER
- * function RLS uses (keyed on `session_user` = this connection's role), so the
- * filter is inherently per-recipient. A `delete` can't be probed (the ownership
- * record is removed by the delete trigger) — those are still forwarded so a client
- * drops a row it may be showing, but the caller STRIPS `owner_role` from the
- * forwarded delete so the editor of an unreadable row is never disclosed. No-op
- * (always visible) on a non-cloud single-user SQLite DB. Fails CLOSED (don't
- * forward) on a probe error, logging it.
+ * Should a realtime change envelope be forwarded to the role THIS server is
+ * connected as? The NOTIFY fan-out is global (every change on the whole cloud), so
+ * this gate scopes it per recipient — without it a member's realtime/feed stream
+ * would disclose the pk + existence of rows the member cannot read. For an
+ * `upsert` we probe the live row's visibility through the SAME SECURITY-DEFINER
+ * predicate RLS uses (keyed on `session_user` = this connection's role), so the
+ * filter is inherently per-recipient. For a `delete` the live row + its ownership
+ * record are already gone, so we probe the PRE-DELETE visibility snapshot the
+ * delete trigger captured (carried on the payload) through the parallel snapshot
+ * predicate — the same per-recipient decision. No-op (always visible) on a
+ * non-cloud single-user SQLite DB. Fails CLOSED (don't forward) on a probe error
+ * or a missing snapshot, logging it.
  */
 export async function changeVisibleToActiveRole(
   db: Lattice,
   payload: RealtimePayload,
 ): Promise<boolean> {
   if (db.getDialect() !== 'postgres') return true; // single-user local — nothing to gate
-  if (payload.op === 'delete' || payload.op === 'DELETE') return true; // can't probe; owner_role stripped by caller
   if (!payload.table_name || !payload.pk) return false;
   try {
+    if (isDeleteOp(payload.op)) {
+      // No snapshot (a legacy delete emitted before the snapshot columns) → fail
+      // closed: a delete event must never be forwarded unproven.
+      if (payload.del_owner_role == null) return false;
+      const row = (await getAsyncOrSync(
+        db.adapter,
+        `SELECT lattice_delete_visible(?, ?, ?::text[]) AS v`,
+        [payload.del_owner_role, payload.del_visibility ?? null, payload.del_grantees ?? []],
+      )) as { v?: unknown } | undefined;
+      return row?.v === true || row?.v === 't' || row?.v === 1;
+    }
     const row = (await getAsyncOrSync(db.adapter, `SELECT lattice_row_visible(?, ?) AS v`, [
       payload.table_name,
       payload.pk,
