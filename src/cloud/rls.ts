@@ -324,6 +324,26 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
   );
 $fn$;
 
+-- Delete-event visibility, decided from the PRE-DELETE snapshot the delete trigger
+-- captures (the live row + its ownership record are gone after a delete, so
+-- lattice_row_visible can't be used). Keyed on session_user, SECURITY DEFINER —
+-- the same per-recipient gate. MUST MIRROR lattice_row_visible's rule: the row is
+-- visible iff this member owned it, OR it was 'everyone', OR it was 'custom' and
+-- this member was a grantee. A NULL owner snapshot (a legacy delete emitted before
+-- the snapshot columns, or a row with no ownership record) yields false — fail
+-- closed, never forward. (tests/integration assert this agrees with
+-- lattice_row_visible for all three visibility states — the no-drift guard.)
+CREATE OR REPLACE FUNCTION lattice_delete_visible(
+  p_owner_role text, p_visibility text, p_grantees text[]
+)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT p_owner_role IS NOT NULL AND (
+       p_owner_role = session_user
+    OR p_visibility = 'everyone'
+    OR (p_visibility = 'custom' AND session_user = ANY(COALESCE(p_grantees, ARRAY[]::text[])))
+  );
+$fn$;
+
 -- Shared owner gate: raises unless the connected member owns (p_table, p_pk).
 -- p_action is spliced into the message so every caller keeps its exact wording.
 -- SECURITY DEFINER + session_user (never current_user), the cloud identity invariant.
@@ -498,6 +518,14 @@ CREATE TABLE IF NOT EXISTS "__lattice_changes" (
   "created_at" timestamptz NOT NULL DEFAULT now()
 );
 
+-- Pre-delete visibility snapshot columns (added to existing clouds via ADD COLUMN
+-- IF NOT EXISTS). A delete event carries the row's visibility AT DELETE TIME so the
+-- live fan-out can gate it per recipient even though the ownership record is gone.
+-- NULL on upserts.
+ALTER TABLE "__lattice_changes" ADD COLUMN IF NOT EXISTS "del_owner_role" text;
+ALTER TABLE "__lattice_changes" ADD COLUMN IF NOT EXISTS "del_visibility" text;
+ALTER TABLE "__lattice_changes" ADD COLUMN IF NOT EXISTS "del_grantees"   text[];
+
 CREATE OR REPLACE FUNCTION lattice_notify_change() RETURNS trigger
 LANGUAGE plpgsql AS $fn$
 BEGIN
@@ -507,7 +535,10 @@ BEGIN
     'pk', NEW."pk",
     'op', NEW."op",
     'owner_role', NEW."owner_role",
-    'created_at', NEW."created_at"
+    'created_at', NEW."created_at",
+    'del_owner_role', NEW."del_owner_role",
+    'del_visibility', NEW."del_visibility",
+    'del_grantees', NEW."del_grantees"
   )::text);
   RETURN NEW;
 END $fn$;
@@ -721,10 +752,22 @@ BEGIN
       VALUES (${lit}, ${pkNew}, 'upsert', session_user);
     RETURN NEW;
   ELSIF TG_OP = 'DELETE' THEN
+    -- Snapshot the row's visibility BEFORE the cascade removes its ownership +
+    -- grant records, so the realtime fan-out can gate the delete event per
+    -- recipient (the live predicate can't — these records are gone post-delete).
+    -- The grantee list is captured here because the grant rows are deleted in the
+    -- same statement below; after that the 'custom' audience is unrecoverable.
+    INSERT INTO "__lattice_changes"
+      ("table_name","pk","op","owner_role","del_owner_role","del_visibility","del_grantees")
+      VALUES (${lit}, ${pkOld}, 'delete', session_user,
+        (SELECT o."owner_role" FROM "__lattice_owners" o
+           WHERE o."table_name" = ${lit} AND o."pk" = ${pkOld}),
+        (SELECT o."visibility" FROM "__lattice_owners" o
+           WHERE o."table_name" = ${lit} AND o."pk" = ${pkOld}),
+        COALESCE((SELECT array_agg(g."grantee_role") FROM "__lattice_row_grants" g
+           WHERE g."table_name" = ${lit} AND g."pk" = ${pkOld}), ARRAY[]::text[]));
     DELETE FROM "__lattice_owners"     WHERE "table_name" = ${lit} AND "pk" = ${pkOld};
     DELETE FROM "__lattice_row_grants" WHERE "table_name" = ${lit} AND "pk" = ${pkOld};
-    INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
-      VALUES (${lit}, ${pkOld}, 'delete', session_user);
     RETURN OLD;
   END IF;
   RETURN NEW;

@@ -21,6 +21,7 @@ import { searchByEmbedding } from './embeddings.js';
 import { fullTextSearch } from './fts.js';
 import { rankingBoost, type RankingOptions } from './ranking.js';
 import { applyReranker, type RerankerFn } from './rerank.js';
+import { clampTopK } from './limits.js';
 
 export interface HybridSearchOptions {
   /** Final number of results. Default 10. */
@@ -111,7 +112,9 @@ export async function hybridSearch(
   query: string,
   opts: HybridSearchOptions = {},
 ): Promise<HybridSearchResult[]> {
-  const topK = opts.topK ?? 10;
+  // Clamp before the `topK * 4` pool fan-out below so a large caller topK can't
+  // pull an effectively unbounded candidate set from each arm.
+  const topK = clampTopK(opts.topK ?? 10);
   const rrfK = opts.rrfK ?? 60;
   const pool = opts.poolSize ?? Math.max(topK * 4, 20);
   const pkColumn = opts.pkColumn ?? 'id';

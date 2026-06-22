@@ -1,0 +1,10 @@
+{
+  "_comment": "ADVISORY latency thresholds (ms) for the retrieval benchmark, checked by `npm run slo:gate`. These are NOT build-blocking — shared CI runners are too latency-noisy to gate on (the slo:gate CI job runs with continue-on-error). The thresholds are intentionally generous headroom over locally-measured p95s (SQLite, default scale: rows=500, queries=25, dim=32 — query ~0.04-0.15ms, fts ~0.3-0.85ms, vector-scan ~2-3ms, aggregate ~0.05ms as of 4.2.0), so the gate flags a GROSS regression (orders of magnitude) without flapping on normal variance. `vector.p95` here reflects the in-process O(n) scan, because no native vector extension is loaded for this SQLite run; on a pgvector/sqlite-vec cluster the indexed number is far lower. Regenerate these by re-running the benchmark on your own hardware and widening the headroom to fit its noise floor.",
+  "scale": { "rows": 500, "queries": 25, "dim": 32 },
+  "slos": [
+    { "metric": "query.p95", "maxMs": 50 },
+    { "metric": "fts.p95", "maxMs": 100 },
+    { "metric": "vector.p95", "maxMs": 250 },
+    { "metric": "aggregate.p95", "maxMs": 50 }
+  ]
+}

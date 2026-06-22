@@ -85,3 +85,80 @@ const provided = inject('latticePgUrl');
 if (provided && !process.env.LATTICE_TEST_PG_URL) {
   process.env.LATTICE_TEST_PG_URL = provided;
 }
+
+/**
+ * Per-fork database isolation.
+ *
+ * The `*-postgres.test.ts` files historically all shared ONE database
+ * (`lattice_test`). The cloud suites isolate themselves into per-test schemas,
+ * but the non-cloud suites open it directly (`new Lattice(PG_URL)` /
+ * `startGuiServer({ db: PG_URL })`) and mutate shared, NON-row-scoped state — the
+ * schema/entity config, the changelog/audit log, the embeddings table. Vitest
+ * runs test FILES across parallel forks, so two files opening independent
+ * "workspaces" on that one database race each other: a GUI server's schema
+ * rewrite clobbers another's config (an undo/redo then 400s), and a vector search
+ * loses rows another file's writes/index touched. The victim VARIES by which
+ * files happen to overlap — the classic shared-state-race signature, not flake.
+ *
+ * Fix: give each fork its OWN database. Files within a single fork execute
+ * SERIALLY, so sharing one db across a fork's files is safe; distinct forks get
+ * distinct dbs, so nothing runs concurrently against the same database. We
+ * recreate the fork db once per fork (the first setup call) for a clean slate,
+ * and pin pgcrypto/pgvector into it (extensions are per-database). On any failure
+ * we stay LOUD and fall back to the shared db rather than break the whole suite.
+ */
+const baseFromEnv = process.env.LATTICE_TEST_PG_URL;
+if (baseFromEnv && !process.env.LATTICE_TEST_PG_BASE_URL) {
+  process.env.LATTICE_TEST_PG_BASE_URL = baseFromEnv; // remember the real cluster url
+}
+const clusterUrl = process.env.LATTICE_TEST_PG_BASE_URL;
+if (clusterUrl) {
+  const forkId = process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? '0';
+  const forkDb = `lattice_test_fork_${forkId}`;
+  const forkUrl = (() => {
+    const u = new URL(clusterUrl);
+    u.pathname = `/${forkDb}`;
+    return u.toString();
+  })();
+  if (!process.env.__LATTICE_FORK_DB_READY) {
+    try {
+      const pgmod = (await import('pg')).default;
+      const admin = new pgmod.Client(clusterUrl);
+      await admin.connect();
+      try {
+        // Drop a leftover from a prior run (terminate stragglers first), then
+        // recreate fresh. No-op on the first run against a clean cluster.
+        await admin
+          .query(
+            `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+              WHERE datname = $1 AND pid <> pg_backend_pid()`,
+            [forkDb],
+          )
+          .catch(() => undefined);
+        await admin.query(`DROP DATABASE IF EXISTS "${forkDb}"`);
+        await admin.query(`CREATE DATABASE "${forkDb}"`);
+      } finally {
+        await admin.end();
+      }
+      // Extensions are per-database — pin them into the fresh fork db's public
+      // schema (mirrors the global setup's pin on the base db).
+      const ext = new pgmod.Client(forkUrl);
+      await ext.connect();
+      try {
+        await ext.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+        await ext.query('CREATE EXTENSION IF NOT EXISTS vector').catch(() => undefined);
+      } finally {
+        await ext.end();
+      }
+      process.env.__LATTICE_FORK_DB_READY = '1';
+      process.env.LATTICE_TEST_PG_URL = forkUrl;
+    } catch (e) {
+      console.warn(
+        `[test] per-fork PG isolation failed (${(e as Error).message}); ` +
+          `falling back to the shared database — parallel PG tests may contend.`,
+      );
+    }
+  } else {
+    process.env.LATTICE_TEST_PG_URL = forkUrl;
+  }
+}
