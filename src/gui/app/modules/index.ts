@@ -28,7 +28,7 @@ import { dataModelJs } from './data-model.js';
 import { latticeTeamsJs } from './lattice-teams.js';
 import { onboardingJs } from './onboarding.js';
 import { createDatabaseWizardJs } from './create-database-wizard.js';
-import { connectImportJs } from './connect-import.js';
+import { inlineImportJs } from './inline-import.js';
 
 export const appJs = [
   displayConfigJs,
@@ -58,5 +58,5 @@ export const appJs = [
   latticeTeamsJs,
   onboardingJs,
   createDatabaseWizardJs,
-  connectImportJs,
+  inlineImportJs,
 ].join('');
