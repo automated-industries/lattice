@@ -364,6 +364,7 @@ export {
   concatRowText,
   cosineSimilarity,
   EmbeddingDimensionMismatchError,
+  EmbeddingScanTooLargeError,
   EMBEDDINGS_TABLE,
 } from './search/embeddings.js';
 export type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
@@ -574,3 +575,33 @@ export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';
 // remain shred-durable on explicit destroy.
 export { FileSourceKeyStore } from './cloud/file-source-key-store.js';
 export type { FileSourceKeyStoreOptions } from './cloud/file-source-key-store.js';
+
+// Structured-source importer: infer a proposed schema from a JSON/Excel source,
+// then materialize it into a workspace (tables + rows + junctions), with as-of
+// snapshots, per-row date columns, and match-to-existing re-import recognition.
+export { inferSchema, inferFieldType, normalizeName, sourceRecords } from './import/infer.js';
+export { materializeImport } from './import/materialize.js';
+export { detectAsOf, detectAsOfCandidates, parseCellDate } from './import/asof.js';
+export type { AsOfCandidate, AsOfInputs } from './import/asof.js';
+export { detectAsOfColumns } from './import/asof-columns.js';
+export type { AsOfColumnCandidate } from './import/asof-columns.js';
+export { matchSchemaToExisting, renameEntities } from './import/match.js';
+export type { SchemaMatch, EntityMatch, ExistingTable } from './import/match.js';
+export { excelToRecords } from './import/excel.js';
+export { dedupeAndDetectViews } from './import/dedupe-views.js';
+export type {
+  MaterializeCtx,
+  MaterializeResult,
+  MaterializeOptions,
+  ImportMode,
+  ImportProgress,
+} from './import/materialize.js';
+export type {
+  ProposedSchema,
+  InferredEntity,
+  InferredColumn,
+  InferredDimension,
+  InferredLinkage,
+  InferredType,
+  DetectedView,
+} from './import/types.js';

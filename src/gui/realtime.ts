@@ -82,6 +82,16 @@ export interface RealtimePayload {
   /** The Postgres login role that made the change (the editor). */
   owner_role: string | null;
   created_at: string;
+  /**
+   * Pre-delete visibility snapshot — present on `delete` events only. The row's
+   * ownership record is removed by the delete, so the live fan-out gate decides a
+   * delete event's per-recipient visibility from this snapshot instead of the
+   * (now-gone) `__lattice_owners` row. Absent on `upsert`, and absent on a legacy
+   * delete emitted before the snapshot columns existed (→ the gate fails closed).
+   */
+  del_owner_role?: string | null;
+  del_visibility?: string | null;
+  del_grantees?: string[] | null;
 }
 
 export type RealtimeStateHandler = (state: RealtimeState) => void;
@@ -438,6 +448,11 @@ export function parsePayload(raw: string | undefined): RealtimePayload | null {
       op: obj.op,
       owner_role: typeof obj.owner_role === 'string' ? obj.owner_role : null,
       created_at: typeof obj.created_at === 'string' ? obj.created_at : '',
+      del_owner_role: typeof obj.del_owner_role === 'string' ? obj.del_owner_role : null,
+      del_visibility: typeof obj.del_visibility === 'string' ? obj.del_visibility : null,
+      del_grantees: Array.isArray(obj.del_grantees)
+        ? obj.del_grantees.filter((g): g is string => typeof g === 'string')
+        : null,
     };
   } catch {
     return null;

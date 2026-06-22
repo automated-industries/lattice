@@ -1,11 +1,14 @@
 /**
- * #4.3 — realtime NOTIFY fan-out is filtered PER RECIPIENT. The change feed is
- * global (every change on the whole cloud), so without a gate a member's realtime
- * stream would leak the pk / existence / editor of rows it cannot read.
+ * Realtime NOTIFY fan-out is filtered PER RECIPIENT. The change feed is global
+ * (every change on the whole cloud), so without a gate a member's realtime stream
+ * would disclose the pk / existence of rows it cannot read.
  * `changeVisibleToActiveRole` probes the row through the same RLS visibility
- * function, keyed on the connecting role — so a member sees only its own /
- * everyone / granted rows. Deletes (unprobeable post-trigger) are always
- * forwarded but the editor is stripped by the caller.
+ * predicate, keyed on the connecting role — so a member sees only its own /
+ * everyone / granted rows. A delete's live row is gone, so it is gated from the
+ * PRE-DELETE visibility snapshot the delete trigger captures (the same
+ * per-recipient decision); a delete with no snapshot fails closed. Deletes are
+ * also excluded from the reconnect catch-up, so a deleted private row's pk can
+ * leak on neither path.
  *
  * Postgres-gated: skipped without LATTICE_TEST_PG_URL.
  */
@@ -18,7 +21,7 @@ import { secureNewCloudTable } from '../../src/cloud/setup.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 import { changeVisibleToActiveRole } from '../../src/gui/server.js';
 import type { RealtimePayload } from '../../src/gui/realtime.js';
-import { allAsyncOrSync } from '../../src/db/adapter.js';
+import { allAsyncOrSync, runAsyncOrSync } from '../../src/db/adapter.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
 const dbs: Lattice[] = [];
@@ -58,7 +61,69 @@ function payload(op: string, pk: string): RealtimePayload {
   return { seq: 1, table_name: 'gadget', pk, op, owner_role: 'lm_other', created_at: '' };
 }
 
-describe.skipIf(!PG_URL)('#4.3 realtime per-recipient visibility gate', () => {
+/** Stand up a fresh secured cloud `gadget` table + N scoped member connections. */
+async function setupCloud(
+  nMembers: number,
+): Promise<{ owner: Lattice; members: Lattice[]; memberRoles: string[] }> {
+  const schema = `rt_${randomBytes(4).toString('hex')}`;
+  schemas.push(schema);
+  const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+  await admin.query(`CREATE SCHEMA "${schema}"`);
+  await admin.end();
+  const owner = new Lattice(schemaUrl(schema));
+  dbs.push(owner);
+  owner.define('gadget', {
+    columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', deleted_at: 'TEXT' },
+    render: () => '',
+    outputFile: 'gadget.md',
+  });
+  await owner.init();
+  await installCloudRls(owner);
+  await secureNewCloudTable(owner, 'gadget', ['id']);
+  const members: Lattice[] = [];
+  const memberRoles: string[] = [];
+  for (let i = 0; i < nMembers; i++) {
+    const role = `lm_${randomBytes(3).toString('hex')}`;
+    roles.push(role);
+    memberRoles.push(role);
+    const pw = generateMemberPassword();
+    await provisionMemberRole(owner, role, pw);
+    const m = new Lattice(memberUrl(schema, role, pw));
+    dbs.push(m);
+    await m.init({ introspectOnly: true });
+    members.push(m);
+  }
+  return { owner, members, memberRoles };
+}
+
+/** The delete-event visibility snapshot the trigger captured for `pk`, as a payload. */
+async function deletePayload(owner: Lattice, pk: string): Promise<RealtimePayload> {
+  const rows = (await allAsyncOrSync(
+    owner.adapter,
+    `SELECT "del_owner_role", "del_visibility", "del_grantees"
+       FROM "__lattice_changes" WHERE table_name='gadget' AND pk=? AND op='delete'
+      ORDER BY seq DESC LIMIT 1`,
+    [pk],
+  )) as {
+    del_owner_role: string | null;
+    del_visibility: string | null;
+    del_grantees: string[] | null;
+  }[];
+  const r = rows[0];
+  return {
+    seq: 99,
+    table_name: 'gadget',
+    pk,
+    op: 'delete',
+    owner_role: null,
+    created_at: '',
+    del_owner_role: r?.del_owner_role ?? null,
+    del_visibility: r?.del_visibility ?? null,
+    del_grantees: r?.del_grantees ?? [],
+  };
+}
+
+describe.skipIf(!PG_URL)('realtime per-recipient visibility gate', () => {
   it('drops an upsert for a row the member cannot read; passes a readable one', async () => {
     const schema = `rt_${randomBytes(4).toString('hex')}`;
     schemas.push(schema);
@@ -152,25 +217,13 @@ describe.skipIf(!PG_URL)('#4.3 realtime per-recipient visibility gate', () => {
     expect(none).toHaveLength(0);
   });
 
-  it('always forwards deletes (caller strips the editor) and never gates SQLite', async () => {
-    const schema = `rt_${randomBytes(4).toString('hex')}`;
-    schemas.push(schema);
-    const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
-    await admin.query(`CREATE SCHEMA "${schema}"`);
-    await admin.end();
-    const owner = new Lattice(schemaUrl(schema));
-    dbs.push(owner);
-    owner.define('gadget', {
-      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', deleted_at: 'TEXT' },
-      render: () => '',
-      outputFile: 'gadget.md',
-    });
-    await owner.init();
-    await installCloudRls(owner);
-    // A delete is unprobeable (the ownership row is gone) → forwarded.
-    expect(await changeVisibleToActiveRole(owner, payload('delete', 'whatever'))).toBe(true);
+  it('fails closed on a delete with no visibility snapshot; never gates SQLite', async () => {
+    const { owner } = await setupCloud(0);
+    // A delete carrying no pre-delete snapshot (e.g. a legacy event from before the
+    // snapshot columns existed) is unprovable → fail closed, never forwarded.
+    expect(await changeVisibleToActiveRole(owner, payload('delete', 'whatever'))).toBe(false);
 
-    // SQLite is single-user — no gating.
+    // SQLite is single-user — no gating at all (delete or upsert).
     const sqlite = new Lattice(':memory:');
     dbs.push(sqlite);
     sqlite.define('gadget', {
@@ -179,6 +232,101 @@ describe.skipIf(!PG_URL)('#4.3 realtime per-recipient visibility gate', () => {
       outputFile: 'gadget.md',
     });
     await sqlite.init();
-    expect(await changeVisibleToActiveRole(sqlite, payload('upsert', 'x'))).toBe(true);
+    expect(await changeVisibleToActiveRole(sqlite, payload('delete', 'x'))).toBe(true);
+  });
+
+  it('does NOT forward a deleted private row to a member, but forwards a deleted everyone-row', async () => {
+    const { owner, members } = await setupCloud(1);
+    const member = members[0]!;
+    await owner.insert('gadget', { id: 'dpriv', name: 'secret' });
+    await owner.insertForcingVisibility('gadget', { id: 'dpub', name: 'public' }, 'everyone');
+    // Hard-delete both as the owner — the DELETE trigger snapshots each row's
+    // pre-delete visibility into the change row before its ownership record is gone.
+    await runAsyncOrSync(owner.adapter, `DELETE FROM "gadget" WHERE "id" = ?`, ['dpriv']);
+    await runAsyncOrSync(owner.adapter, `DELETE FROM "gadget" WHERE "id" = ?`, ['dpub']);
+
+    // THE KEYSTONE (run AS the scoped member): a member must never be told a row it
+    // could not read was deleted — the pk + existence stay hidden. Pre-fix this
+    // returned true (the leak: every delete fanned out to every member).
+    expect(await changeVisibleToActiveRole(member, await deletePayload(owner, 'dpriv'))).toBe(
+      false,
+    );
+    // …but a row everyone could see is fine to forward.
+    expect(await changeVisibleToActiveRole(member, await deletePayload(owner, 'dpub'))).toBe(true);
+    // The owner is told of its own deletion.
+    expect(await changeVisibleToActiveRole(owner, await deletePayload(owner, 'dpriv'))).toBe(true);
+
+    // Reconnect/catch-up can't leak it either — deletes are excluded from the
+    // catch-up replay, so the deleted private pk surfaces on neither path.
+    const since = (await allAsyncOrSync(
+      member.adapter,
+      `SELECT pk, op FROM lattice_changes_since(0, 500)`,
+    )) as { pk: string; op: string }[];
+    expect(since.every((r) => r.op === 'upsert')).toBe(true);
+    expect(since.map((r) => r.pk)).not.toContain('dpriv');
+  });
+
+  it('forwards a deleted custom-shared row only to its grantee', async () => {
+    const { owner, members, memberRoles } = await setupCloud(2);
+    const [granted, other] = members as [Lattice, Lattice];
+    const grantedRole = memberRoles[0]!;
+    await owner.insert('gadget', { id: 'dcustom', name: 'shared' });
+    await allAsyncOrSync(owner.adapter, `SELECT lattice_grant_row(?, ?, ?)`, [
+      'gadget',
+      'dcustom',
+      grantedRole,
+    ]);
+    await runAsyncOrSync(owner.adapter, `DELETE FROM "gadget" WHERE "id" = ?`, ['dcustom']);
+
+    const p = await deletePayload(owner, 'dcustom');
+    expect(p.del_visibility).toBe('custom');
+    expect(p.del_grantees).toContain(grantedRole);
+    expect(await changeVisibleToActiveRole(granted, p)).toBe(true); // the grantee
+    expect(await changeVisibleToActiveRole(other, p)).toBe(false); // a non-grantee
+  });
+
+  it('lattice_delete_visible agrees with lattice_row_visible for owner/everyone/custom (no drift)', async () => {
+    const { owner, members, memberRoles } = await setupCloud(1);
+    const member = members[0]!;
+    const mRole = memberRoles[0]!;
+    await owner.insert('gadget', { id: 'r_priv', name: 'p' });
+    await owner.insertForcingVisibility('gadget', { id: 'r_all', name: 'a' }, 'everyone');
+    await owner.insert('gadget', { id: 'r_cust', name: 'c' });
+    await allAsyncOrSync(owner.adapter, `SELECT lattice_grant_row(?, ?, ?)`, [
+      'gadget',
+      'r_cust',
+      mRole,
+    ]);
+    for (const pk of ['r_priv', 'r_all', 'r_cust']) {
+      const o = (
+        (await allAsyncOrSync(
+          owner.adapter,
+          `SELECT "owner_role", "visibility" FROM "__lattice_owners" WHERE table_name='gadget' AND pk=?`,
+          [pk],
+        )) as { owner_role: string; visibility: string }[]
+      )[0]!;
+      const g = (
+        (await allAsyncOrSync(
+          owner.adapter,
+          `SELECT array_agg("grantee_role") AS gs FROM "__lattice_row_grants" WHERE table_name='gadget' AND pk=?`,
+          [pk],
+        )) as { gs: string[] | null }[]
+      )[0];
+      const live = (
+        (await allAsyncOrSync(member.adapter, `SELECT lattice_row_visible(?, ?) AS v`, [
+          'gadget',
+          pk,
+        ])) as { v: boolean }[]
+      )[0]!;
+      const del = (
+        (await allAsyncOrSync(
+          member.adapter,
+          `SELECT lattice_delete_visible(?, ?, ?::text[]) AS v`,
+          [o.owner_role, o.visibility, g?.gs ?? []],
+        )) as { v: boolean }[]
+      )[0]!;
+      // The snapshot predicate must never drift from the live one.
+      expect(del.v).toBe(live.v);
+    }
   });
 });

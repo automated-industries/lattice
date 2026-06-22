@@ -19,6 +19,12 @@ export function sendJson(res: ServerResponse, body: unknown, status = 200): void
  *  an explicit `maxBytes` (ingest uploads 10 MB, chat history 2 MB). */
 export const DEFAULT_BODY_MAX_BYTES = 1_000_000;
 
+/** Max bytes Lattice will read for a structured-source ingest/import (50 MB). The
+ *  cap is enforced both on the streaming upload and again when the import-apply
+ *  route re-reads the retained bytes, so an oversized source can't exhaust memory
+ *  regardless of how the file got onto disk. */
+export const MAX_INGEST_BYTES = 50_000_000;
+
 /** Max rows a single bounded list read returns — `limit` is clamped to this so no
  *  one request can read an unbounded slice of a table (bounded reads). */
 export const MAX_ROWS_PAGE = 1000;
