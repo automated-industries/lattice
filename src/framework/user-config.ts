@@ -343,7 +343,17 @@ function withCredentialLock<T>(fn: () => T): T {
       fd = openSync(lockPath, 'wx'); // O_CREAT|O_EXCL — atomic; throws EEXIST if held
       break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      // EEXIST = the lock is held → retry. On Windows, an O_EXCL open racing
+      // another process that is mid-create/delete on the same lockfile surfaces
+      // transiently as EPERM / EACCES (a sharing/access race, not a hard failure);
+      // treat those identically so a contended writer retries (stale-reclaim +
+      // backoff below, bounded by the deadline) instead of crashing with a lost
+      // update. POSIX only ever sees EEXIST here, so its behavior is unchanged.
+      const contended =
+        code === 'EEXIST' ||
+        (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES'));
+      if (!contended) throw err;
       try {
         if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
           unlinkSync(lockPath); // abandoned by a crashed holder — reclaim it
