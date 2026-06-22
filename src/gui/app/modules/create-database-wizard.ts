@@ -125,6 +125,11 @@ export const createDatabaseWizardJs = `    // ───────────�
       // survivor if it was a duplicate). Multi-file drops do not navigate.
       if (files.length === 1) {
         uploadFile(files[0]).then(function (j) {
+          // A structured source the server flagged as confirmable comes back with
+          // an autoImport proposal — render the inline confirm card instead of
+          // navigating to the file record. A silent import (autoImport.imported,
+          // no reason) or a plain file keeps the open-the-record behavior.
+          if (j && j.autoImport && j.autoImport.reason) { renderInlineImportCard(j.autoImport); return; }
           if (j && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
         });
         return;
@@ -134,7 +139,15 @@ export const createDatabaseWizardJs = `    // ───────────�
       var bar = ingestProgress(files.length);
       var thunks = [];
       for (var i = 0; i < files.length; i++) {
-        (function (f) { thunks.push(function () { return uploadFile(f); }); })(files[i]);
+        (function (f) {
+          thunks.push(function () {
+            return uploadFile(f).then(function (j) {
+              // A structured source within a batch still gets its own inline
+              // confirm card (the batch as a whole does not navigate).
+              if (j && j.autoImport && j.autoImport.reason) renderInlineImportCard(j.autoImport);
+            });
+          });
+        })(files[i]);
       }
       runIngestBatch(thunks, INGEST_MAX_CONCURRENCY, bar.update).then(bar.done);
     }

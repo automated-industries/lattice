@@ -187,6 +187,21 @@ Two modules:
 
 Standalone entry point compiled to `dist/cli.js` with a `#!/usr/bin/env node` shebang. Uses no external CLI framework — just manual `process.argv` parsing. Calls `generateAll()` and logs results.
 
+### Structured import (`src/import/`) _(v4.2)_
+
+Turns a structured source — a JSON object or an Excel `.xlsx` workbook — into a
+Lattice schema and materializes it. It is a self-contained module with no
+dependency on the GUI or any dashboard:
+
+- `infer.ts` — `inferSchema` / `inferFieldType` / `normalizeName` / `sourceRecords`: source → proposed entities, dimensions, junctions.
+- `excel.ts` — `excelToRecords`: sheets → records (header + data-region detection).
+- `dedupe-views.ts` — `dedupeAndDetectViews`: per-slice tabs that mirror a master become read-only views, not duplicate tables.
+- `asof.ts` / `asof-columns.ts` — `detectAsOf*` / `parseCellDate`: detect a file-level or per-row as-of date for point-in-time snapshots.
+- `match.ts` — `matchSchemaToExisting` / `renameEntities`: fingerprint a re-upload against existing tables so it lands as a new snapshot, not a duplicate set.
+- `materialize.ts` — `materializeImport`: create tables (idempotent), insert rows + links, persist the schema to config, build the detected views.
+
+In `lattice gui` the import is reachable only by dropping a structured file into the assistant rail; the confirmed proposal is applied via `POST /api/import/apply`. The functions are also exported from `latticesql` for library use.
+
 ---
 
 ## Data flow
@@ -314,6 +329,15 @@ src/
 │   └── loop.ts           # SyncLoop (+ cleanup integration, v0.5)
 ├── writeback/
 │   └── pipeline.ts       # WritebackPipeline
+├── import/               # v4.2 — structured-source import
+│   ├── infer.ts          # inferSchema / inferFieldType / normalizeName / sourceRecords
+│   ├── excel.ts          # excelToRecords
+│   ├── dedupe-views.ts   # dedupeAndDetectViews
+│   ├── asof.ts           # detectAsOf* / parseCellDate
+│   ├── asof-columns.ts   # detectAsOfColumns
+│   ├── match.ts          # matchSchemaToExisting / renameEntities
+│   ├── materialize.ts    # materializeImport
+│   └── types.ts          # ProposedSchema, InferredEntity, DetectedView, …
 └── security/
     └── sanitize.ts       # Sanitizer
 

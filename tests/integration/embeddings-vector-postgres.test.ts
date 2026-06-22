@@ -63,6 +63,41 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
     db.close();
   });
 
+  // The auto-embed on insert is fire-and-forget (lattice.ts `_syncEmbedding`):
+  // `db.insert` resolves BEFORE the row's chunks are written to
+  // `_lattice_embeddings`, so a search (or a direct read of the embeddings) run
+  // immediately after can race the write and miss the just-added row — it
+  // surfaces under CPU load (parallel workers) as the OLDER rows being present
+  // while the just-inserted one is absent. Poll until the row's chunk count is
+  // non-zero AND stable across two reads before asserting on it, matching the
+  // documented eventually-consistent contract. (storeEmbedding writes chunks one
+  // at a time with no surrounding transaction, so "row exists" alone isn't enough.)
+  async function waitForEmbedding(pk: string, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let last = -1;
+    let stable = 0;
+    for (;;) {
+      const rows = await allAsyncOrSync(
+        db.adapter,
+        `SELECT count(*)::int AS n FROM "_lattice_embeddings" WHERE table_name = $1 AND row_pk = $2`,
+        [table, pk],
+      );
+      const n = Number(rows[0]?.n ?? 0);
+      if (n > 0 && n === last) {
+        if (++stable >= 2) return;
+      } else {
+        stable = 0;
+        last = n;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `embedding for "${pk}" did not materialize within ${String(timeoutMs)}ms (chunks=${String(n)})`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
   it('stores chunked embeddings and searches by best chunk on Postgres', async () => {
     await db.insert(table, {
       id: 'd1',
@@ -70,6 +105,8 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
       body: 'First about finance.\n\nSecond about logistics.\n\nThird about people.',
     });
     await db.insert(table, { id: 'd2', title: 'Note', body: 'unrelated content here' });
+    await waitForEmbedding('d1');
+    await waitForEmbedding('d2');
 
     const rows = await allAsyncOrSync(
       db.adapter,
@@ -87,6 +124,8 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
   it('excludes soft-deleted rows on Postgres', async () => {
     await db.insert(table, { id: 'x1', title: 'gamma', body: 'gamma payload' });
     await db.insert(table, { id: 'x2', title: 'gamma', body: 'gamma payload' });
+    await waitForEmbedding('x1');
+    await waitForEmbedding('x2');
     await db.delete(table, 'x1');
     const hits = await db.search(table, 'gamma payload', { topK: 10 });
     expect(hits.map((h) => h.row.id)).not.toContain('x1');

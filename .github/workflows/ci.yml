@@ -60,6 +60,13 @@ jobs:
       - name: Test
         run: npm run test:coverage
 
+      # Retrieval-quality regression gate (required). Evaluates the real search()
+      # over the golden corpus and fails if any metric drops past tolerance below
+      # the committed baseline. The committed baseline is sub-perfect, so a real
+      # regression — not just a catastrophic break — trips this.
+      - name: Retrieval-quality gate
+        run: npm run eval:gate
+
       - name: Build
         run: npm run build
         env:
@@ -106,6 +113,30 @@ jobs:
 
       - name: Verify CJS require
         run: node -e "const m = require('./dist/index.cjs'); if (!m.Lattice) throw new Error('CJS export missing'); console.log('CJS OK');"
+
+  # ADVISORY latency SLO gate. Runs the real benchmark and checks observed p95s
+  # against committed thresholds. NEVER build-blocking — shared GitHub runners are
+  # too latency-noisy to gate a merge on — so `continue-on-error: true` reports a
+  # violation without failing the workflow. The numbers it prints are measured,
+  # not fabricated; the thresholds carry generous headroom (see the fixture).
+  slo:
+    name: Latency SLO gate (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Advisory SLO gate
+        run: npm run slo:gate
 
   # Browser-level frontend tests for the `lattice gui` SPA. Separate job so it
   # runs in parallel with the unit/typecheck jobs rather than blocking them.

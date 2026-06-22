@@ -166,6 +166,29 @@ client): `organizeSource`, `describeImage`, `crawlUrl`, `enrichKnowledge`, and t
 A transient **"Analyzing…"** row shows while ingest runs; the add/enrich/link
 events stream into the feed as the server materializes them.
 
+### Structured-source import (drop a JSON / `.xlsx`) (4.2)
+
+The Context Constructor above turns _unstructured_ sources (documents, images,
+web pages) into a summarized, linked `files` row. **Dropping a structured source
+— a JSON object or an Excel `.xlsx` workbook — takes a different path:** Lattice
+infers a schema from it (entities, dimensions, junctions) and materializes it into
+real tables. Excel sheets become records (header + data-region detection);
+per-slice tabs that mirror a master become read-only **views** (no duplicated
+rows). An **as-of date** is detected (file contents → name → Excel preamble → a
+Claude fallback, or per-row from a date column), so re-importing a newer period
+keeps a **dated snapshot** beside the prior one; a re-upload is fingerprinted and
+matched to the tables already in the workspace, so it lands as a new snapshot
+rather than duplicate tables.
+
+A **recognized dataset with a confident date imports silently** as a dated
+snapshot (reported in the activity feed); a brand-new dataset, or a recognized one
+with no confident date, surfaces an **inline confirm card** that proposes the
+schema, the as-of date (and any per-row date column), and the mode before anything
+is written — applied via `POST /api/import/apply`. The same inference +
+materialization functions (`inferSchema`, `materializeImport`, `detectAsOf*`,
+`excelToRecords`, `dedupeAndDetectViews`, …) are exported from `latticesql` for
+library use. See [importing.md](importing.md) for the full walkthrough.
+
 ## Artifacts
 
 Ask the assistant to "write a doc / note / summary / write-up" and it calls the
