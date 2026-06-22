@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>My Dashboard</title>
+    <style>
+      /* A plain, mobile-friendly starting point. Restyle freely — only the
+         fetch() calls below matter. One system font, differentiated by
+         weight/size only. */
+      :root {
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          sans-serif;
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem 1rem;
+        max-width: 760px;
+        margin-inline: auto;
+        line-height: 1.5;
+        overflow-x: hidden;
+      }
+      h1 {
+        font-size: 1.4rem;
+        margin: 0 0 0.25rem;
+      }
+      p.sub {
+        margin: 0 0 1.5rem;
+        opacity: 0.7;
+      }
+      section {
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        border-radius: 12px;
+        padding: 1rem;
+        margin-bottom: 1.25rem;
+      }
+      label {
+        font-weight: 600;
+        display: block;
+        margin-bottom: 0.5rem;
+      }
+      textarea,
+      input[type='text'] {
+        width: 100%;
+        padding: 0.6rem;
+        border-radius: 8px;
+        border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+      }
+      textarea {
+        min-height: 70px;
+        resize: vertical;
+      }
+      .row {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 0.6rem;
+      }
+      button {
+        padding: 0.55rem 1rem;
+        border-radius: 8px;
+        border: 0;
+        background: #2d6cdf;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #drop {
+        border: 2px dashed color-mix(in srgb, currentColor 30%, transparent);
+        border-radius: 10px;
+        padding: 1.25rem;
+        text-align: center;
+        opacity: 0.85;
+      }
+      #drop.over {
+        border-color: #2d6cdf;
+        opacity: 1;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      li {
+        padding: 0.7rem 0;
+        border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+      }
+      li:first-child {
+        border-top: 0;
+      }
+      .name {
+        font-weight: 600;
+        word-break: break-word;
+      }
+      .meta {
+        font-size: 0.85rem;
+        opacity: 0.7;
+      }
+      .tag {
+        display: inline-block;
+        font-size: 0.75rem;
+        padding: 0.1rem 0.5rem;
+        border-radius: 999px;
+        background: color-mix(in srgb, currentColor 12%, transparent);
+        margin: 0.15rem 0.15rem 0 0;
+      }
+      #status {
+        min-height: 1.2rem;
+        font-size: 0.85rem;
+        opacity: 0.8;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>My Dashboard</h1>
+    <p class="sub">
+      Upload a file or jot a note — Lattice reads it and files it against your data.
+    </p>
+
+    <section>
+      <label for="file">Upload files</label>
+      <div id="drop">
+        Drag files here, or
+        <button type="button" id="pick">choose files</button>
+      </div>
+      <input id="file" type="file" multiple hidden />
+    </section>
+
+    <section>
+      <label for="note">Add a note</label>
+      <textarea id="note" placeholder="Type a note, or paste a link to capture it…"></textarea>
+      <div class="row">
+        <button type="button" id="addNote">Add note</button>
+      </div>
+    </section>
+
+    <section>
+      <label>Recently captured</label>
+      <div id="status"></div>
+      <ul id="list"></ul>
+    </section>
+
+    <script>
+      // ---- Lattice client -------------------------------------------------
+      // These three calls are the whole integration. The dashboard is served by
+      // Lattice on the same origin, so plain relative fetch() works — no API key
+      // in the page, no CORS. Copy these into your own page to wire your own UI.
+
+      // Upload one file. Returns { id, extraction_status, suggestedLinks, ... }.
+      async function latticeUpload(file) {
+        const res = await fetch('/api/ingest/upload', {
+          method: 'POST',
+          headers: {
+            'content-type': file.type || 'application/octet-stream',
+            'x-filename': encodeURIComponent(file.name || 'file'),
+          },
+          body: file,
+        });
+        if (!res.ok) throw new Error('Upload failed: HTTP ' + res.status);
+        return res.json();
+      }
+
+      // Capture a note (or a pasted URL). Returns { id, extraction_status, suggestedLinks }.
+      async function latticeAddNote(text, title) {
+        const res = await fetch('/api/ingest/text', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(title ? { text, title } : { text }),
+        });
+        if (!res.ok) throw new Error('Add note failed: HTTP ' + res.status);
+        return res.json();
+      }
+
+      // List captured items (newest first). Returns an array of file rows.
+      async function latticeListFiles(limit = 25) {
+        const res = await fetch('/api/tables/files/rows?limit=' + limit);
+        if (!res.ok) throw new Error('List failed: HTTP ' + res.status);
+        const data = await res.json();
+        return Array.isArray(data.rows) ? data.rows : [];
+      }
+
+      // ---- Wiring (replace with your own UI) ------------------------------
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('list');
+      const fileInput = document.getElementById('file');
+      const drop = document.getElementById('drop');
+
+      function setStatus(msg) {
+        statusEl.textContent = msg || '';
+      }
+
+      function renderList(rows) {
+        listEl.innerHTML = '';
+        for (const r of rows) {
+          const li = document.createElement('li');
+          const name = document.createElement('div');
+          name.className = 'name';
+          name.textContent = r.original_name || r.name || '(untitled)';
+          const meta = document.createElement('div');
+          meta.className = 'meta';
+          meta.textContent =
+            (r.description || '').slice(0, 200) +
+            (r.extraction_status ? '  ·  ' + r.extraction_status : '');
+          li.append(name, meta);
+          listEl.append(li);
+        }
+        if (rows.length === 0) listEl.innerHTML = '<li class="meta">Nothing captured yet.</li>';
+      }
+
+      async function refresh() {
+        try {
+          renderList(await latticeListFiles());
+        } catch (e) {
+          setStatus(e.message);
+        }
+      }
+
+      async function handleFiles(files) {
+        for (const file of files) {
+          setStatus('Uploading ' + file.name + '…');
+          try {
+            const out = await latticeUpload(file);
+            const n = (out.suggestedLinks || []).length;
+            setStatus('Captured ' + file.name + (n ? ' · linked to ' + n + ' record(s)' : ''));
+          } catch (e) {
+            setStatus(e.message);
+          }
+        }
+        await refresh();
+      }
+
+      document.getElementById('pick').addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) handleFiles(fileInput.files);
+        fileInput.value = '';
+      });
+      drop.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        drop.classList.add('over');
+      });
+      drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+      drop.addEventListener('drop', (e) => {
+        e.preventDefault();
+        drop.classList.remove('over');
+        if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+      });
+
+      document.getElementById('addNote').addEventListener('click', async () => {
+        const ta = document.getElementById('note');
+        const text = ta.value.trim();
+        if (!text) return;
+        setStatus('Saving note…');
+        try {
+          await latticeAddNote(text);
+          ta.value = '';
+          setStatus('Note captured.');
+        } catch (e) {
+          setStatus(e.message);
+        }
+        await refresh();
+      });
+
+      refresh();
+    </script>
+  </body>
+</html>

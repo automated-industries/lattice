@@ -14,6 +14,7 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice status`](#lattice-status)
   - [`lattice watch`](#lattice-watch)
   - [`lattice gui`](#lattice-gui)
+  - [`lattice connect`](#lattice-connect)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -323,6 +324,50 @@ These tables are filtered out of `/api/entities`, the dashboard, and rendered
 context output. They are not part of your declared schema and do not affect any
 `Lattice` API calls. No fictional / demo rows are ever inserted — the GUI only
 shows the data already in your database.
+
+---
+
+### `lattice connect`
+
+Puts Lattice _behind your own dashboard_. It serves a local HTML file (or a
+folder of static assets) at `/`, with Lattice's data routes available at the same
+origin — so plain `fetch()` calls from your page upload files, capture notes, and
+list what you've saved with no API key in the page. The built-in Lattice view
+moves to `/lattice`. On first run it walks a non-coder through pasting a Claude
+API key (stored encrypted on this machine only, never written into the database);
+without a key, files are still saved but not auto-categorized.
+
+```sh
+lattice connect [options]
+```
+
+**Options:**
+
+| Option               | Short | Default                    | Description                                                             |
+| -------------------- | ----- | -------------------------- | ----------------------------------------------------------------------- |
+| `--dashboard <path>` | –     | (none)                     | A local `.html` file or a folder to serve at `/` (Lattice → `/lattice`) |
+| `--root <dir>`       | –     | discovered or `./.lattice` | The `.lattice` root location                                            |
+| `--port <number>`    | –     | `4317`                     | Localhost port; auto-increments when the port is busy                   |
+| `--no-open`          | –     | off                        | Print the URL without opening a browser                                 |
+
+**Example:**
+
+```sh
+lattice connect --dashboard ./my-dashboard.html
+```
+
+```
+Your dashboard is live at http://127.0.0.1:4317
+Lattice's own view is at http://127.0.0.1:4317/lattice
+Press Ctrl+C to stop.
+```
+
+A connected dashboard can also be set, changed, or disconnected at runtime from
+the GUI's **Connect dashboard** top-bar button, which persists the choice to the
+machine-local config so it is restored next start. Folders are served **in
+place** — your edits show up on refresh, and a symlink inside the folder that
+escapes it is refused (no arbitrary host-file read). See
+[docs/connect.md](./connect.md) for the full walkthrough.
 
 ---
 

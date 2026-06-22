@@ -6,6 +6,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Connect a dashboard — serve your own HTML over a local Lattice workspace.**
+  A new `lattice connect` command (and a `dashboardPath` option on
+  `startGuiServer`) puts Lattice _behind your own dashboard_: it serves a local
+  HTML file or a folder of static assets at `/`, with Lattice's data routes
+  available at the same origin, so plain `fetch()` calls from your page upload
+  files, capture notes, and list what you've saved — no API key in the page. The
+  built-in Lattice view moves to `/lattice`, and a small "↩ Lattice" return pill
+  is injected into the served HTML so it's never a dead end. A folder is served
+  **in place** (your edits show up on refresh) with real-path containment so a
+  symlink inside the folder can't escape it and leak an arbitrary host file. The
+  connected dashboard can be set, changed, or disconnected at runtime from the
+  GUI's new **Connect dashboard** top-bar button (persisted machine-locally and
+  restored next start) or via `GET`/`POST /api/connect/dashboard`. `lattice
+connect` also walks a non-coder through pasting a Claude API key (stored
+  encrypted on this machine only, never written into the database); without a
+  key, files are still saved but not auto-categorized. The GUI server now warns
+  loudly at startup when it binds to a non-loopback address, since its data
+  routes are unauthenticated. See [docs/connect.md](docs/connect.md) and
+  [docs/examples/dashboard.html](docs/examples/dashboard.html).
+
+---
+
 ## [4.1.0] — 2026-06-22
 
 Fast-follow feature release on 4.0. Turns latticesql into a measurable,

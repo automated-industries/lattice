@@ -22,6 +22,7 @@ import {
 } from '../framework/workspace.js';
 import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
+import { createConnectRouter } from './connect-routes.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
 import { createGuiRequestContext, type GuiRequestContext } from './request-context.js';
@@ -97,6 +98,13 @@ export interface StartGuiServerOptions {
    * ⇒ the version chip stays hidden.
    */
   version?: string;
+  /**
+   * "Bring your own dashboard": a local HTML file or a folder of static assets to
+   * serve at `/` instead of the built-in shell (which moves to `/lattice`). When
+   * omitted, the last dashboard connected via the GUI/API is restored. See
+   * `connect-routes.ts`.
+   */
+  dashboardPath?: string | null;
   /**
    * Realtime backstop liveness-poll interval (ms) for the RealtimeBroker. A
    * managed-Postgres proxy (e.g. AWS RDS Proxy) can silently drop the LISTEN
@@ -214,6 +222,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const bootOutputDir = options.outputDir ? resolve(options.outputDir) : null;
   const startPort = options.port ?? 4317;
   const host = options.host ?? '127.0.0.1';
+  // The data routes (rows, ingest, dashboard control plane) are UNAUTHENTICATED —
+  // that is the accepted trust model only because the server defaults to loopback.
+  // Binding to a non-loopback address (e.g. 0.0.0.0) exposes read/write to the
+  // network with no auth layer, so say so loudly at startup. We do not block it —
+  // an operator may do it deliberately behind their own network controls.
+  const isLoopbackHost = host === 'localhost' || host === '::1' || host.startsWith('127.');
+  if (!isLoopbackHost) {
+    console.warn(
+      `[lattice] GUI is binding to a non-loopback address (${host}); its data ` +
+        `routes are UNAUTHENTICATED and will be reachable from the network.`,
+    );
+  }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
   // One id per GUI server process. Stamped on every audit entry so the header
@@ -462,6 +482,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // (host/guiVersion/guiAppHtml/sendText never change for the server's life),
   // built once here rather than per request.
   const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText };
+  // Connect-a-dashboard. Owns the connected-dashboard state for the server's
+  // lifetime; its handler runs BEFORE the virgin gate so the dashboard serves
+  // (and the control plane answers) with no active workspace.
+  const connectRouter = createConnectRouter({
+    guiAppHtml,
+    guiVersion,
+    dashboardPath: options.dashboardPath ?? null,
+  });
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
@@ -537,6 +565,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           return;
         }
+
+        // Connect-a-dashboard. Runs before the virgin gate so a connected
+        // dashboard serves at `/` (shell → `/lattice`) and the control plane
+        // answers even with no active workspace. Returns true when it handled
+        // the request.
+        if (await connectRouter.handle(req, res)) return;
 
         // Zero-workspace "virgin" state: no active DB. Serve only the shell +
         // the workspace-management & onboarding routes; everything else 409s

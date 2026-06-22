@@ -15,12 +15,15 @@ import { appJs } from '../../src/gui/app/script.js';
 // (the switch path now re-fetches /api/dbconfig + re-points the header logo,
 // matching the boot path), the manual-upgrade link (the version chip's
 // "Update available — Upgrade" affordance: checkUpdateAvailable + wireUpdateLink,
-// wired at boot and refreshed on each reconnect version check), and the FOUC fix
+// wired at boot and refreshed on each reconnect version check), the FOUC fix
 // that softens the two background in-place re-renders (advanced-mode toggle +
 // workspace-switch reload now pass {soft:true} so they never paint the loading
-// frame). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 401500;
-const ORIGINAL_SHA256 = 'def9945b673adc9d45f9341660c3b7d634adcc83cb0535b355fd107cb708119c';
+// frame), and the connect-a-dashboard segment (the state-aware "Connect
+// dashboard" top-bar button + its modal panel that points Lattice at the user's
+// own HTML over /api/connect/dashboard). Recapture the length + hash on any
+// intended change.
+const ORIGINAL_LENGTH = 410600;
+const ORIGINAL_SHA256 = '1cf814d6c9e6a0ad219bc6ff148e610d89ee90b1a6357ebd42832b83caea34be';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

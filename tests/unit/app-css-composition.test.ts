@@ -12,9 +12,11 @@ import { css } from '../../src/gui/app/css.js';
 //
 // These constants were captured from the pre-split `css` value. If `css` is
 // ever changed intentionally, recapture the length + hash and update them here.
-// Most recently grown by the manual-upgrade link's two #app-update-link rules.
-const ORIGINAL_LENGTH = 75013;
-const ORIGINAL_SHA256 = 'eae06ad7302bd0799d292a824c5b724abae85559dd540b9f89fa8bb19dfc6fca';
+// Most recently grown by the connect-a-dashboard styles (the "Connect dashboard"
+// top-bar button + its modal panel), after the manual-upgrade link's two
+// #app-update-link rules.
+const ORIGINAL_LENGTH = 78657;
+const ORIGINAL_SHA256 = '5b700ffba9c6515e472a71462d3c14735dd3e6640c862c3ff5d1474f4610e810';
 
 describe('css composition', () => {
   it('matches the original length exactly', () => {
