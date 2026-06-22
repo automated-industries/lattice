@@ -24,6 +24,7 @@ import {
 import { NATIVE_INTERNAL_NAMES } from '../framework/native-entities.js';
 import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
+import { hasFilePresigner, grantPresignerToMemberGroup } from './file-presign.js';
 
 /**
  * Tables that are PRIVATE to their owner on a cloud and must never be bulk-shared:
@@ -181,6 +182,24 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   } catch (err) {
     console.warn(
       '[reconcileCloudMemberAccess] could not grant EXECUTE on polyfills (will retry next open):',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // (4b) Seamless cloud file bytes: if the in-database SigV4 presigner is installed
+  // (the owner enabled S3), grant EXECUTE to the member group so EVERY current AND
+  // future member can presign their own visible files with no key. The grant is
+  // idempotent and re-applied on every reconcile (open/join), so a member who joins
+  // AFTER S3 was enabled still receives it — closing the one-shot-at-config gap. The
+  // owner-only secret table is never granted (the function reads it as DEFINER). No-op
+  // when the presigner isn't installed; self-heals next open if the grant fails.
+  try {
+    if (await hasFilePresigner(db.adapter)) {
+      await grantPresignerToMemberGroup(db.adapter, group);
+    }
+  } catch (err) {
+    console.warn(
+      '[reconcileCloudMemberAccess] could not grant EXECUTE on the file presigner (will retry next open):',
       err instanceof Error ? err.message : String(err),
     );
   }

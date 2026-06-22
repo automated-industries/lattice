@@ -31,4 +31,17 @@ describe('3.3.5 GUI — no-flash refresh + settings-drawer URL sync', () => {
     expect(guiAppHtml).toContain("location.hash.indexOf('#/settings/') === 0");
     expect(guiAppHtml).toContain("window.history.replaceState(null, '', '#/')");
   });
+
+  it('background in-place re-renders pass {soft:true} — no bare else-branch renderRoute (the regressed FOUC sites)', () => {
+    // The advanced-mode toggle (same remapped hash) and the workspace-switch reload
+    // (already on #/) re-render the pane IN PLACE; both previously called a BARE
+    // `renderRoute()`, which synchronously painted the loading frame (the wipe gated
+    // on `!soft` above) and flashed during background/chat activity. Both now pass
+    // {soft:true}. The bare `else renderRoute();` pattern was unique to those two
+    // sites — guard that it cannot reappear. (The PRIMARY flash cause — spurious
+    // renders triggered by chat writes — is covered behaviorally by
+    // tests/unit/eager-rerender-filter.test.ts.)
+    expect(guiAppHtml).not.toContain('else renderRoute();');
+    expect(guiAppHtml).toContain('else renderRoute({ soft: true })');
+  });
 });
