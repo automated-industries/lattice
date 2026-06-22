@@ -438,7 +438,12 @@ export async function handleReadRoutes(
 
   // ── Version history (audit log + undo/redo + revert) ──────────────
   if (method === 'GET' && pathname === '/api/history') {
-    const limit = Number(url.searchParams.get('limit') ?? '200');
+    // Bounded read: clamp a provided limit to [1, MAX_ROWS_PAGE] so a client can't
+    // request the whole audit table; default 200 (the historical default, well
+    // within the clamp) on a missing or non-numeric limit.
+    const limitRaw = url.searchParams.get('limit');
+    const parsedLimit = parsePageParam(limitRaw, 'limit');
+    const limit = limitRaw !== null && typeof parsedLimit === 'number' ? parsedLimit : 200;
     const filterTable = url.searchParams.get('table');
     const raw = (await active.db.query('_lattice_gui_audit', { limit })) as Record<
       string,
