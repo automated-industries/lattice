@@ -7,6 +7,10 @@ import type {
   WritebackDefinition,
   QueryOptions,
   CountOptions,
+  AggregateOptions,
+  AggregateResult,
+  QueryPageOptions,
+  QueryPageResult,
   InitOptions,
   Migration,
   WatchOptions,
@@ -91,8 +95,65 @@ import {
   storeEmbedding,
   removeEmbedding,
   searchByEmbedding,
+  refreshEmbeddings,
+  concatRowText,
 } from './search/embeddings.js';
+import type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
+import { buildVectorIndex } from './search/vector-index.js';
 import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
+import { hybridSearch } from './search/hybrid.js';
+import type { HybridSearchOptions, HybridSearchResult } from './search/hybrid.js';
+import { applyReranker } from './search/rerank.js';
+import {
+  provenanceColumns,
+  resolveTrustDefault,
+  TRUST_COLUMNS,
+  ProvenanceImmutableError,
+} from './schema/governance.js';
+import type { TrustState } from './schema/governance.js';
+import {
+  addEdge,
+  addEdges,
+  removeEdge,
+  neighbors,
+  traverse,
+  extractEdgesFromColumn,
+  graphAdjacencyBoost,
+} from './search/graph.js';
+import type {
+  GraphEdge,
+  GraphNode,
+  TraversalOptions,
+  GraphTraversalResult,
+  ExtractEdgesSpec,
+  TraversalDirection,
+} from './search/graph.js';
+import {
+  computedColumnOrder,
+  computeColumns,
+  computedColumnDdl,
+  rollupColumnDdl,
+  allComputedDeps,
+} from './schema/computed.js';
+import type { ComputedColumnSpec, MaterializedRollupSpec } from './schema/computed.js';
+import {
+  installFilePresigner,
+  setCloudS3Secret,
+  grantPresignerToMemberGroup,
+} from './cloud/file-presign.js';
+import type { CloudS3Secret } from './cloud/file-presign.js';
+import { cloudSchema, memberGroupFor } from './cloud/rls.js';
+import { evaluateRetrieval } from './search/eval.js';
+import type {
+  EvalQuery,
+  Retriever,
+  RetrievalEvalOptions,
+  RetrievalEvalSummary,
+} from './search/eval.js';
+import { diagnoseRetrieval } from './search/doctor.js';
+import type { RetrievalHealthReport, RetrievalHealthSpec } from './search/doctor.js';
+import { benchmarkRetrieval } from './search/benchmark.js';
+import type { BenchmarkOptions, BenchmarkReport } from './search/benchmark.js';
 
 /**
  * Initialise Lattice from a YAML config file instead of an explicit path.
@@ -233,6 +294,24 @@ export class Lattice {
   private readonly _writeHooks: WriteHook[] = [];
   /** Optional cap on per-row payload bytes; see LatticeOptions.maxRowBytes. */
   private _maxRowBytes: number | undefined;
+  /** Optional default bounded-read cap; see LatticeOptions.defaultMaxRows. */
+  private _defaultMaxRows: number | undefined;
+  /** table → immutable provenance column names (governance: P-PROV). */
+  private readonly _provenanceCols = new Map<string, string[]>();
+  /** table → default trust state for new rows (governance: P-TRUST). */
+  private readonly _trustDefault = new Map<string, TrustState>();
+  /** table → computed-column specs + recompute order + dep set (P-VIEW). */
+  private readonly _computed = new Map<
+    string,
+    { specs: Record<string, ComputedColumnSpec>; order: string[]; deps: Set<string> }
+  >();
+  /** table → materialized rollup specs (P-VIEW). */
+  private readonly _rollups = new Map<string, Record<string, MaterializedRollupSpec>>();
+  /** source table → parents whose rollup it feeds (for incremental recompute). */
+  private readonly _rollupSources = new Map<
+    string,
+    { parentTable: string; name: string; spec: MaterializedRollupSpec }[]
+  >();
 
   /**
    * Reject the row if its payload exceeds `_maxRowBytes`. Cost is dominated
@@ -292,6 +371,7 @@ export class Lattice {
     if (options.encryptionKey) this._encryptionKeyRaw = options.encryptionKey;
     if (options.changelog) this._changelogOptions = options.changelog;
     if (options.maxRowBytes !== undefined) this._maxRowBytes = options.maxRowBytes;
+    if (options.defaultMaxRows !== undefined) this._defaultMaxRows = options.defaultMaxRows;
 
     this._sanitizer.onAudit((event) => {
       for (const h of this._auditHandlers) h(event);
@@ -430,10 +510,38 @@ export class Lattice {
   }
 
   private _registerTable(table: string, def: TableDefinition): void {
-    // Auto-inject reward tracking columns
-    const columns = def.rewardTracking
+    // Auto-inject reward tracking + governance (provenance / trust) columns.
+    let columns = def.rewardTracking
       ? { ...def.columns, _reward_total: 'REAL DEFAULT 0', _reward_count: 'INTEGER DEFAULT 0' }
       : def.columns;
+    if (def.provenance) {
+      const provCols = provenanceColumns(def.provenance);
+      columns = { ...columns, ...provCols };
+      this._provenanceCols.set(table, Object.keys(provCols));
+    }
+    if (def.trust) {
+      columns = { ...columns, ...TRUST_COLUMNS };
+      this._trustDefault.set(table, resolveTrustDefault(def.trust) ?? 'unverified');
+    }
+    if (def.computed) {
+      // Validate dependency order (throws on a cycle) before adding columns.
+      const order = computedColumnOrder(table, def.computed);
+      columns = { ...columns, ...computedColumnDdl(def.computed) };
+      this._computed.set(table, {
+        specs: def.computed,
+        order,
+        deps: allComputedDeps(def.computed),
+      });
+    }
+    if (def.materializedRollups) {
+      columns = { ...columns, ...rollupColumnDdl(def.materializedRollups) };
+      this._rollups.set(table, def.materializedRollups);
+      for (const [name, spec] of Object.entries(def.materializedRollups)) {
+        const arr = this._rollupSources.get(spec.sourceTable) ?? [];
+        arr.push({ parentTable: table, name, spec });
+        this._rollupSources.set(spec.sourceTable, arr);
+      }
+    }
 
     // Resolve the built-in template name (if any) for reverse-seed parsing
     const renderTemplateName = _resolveTemplateName(def.render);
@@ -933,7 +1041,13 @@ export class Lattice {
     row: Row,
   ): { sql: string; values: unknown[]; pkValue: string; rowWithPk: Row } {
     this._assertIdent(table);
-    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
+    const sanitized = this._applyComputedColumns(
+      table,
+      this._applyGovernanceDefaults(
+        table,
+        this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+      ),
+    );
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
     // Auto-generate UUID only for the default 'id' PK when the field is absent.
@@ -964,6 +1078,25 @@ export class Lattice {
     };
   }
 
+  /**
+   * Stamp governance defaults at insert time: auto-set `ingested_at` for a
+   * provenance table (when not supplied) and the default `_trust_state` for a
+   * trust table. Returns a shallow copy; a no-op for tables without governance.
+   */
+  private _applyGovernanceDefaults(table: string, row: Row): Row {
+    const provCols = this._provenanceCols.get(table);
+    const trustDefault = this._trustDefault.get(table);
+    if (!provCols && trustDefault === undefined) return row;
+    const out = { ...row };
+    if (provCols?.includes('ingested_at') && out.ingested_at == null) {
+      out.ingested_at = new Date().toISOString();
+    }
+    if (trustDefault !== undefined && out._trust_state == null) {
+      out._trust_state = trustDefault;
+    }
+    return out;
+  }
+
   /** Post-insert side effects (changelog, audit, write hooks, embedding sync),
    *  identical for the plain and force-visibility insert paths. */
   private async _afterInsert(
@@ -985,6 +1118,8 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
+    // If this table feeds a parent rollup, recompute the affected parent.
+    if (this._rollupSources.has(table)) await this._propagateRollupsFromRow(table, rowWithPk);
   }
 
   /**
@@ -1027,16 +1162,25 @@ export class Lattice {
       .join(', ');
     // Conflict target uses all PK columns
     const conflictCols = pkCols.map((c) => `"${c}"`).join(', ');
-    // Exclude all PK columns from the UPDATE SET clause
+    // Exclude PK columns AND immutable provenance columns from the UPDATE SET: an
+    // upsert against an existing row must NOT rewrite its lineage (P-PROV), just as
+    // a plain update() rejects a provenance change — the first-insert provenance is
+    // preserved on conflict.
+    const keepOnConflict = new Set([...pkCols, ...(this._provenanceCols.get(table) ?? [])]);
     const updateCols = Object.keys(encrypted)
-      .filter((c) => !pkCols.includes(c))
+      .filter((c) => !keepOnConflict.has(c))
       .map((c) => `"${c}" = excluded."${c}"`)
       .join(', ');
     const values = Object.values(encrypted);
 
+    // If every non-PK column is provenance (nothing left to update), the conflict
+    // is a no-op rather than an invalid empty SET.
+    const onConflict = updateCols
+      ? `ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`
+      : `ON CONFLICT(${conflictCols}) DO NOTHING`;
     await runAsyncOrSync(
       this._adapter,
-      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`,
+      `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ${onConflict}`,
       values,
     );
 
@@ -1085,7 +1229,20 @@ export class Lattice {
     this._assertIdent(table);
     this._assertRowSize(table, row as Row);
 
-    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row as Row));
+    const baseSanitized = this._filterToSchemaColumns(
+      table,
+      this._sanitizer.sanitizeRow(row as Row),
+    );
+    // Provenance columns are immutable — reject any update that touches them.
+    const provCols = this._provenanceCols.get(table);
+    if (provCols) {
+      for (const c of provCols) {
+        if (c in baseSanitized) throw new ProvenanceImmutableError(table, c);
+      }
+    }
+    // Recompute any computed columns whose dependencies changed (merges the
+    // current row with the changes, then derives the computed values).
+    const sanitized = await this._recomputeComputedOnUpdate(table, id, baseSanitized);
     const encrypted = this._encryption.encryptRow(table, sanitized);
     const setCols = Object.keys(encrypted)
       .map((c) => `"${c}" = ?`)
@@ -1143,6 +1300,146 @@ export class Lattice {
       );
       if (fullRow) this._syncEmbedding(table, 'update', fullRow, auditId);
     }
+    // If this table feeds a parent rollup, recompute the affected parent.
+    if (this._rollupSources.has(table)) await this._propagateRollups(table, id);
+  }
+
+  // -------------------------------------------------------------------------
+  // Computed columns + materialized rollups (P-VIEW)
+  // -------------------------------------------------------------------------
+
+  /** Compute a table's computed columns from a (full) row, returning the merged row. */
+  private _applyComputedColumns(table: string, row: Row): Row {
+    const c = this._computed.get(table);
+    if (!c) return row;
+    return { ...row, ...computeColumns(c.specs, c.order, row) };
+  }
+
+  /**
+   * On update, if the changed columns include any computed-column dependency,
+   * fetch + decrypt the current row, merge the changes, recompute the computed
+   * columns, and fold them into the update payload. No-op otherwise.
+   */
+  private async _recomputeComputedOnUpdate(
+    table: string,
+    id: PkLookup,
+    sanitized: Row,
+  ): Promise<Row> {
+    const c = this._computed.get(table);
+    if (!c) return sanitized;
+    const touchesDep = Object.keys(sanitized).some((k) => c.deps.has(k));
+    if (!touchesDep) return sanitized;
+    const { clause, params } = this._pkWhere(table, id);
+    const current = await getAsyncOrSync(
+      this._adapter,
+      `SELECT * FROM "${table}" WHERE ${clause}`,
+      params,
+    );
+    const merged: Row = {
+      ...(current ? this._encryption.decryptRow(table, current) : {}),
+      ...sanitized,
+    };
+    return { ...sanitized, ...computeColumns(c.specs, c.order, merged) };
+  }
+
+  /** Recompute parent rollup(s) for the FK values carried on a source row. */
+  private async _propagateRollupsFromRow(sourceTable: string, sourceRow: Row): Promise<void> {
+    const feeds = this._rollupSources.get(sourceTable);
+    if (!feeds) return;
+    for (const feed of feeds) {
+      const parentId = sourceRow[feed.spec.foreignKey];
+      if (typeof parentId !== 'string' && typeof parentId !== 'number') continue;
+      await this._recomputeRollupCell(feed.parentTable, feed.name, feed.spec, String(parentId));
+    }
+  }
+
+  /** Recompute the parent rollup(s) fed by a changed source row (fetched by id). */
+  private async _propagateRollups(sourceTable: string, sourceId: PkLookup): Promise<void> {
+    if (!this._rollupSources.has(sourceTable)) return;
+    const { clause, params } = this._pkWhere(sourceTable, sourceId);
+    const src = await getAsyncOrSync(
+      this._adapter,
+      `SELECT * FROM "${sourceTable}" WHERE ${clause}`,
+      params,
+    );
+    if (src) await this._propagateRollupsFromRow(sourceTable, src);
+  }
+
+  /** Recompute a single rollup cell for one parent row. */
+  private async _recomputeRollupCell(
+    parentTable: string,
+    name: string,
+    spec: MaterializedRollupSpec,
+    parentId: string,
+  ): Promise<void> {
+    const parentPk = this._schema.getPrimaryKey(parentTable)[0] ?? 'id';
+    const cols = await introspectColumnsAsyncOrSync(this._adapter, spec.sourceTable).catch(
+      () => [] as string[],
+    );
+    const srcDeleted = cols.includes('deleted_at') ? ` AND "deleted_at" IS NULL` : '';
+    const inner =
+      spec.fn === 'count'
+        ? 'COUNT(*)'
+        : `${spec.fn.toUpperCase()}("${spec.column ?? spec.foreignKey}")`;
+    const fallback = spec.fn === 'count' ? '0' : 'NULL';
+    await runAsyncOrSync(
+      this._adapter,
+      `UPDATE "${parentTable}" SET "${name}" = COALESCE(
+         (SELECT ${inner} FROM "${spec.sourceTable}" WHERE "${spec.foreignKey}" = ?${srcDeleted}), ${fallback})
+       WHERE "${parentPk}" = ?`,
+      [parentId, parentId],
+    );
+  }
+
+  /**
+   * Recompute all computed columns for every row of a table (a full pass). Use
+   * after a bulk import that bypassed the per-row recompute, or after changing a
+   * computed definition. Requires `computed` config.
+   */
+  async refreshComputedColumns(table: string): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    const c = this._computed.get(table);
+    if (!c) throw new Error(`Table "${table}" has no computed columns`);
+    const pk = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const rows = await this._queryCore.query(table, {});
+    let updated = 0;
+    for (const row of rows) {
+      const values = computeColumns(c.specs, c.order, row);
+      const setCols = Object.keys(values)
+        .map((col) => `"${col}" = ?`)
+        .join(', ');
+      if (setCols === '') continue;
+      await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE "${pk}" = ?`, [
+        ...Object.values(values),
+        row[pk],
+      ]);
+      updated++;
+    }
+    return updated;
+  }
+
+  /**
+   * Recompute all materialized rollups for every row of a table (a full,
+   * authoritative pass). Requires `materializedRollups` config.
+   */
+  async refreshMaterializedRollups(table: string): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    const rollups = this._rollups.get(table);
+    if (!rollups) throw new Error(`Table "${table}" has no materialized rollups`);
+    const pk = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const parents = await this._queryCore.query(table, { projection: [pk] });
+    let updated = 0;
+    for (const parent of parents) {
+      const parentId = parent[pk];
+      if (typeof parentId !== 'string' && typeof parentId !== 'number') continue;
+      for (const [name, spec] of Object.entries(rollups)) {
+        await this._recomputeRollupCell(table, name, spec, String(parentId));
+      }
+      updated++;
+    }
+    return updated;
   }
 
   /**
@@ -1164,15 +1461,20 @@ export class Lattice {
 
     const { clause, params } = this._pkWhere(table, id);
 
-    // Capture full row before deletion for changelog
+    // Capture full row before deletion for changelog and/or rollup propagation
+    // (a deleted child must be removed from its parent's rollup, which needs the
+    // child's FK that's about to be gone).
     let previousRow: Row | null = null;
-    if (this._changelogTables.has(table)) {
+    if (this._changelogTables.has(table) || this._rollupSources.has(table)) {
       previousRow =
         (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
         null;
     }
 
     await runAsyncOrSync(this._adapter, `DELETE FROM "${table}" WHERE ${clause}`, params);
+    if (previousRow && this._rollupSources.has(table)) {
+      await this._propagateRollupsFromRow(table, previousRow);
+    }
 
     // Canonical pk so a row addressed by composite lookup keys its
     // change-log entry the same way insert() keyed it.
@@ -1654,6 +1956,7 @@ export class Lattice {
         this._invalidColumnError<T>(table, cols),
       decryptRow: (table, row) => this._encryption.decryptRow(table, row),
       decryptRows: (table, rows) => this._encryption.decryptRows(table, rows),
+      defaultMaxRows: this._defaultMaxRows,
     });
     return this._queryCoreInstance;
   }
@@ -1734,27 +2037,460 @@ export class Lattice {
     }
 
     const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
-    return searchByEmbedding(
+    const topK = opts.topK ?? 10;
+    const embCfg = def.embeddings;
+    // With a reranker, retrieve a larger pool, rerank it, then slice to topK.
+    const pool = opts.reranker ? (opts.rerankPoolSize ?? Math.max(topK * 4, 20)) : topK;
+    const results = await searchByEmbedding(
       this._adapter,
       table,
       query,
-      def.embeddings,
-      opts.topK ?? 10,
+      embCfg,
+      pool,
       opts.minScore ?? 0,
       pkCol,
     );
+    if (!opts.reranker) return results;
+
+    const candidates = results.map((r) => ({
+      id: String(r.row[pkCol]),
+      content: r.matchedContent ?? concatRowText(r.row, embCfg.fields),
+      result: r,
+    }));
+    const { order, applied } = await applyReranker(query, candidates, opts.reranker);
+    const ordered = applied ? order.map((c) => c.result) : results;
+    return ordered.slice(0, topK);
+  }
+
+  /**
+   * Hybrid search — fuse semantic (vector) and full-text retrieval with
+   * Reciprocal Rank Fusion, with optional deterministic ranking signals
+   * (recency / reward / custom) and an optional reranker. Returns fused results
+   * with a per-result score breakdown (`explain`). The vector arm is enabled
+   * when the table has `embeddings` config; otherwise it is full-text only.
+   */
+  async hybridSearch(
+    table: string,
+    query: string,
+    opts: Omit<HybridSearchOptions, 'embeddingsConfig' | 'pkColumn'> = {},
+  ): Promise<HybridSearchResult[]> {
+    const notInit = this._notInitError<HybridSearchResult[]>();
+    if (notInit) return notInit;
+    const def = this._schema.getTables().get(table);
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const merged: HybridSearchOptions = { ...opts, pkColumn: pkCol };
+    if (def?.embeddings) merged.embeddingsConfig = def.embeddings;
+    return hybridSearch(this._adapter, table, query, merged);
+  }
+
+  /**
+   * Backfill / re-embed a table's vectors incrementally — embed only rows that
+   * are missing, model-stale, or changed since a timestamp, sweeping embeddings
+   * whose source row is gone. Honors `deleted_at`. Requires `embeddings` config.
+   */
+  async refreshEmbeddings(
+    table: string,
+    opts: RefreshEmbeddingsOptions = {},
+  ): Promise<EmbeddingRefreshResult> {
+    const notInit = this._notInitError<EmbeddingRefreshResult>();
+    if (notInit) return notInit;
+    const def = this._schema.getTables().get(table);
+    if (!def?.embeddings) {
+      return Promise.reject(new Error(`Table "${table}" does not have embeddings configured`));
+    }
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    return refreshEmbeddings(this._adapter, table, def.embeddings, pkCol, opts);
+  }
+
+  /**
+   * Build (or rebuild) a native vector index (pgvector / sqlite-vec) for `table`
+   * from the stored embeddings, so semantic search uses an indexed
+   * approximate-nearest-neighbor lookup instead of an in-process scan. Returns
+   * the number of vectors indexed; a no-op (returns 0) when no native vector
+   * extension is available, unless `requireExtension` is set. Requires
+   * `embeddings` config (to determine the vector dimension).
+   */
+  async buildVectorIndex(table: string, requireExtension = false): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    const def = this._schema.getTables().get(table);
+    if (!def?.embeddings) {
+      return Promise.reject(new Error(`Table "${table}" does not have embeddings configured`));
+    }
+    // Determine the dimension from a stored vector.
+    const sample = await getAsyncOrSync(
+      this._adapter,
+      `SELECT "vec_dim" AS d FROM "_lattice_embeddings" WHERE "table_name" = ? AND "vec_dim" IS NOT NULL LIMIT 1`,
+      [table],
+    );
+    const dim = Number(sample?.d ?? 0);
+    if (dim <= 0) {
+      return Promise.reject(
+        new Error(
+          `buildVectorIndex: no embeddings stored for "${table}" — embed rows first (insert or refreshEmbeddings).`,
+        ),
+      );
+    }
+    return buildVectorIndex(this._adapter, table, dim, requireExtension);
+  }
+
+  // -------------------------------------------------------------------------
+  // Retrieval evaluation + health (measurable, monitorable retrieval quality)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Evaluate a retriever against a labeled query set, returning the standard IR
+   * metrics (P@k / Recall@k / MRR / nDCG@k / MAP). The retriever is any
+   * `(query) => rankedRowIds` function, so this grades semantic search,
+   * full-text search, a hybrid fusion, or an external service — and can gate
+   * retrieval-quality regressions in CI.
+   */
+  async evaluateRetrieval(
+    queries: EvalQuery[],
+    retriever: Retriever,
+    opts: RetrievalEvalOptions = {},
+  ): Promise<RetrievalEvalSummary> {
+    const notInit = this._notInitError<RetrievalEvalSummary>();
+    if (notInit) return notInit;
+    return evaluateRetrieval(queries, retriever, opts);
+  }
+
+  /**
+   * Diagnose the database's retrieval health: extension availability plus
+   * per-table full-text and embedding coverage, with gaps/staleness surfaced as
+   * severity-ranked issues. Read-only. When `tables` is omitted, the expectations
+   * are derived from each registered table's `fts` / `embeddings` config.
+   */
+  async diagnoseRetrieval(
+    opts: { tables?: RetrievalHealthSpec[] } = {},
+  ): Promise<RetrievalHealthReport> {
+    const notInit = this._notInitError<RetrievalHealthReport>();
+    if (notInit) return notInit;
+    const specs =
+      opts.tables ??
+      [...this._schema.getTables().entries()]
+        .filter(([, def]) => Boolean(def.fts) || Boolean(def.embeddings))
+        .map(([table, def]) => ({
+          table,
+          expectFts: !!def.fts,
+          expectEmbeddings: !!def.embeddings,
+        }));
+    return diagnoseRetrieval(this._adapter, { tables: specs });
+  }
+
+  /**
+   * Run the reproducible retrieval benchmark against this connection and return
+   * latency percentiles + ingest throughput. Default scale is small (CI-fast);
+   * pass `scale` (or set LATTICE_BENCH_* env vars) to reproduce large-n numbers.
+   */
+  async benchmarkRetrieval(opts: BenchmarkOptions = {}): Promise<BenchmarkReport> {
+    const notInit = this._notInitError<BenchmarkReport>();
+    if (notInit) return notInit;
+    return benchmarkRetrieval(this._adapter, opts);
   }
 
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
     const notInit = this._notInitError<Row[]>();
     if (notInit) return notInit;
-    return this._queryCore.query(table, opts);
+    const rows = await this._queryCore.query(table, opts);
+    if (opts.include && opts.include.length > 0) {
+      await this._expandRelations(table, rows, opts.include);
+    }
+    return rows;
+  }
+
+  /**
+   * Keyset (cursor) pagination — stable, index-friendly paging that stays fast
+   * arbitrarily deep into a result set (unlike OFFSET, which scans-and-discards).
+   * Returns a page plus an opaque `nextCursor` (null on the last page).
+   */
+  async queryPage(table: string, opts: QueryPageOptions = {}): Promise<QueryPageResult> {
+    const notInit = this._notInitError<QueryPageResult>();
+    if (notInit) return notInit;
+    const pkCols = this._schema.getPrimaryKey(table);
+    return this._queryCore.queryPage(table, opts, pkCols.length > 0 ? pkCols : ['id']);
+  }
+
+  /**
+   * Attach declared relations to each row in `rows` (mutates in place). Each
+   * relation is fetched in ONE batched `IN (...)` query — no N+1. `belongsTo`
+   * attaches a single row (or null); `hasMany` attaches an array.
+   */
+  private async _expandRelations(table: string, rows: Row[], includes: string[]): Promise<void> {
+    if (rows.length === 0) return;
+    const def = this._schema.getTables().get(table);
+    const relations = def?.relations;
+    for (const name of includes) {
+      const rel = relations?.[name];
+      if (!rel) {
+        throw new Error(`include: "${name}" is not a declared relation on "${table}"`);
+      }
+      if (rel.type === 'belongsTo') {
+        const fkCol = rel.foreignKey;
+        const refCol = rel.references ?? this._schema.getPrimaryKey(rel.table)[0] ?? 'id';
+        const fks = [...new Set(rows.map((r) => r[fkCol]).filter((v) => v != null))];
+        if (fks.length === 0) {
+          for (const r of rows) r[name] = null;
+          continue;
+        }
+        const related = await this._queryCore.query(rel.table, {
+          filters: [{ col: refCol, op: 'in', val: fks }],
+        });
+        const byKey = new Map(related.map((r) => [String(r[refCol]), r]));
+        for (const r of rows) r[name] = byKey.get(String(r[fkCol])) ?? null;
+      } else {
+        // hasMany: the related table holds the FK back to this table.
+        const fkCol = rel.foreignKey;
+        const refCol = rel.references ?? this._schema.getPrimaryKey(table)[0] ?? 'id';
+        const keys = [...new Set(rows.map((r) => r[refCol]).filter((v) => v != null))];
+        if (keys.length === 0) {
+          for (const r of rows) r[name] = [];
+          continue;
+        }
+        const related = await this._queryCore.query(rel.table, {
+          filters: [{ col: fkCol, op: 'in', val: keys }],
+        });
+        const grouped = new Map<string, Row[]>();
+        for (const rr of related) {
+          const k = String(rr[fkCol]);
+          const arr = grouped.get(k);
+          if (arr) arr.push(rr);
+          else grouped.set(k, [rr]);
+        }
+        for (const r of rows) r[name] = grouped.get(String(r[refCol])) ?? [];
+      }
+    }
   }
 
   async count(table: string, opts: CountOptions = {}): Promise<number> {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
     return this._queryCore.count(table, opts);
+  }
+
+  /**
+   * SQL-side aggregation — `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` with optional
+   * `GROUP BY` and `HAVING`, computed in the database so only the grouped result
+   * rows transfer (never the underlying rows). Returns one object per group with
+   * the groupBy columns and each aggregate under its `as` key.
+   *
+   * @example
+   * ```ts
+   * await db.aggregate('orders', {
+   *   groupBy: ['status'],
+   *   aggregates: [{ fn: 'count', as: 'n' }, { fn: 'sum', col: 'total', as: 'revenue' }],
+   *   having: [{ aggregate: 'n', op: 'gt', val: 10 }],
+   *   orderBy: 'revenue', orderDir: 'desc',
+   * });
+   * ```
+   */
+  async aggregate(table: string, opts: AggregateOptions): Promise<AggregateResult[]> {
+    const notInit = this._notInitError<AggregateResult[]>();
+    if (notInit) return notInit;
+    return this._queryCore.aggregate(table, opts);
+  }
+
+  // -------------------------------------------------------------------------
+  // Trust / verification workflow (governance: P-TRUST)
+  // -------------------------------------------------------------------------
+
+  private _assertTrust(table: string): void {
+    if (!this._trustDefault.has(table)) {
+      throw new Error(`Table "${table}" does not have trust configured`);
+    }
+  }
+
+  /**
+   * Mark a row `verified` — sets `_trust_state='verified'`, `_verified_by`, and
+   * `_verified_at` (now). Requires `trust` config on the table.
+   */
+  async verifyRow(table: string, id: PkLookup, verifiedBy?: string): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._adapter,
+      `UPDATE "${table}" SET "_trust_state" = 'verified', "_verified_by" = ?, "_verified_at" = ?, "_review_reason" = NULL WHERE ${clause}`,
+      [verifiedBy ?? null, new Date().toISOString(), ...params],
+    );
+  }
+
+  /**
+   * Flag a row for human review — sets `_trust_state='needs_review'` and an
+   * optional `_review_reason`. Requires `trust` config on the table.
+   */
+  async markRowForReview(table: string, id: PkLookup, reason?: string): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._adapter,
+      `UPDATE "${table}" SET "_trust_state" = 'needs_review', "_review_reason" = ? WHERE ${clause}`,
+      [reason ?? null, ...params],
+    );
+  }
+
+  /** Rows currently in `needs_review` state (non-deleted). Requires `trust` config. */
+  async rowsNeedingReview(table: string): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    return this._queryCore.query(table, {
+      filters: [{ col: '_trust_state', op: 'eq', val: 'needs_review' }],
+    });
+  }
+
+  /** Rows currently in `verified` state (non-deleted). Requires `trust` config. */
+  async verifiedRows(table: string): Promise<Row[]> {
+    const notInit = this._notInitError<Row[]>();
+    if (notInit) return notInit;
+    this._assertTrust(table);
+    return this._queryCore.query(table, {
+      filters: [{ col: '_trust_state', op: 'eq', val: 'verified' }],
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Graph-augmented retrieval (P-GRAPH)
+  // -------------------------------------------------------------------------
+
+  /** Add (upsert) a typed edge between two rows. */
+  async addEdge(edge: GraphEdge): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    return addEdge(this._adapter, edge);
+  }
+
+  /** Add (upsert) many typed edges. */
+  async addEdges(edges: GraphEdge[]): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    return addEdges(this._adapter, edges);
+  }
+
+  /** Remove an edge (all types between the pair when `type` omitted). */
+  async removeEdge(edge: Omit<GraphEdge, 'weight' | 'type'> & { type?: string }): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    return removeEdge(this._adapter, edge);
+  }
+
+  /** Direct neighbors (one hop) of a node. */
+  async neighbors(
+    node: GraphNode,
+    opts: { direction?: TraversalDirection; edgeTypes?: string[] } = {},
+  ): Promise<GraphEdge[]> {
+    const notInit = this._notInitError<GraphEdge[]>();
+    if (notInit) return notInit;
+    return neighbors(this._adapter, node, opts);
+  }
+
+  /** Bounded BFS from a node (depth ≤ 5, node-count capped). */
+  async traverseGraph(
+    start: GraphNode,
+    opts: TraversalOptions = {},
+  ): Promise<GraphTraversalResult> {
+    const notInit = this._notInitError<GraphTraversalResult>();
+    if (notInit) return notInit;
+    return traverse(this._adapter, start, opts);
+  }
+
+  /** Zero-LLM edge extraction from a foreign-key column. Returns the edge count. */
+  async extractEdges(spec: ExtractEdgesSpec): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    return extractEdgesFromColumn(this._adapter, spec);
+  }
+
+  /**
+   * Graph-augmented hybrid search: run {@link hybridSearch}, then boost results
+   * that are graph-adjacent to the `anchors` (e.g. the user's current-context
+   * entities), so relationship-relevant rows rank higher. Returns the reranked
+   * hybrid results (the graph boost is folded into each score).
+   */
+  async graphSearch(
+    table: string,
+    query: string,
+    opts: Omit<HybridSearchOptions, 'embeddingsConfig' | 'pkColumn'> & {
+      anchors: GraphNode[];
+      graphWeight?: number;
+      graphDepth?: number;
+      graphDirection?: TraversalDirection;
+      graphEdgeTypes?: string[];
+    },
+  ): Promise<HybridSearchResult[]> {
+    const notInit = this._notInitError<HybridSearchResult[]>();
+    if (notInit) return notInit;
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const hybrid = await this.hybridSearch(table, query, opts);
+    if (opts.anchors.length === 0) return hybrid;
+    const scored = hybrid.map((r) => ({ id: String(r.row[pkCol]), score: r.score, _r: r }));
+    const boosted = await graphAdjacencyBoost(this._adapter, scored, {
+      anchors: opts.anchors,
+      resultTable: table,
+      ...(opts.graphWeight !== undefined ? { weight: opts.graphWeight } : {}),
+      ...(opts.graphDepth !== undefined ? { maxDepth: opts.graphDepth } : {}),
+      ...(opts.graphDirection ? { direction: opts.graphDirection } : {}),
+      ...(opts.graphEdgeTypes ? { edgeTypes: opts.graphEdgeTypes } : {}),
+    });
+    return boosted.map((b) => {
+      const r = b.item._r;
+      r.score = b.boostedScore;
+      r.explain.final = b.boostedScore;
+      return r;
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Seamless cloud file-byte access (P-CLOUDFILES) — Postgres cloud only
+  // -------------------------------------------------------------------------
+
+  /**
+   * Enable keyless cloud file-byte access cloud-wide (Postgres cloud only).
+   * Installs the in-database SigV4 presigner + `pgcrypto`, stores the owner's
+   * least-privilege S3 key in an **owner-only, member-unreadable** table, and
+   * grants the cloud's member group EXECUTE on `lattice_presign_file` — so every
+   * current + future member can presign GET/PUT URLs for the `files` rows they're
+   * allowed to see, holding no key themselves. One owner action turns it on for
+   * the whole cloud.
+   */
+  async enableCloudFilePresigning(
+    secret: CloudS3Secret,
+    opts: { memberGroup?: string } = {},
+  ): Promise<void> {
+    const notInit = this._notInitError<never>();
+    if (notInit) return notInit;
+    if (this._adapter.dialect !== 'postgres') {
+      throw new Error('enableCloudFilePresigning: requires a Postgres cloud (no-op on SQLite)');
+    }
+    const schema = await cloudSchema(this);
+    await installFilePresigner(this._adapter, schema);
+    await setCloudS3Secret(this._adapter, secret);
+    const group = opts.memberGroup ?? (await memberGroupFor(this));
+    await grantPresignerToMemberGroup(this._adapter, group);
+  }
+
+  /**
+   * Presign a GET/PUT URL for a `files` row, computed inside Postgres and gated
+   * on the caller's row-visibility (the keyless-member path). Requires the
+   * presigner to be installed + an S3 secret configured
+   * ({@link enableCloudFilePresigning}). TTL is capped at 60s server-side.
+   */
+  async presignFile(fileId: string, method: 'GET' | 'PUT', ttlSeconds = 60): Promise<string> {
+    const notInit = this._notInitError<string>();
+    if (notInit) return notInit;
+    const row = await getAsyncOrSync(this._adapter, `SELECT lattice_presign_file(?, ?, ?) AS url`, [
+      fileId,
+      method,
+      ttlSeconds,
+    ]);
+    const url = row?.url;
+    if (typeof url !== 'string' || url.length === 0) {
+      throw new Error(`presignFile: no presigned URL returned for "${fileId}"`);
+    }
+    return url;
   }
 
   // -------------------------------------------------------------------------
@@ -1841,10 +2577,13 @@ export class Lattice {
    * rendered context tree is read THROUGH the member's RLS connection + masking
    * views — making the on-disk tree the viewer's own scoped projection. Owner /
    * local SQLite leave it unset → identity → unchanged behavior. Set on the
-   * engine (not per-render-call) so the opts-less auto-render path masks too.
+   * SchemaManager (the read layer), not per-render-call, so the opts-less
+   * auto-render path masks too — AND so the reverse-sync engine, which reads the
+   * same SchemaManager, writes a member's file edit back through the masked view
+   * instead of the REVOKE'd base table. One resolver, every reader.
    */
   setRenderReadRelation(fn: (table: string) => string): void {
-    this._render.setRenderReadRelation(fn);
+    this._schema.setReadRelation(fn);
   }
 
   /**

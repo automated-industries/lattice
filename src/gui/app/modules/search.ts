@@ -81,7 +81,9 @@ export const searchJs = `    // ────────────────
         clearChat();
         refreshThreadList(true);
         if (location.hash !== '#/') location.hash = '#/';
-        else renderRoute();
+        // Already on the dashboard hash: re-render in place as a soft refresh so a
+        // workspace switch/reload doesn't flash the loading frame over the pane.
+        else renderRoute({ soft: true });
         loadedTables = {};
         // A switch swaps the server-side buses to the new workspace; drop the old
         // workspace's render overlay state and reconnect the multiplexed event

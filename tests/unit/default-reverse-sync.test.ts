@@ -80,4 +80,18 @@ describe('deriveUpdatesFromFile', () => {
     const content = '# Alpha\n\nA free-form note about the agent with no structured pairs.\n';
     expect(deriveUpdatesFromFile(content, row, { table: 'agents', pkCols: ['id'] })).toEqual([]);
   });
+
+  it('round-trips a body field in the DEFAULT RENDER format `- **key:** value` (the real on-disk shape)', () => {
+    // This is the EXACT bullet the default entity-context render emits — a bold
+    // key with the colon INSIDE the bold (canonical-context.ts:137 / entity-
+    // templates.ts:86). The `status: archived` test above hand-wrote a format the
+    // render never produces, so the render↔parser mismatch went unnoticed: every
+    // body edit to a real rendered file parsed to nothing and was reported "not
+    // auto-importable". Pre-fix this returns []; post-fix it imports the change.
+    const content =
+      '---\ngenerated_at: "x"\n---\n\n# Alpha\n\n- **status:** archived\n- **role:** Commander\n';
+    expect(deriveUpdatesFromFile(content, row, { table: 'agents', pkCols: ['id'] })).toEqual([
+      { table: 'agents', pk: { id: 'a1' }, set: { status: 'archived', role: 'Commander' } },
+    ]);
+  });
 });
