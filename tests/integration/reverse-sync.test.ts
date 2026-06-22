@@ -642,4 +642,58 @@ describe('reverse-sync — optimistic-concurrency conflict gate', () => {
 
     db.close();
   });
+
+  it('redacts computed columns from reverse-sync (immutable — recomputed, never written back)', async () => {
+    const outputDir = tempDir();
+    const db = new Lattice(':memory:');
+    db.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', slug: 'TEXT', body: 'TEXT' },
+      computed: {
+        body_len: { deps: ['body'], compute: (r) => String(r.body ?? '').length, type: 'INTEGER' },
+      },
+      render: (rows) => rows.map((r) => `- ${r.id as string}`).join('\n'),
+      outputFile: 'notes.md',
+    });
+    db.defineEntityContext('notes', {
+      slug: (r) => r.slug as string,
+      directoryRoot: 'notes',
+      files: {
+        'NOTE.md': {
+          source: { type: 'self' },
+          render: ([r]) =>
+            `Body: ${(r?.body as string) ?? ''}\nLen: ${String(r?.body_len ?? '')}\n`,
+          reverseSync: (content: string, row: import('../../src/types.js').Row) => {
+            const updates: import('../../src/schema/entity-context.js').ReverseSyncUpdate[] = [];
+            const bodyM = /^Body: (.*)$/m.exec(content);
+            if (bodyM && bodyM[1] !== row.body) {
+              updates.push({ table: 'notes', pk: { id: row.id }, set: { body: bodyM[1] } });
+            }
+            const lenM = /^Len: (.*)$/m.exec(content);
+            if (lenM) {
+              // A (mischievous) attempt to write the computed column directly.
+              updates.push({
+                table: 'notes',
+                pk: { id: row.id },
+                set: { body_len: Number(lenM[1]) },
+              });
+            }
+            return updates;
+          },
+        },
+      },
+    });
+    await db.init();
+    await db.insert('notes', { id: 'n1', slug: 'n1', body: 'hello' }); // body_len computed = 5
+    await db.reconcile(outputDir);
+
+    const file = join(outputDir, 'notes', 'n1', 'NOTE.md');
+    // Edit ONLY the computed Len to a bogus value; leave Body unchanged.
+    writeFileSync(file, readFileSync(file, 'utf8').replace(/^Len: .*$/m, 'Len: 999'));
+    await db.reconcile(outputDir);
+
+    // The body_len write-back was redacted (computed/immutable) → it stays the
+    // value derived from `body` (5), not the edited 999.
+    expect(Number((await db.get('notes', 'n1'))!.body_len)).toBe(5);
+    db.close();
+  });
 });

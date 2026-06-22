@@ -19,10 +19,29 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 3. **Ingests** agent-written output back into the DB via the writeback pipeline
 4. **Manages** state with full CRUD, natural-key operations, seeding, and soft-delete
 5. **Optimizes** context with token budgets, relevance filtering, enrichment pipelines, and reward-scored memory
-6. **Searches** full-text (FTS5 / `tsvector`, with a LIKE fallback) and semantically (bring-your-own embeddings + cosine similarity)
+6. **Searches** full-text (FTS5 / `tsvector`, with a LIKE fallback), semantically (bring-your-own embeddings, chunked + indexed), **hybrid** (Reciprocal Rank Fusion), and **graph-augmented** — with retrieval **eval metrics**, a health **`doctor`**, and a reproducible **benchmark** (see [docs/retrieval.md](docs/retrieval.md))
 7. **Organizes** everything into `.lattice` workspaces with a local browser GUI, a workspace dashboard, changelog/version history, and a SQL↔markdown context bridge that auto-renders on every write
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
+
+**New in 4.1 (additive — every 4.0 caller runs unchanged):** a measurable,
+production-grade **retrieval & data substrate**. Retrieval gets _measurable_:
+`evaluateRetrieval` reports the standard IR metrics (Precision@k / Recall@k / MRR /
+nDCG / MAP) over any ranked retriever, `lattice doctor` reports index/embedding
+health, and `benchmarkRetrieval` produces reproducible latency/throughput numbers.
+Search gets _better_: **chunked + contextual embeddings** (`semanticChunker`,
+`EmbeddingsConfig.chunker`), an opt-in **indexed vector** path (`buildVectorIndex` —
+pgvector HNSW / sqlite-vec, with the in-process scan as fallback), **hybrid search**
+(`hybridSearch` — Reciprocal Rank Fusion of vector + full-text) with **ranking
+signals** + an optional **reranker**, and **graph-augmented retrieval** (a typed-edge
+graph with bounded BFS + `graphSearch` adjacency boosting). The query surface grows:
+**bounded reads** (`maxRows` / `defaultMaxRows` → `BoundedReadError`), **projection**,
+**OR/AND + `jsonPath` filters**, **SQL-side `aggregate`**, **keyset `queryPage`**,
+**`distinctOn`**, and batched relation **`include`**. Plus governance (**immutable
+provenance** + a **trust/verification** workflow), reliability (**`withRetry`** +
+**online resumable migrations**), **computed columns / materialized rollups**, and
+seamless **keyless cloud file-byte access** (an in-database SigV4 presigner). All
+opt-in per table/call; absent the opt-in, behavior is byte-identical to 4.0.
 
 **New in 4.0 (major release — mostly drop-in):** a major version that decomposes the three largest internal modules and hardens the cloud path for many simultaneous users, while keeping the `Lattice` / GUI surface stable. **Existing 3.0+ configs and databases are migrated forward SILENTLY on open** — you usually need to do nothing. The breaking changes are auto-handled on open (or clearly documented): the per-field `ref:` shorthand is still parsed (and the GUI rewrites it to the explicit `relations:` block on disk); a legacy empty-string `deleted_at` is normalized to `NULL`; a legacy `files.path`-only row is backfilled into the reference model; the render manifest is v2-only and self-upgrades on first render. The one consumer-code change: the exported `MEMBER_GROUP` constant is replaced by **`memberGroupFor(db)`** (the member group role is now **per-cloud** — derived from the database/schema — so unrelated clouds on one Postgres cluster no longer share a group). Opening a cloud workspace is now **much faster** (one batched schema introspection instead of per-table round-trips; the owner-side RLS/grant convergence runs in the background since the owner is BYPASSRLS). See **[docs/MIGRATING-4.0.md](docs/MIGRATING-4.0.md)** for the (mostly no-op) migration and the manual steps for library/non-GUI consumers.
 

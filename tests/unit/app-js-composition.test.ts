@@ -13,12 +13,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // changes intentionally (the modules are edited together as the source of truth):
 // the offline-retry self-heal, the 3.4.1 merge's workspace-switch logo refresh
 // (the switch path now re-fetches /api/dbconfig + re-points the header logo,
-// matching the boot path), and the manual-upgrade link (the version chip's
+// matching the boot path), the manual-upgrade link (the version chip's
 // "Update available — Upgrade" affordance: checkUpdateAvailable + wireUpdateLink,
-// wired at boot and refreshed on each reconnect version check). Recapture the
-// length + hash on any intended change.
-const ORIGINAL_LENGTH = 401093;
-const ORIGINAL_SHA256 = '3be04280b1d5a0aa8ac8e7d65ac034c8d5b50708128e2c950c2fb5b5968f5549';
+// wired at boot and refreshed on each reconnect version check), and the FOUC fix
+// that softens the two background in-place re-renders (advanced-mode toggle +
+// workspace-switch reload now pass {soft:true} so they never paint the loading
+// frame). Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 401500;
+const ORIGINAL_SHA256 = 'def9945b673adc9d45f9341660c3b7d634adcc83cb0535b355fd107cb708119c';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

@@ -254,6 +254,33 @@ export async function dispatchFilesRoute(
       return true;
     }
 
+    // Keyless cloud member: the file lives in S3 but this member has no local S3
+    // config (only the owner configures one). Presign the GET INSIDE Postgres,
+    // gated on this member's row-visibility (the get() above already passed it),
+    // and stream the bytes from the returned URL. The member never holds a key.
+    // Falls through to the 404 below if the cloud hasn't enabled the presigner
+    // (lattice_presign_file absent / no S3 secret configured).
+    if (s3 && !s3cfg && ctx.db.getDialect() === 'postgres') {
+      try {
+        const url = await ctx.db.presignFile(id, 'GET', 60);
+        const upstream = await fetch(url);
+        if (upstream.ok) {
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          res.writeHead(200, blobResponseHeaders(contentType, name));
+          res.end(buf);
+          return true;
+        }
+        sendJson(
+          res,
+          { error: `file bytes unavailable from S3 (HTTP ${String(upstream.status)})` },
+          502,
+        );
+        return true;
+      } catch {
+        // Presigner not installed / no secret configured → fall through to 404.
+      }
+    }
+
     sendJson(
       res,
       { error: 'this file has no underlying blob here (text-only ingest, or S3 not configured)' },
