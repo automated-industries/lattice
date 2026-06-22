@@ -22,7 +22,6 @@ import {
 } from '../framework/workspace.js';
 import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
-import { createConnectRouter } from './connect-routes.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
 import { createGuiRequestContext, type GuiRequestContext } from './request-context.js';
@@ -99,13 +98,6 @@ export interface StartGuiServerOptions {
    * ⇒ the version chip stays hidden.
    */
   version?: string;
-  /**
-   * "Bring your own dashboard": a local HTML file or a folder of static assets to
-   * serve at `/` instead of the built-in shell (which moves to `/lattice`). When
-   * omitted, the last dashboard connected via the GUI/API is restored. See
-   * `connect-routes.ts`.
-   */
-  dashboardPath?: string | null;
   /**
    * Realtime backstop liveness-poll interval (ms) for the RealtimeBroker. A
    * managed-Postgres proxy (e.g. AWS RDS Proxy) can silently drop the LISTEN
@@ -493,15 +485,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // (host/guiVersion/guiAppHtml/sendText never change for the server's life),
   // built once here rather than per request.
   const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText };
-  // Connect-a-dashboard + structured-import. Owns the connected-dashboard state
-  // for the server's lifetime; its handler runs BEFORE the virgin gate so the
-  // dashboard serves (and the control plane answers) with no active workspace.
-  const connectRouter = createConnectRouter({
-    guiAppHtml,
-    guiVersion,
-    getActive: () => activeRef,
-    dashboardPath: options.dashboardPath ?? null,
-  });
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
@@ -577,12 +560,6 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           return;
         }
-
-        // Connect-a-dashboard + structured import. Runs before the virgin gate so
-        // a connected dashboard serves at `/` (shell → `/lattice`) and the control
-        // plane answers even with no active workspace; the import-write routes 409
-        // until one exists. Returns true when it handled the request.
-        if (await connectRouter.handle(req, res)) return;
 
         // Zero-workspace "virgin" state: no active DB. Serve only the shell +
         // the workspace-management & onboarding routes; everything else 409s

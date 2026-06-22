@@ -33,7 +33,7 @@ export interface ImportRouteDeps {
 interface FileRow {
   id: string;
   original_name?: string | null;
-  mime_type?: string | null;
+  mime?: string | null;
   ref_kind?: string | null;
   ref_uri?: string | null;
   blob_path?: string | null;
@@ -85,7 +85,7 @@ async function readImportSourceFromFile(
 ): Promise<Record<string, unknown>> {
   const row = (await getAsyncOrSync(
     db.adapter,
-    `SELECT "id","original_name","mime_type","ref_kind","ref_uri","blob_path"
+    `SELECT "id","original_name","mime","ref_kind","ref_uri","blob_path"
        FROM "files" WHERE "id" = ? AND "deleted_at" IS NULL LIMIT 1`,
     [fileId],
   )) as FileRow | undefined;
@@ -95,7 +95,7 @@ async function readImportSourceFromFile(
     throw badRequest('The import file’s bytes are not available locally.');
   }
   const name = row.original_name ?? '';
-  const mime = row.mime_type ?? '';
+  const mime = row.mime ?? '';
   if (/\.xlsx?$/i.test(name) || mime.includes('spreadsheet') || mime.includes('excel')) {
     return excelToRecords(path);
   }

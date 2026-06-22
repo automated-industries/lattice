@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -211,154 +211,119 @@ describe('import: infer → materialize → query (canonical)', () => {
   });
 });
 
-describe('import: over the HTTP endpoints (connect panel flow)', () => {
-  it('lists sources, analyzes, applies, then serves the data via /api/tables', async () => {
-    const base = mkdtempSync(join(tmpdir(), 'lattice-import-http-'));
+describe('import: over the HTTP endpoints (chat-drop flow)', () => {
+  async function freshServer(prefix: string): Promise<{ server: GuiServerHandle; base: string }> {
+    const base = mkdtempSync(join(tmpdir(), prefix));
     dirs.push(base);
     process.env.LATTICE_ROOT = join(base, '.lattice');
     const root = ensureLatticeRoot(base);
-    const ws = addWorkspace(root, { displayName: 'ImportHttp' });
-    const seed = await Lattice.openWorkspace({ root, workspaceId: ws.id });
-    seed.close();
+    const ws = addWorkspace(root, { displayName: 'Http' });
+    (await Lattice.openWorkspace({ root, workspaceId: ws.id })).close();
     const paths = resolveWorkspacePaths(root, ws);
-
-    // A connected dashboard folder containing the data model.
-    const dashDir = join(base, 'dash');
-    mkdirSync(dashDir, { recursive: true });
-    writeFileSync(join(dashDir, 'data.json'), JSON.stringify(fixture()), 'utf8');
-
     const server = await startGuiServer({
       configPath: paths.configPath,
       outputDir: paths.contextDir,
+      latticeRoot: root,
       port: 0,
       openBrowser: false,
-      dashboardPath: dashDir,
     });
     servers.push(server);
+    return { server, base };
+  }
 
-    // sources lists the JSON in the connected folder
-    const sources = (await (await fetch(`${server.url}/api/connect/import/sources`)).json()) as {
-      sources: string[];
+  interface UploadResult {
+    id: string;
+    autoImport?: {
+      reason?: string;
+      fileId?: string;
+      plan?: { entities: { name: string }[] };
+      views?: { name: string; master: string }[];
     };
-    expect(sources.sources.some((s) => s.endsWith('data.json'))).toBe(true);
+  }
 
-    // analyze (no writes)
-    const analyzed = (await (
-      await fetch(`${server.url}/api/connect/import/analyze`, {
+  async function uploadFile(
+    server: GuiServerHandle,
+    name: string,
+    mime: string,
+    bytes: Buffer,
+  ): Promise<UploadResult> {
+    return (await (
+      await fetch(`${server.url}/api/ingest/upload`, {
+        method: 'POST',
+        headers: { 'content-type': mime, 'x-filename': name },
+        body: bytes,
+      })
+    ).json()) as UploadResult;
+  }
+
+  interface ApplyEvent {
+    phase: string;
+    ok?: boolean;
+    result?: { rowsByTable: Record<string, number>; views: { name: string; rows: number }[] };
+  }
+
+  async function applyImport(server: GuiServerHandle, fileId: string): Promise<ApplyEvent[]> {
+    const text = await (
+      await fetch(`${server.url}/api/import/apply`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: 'data.json' }),
+        body: JSON.stringify({ fileId, mode: 'both' }),
       })
-    ).json()) as { plan: { entities: { name: string }[] } };
-    expect(analyzed.plan.entities.map((e) => e.name).sort()).toEqual([
+    ).text();
+    return text
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as ApplyEvent);
+  }
+
+  it('drop → new-dataset proposal → apply materializes it + serves via /api/tables', async () => {
+    const { server } = await freshServer('lattice-import-http-');
+    const up = await uploadFile(
+      server,
+      'data.json',
+      'application/json',
+      Buffer.from(JSON.stringify(fixture()), 'utf8'),
+    );
+    // A brand-new structured drop is proposed, never silently imported.
+    expect(up.autoImport?.reason).toBe('new-dataset');
+    expect(up.autoImport?.plan?.entities.map((e) => e.name).sort()).toEqual([
       'funds',
       'gross_deploy',
       'investments',
     ]);
+    const fileId = up.autoImport?.fileId;
+    expect(typeof fileId).toBe('string');
 
-    // apply — streams newline-delimited JSON progress; the final line carries the result
-    const applyText = await (
-      await fetch(`${server.url}/api/connect/import/apply`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: 'data.json', mode: 'both' }),
-      })
-    ).text();
-    const events = applyText
-      .trim()
-      .split('\n')
-      .map(
-        (l) =>
-          JSON.parse(l) as {
-            phase: string;
-            ok?: boolean;
-            result?: { rowsByTable: Record<string, number> };
-          },
-      );
+    // Apply streams NDJSON; the final line carries the result.
+    const events = await applyImport(server, fileId!);
     const done = events.find((e) => e.phase === 'done' && e.ok);
-    expect(done).toBeTruthy();
     expect(done?.result?.rowsByTable.funds).toBe(2);
-    // progress streamed (not just a single response)
     expect(events.some((e) => e.phase === 'entities')).toBe(true);
 
-    // the imported data is now served via the canonical read path
+    // The imported data is served via the canonical read path…
     const rows = (await (await fetch(`${server.url}/api/tables/funds/rows`)).json()) as {
       rows: { code: string }[];
     };
     expect(rows.rows.map((r) => r.code).sort()).toEqual(['Fund EP', 'Fund GG']);
+    // …and the dropped source is already a File (created at upload, before apply).
+    const files = (await (await fetch(`${server.url}/api/tables/files/rows`)).json()) as {
+      rows: { original_name?: string }[];
+    };
+    expect(files.rows.some((r) => r.original_name === 'data.json')).toBe(true);
+  });
 
-    // a bad path is a 400, not a 500
-    const bad = await fetch(`${server.url}/api/connect/import/analyze`, {
+  it('apply with no fileId is a 400, not a 500', async () => {
+    const { server } = await freshServer('lattice-import-bad-');
+    const bad = await fetch(`${server.url}/api/import/apply`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path: 'does-not-exist.json' }),
+      body: JSON.stringify({ mode: 'both' }),
     });
     expect(bad.status).toBe(400);
   });
 
-  it('stages an uploaded file, imports it, and ingests the source as a File', async () => {
-    const base = mkdtempSync(join(tmpdir(), 'lattice-stage-'));
-    dirs.push(base);
-    process.env.LATTICE_ROOT = join(base, '.lattice');
-    const root = ensureLatticeRoot(base);
-    const ws = addWorkspace(root, { displayName: 'Stage' });
-    (await Lattice.openWorkspace({ root, workspaceId: ws.id })).close();
-    const paths = resolveWorkspacePaths(root, ws);
-    const server = await startGuiServer({
-      configPath: paths.configPath,
-      outputDir: paths.contextDir,
-      port: 0,
-      openBrowser: false,
-    });
-    servers.push(server);
-
-    // Upload bytes to /stage (the picker's path) → get a server path.
-    const bytes = Buffer.from(
-      JSON.stringify({ deals: [{ company: 'A' }, { company: 'B' }] }),
-      'utf8',
-    );
-    const staged = (await (
-      await fetch(`${server.url}/api/connect/import/stage`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/octet-stream', 'x-filename': 'deals.json' },
-        body: bytes,
-      })
-    ).json()) as { path: string };
-    expect(staged.path).toContain('import-staging');
-
-    // Import the staged path → streams a 'file' phase (source ingested as a File).
-    const events = (
-      await (
-        await fetch(`${server.url}/api/connect/import/apply`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path: staged.path, mode: 'both' }),
-        })
-      ).text()
-    )
-      .trim()
-      .split('\n')
-      .map((l) => JSON.parse(l) as { phase: string; ok?: boolean });
-    expect(events.some((e) => e.phase === 'file')).toBe(true);
-    expect(events.find((e) => e.phase === 'done' && e.ok)).toBeTruthy();
-
-    // The source file shows up under Files, with the original name (no uuid prefix).
-    const files = (await (await fetch(`${server.url}/api/tables/files/rows`)).json()) as {
-      rows: { original_name?: string }[];
-    };
-    expect(files.rows.length).toBeGreaterThanOrEqual(1);
-    expect(files.rows.some((r) => r.original_name === 'deals.json')).toBe(true);
-  });
-
-  it('imports an .xlsx: per-fund tabs become read-only views of the master', async () => {
-    const base = mkdtempSync(join(tmpdir(), 'lattice-xlsx-http-'));
-    dirs.push(base);
-    process.env.LATTICE_ROOT = join(base, '.lattice');
-    const root = ensureLatticeRoot(base);
-    const ws = addWorkspace(root, { displayName: 'Xlsx' });
-    (await Lattice.openWorkspace({ root, workspaceId: ws.id })).close();
-    const paths = resolveWorkspacePaths(root, ws);
-
+  it('imports an .xlsx drop: per-fund tabs become read-only views of the master', async () => {
+    const { server, base } = await freshServer('lattice-xlsx-http-');
     const ExcelJS = await import('exceljs');
     const wb = new ExcelJS.Workbook();
     const regions = ['NA', 'EU', 'Asia'];
@@ -379,65 +344,31 @@ describe('import: over the HTTP endpoints (connect panel flow)', () => {
       const sheet = fund === 'F1' ? f1 : f2;
       sheet.getRow(fr[fund]++).values = [null, co, region, inv];
     }
-    const dashDir = join(base, 'dash');
-    mkdirSync(dashDir, { recursive: true });
-    writeFileSync(join(dashDir, 'index.html'), '<!doctype html><body>x</body>', 'utf8');
-    await wb.xlsx.writeFile(join(dashDir, 'book.xlsx'));
+    const xlsxPath = join(base, 'book.xlsx');
+    await wb.xlsx.writeFile(xlsxPath);
 
-    const server = await startGuiServer({
-      configPath: paths.configPath,
-      outputDir: paths.contextDir,
-      port: 0,
-      openBrowser: false,
-      dashboardPath: dashDir,
-    });
-    servers.push(server);
+    const up = await uploadFile(
+      server,
+      'book.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      readFileSync(xlsxPath),
+    );
+    expect(up.autoImport?.reason).toBe('new-dataset');
+    expect(up.autoImport?.views?.map((v) => v.name).sort()).toEqual(['f1', 'f2']);
+    expect(up.autoImport?.views?.every((v) => v.master === 'investments')).toBe(true);
+    expect(up.autoImport?.plan?.entities.map((e) => e.name)).toContain('investments');
+    expect(up.autoImport?.plan?.entities.map((e) => e.name)).not.toContain('f1');
 
-    const analyzed = (await (
-      await fetch(`${server.url}/api/connect/import/analyze`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: 'book.xlsx' }),
-      })
-    ).json()) as {
-      plan: { entities: { name: string }[] };
-      views: { name: string; master: string }[];
-    };
-    expect(analyzed.views.map((v) => v.name).sort()).toEqual(['f1', 'f2']);
-    expect(analyzed.views.every((v) => v.master === 'investments')).toBe(true);
-    expect(analyzed.plan.entities.map((e) => e.name)).toContain('investments');
-    expect(analyzed.plan.entities.map((e) => e.name)).not.toContain('f1');
-
-    const applyText = await (
-      await fetch(`${server.url}/api/connect/import/apply`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path: 'book.xlsx', mode: 'both' }),
-      })
-    ).text();
-    const applyEvents = applyText
-      .trim()
-      .split('\n')
-      .map(
-        (l) =>
-          JSON.parse(l) as {
-            phase: string;
-            ok?: boolean;
-            result?: { views: { name: string; rows: number }[] };
-          },
-      );
-    const applied = applyEvents.find((e) => e.phase === 'done' && e.ok);
-    expect(applied).toBeTruthy();
+    const events = await applyImport(server, up.autoImport!.fileId!);
+    const applied = events.find((e) => e.phase === 'done' && e.ok);
     expect(applied?.result?.views.find((v) => v.name === 'f1')?.rows).toBe(6);
 
     const all = (await (
       await fetch(`${server.url}/api/tables/investments/rows?limit=50`)
-    ).json()) as {
-      rows: unknown[];
-    };
+    ).json()) as { rows: unknown[] };
     expect(all.rows).toHaveLength(12);
     const view = (await (await fetch(`${server.url}/api/tables/f1/rows?limit=50`)).json()) as {
-      rows: { fund?: string }[];
+      rows: unknown[];
     };
     expect(view.rows).toHaveLength(6);
   });

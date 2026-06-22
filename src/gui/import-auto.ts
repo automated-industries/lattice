@@ -58,8 +58,11 @@ function existingDataTables(db: Lattice): ExistingTable[] {
   return out;
 }
 
-async function readStructured(abs: string): Promise<Record<string, unknown>> {
-  if (/\.xlsx?$/i.test(abs)) return excelToRecords(abs);
+async function readStructured(abs: string, name: string): Promise<Record<string, unknown>> {
+  // Key the parser on the ORIGINAL name's extension, not `abs`: an uploaded file
+  // is staged to an extensionless temp path, so testing `abs` would misroute an
+  // `.xlsx` into the JSON branch. The bytes are read from `abs` either way.
+  if (/\.xlsx?$/i.test(name)) return excelToRecords(abs);
   return JSON.parse(readFileSync(abs, 'utf8')) as Record<string, unknown>;
 }
 
@@ -72,7 +75,7 @@ export async function autoImportStructured(
   if (!/\.(xlsx?|json)$/i.test(name)) return null;
   let data: Record<string, unknown>;
   try {
-    data = await readStructured(abs);
+    data = await readStructured(abs, name);
   } catch {
     return null; // not structured data we can model — leave it as a reference file
   }
