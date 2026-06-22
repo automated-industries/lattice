@@ -24,26 +24,23 @@ Every AI agent session starts cold — no memory of what happened yesterday, wha
 
 Lattice has no opinions about your schema, your agents, or your file format. You define the tables. You control the rendering. Lattice runs the sync loop.
 
-**New in 4.2 (additive — every 4.1 caller runs unchanged):** put Lattice behind
-**your own dashboard**, and **import structured data** into it. `lattice connect`
-serves a dashboard you provide (a single HTML file or a folder) at `/` — the
-built-in view moves to `/lattice` and a small "↩ Lattice" pill is injected so
-you're never trapped — same-origin, so the page's own controls call the data
-routes directly (the new `startGuiServer` option is `dashboardPath`; folder
-serving is real-path contained so a symlink can't escape the dashboard dir, and a
-non-loopback bind warns that the routes are unauthenticated). The
-**structured-source importer** turns a JSON or `.xlsx` source into a reviewed
-schema (entities / dimensions / junctions) and materializes it: Excel sheets
-become records (header + data-region detection), per-slice tabs become read-only
-**views** (no duplicated rows), an **as-of date** is detected (contents → name →
-Excel preamble → Claude fallback, or per-row from a date column) so re-importing a
-newer period keeps a **point-in-time snapshot** beside the prior one, and a
-re-upload is fingerprinted + matched to existing tables (new snapshot, not
-duplicate tables). It also runs from the **assistant** — drop a recognized file in
-chat and it auto-imports as a dated snapshot. New exports: `inferSchema`,
+**New in 4.2 (additive — every 4.1 caller runs unchanged):** **import structured
+data by dropping a file into the assistant.** The **structured-source importer**
+turns a JSON or `.xlsx` source into a schema (entities / dimensions / junctions)
+and materializes it: Excel sheets become records (header + data-region detection),
+per-slice tabs become read-only **views** (no duplicated rows), an **as-of date**
+is detected (contents → name → Excel preamble → Claude fallback, or per-row from a
+date column) so re-importing a newer period keeps a **point-in-time snapshot**
+beside the prior one, and a re-upload is fingerprinted + matched to existing tables
+(new snapshot, not duplicate tables). It's reachable only by dropping a file in the
+assistant rail: a confident match + detected date imports silently; otherwise an
+**inline confirm card** proposes the schema, date, and mode before anything is
+written (applied via `POST /api/import/apply`). New exports: `inferSchema`,
 `materializeImport`, `detectAsOf*`, `parseCellDate`, `matchSchemaToExisting`,
-`renameEntities`, `excelToRecords`, `dedupeAndDetectViews`. All opt-in; absent the
-opt-in, behavior is byte-identical to 4.1.
+`renameEntities`, `excelToRecords`, `dedupeAndDetectViews`. 4.2 also **scopes
+realtime delete events per recipient** (a deleted row's pk/existence is no longer
+fanned out to members who couldn't read it) and **renders many-to-many junctions
+symmetrically**. All opt-in; absent the opt-in, behavior is byte-identical to 4.1.
 
 **New in 4.1 (additive — every 4.0 caller runs unchanged):** a measurable,
 production-grade **retrieval & data substrate**. Retrieval gets _measurable_:

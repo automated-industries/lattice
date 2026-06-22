@@ -8,47 +8,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [4.2.0] — unreleased
 
-Feature release on 4.1 (**additive** — every 4.1 caller runs unchanged): put
-Lattice behind your own dashboard, and import structured data into it.
+Feature release on 4.1 (**additive** — every 4.1 caller runs unchanged): import
+structured data by dropping a file into the assistant — plus correctness and
+security hardening (below).
 
 ### Added
 
-- **`lattice connect` — put Lattice behind your own dashboard, and import data into
-  it.** A non-coder-friendly command (and GUI flow) that pastes your Claude key,
-  opens a local workspace, and serves your own dashboard (a single HTML file or a
-  folder) at `/` — the built-in view moves to `/lattice`, and a small "↩ Lattice"
-  pill is injected into the served page so you're never trapped. Same-origin, so
-  the dashboard's own upload/notes controls call the data routes directly (no key
-  in the page, no CORS). New `startGuiServer` option `dashboardPath`; the connected
-  dashboard persists across restarts.
-- **Structured-source importer.** Turn a JSON or `.xlsx` source into a Lattice
-  schema (entities, dimensions, junctions), reviewed before anything is written,
-  then materialized into the workspace (deduped, persisted to config). Excel sheets
-  become records by detecting the header row + data region; per-fund-style tabs
-  that are a slice of a master become read-only **views** (no duplicated rows).
-  **Point-in-time snapshots:** an as-of date is detected from the file's contents,
-  name, Excel preamble, then a Claude fallback — or per-row from a date column — so
-  re-importing a newer period keeps a dated snapshot beside the prior one.
-  **Re-import recognition:** a new upload is fingerprinted and matched to the tables
-  already in the workspace, so it lands as a new snapshot instead of duplicate
-  tables. And it works from the **assistant**: dropping a recognized `.xlsx`/`.json`
-  into the chat auto-imports it as a dated snapshot, reported in the activity feed.
-  New library exports: `inferSchema`, `materializeImport`, `detectAsOf`,
-  `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`, `matchSchemaToExisting`,
-  `renameEntities`, `excelToRecords`, `dedupeAndDetectViews` (+ types).
+- **Structured-source importer — drop a file in the assistant chat.** Turn a JSON
+  or `.xlsx` source into a Lattice schema (entities, dimensions, junctions) and
+  materialize it (deduped, persisted to config). Excel sheets become records by
+  detecting the header row + data region; per-slice tabs that are a view of a
+  master become read-only **views** (no duplicated rows). **Point-in-time
+  snapshots:** an as-of date is detected from the file's contents, name, Excel
+  preamble, then a Claude fallback — or per-row from a date column — so re-importing
+  a newer period keeps a dated snapshot beside the prior one. **Re-import
+  recognition:** a new upload is fingerprinted and matched to the tables already in
+  the workspace, so it lands as a new snapshot instead of duplicate tables. The
+  importer is reachable ONLY by dropping a file into the assistant rail: a confident
+  match + detected date imports silently as a dated snapshot; otherwise an **inline
+  confirm card** proposes the schema, as-of date (and per-row date column), and mode
+  before anything is written, applied via `POST /api/import/apply`. New library
+  exports: `inferSchema`, `materializeImport`, `detectAsOf`, `detectAsOfCandidates`,
+  `detectAsOfColumns`, `parseCellDate`, `matchSchemaToExisting`, `renameEntities`,
+  `excelToRecords`, `dedupeAndDetectViews` (+ types).
+
+### Fixed
+
+- **Many-to-many junctions render symmetrically.** A join table is rendered so each
+  side shows the REMOTE entity (a contact shows its meetings, a meeting shows its
+  contacts) instead of only the foreign key pointing back at the parent. A
+  render-time invariant fails loudly if a junction would ever render one-sided.
 
 ### Security
 
-- **Connected-dashboard serving is real-path contained.** A folder dashboard is
-  served only for files that resolve (after following symlinks) to inside the
-  dashboard directory, so a symlink placed in the folder can't escape it to serve
-  arbitrary files elsewhere on disk. (`../` / percent-encoded traversal was
-  already blocked.)
-- **Non-loopback bind warning.** The GUI's data routes are unauthenticated by
-  design for localhost; binding to a non-loopback address (e.g. `0.0.0.0`) now
-  logs a clear startup warning that the routes will be reachable from the network.
-- **Import file-size cap.** A `path`-based import (`analyze`/`apply`/the
-  dashboard's source scan) caps the source file at 200 MB before reading it,
+- **Realtime delete events are scoped per recipient.** A deleted row's pk +
+  existence are no longer fanned out over the realtime stream to members who could
+  not read the row; delete events are gated from a pre-delete visibility snapshot,
+  matching how upserts are scoped (corrects the 4.x realtime note above). Deletes
+  remain excluded from reconnect catch-up; clients reconcile deletions on refetch.
+- **Import file-size cap.** A path-based import read caps the source file at 200 MB,
   matching the streaming-upload cap, so an oversized JSON/`.xlsx` can't exhaust
   memory.
 
@@ -1425,10 +1423,13 @@ public`. Owner / SQLite / fresh-database behavior is unchanged.
   `owner_role` (the editor), so "last edited by" never resolved. Both now mirror
   the NOTIFY trigger exactly.
 - **Realtime fan-out is filtered per recipient.** The NOTIFY stream is global; a
-  member's stream now forwards only changes for rows it may actually read (probed
-  through the same RLS visibility function), so the pk / existence / editor of an
-  unreadable row no longer leaks. Deletes (unprobeable post-trigger) are still
-  forwarded so a shown row drops, but with the editor stripped.
+  member's stream forwards only `upsert` changes for rows it may actually read
+  (probed through the same RLS visibility function), so an unreadable upserted
+  row's pk / existence / editor is not disclosed. (Correction: delete events at
+  this version were still fanned out to every member, with the editor stripped —
+  so a deleted row's pk + existence were visible to members who could not read it.
+  Per-recipient scoping of delete events lands in 4.2, gating them from a
+  pre-delete visibility snapshot.)
 - **Realtime catches up after a gap.** A broker that drops its `LISTEN` (sleep,
   network blip) replays the changes it missed on reconnect, via a bounded
   `SECURITY DEFINER lattice_changes_since(seq, limit)` that returns only the
