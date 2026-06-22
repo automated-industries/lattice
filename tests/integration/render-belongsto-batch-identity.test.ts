@@ -424,6 +424,9 @@ describe('SAFE-SUBSET belongsTo→PK render batch — identity', () => {
             openBrowser: false,
           }),
         );
+        // Wait for the owner's background convergence (the member-group grant of
+        // `_lattice_gui_meta`) before rendering AS the member races it.
+        await servers[servers.length - 1]!.whenConverged();
       }
 
       // Render the member tree twice (off, then on), each into its own dir.

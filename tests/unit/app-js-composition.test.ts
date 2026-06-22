@@ -18,9 +18,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // wired at boot and refreshed on each reconnect version check), and the FOUC fix
 // that softens the two background in-place re-renders (advanced-mode toggle +
 // workspace-switch reload now pass {soft:true} so they never paint the loading
-// frame). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 401500;
-const ORIGINAL_SHA256 = 'def9945b673adc9d45f9341660c3b7d634adcc83cb0535b355fd107cb708119c';
+// frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
+// JSON/xlsx file into the assistant chat: the upload returns a proposal and an
+// inline confirm card renders into the assistant rail (no top-bar button, no
+// modal). Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 413654;
+const ORIGINAL_SHA256 = '7468ba0374c997fd7f4986ea7123f5ae21433e744738e8243a3f3ae1cdc946bf';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {
