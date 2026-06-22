@@ -3,6 +3,7 @@ import { runAsyncOrSync, allAsyncOrSync, introspectColumnsAsyncOrSync } from '..
 import type { Row, EmbeddingsConfig, SearchResult } from '../types.js';
 import { chunkText } from './chunking.js';
 import { vectorIndexAvailable, hasVectorIndex, searchVectorIndex } from './vector-index.js';
+import { clampTopK } from './limits.js';
 
 /** Internal table that stores one embedding vector per (table, row, chunk). */
 export const EMBEDDINGS_TABLE = '_lattice_embeddings';
@@ -243,11 +244,14 @@ export async function searchByEmbedding(
   pkColumn = 'id',
 ): Promise<SearchResult[]> {
   const queryVector = await config.embed(queryText);
+  // Bound the candidate fan-out: the indexed arm over-fetches `k * 4` below, so
+  // clamp before that multiply rather than trust a caller-supplied topK.
+  const k = clampTopK(topK);
 
   // Native-index fast path (pgvector). Returns ranked (pk, chunk_index, score).
   let ranked: RankedChunk[];
   if ((await vectorIndexAvailable(adapter)) && (await hasVectorIndex(adapter, table))) {
-    const hits = await searchVectorIndex(adapter, table, queryVector, topK * 4, minScore);
+    const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore);
     ranked = hits.map((h) => ({
       pk: h.pk,
       score: h.score,
@@ -285,7 +289,7 @@ export async function searchByEmbedding(
       if (r.content !== null) result.matchedContent = r.content;
     }
     results.push(result);
-    if (results.length >= topK) break;
+    if (results.length >= k) break;
   }
   return results;
 }
