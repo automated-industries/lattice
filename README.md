@@ -36,11 +36,24 @@ beside the prior one, and a re-upload is fingerprinted + matched to existing tab
 assistant rail: a confident match + detected date imports silently; otherwise an
 **inline confirm card** proposes the schema, date, and mode before anything is
 written (applied via `POST /api/import/apply`). New exports: `inferSchema`,
-`materializeImport`, `detectAsOf*`, `parseCellDate`, `matchSchemaToExisting`,
-`renameEntities`, `excelToRecords`, `dedupeAndDetectViews`. 4.2 also **scopes
-realtime delete events per recipient** (a deleted row's pk/existence is no longer
-fanned out to members who couldn't read it) and **renders many-to-many junctions
-symmetrically**. All opt-in; absent the opt-in, behavior is byte-identical to 4.1.
+`inferFieldType`, `normalizeName`, `sourceRecords`, `materializeImport`,
+`detectAsOf`, `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`,
+`matchSchemaToExisting`, `renameEntities`, `excelToRecords`,
+`dedupeAndDetectViews` (+ types). See **[docs/importing.md](docs/importing.md)**.
+4.2 also tightens correctness and the read/egress posture: **retrieval bounding**
+(`/api/history` clamps its `limit`; semantic search clamps `topK` before the
+candidate fan-out; the no-index embedding scan takes an opt-in `maxScanChunks`
+that fails loudly with `EmbeddingScanTooLargeError` rather than silently truncate
+— off by default), an **import file-size cap enforced on BOTH the upload and the
+apply-time read** (50 MB), a **genuinely failable retrieval-quality gate**
+(cross-topic golden corpus + a generated sub-perfect committed baseline +
+`npm run eval:gate` in CI; the benchmark now asserts a real pgvector index before
+timing the vector phase; an advisory `npm run slo:gate`), **per-recipient scoping
+of realtime delete events** (a deleted row's pk/existence is no longer fanned out
+to members who couldn't read it), **symmetric many-to-many junction rendering**
+(both sides show the remote entity), and a **Windows credential-store fix** (the
+cross-process lock now retries transient `EPERM`/`EACCES`). All opt-in; absent the
+opt-in, behavior is byte-identical to 4.1.
 
 **New in 4.1 (additive — every 4.0 caller runs unchanged):** a measurable,
 production-grade **retrieval & data substrate**. Retrieval gets _measurable_:
