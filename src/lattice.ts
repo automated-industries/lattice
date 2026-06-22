@@ -2577,10 +2577,13 @@ export class Lattice {
    * rendered context tree is read THROUGH the member's RLS connection + masking
    * views — making the on-disk tree the viewer's own scoped projection. Owner /
    * local SQLite leave it unset → identity → unchanged behavior. Set on the
-   * engine (not per-render-call) so the opts-less auto-render path masks too.
+   * SchemaManager (the read layer), not per-render-call, so the opts-less
+   * auto-render path masks too — AND so the reverse-sync engine, which reads the
+   * same SchemaManager, writes a member's file edit back through the masked view
+   * instead of the REVOKE'd base table. One resolver, every reader.
    */
   setRenderReadRelation(fn: (table: string) => string): void {
-    this._render.setRenderReadRelation(fn);
+    this._schema.setReadRelation(fn);
   }
 
   /**

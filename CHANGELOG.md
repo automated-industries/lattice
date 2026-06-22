@@ -6,7 +6,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [4.1.0] — unreleased
+## [4.2.0] — unreleased
+
+Feature release on 4.1 (**additive** — every 4.1 caller runs unchanged): put
+Lattice behind your own dashboard, and import structured data into it.
+
+### Added
+
+- **`lattice connect` — put Lattice behind your own dashboard, and import data into
+  it.** A non-coder-friendly command (and GUI flow) that pastes your Claude key,
+  opens a local workspace, and serves your own dashboard (a single HTML file or a
+  folder) at `/` — the built-in view moves to `/lattice`, and a small "↩ Lattice"
+  pill is injected into the served page so you're never trapped. Same-origin, so
+  the dashboard's own upload/notes controls call the data routes directly (no key
+  in the page, no CORS). New `startGuiServer` option `dashboardPath`; the connected
+  dashboard persists across restarts.
+- **Structured-source importer.** Turn a JSON or `.xlsx` source into a Lattice
+  schema (entities, dimensions, junctions), reviewed before anything is written,
+  then materialized into the workspace (deduped, persisted to config). Excel sheets
+  become records by detecting the header row + data region; per-fund-style tabs
+  that are a slice of a master become read-only **views** (no duplicated rows).
+  **Point-in-time snapshots:** an as-of date is detected from the file's contents,
+  name, Excel preamble, then a Claude fallback — or per-row from a date column — so
+  re-importing a newer period keeps a dated snapshot beside the prior one.
+  **Re-import recognition:** a new upload is fingerprinted and matched to the tables
+  already in the workspace, so it lands as a new snapshot instead of duplicate
+  tables. And it works from the **assistant**: dropping a recognized `.xlsx`/`.json`
+  into the chat auto-imports it as a dated snapshot, reported in the activity feed.
+  New library exports: `inferSchema`, `materializeImport`, `detectAsOf`,
+  `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`, `matchSchemaToExisting`,
+  `renameEntities`, `excelToRecords`, `dedupeAndDetectViews` (+ types).
+
+## [4.1.0] — 2026-06-22
 
 Fast-follow feature release on 4.0. Turns latticesql into a measurable,
 production-grade retrieval substrate: a retrieval-eval + health + benchmark
@@ -144,32 +175,42 @@ method that is inert unless a table opts in.
   populated by the indexed tier (`ts_rank` on Postgres, `-bm25` on SQLite FTS5)
   and results are ordered by relevance — previously indexed full-text results
   came back in physical/rowid order.
-- **`lattice connect` — put Lattice behind your own dashboard, and import data into it.**
-  A non-coder-friendly command (and GUI flow) that pastes your Claude key, opens a
-  local workspace, and serves your own dashboard (a single HTML file or a folder)
-  at `/` — the built-in view moves to `/lattice`, and a small "↩ Lattice" pill is
-  injected into the served page so you're never trapped. Same-origin, so the
-  dashboard's own upload/notes controls call the data routes directly (no key in
-  the page, no CORS). New `startGuiServer` option `dashboardPath`; the connected
-  dashboard persists across restarts.
-- **Structured-source importer.** Turn a JSON or `.xlsx` source into a Lattice
-  schema (entities, dimensions, junctions), reviewed before anything is written,
-  then materialized into the workspace (deduped, persisted to config). Excel sheets
-  become records by detecting the header row + data region; per-fund-style tabs
-  that are a slice of a master become read-only **views** (no duplicated rows).
-  **Point-in-time snapshots:** an as-of date is detected from the file's contents,
-  name, Excel preamble, then a Claude fallback — or per-row from a date column — so
-  re-importing a newer period keeps a dated snapshot beside the prior one.
-  **Re-import recognition:** a new upload is fingerprinted and matched to the tables
-  already in the workspace, so it lands as a new snapshot instead of duplicate
-  tables. And it works from the **assistant**: dropping a recognized `.xlsx`/`.json`
-  into the chat auto-imports it as a dated snapshot, reported in the activity feed.
-  New library exports: `inferSchema`, `materializeImport`, `detectAsOf`,
-  `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`, `matchSchemaToExisting`,
-  `renameEntities`, `excelToRecords`, `dedupeAndDetectViews` (+ types).
 
 ### Fixed
 
+- **Rendered-file body edits were silently not imported.** The default
+  entity-context render writes each field as a bold bullet — `- **key:** value`,
+  with the colon _inside_ the bold — but the reverse-sync body parser only
+  recognized `**key**: value` / plain `key: value`. So an edit to a rendered
+  file's body parsed to zero fields and was reported "not auto-importable
+  (custom/computed render)", even for a plain structured record. (Latent until the
+  reverse-sync starvation above was fixed, which is when file edits started
+  running at all.) The parser now also reads the render's own
+  colon-inside-the-bold format; a new test renders-then-parses the real on-disk
+  shape rather than a hand-written one.
+- **Spurious full re-renders driven by chat / bookkeeping writes.** The GUI's
+  eager per-viewer re-render fired on _every_ realtime change, including writes to
+  internal tables (the assistant's `chat_messages`/`chat_threads`, every
+  `_lattice*` table). On a cloud workspace, each assistant message wrote a
+  `chat_messages` row → change-feed `NOTIFY` → a full background render — so an
+  ongoing conversation re-rendered the whole workspace every turn, wasting egress.
+  It also starved the file-loopback reverse-sync, which is deferred while a render
+  is in flight: with renders firing constantly, a user's on-disk `.md` edit never
+  got written back. The eager re-render now filters out feed-hidden tables (the
+  same `isFeedHiddenTable` guard the activity feed uses), so only changes to the
+  rendered entity tree trigger a re-render.
+- **Member-cloud file edits silently dropped.** On a masked member open, base-table
+  `SELECT` is revoked and granted only on the per-viewer masking view. The render
+  engine read through that view, but the reverse-sync engine read the base table
+  directly — hitting a permission error that was swallowed, so a member's `.md`
+  edit was never written back to the database or recorded in history. The
+  per-viewer read-relation resolver now lives on the shared read layer
+  (`SchemaManager`), so render **and** reverse-sync read through the same relation
+  — one resolver, routed by access rights, rather than a second read path.
+- **Loading-frame flash on background in-place re-renders.** The advanced-mode
+  toggle (same hash) and the workspace-switch reload (already on `#/`) re-rendered
+  the content pane with a bare call that synchronously painted the loading frame,
+  flashing during background activity. Both now request a soft (in-place) refresh.
 - **Embedding writes on Postgres.** `storeEmbedding` used a SQLite-only
   `INSERT OR REPLACE`, which the Postgres adapter refuses to translate — semantic
   embedding writes therefore failed on Postgres. Now uses a portable

@@ -35,6 +35,7 @@ import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
 import type { AuditEntry } from './mutations.js';
 import { retireLegacyPreferenceSecrets } from './assistant-routes.js';
 import type { ActiveDb } from './active-db.js';
+import { isFeedHiddenTable } from './active-db.js';
 
 /**
  * Workspace lifecycle: open / reopen / dispose a workspace's ActiveDb, the
@@ -601,6 +602,70 @@ export async function convergeOwnerCloud(active: ActiveDb): Promise<void> {
  * stream, while keeping a member's per-viewer tree fresh within ~1.5s.
  */
 const EAGER_RERENDER_MIN_INTERVAL_MS = 1500;
+
+/**
+ * Eager per-viewer freshness: a REMOTE change (another client's write, or the
+ * owner re-sharing / un-sharing a row) re-renders this member's RLS-scoped tree
+ * so it reflects the new visibility promptly. Wired once per ActiveDb; the broker
+ * is stopped in disposeActive.
+ *
+ * Deliberately NOT gated on "is this change visible to me now": an UN-SHARE makes
+ * the row invisible, so a visibility filter would skip the re-render and leave the
+ * now-stale row on disk. Re-rendering on every remote change handles share AND
+ * un-share; the render reads current RLS state, so it adds/removes rows correctly.
+ *
+ * Bookkeeping + assistant-chat writes (chat_messages/chat_threads + every
+ * `_lattice*` table) are NOT part of the rendered entity tree and are filtered
+ * out via isFeedHiddenTable — otherwise every assistant message (each upserts
+ * chat_messages → __lattice_changes → NOTIFY) fired a full render, which both
+ * wasted egress AND, because the file-loopback watcher defers reverse-sync while a
+ * render is in flight, perpetually starved the file→DB writeback.
+ *
+ * THROTTLED to bound shared-quota egress: a leading+trailing throttle caps it at
+ * one re-render per EAGER_RERENDER_MIN_INTERVAL_MS; requestRender debounces +
+ * coalesces beneath this. Extracted from startBackgroundRender so the
+ * feed-hidden filter is independently unit-testable.
+ */
+export function wireEagerRerender(active: ActiveDb): void {
+  if (active.eagerRenderWired || !active.realtime) return;
+  active.eagerRenderWired = true;
+  let lastFire = 0;
+  let trailing: ReturnType<typeof setTimeout> | undefined;
+  // Accumulate the CHANGED tables across the throttle window so the re-render is
+  // incremental — only the entity contexts a remote change touched re-render, not
+  // the whole tree. A change with no table name forces a full render.
+  const pendingTables = new Set<string>();
+  let pendingFull = false;
+  const fire = (): void => {
+    lastFire = Date.now();
+    if (pendingFull || pendingTables.size === 0) {
+      pendingFull = false;
+      pendingTables.clear();
+      active.db.requestRender(); // full
+      return;
+    }
+    for (const t of pendingTables) active.db.requestRender(t);
+    pendingTables.clear();
+  };
+  active.realtime.subscribePayload((payload) => {
+    // Skip bookkeeping/chat writes BEFORE touching pendingTables / scheduling
+    // fire() — otherwise an empty pendingTables set would itself fall through to a
+    // full render in fire(). Mirror the feed's own isFeedHiddenTable filter.
+    if (payload.table_name && isFeedHiddenTable(payload.table_name)) return;
+    if (payload.table_name) pendingTables.add(payload.table_name);
+    else pendingFull = true;
+    const since = Date.now() - lastFire;
+    if (since >= EAGER_RERENDER_MIN_INTERVAL_MS) {
+      fire();
+    } else if (!trailing) {
+      trailing = setTimeout(() => {
+        trailing = undefined;
+        fire();
+      }, EAGER_RERENDER_MIN_INTERVAL_MS - since);
+      trailing.unref();
+    }
+  });
+}
 /**
  * Kick off the background render for `active` — fire-and-forget. Returns
  * immediately; the render churns on its own and folds progress into
@@ -620,58 +685,9 @@ export function startBackgroundRender(active: ActiveDb): void {
   // single "begin serving this workspace" chokepoint). Echo suppression keys off
   // the manifest, so the initial render's own writes are never re-ingested.
   active.fileWatcher?.start();
-  // Eager per-viewer freshness: a REMOTE change (another client's write, or the
-  // owner re-sharing / un-sharing a row) re-renders this member's RLS-scoped tree
-  // so it reflects the new visibility promptly. Wired once per ActiveDb; the
-  // broker is stopped in disposeActive.
-  //
-  // Deliberately NOT gated on "is this change visible to me now": an UN-SHARE
-  // makes the row invisible, so a visibility filter would skip the re-render and
-  // leave the now-stale row on disk — the exact staleness this is meant to fix.
-  // Re-rendering on every remote change handles share AND un-share; the render
-  // itself reads current RLS state, so it adds/removes rows correctly either way.
-  //
-  // THROTTLED to bound shared-quota egress: a render re-reads the member's visible
-  // tables, and single-flight alone would render back-to-back under a sustained
-  // stream of remote changes. A leading+trailing throttle caps it at one re-render
-  // per EAGER_RERENDER_MIN_INTERVAL_MS (freshness stays sub-2s); requestRender
-  // still debounces + coalesces beneath this.
-  if (!active.eagerRenderWired && active.realtime) {
-    active.eagerRenderWired = true;
-    let lastFire = 0;
-    let trailing: ReturnType<typeof setTimeout> | undefined;
-    // Accumulate the CHANGED tables across the throttle window so the re-render is
-    // incremental — only the entity contexts a remote change touched (the changed
-    // table + its cross-table dependents) re-render, not the whole tree. A change
-    // with no table name forces a full render.
-    const pendingTables = new Set<string>();
-    let pendingFull = false;
-    const fire = (): void => {
-      lastFire = Date.now();
-      if (pendingFull || pendingTables.size === 0) {
-        pendingFull = false;
-        pendingTables.clear();
-        active.db.requestRender(); // full
-        return;
-      }
-      for (const t of pendingTables) active.db.requestRender(t);
-      pendingTables.clear();
-    };
-    active.realtime.subscribePayload((payload) => {
-      if (payload.table_name) pendingTables.add(payload.table_name);
-      else pendingFull = true;
-      const since = Date.now() - lastFire;
-      if (since >= EAGER_RERENDER_MIN_INTERVAL_MS) {
-        fire();
-      } else if (!trailing) {
-        trailing = setTimeout(() => {
-          trailing = undefined;
-          fire();
-        }, EAGER_RERENDER_MIN_INTERVAL_MS - since);
-        trailing.unref();
-      }
-    });
-  }
+  // Eager per-viewer freshness — wired once per ActiveDb (see wireEagerRerender,
+  // which filters out bookkeeping/chat writes so they never trigger a render).
+  wireEagerRerender(active);
   if (active.renderState.phase === 'running') return;
   active.renderState.phase = 'running';
   const db = active.db;

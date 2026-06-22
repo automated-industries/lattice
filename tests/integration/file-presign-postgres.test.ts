@@ -274,6 +274,45 @@ describe.skipIf(!PG_URL)('lattice_presign_file wrapper (isolated schema)', () =>
     }
   });
 
+  it('uses PATH-style URLs for a custom (S3-compatible) endpoint, virtual-hosted for AWS', async () => {
+    const pg = (await import('pg')).default;
+    const schema = `presign_ep_${randomSchemaSuffix()}`;
+    const client = new pg.Client(PG_URL);
+    await client.connect();
+    try {
+      await client.query(`CREATE SCHEMA "${schema}"`);
+      await client.query(`SET search_path TO "${schema}"`);
+      await client.query(
+        `CREATE FUNCTION lattice_row_visible(p_table text, p_pk text) RETURNS boolean LANGUAGE sql AS $$ SELECT true $$`,
+      );
+      await client.query(`CREATE TABLE files (id text primary key, ref_uri text)`);
+      await client.query(`INSERT INTO files (id, ref_uri) VALUES ('f1','s3://b/files/a.pdf')`);
+      await client.query(pinPresignerDefiner(filePresignSql(), schema));
+
+      // Custom endpoint (e.g. MinIO) → path-style: the bucket is in the URL PATH,
+      // the host is the endpoint. (Before the fix the bucket was dropped entirely.)
+      await client.query(
+        `INSERT INTO ${S3_SECRET_TABLE} (id, bucket, region, prefix, endpoint, access_key, secret_key)
+         VALUES ('default','b','us-east-1','files/','minio.local:9000','AKIA','shh')`,
+      );
+      const epUrl: string = (
+        await client.query(`SELECT lattice_presign_file('f1','GET',60) AS url`)
+      ).rows[0].url;
+      expect(epUrl).toContain('https://minio.local:9000/b/files/a.pdf?');
+      expect(epUrl).toContain('X-Amz-Signature=');
+
+      // No endpoint → AWS virtual-hosted: bucket in the HOST, not the path.
+      await client.query(`UPDATE ${S3_SECRET_TABLE} SET endpoint = NULL WHERE id = 'default'`);
+      const awsUrl: string = (
+        await client.query(`SELECT lattice_presign_file('f1','GET',60) AS url`)
+      ).rows[0].url;
+      expect(awsUrl).toContain('https://b.s3.us-east-1.amazonaws.com/files/a.pdf?');
+    } finally {
+      await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+      await client.end();
+    }
+  });
+
   // The single highest-stakes p4c guarantee: a scoped MEMBER role can presign its
   // own visible files but can NEVER read the owner's S3 secret. Asserted AS the
   // member role (SET ROLE), not in prose.

@@ -616,7 +616,10 @@ export const dashboardJs = `    // ───────────────
       var mapped = mapHashForMode(cur, on);
       renderSidebar();
       if (mapped && mapped !== cur) location.hash = mapped; // triggers hashchange → renderRoute
-      else renderRoute();
+      // Same-hash advanced-mode toggle re-renders the current pane in place — a
+      // soft refresh so it never flashes the loading frame (the data is already
+      // loaded; only the display-config changed).
+      else renderRoute({ soft: true });
     }
 
     // Parse "#/fs/a/b/c…" into its decoded segment list (or null).

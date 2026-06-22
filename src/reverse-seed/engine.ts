@@ -608,10 +608,21 @@ function parseEntityProfileContent(content: string): Record<string, unknown> {
       continue;
     }
 
-    const colonIdx = trimmed.indexOf(': ');
+    // The default entity-context render emits one bold bullet per field —
+    // `- **key:** value`, with the colon sitting INSIDE the bold (see
+    // canonical-context.ts / entity-templates.ts). Also accept `**key**: value`
+    // and plain `key: value`. Normalize by dropping a leading list bullet and the
+    // bold markers that wrap the KEY (never the value), then split on the first
+    // ': '. Without this, the render's own output never parsed back — body edits
+    // to a rendered file were silently dropped as "not auto-importable".
+    let normalized = trimmed.replace(/^[-*]\s+/, '');
+    normalized = normalized
+      .replace(/^\*\*(.+?):\*\*/, '$1:') // `**key:**` → `key:`  (colon inside bold)
+      .replace(/^\*\*(.+?)\*\*:/, '$1:'); // `**key**:` → `key:`  (colon outside bold)
+    const colonIdx = normalized.indexOf(': ');
     if (colonIdx > 0) {
-      const key = trimmed.slice(0, colonIdx).replace(/^\*\*/, '').replace(/\*\*$/, '');
-      const val = trimmed.slice(colonIdx + 2);
+      const key = normalized.slice(0, colonIdx).trim();
+      const val = normalized.slice(colonIdx + 2);
       row[key] = coerceValue(val);
     }
   }
