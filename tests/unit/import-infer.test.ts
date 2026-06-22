@@ -39,7 +39,17 @@ function fixture() {
       [2022, 'Fund GG', 'Growth', 'N. America', 'Healthcare', 'United States', 8, 1, 9],
       [2023, 'Fund GG', 'Growth', 'Asia', 'Energy', 'China', 3, 0, 4],
     ],
-    grossDeployCols: ['year', 'fund', 'stage', 'region', 'industry', 'country', 'invested', 'proceeds', 'nav'],
+    grossDeployCols: [
+      'year',
+      'fund',
+      'stage',
+      'region',
+      'industry',
+      'country',
+      'invested',
+      'proceeds',
+      'nav',
+    ],
     total: { invested: 999 }, // derived → skip
   };
 }
@@ -70,7 +80,11 @@ describe('inferSchema', () => {
   const entity = (n: string) => schema.entities.find((e) => e.name === n);
 
   it('detects the three entities incl. the columnar one, skips derived objects', () => {
-    expect(schema.entities.map((e) => e.name).sort()).toEqual(['funds', 'gross_deploy', 'investments']);
+    expect(schema.entities.map((e) => e.name).sort()).toEqual([
+      'funds',
+      'gross_deploy',
+      'investments',
+    ]);
     expect(entity('gross_deploy')?.columnar).toBe(true);
     const skippedKeys = schema.skipped.map((s) => s.key);
     expect(skippedKeys).toContain('meta');
@@ -100,7 +114,9 @@ describe('inferSchema', () => {
   });
 
   it('infers the array ref as one many-to-many link to funds (deduped from fundsRaw)', () => {
-    const toFunds = schema.linkages.filter((l) => l.fromEntity === 'investments' && l.toEntity === 'funds');
+    const toFunds = schema.linkages.filter(
+      (l) => l.fromEntity === 'investments' && l.toEntity === 'funds',
+    );
     expect(toFunds).toHaveLength(1);
     expect(toFunds[0]!.kind).toBe('many-to-many');
     expect(toFunds[0]!.confidence).toBeGreaterThan(0.9);
@@ -120,7 +136,8 @@ describe('inferSchema', () => {
     // and each contributor gets a dimension linkage
     expect(
       schema.linkages.some(
-        (l) => l.kind === 'dimension' && l.fromEntity === 'investments' && l.toEntity === 'industry',
+        (l) =>
+          l.kind === 'dimension' && l.fromEntity === 'investments' && l.toEntity === 'industry',
       ),
     ).toBe(true);
   });

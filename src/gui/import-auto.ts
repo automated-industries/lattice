@@ -66,7 +66,10 @@ export async function autoImportStructured(
   } catch {
     return null; // not structured data we can model — leave it as a reference file
   }
-  const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(inferSchema(data), data);
+  const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
+    inferSchema(data),
+    data,
+  );
   if (inferredPlan.entities.length === 0) return null;
 
   const match = matchSchemaToExisting(existingDataTables(db), inferredPlan);

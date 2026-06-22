@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Lattice, ensureLatticeRoot, addWorkspace, resolveWorkspacePaths } from '../../src/index.js';
+import {
+  Lattice,
+  ensureLatticeRoot,
+  addWorkspace,
+  resolveWorkspacePaths,
+} from '../../src/index.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { inferSchema } from '../../src/import/infer.js';
 import { materializeImport } from '../../src/import/materialize.js';
@@ -165,8 +170,12 @@ describe('import: infer → materialize → query (canonical)', () => {
     const configPath = resolveWorkspacePaths(root, ws).configPath;
     const data = fixture();
 
-    await materializeImport({ db, configPath }, data, inferSchema(data), [], { asOf: '2025-06-30' });
-    await materializeImport({ db, configPath }, data, inferSchema(data), [], { asOf: '2026-03-31' });
+    await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+      asOf: '2025-06-30',
+    });
+    await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+      asOf: '2026-03-31',
+    });
 
     // Both dated snapshots are kept (2 imports × per-snapshot counts).
     expect(await db.count('funds')).toBe(4); // 2 funds × 2 dates
@@ -180,7 +189,9 @@ describe('import: infer → materialize → query (canonical)', () => {
     expect((await db.query('funds', { where: { as_of: '2026-03-31' } })).length).toBe(2);
 
     // Re-importing the SAME date is idempotent (no third snapshot).
-    await materializeImport({ db, configPath }, data, inferSchema(data), [], { asOf: '2025-06-30' });
+    await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+      asOf: '2025-06-30',
+    });
     expect(await db.count('funds')).toBe(4);
     expect(await db.count('investments')).toBe(24);
 
@@ -195,9 +206,7 @@ describe('import: infer → materialize → query (canonical)', () => {
     const edges26 = await db.query('investments_funds', { where: { as_of: '2026-03-31' } });
     expect(edges26.length).toBe(12);
     expect(
-      edges26.every(
-        (e) => inv26.has(String(e.investments_id)) && funds26.has(String(e.funds_id)),
-      ),
+      edges26.every((e) => inv26.has(String(e.investments_id)) && funds26.has(String(e.funds_id))),
     ).toBe(true);
   });
 });
@@ -258,7 +267,14 @@ describe('import: over the HTTP endpoints (connect panel flow)', () => {
     const events = applyText
       .trim()
       .split('\n')
-      .map((l) => JSON.parse(l) as { phase: string; ok?: boolean; result?: { rowsByTable: Record<string, number> } });
+      .map(
+        (l) =>
+          JSON.parse(l) as {
+            phase: string;
+            ok?: boolean;
+            result?: { rowsByTable: Record<string, number> };
+          },
+      );
     const done = events.find((e) => e.phase === 'done' && e.ok);
     expect(done).toBeTruthy();
     expect(done?.result?.rowsByTable.funds).toBe(2);
@@ -297,7 +313,10 @@ describe('import: over the HTTP endpoints (connect panel flow)', () => {
     servers.push(server);
 
     // Upload bytes to /stage (the picker's path) → get a server path.
-    const bytes = Buffer.from(JSON.stringify({ deals: [{ company: 'A' }, { company: 'B' }] }), 'utf8');
+    const bytes = Buffer.from(
+      JSON.stringify({ deals: [{ company: 'A' }, { company: 'B' }] }),
+      'utf8',
+    );
     const staged = (await (
       await fetch(`${server.url}/api/connect/import/stage`, {
         method: 'POST',
@@ -380,7 +399,10 @@ describe('import: over the HTTP endpoints (connect panel flow)', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ path: 'book.xlsx' }),
       })
-    ).json()) as { plan: { entities: { name: string }[] }; views: { name: string; master: string }[] };
+    ).json()) as {
+      plan: { entities: { name: string }[] };
+      views: { name: string; master: string }[];
+    };
     expect(analyzed.views.map((v) => v.name).sort()).toEqual(['f1', 'f2']);
     expect(analyzed.views.every((v) => v.master === 'investments')).toBe(true);
     expect(analyzed.plan.entities.map((e) => e.name)).toContain('investments');
@@ -396,12 +418,21 @@ describe('import: over the HTTP endpoints (connect panel flow)', () => {
     const applyEvents = applyText
       .trim()
       .split('\n')
-      .map((l) => JSON.parse(l) as { phase: string; ok?: boolean; result?: { views: { name: string; rows: number }[] } });
+      .map(
+        (l) =>
+          JSON.parse(l) as {
+            phase: string;
+            ok?: boolean;
+            result?: { views: { name: string; rows: number }[] };
+          },
+      );
     const applied = applyEvents.find((e) => e.phase === 'done' && e.ok);
     expect(applied).toBeTruthy();
     expect(applied?.result?.views.find((v) => v.name === 'f1')?.rows).toBe(6);
 
-    const all = (await (await fetch(`${server.url}/api/tables/investments/rows?limit=50`)).json()) as {
+    const all = (await (
+      await fetch(`${server.url}/api/tables/investments/rows?limit=50`)
+    ).json()) as {
       rows: unknown[];
     };
     expect(all.rows).toHaveLength(12);

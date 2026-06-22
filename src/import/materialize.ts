@@ -191,7 +191,11 @@ export async function materializeImport(
     if (!db.getRegisteredTableNames().includes(entity.name)) tablesCreated.push(entity.name);
     await db.defineLate(entity.name, { columns, fieldTypes, primaryKey: 'id' });
     persistTable(configPath, entity.name, cfgFields);
-    await report({ phase: 'entities', table: entity.name, message: `Created table ${entity.name}` });
+    await report({
+      phase: 'entities',
+      table: entity.name,
+      message: `Created table ${entity.name}`,
+    });
 
     if (doContents) {
       const records = sourceRecords(data, entity);
@@ -209,7 +213,12 @@ export async function materializeImport(
       });
       const n = await db.count(entity.name);
       rowsByTable[entity.name] = n;
-      await report({ phase: 'entities', table: entity.name, count: n, message: `Loaded ${String(n)} rows into ${entity.name}` });
+      await report({
+        phase: 'entities',
+        table: entity.name,
+        count: n,
+        message: `Loaded ${String(n)} rows into ${entity.name}`,
+      });
     }
   }
 
@@ -237,7 +246,9 @@ export async function materializeImport(
         if (!ent) continue;
         const records = sourceRecords(data, ent);
         const first = records[0];
-        const srcKey = first ? Object.keys(first).find((k) => normalizeName(k) === dim.name) : undefined;
+        const srcKey = first
+          ? Object.keys(first).find((k) => normalizeName(k) === dim.name)
+          : undefined;
         if (!srcKey) continue;
         for (const r of records) {
           const v = r[srcKey];
@@ -253,7 +264,12 @@ export async function materializeImport(
       });
       const n = await db.count(dim.name);
       rowsByTable[dim.name] = n;
-      await report({ phase: 'dimensions', table: dim.name, count: n, message: `Dimension ${dim.name}: ${String(n)} values` });
+      await report({
+        phase: 'dimensions',
+        table: dim.name,
+        count: n,
+        message: `Dimension ${dim.name}: ${String(n)} values`,
+      });
     }
   }
 
@@ -291,7 +307,11 @@ export async function materializeImport(
     const fromFk = `${link.fromEntity}_id`;
     const toFk = `${link.toEntity}_id`;
 
-    const jCols: Record<string, string> = { id: 'TEXT PRIMARY KEY', [fromFk]: 'TEXT', [toFk]: 'TEXT' };
+    const jCols: Record<string, string> = {
+      id: 'TEXT PRIMARY KEY',
+      [fromFk]: 'TEXT',
+      [toFk]: 'TEXT',
+    };
     const jCfg: Record<string, unknown> = {
       id: { type: 'uuid', primaryKey: true },
       [fromFk]: { type: 'uuid', ref: link.fromEntity },
@@ -324,7 +344,8 @@ export async function materializeImport(
     let created = 0;
     for (const record of sourceRecords(data, from)) {
       const a = rowAsOf(from, record); // this row's snapshot date
-      const fromKeyVal = from.naturalKey === null ? recordKey(from, record) : record[from.naturalKeySource ?? ''];
+      const fromKeyVal =
+        from.naturalKey === null ? recordKey(from, record) : record[from.naturalKeySource ?? ''];
       const fromId = fromMap.get(dated ? scopedKey(a, fromKeyVal) : normalizeText(fromKeyVal));
       if (!fromId) continue;
       const raw = record[link.fromField];
@@ -340,13 +361,21 @@ export async function materializeImport(
         const edge = fromId + '|' + toId;
         if (seen.has(edge)) continue;
         seen.add(edge);
-        await db.insert(jName, dated ? { [fromFk]: fromId, [toFk]: toId, as_of: a } : { [fromFk]: fromId, [toFk]: toId });
+        await db.insert(
+          jName,
+          dated ? { [fromFk]: fromId, [toFk]: toId, as_of: a } : { [fromFk]: fromId, [toFk]: toId },
+        );
         created++;
       }
     }
     rowsByTable[jName] = created;
     links.push({ junction: jName, created, unresolved: unresolved.size });
-    await report({ phase: 'links', table: jName, count: created, message: `Linked ${String(created)} ${jName}` });
+    await report({
+      phase: 'links',
+      table: jName,
+      count: created,
+      message: `Linked ${String(created)} ${jName}`,
+    });
   }
 
   // ── Reconstructed views: read-only projections of a master, no duplicate rows ──
@@ -373,7 +402,12 @@ export async function materializeImport(
       const rows = await db.count(v.name);
       rowsByTable[v.name] = rows;
       viewResults.push({ name: v.name, master: v.master, rows });
-      await report({ phase: 'views', table: v.name, count: rows, message: `View ${v.name}: ${String(rows)} rows` });
+      await report({
+        phase: 'views',
+        table: v.name,
+        count: rows,
+        message: `View ${v.name}: ${String(rows)} rows`,
+      });
     }
   }
 

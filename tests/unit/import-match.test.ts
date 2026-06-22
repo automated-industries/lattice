@@ -4,8 +4,14 @@ import { matchSchemaToExisting, renameEntities } from '../../src/import/match.js
 
 // A December import already in the workspace (with the importer's bookkeeping cols).
 const existing = [
-  { name: 'funds', columns: ['id', 'code', 'name', 'vintage', 'fund_size', 'as_of', 'content_key', 'deleted_at'] },
-  { name: 'investments', columns: ['id', 'company', 'invested', 'region', 'as_of', 'content_key', 'deleted_at'] },
+  {
+    name: 'funds',
+    columns: ['id', 'code', 'name', 'vintage', 'fund_size', 'as_of', 'content_key', 'deleted_at'],
+  },
+  {
+    name: 'investments',
+    columns: ['id', 'company', 'invested', 'region', 'as_of', 'content_key', 'deleted_at'],
+  },
   { name: 'region', columns: ['id', 'value', 'deleted_at'] }, // a dimension
   { name: 'investments_region', columns: ['id', 'investments_id', 'region_id', 'as_of'] }, // a junction
 ];

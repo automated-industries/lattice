@@ -131,7 +131,7 @@ up on refresh — nothing is copied.
 
 ## Import your data model (make Lattice the source of truth)
 
-Serving your dashboard lets Lattice *host* it. To make Lattice actually *understand*
+Serving your dashboard lets Lattice _host_ it. To make Lattice actually _understand_
 your data — so it can show your records, link them, and auto-tag uploads against
 them — import your data model. If your dashboard is backed by a structured JSON file
 (records like `funds`, `investments`, …), Lattice can reconstruct it as real tables.

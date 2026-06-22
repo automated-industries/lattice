@@ -47,7 +47,9 @@ async function freshWorkspace(): Promise<{ db: Lattice; configPath: string; base
 describe('autoImportStructured (assistant-door smart import)', () => {
   it('auto-imports a recognized new period as a dated snapshot', async () => {
     const { db, configPath, base } = await freshWorkspace();
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], { asOf: '2025-06-30' });
+    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+      asOf: '2025-06-30',
+    });
 
     // A drop whose name carries the period → recognized + dated automatically.
     const p = join(base, 'Track Record 3.31.2026.json');
@@ -61,7 +63,9 @@ describe('autoImportStructured (assistant-door smart import)', () => {
 
   it('does NOT auto-import an unrecognized structure (left as a reference file)', async () => {
     const { db, configPath, base } = await freshWorkspace();
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], { asOf: '2025-06-30' });
+    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+      asOf: '2025-06-30',
+    });
     const p = join(base, 'orders.json');
     writeFileSync(p, JSON.stringify({ orders: [{ order_id: 1, sku: 'X', qty: 3, buyer: 'Bob' }] }));
     const r = await autoImportStructured(db, configPath, p, 'orders.json');
@@ -70,7 +74,9 @@ describe('autoImportStructured (assistant-door smart import)', () => {
 
   it('flags a matched document with no detectable date instead of overwriting', async () => {
     const { db, configPath, base } = await freshWorkspace();
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], { asOf: '2025-06-30' });
+    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+      asOf: '2025-06-30',
+    });
     const p = join(base, 'book.json'); // no date in name, no date in content
     writeFileSync(p, JSON.stringify(doc()));
     const r = await autoImportStructured(db, configPath, p, 'book.json');

@@ -1,12 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
@@ -112,7 +105,11 @@ function badRequest(message: string): Error & { statusCode: number } {
 }
 
 /** Run an async handler, mapping a thrown error to its `statusCode` (default 500). */
-async function tryHandler(res: ServerResponse, fn: () => Promise<void>, label: string): Promise<void> {
+async function tryHandler(
+  res: ServerResponse,
+  fn: () => Promise<void>,
+  label: string,
+): Promise<void> {
   try {
     await fn();
   } catch (e) {
@@ -392,7 +389,8 @@ export function createConnectRouter(deps: ConnectRouterDeps): ConnectRouter {
         req,
       ).catch(() => ({}));
     const rawPath = typeof body.path === 'string' ? body.path : '';
-    const mode: ImportMode = body.mode === 'schema' || body.mode === 'contents' ? body.mode : 'both';
+    const mode: ImportMode =
+      body.mode === 'schema' || body.mode === 'contents' ? body.mode : 'both';
     const asOf =
       typeof body.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.asOf.trim())
         ? body.asOf.trim()
@@ -432,7 +430,8 @@ export function createConnectRouter(deps: ConnectRouterDeps): ConnectRouter {
           message: `Recognized as a new period of an existing document — ${String(match.matchedCount)} of ${String(match.totalEntities)} tables matched`,
         });
       }
-      if (asOfColumn) emit({ phase: 'infer', message: `Dating each row by its "${asOfColumn}" column` });
+      if (asOfColumn)
+        emit({ phase: 'infer', message: `Dating each row by its "${asOfColumn}" column` });
       else if (asOf) emit({ phase: 'infer', message: `Importing as a snapshot dated ${asOf}` });
       const result = await materializeImport(
         { db: active.db, configPath: active.configPath },
@@ -462,9 +461,15 @@ export function createConnectRouter(deps: ConnectRouterDeps): ConnectRouter {
             meta.original_name = (meta.original_name ?? '').replace(/^[0-9a-f]{8}-/, '');
           }
           await active.db.insert('files', { id: randomUUID(), ...meta });
-          emit({ phase: 'file', message: `Saved ${meta.original_name ?? basename(srcPath)} to Files` });
+          emit({
+            phase: 'file',
+            message: `Saved ${meta.original_name ?? basename(srcPath)} to Files`,
+          });
         } catch (e) {
-          emit({ phase: 'file', message: `Imported, but saving the file to Files failed: ${(e as Error).message}` });
+          emit({
+            phase: 'file',
+            message: `Imported, but saving the file to Files failed: ${(e as Error).message}`,
+          });
         }
       }
       emit({ phase: 'done', ok: true, result });

@@ -21,9 +21,11 @@ async function writeFixture(): Promise<string> {
   nav.getCell('A1').value = 'See the other tabs';
 
   const dis = wb.addWorksheet('Disclaimer');
-  ['Confidential', 'This document is provided for...', 'Past performance is not...'].forEach((t, i) => {
-    dis.getCell(i + 1, 1).value = t;
-  });
+  ['Confidential', 'This document is provided for...', 'Past performance is not...'].forEach(
+    (t, i) => {
+      dis.getCell(i + 1, 1).value = t;
+    },
+  );
 
   const fs = wb.addWorksheet('Funds');
   fs.getCell('A1').value = 'Confidential';

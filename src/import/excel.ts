@@ -130,7 +130,9 @@ export async function excelToRecords(absPath: string): Promise<Record<string, un
   try {
     mod = await import('exceljs');
   } catch {
-    throw new Error('Reading Excel files needs the "exceljs" package — install it with: npm install exceljs');
+    throw new Error(
+      'Reading Excel files needs the "exceljs" package — install it with: npm install exceljs',
+    );
   }
   // exceljs is CJS: under native ESM the export lands on `.default`, but bundlers
   // expose it on the namespace — accept either.

@@ -3,7 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
-import { Lattice, ensureLatticeRoot, addWorkspace, resolveWorkspacePaths } from '../../src/index.js';
+import {
+  Lattice,
+  ensureLatticeRoot,
+  addWorkspace,
+  resolveWorkspacePaths,
+} from '../../src/index.js';
 import { getConnectedDashboard } from '../../src/connect/dashboard.js';
 
 /**
@@ -85,7 +90,11 @@ describe('connect: dashboard serving', () => {
     const { configPath, contextDir } = await freshWorkspace('lattice-cd-dir-');
     const dashDir = join(dirs[0]!, 'site');
     mkdirSync(dashDir, { recursive: true });
-    writeFileSync(join(dashDir, 'index.html'), `<!doctype html><body>${DASH_MARKER}</body>`, 'utf8');
+    writeFileSync(
+      join(dashDir, 'index.html'),
+      `<!doctype html><body>${DASH_MARKER}</body>`,
+      'utf8',
+    );
     writeFileSync(join(dashDir, 'style.css'), 'body{color:red}', 'utf8');
 
     const server = await startGuiServer({

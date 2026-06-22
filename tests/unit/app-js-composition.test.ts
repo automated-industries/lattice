@@ -18,9 +18,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // wired at boot and refreshed on each reconnect version check), and the FOUC fix
 // that softens the two background in-place re-renders (advanced-mode toggle +
 // workspace-switch reload now pass {soft:true} so they never paint the loading
-// frame). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 401500;
-const ORIGINAL_SHA256 = 'def9945b673adc9d45f9341660c3b7d634adcc83cb0535b355fd107cb708119c';
+// frame), and the 4.2 `lattice connect` + structured-source-importer GUI (top-bar
+// buttons + modal panels for the connected-dashboard flow and the JSON/xlsx
+// importer). Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 425046;
+const ORIGINAL_SHA256 = 'aa5fafb9de7ba7cef2f0bc699bb9bc2d47793fff169af207b381ba95cc6f8925';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

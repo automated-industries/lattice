@@ -87,9 +87,13 @@ export function dedupeAndDetectViews(
     if (!tabName) continue;
     const aColSet = new Set(a.cols);
 
-    let best:
-      | { master: EntityData; disc: string; value: string; matched: number; overlap: number }
-      | null = null;
+    let best: {
+      master: EntityData;
+      disc: string;
+      value: string;
+      matched: number;
+      overlap: number;
+    } | null = null;
 
     for (const b of entities) {
       if (b.name === a.name || asView.has(b.name)) continue;
@@ -100,7 +104,9 @@ export function dedupeAndDetectViews(
 
       const identity = pickIdentity(a, shared);
       if (!identity) continue;
-      const aIds = new Set(a.normRows.map((r) => normalizeText(r[identity])).filter((v) => v !== ''));
+      const aIds = new Set(
+        a.normRows.map((r) => normalizeText(r[identity])).filter((v) => v !== ''),
+      );
       if (aIds.size === 0) continue;
 
       // Discriminator: a master column (one A does NOT have) whose value equals

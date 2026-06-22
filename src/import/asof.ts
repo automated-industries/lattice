@@ -25,13 +25,35 @@ export interface AsOfCandidate {
 }
 
 const MONTHS: Record<string, number> = {
-  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
-  may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9,
-  september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
 };
 
 // Phrases that, near a date, strongly imply it's THE snapshot date.
-const ASOF_KEYWORDS = /\b(as[ -]?of|as at|period (?:end(?:ed|ing)?|of)|fye|fiscal year end(?:ed|ing)?|year[ -]?end(?:ed|ing)?|quarter[ -]?end(?:ed|ing)?|valuation date|report(?:ing)? date|effective date|dated)\b/i;
+const ASOF_KEYWORDS =
+  /\b(as[ -]?of|as at|period (?:end(?:ed|ing)?|of)|fye|fiscal year end(?:ed|ing)?|year[ -]?end(?:ed|ing)?|quarter[ -]?end(?:ed|ing)?|valuation date|report(?:ing)? date|effective date|dated)\b/i;
 
 function isoFrom(y: number, m: number, d: number): string | null {
   if (m < 1 || m > 12 || d < 1 || d > 31) return null;
@@ -63,9 +85,7 @@ function findDates(text: string): RawHit[] {
     push(isoFrom(y, Number(m[1]), Number(m[2])), m[0], m.index);
   }
   // Long: March 31, 2026  /  Mar 31 2026  /  31 March 2026
-  for (const m of text.matchAll(
-    /([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(20\d{2})/g,
-  )) {
+  for (const m of text.matchAll(/([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(20\d{2})/g)) {
     const mon = MONTHS[(m[1] ?? '').toLowerCase()];
     if (mon) push(isoFrom(Number(m[3]), mon, Number(m[2])), m[0], m.index);
   }

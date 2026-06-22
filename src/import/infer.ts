@@ -22,15 +22,19 @@ const SAMPLE = 300;
 /** Field names that make a good stable key, tried in order. */
 const PREFERRED_KEYS = ['code', 'id', 'slug', 'key', 'ticker', 'symbol'];
 /** Never use these as a natural key (free text). */
-const NEVER_KEY = new Set(['description', 'notes', 'summary', 'desc', 'comment', 'comments', 'bio', 'text', 'body']);
-/** Never normalize these into a dimension (high-cardinality / free text). */
-const FREETEXT = new Set([
-  ...NEVER_KEY,
-  'name',
-  'title',
-  'company',
-  'label',
+const NEVER_KEY = new Set([
+  'description',
+  'notes',
+  'summary',
+  'desc',
+  'comment',
+  'comments',
+  'bio',
+  'text',
+  'body',
 ]);
+/** Never normalize these into a dimension (high-cardinality / free text). */
+const FREETEXT = new Set([...NEVER_KEY, 'name', 'title', 'company', 'label']);
 /** A string column with at most this many distinct values is a dimension candidate. */
 const DIM_MAX_DISTINCT = 64;
 /** ...as long as it is not near-unique (distinct/rows under this ratio). */
@@ -175,7 +179,10 @@ function profileColumns(records: Record<string, unknown>[]): Map<string, ColumnP
 }
 
 /** Pick a natural key: a unique, non-freetext scalar column, preferring stable names. */
-function pickNaturalKey(records: Record<string, unknown>[], profiles: Map<string, ColumnProfile>): string | null {
+function pickNaturalKey(
+  records: Record<string, unknown>[],
+  profiles: Map<string, ColumnProfile>,
+): string | null {
   const n = records.length;
   const isUnique = (key: string): boolean => {
     const seen = new Set<string>();
@@ -207,7 +214,10 @@ export interface InferOptions {
   rename?: Record<string, string>;
 }
 
-export function inferSchema(data: Record<string, unknown>, opts: InferOptions = {}): ProposedSchema {
+export function inferSchema(
+  data: Record<string, unknown>,
+  opts: InferOptions = {},
+): ProposedSchema {
   const skipped: { key: string; reason: string }[] = [];
 
   // Pass 1 — find columnar pairs (`x` array-of-arrays + `xCols` string[]).
@@ -232,7 +242,10 @@ export function inferSchema(data: Record<string, unknown>, opts: InferOptions = 
     if (consumedColsKeys.has(key)) continue; // a column dictionary, consumed below
     const v = data[key];
     if (!Array.isArray(v) || v.length === 0) {
-      skipped.push({ key, reason: isPlainObject(v) ? 'object (derived/rollup)' : 'scalar/empty (meta or derived)' });
+      skipped.push({
+        key,
+        reason: isPlainObject(v) ? 'object (derived/rollup)' : 'scalar/empty (meta or derived)',
+      });
       continue;
     }
     let records: Record<string, unknown>[];
@@ -253,7 +266,14 @@ export function inferSchema(data: Record<string, unknown>, opts: InferOptions = 
     }
     const name = opts.rename?.[key] ?? normalizeName(key);
     const profiles = profileColumns(records);
-    sources.push({ name, sourceKey: key, records, columnar, profiles, naturalKey: pickNaturalKey(records, profiles) });
+    sources.push({
+      name,
+      sourceKey: key,
+      records,
+      columnar,
+      profiles,
+      naturalKey: pickNaturalKey(records, profiles),
+    });
   }
 
   // Pass 3 — linkages. Match a field's distinct string values against other
@@ -370,7 +390,9 @@ export function inferSchema(data: Record<string, unknown>, opts: InferOptions = 
       // waives the per-entity ratio test (a small columnar tab can still carry
       // the shared taxonomy) — it does NOT waive the cardinality cap.
       const isDim =
-        p.distinct >= 1 && p.distinct <= DIM_MAX_DISTINCT && (ratio <= DIM_MAX_RATIO || sharedAcross >= 2);
+        p.distinct >= 1 &&
+        p.distinct <= DIM_MAX_DISTINCT &&
+        (ratio <= DIM_MAX_RATIO || sharedAcross >= 2);
       if (!isDim) continue;
       let dim = dimByName.get(nn);
       if (!dim) {

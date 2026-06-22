@@ -32,7 +32,10 @@ describe('detectAsOf', () => {
 
 describe('scanText (in-content detection)', () => {
   it('finds an "as of" phrase with high confidence + evidence, incl. long-month form', () => {
-    const c = scanText('Acme Capital — Track Record\n(USD in thousands) as of March 31, 2026', 'title');
+    const c = scanText(
+      'Acme Capital — Track Record\n(USD in thousands) as of March 31, 2026',
+      'title',
+    );
     expect(c[0]?.date).toBe('2026-03-31');
     expect(c[0]?.confidence).toBeGreaterThan(0.9);
     expect(c[0]?.source).toBe('content');

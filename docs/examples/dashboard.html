@@ -9,7 +9,13 @@
          fetch() calls below matter. One system font, differentiated by
          weight/size only. */
       :root {
-        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          sans-serif;
         color-scheme: light dark;
       }
       * {
@@ -125,11 +131,14 @@
   </head>
   <body>
     <h1>My Dashboard</h1>
-    <p class="sub">Upload a file or jot a note — Lattice reads it and files it against your data.</p>
+    <p class="sub">
+      Upload a file or jot a note — Lattice reads it and files it against your data.
+    </p>
 
     <section>
       <label for="file">Upload files</label>
-      <div id="drop">Drag files here, or
+      <div id="drop">
+        Drag files here, or
         <button type="button" id="pick">choose files</button>
       </div>
       <input id="file" type="file" multiple hidden />
