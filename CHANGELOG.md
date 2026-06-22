@@ -36,8 +36,9 @@ security hardening (below).
 
 - **Many-to-many junctions render symmetrically.** A join table is rendered so each
   side shows the REMOTE entity (a contact shows its meetings, a meeting shows its
-  contacts) instead of only the foreign key pointing back at the parent. A
-  render-time invariant fails loudly if a junction would ever render one-sided.
+  contacts) instead of only the foreign key pointing back at the parent. Both
+  endpoints emit the reciprocal relation by construction, so the render is symmetric
+  for every junction shape (pure or payload-bearing); a test locks the invariant in.
 - **Credential store: a contended write no longer drops on Windows.** The
   cross-process credential-store lock retried only on `EEXIST`; on Windows an
   O_EXCL open racing another process mid-create/delete on the lockfile surfaces

@@ -106,7 +106,12 @@ export function deriveCanonicalContexts(
       },
     });
   }
-  assertJunctionRenderSymmetry(out);
+  // Junction render symmetry is guaranteed by the by-construction derivation
+  // above — both endpoints of a render-junction emit the reciprocal manyToMany
+  // source — and locked by canonical-context-junction-symmetry.test.ts. It is NOT
+  // re-checked at render time: a violation there would crash a user's render for
+  // what is at worst a cosmetic asymmetry, and a derivation regression is the
+  // kind of thing CI should catch before it ships, not the running GUI.
   return out;
 }
 
@@ -134,44 +139,6 @@ function isRenderJunction(def: TableDefinition, bt: BelongsToRelation[]): boolea
   // (b) pure junction: every column is one of the two FKs or a system column.
   const SYSTEM = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
   return Object.keys(def.columns).every((c) => fks.has(c) || SYSTEM.has(c));
-}
-
-/**
- * Render-time symmetry invariant — fail loudly (a one-sided junction render
- * silently hides the link from one side, a correctness/visibility bug). For every
- * `manyToMany` source emitted under entity A for junction J (localKey=fkA,
- * remoteKey=fkB, remoteTable=B), the derived context for B MUST emit the
- * reciprocal source for J (localKey=fkB, remoteKey=fkA). A remote table with no
- * derived context (e.g. a system table that never renders) is skipped. With the
- * by-construction derivation above this never fires; it guards a future
- * regression or a junction whose remote relation is malformed.
- */
-function assertJunctionRenderSymmetry(
-  out: { table: string; definition: EntityContextDefinition }[],
-): void {
-  const byTable = new Map(out.map((o) => [o.table, o] as const));
-  for (const { table, definition } of out) {
-    for (const spec of Object.values(definition.files)) {
-      const s = spec.source;
-      if (s.type !== 'manyToMany') continue;
-      const remote = byTable.get(s.remoteTable);
-      if (!remote) continue; // remote has no derived context → nothing to reciprocate
-      const reciprocal = Object.values(remote.definition.files).some(
-        (rs) =>
-          rs.source.type === 'manyToMany' &&
-          rs.source.junctionTable === s.junctionTable &&
-          rs.source.localKey === s.remoteKey &&
-          rs.source.remoteKey === s.localKey,
-      );
-      if (!reciprocal) {
-        throw new Error(
-          `Junction render asymmetry: "${s.junctionTable}" renders under "${table}" ` +
-            `(→ "${s.remoteTable}") but "${s.remoteTable}" has no reciprocal render back ` +
-            `to "${table}" — a one-sided junction render hides the link from one side.`,
-        );
-      }
-    }
-  }
 }
 
 function belongsToRelations(def: TableDefinition): BelongsToRelation[] {

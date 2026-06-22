@@ -50,7 +50,7 @@ describe('canonical-context junction render symmetry', () => {
       remoteKey: 'meeting_id',
       remoteTable: 'meeting',
     });
-    // Reciprocal — proves the symmetry the render-time invariant enforces.
+    // Reciprocal — proves the symmetry the invariant test below locks in.
     expect(byTable.meeting.files['CONTACT.md']!.source).toMatchObject({
       type: 'manyToMany',
       junctionTable: 'contact_meeting',
@@ -58,6 +58,32 @@ describe('canonical-context junction render symmetry', () => {
       remoteKey: 'contact_id',
       remoteTable: 'contact',
     });
+  });
+
+  it('emits a reciprocal manyToMany for every junction render (symmetry invariant)', () => {
+    // The symmetry invariant itself, enforced at test time. (It used to be a
+    // render-time throw — removed, because a derivation regression should fail CI,
+    // not crash a user's render.) For every manyToMany A → B, B must carry the
+    // reciprocal source back to A.
+    for (const { table, definition } of out) {
+      for (const [file, spec] of Object.entries(definition.files)) {
+        const s = spec.source;
+        if (s.type !== 'manyToMany') continue;
+        const remote = byTable[s.remoteTable];
+        if (!remote) continue; // remote has no derived context (e.g. a system table)
+        const reciprocal = Object.values(remote.files).some(
+          (rs) =>
+            rs.source.type === 'manyToMany' &&
+            rs.source.junctionTable === s.junctionTable &&
+            rs.source.localKey === s.remoteKey &&
+            rs.source.remoteKey === s.localKey,
+        );
+        expect(
+          reciprocal,
+          `"${s.junctionTable}" renders ${table} → ${s.remoteTable} but ${s.remoteTable} has no reciprocal back to ${table} (${file})`,
+        ).toBe(true);
+      }
+    }
   });
 
   it('the rendered list shows the remote entity label, not the local FK', () => {
