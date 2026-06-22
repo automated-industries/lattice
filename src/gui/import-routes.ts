@@ -1,9 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import { getAsyncOrSync } from '../db/adapter.js';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
 import { materializeImport, type ImportMode } from '../import/materialize.js';
@@ -93,6 +93,17 @@ async function readImportSourceFromFile(
   const path = localPathOf(row, latticeRoot);
   if (!path || !existsSync(path)) {
     throw badRequest('The import file’s bytes are not available locally.');
+  }
+  // Bound the read: the apply route re-reads the retained bytes from disk, so it
+  // must re-enforce the ingest cap — a row whose bytes were swapped/grew on disk
+  // (or reached via a local_ref that never went through the upload cap) can't be
+  // streamed whole into memory and OOM the process.
+  const sizeBytes = statSync(path).size;
+  if (sizeBytes > MAX_INGEST_BYTES) {
+    throw badRequest(
+      `The import file is too large (${String(Math.round(sizeBytes / 1_000_000))} MB); ` +
+        `the limit is ${String(Math.round(MAX_INGEST_BYTES / 1_000_000))} MB.`,
+    );
   }
   const name = row.original_name ?? '';
   const mime = row.mime ?? '';

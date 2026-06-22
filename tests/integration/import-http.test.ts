@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -259,6 +259,7 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
   interface ApplyEvent {
     phase: string;
     ok?: boolean;
+    message?: string;
     result?: { rowsByTable: Record<string, number>; views: { name: string; rows: number }[] };
   }
 
@@ -371,5 +372,48 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
       rows: unknown[];
     };
     expect(view.rows).toHaveLength(6);
+  });
+
+  it('apply refuses an oversized source (the 50MB cap) instead of OOM-ing', async () => {
+    const { server, base } = await freshServer('lattice-import-cap-');
+    const up = await uploadFile(
+      server,
+      'data.json',
+      'application/json',
+      Buffer.from(JSON.stringify(fixture()), 'utf8'),
+    );
+    const fileId = up.autoImport?.fileId;
+    expect(typeof fileId).toBe('string');
+
+    // Grow the retained blob past the cap on disk — a swapped/grown source the
+    // apply route must re-check (the upload cap only bounded the original bytes).
+    const filesRows = (await (await fetch(`${server.url}/api/tables/files/rows`)).json()) as {
+      rows: { id: string; blob_path?: string }[];
+    };
+    const blobPath = filesRows.rows.find((r) => r.id === fileId)?.blob_path;
+    expect(typeof blobPath).toBe('string');
+    // Locate the content-addressed blob wherever it landed under the workspace
+    // (resolution-independent) and grow it past the cap.
+    const sha = blobPath!.split(/[/\\]/).pop()!;
+    const rel = (readdirSync(base, { recursive: true }) as string[]).find(
+      (e) => e.split(/[/\\]/).pop() === sha,
+    );
+    expect(rel).toBeTruthy();
+    truncateSync(join(base, rel!), 51_000_000);
+
+    // The route statSyncs before reading and fails loudly rather than streaming
+    // 51MB into memory.
+    const events = await applyImport(server, fileId!);
+    expect(events.some((e) => e.phase === 'error' && /too large/i.test(e.message ?? ''))).toBe(
+      true,
+    );
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(false);
+  });
+
+  it('GET /api/history rejects a non-numeric limit (400) but defaults a missing one', async () => {
+    const { server } = await freshServer('lattice-history-limit-');
+    expect((await fetch(`${server.url}/api/history?limit=abc`)).status).toBe(400);
+    expect((await fetch(`${server.url}/api/history?limit=50`)).status).toBe(200);
+    expect((await fetch(`${server.url}/api/history`)).status).toBe(200);
   });
 });

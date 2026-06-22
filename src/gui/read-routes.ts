@@ -439,11 +439,16 @@ export async function handleReadRoutes(
   // ── Version history (audit log + undo/redo + revert) ──────────────
   if (method === 'GET' && pathname === '/api/history') {
     // Bounded read: clamp a provided limit to [1, MAX_ROWS_PAGE] so a client can't
-    // request the whole audit table; default 200 (the historical default, well
-    // within the clamp) on a missing or non-numeric limit.
+    // request the whole audit table. A missing limit keeps the historical 200
+    // default; a non-numeric limit is rejected (400) rather than silently
+    // defaulted, matching the other bounded-list endpoints (fail loudly).
     const limitRaw = url.searchParams.get('limit');
     const parsedLimit = parsePageParam(limitRaw, 'limit');
-    const limit = limitRaw !== null && typeof parsedLimit === 'number' ? parsedLimit : 200;
+    if (parsedLimit === 'invalid') {
+      sendJson(res, { error: 'limit must be a non-negative integer' }, 400);
+      return true;
+    }
+    const limit = limitRaw === null ? 200 : parsedLimit;
     const filterTable = url.searchParams.get('table');
     const raw = (await active.db.query('_lattice_gui_audit', { limit })) as Record<
       string,

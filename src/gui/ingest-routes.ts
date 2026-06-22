@@ -15,7 +15,7 @@ import { resolveActiveS3Config } from '../framework/s3-config.js';
 import { createHash } from 'node:crypto';
 import { resolveClaudeAuth } from './assistant-routes.js';
 import { type ClassifyMatch } from './ai/summarize.js';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 // LLM enrichment (description + auto-link + object extraction) is a shared leaf
 // module so both the ingest routes and the assistant's URL-ingest tool reuse it.
 import { enrichWithLlm } from './ai/enrich.js';
@@ -300,9 +300,6 @@ function looksLikeUrl(s: string): boolean {
   const t = s.trim();
   return /^https?:\/\/\S+$/i.test(t) && !/\s/.test(t);
 }
-
-/** Max bytes ingested from a single source (upload body or referenced local file). */
-const MAX_INGEST_BYTES = 50_000_000;
 
 function readBuffer(req: IncomingMessage, maxBytes = MAX_INGEST_BYTES): Promise<Buffer> {
   return new Promise((resolve_, reject) => {

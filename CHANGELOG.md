@@ -28,9 +28,10 @@ security hardening (below).
   match + detected date imports silently as a dated snapshot; otherwise an **inline
   confirm card** proposes the schema, as-of date (and per-row date column), and mode
   before anything is written, applied via `POST /api/import/apply`. New library
-  exports: `inferSchema`, `materializeImport`, `detectAsOf`, `detectAsOfCandidates`,
-  `detectAsOfColumns`, `parseCellDate`, `matchSchemaToExisting`, `renameEntities`,
-  `excelToRecords`, `dedupeAndDetectViews` (+ types).
+  exports: `inferSchema`, `inferFieldType`, `normalizeName`, `sourceRecords`,
+  `materializeImport`, `detectAsOf`, `detectAsOfCandidates`, `detectAsOfColumns`,
+  `parseCellDate`, `matchSchemaToExisting`, `renameEntities`, `excelToRecords`,
+  `dedupeAndDetectViews` (+ types).
 
 ### Changed
 
@@ -85,9 +86,11 @@ security hardening (below).
   not read the row; delete events are gated from a pre-delete visibility snapshot,
   matching how upserts are scoped (corrects the 4.x realtime note above). Deletes
   remain excluded from reconnect catch-up; clients reconcile deletions on refetch.
-- **Import file-size cap.** A path-based import read caps the source file at 200 MB,
-  matching the streaming-upload cap, so an oversized JSON/`.xlsx` can't exhaust
-  memory.
+- **Import file-size cap (both paths).** The streaming upload caps the source at
+  50 MB; the import-apply route now re-enforces that same 50 MB cap when it re-reads
+  the retained bytes from disk (it `statSync`s before reading), so an oversized or
+  swapped-on-disk JSON/`.xlsx` — including one reached via a `local_ref` that never
+  went through the upload — can't be streamed whole into memory and OOM the process.
 - **Bounded reads on hot paths.** `/api/history` clamps its `limit` (a client can
   no longer request the whole audit table); semantic search clamps `topK` before
   the candidate over-fetch; and the no-index embedding scan takes an optional
