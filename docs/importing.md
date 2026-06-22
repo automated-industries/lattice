@@ -99,13 +99,11 @@ const asOfColumns = detectAsOfColumns(data, plan);
 const { views } = dedupeAndDetectViews(data, plan);
 
 // Materialize into a workspace
-const result = await materializeImport(
-  { db, configPath },
-  data,
-  plan,
-  views,
-  { mode: 'both', asOf, asOfColumn: null },
-);
+const result = await materializeImport({ db, configPath }, data, plan, views, {
+  mode: 'both',
+  asOf,
+  asOfColumn: null,
+});
 // result: { mode, asOf, asOfColumn, tablesCreated, rowsByTable, links, views }
 ```
 

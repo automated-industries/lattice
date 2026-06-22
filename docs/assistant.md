@@ -168,7 +168,7 @@ events stream into the feed as the server materializes them.
 
 ### Structured-source import (drop a JSON / `.xlsx`) (4.2)
 
-The Context Constructor above turns *unstructured* sources (documents, images,
+The Context Constructor above turns _unstructured_ sources (documents, images,
 web pages) into a summarized, linked `files` row. **Dropping a structured source
 — a JSON object or an Excel `.xlsx` workbook — takes a different path:** Lattice
 infers a schema from it (entities, dimensions, junctions) and materializes it into

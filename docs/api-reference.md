@@ -501,10 +501,10 @@ const results = await db.search('docs', 'deploy to production', { topK: 5, minSc
 
 **`SearchOptions`**:
 
-| Field      | Type     | Default | Description                         |
-| ---------- | -------- | ------- | ----------------------------------- |
+| Field      | Type     | Default | Description                                                                       |
+| ---------- | -------- | ------- | --------------------------------------------------------------------------------- |
 | `topK`     | `number` | `10`    | Max results to return (clamped to `[1, 1000]` before the candidate fan-out; v4.2) |
-| `minScore` | `number` | `0`     | Minimum cosine similarity threshold |
+| `minScore` | `number` | `0`     | Minimum cosine similarity threshold                                               |
 
 **`SearchResult`**: `{ row: Row, score: number }`
 
@@ -1424,19 +1424,19 @@ the same functions are available as a GUI-independent library API. See
 
 ```ts
 import {
-  inferSchema,          // (data, opts?) => ProposedSchema  — entities/dimensions/junctions
-  inferFieldType,       // (values) => InferredType
-  normalizeName,        // (key) => string                  — source key → table/column name
-  sourceRecords,        // (data, entity) => Record<string, unknown>[]
-  excelToRecords,       // (absPath) => Promise<Record<string, unknown[]>>  — sheets → records
+  inferSchema, // (data, opts?) => ProposedSchema  — entities/dimensions/junctions
+  inferFieldType, // (values) => InferredType
+  normalizeName, // (key) => string                  — source key → table/column name
+  sourceRecords, // (data, entity) => Record<string, unknown>[]
+  excelToRecords, // (absPath) => Promise<Record<string, unknown[]>>  — sheets → records
   dedupeAndDetectViews, // (data, plan) => { ..., views: DetectedView[] }   — read-only per-slice views
-  detectAsOf,           // (fileName) => string | null      — ISO YYYY-MM-DD
+  detectAsOf, // (fileName) => string | null      — ISO YYYY-MM-DD
   detectAsOfCandidates, // (inputs: AsOfInputs) => AsOfCandidate[]
-  detectAsOfColumns,    // (data, plan) => AsOfColumnCandidate[]  — per-row date columns
-  parseCellDate,        // (value) => string | null         — ISO YYYY-MM-DD
-  matchSchemaToExisting,// (existing, plan) => SchemaMatch  — fingerprint re-imports
-  renameEntities,       // (plan, rename) => ProposedSchema
-  materializeImport,    // (ctx, data, plan, views?, opts?) => Promise<MaterializeResult>
+  detectAsOfColumns, // (data, plan) => AsOfColumnCandidate[]  — per-row date columns
+  parseCellDate, // (value) => string | null         — ISO YYYY-MM-DD
+  matchSchemaToExisting, // (existing, plan) => SchemaMatch  — fingerprint re-imports
+  renameEntities, // (plan, rename) => ProposedSchema
+  materializeImport, // (ctx, data, plan, views?, opts?) => Promise<MaterializeResult>
   EmbeddingScanTooLargeError,
 } from 'latticesql';
 ```
