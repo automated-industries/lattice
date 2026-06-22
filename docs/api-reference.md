@@ -2,6 +2,13 @@
 
 Complete reference for all public classes, methods, and types exported by `latticesql`.
 
+> **v4.1 retrieval, query & data primitives** (eval/doctor/benchmark, chunked +
+> indexed vector, hybrid + ranking + rerank, graph, bounded reads / projection /
+> jsonPath / aggregate / keyset pagination / distinctOn / include, provenance +
+> trust, retry + resumable migrations, computed columns + rollups, keyless cloud
+> file presigning) are documented with examples in **[retrieval.md](retrieval.md)**.
+> All are additive and opt-in.
+
 ---
 
 ## Table of Contents

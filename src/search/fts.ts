@@ -23,6 +23,13 @@ import { allAsyncOrSync, runAsyncOrSync, introspectColumnsAsyncOrSync } from '..
 export interface FtsHit {
   id: string;
   snippet: string;
+  /**
+   * Relevance score, higher = better. Populated by the indexed tier
+   * (`ts_rank` on Postgres, `-bm25` on SQLite FTS5). Absent / 0 for the LIKE
+   * fallback tier, which has no ranking model. Used to order hits and as the
+   * FTS signal in hybrid fusion.
+   */
+  score?: number;
 }
 
 export interface FtsGroup {
@@ -213,26 +220,34 @@ async function indexedSearchTable(
   const deleted = hasDeletedAt ? `AND b.deleted_at IS NULL` : '';
   let rows: Record<string, unknown>[];
   if (adapter.dialect === 'postgres') {
+    // ts_rank scores relevance; ORDER BY it so the best matches come first
+    // (previously results came back in physical order).
     rows = (await allAsyncOrSync(
       adapter,
       `SELECT f.row_id AS id,
               ts_headline('simple', f.body, plainto_tsquery('simple', ?),
-                          'StartSel=,StopSel=,MaxWords=18,MinWords=4') AS snippet
+                          'StartSel=,StopSel=,MaxWords=18,MinWords=4') AS snippet,
+              ts_rank(f.tsv, plainto_tsquery('simple', ?)) AS score
        FROM "${fts}" f JOIN "${table}" b ON b."id" = f.row_id
        WHERE f.tsv @@ plainto_tsquery('simple', ?) ${deleted}
+       ORDER BY score DESC
        LIMIT ?`,
-      [q, q, limit + 1],
+      [q, q, q, limit + 1],
     )) as Record<string, unknown>[];
   } else {
     const match = toFts5Query(q);
     if (match.length === 0) return null;
+    // FTS5 `bm25()` is more-negative = more relevant; negate so higher = better
+    // and ORDER BY it for relevance ranking (FTS5 otherwise returns rowid order).
     // FTS5 MATCH requires the FTS table's real name (an alias is rejected), so
     // the index table is referenced unaliased; only the base table is aliased.
     rows = (await allAsyncOrSync(
       adapter,
-      `SELECT "${fts}".row_id AS id, snippet("${fts}", 1, '', '', '…', 12) AS snippet
+      `SELECT "${fts}".row_id AS id, snippet("${fts}", 1, '', '', '…', 12) AS snippet,
+              -bm25("${fts}") AS score
        FROM "${fts}" JOIN "${table}" b ON b."id" = "${fts}".row_id
        WHERE "${fts}" MATCH ? ${deleted}
+       ORDER BY score DESC
        LIMIT ?`,
       [match, limit + 1],
     )) as Record<string, unknown>[];
@@ -243,7 +258,11 @@ async function indexedSearchTable(
     table,
     count: capped.length,
     more: rows.length > limit,
-    hits: capped.map((r) => ({ id: idOf(r), snippet: snippetText(r.snippet) })),
+    hits: capped.map((r) => ({
+      id: idOf(r),
+      snippet: snippetText(r.snippet),
+      score: r.score == null ? 0 : Number(r.score),
+    })),
   };
 }
 

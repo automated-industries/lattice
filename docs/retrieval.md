@@ -1,0 +1,171 @@
+# Retrieval, query & data primitives (v4.1)
+
+latticesql 4.1 turns the library into a measurable, production-grade retrieval and
+data substrate. Everything here is **additive and opt-in** — absent the opt-in,
+`query()` / `count()` / `search()` behave byte-identically to 4.0. Every primitive
+ships with unit (`:memory:` SQLite) + integration (real Postgres) + dialect-parity
+tests.
+
+## Measurable retrieval
+
+### `evaluateRetrieval(queries, retriever, opts?)`
+
+Standard IR metrics over **any** ranked retriever — `(query) => rankedRowIds`, so
+it grades semantic, full-text, hybrid, graph, or an external service.
+
+```ts
+const summary = await db.evaluateRetrieval(
+  [{ query: 'budget', relevant: ['doc1', 'doc7'] }],
+  async (q) => (await db.search('docs', q, { topK: 10 })).map((r) => String(r.row.id)),
+  { k: 10, ks: [1, 5, 10] },
+);
+// summary.precisionAtK / recallAtK / mrr / ndcgAtK / map (+ perQuery, byK)
+```
+
+`detectRetrievalRegressions(baseline, candidate, tolerance)` turns it into a CI
+gate — a retrieval change that lowers any metric past tolerance fails the build.
+
+### `lattice doctor` / `diagnoseRetrieval(opts?)`
+
+Read-only health: per-table FTS + embedding coverage (soft-deleted rows excluded),
+extension availability (FTS5, sqlite-vec, pgvector, pg_trgm), and severity-ranked
+issues. `lattice doctor [--json]` exits non-zero on any error (deploy gate).
+
+### `benchmarkRetrieval(opts?)` / `checkSlos(report, slos)`
+
+Reproducible p50/p95/p99 latency for filtered query, FTS, vector, and aggregate,
+plus ingest throughput + peak memory — on both dialects, at a configurable scale
+(`LATTICE_BENCH_ROWS/QUERIES/DIM`). Ships in the package so buyers reproduce the
+numbers; wire `checkSlos` as a CI SLO gate.
+
+## Better search
+
+### Chunked + contextual embeddings
+
+```ts
+db.define('docs', {
+  columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', body: 'TEXT' },
+  embeddings: {
+    fields: ['title', 'body'],
+    embed: myEmbedder,
+    chunker: semanticChunker({ maxChars: 1000, overlap: 100 }),
+    contextPrefix: (row) => String(row.title), // prepended to every chunk
+    modelId: 'text-embedding-3-small',
+  },
+});
+```
+
+Each row is embedded as several boundary-aware chunks → higher precision@k and
+fewer tokens to a correct answer. `search()` returns the best-matching chunk
+(`chunkIndex` + `matchedContent`), excludes soft-deleted rows, and throws
+`EmbeddingDimensionMismatchError` if the model dimension changed without a re-embed.
+`refreshEmbeddings(table, opts)` backfills missing / re-embeds stale / sweeps orphans.
+
+### Indexed vector search
+
+```ts
+await db.buildVectorIndex('docs'); // pgvector HNSW (PG) / sqlite-vec (SQLite)
+```
+
+Opt-in per-table approximate-nearest-neighbor index built from the stored vectors;
+`search()` uses it automatically when present, else the in-process scan (which
+`doctor` reports). Requires the extension server-side (pgvector) or loaded
+(sqlite-vec).
+
+### Hybrid search + ranking + reranker
+
+```ts
+const results = await db.hybridSearch('docs', 'q4 budget', {
+  topK: 10,
+  ranking: {
+    recency: { column: 'created_at', halfLifeDays: 30, weight: 1 },
+    reward: { weight: 0.5 },
+  },
+  reranker: myCrossEncoder, // optional; graceful fallback on failure
+});
+// each result carries .explain { rrf, vectorRank/Score, ftsRank/Score, rankingBoost, rerankerScore }
+```
+
+Reciprocal Rank Fusion (k=60) of the vector + full-text arms. `lattice search
+"<q>" --table <t> --explain` shows the score breakdown. Full-text is now
+relevance-ranked (`ts_rank` / `bm25`).
+
+### Graph-augmented retrieval
+
+```ts
+await db.addEdge({ srcTable: 'docs', srcId: 'a', dstTable: 'docs', dstId: 'b', type: 'cites' });
+await db.extractEdges({ srcTable: 'docs', fkColumn: 'parent_id', dstTable: 'docs' }); // zero-LLM
+const results = await db.graphSearch('docs', 'q', { anchors: [{ table: 'docs', id: 'a' }] });
+```
+
+A typed-edge graph (`__lattice_edges`) with bounded BFS (`traverseGraph`, depth ≤ 5,
+node-capped) and adjacency boosting — relationship-aware retrieval that lifts rows
+connected to your current-context entities.
+
+## Query primitives
+
+```ts
+// Bounded reads — guard against unbounded full-table loads
+await db.query('t', { maxRows: 1000 }); // throws BoundedReadError if more match
+new Lattice(path, { defaultMaxRows: 1000 }); // global default
+
+// Projection — return only the columns you need
+await db.query('t', { projection: ['id', 'name'] });
+
+// OR/AND groups + jsonPath
+await db.query('t', {
+  filters: [
+    { col: 'status', op: 'eq', val: 'open' },
+    {
+      or: [
+        { col: 'priority', op: 'gte', val: 3 },
+        { col: 'pinned', op: 'eq', val: true },
+      ],
+    },
+    { col: 'meta', jsonPath: 'tier', op: 'eq', val: 'gold' },
+  ],
+});
+
+// SQL-side aggregation
+await db.aggregate('orders', {
+  groupBy: ['status'],
+  aggregates: [
+    { fn: 'count', as: 'n' },
+    { fn: 'sum', col: 'total', as: 'revenue' },
+  ],
+  having: [{ aggregate: 'n', op: 'gt', val: 10 }],
+});
+
+// Keyset pagination — fast arbitrarily deep
+const page = await db.queryPage('t', { orderBy: 'created_at', limit: 50, cursor });
+
+// distinctOn — one row per group; include — batched relation expansion
+await db.query('events', { distinctOn: 'user_id', orderBy: 'ts', orderDir: 'desc' });
+await db.query('posts', { include: ['author'] }); // belongsTo → row; hasMany → array
+```
+
+## Governance, reliability, computed columns, cloud files
+
+```ts
+// Immutable provenance + trust gate
+db.define('docs', { columns: {...}, provenance: true, trust: true });
+await db.verifyRow('docs', id, 'alice');          // markRowForReview / rowsNeedingReview / verifiedRows
+
+// Durable retry + online resumable migrations
+await withRetry(() => db.insert(...));            // idempotent ops only
+await applyChunkedMigration(db.adapter, { id, table, apply, batchSize: 1000 });
+
+// Computed columns + materialized rollups
+db.define('people', { columns: {...}, computed: {
+  full_name: { deps: ['first', 'last'], compute: (r) => `${r.first} ${r.last}` },
+}});
+db.define('posts', { columns: {...}, materializedRollups: {
+  comment_count: { sourceTable: 'comments', foreignKey: 'post_id', fn: 'count' },
+}});
+
+// Keyless cloud file-byte access (Postgres cloud)
+await db.enableCloudFilePresigning({ bucket, region, accessKey, secretKey });
+// members fetch bytes with zero config; the owner key never leaves the database.
+```
+
+See [CHANGELOG.md](../CHANGELOG.md) for the full 4.1 list.

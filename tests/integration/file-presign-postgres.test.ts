@@ -1,0 +1,385 @@
+/**
+ * p4c — the in-database SigV4 presigner. The highest-risk item is the
+ * plpgsql SigV4 signing; this verifies it against AWS's PUBLISHED test vector
+ * (no real S3 needed), plus install idempotency + that the owner secret table
+ * is not member-readable.
+ *
+ * AWS example (docs: "GET Object — Query String Authentication"):
+ *   region us-east-1, service s3, host examplebucket.s3.amazonaws.com
+ *   GET /test.txt, X-Amz-Date 20130524T000000Z, X-Amz-Expires 86400
+ *   => signature aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404
+ */
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { randomBytes, createHmac, createHash } from 'node:crypto';
+import { Lattice } from '../../src/lattice.js';
+import { getAsyncOrSync, runAsyncOrSync } from '../../src/db/adapter.js';
+import {
+  installFilePresigner,
+  setCloudS3Secret,
+  hasFilePresigner,
+  filePresignSql,
+  pinPresignerDefiner,
+  S3_SECRET_TABLE,
+} from '../../src/cloud/file-presign.js';
+
+const PG_URL = process.env.LATTICE_TEST_PG_URL;
+
+const AWS_EXPECTED_SIG = 'aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404';
+
+function hmacBytes(key: Buffer | string, data: string): Buffer {
+  return createHmac('sha256', key).update(data, 'utf8').digest();
+}
+function sha256Hex(data: string): string {
+  return createHash('sha256').update(data, 'utf8').digest('hex');
+}
+/** RFC-3986 encoding matching the plpgsql `lattice_uri_encode`. */
+function uriEncode(s: string, keepSlash: boolean): string {
+  let out = '';
+  for (const ch of s) {
+    if (/[A-Za-z0-9._~-]/.test(ch) || (keepSlash && ch === '/')) {
+      out += ch;
+    } else {
+      for (const b of Buffer.from(ch, 'utf8'))
+        out += '%' + b.toString(16).toUpperCase().padStart(2, '0');
+    }
+  }
+  return out;
+}
+/**
+ * An independent Node SigV4 S3-presign reference matching the plpgsql signer's
+ * canonical form (UNSIGNED-PAYLOAD, host signed header, sorted query). Returns the
+ * hex signature; validated in-test against AWS's published GET vector, then used
+ * to cross-check the plpgsql PUT signature.
+ */
+function sigv4ReferenceSignature(o: {
+  method: string;
+  host: string;
+  region: string;
+  service: string;
+  path: string;
+  accessKey: string;
+  secretKey: string;
+  expires: number;
+  amzDate: string;
+  dateStamp: string;
+}): string {
+  const scope = `${o.dateStamp}/${o.region}/${o.service}/aws4_request`;
+  const credential = uriEncode(`${o.accessKey}/${scope}`, false);
+  const canonicalUri = uriEncode(o.path, true);
+  const canonicalQs =
+    'X-Amz-Algorithm=AWS4-HMAC-SHA256' +
+    `&X-Amz-Credential=${credential}` +
+    `&X-Amz-Date=${o.amzDate}` +
+    `&X-Amz-Expires=${String(o.expires)}` +
+    '&X-Amz-SignedHeaders=host';
+  const canonicalRequest = [
+    o.method,
+    canonicalUri,
+    canonicalQs,
+    `host:${o.host}\n`,
+    'host',
+    'UNSIGNED-PAYLOAD',
+  ].join('\n');
+  const stringToSign = ['AWS4-HMAC-SHA256', o.amzDate, scope, sha256Hex(canonicalRequest)].join(
+    '\n',
+  );
+  const kDate = hmacBytes(`AWS4${o.secretKey}`, o.dateStamp);
+  const kRegion = hmacBytes(kDate, o.region);
+  const kService = hmacBytes(kRegion, o.service);
+  const kSigning = hmacBytes(kService, 'aws4_request');
+  return hmacBytes(kSigning, stringToSign).toString('hex');
+}
+
+describe.skipIf(!PG_URL)('p4c file presigner (Postgres)', () => {
+  let db: Lattice;
+
+  beforeAll(async () => {
+    db = new Lattice(PG_URL!);
+    await db.init();
+    // current_schema is 'public' for the test connection.
+    await installFilePresigner(db.adapter, 'public');
+  });
+
+  afterAll(async () => {
+    try {
+      await runAsyncOrSync(
+        db.adapter,
+        `DROP FUNCTION IF EXISTS lattice_presign_file(text,text,int)`,
+      );
+      await runAsyncOrSync(
+        db.adapter,
+        `DROP FUNCTION IF EXISTS lattice_aws_sigv4_presign(text,text,text,text,text,text,text,int,text,text)`,
+      );
+      await runAsyncOrSync(db.adapter, `DROP FUNCTION IF EXISTS lattice_uri_encode(text,boolean)`);
+      await runAsyncOrSync(db.adapter, `DROP TABLE IF EXISTS ${S3_SECRET_TABLE} CASCADE`);
+    } catch {
+      /* best effort */
+    }
+    db.close();
+  });
+
+  it('installs the presigner (idempotently)', async () => {
+    expect(await hasFilePresigner(db.adapter)).toBe(true);
+    // Re-install is a no-op (CREATE OR REPLACE / IF NOT EXISTS).
+    await installFilePresigner(db.adapter, 'public');
+    expect(await hasFilePresigner(db.adapter)).toBe(true);
+  });
+
+  it('reproduces the AWS SigV4 published test-vector signature', async () => {
+    const row = await getAsyncOrSync(
+      db.adapter,
+      `SELECT lattice_aws_sigv4_presign(
+         'GET', 'examplebucket.s3.amazonaws.com', 'us-east-1', 's3', '/test.txt',
+         'AKIAIOSFODNN7EXAMPLE', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+         86400, '20130524T000000Z', '20130524'
+       ) AS url`,
+    );
+    const url = String(row?.url ?? '');
+    expect(url).toContain(`X-Amz-Signature=${AWS_EXPECTED_SIG}`);
+    // Sanity: the canonical query string is present + ordered.
+    expect(url).toContain('X-Amz-Algorithm=AWS4-HMAC-SHA256');
+    expect(url).toContain(
+      'X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request',
+    );
+    expect(url).toMatch(/^https:\/\/examplebucket\.s3\.amazonaws\.com\/test\.txt\?/);
+  });
+
+  it('signs PUT identically to an independent SigV4 reference (method flows through)', async () => {
+    const base = {
+      host: 'examplebucket.s3.amazonaws.com',
+      region: 'us-east-1',
+      service: 's3',
+      accessKey: 'AKIAIOSFODNN7EXAMPLE',
+      secretKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      amzDate: '20130524T000000Z',
+      dateStamp: '20130524',
+    };
+    // The reference reproduces AWS's published GET vector → the reference is correct.
+    expect(
+      sigv4ReferenceSignature({ ...base, method: 'GET', path: '/test.txt', expires: 86400 }),
+    ).toBe(AWS_EXPECTED_SIG);
+
+    // The plpgsql PUT signature must equal the reference PUT signature.
+    const putArgs = { ...base, method: 'PUT', path: '/files/a.pdf', expires: 60 };
+    const refPut = sigv4ReferenceSignature(putArgs);
+    const row = await getAsyncOrSync(
+      db.adapter,
+      `SELECT lattice_aws_sigv4_presign(
+         'PUT', '${base.host}', '${base.region}', 's3', '/files/a.pdf',
+         '${base.accessKey}', '${base.secretKey}', 60, '${base.amzDate}', '${base.dateStamp}'
+       ) AS url`,
+    );
+    const url = String(row?.url ?? '');
+    expect(url).toContain(`X-Amz-Signature=${refPut}`);
+
+    // PUT differs from GET on the same inputs — the method really flows through.
+    const getRow = await getAsyncOrSync(
+      db.adapter,
+      `SELECT lattice_aws_sigv4_presign(
+         'GET', '${base.host}', '${base.region}', 's3', '/files/a.pdf',
+         '${base.accessKey}', '${base.secretKey}', 60, '${base.amzDate}', '${base.dateStamp}'
+       ) AS url`,
+    );
+    expect(String(getRow?.url)).not.toContain(`X-Amz-Signature=${refPut}`);
+  });
+
+  it('stores the owner S3 secret (upsert)', async () => {
+    await setCloudS3Secret(db.adapter, {
+      bucket: 'mybucket',
+      region: 'us-west-2',
+      accessKey: 'AKIA_X',
+      secretKey: 'shh',
+      prefix: 'files/',
+    });
+    const row = await getAsyncOrSync(
+      db.adapter,
+      `SELECT bucket, region, prefix FROM ${S3_SECRET_TABLE} WHERE id = 'default'`,
+    );
+    expect(row?.bucket).toBe('mybucket');
+    expect(row?.region).toBe('us-west-2');
+    expect(row?.prefix).toBe('files/');
+    // upsert replaces, not duplicates
+    await setCloudS3Secret(db.adapter, {
+      bucket: 'b2',
+      region: 'eu-west-1',
+      accessKey: 'k',
+      secretKey: 's',
+    });
+    const count = await getAsyncOrSync(db.adapter, `SELECT count(*) AS n FROM ${S3_SECRET_TABLE}`);
+    expect(Number(count?.n)).toBe(1);
+  });
+
+  it('encodes path + credential per RFC-3986', async () => {
+    const row = await getAsyncOrSync(
+      db.adapter,
+      `SELECT lattice_uri_encode('a/b c.txt', true) AS p, lattice_uri_encode('a/b', false) AS c`,
+    );
+    expect(row?.p).toBe('a/b%20c.txt'); // slash kept, space encoded
+    expect(row?.c).toBe('a%2Fb'); // slash encoded
+  });
+});
+
+/**
+ * The `lattice_presign_file` wrapper (visibility gate + key resolution). Run in
+ * an ISOLATED unique schema via a dedicated single connection, so it never
+ * touches the shared `files` / `lattice_row_visible` objects other Postgres test
+ * files use concurrently.
+ */
+describe.skipIf(!PG_URL)('lattice_presign_file wrapper (isolated schema)', () => {
+  it('gates on row-visibility and resolves the object key', async () => {
+    const pg = (await import('pg')).default;
+    const schema = `presign_test_${randomSchemaSuffix()}`;
+    const client = new pg.Client(PG_URL);
+    await client.connect();
+    try {
+      await client.query(`CREATE SCHEMA "${schema}"`);
+      await client.query(`SET search_path TO "${schema}"`);
+      // Stub the visibility helper + a minimal files table in THIS schema.
+      await client.query(
+        `CREATE FUNCTION lattice_row_visible(p_table text, p_pk text) RETURNS boolean
+         LANGUAGE sql AS $$ SELECT p_pk <> 'hidden' $$`,
+      );
+      await client.query(`CREATE TABLE files (id text primary key, ref_uri text)`);
+      // Realistic production refs: `s3://bucket/<key>` where <key> ALREADY includes
+      // the configured prefix (the upload baked it in). The presigner must use the
+      // key verbatim — re-prepending s.prefix would double it (files/files/...) → 404.
+      await client.query(
+        `INSERT INTO files (id, ref_uri) VALUES ('f1','s3://b/files/docs/report.pdf')`,
+      );
+      await client.query(
+        `INSERT INTO files (id, ref_uri) VALUES ('hidden','s3://b/files/secret.pdf')`,
+      );
+      // Install the presigner pinned to this schema + store a secret.
+      await client.query(pinPresignerDefiner(filePresignSql(), schema));
+      await client.query(
+        `INSERT INTO ${S3_SECRET_TABLE} (id, bucket, region, prefix, access_key, secret_key)
+         VALUES ('default','b','us-east-1','files/','AKIA','shh')`,
+      );
+
+      const ok = await client.query(`SELECT lattice_presign_file('f1','GET',60) AS url`);
+      const url: string = ok.rows[0].url;
+      expect(url).toContain('https://b.s3.us-east-1.amazonaws.com/files/docs/report.pdf?');
+      expect(url).toContain('X-Amz-Signature=');
+
+      // A file the caller can't see is rejected.
+      await expect(client.query(`SELECT lattice_presign_file('hidden','GET',60)`)).rejects.toThrow(
+        /not authorized/,
+      );
+      // TTL is hard-capped at 60s.
+      const capped = await client.query(`SELECT lattice_presign_file('f1','GET',9999) AS url`);
+      expect(String(capped.rows[0].url)).toContain('X-Amz-Expires=60');
+    } finally {
+      await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+      await client.end();
+    }
+  });
+
+  it('uses PATH-style URLs for a custom (S3-compatible) endpoint, virtual-hosted for AWS', async () => {
+    const pg = (await import('pg')).default;
+    const schema = `presign_ep_${randomSchemaSuffix()}`;
+    const client = new pg.Client(PG_URL);
+    await client.connect();
+    try {
+      await client.query(`CREATE SCHEMA "${schema}"`);
+      await client.query(`SET search_path TO "${schema}"`);
+      await client.query(
+        `CREATE FUNCTION lattice_row_visible(p_table text, p_pk text) RETURNS boolean LANGUAGE sql AS $$ SELECT true $$`,
+      );
+      await client.query(`CREATE TABLE files (id text primary key, ref_uri text)`);
+      await client.query(`INSERT INTO files (id, ref_uri) VALUES ('f1','s3://b/files/a.pdf')`);
+      await client.query(pinPresignerDefiner(filePresignSql(), schema));
+
+      // Custom endpoint (e.g. MinIO) → path-style: the bucket is in the URL PATH,
+      // the host is the endpoint. (Before the fix the bucket was dropped entirely.)
+      await client.query(
+        `INSERT INTO ${S3_SECRET_TABLE} (id, bucket, region, prefix, endpoint, access_key, secret_key)
+         VALUES ('default','b','us-east-1','files/','minio.local:9000','AKIA','shh')`,
+      );
+      const epUrl: string = (
+        await client.query(`SELECT lattice_presign_file('f1','GET',60) AS url`)
+      ).rows[0].url;
+      expect(epUrl).toContain('https://minio.local:9000/b/files/a.pdf?');
+      expect(epUrl).toContain('X-Amz-Signature=');
+
+      // No endpoint → AWS virtual-hosted: bucket in the HOST, not the path.
+      await client.query(`UPDATE ${S3_SECRET_TABLE} SET endpoint = NULL WHERE id = 'default'`);
+      const awsUrl: string = (
+        await client.query(`SELECT lattice_presign_file('f1','GET',60) AS url`)
+      ).rows[0].url;
+      expect(awsUrl).toContain('https://b.s3.us-east-1.amazonaws.com/files/a.pdf?');
+    } finally {
+      await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+      await client.end();
+    }
+  });
+
+  // The single highest-stakes p4c guarantee: a scoped MEMBER role can presign its
+  // own visible files but can NEVER read the owner's S3 secret. Asserted AS the
+  // member role (SET ROLE), not in prose.
+  it('never exposes the owner S3 secret to a member role (SET ROLE)', async () => {
+    const pg = (await import('pg')).default;
+    const schema = `presign_member_${randomSchemaSuffix()}`;
+    const role = `presign_member_${randomSchemaSuffix()}`;
+    const client = new pg.Client(PG_URL);
+    await client.connect();
+    try {
+      await client.query(`CREATE SCHEMA "${schema}"`);
+      await client.query(`SET search_path TO "${schema}"`);
+      await client.query(
+        `CREATE FUNCTION lattice_row_visible(p_table text, p_pk text) RETURNS boolean
+         LANGUAGE sql AS $$ SELECT p_pk <> 'hidden' $$`,
+      );
+      await client.query(`CREATE TABLE files (id text primary key, ref_uri text)`);
+      await client.query(`INSERT INTO files (id, ref_uri) VALUES ('f1','s3://b/files/a.pdf')`);
+      await client.query(`INSERT INTO files (id, ref_uri) VALUES ('hidden','s3://b/files/h.pdf')`);
+      await client.query(pinPresignerDefiner(filePresignSql(), schema));
+      await client.query(
+        `INSERT INTO ${S3_SECRET_TABLE} (id, bucket, region, prefix, access_key, secret_key)
+         VALUES ('default','b','us-east-1','files/','AKIA_OWNER','SUPER_SECRET_KEY')`,
+      );
+
+      // A least-privilege member: USAGE on the schema + EXECUTE on the presigner,
+      // and NOTHING on the secret table — exactly what the cloud grant issues.
+      await client.query(`CREATE ROLE "${role}"`);
+      await client.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${role}"`);
+      await client.query(`GRANT SELECT ON files TO "${role}"`);
+      await client.query(
+        `GRANT EXECUTE ON FUNCTION lattice_presign_file(text,text,int) TO "${role}"`,
+      );
+
+      await client.query(`SET ROLE "${role}"`);
+      try {
+        // The member CANNOT read the secret — neither the key column nor the row.
+        await expect(client.query(`SELECT secret_key FROM ${S3_SECRET_TABLE}`)).rejects.toThrow(
+          /permission denied/i,
+        );
+        await expect(client.query(`SELECT * FROM ${S3_SECRET_TABLE}`)).rejects.toThrow(
+          /permission denied/i,
+        );
+        // The member CAN presign a visible file (the DEFINER reads the secret for
+        // them) and the URL never carries the secret key.
+        const ok = await client.query(`SELECT lattice_presign_file('f1','GET',60) AS url`);
+        const url: string = ok.rows[0].url;
+        expect(url).toContain('https://b.s3.us-east-1.amazonaws.com/files/a.pdf');
+        expect(url).not.toContain('SUPER_SECRET_KEY');
+        // The member CANNOT presign a file they cannot see.
+        await expect(
+          client.query(`SELECT lattice_presign_file('hidden','GET',60)`),
+        ).rejects.toThrow(/not authorized/);
+      } finally {
+        await client.query(`RESET ROLE`);
+      }
+    } finally {
+      await client.query(`RESET ROLE`).catch(() => undefined);
+      await client.query(`DROP OWNED BY "${role}"`).catch(() => undefined);
+      await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+      await client.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => undefined);
+      await client.end();
+    }
+  });
+});
+
+function randomSchemaSuffix(): string {
+  // Deterministic-enough unique suffix from the imported randomBytes.
+  return randomBytes(4).toString('hex');
+}

@@ -6,6 +6,185 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.1.0] — 2026-06-22
+
+Fast-follow feature release on 4.0. Turns latticesql into a measurable,
+production-grade retrieval substrate: a retrieval-eval + health + benchmark
+layer, indexed vector search with chunking, hybrid fusion + reranking, governance
+(provenance + trust), reliability (retry + resumable migrations), graph-augmented
+retrieval, declarative computed columns, and a fuller query surface. **Additive
+only** — every 4.0 caller runs unchanged; each feature is a new optional field or
+method that is inert unless a table opts in.
+
+### Added
+
+- **Retrieval evaluation (`evaluateRetrieval`).** Standard IR metrics —
+  Precision@k, Recall@k, MRR, nDCG@k (graded gains), MAP — over any ranked
+  retriever (`(query) => rankedRowIds`), with a per-query breakdown and optional
+  multi-cutoff report. `detectRetrievalRegressions(baseline, candidate, tolerance)`
+  powers a regression gate that runs in the test suite — a golden set evaluated
+  against the real `search()` and compared to a committed baseline — so a change
+  that lowers retrieval quality below tolerance fails the build.
+  Empty input / non-positive `k` throw rather than report a meaningless zero.
+- **Retrieval health doctor (`diagnoseRetrieval`, `lattice doctor`).** Read-only
+  diagnostics: per-table full-text and embedding coverage (soft-deleted rows
+  excluded), extension availability (FTS5, sqlite-vec, pgvector, pg_trgm), and
+  severity-ranked issues for missing/stale indexes or embeddings. The CLI
+  `lattice doctor [--json]` prints a report and exits non-zero on any error so it
+  can gate a deploy.
+- **Benchmark harness (`benchmarkRetrieval`, `checkSlos`).** Reproducible
+  speed-to-answer numbers — p50/p95/p99 for filtered query, full-text, vector, and
+  aggregate, plus ingest throughput and peak memory — on synthetic data at a
+  configurable scale, both dialects, exercising the real code paths. The vector
+  phase builds the native index first, and the report's `vectorIndexed` flag marks
+  whether the vector numbers reflect the index or the in-process-scan fallback —
+  so a published number is never the scan masquerading as the index. `checkSlos`
+  flags latency-SLO violations against thresholds you set for your own hardware
+  (shared-runner latency is too noisy to gate a build on by default). Default
+  scale is CI-fast; `LATTICE_BENCH_*` env vars scale it up.
+- **Text chunking for embeddings (`semanticChunker`, `EmbeddingsConfig.chunker`).**
+  A dependency-free, boundary-aware splitter (paragraph → sentence → word) with
+  optional overlap, so a row is embedded as several small, coherent chunks instead
+  of one blurred whole-row vector — higher precision@k and fewer tokens to a
+  correct answer. `EmbeddingsConfig.contextPrefix(row)` prepends per-row context
+  (e.g. a title) to every chunk; `modelId` is stored with each vector.
+- **Indexed vector search (`buildVectorIndex`).** An opt-in per-table native
+  approximate-nearest-neighbor index — pgvector HNSW on Postgres (auto-enabled via
+  `CREATE EXTENSION IF NOT EXISTS vector`), sqlite-vec on SQLite (when the extension
+  is loaded into the connection) — built from the stored embeddings, turning the
+  O(n) in-process scan into an indexed ~O(log n) lookup; semantic search uses it
+  automatically when present and falls back to the in-process scan (reported by
+  `lattice doctor`) otherwise.
+- **Incremental embedding refresh (`refreshEmbeddings`).** Backfill missing,
+  re-embed model-stale or changed rows, and sweep orphaned embeddings — instead of
+  re-embedding everything on any change.
+- `SearchResult` now carries `chunkIndex` + `matchedContent` for chunked
+  embeddings (a precise, low-token snippet of the matching chunk).
+- **Hybrid search (`hybridSearch`, `Lattice.hybridSearch`).** Fuses semantic
+  (vector) and lexical (full-text) retrieval with Reciprocal Rank Fusion (k=60),
+  so results have both embeddings' recall and exact-term precision. Each result
+  carries a score breakdown for `--explain`. Full-text-only when a table has no
+  embeddings; soft-deleted rows excluded.
+- **Ranking signals (`RankingOptions`).** Deterministic, model-free boosts from
+  existing columns — recency (half-life decay), reward (saturating
+  `_reward_total`), and a custom signal — folded into the hybrid score.
+- **Reranking (`SearchOptions.reranker`, `HybridSearchOptions.reranker`).** An
+  optional bring-your-own second-stage reranker over the retrieved candidates,
+  with graceful fallback to the first-stage order if it throws or returns nothing
+  usable. Lattice never calls a model.
+- **`lattice search "<query>" --table <t> [--explain] [--topk N] [--json]`** — a
+  CLI hybrid search; `--explain` prints the per-result score breakdown.
+- **Query primitives.** `QueryOptions.projection` (`string[]` / `{include}` /
+  `{exclude}`) returns only the columns you need; `QueryOptions.maxRows` +
+  `LatticeOptions.defaultMaxRows` + `BoundedReadError` guard against accidental
+  unbounded full-table reads; `filters` now accept recursive `or`/`and` groups
+  and per-clause `jsonPath` extraction into JSON/JSONB columns.
+- **SQL-side aggregation (`Lattice.aggregate`).** `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`
+  (and `COUNT(DISTINCT)`) with `GROUP BY`/`HAVING`/`ORDER BY`, computed in the
+  database so only the grouped result rows transfer — not the underlying rows.
+- **Keyset pagination (`Lattice.queryPage`).** Cursor-based paging ordered by
+  `(orderBy, pk)` with an opaque cursor — stays fast arbitrarily deep into a
+  result set, unlike OFFSET. Returns a page plus `nextCursor`/`hasMore`.
+- **`QueryOptions.distinctOn`.** One row per distinct value of the given
+  column(s) (Postgres `DISTINCT ON`, SQLite `ROW_NUMBER()` window), the survivor
+  chosen by `orderBy`.
+- **`QueryOptions.include`.** Expand declared relations on each row — `belongsTo`
+  attaches the related row, `hasMany` an array — each fetched in a single batched
+  `IN (...)` query (no N+1).
+- **Durable retry (`withRetry`).** Re-runs an idempotent operation through
+  decorrelated-jitter backoff on transient DB failures (SQLite `SQLITE_BUSY`,
+  Postgres serialization/deadlock/connection errors, dropped sockets), with a
+  nested-retry guard so composed helpers don't multiply attempts.
+- **Online, resumable migrations (`applyChunkedMigration` / `resumeMigration` /
+  `revertMigration`).** Walks a table's primary key in batches — each a short
+  transaction, no long table lock — checkpointing progress, so a killed
+  migration resumes after the last checkpoint instead of restarting from zero.
+- **Immutable provenance (`TableDefinition.provenance`).** Opt a table into
+  `ingested_via` / `source_uri` / `ingested_at` columns stamped at creation;
+  `ingested_at` is auto-stamped and any `update()` that changes a provenance
+  column throws `ProvenanceImmutableError`, so lineage can't be rewritten.
+- **Trust / verification (`TableDefinition.trust`).** Gate untrusted ingest:
+  new rows default to `unverified`; `markRowForReview` / `verifyRow` move them to
+  `needs_review` / `verified`, and `rowsNeedingReview` / `verifiedRows` filter by
+  state.
+- **Graph-augmented retrieval.** A typed-edge graph over rows (`addEdge` /
+  `neighbors` / `traverseGraph` with bounded BFS, `extractEdges` for zero-LLM
+  edge extraction from foreign keys) plus `graphSearch` — hybrid search re-ranked
+  by graph adjacency to anchor entities, so relationship-relevant rows rank
+  higher. Depth and visited-node hard caps prevent runaway traversal.
+- **Computed columns (`TableDefinition.computed`).** Stored columns derived from
+  other columns by a pure function, computed on insert and recomputed when a
+  dependency changes (`refreshComputedColumns` for a full pass). Dependency
+  cycles are rejected at init.
+- **Materialized rollups (`TableDefinition.materializedRollups`).** Stored
+  aggregates over a child table (e.g. `comment_count`), maintained incrementally
+  as children change and recomputable in full via `refreshMaterializedRollups`.
+- **Seamless cloud file-byte access (`enableCloudFilePresigning`, cloud
+  Postgres).** An in-database SigV4 presigner: a keyless cloud member fetches file
+  bytes with zero config — `lattice_presign_file` computes a short-lived (≤ 60 s)
+  presigned URL inside Postgres, gated on the member's row-visibility, using the
+  owner's key which never leaves the database (a member-role test asserts the
+  secret table is not member-readable). Enabling S3 on a cloud turns it on for all
+  current + future members (re-granted on every reconcile); the GUI file-byte route
+  uses it automatically for keyless member fetches. SigV4 signing is verified
+  against AWS's published GET test vector plus an independent reference for PUT.
+  Keyless **upload** (presigned PUT) is forthcoming in a 4.1.x follow-up — the
+  signer supports it; the ingest-route wiring lands separately.
+
+### Changed
+
+- **Semantic search now respects `deleted_at`** — soft-deleted rows are excluded
+  from `Lattice.search` results (they could previously be returned), and a stored
+  vector whose dimensionality differs from the query's now throws
+  `EmbeddingDimensionMismatchError` instead of silently mis-scoring.
+- The internal `_lattice_embeddings` store is now chunk-aware
+  (`chunk_index`/`content`/`embedding_model`/`embedded_at`/`vec_dim`); an older
+  store is migrated forward automatically and idempotently on init.
+- **Indexed full-text search is now relevance-ranked.** `FtsHit.score` is
+  populated by the indexed tier (`ts_rank` on Postgres, `-bm25` on SQLite FTS5)
+  and results are ordered by relevance — previously indexed full-text results
+  came back in physical/rowid order.
+
+### Fixed
+
+- **Rendered-file body edits were silently not imported.** The default
+  entity-context render writes each field as a bold bullet — `- **key:** value`,
+  with the colon _inside_ the bold — but the reverse-sync body parser only
+  recognized `**key**: value` / plain `key: value`. So an edit to a rendered
+  file's body parsed to zero fields and was reported "not auto-importable
+  (custom/computed render)", even for a plain structured record. (Latent until the
+  reverse-sync starvation above was fixed, which is when file edits started
+  running at all.) The parser now also reads the render's own
+  colon-inside-the-bold format; a new test renders-then-parses the real on-disk
+  shape rather than a hand-written one.
+- **Spurious full re-renders driven by chat / bookkeeping writes.** The GUI's
+  eager per-viewer re-render fired on _every_ realtime change, including writes to
+  internal tables (the assistant's `chat_messages`/`chat_threads`, every
+  `_lattice*` table). On a cloud workspace, each assistant message wrote a
+  `chat_messages` row → change-feed `NOTIFY` → a full background render — so an
+  ongoing conversation re-rendered the whole workspace every turn, wasting egress.
+  It also starved the file-loopback reverse-sync, which is deferred while a render
+  is in flight: with renders firing constantly, a user's on-disk `.md` edit never
+  got written back. The eager re-render now filters out feed-hidden tables (the
+  same `isFeedHiddenTable` guard the activity feed uses), so only changes to the
+  rendered entity tree trigger a re-render.
+- **Member-cloud file edits silently dropped.** On a masked member open, base-table
+  `SELECT` is revoked and granted only on the per-viewer masking view. The render
+  engine read through that view, but the reverse-sync engine read the base table
+  directly — hitting a permission error that was swallowed, so a member's `.md`
+  edit was never written back to the database or recorded in history. The
+  per-viewer read-relation resolver now lives on the shared read layer
+  (`SchemaManager`), so render **and** reverse-sync read through the same relation
+  — one resolver, routed by access rights, rather than a second read path.
+- **Loading-frame flash on background in-place re-renders.** The advanced-mode
+  toggle (same hash) and the workspace-switch reload (already on `#/`) re-rendered
+  the content pane with a bare call that synchronously painted the loading frame,
+  flashing during background activity. Both now request a soft (in-place) refresh.
+- **Embedding writes on Postgres.** `storeEmbedding` used a SQLite-only
+  `INSERT OR REPLACE`, which the Postgres adapter refuses to translate — semantic
+  embedding writes therefore failed on Postgres. Now uses a portable
+  `INSERT ... ON CONFLICT DO UPDATE` upsert that both engines accept.
+
 ## [4.0.1] — 2026-06-19
 
 ### Fixed

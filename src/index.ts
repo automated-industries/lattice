@@ -38,6 +38,18 @@ export type {
   Relation,
   FilterOp,
   Filter,
+  // v4.1 query primitives
+  FilterExpr,
+  FilterOr,
+  FilterAnd,
+  QueryProjection,
+  AggregateFunction,
+  AggregateSpec,
+  AggregateHaving,
+  AggregateOptions,
+  AggregateResult,
+  QueryPageOptions,
+  QueryPageResult,
   // v0.3 additions
   BuiltinTemplateName,
   RenderHooks,
@@ -90,6 +102,8 @@ export type {
   ChangelogOptions,
   ChangeEntry,
 } from './types.js';
+// v4.1 — bounded-read guard error (QueryOptions.maxRows / defaultMaxRows).
+export { BoundedReadError } from './query/core.js';
 export { contentHash } from './render/writer.js';
 export { estimateTokens, applyTokenBudget } from './render/token-budget.js';
 export {
@@ -145,6 +159,57 @@ export type { StorageAdapter, PreparedStatement } from './db/adapter.js';
 export { SQLiteAdapter } from './db/sqlite.js';
 export { PostgresAdapter } from './db/postgres.js';
 export type { PostgresAdapterOptions } from './db/postgres.js';
+
+// v4.1 — declarative computed columns + materialized rollups.
+export {
+  computedColumnOrder,
+  computeColumns,
+  computedColumnDdl,
+  rollupColumnDdl,
+  allComputedDeps,
+  ComputedColumnCycleError,
+} from './schema/computed.js';
+export type {
+  ComputedColumnSpec,
+  MaterializedRollupSpec,
+  RollupFunction,
+} from './schema/computed.js';
+
+// v4.1 — data governance: immutable provenance + trust/verification workflow.
+export {
+  ProvenanceImmutableError,
+  provenanceColumns,
+  resolveProvenanceFields,
+  resolveTrustDefault,
+  TRUST_COLUMNS,
+  ALL_PROVENANCE_FIELDS,
+} from './schema/governance.js';
+export type {
+  ProvenanceConfig,
+  ProvenanceField,
+  TrustConfig,
+  TrustState,
+} from './schema/governance.js';
+
+// v4.1 — durable retry for transient DB failures (idempotent ops only).
+export { withRetry, isRetryableDbError } from './db/retry.js';
+export type { RetryOptions } from './db/retry.js';
+
+// v4.1 — online, resumable chunked migrations (no long lock; resume after kill).
+export {
+  applyChunkedMigration,
+  resumeMigration,
+  revertMigration,
+  listMigrationCheckpoints,
+  getMigrationCheckpoint,
+  ensureCheckpointTable,
+} from './schema/chunked-migration.js';
+export type {
+  ChunkedMigrationOptions,
+  ChunkedMigrationResult,
+  MigrationCheckpoint,
+  MigrationStatus,
+} from './schema/chunked-migration.js';
 
 // v1.12 additions — framework-shipped tables, machine-local user config,
 // content-addressed blob store, ed25519-style team auth client.
@@ -240,6 +305,117 @@ export {
   autoFtsColumns,
 } from './search/fts.js';
 export type { FtsResult, FtsGroup, FtsHit, FtsOptions } from './search/fts.js';
+
+// v4.1 — hybrid (vector + full-text) search via Reciprocal Rank Fusion, with
+// deterministic ranking signals and an optional bring-your-own reranker.
+export { hybridSearch } from './search/hybrid.js';
+export type {
+  HybridSearchOptions,
+  HybridSearchResult,
+  HybridScoreBreakdown,
+} from './search/hybrid.js';
+export { rankingBoost, recencyBoost, rewardBoost, backlinkBoost } from './search/ranking.js';
+export type {
+  RankingOptions,
+  RecencySignal,
+  RewardSignal,
+  BacklinkSignal,
+  CustomSignal,
+} from './search/ranking.js';
+export { applyReranker } from './search/rerank.js';
+export type { RerankerFn, RerankCandidate, RerankScore } from './search/rerank.js';
+
+// v4.1 — graph-augmented retrieval: typed-edge graph, bounded BFS, adjacency boost.
+export {
+  ensureEdgesTable,
+  addEdge,
+  addEdges,
+  removeEdge,
+  neighbors,
+  traverse,
+  extractEdgesFromColumn,
+  graphAdjacencyBoost,
+  MAX_TRAVERSAL_DEPTH,
+  DEFAULT_MAX_NODES,
+} from './search/graph.js';
+export type {
+  GraphNode,
+  GraphEdge,
+  TraversalDirection,
+  TraversalOptions,
+  TraversalNode,
+  GraphTraversalResult,
+  ExtractEdgesSpec,
+  GraphBoostOptions,
+  GraphBoostResult,
+} from './search/graph.js';
+
+// v4.1 — text chunking for higher-precision, lower-token embedding.
+export { semanticChunker, chunkText } from './search/chunking.js';
+export type { TextChunk, ChunkerFn, SemanticChunkerOptions } from './search/chunking.js';
+
+// v4.1 — chunk-aware embedding store + incremental refresh + dim-mismatch guard.
+export {
+  ensureEmbeddingsTable,
+  storeEmbedding,
+  removeEmbedding,
+  searchByEmbedding,
+  refreshEmbeddings,
+  concatRowText,
+  cosineSimilarity,
+  EmbeddingDimensionMismatchError,
+  EMBEDDINGS_TABLE,
+} from './search/embeddings.js';
+export type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
+
+// v4.1 — native indexed vector search (pgvector / sqlite-vec), opt-in accelerator
+// over the portable JSON store.
+export {
+  buildVectorIndex,
+  dropVectorIndex,
+  hasVectorIndex,
+  vectorIndexAvailable,
+  vectorIndexName,
+  searchVectorIndex,
+} from './search/vector-index.js';
+export type { VectorHit } from './search/vector-index.js';
+
+// v4.1 — retrieval evaluation: standard IR metrics over any ranked retriever,
+// plus a CI-friendly regression detector.
+export { evaluateRetrieval, detectRetrievalRegressions } from './search/eval.js';
+export type {
+  EvalQuery,
+  RelevanceLabel,
+  Retriever,
+  RetrievalEvalOptions,
+  PerQueryEval,
+  RetrievalEvalSummary,
+  EvalRegression,
+} from './search/eval.js';
+
+// v4.1 — retrieval health diagnostics (read-only `doctor`).
+export { diagnoseRetrieval, formatHealthReport } from './search/doctor.js';
+export type {
+  RetrievalHealthReport,
+  RetrievalHealthIssue,
+  RetrievalHealthSpec,
+  TableHealth,
+  ExtensionAvailability,
+  HealthSeverity,
+  HealthIssueKind,
+  DiagnoseOptions,
+} from './search/doctor.js';
+
+// v4.1 — reproducible retrieval benchmark harness + SLO gate.
+export { benchmarkRetrieval, latencyStats, percentile, checkSlos } from './search/benchmark.js';
+export type {
+  BenchmarkReport,
+  BenchmarkOptions,
+  BenchmarkScale,
+  LatencyStats,
+  RetrievalSlo,
+  SloViolation,
+} from './search/benchmark.js';
 export { ReferenceUnavailableError } from './sources/types.js';
 export type {
   RefKind,
@@ -319,6 +495,17 @@ export {
 export type { SourceKeyStore } from './cloud/shred.js';
 export { FoldCache } from './cloud/fold-cache.js';
 export { secureCloud } from './cloud/setup.js';
+// v4.1 — seamless cloud file-byte access: in-database SigV4 presigner so a keyless
+// member fetches/uploads bytes with zero config (Postgres cloud only).
+export {
+  installFilePresigner,
+  setCloudS3Secret,
+  grantPresignerToMemberGroup,
+  hasFilePresigner,
+  filePresignSql,
+  S3_SECRET_TABLE,
+} from './cloud/file-presign.js';
+export type { CloudS3Secret } from './cloud/file-presign.js';
 export {
   installCloudSettings,
   getCloudSetting,
