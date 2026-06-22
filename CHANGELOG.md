@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [4.1.0] — unreleased
+## [4.1.0] — 2026-06-22
 
 Fast-follow feature release on 4.0. Turns latticesql into a measurable,
 production-grade retrieval substrate: a retrieval-eval + health + benchmark
