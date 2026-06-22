@@ -229,6 +229,28 @@ export class EmbeddingDimensionMismatchError extends Error {
 }
 
 /**
+ * Thrown by `searchByEmbedding` when the no-index fallback cosine scan would read
+ * more stored chunk vectors than the configured `maxScanChunks`. The scan is
+ * never silently truncated (that would return incomplete, wrong results) — it
+ * fails loudly so the caller adds a native vector index or raises the cap.
+ */
+export class EmbeddingScanTooLargeError extends Error {
+  constructor(
+    readonly table: string,
+    readonly found: number,
+    readonly limit: number,
+  ) {
+    super(
+      `Embedding scan on "${table}" would read ${String(found)} stored chunk vectors, ` +
+        `over the configured maxScanChunks of ${String(limit)}. Add a native vector index ` +
+        `(pgvector) for this table or raise maxScanChunks — Lattice will not silently ` +
+        `truncate the scan, which would return incomplete results.`,
+    );
+    this.name = 'EmbeddingScanTooLargeError';
+  }
+}
+
+/**
  * Search rows by semantic similarity. Uses a native vector index (pgvector) when
  * one exists for the table; otherwise an in-process cosine scan over the stored
  * chunk vectors. Either way results respect `deleted_at IS NULL` on the base
@@ -259,7 +281,7 @@ export async function searchByEmbedding(
       content: h.content,
     }));
   } else {
-    ranked = await scanChunks(adapter, table, queryVector, minScore);
+    ranked = await scanChunks(adapter, table, queryVector, minScore, config.maxScanChunks);
   }
 
   // Best chunk per row, then sort rows by their best score.
@@ -300,7 +322,20 @@ async function scanChunks(
   table: string,
   queryVector: number[],
   minScore: number,
+  maxScanChunks?: number,
 ): Promise<RankedChunk[]> {
+  if (maxScanChunks !== undefined) {
+    // Opt-in hard bound on the no-index scan: count first and refuse loudly
+    // rather than load an unbounded set of vectors into memory. Never silently
+    // truncate — a partial cosine scan would return wrong results.
+    const countRows = await allAsyncOrSync(
+      adapter,
+      `SELECT COUNT(*) AS n FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+      [table],
+    );
+    const n = Number(countRows[0]?.n ?? 0); // pg returns COUNT(*) as a string
+    if (n > maxScanChunks) throw new EmbeddingScanTooLargeError(table, n, maxScanChunks);
+  }
   const stored = await allAsyncOrSync(
     adapter,
     `SELECT "row_pk", "chunk_index", "content", "embedding", "vec_dim" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,

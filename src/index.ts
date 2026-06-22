@@ -364,6 +364,7 @@ export {
   concatRowText,
   cosineSimilarity,
   EmbeddingDimensionMismatchError,
+  EmbeddingScanTooLargeError,
   EMBEDDINGS_TABLE,
 } from './search/embeddings.js';
 export type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';

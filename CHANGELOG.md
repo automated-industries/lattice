@@ -55,6 +55,11 @@ security hardening (below).
 - **Import file-size cap.** A path-based import read caps the source file at 200 MB,
   matching the streaming-upload cap, so an oversized JSON/`.xlsx` can't exhaust
   memory.
+- **Bounded reads on hot paths.** `/api/history` clamps its `limit` (a client can
+  no longer request the whole audit table); semantic search clamps `topK` before
+  the candidate over-fetch; and the no-index embedding scan takes an optional
+  `maxScanChunks` that fails loudly (`EmbeddingScanTooLargeError`) rather than load
+  an unbounded vector set into memory — off by default, never silently truncated.
 
 ## [4.1.0] — 2026-06-22
 
