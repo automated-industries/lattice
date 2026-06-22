@@ -7,34 +7,44 @@ import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../im
 import { materializeImport } from '../import/materialize.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
 import { detectImportAsOf } from './import-detect.js';
+import { detectAsOfColumns } from '../import/asof-columns.js';
 
 /**
- * Automatic structured import for a file dropped into the assistant (or any
- * ingest door). When an uploaded `.xlsx`/`.json` is recognized as a NEW PERIOD
- * of a document already in the workspace, it's imported as a dated snapshot into
- * the existing tables — no preview, no Q&A. Deliberately conservative:
+ * Automatic structured import for a file dropped into the assistant. The importer
+ * is reachable ONLY through this single chat-upload door. Behavior:
  *
  *   - not parseable as structured data → null (kept as a plain reference file)
- *   - no entities inferred           → null
- *   - doesn't match an existing doc  → null (we never silently create a brand-new
- *                                       schema from a chat drop; that's the
- *                                       Import-button's explicit job)
- *   - matches but no date detected   → `{ imported:false, reason:'no-date' }`
- *                                       (importing undated would overwrite the
- *                                       prior snapshot — surface, don't guess)
+ *   - no entities inferred             → null
+ *   - matches an existing dataset + a CONFIDENT date → silent import as a dated
+ *     snapshot (`imported:true`), no preview, no Q&A
+ *   - matches an existing dataset but NO/ambiguous date → `reason:'needs-confirm'`
+ *     + a full proposal (surface the date choice, don't guess)
+ *   - brand-new structured data (no match) → `reason:'new-dataset'` + a full
+ *     proposal; tables are created only when the user confirms (never silently
+ *     from a chat drop)
  *
- * So it only ever WRITES when it's confident: a known document + a detected date.
+ * Non-silent cases carry the proposal the inline confirm card renders; the apply
+ * route (`/api/import/apply`) re-reads the file's bytes from its `fileId` and
+ * re-derives everything, so these fields are display-only.
  */
 
 export interface AutoImportResult {
   imported: boolean;
-  /** Why it didn't import, when `imported` is false but a match was found. */
-  reason?: 'no-date';
+  /** When `imported` is false: why, and which inline card to show. */
+  reason?: 'needs-confirm' | 'new-dataset';
   asOf: string | null;
   matchedCount: number;
   totalEntities: number;
   tables: string[];
   rows: number;
+  // ── Proposal payload for the inline confirm card (present when `reason` is set).
+  /** The dropped file's `files` row id — the apply route resolves it to the blob. */
+  fileId?: string;
+  plan?: ReturnType<typeof dedupeAndDetectViews>['plan'];
+  views?: ReturnType<typeof dedupeAndDetectViews>['views'];
+  asOfCandidates?: Awaited<ReturnType<typeof detectImportAsOf>>;
+  asOfColumns?: ReturnType<typeof detectAsOfColumns>;
+  schemaMatch?: ReturnType<typeof matchSchemaToExisting>;
 }
 
 function existingDataTables(db: Lattice): ExistingTable[] {
@@ -72,33 +82,43 @@ export async function autoImportStructured(
   );
   if (inferredPlan.entities.length === 0) return null;
 
-  const match = matchSchemaToExisting(existingDataTables(db), inferredPlan);
-  if (!match.isKnownDocument) return null; // unknown structure — not an auto-import
+  const schemaMatch = matchSchemaToExisting(existingDataTables(db), inferredPlan);
+  const asOfCandidates = await detectImportAsOf(db, data, { abs, fileName: name });
+  const asOf = asOfCandidates[0]?.date ?? null;
+  const asOfColumns = detectAsOfColumns(data, inferredPlan);
+  // The proposal the inline confirm card renders (display-only; apply re-derives).
+  const proposal = {
+    plan: inferredPlan,
+    views: inferredViews,
+    asOfCandidates,
+    asOfColumns,
+    schemaMatch,
+    matchedCount: schemaMatch.matchedCount,
+    totalEntities: schemaMatch.totalEntities,
+    tables: [],
+    rows: 0,
+  };
 
-  const candidates = await detectImportAsOf(db, data, { abs, fileName: name });
-  const asOf = candidates[0]?.date ?? null;
+  // Brand-new structured data: never silently create from a chat drop — surface
+  // a 'new-dataset' card; tables are created only on Apply.
+  if (!schemaMatch.isKnownDocument) {
+    return { imported: false, reason: 'new-dataset', asOf, ...proposal };
+  }
+  // Recognized as a known dataset but no confident date — importing undated would
+  // overwrite the prior snapshot, so surface a 'needs-confirm' card.
   if (!asOf) {
-    // Recognized, but importing undated would overwrite the existing snapshot —
-    // tell the caller so it can ask for the date rather than guess.
-    return {
-      imported: false,
-      reason: 'no-date',
-      asOf: null,
-      matchedCount: match.matchedCount,
-      totalEntities: match.totalEntities,
-      tables: [],
-      rows: 0,
-    };
+    return { imported: false, reason: 'needs-confirm', asOf: null, ...proposal };
   }
 
-  const { plan, views } = renameEntities(inferredPlan, inferredViews, match.rename);
+  // Known document + a confident date → silent import as a dated snapshot.
+  const { plan, views } = renameEntities(inferredPlan, inferredViews, schemaMatch.rename);
   const result = await materializeImport({ db, configPath }, data, plan, views, { asOf });
   const rows = Object.values(result.rowsByTable).reduce((a, b) => a + b, 0);
   return {
     imported: true,
     asOf,
-    matchedCount: match.matchedCount,
-    totalEntities: match.totalEntities,
+    matchedCount: schemaMatch.matchedCount,
+    totalEntities: schemaMatch.totalEntities,
     tables: Object.keys(result.rowsByTable),
     rows,
   };

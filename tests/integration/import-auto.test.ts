@@ -61,7 +61,7 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     expect(await db.count('funds')).toBe(4); // snapshot appended, not overwritten
   });
 
-  it('does NOT auto-import an unrecognized structure (left as a reference file)', async () => {
+  it('surfaces a brand-new structured drop as a new-dataset proposal (no silent create)', async () => {
     const { db, configPath, base } = await freshWorkspace();
     await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
       asOf: '2025-06-30',
@@ -69,6 +69,19 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     const p = join(base, 'orders.json');
     writeFileSync(p, JSON.stringify({ orders: [{ order_id: 1, sku: 'X', qty: 3, buyer: 'Bob' }] }));
     const r = await autoImportStructured(db, configPath, p, 'orders.json');
+    // Structured but not a known dataset → propose, never silently create.
+    expect(r?.imported).toBe(false);
+    expect(r?.reason).toBe('new-dataset');
+    expect(r?.plan?.entities.length).toBeGreaterThan(0); // a proposal to confirm
+    expect(r?.schemaMatch?.isKnownDocument).toBe(false);
+    expect(db.getRegisteredTableNames()).not.toContain('orders'); // created only on Apply
+  });
+
+  it('leaves a truly-unstructured file as a plain reference (null)', async () => {
+    const { db, configPath, base } = await freshWorkspace();
+    const p = join(base, 'note.json'); // valid JSON but no record arrays → 0 entities
+    writeFileSync(p, JSON.stringify({ greeting: 'hi', count: 3 }));
+    const r = await autoImportStructured(db, configPath, p, 'note.json');
     expect(r).toBeNull();
   });
 
@@ -81,7 +94,8 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     writeFileSync(p, JSON.stringify(doc()));
     const r = await autoImportStructured(db, configPath, p, 'book.json');
     expect(r?.imported).toBe(false);
-    expect(r?.reason).toBe('no-date');
+    expect(r?.reason).toBe('needs-confirm');
+    expect(r?.plan?.entities.length).toBeGreaterThan(0); // full proposal present
     expect(await db.count('funds')).toBe(2); // untouched — no silent overwrite
   });
 });

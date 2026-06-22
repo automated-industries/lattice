@@ -41,6 +41,7 @@ import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
+import { dispatchImportRoute } from './import-routes.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
@@ -768,6 +769,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 sessionId,
                 pathname,
                 method,
+              });
+            },
+          },
+          // ── Structured-source import (apply) ──
+          // The importer is reachable only via dropping a file in the assistant
+          // chat; this materializes the user-confirmed proposal, re-reading the
+          // file's bytes from its `fileId` (its retained blob).
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/import/')) return false;
+              return await dispatchImportRoute(req, res, {
+                db: active.db,
+                configPath: active.configPath,
+                latticeRoot: dirname(active.configPath),
+                validTables: active.validTables,
+                softDeletable: active.softDeletable,
               });
             },
           },

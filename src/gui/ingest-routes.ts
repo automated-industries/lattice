@@ -513,6 +513,10 @@ export async function dispatchIngestRoute(
       },
       forcePrivate ? 'private' : undefined,
     );
+    // Stamp the dropped file's row id onto a non-silent import proposal so the
+    // inline confirm card's Apply can resolve it (the apply route re-reads the
+    // file's bytes from this row's retained blob).
+    if (autoImport?.reason) autoImport.fileId = id;
     // Seamless auto-dedup: a byte-identical re-upload is merged onto the OLDEST
     // existing copy (this just-created row is soft-deleted — recoverable from
     // Trash / Undo) and enrichment is skipped. The only signal is the 'system'
@@ -557,15 +561,9 @@ export async function dispatchIngestRoute(
         source: 'system',
         summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables`,
       });
-    } else if (autoImport?.reason === 'no-date') {
-      ctx.feed.publish({
-        table: 'files',
-        op: 'update',
-        rowId: id,
-        source: 'system',
-        summary: `"${name}" matches an existing document, but no snapshot date was found — open Import Dashboard Data to set it.`,
-      });
     }
+    // A non-silent proposal (`reason` set) surfaces via the inline confirm card in
+    // the assistant rail (the `autoImport` proposal in the response below) — no pill.
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
       const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res, forcePrivate);
