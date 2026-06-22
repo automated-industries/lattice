@@ -33,6 +33,7 @@ export function deriveCanonicalContexts(
       childrenOf.set(rel.table, list);
     }
   }
+  const byName = new Map(tables.map((t) => [t.name, t.definition] as const));
 
   const out: { table: string; definition: EntityContextDefinition }[] = [];
   for (const { name, definition } of tables) {
@@ -53,13 +54,47 @@ export function deriveCanonicalContexts(
       };
     }
 
-    // hasMany rollups — the child rows that point back to this entity.
+    // Child rollups — rows that point back to this entity. A RELATIONSHIP/junction
+    // child renders the REMOTE entity via `manyToMany` (so each side shows the
+    // OTHER — symmetric by construction: contact→meetings, meeting→contacts); a
+    // first-class child renders its own rows via `hasMany`. Rendering a junction
+    // as a raw `hasMany` dump surfaces only the FK pointing back at THIS parent
+    // (the parent's own id, repeated) and never the remote link — the asymmetry
+    // this fixes.
     for (const child of childrenOf.get(name) ?? []) {
-      files[`${child.table.toUpperCase()}.md`] = {
-        source: { type: 'hasMany', table: child.table, foreignKey: child.foreignKey },
-        render: renderRelated(child.table),
-        omitIfEmpty: true,
-      };
+      const childDef = byName.get(child.table);
+      const childBt = childDef ? belongsToRelations(childDef) : [];
+      const [rel0, rel1] = childBt;
+      if (childDef && rel0 && rel1 && isRenderJunction(childDef, childBt)) {
+        // localKey = the FK pointing back at THIS entity; remoteKey = the other.
+        const localRel = rel0.foreignKey === child.foreignKey ? rel0 : rel1;
+        const remoteRel = localRel === rel0 ? rel1 : rel0;
+        // File named for the REMOTE entity. A self-referential junction (both FKs
+        // point back at this table) would collide on the remote name, so for that
+        // case disambiguate the file by the remote FK column.
+        const fileKey =
+          remoteRel.table === name
+            ? `${child.table.toUpperCase()}__${remoteRel.foreignKey.toUpperCase()}.md`
+            : `${remoteRel.table.toUpperCase()}.md`;
+        files[fileKey] = {
+          source: {
+            type: 'manyToMany',
+            junctionTable: child.table,
+            localKey: localRel.foreignKey,
+            remoteKey: remoteRel.foreignKey,
+            remoteTable: remoteRel.table,
+            references: remoteRel.references ?? 'id',
+          } satisfies EntityFileSource,
+          render: renderRelated(remoteRel.table),
+          omitIfEmpty: true,
+        };
+      } else {
+        files[`${child.table.toUpperCase()}.md`] = {
+          source: { type: 'hasMany', table: child.table, foreignKey: child.foreignKey },
+          render: renderRelated(child.table),
+          omitIfEmpty: true,
+        };
+      }
     }
 
     out.push({
@@ -71,7 +106,72 @@ export function deriveCanonicalContexts(
       },
     });
   }
+  assertJunctionRenderSymmetry(out);
   return out;
+}
+
+/**
+ * Should a child table render as a RELATIONSHIP (resolve the REMOTE entity via
+ * `manyToMany`) instead of a raw child-row dump (`hasMany`)? True for a table that
+ * connects exactly two entities: a PURE junction (only the two FK columns + system
+ * columns) OR a PAYLOAD-bearing junction whose PRIMARY KEY is exactly the two FK
+ * columns (its identity IS the endpoint pair — e.g. `contact_meeting(contact_id,
+ * meeting_id, role, rsvp)`). A first-class entity that merely carries two FKs keeps
+ * its own `id` PK + content columns and renders its own rows (`hasMany`), never
+ * collapsed into the remote side.
+ */
+function isRenderJunction(def: TableDefinition, bt: BelongsToRelation[]): boolean {
+  if (bt.length !== 2) return false;
+  const fks = new Set(bt.map((r) => r.foreignKey));
+  if (fks.size !== 2) return false; // the two FKs must be distinct columns
+  const pk = Array.isArray(def.primaryKey)
+    ? def.primaryKey
+    : def.primaryKey != null
+      ? [def.primaryKey]
+      : [];
+  // (a) composite PK = exactly the two FK columns → the row's identity is the pair.
+  if (pk.length === 2 && pk.every((c) => fks.has(c))) return true;
+  // (b) pure junction: every column is one of the two FKs or a system column.
+  const SYSTEM = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+  return Object.keys(def.columns).every((c) => fks.has(c) || SYSTEM.has(c));
+}
+
+/**
+ * Render-time symmetry invariant — fail loudly (a one-sided junction render
+ * silently hides the link from one side, a correctness/visibility bug). For every
+ * `manyToMany` source emitted under entity A for junction J (localKey=fkA,
+ * remoteKey=fkB, remoteTable=B), the derived context for B MUST emit the
+ * reciprocal source for J (localKey=fkB, remoteKey=fkA). A remote table with no
+ * derived context (e.g. a system table that never renders) is skipped. With the
+ * by-construction derivation above this never fires; it guards a future
+ * regression or a junction whose remote relation is malformed.
+ */
+function assertJunctionRenderSymmetry(
+  out: { table: string; definition: EntityContextDefinition }[],
+): void {
+  const byTable = new Map(out.map((o) => [o.table, o] as const));
+  for (const { table, definition } of out) {
+    for (const spec of Object.values(definition.files)) {
+      const s = spec.source;
+      if (s.type !== 'manyToMany') continue;
+      const remote = byTable.get(s.remoteTable);
+      if (!remote) continue; // remote has no derived context → nothing to reciprocate
+      const reciprocal = Object.values(remote.definition.files).some(
+        (rs) =>
+          rs.source.type === 'manyToMany' &&
+          rs.source.junctionTable === s.junctionTable &&
+          rs.source.localKey === s.remoteKey &&
+          rs.source.remoteKey === s.localKey,
+      );
+      if (!reciprocal) {
+        throw new Error(
+          `Junction render asymmetry: "${s.junctionTable}" renders under "${table}" ` +
+            `(→ "${s.remoteTable}") but "${s.remoteTable}" has no reciprocal render back ` +
+            `to "${table}" — a one-sided junction render hides the link from one side.`,
+        );
+      }
+    }
+  }
 }
 
 function belongsToRelations(def: TableDefinition): BelongsToRelation[] {
