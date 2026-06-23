@@ -6,12 +6,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [4.2.4] — unreleased
+## [4.3.0] — unreleased
 
-Release on the 4.2 line. Two additive features — **connectors** and inline
-**HTML files** in the GUI assistant. Additive on 4.2 (every 4.2 caller runs
-unchanged); the connector layer and its optional dependency are inert until a
-connector is configured.
+Minor release. Two additive features — **connectors** and inline **HTML files**
+in the GUI assistant. Additive on 4.2 (every 4.2 caller runs unchanged); the
+connector layer and its optional dependency are inert until a connector is
+configured.
 
 ### Added — Connectors
 

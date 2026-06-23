@@ -21,7 +21,7 @@ import { appJs } from '../../src/gui/app/script.js';
 // frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
 // JSON/xlsx file into the assistant chat: the upload returns a proposal and an
 // inline confirm card renders into the assistant rail (no top-bar button, no
-// modal). The 4.2.4 release adds two GUI features. (1) The Connectors settings
+// modal). The 4.3 release adds two GUI features. (1) The Connectors settings
 // panel (renderConnectorsPanel + the "Connectors" drawer tab + the sidebar
 // "Connected" badge for connected data types). (2) Inline HTML files: the file
 // preview renders an `artifact_type='html'` file live in a sandboxed `srcdoc`
