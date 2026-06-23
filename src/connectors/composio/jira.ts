@@ -161,6 +161,10 @@ const comments = model(
     { fkColumn: 'author_id', dstTable: 'jira_users', type: 'authored_by' },
   ],
 );
+// Comments come from the per-issue Jira endpoint: the sync engine iterates the
+// already-synced issue keys, passes each as `parentKey`, and stamps it onto the
+// comment's `issue_key` FK column.
+comments.parent = { table: 'jira_issues', keyColumn: 'issue_key', childColumn: 'issue_key' };
 
 const users = model(
   'jira_users',
@@ -408,10 +412,14 @@ const fetch: Record<string, ModelFetchSpec> = {
     },
   ),
   comment: {
-    // Comments are fetched per-issue; the sync engine supplies the issue key in
-    // `arguments.issueIdOrKey` by iterating known issues (see the sync engine).
+    // Comments are fetched per-issue; the sync engine passes the issue key as
+    // `parentKey`, which becomes the `issueIdOrKey` action argument.
     action: 'JIRA_GET_COMMENTS',
-    args: (cursor) => ({ startAt: Number(cursor) || 0, maxResults: PAGE_SIZE }),
+    args: (cursor, parentKey) => ({
+      issueIdOrKey: parentKey,
+      startAt: Number(cursor) || 0,
+      maxResults: PAGE_SIZE,
+    }),
     map: (data) => {
       const payload = unwrap(data);
       const items = pickArray(payload, ['comments', 'values']);

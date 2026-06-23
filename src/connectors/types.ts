@@ -46,6 +46,20 @@ export interface ConnectedModelDef {
   graphEdges?: ConnectedEdgeSpec[];
   /** Embedded text columns, so the sync engine can refresh embeddings. */
   embedded?: boolean;
+  /**
+   * Declares this model is fetched once *per parent row* rather than in one pass
+   * (e.g. comments fetched per issue). The sync engine queries the parent table's
+   * already-synced keys and calls {@link Connector.listChanges} with each as
+   * `parentKey`. Omit for models fetched in a single paged pass.
+   */
+  parent?: {
+    /** The parent connected table (must be synced earlier in the model order). */
+    table: string;
+    /** The parent's key column to iterate (its natural key / primary key). */
+    keyColumn: string;
+    /** The FK column on THIS table to stamp with each parent key during sync. */
+    childColumn: string;
+  };
 }
 
 /**
@@ -82,6 +96,8 @@ export interface ListChangesContext {
   userId: string;
   /** Cursor from a prior page, or null for a full pull. */
   cursor?: string | null;
+  /** Parent row key for a per-parent model (e.g. an issue key when fetching its comments). */
+  parentKey?: string;
 }
 
 /**

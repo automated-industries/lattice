@@ -54,6 +54,9 @@ export {
   defineJiraTables,
 } from './composio/jira.js';
 
+export { syncConnector, syncIfStale, syncStaleConnectors, DEFAULT_STALE_MS } from './sync.js';
+export type { SyncConnectorResult, SyncConnectorOptions } from './sync.js';
+
 import { registerJiraToolkit } from './composio/jira.js';
 
 // Register the built-in toolkits so the Composio connector can serve them.

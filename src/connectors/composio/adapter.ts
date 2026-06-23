@@ -24,8 +24,11 @@ import type { ComposioClient } from './client.js';
 export interface ModelFetchSpec {
   /** The Composio action/tool slug, e.g. `'JIRA_SEARCH_FOR_ISSUES_USING_JQL'`. */
   action: string;
-  /** Build the action arguments for a page given the prior cursor (null = first). */
-  args(cursor: string | null): Record<string, unknown>;
+  /**
+   * Build the action arguments for a page given the prior cursor (null = first)
+   * and, for a per-parent model, the current parent row key.
+   */
+  args(cursor: string | null, parentKey?: string): Record<string, unknown>;
   /** Map the action's raw `data` into records + the next cursor (null = last page). */
   map(data: unknown): { records: ExternalRecord[]; nextCursor: string | null };
 }
@@ -106,7 +109,7 @@ export class ComposioConnector implements Connector {
       const res = await client.execute(fetchSpec.action, {
         userId: ctx.userId,
         connectionId: ctx.connectionId,
-        arguments: fetchSpec.args(cursor),
+        arguments: fetchSpec.args(cursor, ctx.parentKey),
       });
       // Fail loudly — a connector fetch is an external operation; never swallow it.
       if (!res.successful) {
