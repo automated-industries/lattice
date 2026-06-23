@@ -6,6 +6,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.2.1] — unreleased
+
+Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
+unchanged).
+
+### Fixed
+
+- **Self-healing SQLite engine across a Node-runtime change.** The local SQLite
+  backend is powered by the `better-sqlite3` native module, whose compiled
+  binary is pinned to the Node ABI present at install time. When the runtime's
+  Node changes (a package-manager bump, a different Node in CI vs. local, etc.)
+  the prebuilt binary no longer loads and the SQLite path used to crash at
+  module init with a cryptic native `NODE_MODULE_VERSION` error. The module is
+  now loaded **lazily** (matching the existing `pg` loader) and **self-heals**:
+  on a detected ABI mismatch it rebuilds `better-sqlite3` for the current
+  runtime in-process, then continues. A clear, system-agnostic error is
+  surfaced only as a last resort — the module is genuinely not installed, the
+  rebuild can't complete, or auto-rebuild was opted out. Set
+  `LATTICE_SQLITE_NO_AUTOREBUILD=1` to disable the automatic rebuild. New
+  internal module `src/db/load-sqlite.ts` (exported helpers `loadSqlite`,
+  `resolveSqliteCtor`).
+
 ## [4.2.0] — unreleased
 
 Feature release on 4.1 (**additive** — every 4.1 caller runs unchanged): import
