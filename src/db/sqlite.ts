@@ -1,6 +1,7 @@
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import type { StorageAdapter, PreparedStatement, TxClient } from './adapter.js';
 import type { Row } from '../types.js';
+import { loadSqlite } from './load-sqlite.js';
 
 export class SQLiteAdapter implements StorageAdapter {
   readonly dialect = 'sqlite' as const;
@@ -21,7 +22,12 @@ export class SQLiteAdapter implements StorageAdapter {
   }
 
   open(): void {
-    this._db = new Database(this._path);
+    // better-sqlite3 is loaded lazily here (not via a static top-level import)
+    // so a Node-runtime change never crashes module init with a cryptic native
+    // NODE_MODULE_VERSION error. loadSqlite() self-heals an ABI mismatch by
+    // rebuilding the native module for the current runtime; see load-sqlite.ts.
+    const Ctor = loadSqlite();
+    this._db = new Ctor(this._path);
     this._db.pragma(`busy_timeout = ${this._busyTimeout.toString()}`);
     if (this._wal) {
       this._db.pragma('journal_mode = WAL');
