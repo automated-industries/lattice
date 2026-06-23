@@ -17,6 +17,7 @@ Complete reference for `lattice.config.yml` — the YAML schema config format in
 - [Multiple entities](#multiple-entities)
 - [Programmatic config API](#programmatic-config-api)
 - [Complete example](#complete-example)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -451,3 +452,29 @@ without `fts` are still searchable via the LIKE fallback. Indexes are created
 **only** for opt-in tables, so a library consumer with no `fts` config incurs
 no index and no write-path overhead. See `docs/api-reference.md` →
 _Full-text search_ for the `fullTextSearch` API.
+
+## Troubleshooting
+
+### The local SQLite engine auto-rebuilds when the Node runtime changes
+
+The local SQLite backend is powered by the `better-sqlite3` native module,
+whose compiled binary is pinned to the Node ABI present when it was installed.
+If your Node version later changes — a package-manager upgrade, a version
+switch via a Node manager, or simply a different Node in CI than on your
+machine — that prebuilt binary no longer matches the runtime.
+
+Lattice handles this transparently: the SQLite engine is loaded the first time
+a workspace opens, and when it detects an ABI mismatch it **automatically
+rebuilds `better-sqlite3` for the current runtime** in-process, then continues.
+You'll see a single line on stderr while the rebuild runs (so a slow rebuild
+isn't a silent hang); on success there's nothing else to do.
+
+An error is surfaced only as a last resort — when the module isn't installed at
+all, or the automatic rebuild can't complete (no build toolchain, no network to
+fetch a prebuild, etc.). In that case the message tells you exactly what to run:
+`npm rebuild better-sqlite3` (or a clean reinstall), then retry.
+
+To disable the automatic rebuild (e.g. in a sandboxed or read-only environment
+where you'd rather manage the native module yourself), set the environment
+variable `LATTICE_SQLITE_NO_AUTOREBUILD=1`. With it set, an ABI mismatch raises
+the same actionable error instead of attempting a rebuild.
