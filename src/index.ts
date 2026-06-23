@@ -157,6 +157,7 @@ export type { AutoUpdateResult } from './auto-update.js';
 // v1.6 additions — pluggable storage adapters
 export type { StorageAdapter, PreparedStatement } from './db/adapter.js';
 export { SQLiteAdapter } from './db/sqlite.js';
+export { DenoSqliteAdapter } from './db/sqlite-deno.js';
 export { PostgresAdapter } from './db/postgres.js';
 export type { PostgresAdapterOptions } from './db/postgres.js';
 

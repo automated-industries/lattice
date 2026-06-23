@@ -536,13 +536,22 @@ export async function dispatchAssistantRoute(
     // 10 min: the manual flow has the user authorize, copy a code, and paste it
     // back, so the verifier/state must outlive a short window.
     const cookieOpts = 'HttpOnly; Path=/; Max-Age=600; SameSite=Lax';
-    res.writeHead(302, {
-      Location: buildAuthorizeUrl(cfg, state, pkceChallengeFor(verifier)),
-      'Set-Cookie': [
-        `lat_oauth_verifier=${verifier}; ${cookieOpts}`,
-        `lat_oauth_state=${state}; ${cookieOpts}`,
-      ],
-    });
+    const setCookie = [
+      `lat_oauth_verifier=${verifier}; ${cookieOpts}`,
+      `lat_oauth_state=${state}; ${cookieOpts}`,
+    ];
+    const authorizeUrl = buildAuthorizeUrl(cfg, state, pkceChallengeFor(verifier));
+    // Desktop/webview clients can't open a new tab, so they request this with
+    // `Accept: application/json` to get the authorize URL back (to open in the
+    // system browser) WHILE keeping the verifier/state cookies on the webview —
+    // so the later /oauth/exchange of the pasted code finds its verifier. The
+    // default browser path still gets the 302 redirect, unchanged.
+    if ((req.headers.accept ?? '').includes('application/json')) {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': setCookie });
+      res.end(JSON.stringify({ authorizeUrl }));
+      return true;
+    }
+    res.writeHead(302, { Location: authorizeUrl, 'Set-Cookie': setCookie });
     res.end();
     return true;
   }

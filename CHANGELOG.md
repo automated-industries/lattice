@@ -11,6 +11,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
 unchanged).
 
+### Added
+
+- **Downloadable desktop app (`deno desktop`).** A native, double-click build of
+  the Lattice GUI for macOS (`.dmg`) and Windows (`.msi`), in addition to the
+  `lattice gui` CLI. It serves the same GUI server in a native window and uses a
+  `node:sqlite`-backed adapter (`DenoSqliteAdapter`) in place of the native
+  `better-sqlite3` addon, which cannot load under Deno — the npm/Node build is
+  unchanged and still uses `better-sqlite3`. External links / OAuth open in the
+  system browser (a webview has no tabs). Upgrade-on-run via `Deno.autoUpdate()`;
+  installers + a `latest.json` manifest publish to GitHub Releases on a version
+  tag. Requires a Deno canary to build; v1 installers are unsigned. See
+  [docs/desktop.md](docs/desktop.md).
+
 ### Fixed
 
 - **Same-titled entities no longer overwrite each other on render.** Each entity

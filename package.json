@@ -44,6 +44,11 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "docs": "typedoc --out docs-generated src/index.ts",
+    "desktop:version:check": "node scripts/sync-desktop-version.mjs --check",
+    "test:deno": "deno test --no-check -A tests/deno/",
+    "desktop:dev": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-all desktop/main.ts",
+    "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --output dist-desktop/Lattice.dmg desktop/main.ts",
+    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --output dist-desktop/Lattice.msi desktop/main.ts",
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {

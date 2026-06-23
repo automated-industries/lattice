@@ -83,4 +83,32 @@ export default defineConfig([
       'exceljs',
     ],
   },
+
+  // -------------------------------------------------------------------------
+  // Desktop entry — ESM re-export of startGuiServer for the deno-desktop build
+  // -------------------------------------------------------------------------
+  {
+    entry: ['src/desktop-entry.ts'],
+    format: ['esm'],
+    define: versionDefine,
+    dts: false,
+    splitting: false,
+    sourcemap: false,
+    target: 'node18',
+    outDir: 'dist',
+    external: [
+      'pg',
+      'sharp',
+      'jsdom',
+      '@mozilla/readability',
+      'file-type',
+      '@anthropic-ai/sdk',
+      'mammoth',
+      'fflate',
+      'word-extractor',
+      'unpdf',
+      'ws',
+      'exceljs',
+    ],
+  },
 ]);
