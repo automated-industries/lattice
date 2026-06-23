@@ -80,6 +80,44 @@ verification) and the findings folded into the above.
 
 ---
 
+## [4.2.3] — unreleased
+
+Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
+unchanged).
+
+### Fixed
+
+- **Same-titled entities no longer overwrite each other on render.** Each entity
+  row is rendered into a directory named by its slug. When two rows produced the
+  **same** slug (e.g. two records with an identical title), they resolved to the
+  **same** directory, so one silently clobbered the other and a row that exists
+  in the data never got its own rendered context. Per-row slugs are now made
+  **unique within each table's render**: a slug used by exactly one row is left
+  unchanged (no churn for the common case), while colliding rows are
+  disambiguated with a short, stable suffix derived from their primary key. The
+  result is deterministic and order-independent — the same row keeps the same
+  directory across renders regardless of row order — so both rows now get their
+  own distinct directory with content. Custom `slug` functions are unaffected
+  (the disambiguation wraps the result rather than replacing the function), and
+  the existing slug sanitization + path-traversal validation are preserved.
+- **Cleanup now removes the directories of entity contexts that became collapsed
+  relations.** When a table stops being a first-class entity context — for
+  example a join table that the symmetric many-to-many change folds into a
+  relation and drops from the rendered set — its previously written directory
+  tree was never revisited by cleanup and lingered as orphaned directories
+  forever. Cleanup now sweeps a table that was an entity context in the previous
+  render but is no longer one, using the previous manifest as the record of what
+  the renderer managed — so only directories the renderer created are removed;
+  unrelated top-level directories and custom-`directory()` contexts are left
+  untouched. Respects the existing dry-run / orphan-callback options.
+- **One-time re-render to apply both fixes.** Both changes alter what reaches
+  disk for existing data, so the render-output format version is bumped: the
+  **first open after upgrading does a one-time full re-render** that de-collides
+  same-slug directories and sweeps the collapsed-context directories; subsequent
+  opens skip again once the manifest is re-stamped.
+
+---
+
 ## [4.2.2] — unreleased
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
