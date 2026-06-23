@@ -267,6 +267,7 @@ exports[`public API surface (additive-only) > exports only grow — no removal/r
   "toSafeDirName",
   "traverse",
   "truncate",
+  "updateConnectorConnection",
   "validateEntryId",
   "vectorIndexAvailable",
   "vectorIndexName",

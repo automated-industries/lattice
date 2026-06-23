@@ -105,6 +105,7 @@ describe('connectors routes (SQLite)', () => {
     method: string,
     url: string,
     body?: unknown,
+    connectedBy = 'u1',
   ): Promise<{ status: number; body: unknown; handled: boolean }> {
     const req = fakeReq(method, url, body);
     const { res, done } = fakeRes();
@@ -112,7 +113,7 @@ describe('connectors routes (SQLite)', () => {
       db: db!,
       connector: fake,
       outputDir: '/tmp/does-not-matter',
-      connectedBy: 'u1',
+      connectedBy,
     });
     if (!handled) return { status: 0, body: null, handled: false };
     return { ...(await done), handled: true };
@@ -178,7 +179,10 @@ describe('connectors routes (SQLite)', () => {
     expect(await db!.query('demo_things', {})).toHaveLength(1);
     const r = await call('DELETE', '/api/connectors/demo', {});
     expect(r.status).toBe(200);
-    expect(await db!.query('demo_things', {})).toHaveLength(0);
+    // hidden from live reads (deleted_at filtered), but soft-deleted (recoverable)
+    const live = await db!.query('demo_things', { filters: [{ col: 'deleted_at', op: 'isNull' }] });
+    expect(live).toHaveLength(0);
+    expect((await db!.query('demo_things', {}))[0]?.deleted_at).toBeTruthy();
     expect(fake.revoked).toEqual(['conn-1']);
   });
 
@@ -192,5 +196,50 @@ describe('connectors routes (SQLite)', () => {
     await open();
     const r = await call('GET', '/api/something-else');
     expect(r.handled).toBe(false);
+  });
+
+  it('scopes connectors per identity: member B cannot see/refresh/disconnect member A’s', async () => {
+    await open();
+    // A connects.
+    const a = (await call('POST', '/api/connectors/demo/finalize', undefined, 'alice')).body as {
+      connectorId: string;
+    };
+    // B lists — sees none of A's connectors.
+    const bList = (await call('GET', '/api/connectors', undefined, 'bob')).body as {
+      connectors: unknown[];
+    };
+    expect(bList.connectors).toHaveLength(0);
+    // B tries to refresh A's connector by id → 404 (app-layer ownership check).
+    const bRefresh = await call(
+      'POST',
+      '/api/connectors/demo/refresh',
+      { connectorId: a.connectorId },
+      'bob',
+    );
+    expect(bRefresh.status).toBe(404);
+    // B tries to disconnect A's connector by id → 404; A's data survives.
+    const bDelete = await call(
+      'DELETE',
+      '/api/connectors/demo',
+      { connectorId: a.connectorId },
+      'bob',
+    );
+    expect(bDelete.status).toBe(404);
+    expect(
+      await db!.query('demo_things', { filters: [{ col: 'deleted_at', op: 'isNull' }] }),
+    ).toHaveLength(1);
+  });
+
+  it('finalize is idempotent — re-running reuses the same connector (no duplicate)', async () => {
+    await open();
+    const first = (await call('POST', '/api/connectors/demo/finalize')).body as {
+      connectorId: string;
+    };
+    const second = (await call('POST', '/api/connectors/demo/finalize')).body as {
+      connectorId: string;
+    };
+    expect(second.connectorId).toBe(first.connectorId);
+    const list = (await call('GET', '/api/connectors')).body as { connectors: unknown[] };
+    expect(list.connectors).toHaveLength(1);
   });
 });

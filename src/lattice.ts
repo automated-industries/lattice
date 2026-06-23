@@ -1181,7 +1181,16 @@ export class Lattice {
     this._assertIdent(table);
     this._assertRowSize(table, row);
 
-    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
+    // Apply governance + connector-lineage defaults so a direct upsert into a
+    // connected/provenance table stamps the same defaults an insert() would
+    // (no-op for plain tables).
+    const sanitized = this._applyConnectedDefaults(
+      table,
+      this._applyGovernanceDefaults(
+        table,
+        this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+      ),
+    );
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
 

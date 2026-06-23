@@ -16,7 +16,9 @@
 
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
-import { extractEdgesFromColumn } from '../search/graph.js';
+import { runAsyncOrSync } from '../db/adapter.js';
+import { addEdges } from '../search/graph.js';
+import type { GraphEdge } from '../search/graph.js';
 import type { Connector, ConnectedModelDef, ListChangesContext } from './types.js';
 import { getConnector, listConnectors, recordSync } from './registry.js';
 
@@ -77,19 +79,16 @@ export async function syncConnector(
 
   try {
     for (const m of models) {
-      const seen = await syncModel(db, connector, toolkit, m, ctxBase, connectorId, now);
+      const { seen, edges } = await syncModel(db, connector, toolkit, m, ctxBase, connectorId, now);
       result.upserted[m.table] = seen.size;
-      if (pruneVanished) {
-        result.softDeleted[m.table] = await pruneVanished_(db, m, connectorId, seen);
+      // Edges are derived inline from the rows just synced (bounded to what
+      // changed) and batched — never a full-table re-scan of the connected table.
+      if (edges.length > 0) {
+        await addEdges(db.adapter, edges);
+        result.edges += edges.length;
       }
-      for (const edge of m.graphEdges ?? []) {
-        result.edges += await extractEdgesFromColumn(db.adapter, {
-          srcTable: m.table,
-          fkColumn: edge.fkColumn,
-          dstTable: edge.dstTable,
-          type: edge.type,
-          pkColumn: m.naturalKey,
-        });
+      if (pruneVanished) {
+        result.softDeleted[m.table] = await pruneVanished_(db, m, connectorId, seen, now);
       }
     }
     await recordSync(db, connectorId, { ok: true, at: now });
@@ -101,7 +100,7 @@ export async function syncConnector(
   return result;
 }
 
-/** Sync one model, returning the set of natural keys seen this pass. */
+/** Sync one model, returning the natural keys seen this pass + the edges to add. */
 async function syncModel(
   db: Lattice,
   connector: Connector,
@@ -110,45 +109,85 @@ async function syncModel(
   ctxBase: Omit<ListChangesContext, 'parentKey'>,
   connectorId: string,
   now: string,
-): Promise<Set<string>> {
+): Promise<{ seen: Set<string>; edges: GraphEdge[] }> {
   const seen = new Set<string>();
+  const edges: GraphEdge[] = [];
+  // Clear deleted_at so a previously soft-deleted natural key is RESURRECTED on
+  // conflict when it reappears in the source (otherwise it would stay hidden).
   const stamp = (row: Row): Row => ({
     ...row,
+    deleted_at: null,
     _source_connector_id: connectorId,
     _source_model: m.model,
     _source_synced_at: now,
   });
+
+  const ingest = async (rec: { id: string; row: Row }, extra?: Row): Promise<void> => {
+    const row = extra ? { ...rec.row, ...extra } : rec.row;
+    await db.upsert(m.table, stamp(row));
+    seen.add(rec.id);
+    // Derive graph edges from this row's FK columns (bounded to synced rows).
+    for (const e of m.graphEdges ?? []) {
+      const dst = row[e.fkColumn];
+      if (dst != null) {
+        edges.push({
+          srcTable: m.table,
+          srcId: rec.id,
+          dstTable: e.dstTable,
+          dstId: String(dst as string | number),
+          type: e.type,
+        });
+      }
+    }
+  };
 
   if (m.parent) {
     const parent = m.parent;
     const parentKeys = await collectConnectorKeys(db, parent.table, parent.keyColumn, connectorId);
     for (const parentKey of parentKeys) {
       for await (const rec of connector.listChanges(toolkit, m.model, { ...ctxBase, parentKey })) {
-        await db.upsert(m.table, stamp({ ...rec.row, [parent.childColumn]: parentKey }));
-        seen.add(rec.id);
+        await ingest(rec, { [parent.childColumn]: parentKey });
       }
     }
   } else {
     for await (const rec of connector.listChanges(toolkit, m.model, ctxBase)) {
-      await db.upsert(m.table, stamp(rec.row));
-      seen.add(rec.id);
+      await ingest(rec);
     }
   }
-  return seen;
+  return { seen, edges };
 }
 
-/** Soft-delete this connector's rows whose natural key wasn't seen this sync. */
+const EDGES_TABLE = '__lattice_edges';
+
+/**
+ * Soft-delete this connector's LIVE rows whose natural key wasn't seen this sync,
+ * and drop their graph edges. Soft-delete goes through `db.update(deleted_at)` so
+ * it records a changelog entry + fires the render hooks (a raw DELETE would not).
+ *
+ * SAFETY: if NOTHING was seen this pass, skip the prune entirely. An empty fetch
+ * is far more likely a transient/auth/shape failure than the genuine
+ * disappearance of every row — soft-deleting the whole table on an empty result
+ * would be silent mass data loss. Lingering stale rows are the safe tradeoff.
+ */
 async function pruneVanished_(
   db: Lattice,
   m: ConnectedModelDef,
   connectorId: string,
   seen: Set<string>,
+  now: string,
 ): Promise<number> {
+  if (seen.size === 0) return 0; // never prune-to-zero on an empty/failed fetch
   const existing = await collectConnectorKeys(db, m.table, m.naturalKey, connectorId);
   let count = 0;
   for (const key of existing) {
     if (!seen.has(key)) {
-      await db.delete(m.table, key);
+      await db.update(m.table, key, { deleted_at: now });
+      // Drop edges originating from the now-hidden row (bounded to pruned keys).
+      await runAsyncOrSync(
+        db.adapter,
+        `DELETE FROM "${EDGES_TABLE}" WHERE src_table = ? AND src_id = ?`,
+        [m.table, key],
+      );
       count++;
     }
   }
@@ -170,7 +209,12 @@ export async function collectConnectorKeys(
   let cursor: string | undefined;
   for (;;) {
     const page = await db.queryPage(table, {
-      filters: [{ col: '_source_connector_id', op: 'eq', val: connectorId }],
+      // LIVE rows only: a soft-deleted key must not count as "existing" for the
+      // prune diff, nor as a parent to re-fetch children for.
+      filters: [
+        { col: '_source_connector_id', op: 'eq', val: connectorId },
+        { col: 'deleted_at', op: 'isNull' },
+      ],
       projection: [keyColumn],
       orderBy: keyColumn,
       limit: KEY_PAGE_SIZE,
@@ -202,21 +246,36 @@ export async function syncIfStale(
   return syncConnector(db, connector, connectorId);
 }
 
+/** Outcome of a batch stale-sync: the connectors that synced + the ones that failed. */
+export interface SyncStaleResult {
+  synced: SyncConnectorResult[];
+  failed: { connectorId: string; error: string }[];
+}
+
 /**
  * Sync every stale connector served by this connector implementation. The GUI
  * calls this on load so connected data refreshes hourly without a scheduler.
+ *
+ * Per-connector failures are ISOLATED: one connector with a broken/expired
+ * connection records its error (via syncConnector's recordSync) and is reported
+ * in `failed`, but never blocks the refresh of the member's other connectors.
  */
 export async function syncStaleConnectors(
   db: Lattice,
   connector: Connector,
   maxAgeMs: number = DEFAULT_STALE_MS,
-): Promise<SyncConnectorResult[]> {
+): Promise<SyncStaleResult> {
   const all = await listConnectors(db);
-  const results: SyncConnectorResult[] = [];
+  const synced: SyncConnectorResult[] = [];
+  const failed: { connectorId: string; error: string }[] = [];
   for (const rec of all) {
     if (rec.connector !== connector.connector || rec.status === 'disconnected') continue;
-    const r = await syncIfStale(db, connector, rec.id, maxAgeMs);
-    if (r) results.push(r);
+    try {
+      const r = await syncIfStale(db, connector, rec.id, maxAgeMs);
+      if (r) synced.push(r);
+    } catch (err) {
+      failed.push({ connectorId: rec.id, error: err instanceof Error ? err.message : String(err) });
+    }
   }
-  return results;
+  return { synced, failed };
 }

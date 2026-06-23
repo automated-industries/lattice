@@ -154,20 +154,47 @@ export async function getConnectorByToolkit(
   const params = connectedBy ? [toolkit, connectedBy] : [toolkit];
   const row = (await getAsyncOrSync(
     db.adapter,
-    `SELECT * FROM "${CONNECTORS_TABLE}" WHERE ${where} ORDER BY "created_at" DESC LIMIT 1`,
+    `SELECT * FROM "${CONNECTORS_TABLE}" WHERE ${where} ORDER BY "created_at" DESC, "id" DESC LIMIT 1`,
     params,
   )) as ConnectorRow | undefined;
   return row ? toRecord(row) : null;
 }
 
-/** List all connectors (RLS scopes this per-member on cloud). */
-export async function listConnectors(db: Lattice): Promise<ConnectorRecord[]> {
+/**
+ * List connectors. Pass `connectedBy` to scope to one identity — an APP-LAYER
+ * fail-closed filter that does not rely on RLS (the app/owner connection is
+ * BYPASSRLS, so RLS would not filter its own reads). Callers serving a specific
+ * member MUST pass it so one member can't see another's connectors.
+ */
+export async function listConnectors(
+  db: Lattice,
+  connectedBy?: string,
+): Promise<ConnectorRecord[]> {
   await ensureConnectorRegistry(db);
-  const rows = (await allAsyncOrSync(
-    db.adapter,
-    `SELECT * FROM "${CONNECTORS_TABLE}" ORDER BY "created_at" DESC`,
-  )) as unknown as ConnectorRow[];
+  const rows = (connectedBy
+    ? await allAsyncOrSync(
+        db.adapter,
+        `SELECT * FROM "${CONNECTORS_TABLE}" WHERE "connected_by" = ? ORDER BY "created_at" DESC`,
+        [connectedBy],
+      )
+    : await allAsyncOrSync(
+        db.adapter,
+        `SELECT * FROM "${CONNECTORS_TABLE}" ORDER BY "created_at" DESC`,
+      )) as unknown as ConnectorRow[];
   return rows.map(toRecord);
+}
+
+/** Update a connector's backend connection id + mark it connected (re-auth/reuse). */
+export async function updateConnectorConnection(
+  db: Lattice,
+  id: string,
+  composioConnectionId: string,
+): Promise<void> {
+  await runAsyncOrSync(
+    db.adapter,
+    `UPDATE "${CONNECTORS_TABLE}" SET "composio_connection_id" = ?, "status" = 'connected', "updated_at" = ? WHERE "id" = ?`,
+    [composioConnectionId, new Date().toISOString(), id],
+  );
 }
 
 /** Record a sync outcome: success stamps `last_sync_at` + clears the error. */

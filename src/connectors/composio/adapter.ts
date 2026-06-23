@@ -29,8 +29,15 @@ export interface ModelFetchSpec {
    * and, for a per-parent model, the current parent row key.
    */
   args(cursor: string | null, parentKey?: string): Record<string, unknown>;
-  /** Map the action's raw `data` into records + the next cursor (null = last page). */
-  map(data: unknown): { records: ExternalRecord[]; nextCursor: string | null };
+  /**
+   * Map the action's raw `data` into records + the next cursor (null = last page).
+   * Receives the REQUESTED cursor so offset paging advances from the request, not
+   * from a (possibly absent) echoed `startAt`.
+   */
+  map(
+    data: unknown,
+    cursor: string | null,
+  ): { records: ExternalRecord[]; nextCursor: string | null };
 }
 
 /** A toolkit's connected models plus their per-model fetch specs. */
@@ -117,7 +124,7 @@ export class ComposioConnector implements Connector {
           `Composio action "${fetchSpec.action}" failed for ${toolkit}/${model}: ${res.error ?? 'unknown error'}`,
         );
       }
-      const { records, nextCursor } = fetchSpec.map(res.data);
+      const { records, nextCursor } = fetchSpec.map(res.data, cursor);
       for (const record of records) yield record;
       if (!nextCursor) return;
       cursor = nextCursor;

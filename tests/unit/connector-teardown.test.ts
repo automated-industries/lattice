@@ -89,9 +89,13 @@ describe('connector teardown (SQLite)', () => {
     const res = await disconnectConnector(db, fake, id);
     expect(res.softDeleted).toEqual({ demo_tasks: 1, demo_projects: 1 });
 
-    // rows no longer available
-    expect(await db.query('demo_tasks', {})).toHaveLength(0);
-    expect(await db.query('demo_projects', {})).toHaveLength(0);
+    // rows no longer available (hidden from live reads: render/search/GUI filter deleted_at)
+    expect(await live(db, 'demo_tasks')).toHaveLength(0);
+    expect(await live(db, 'demo_projects')).toHaveLength(0);
+    // but SOFT-deleted, not hard-deleted: still physically present with deleted_at set
+    const t1 = (await db.query('demo_tasks', {}))[0];
+    expect(t1).toBeDefined();
+    expect(t1!.deleted_at).toBeTruthy();
     // registry row kept, marked disconnected
     expect((await getConnector(db, id))?.status).toBe('disconnected');
     // backend connection revoked
@@ -102,7 +106,14 @@ describe('connector teardown (SQLite)', () => {
     const { db, fake, id } = await setupAndSync();
     await disconnectConnector(db, fake, id, { mode: 'hard' });
     expect(await getConnector(db, id)).toBeNull();
-    expect(await db.query('demo_tasks', {})).toHaveLength(0);
+    expect(await live(db, 'demo_tasks')).toHaveLength(0);
+    // rows soft-deleted (recoverable), not physically destroyed
+    expect((await db.query('demo_tasks', {}))[0]?.deleted_at).toBeTruthy();
     expect(fake.revoked).toEqual(['conn-9']);
   });
 });
+
+/** Rows visible to live reads (render/search/GUI all filter deleted_at IS NULL). */
+function live(db: Lattice, table: string): Promise<unknown[]> {
+  return db.query(table, { filters: [{ col: 'deleted_at', op: 'isNull' }] });
+}

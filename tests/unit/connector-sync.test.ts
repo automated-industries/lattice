@@ -135,7 +135,7 @@ describe('connector sync (SQLite)', () => {
     expect((await getConnector(db, id))?.lastSyncAt).toBeTruthy();
   });
 
-  it('is idempotent and prunes rows that vanish from the source', async () => {
+  it('is idempotent and SOFT-deletes (not hard-deletes) rows that vanish', async () => {
     const { db, fake, id } = await setup();
     await syncConnector(db, fake, id);
     // T2 disappears from the source
@@ -143,10 +143,51 @@ describe('connector sync (SQLite)', () => {
     const res = await syncConnector(db, fake, id);
     expect(res.upserted.demo_tasks).toBe(1);
     expect(res.softDeleted.demo_tasks).toBe(1);
-    // T1 updated, T2 soft-deleted (no longer returned by a normal query)
     expect((await db.get('demo_tasks', 'T1'))!.title).toBe('do x (edited)');
-    const live = await db.query('demo_tasks', {});
-    expect(live.map((r) => r.tid)).toEqual(['T1']);
+    // Live reads (render/search/GUI filter deleted_at) show only T1...
+    const liveRows = await db.query('demo_tasks', {
+      filters: [{ col: 'deleted_at', op: 'isNull' }],
+    });
+    expect(liveRows.map((r) => r.tid)).toEqual(['T1']);
+    // ...but T2 is SOFT-deleted: still physically present with deleted_at set (recoverable).
+    const t2 = (await db.query('demo_tasks', {})).find((r) => r.tid === 'T2');
+    expect(t2).toBeDefined();
+    expect(t2!.deleted_at).toBeTruthy();
+  });
+
+  it('resurrects a soft-deleted row when it reappears in the source', async () => {
+    const { db, fake, id } = await setup();
+    const liveTasks = () =>
+      db.query('demo_tasks', { filters: [{ col: 'deleted_at', op: 'isNull' }] });
+    await syncConnector(db, fake, id); // T1, T2 live
+    fake.tasks = [{ id: 'T1', row: { tid: 'T1', title: 'do x', pid: 'P1' } }]; // T2 vanishes
+    await syncConnector(db, fake, id); // T2 soft-deleted
+    expect((await liveTasks()).map((r) => r.tid)).not.toContain('T2');
+    // T2 comes back
+    fake.tasks = [
+      { id: 'T1', row: { tid: 'T1', title: 'do x', pid: 'P1' } },
+      { id: 'T2', row: { tid: 'T2', title: 'back again', pid: 'P1' } },
+    ];
+    await syncConnector(db, fake, id);
+    const t2 = (await liveTasks()).find((r) => r.tid === 'T2');
+    expect(t2).toBeDefined(); // resurrected (deleted_at cleared on conflict)
+    expect(t2!.title).toBe('back again');
+    expect(t2!.deleted_at).toBeNull();
+  });
+
+  it('does NOT prune when a sync returns zero rows (guards against a wipe on an empty/failed fetch)', async () => {
+    const { db, fake, id } = await setup();
+    await syncConnector(db, fake, id);
+    // A bad sync: the source returns nothing (shape drift / auth / transient).
+    fake.tasks = [];
+    fake.projects = [];
+    const res = await syncConnector(db, fake, id);
+    expect(res.softDeleted.demo_tasks).toBe(0); // skipped, not wiped
+    // Existing rows survive (live).
+    const liveTasks = await db.query('demo_tasks', {
+      filters: [{ col: 'deleted_at', op: 'isNull' }],
+    });
+    expect(liveTasks.length).toBe(2);
   });
 
   it('syncIfStale skips a fresh connector and runs a stale one', async () => {

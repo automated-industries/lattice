@@ -85,8 +85,10 @@ await disconnectConnector(db, connector, connectorId, { outputDir });
 Soft-deletes every ingested row (children before parents), prunes rendered
 context files, marks the connector `disconnected` (use `{ mode: 'hard' }` to also
 remove the registry row), and revokes the backend connection. Soft-deleted rows
-drop out of queries, search, and graph traversal automatically, so their derived
-enrichment and edges become dead-ends with no extra bookkeeping.
+drop out of the rendered context, full-text search, and the GUI listings (all of
+which filter `deleted_at IS NULL`), and their graph edges are removed — so the
+data is no longer available to the agent while remaining physically present and
+restorable.
 
 ## Cloud ACL
 

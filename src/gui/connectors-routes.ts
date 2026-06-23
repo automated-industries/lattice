@@ -7,9 +7,11 @@ import {
   getConnector,
   createConnector,
   getConnectorByToolkit,
+  updateConnectorConnection,
 } from '../connectors/registry.js';
 import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
+import { enableConnectorRls } from '../connectors/acl.js';
 import {
   getComposioApiKey,
   setComposioApiKey,
@@ -54,9 +56,9 @@ export async function dispatchConnectorsRoute(
   const { db, connector, outputDir, connectedBy } = deps;
 
   try {
-    // GET /api/connectors — list connectors + whether the Composio key is set.
+    // GET /api/connectors — list THIS member's connectors + whether the key is set.
     if (pathname === '/api/connectors' && method === 'GET') {
-      const connectors = await listConnectors(db);
+      const connectors = await listConnectors(db, connectedBy);
       sendJson(res, {
         apiKeySet: getComposioApiKey() !== null,
         toolkits: connector.toolkits(),
@@ -94,8 +96,8 @@ export async function dispatchConnectorsRoute(
 
     // POST /api/connectors/sync-if-stale — GUI-load refresh hook.
     if (pathname === '/api/connectors/sync-if-stale' && method === 'POST') {
-      const results = await syncStaleConnectors(db, connector);
-      sendJson(res, { synced: results.length });
+      const { synced, failed } = await syncStaleConnectors(db, connector);
+      sendJson(res, { synced: synced.length, failed: failed.length });
       return true;
     }
 
@@ -124,34 +126,62 @@ export async function dispatchConnectorsRoute(
       }
 
       // POST /api/connectors/<toolkit>/finalize — record the connection + initial sync.
+      // Idempotent: re-running OAuth reuses the existing connector for this
+      // (toolkit, member) instead of orphaning the prior one with a duplicate row.
       if (action === 'finalize' && method === 'POST') {
         const { connectionId } = await connector.completeAuth(connectedBy, toolkit);
-        const connectorId = await createConnector(db, {
-          connector: connector.connector,
-          toolkit,
-          displayName: toolkit,
-          composioConnectionId: connectionId,
-          connectedBy,
-        });
+        const existing = await getConnectorByToolkit(db, toolkit, connectedBy);
+        let connectorId: string;
+        if (existing) {
+          await updateConnectorConnection(db, existing.id, connectionId);
+          connectorId = existing.id;
+        } else {
+          connectorId = await createConnector(db, {
+            connector: connector.connector,
+            toolkit,
+            displayName: toolkit,
+            composioConnectionId: connectionId,
+            connectedBy,
+          });
+        }
+        // Define + (owner-only) secure the connected tables before ingest, so a
+        // cloud owner's rows are RLS-stamped on insert. No-op off-cloud/non-owner.
+        for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+        await enableConnectorRls(db, connector, toolkit);
         const result = await syncConnector(db, connector, connectorId);
         sendJson(res, { connectorId, result });
         return true;
       }
+
+      // Resolve the target connector for refresh/disconnect, verifying OWNERSHIP
+      // at the app layer (a caller-supplied id must belong to this member — never
+      // trust RLS alone, since the app connection is BYPASSRLS).
+      const resolveOwned = async (
+        bodyId: unknown,
+      ): Promise<{ id: string } | { error: string; status: number }> => {
+        if (typeof bodyId === 'string') {
+          const rec = await getConnector(db, bodyId);
+          if (rec?.connectedBy !== connectedBy) {
+            return { error: 'connector not found', status: 404 };
+          }
+          return { id: rec.id };
+        }
+        const rec = await getConnectorByToolkit(db, toolkit, connectedBy);
+        if (!rec) return { error: `No connected ${toolkit}`, status: 404 };
+        return { id: rec.id };
+      };
 
       // POST /api/connectors/<toolkit>/refresh — manual re-sync.
       if (action === 'refresh' && method === 'POST') {
         const body = await readJson<{ connectorId?: unknown }>(req).catch(
           () => ({}) as { connectorId?: unknown },
         );
-        const connectorId =
-          typeof body.connectorId === 'string'
-            ? body.connectorId
-            : (await getConnectorByToolkit(db, toolkit, connectedBy))?.id;
-        if (!connectorId) {
-          sendJson(res, { error: `No connected ${toolkit} to refresh` }, 404);
+        const owned = await resolveOwned(body.connectorId);
+        if ('error' in owned) {
+          sendJson(res, { error: owned.error }, owned.status);
           return true;
         }
-        const result = await syncConnector(db, connector, connectorId);
+        const result = await syncConnector(db, connector, owned.id);
         sendJson(res, { result });
         return true;
       }
@@ -161,15 +191,12 @@ export async function dispatchConnectorsRoute(
         const body = await readJson<{ connectorId?: unknown }>(req).catch(
           () => ({}) as { connectorId?: unknown },
         );
-        const connectorId =
-          typeof body.connectorId === 'string'
-            ? body.connectorId
-            : (await getConnectorByToolkit(db, toolkit, connectedBy))?.id;
-        if (!connectorId || !(await getConnector(db, connectorId))) {
-          sendJson(res, { error: `No connected ${toolkit} to disconnect` }, 404);
+        const owned = await resolveOwned(body.connectorId);
+        if ('error' in owned) {
+          sendJson(res, { error: owned.error }, owned.status);
           return true;
         }
-        const result = await disconnectConnector(db, connector, connectorId, { outputDir });
+        const result = await disconnectConnector(db, connector, owned.id, { outputDir });
         sendJson(res, { result });
         return true;
       }

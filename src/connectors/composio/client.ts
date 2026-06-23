@@ -145,10 +145,13 @@ export async function loadComposioClient(): Promise<ComposioClient> {
       return out;
     },
     async finalize(userId, toolkit) {
-      const { items } = await sdk.connectedAccounts.list({
+      const res = await sdk.connectedAccounts.list({
         userIds: [userId],
         toolkitSlugs: [toolkit],
       });
+      // Guard the response shape (a drifted SDK could return a non-array) so a
+      // mismatch yields a clear error, not a `Cannot read properties of undefined`.
+      const items = Array.isArray(res.items) ? res.items : [];
       const account = items[0];
       if (!account) {
         throw new ConnectorUnavailableError(

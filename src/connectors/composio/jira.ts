@@ -263,17 +263,34 @@ function pickArray(payload: Record<string, unknown>, keys: string[]): Record<str
 }
 
 /**
- * Offset-paging: compute the next cursor from the response's own
- * `startAt`/`total`/`isLast` (Jira echoes these), so `map` needs no prior cursor.
+ * Compute the next page cursor. Supports BOTH paging styles Jira/Composio may
+ * use: token paging (the enhanced JQL search returns an opaque `nextPageToken`)
+ * and classic offset paging (`startAt`/`total`/`isLast`). For offset paging the
+ * next offset is computed from the REQUESTED cursor, not a possibly-absent echoed
+ * `startAt`, so page 2 never re-requests page 1's window.
  */
-function nextOffsetCursor(payload: Record<string, unknown>, fetched: number): string | null {
+function nextPageCursor(
+  payload: Record<string, unknown>,
+  fetched: number,
+  cursor: string | null,
+): string | null {
+  const token = payload.nextPageToken;
+  if (typeof token === 'string' && token) return token; // token paging
   if (payload.isLast === true) return null;
-  const startAt = typeof payload.startAt === 'number' ? payload.startAt : 0;
+  const startAt = Number(cursor) || 0;
   const total = typeof payload.total === 'number' ? payload.total : undefined;
   const next = startAt + (fetched || PAGE_SIZE);
   if (total !== undefined) return next < total ? String(next) : null;
-  // No total provided: stop when a short (last) page comes back.
+  // No total / token: stop when a short (last) page comes back.
   return fetched < PAGE_SIZE ? null : String(next);
+}
+
+/** Page args from a cursor: a numeric cursor → offset; a non-numeric cursor → token. */
+function pageArgs(cursor: string | null): Record<string, unknown> {
+  if (cursor && Number.isNaN(Number(cursor))) {
+    return { nextPageToken: cursor, maxResults: PAGE_SIZE };
+  }
+  return { startAt: Number(cursor) || 0, maxResults: PAGE_SIZE };
 }
 
 const str = (v: unknown): string | null => {
@@ -282,21 +299,25 @@ const str = (v: unknown): string | null => {
   return String(v as string | number | boolean);
 };
 
-/** Build an offset-paged fetch spec from an arg-builder + a per-item mapper. */
+/**
+ * Build a paged fetch spec from non-paging args (e.g. a JQL clause) + a per-item
+ * mapper. Paging args (offset or token) are merged in automatically, and the next
+ * cursor supports both token and offset paging.
+ */
 function offsetFetch(
   action: string,
   arrayKeys: string[],
-  buildArgs: (startAt: number) => Record<string, unknown>,
+  extraArgs: () => Record<string, unknown>,
   mapItem: (item: Record<string, unknown>) => ExternalRecord | null,
 ): ModelFetchSpec {
   return {
     action,
-    args: (cursor) => buildArgs(Number(cursor) || 0),
-    map: (data) => {
+    args: (cursor) => ({ ...extraArgs(), ...pageArgs(cursor) }),
+    map: (data, cursor) => {
       const payload = unwrap(data);
       const items = pickArray(payload, arrayKeys);
       const records = items.map(mapItem).filter((r): r is ExternalRecord => r !== null);
-      return { records, nextCursor: nextOffsetCursor(payload, items.length) };
+      return { records, nextCursor: nextPageCursor(payload, items.length, cursor) };
     },
   };
 }
@@ -307,7 +328,7 @@ const fetch: Record<string, ModelFetchSpec> = {
   user: offsetFetch(
     'JIRA_GET_ALL_USERS',
     ['users', 'values'],
-    (startAt) => ({ startAt, maxResults: PAGE_SIZE }),
+    () => ({}),
     (u) => {
       const id = str(u.accountId ?? u.account_id);
       if (!id) return null;
@@ -325,7 +346,7 @@ const fetch: Record<string, ModelFetchSpec> = {
   project: offsetFetch(
     'JIRA_GET_ALL_PROJECTS',
     ['values', 'projects'],
-    (startAt) => ({ startAt, maxResults: PAGE_SIZE }),
+    () => ({}),
     (p) => {
       const key = str(p.key ?? p.project_key);
       if (!key) return null;
@@ -347,7 +368,7 @@ const fetch: Record<string, ModelFetchSpec> = {
   board: offsetFetch(
     'JIRA_GET_ALL_BOARDS',
     ['values', 'boards'],
-    (startAt) => ({ startAt, maxResults: PAGE_SIZE }),
+    () => ({}),
     (b) => {
       const id = str(b.id ?? b.board_id);
       if (!id) return null;
@@ -366,7 +387,7 @@ const fetch: Record<string, ModelFetchSpec> = {
   sprint: offsetFetch(
     'JIRA_GET_ALL_SPRINTS',
     ['values', 'sprints'],
-    (startAt) => ({ startAt, maxResults: PAGE_SIZE }),
+    () => ({}),
     (s) => {
       const id = str(s.id ?? s.sprint_id);
       if (!id) return null;
@@ -387,7 +408,7 @@ const fetch: Record<string, ModelFetchSpec> = {
   issue: offsetFetch(
     'JIRA_SEARCH_FOR_ISSUES_USING_JQL',
     ['issues'],
-    (startAt) => ({ jql: 'ORDER BY created ASC', startAt, maxResults: PAGE_SIZE }),
+    () => ({ jql: 'ORDER BY created ASC' }),
     (it) => {
       const key = str(it.key ?? it.issue_key);
       if (!key) return null;
@@ -419,12 +440,8 @@ const fetch: Record<string, ModelFetchSpec> = {
     // Comments are fetched per-issue; the sync engine passes the issue key as
     // `parentKey`, which becomes the `issueIdOrKey` action argument.
     action: 'JIRA_GET_COMMENTS',
-    args: (cursor, parentKey) => ({
-      issueIdOrKey: parentKey,
-      startAt: Number(cursor) || 0,
-      maxResults: PAGE_SIZE,
-    }),
-    map: (data) => {
+    args: (cursor, parentKey) => ({ issueIdOrKey: parentKey, ...pageArgs(cursor) }),
+    map: (data, cursor) => {
       const payload = unwrap(data);
       const items = pickArray(payload, ['comments', 'values']);
       const records = items
@@ -443,7 +460,7 @@ const fetch: Record<string, ModelFetchSpec> = {
           };
         })
         .filter((r): r is ExternalRecord => r !== null);
-      return { records, nextCursor: nextOffsetCursor(payload, items.length) };
+      return { records, nextCursor: nextPageCursor(payload, items.length, cursor) };
     },
   },
 };

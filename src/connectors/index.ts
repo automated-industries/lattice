@@ -26,6 +26,7 @@ export {
   recordSync,
   setConnectorStatus,
   deleteConnectorRecord,
+  updateConnectorConnection,
   CONNECTORS_TABLE,
 } from './registry.js';
 export type { ConnectorRecord, ConnectorStatus, CreateConnectorInput } from './registry.js';
