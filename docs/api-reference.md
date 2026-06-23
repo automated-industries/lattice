@@ -501,12 +501,22 @@ const results = await db.search('docs', 'deploy to production', { topK: 5, minSc
 
 **`SearchOptions`**:
 
-| Field      | Type     | Default | Description                         |
-| ---------- | -------- | ------- | ----------------------------------- |
-| `topK`     | `number` | `10`    | Max results to return               |
-| `minScore` | `number` | `0`     | Minimum cosine similarity threshold |
+| Field      | Type     | Default | Description                                                                       |
+| ---------- | -------- | ------- | --------------------------------------------------------------------------------- |
+| `topK`     | `number` | `10`    | Max results to return (clamped to `[1, 1000]` before the candidate fan-out; v4.2) |
+| `minScore` | `number` | `0`     | Minimum cosine similarity threshold                                               |
 
 **`SearchResult`**: `{ row: Row, score: number }`
+
+> **v4.2 — bounded retrieval.** `topK` is clamped (`clampTopK`,
+> `SEARCH_TOPK_MAX = 1000`) before the indexed arm over-fetches `topK * N`
+> candidates, so a single large `topK` can't turn one query into a whole-table
+> read. When a table has **no** native vector index, the in-process cosine scan
+> can be capped per-table via `EmbeddingsConfig.maxScanChunks`: if the scan would
+> read more than that many stored chunk vectors it throws
+> `EmbeddingScanTooLargeError` rather than load them all into memory — off by
+> default (unbounded scan, historical behavior), and never silently truncated. See
+> [retrieval.md](retrieval.md).
 
 ---
 
@@ -1402,6 +1412,52 @@ function cleanupEntityContexts(
   newManifest?: LatticeManifest,
 ): CleanupResult;
 ```
+
+### Structured import (4.2)
+
+Turn a JSON object or an Excel `.xlsx` workbook into a Lattice schema and
+materialize it (entities / dimensions / junctions), with point-in-time snapshots
+and re-import recognition. All exported from `latticesql`. In `lattice gui` these
+run automatically when you **drop a structured file into the assistant rail**;
+the same functions are available as a GUI-independent library API. See
+[importing.md](importing.md).
+
+```ts
+import {
+  inferSchema, // (data, opts?) => ProposedSchema  — entities/dimensions/junctions
+  inferFieldType, // (values) => InferredType
+  normalizeName, // (key) => string                  — source key → table/column name
+  sourceRecords, // (data, entity) => Record<string, unknown>[]
+  excelToRecords, // (absPath) => Promise<Record<string, unknown[]>>  — sheets → records
+  dedupeAndDetectViews, // (data, plan) => { ..., views: DetectedView[] }   — read-only per-slice views
+  detectAsOf, // (fileName) => string | null      — ISO YYYY-MM-DD
+  detectAsOfCandidates, // (inputs: AsOfInputs) => AsOfCandidate[]
+  detectAsOfColumns, // (data, plan) => AsOfColumnCandidate[]  — per-row date columns
+  parseCellDate, // (value) => string | null         — ISO YYYY-MM-DD
+  matchSchemaToExisting, // (existing, plan) => SchemaMatch  — fingerprint re-imports
+  renameEntities, // (plan, rename) => ProposedSchema
+  materializeImport, // (ctx, data, plan, views?, opts?) => Promise<MaterializeResult>
+  EmbeddingScanTooLargeError,
+} from 'latticesql';
+```
+
+`materializeImport(ctx, data, plan, views?, opts?)`:
+
+- `ctx`: `{ db: Lattice, configPath?: string | null }` — when `configPath` is
+  set, the inferred schema is persisted to the workspace config (canonical).
+- `opts.mode`: `'schema' | 'contents' | 'both'` (default `'both'`).
+- `opts.asOf`: file-level ISO date — stamps every row's `as_of` and folds it into
+  the row identity, so re-importing at a new date appends a snapshot.
+- `opts.asOfColumn`: a per-row date column name — dates each row individually.
+- `opts.onProgress`: streams `ImportProgress` steps for a live pipeline view.
+- Returns `MaterializeResult`:
+  `{ mode, asOf, asOfColumn, tablesCreated, rowsByTable, links, views }`.
+
+Types: `ProposedSchema`, `InferredEntity`, `InferredColumn`, `InferredDimension`,
+`InferredLinkage`, `InferredType`, `DetectedView`, `AsOfCandidate`, `AsOfInputs`,
+`AsOfColumnCandidate`, `SchemaMatch`, `EntityMatch`, `ExistingTable`,
+`MaterializeCtx`, `MaterializeResult`, `MaterializeOptions`, `ImportMode`,
+`ImportProgress`.
 
 ### Full-text search (1.16)
 

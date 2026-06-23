@@ -188,6 +188,10 @@ describe.skipIf(!PG_URL)('WS8b: per-viewer rendered context (render-through-RLS)
         openBrowser: false,
       });
       servers.push(ownerGui);
+      // Wait for the owner's background convergence (the member-group grant of
+      // `_lattice_gui_meta`) before the member render races it — else it fails
+      // intermittently with "permission denied for table _lattice_gui_meta".
+      await ownerGui.whenConverged();
     }
 
     // ── Member GUI pointed at the cloud as the scoped role, autoRender ON so the
@@ -297,6 +301,9 @@ describe.skipIf(!PG_URL)('WS8b: per-viewer rendered context (render-through-RLS)
           openBrowser: false,
         }),
       );
+      // Let the owner's background convergence (the member-group grant of
+      // `_lattice_gui_meta`) settle before the member render races it.
+      await servers[servers.length - 1]!.whenConverged();
     }
 
     // Member GUI (autoRender) → render folds in the visible derived value.
@@ -385,6 +392,9 @@ describe.skipIf(!PG_URL)('WS8b: per-viewer rendered context (render-through-RLS)
           openBrowser: false,
         }),
       );
+      // Let the owner's background convergence (the member-group grant of
+      // `_lattice_gui_meta`) settle before the member render races it.
+      await servers[servers.length - 1]!.whenConverged();
     }
 
     // Member GUI (autoRender) → first render: w9 not visible yet.
@@ -477,6 +487,9 @@ describe.skipIf(!PG_URL)('WS8b: per-viewer rendered context (render-through-RLS)
           openBrowser: false,
         }),
       );
+      // Let the owner's background convergence (the member-group grant of
+      // `_lattice_gui_meta`) settle before the member render races it.
+      await servers[servers.length - 1]!.whenConverged();
     }
 
     const tmp = mkdtempSync(join(tmpdir(), `pvru-${randomBytes(3).toString('hex')}-`));

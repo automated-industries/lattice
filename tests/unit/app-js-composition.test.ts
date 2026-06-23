@@ -15,15 +15,15 @@ import { appJs } from '../../src/gui/app/script.js';
 // (the switch path now re-fetches /api/dbconfig + re-points the header logo,
 // matching the boot path), the manual-upgrade link (the version chip's
 // "Update available — Upgrade" affordance: checkUpdateAvailable + wireUpdateLink,
-// wired at boot and refreshed on each reconnect version check), the FOUC fix
+// wired at boot and refreshed on each reconnect version check), and the FOUC fix
 // that softens the two background in-place re-renders (advanced-mode toggle +
 // workspace-switch reload now pass {soft:true} so they never paint the loading
-// frame), and the connect-a-dashboard segment (the state-aware "Connect
-// dashboard" top-bar button + its modal panel that points Lattice at the user's
-// own HTML over /api/connect/dashboard). Recapture the length + hash on any
-// intended change.
-const ORIGINAL_LENGTH = 410600;
-const ORIGINAL_SHA256 = '1cf814d6c9e6a0ad219bc6ff148e610d89ee90b1a6357ebd42832b83caea34be';
+// frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
+// JSON/xlsx file into the assistant chat: the upload returns a proposal and an
+// inline confirm card renders into the assistant rail (no top-bar button, no
+// modal). Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 413654;
+const ORIGINAL_SHA256 = '7468ba0374c997fd7f4986ea7123f5ae21433e744738e8243a3f3ae1cdc946bf';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

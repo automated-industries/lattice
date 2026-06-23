@@ -643,6 +643,16 @@ export interface EmbeddingsConfig {
    * Lattice never calls a model itself.
    */
   modelId?: string;
+  /**
+   * Optional opt-in cap on the no-index fallback scan. When the in-process cosine
+   * scan (used only when no native vector index exists for a table) would read
+   * more than this many stored chunk vectors, `searchByEmbedding` throws
+   * `EmbeddingScanTooLargeError` instead of loading them all into memory. OFF by
+   * default (unbounded scan — historical behavior). Lattice never silently
+   * truncates the scan: a partial cosine scan returns incomplete, wrong results,
+   * so it fails loudly and tells you to add a pgvector index or raise the cap.
+   */
+  maxScanChunks?: number;
 }
 
 /**

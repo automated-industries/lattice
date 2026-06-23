@@ -21,7 +21,7 @@ import { fsWorkspaceCss } from './fs-workspace.js';
 import { settingsDrawerCss } from './settings-drawer.js';
 import { assistantRailCss } from './assistant-rail.js';
 import { chatCss } from './chat.js';
-import { connectDashboardCss } from './connect-dashboard.js';
+import { inlineImportCss } from './inline-import.js';
 
 export const css = [
   tokensCss,
@@ -44,5 +44,5 @@ export const css = [
   settingsDrawerCss,
   assistantRailCss,
   chatCss,
-  connectDashboardCss,
+  inlineImportCss,
 ].join('');

@@ -1,104 +1,73 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { Lattice } from '../../src/lattice.js';
-import { evaluateRetrieval, detectRetrievalRegressions } from '../../src/search/eval.js';
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { detectRetrievalRegressions } from '../../src/search/eval.js';
 import type { RetrievalEvalSummary } from '../../src/search/eval.js';
+import { runEval, TOLERANCE, type EvalBaseline } from '../../scripts/eval-corpus.js';
 
 /**
  * The retrieval-quality regression GATE.
  *
  * `evaluateRetrieval` + `detectRetrievalRegressions` are only a gate if something
- * actually runs them against a committed baseline and fails the build on a drop.
- * This test is that gate: it evaluates the REAL `search()` over a fixed golden set
- * with a deterministic embedder, and fails if any metric regresses past tolerance
- * below the committed baseline — so a change that silently lowers retrieval
- * quality cannot land green. It runs in the normal suite, so CI enforces it.
+ * runs them against a committed baseline and fails on a drop. This test is that
+ * gate inside the normal suite: it evaluates the REAL `search()` over the golden
+ * corpus (scripts/eval-corpus.ts — the SAME corpus the `eval:baseline` /
+ * `eval:gate` scripts use) and compares to the committed baseline fixture.
  *
- * To intentionally move the baseline (a real, justified quality change), update
- * BASELINE below in the same PR — the diff makes the change reviewable.
+ * The corpus has deliberate CROSS-TOPIC LEXICAL OVERLAP, so the real search
+ * scores good-but-imperfect — the committed baseline is sub-perfect (mrr < 1).
+ * That headroom is what makes the gate able to FAIL: a baseline pinned at the
+ * 1.0 ceiling can only catch a catastrophic break. The `baseline.mrr < 1`
+ * assertion below guards the headroom itself — if a future corpus change pushed
+ * the baseline back to 1.0, this test fails and tells you the gate went blind.
+ *
+ * To move the baseline intentionally (a real, justified quality change), run
+ * `npm run eval:baseline -- --write` in the same PR — the fixture diff makes the
+ * change reviewable.
  */
 
-/** Deterministic token-hash embedder — identical text always yields identical vectors. */
-function tokenEmbed(dim = 64) {
-  return (text: string): Promise<number[]> => {
-    const v = new Array<number>(dim).fill(0);
-    for (const tok of text.toLowerCase().match(/[a-z]+/g) ?? []) {
-      let h = 0;
-      for (const ch of tok) h = (h * 31 + ch.charCodeAt(0)) % dim;
-      v[h] = (v[h] ?? 0) + 1;
-    }
-    return Promise.resolve(v);
-  };
+const BASELINE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'fixtures',
+  'eval-baseline.json',
+);
+
+function loadBaseline(): EvalBaseline {
+  return JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as EvalBaseline;
 }
 
-const CORPUS: Record<string, string> = {
-  d1: 'finance budget revenue accounting fiscal quarter',
-  d2: 'logistics shipping warehouse inventory freight cargo',
-  d3: 'engineering software code deployment architecture release',
-  d4: 'marketing campaign brand audience advertising outreach',
-  d5: 'legal contract compliance regulation policy clause',
-  d6: 'people hiring recruiting onboarding culture team',
-};
-
-const GOLDEN = [
-  { id: 'q1', query: 'revenue accounting fiscal', relevant: ['d1'] },
-  { id: 'q2', query: 'shipping freight inventory', relevant: ['d2'] },
-  { id: 'q3', query: 'software deployment release', relevant: ['d3'] },
-  { id: 'q4', query: 'brand advertising campaign', relevant: ['d4'] },
-  { id: 'q5', query: 'contract compliance policy', relevant: ['d5'] },
-  { id: 'q6', query: 'hiring onboarding team', relevant: ['d6'] },
-];
-
-/**
- * Committed baseline — the quality the current `search()` achieves on the golden
- * set (every query's relevant doc ranks first → perfect on this set). The gate
- * fails if a future change drops any metric more than TOLERANCE below these.
- */
-const BASELINE: RetrievalEvalSummary = {
-  k: 3,
-  queryCount: 6,
-  precisionAtK: 1 / 3, // 1 relevant in top-3 → 1/3 per query
-  recallAtK: 1, // the 1 relevant doc is always retrieved
-  mrr: 1, // relevant doc is rank 1
-  ndcgAtK: 1,
-  map: 1,
-  perQuery: [],
-};
-const TOLERANCE = 0.05;
-
 describe('retrieval-quality regression gate', () => {
-  let db: Lattice | undefined;
-  afterEach(() => {
-    db?.close();
-    db = undefined;
+  it('the committed baseline has headroom (sub-perfect — so a regression is detectable)', () => {
+    const baseline = loadBaseline();
+    // A baseline at the perfect ceiling cannot detect a regression. These prove
+    // the golden corpus scores below 1, so the gate has something to catch.
+    expect(baseline.mrr).toBeLessThan(1);
+    expect(baseline.ndcgAtK).toBeLessThan(1);
+    expect(baseline.map).toBeLessThan(1);
   });
 
   it('the real search() meets the committed quality baseline (no regression)', async () => {
-    db = new Lattice(':memory:');
-    db.define('docs', {
-      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', deleted_at: 'TEXT' },
-      embeddings: { fields: ['body'], embed: tokenEmbed(64) },
-      render: () => '',
-      outputFile: 'd.md',
-    });
-    await db.init();
-    for (const [id, body] of Object.entries(CORPUS)) await db.insert('docs', { id, body });
+    const baseline = loadBaseline();
+    const summary = await runEval();
 
-    const retriever = async (query: string): Promise<string[]> => {
-      const hits = await db!.search('docs', query, { topK: 6 });
-      return hits.map((h) => String(h.row.id));
-    };
+    const baselineSummary = {
+      ...baseline,
+      byK: undefined,
+      perQuery: [],
+    } as RetrievalEvalSummary;
 
-    const summary = await evaluateRetrieval(GOLDEN, retriever, { k: 3, ks: [1, 3] });
-
-    // The gate: no metric may regress past tolerance below the committed baseline.
-    const regressions = detectRetrievalRegressions(BASELINE, summary, TOLERANCE);
+    const regressions = detectRetrievalRegressions(baselineSummary, summary, TOLERANCE);
     expect(
       regressions,
-      `retrieval quality regressed vs baseline: ${JSON.stringify(regressions)}`,
+      `retrieval quality regressed vs committed baseline: ${JSON.stringify(regressions)}`,
     ).toEqual([]);
 
-    // Sanity floor (independent of the baseline diff): the search is actually good.
-    expect(summary.mrr).toBeGreaterThanOrEqual(0.9);
-    expect(summary.ndcgAtK).toBeGreaterThanOrEqual(0.9);
+    // Sanity floor (independent of the baseline diff): search is actually good,
+    // and the corpus is genuinely imperfect (not a green-by-construction ceiling).
+    expect(summary.mrr).toBeGreaterThanOrEqual(0.85);
+    expect(summary.mrr).toBeLessThan(1);
+    expect(summary.queryCount).toBe(20);
   });
 });

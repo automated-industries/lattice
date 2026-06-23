@@ -25,6 +25,15 @@ const summary = await db.evaluateRetrieval(
 `detectRetrievalRegressions(baseline, candidate, tolerance)` turns it into a CI
 gate — a retrieval change that lowers any metric past tolerance fails the build.
 
+> **v4.2 — the gate can actually fail.** The golden corpus is now ~20 docs with
+> deliberate cross-topic lexical overlap, so the real `search()` scores
+> good-but-imperfect; the committed baseline is **generated** by running the real
+> search (`npm run eval:baseline`) and is sub-perfect (`mrr ≈ 0.92`,
+> `ndcg@3 ≈ 0.94`), never hand-authored. `npm run eval:gate` evaluates the current
+> `search()` against that baseline and exits non-zero on any metric dropping past
+> tolerance; it runs as a required CI step, and a suite test asserts the baseline
+> still has headroom (`mrr < 1`) so the gate can't silently go blind.
+
 ### `lattice doctor` / `diagnoseRetrieval(opts?)`
 
 Read-only health: per-table FTS + embedding coverage (soft-deleted rows excluded),
@@ -37,6 +46,17 @@ Reproducible p50/p95/p99 latency for filtered query, FTS, vector, and aggregate,
 plus ingest throughput + peak memory — on both dialects, at a configurable scale
 (`LATTICE_BENCH_ROWS/QUERIES/DIM`). Ships in the package so buyers reproduce the
 numbers; wire `checkSlos` as a CI SLO gate.
+
+> **v4.2 — honest vector timing + an advisory SLO gate.** A Postgres integration
+> test runs the benchmark against a real pgvector cluster and asserts the harness
+> built the **native index before** the vector timing loop
+> (`report.vectorIndexed === true`), so `vector.p95` reflects the indexed path,
+> not the O(n) in-process scan; where pgvector is unavailable the test skips with a
+> clear message rather than passing green-by-construction. `npm run slo:gate` runs
+> the real benchmark at a committed scale and checks observed p95 latencies against
+> committed thresholds — it is **advisory, never build-blocking** (shared CI
+> runners are too latency-noisy to gate a merge on), and the output marks whether
+> `vector.p95` reflects a native index or the in-process scan.
 
 ## Better search
 
@@ -71,6 +91,17 @@ Opt-in per-table approximate-nearest-neighbor index built from the stored vector
 `search()` uses it automatically when present, else the in-process scan (which
 `doctor` reports). Requires the extension server-side (pgvector) or loaded
 (sqlite-vec).
+
+> **v4.2 — bounded retrieval reads.** `search()` / `hybridSearch()` clamp the
+> caller's `topK` (`clampTopK`, `SEARCH_TOPK_MAX = 1000`) **before** the indexed
+> arm over-fetches `topK * N` candidates, so a single large `topK` can't fan out
+> into a whole-table read. For a table with **no** native index, the in-process
+> cosine scan can be capped per-table with `embeddings.maxScanChunks`: when the
+> scan would read more than that many stored chunk vectors it throws
+> `EmbeddingScanTooLargeError` (telling you to add a pgvector index or raise the
+> cap) rather than load them all into memory. It is **off by default** (unbounded
+> scan — the historical behavior) and is **never silently truncated**, because a
+> partial cosine scan would return incomplete, wrong results.
 
 ### Hybrid search + ranking + reranker
 
