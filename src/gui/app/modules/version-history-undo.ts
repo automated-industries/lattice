@@ -18,8 +18,12 @@ export const versionHistoryUndoJs = `    // ────────────
           ? ' <span class="nav-badge" title="' + unseen + ' change' + (unseen === 1 ? '' : 's') +
             ' from another editor">' + (unseen > 99 ? '99+' : unseen) + '</span>'
           : '';
+        // Connected data types (synced from an external source) get a link chip.
+        var connBadge = t.connectorToolkit
+          ? ' <span class="nav-badge" title="Connected — synced from ' + escapeHtml(t.connectorToolkit) + '">🔗</span>'
+          : '';
         return '<li><a data-route="' + prefix + t.name + '" href="' + prefix + t.name +
-          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + navVisIcon(t) + badge + '</a></li>';
+          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + navVisIcon(t) + badge + connBadge + '</a></li>';
       }).join('');
 
       var section = document.getElementById('system-section');

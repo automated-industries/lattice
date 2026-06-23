@@ -118,6 +118,7 @@ export const guiAppHtml = `<!doctype html>
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
+      <button class="drawer-tab" data-tab="connectors">Connectors</button>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>

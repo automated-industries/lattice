@@ -51,6 +51,7 @@ export const tableViewJs = `    // ───────────────
       if (!body) return;
       if (tab === 'database') renderDatabaseSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
+      else if (tab === 'connectors') renderConnectorsPanel(body);
       else renderUserConfig(body);
     }
     function wireSettingsDrawer() {

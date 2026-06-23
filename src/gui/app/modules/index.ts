@@ -29,6 +29,7 @@ import { latticeTeamsJs } from './lattice-teams.js';
 import { onboardingJs } from './onboarding.js';
 import { createDatabaseWizardJs } from './create-database-wizard.js';
 import { inlineImportJs } from './inline-import.js';
+import { connectorsSettingsJs } from './connectors-settings.js';
 
 export const appJs = [
   displayConfigJs,
@@ -59,4 +60,5 @@ export const appJs = [
   onboardingJs,
   createDatabaseWizardJs,
   inlineImportJs,
+  connectorsSettingsJs,
 ].join('');

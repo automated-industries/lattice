@@ -21,9 +21,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
 // JSON/xlsx file into the assistant chat: the upload returns a proposal and an
 // inline confirm card renders into the assistant rail (no top-bar button, no
-// modal). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 413654;
-const ORIGINAL_SHA256 = '7468ba0374c997fd7f4986ea7123f5ae21433e744738e8243a3f3ae1cdc946bf';
+// modal), and the 4.3 Connectors settings panel (renderConnectorsPanel + the
+// "Connectors" drawer tab + the sidebar "Connected" badge for connected data
+// types). Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 422201;
+const ORIGINAL_SHA256 = '4fdf92288ee386b70cb66baca607db9e090e0aaf8113390a4b4b5eee0650e82a';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {
