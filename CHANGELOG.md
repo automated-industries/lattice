@@ -6,12 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [4.3.0] — unreleased
+## [4.2.4] — unreleased
 
-Minor release: **connectors** — sync external sources into Lattice as a new kind
-of table, the **connected data type**. Additive on 4.2 (every 4.2 caller runs
+Release on the 4.2 line. Two additive features — **connectors** and inline
+**HTML files** in the GUI assistant. Additive on 4.2 (every 4.2 caller runs
 unchanged); the connector layer and its optional dependency are inert until a
 connector is configured.
+
+### Connectors
+
+Sync external sources into Lattice as a new kind of table, the **connected data
+type**.
 
 ### Added
 
@@ -65,6 +70,66 @@ connector is configured.
   (list / connect / refresh / disconnect + a `sync-if-stale` load hook).
   Connected data types are marked with a "Connected" badge in the Objects list
   (`/api/entities` reports a per-table `connectorToolkit`).
+
+## [4.2.3] — unreleased
+
+Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
+unchanged).
+
+### Fixed
+
+- **Same-titled entities no longer overwrite each other on render.** Each entity
+  row is rendered into a directory named by its slug. When two rows produced the
+  **same** slug (e.g. two records with an identical title), they resolved to the
+  **same** directory, so one silently clobbered the other and a row that exists
+  in the data never got its own rendered context. Per-row slugs are now made
+  **unique within each table's render**: a slug used by exactly one row is left
+  unchanged (no churn for the common case), while colliding rows are
+  disambiguated with a short, stable suffix derived from their primary key. The
+  result is deterministic and order-independent — the same row keeps the same
+  directory across renders regardless of row order — so both rows now get their
+  own distinct directory with content. Custom `slug` functions are unaffected
+  (the disambiguation wraps the result rather than replacing the function), and
+  the existing slug sanitization + path-traversal validation are preserved.
+- **Cleanup now removes the directories of entity contexts that became collapsed
+  relations.** When a table stops being a first-class entity context — for
+  example a join table that the symmetric many-to-many change folds into a
+  relation and drops from the rendered set — its previously written directory
+  tree was never revisited by cleanup and lingered as orphaned directories
+  forever. Cleanup now sweeps a table that was an entity context in the previous
+  render but is no longer one, using the previous manifest as the record of what
+  the renderer managed — so only directories the renderer created are removed;
+  unrelated top-level directories and custom-`directory()` contexts are left
+  untouched. Respects the existing dry-run / orphan-callback options.
+- **One-time re-render to apply both fixes.** Both changes alter what reaches
+  disk for existing data, so the render-output format version is bumped: the
+  **first open after upgrading does a one-time full re-render** that de-collides
+  same-slug directories and sweeps the collapsed-context directories; subsequent
+  opens skip again once the manifest is re-stamped.
+
+## [4.2.2] — unreleased
+
+Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
+unchanged).
+
+### Fixed
+
+- **Render-logic changes now auto-apply to workspaces rendered by an older
+  version.** The renderer records a render-output FORMAT version in each
+  workspace's manifest, and the open-time staleness gate skips re-rendering when
+  everything the tree depends on is unchanged. The 4.2 change that made
+  many-to-many junctions render symmetrically (the remote entity is emitted on
+  BOTH sides of a join table, not just one) altered the bytes a clean render
+  produces — but the format version was not bumped alongside it. Workspaces
+  rendered by the older version therefore matched the unchanged version, the
+  gate skipped, and they kept serving the cached one-sided output even though
+  the fix was already in the code. The render-output format version is now
+  bumped, so the **first open after upgrading does a one-time full re-render**
+  and picks up the new output; subsequent opens skip again once the manifest is
+  re-stamped. The one-time re-render reads all entities once (the normal cost of
+  a full render) — there is no ongoing per-open cost. Going forward, any change
+  to how the entity-context is derived or templated must bump this version so
+  the new output reaches existing workspaces.
 
 ## [4.2.1] — unreleased
 
