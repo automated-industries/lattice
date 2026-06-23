@@ -82,6 +82,21 @@ describe('cursorIsFresh', () => {
     expect(cursorIsFresh(recorded, cur({ changelog: '5' }))).toBe(false);
   });
 
+  it('STALE: a manifest at the PRIOR template version forces a re-render even when the cursor is otherwise fresh', () => {
+    // This is the upgrade case that motivates bumping TEMPLATE_VERSION: an
+    // existing workspace whose manifest was recorded at the version BEFORE this
+    // release, with a cursor that is identical to live (no data/share change).
+    // The data-freshness checks alone would say "fresh, skip" — but the render
+    // derivation changed, so the version gate MUST override and force a one-time
+    // full re-render that picks up the new output. This locks the mechanism so a
+    // future derivation change that bumps the version is provably honored.
+    const recorded = {
+      templateVersion: TEMPLATE_VERSION - 1,
+      cursor: cur({ changelog: '5' }),
+    };
+    expect(cursorIsFresh(recorded, cur({ changelog: '5' }))).toBe(false);
+  });
+
   it('STALE (fail-open): a missing manifest', () => {
     expect(cursorIsFresh(null, cur({ changelog: '5' }))).toBe(false);
   });

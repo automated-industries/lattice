@@ -38,8 +38,13 @@ export interface EntityContextManifestEntry {
 
 /**
  * Render-output FORMAT version. Bump this — and ONLY this — when a change to the
- * render engine alters the BYTES a clean render would produce for unchanged data
- * (a template tweak, a new combined-file rule, a slug-sanitization change, …).
+ * render engine alters the BYTES a clean render would produce for unchanged data:
+ * a template tweak, a new combined-file rule, a slug-sanitization change, OR a
+ * change to how the entity-context is DERIVED (which relations/files an entity
+ * emits). Incrementing it forces every existing workspace to do a one-time full
+ * re-render on its next open, so the new output reaches disk and the derivation
+ * fix actually becomes visible — otherwise a workspace rendered by an older
+ * version keeps serving its cached, pre-fix tree forever.
  *
  * It is deliberately NOT the npm package version: a plain version bump that does
  * not change render output must NOT invalidate an existing tree (re-rendering an
@@ -47,8 +52,15 @@ export interface EntityContextManifestEntry {
  * open-time staleness gate treats a manifest whose `templateVersion` differs from
  * this constant as STALE and forces a full render — so an output-format change is
  * guaranteed to reach disk on the next open.
+ *
+ * History:
+ *  - 1 → 2: the entity-context derivation changed — many-to-many junctions now
+ *    render SYMMETRICALLY (the remote entity is emitted on BOTH sides of the
+ *    junction, not just one). Workspaces rendered at version 1 cached the old
+ *    one-sided output; the bump forces them to re-render and pick up the
+ *    symmetric form.
  */
-export const TEMPLATE_VERSION = 1;
+export const TEMPLATE_VERSION = 2;
 
 /**
  * Monotonic cursor the rendered tree was produced FROM, recorded in the manifest
