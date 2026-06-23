@@ -6,6 +6,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.3.0] — unreleased
+
+Minor release: **connectors** — sync external sources into Lattice as a new kind
+of table, the **connected data type**. Additive on 4.2 (every 4.2 caller runs
+unchanged); the connector layer and its optional dependency are inert until a
+connector is configured.
+
+### Added
+
+- **Connected data types.** A table can declare `source` on its
+  `TableDefinition` to mark it as backed by an external system. The framework
+  adds connector-lineage columns (`_source_connector_id`, `_source_model` —
+  immutable; `_source_synced_at`), stamped at ingest. The natural key is the
+  primary key, so re-syncs upsert idempotently and the lineage is preserved on
+  conflict. New module `src/schema/connected.ts` (`ConnectorSource`,
+  `connectedColumns`, `ConnectedSourceImmutableError`); new accessors
+  `db.getConnectedSource(table)` / `db.connectedTables()`.
+- **Connector framework** (`src/connectors/`). A small fetch/auth SPI
+  (`Connector`: `authorize` / `completeAuth` / `listChanges` / `disconnect`), an
+  on-demand registry (`__lattice_connectors`), a sync engine, and a teardown
+  cascade. Driven entirely by per-model descriptors — no per-product code in the
+  core.
+- **Composio connector** (`src/connectors/composio/`). Wraps the **optional**
+  dependency `@composio/core` (lazy-loaded — the package compiles and runs
+  without it; a clear error is thrown only when a connector is actually used).
+  Generic over per-toolkit specs.
+- **Jira toolkit** — the first connector: six connected data types (projects,
+  issues, comments, users, boards, sprints) with FK relations that derive graph
+  edges and FTS on text columns.
+- **Sync engine.** `syncConnector` (idempotent upsert, per-parent fetch for
+  comments, vanished-row pruning, graph-edge derivation), plus `syncIfStale` /
+  `syncStaleConnectors` for "sync on connect, on load if older than an hour, and
+  on manual refresh" — no scheduler. Reads are bounded + projected; an
+  external-sync failure is recorded on the connector and re-thrown (never
+  swallowed).
+- **Disconnect teardown.** `disconnectConnector` soft-deletes every ingested row
+  (children before parents), prunes rendered context files, marks the connector
+  disconnected (or removes it in hard mode), and revokes the backend connection.
+  Soft-deleted rows drop out of queries, search, and graph traversal
+  automatically.
+- **Cloud ACL.** `enableConnectorRls` enables per-member Row-Level Security on
+  the registry + a toolkit's connected tables and applies each type's default
+  visibility (`private` per member, or `everyone`). Owner-only; a no-op on
+  SQLite / non-cloud / non-owner. Derived enrichment over connected rows
+  inherits source visibility via the existing source-gated fold.
+- **GUI connectors API.** Server routes to list/connect/refresh/disconnect and a
+  `sync-if-stale` load hook; `/api/entities` now reports a per-table
+  `connectorToolkit`. (The Connectors settings page UI lands in a follow-up.)
+
 ## [4.2.1] — unreleased
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
