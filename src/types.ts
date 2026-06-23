@@ -586,6 +586,16 @@ export interface TableDefinition {
    * `refreshMaterializedRollups`. See {@link MaterializedRollupSpec}.
    */
   materializedRollups?: Record<string, import('./schema/computed.js').MaterializedRollupSpec>;
+  /**
+   * Mark this table as a *connected data type* (4.3+) — its rows are ingested
+   * from an external system through a connector rather than authored locally.
+   * Adds connector-lineage columns (`_source_connector_id`, `_source_model`,
+   * `_source_synced_at`); the first two are immutable (an `update()` touching
+   * them throws `ConnectedSourceImmutableError`). The GUI shows a "Connected"
+   * badge for these tables, and disconnecting the connector tears their rows
+   * down. Tables without a `source` are unaffected. See {@link ConnectorSource}.
+   */
+  source?: import('./schema/connected.js').ConnectorSource;
 }
 
 export interface MultiTableDefinition {
