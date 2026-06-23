@@ -59,8 +59,17 @@ export interface EntityContextManifestEntry {
  *    junction, not just one). Workspaces rendered at version 1 cached the old
  *    one-sided output; the bump forces them to re-render and pick up the
  *    symmetric form.
+ *  - 2 → 3: two render/cleanup fixes that change what reaches disk. (1) Per-row
+ *    slugs are now made UNIQUE within each table's render, so two rows whose slug
+ *    function returns the same value no longer write to (and clobber) the same
+ *    directory — colliding rows get a stable PK-derived suffix. (2) Cleanup now
+ *    removes the directory tree of an entity context that COLLAPSED into a
+ *    relation (a table that was an entity context in the prior manifest but is no
+ *    longer one), instead of leaving it orphaned. Existing workspaces must
+ *    re-render once so the de-collided dirs appear and the collapsed dirs are
+ *    swept; the bump forces that one-time full render.
  */
-export const TEMPLATE_VERSION = 2;
+export const TEMPLATE_VERSION = 3;
 
 /**
  * Monotonic cursor the rendered tree was produced FROM, recorded in the manifest
