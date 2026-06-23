@@ -6,6 +6,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.2.2] — unreleased
+
+Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
+unchanged).
+
+### Fixed
+
+- **Render-logic changes now auto-apply to workspaces rendered by an older
+  version.** The renderer records a render-output FORMAT version in each
+  workspace's manifest, and the open-time staleness gate skips re-rendering when
+  everything the tree depends on is unchanged. The 4.2 change that made
+  many-to-many junctions render symmetrically (the remote entity is emitted on
+  BOTH sides of a join table, not just one) altered the bytes a clean render
+  produces — but the format version was not bumped alongside it. Workspaces
+  rendered by the older version therefore matched the unchanged version, the
+  gate skipped, and they kept serving the cached one-sided output even though
+  the fix was already in the code. The render-output format version is now
+  bumped, so the **first open after upgrading does a one-time full re-render**
+  and picks up the new output; subsequent opens skip again once the manifest is
+  re-stamped. The one-time re-render reads all entities once (the normal cost of
+  a full render) — there is no ongoing per-open cost. Going forward, any change
+  to how the entity-context is derived or templated must bump this version so
+  the new output reaches existing workspaces.
+
 ## [4.2.1] — unreleased
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
