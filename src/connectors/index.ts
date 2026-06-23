@@ -66,6 +66,8 @@ export type { SyncConnectorResult, SyncConnectorOptions } from './sync.js';
 export { disconnectConnector } from './teardown.js';
 export type { DisconnectOptions, DisconnectResult } from './teardown.js';
 
+export { enableConnectorRls } from './acl.js';
+
 import { registerJiraToolkit } from './composio/jira.js';
 
 // Register the built-in toolkits so the Composio connector can serve them.
