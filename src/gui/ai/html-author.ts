@@ -9,11 +9,12 @@ import type { LlmClient } from './chat.js';
  * whose handlers call HERE to do the heavy authoring on a stronger model.
  *
  * The model is given the live table/column schema so any data it wires up uses
- * real names, and is instructed to fetch live data from the SAME-ORIGIN read API
+ * real names, and is instructed to read data through the injected `window.lattice`
+ * bridge (the frame is fully isolated and has NO network access — it cannot fetch)
  * and to use the `Chart` global the GUI injects into the rendered frame — the
- * authored HTML must NOT add its own `<script src>` or reach any external origin
- * (the frame's CSP blocks that). Returns the HTML string; throws loudly (never a
- * silent empty/partial fallback) if the model returns something that isn't HTML.
+ * authored HTML must NOT add its own `<script src>` or attempt any network call.
+ * Returns the HTML string; throws loudly (never a silent empty/partial fallback)
+ * if the model returns something that isn't HTML.
  */
 
 /** The model used for HTML authoring — stronger than the chat default. */
@@ -27,15 +28,16 @@ const HTML_SYSTEM = [
   '',
   'Output contract:',
   '- Output ONLY the HTML document — begin at `<!doctype html>` (or `<html>`). No markdown, no code fences, no prose before or after.',
-  '- Self-contained: put CSS in an inline `<style>` and JS in an inline `<script>`. Do NOT add any `<script src="...">` and do NOT reference any external/CDN URL — external network is blocked by policy.',
+  '- Self-contained: put CSS in an inline `<style>` and JS in an inline `<script>`. Do NOT add any `<script src="...">` and do NOT reference any external/CDN URL.',
+  '- The page runs fully isolated with NO network access: `fetch`, `XMLHttpRequest`, WebSocket, and remote images are all blocked. Read data ONLY through the injected `window.lattice` bridge (described below). Never attempt a direct network call — it will fail.',
   '- A charting library is ALREADY loaded in the page: a global `Chart` (Chart.js) is available. Call `new Chart(canvasEl, {...})` directly when a chart helps. Never load your own chart library.',
   '',
   "Live data (optional — only when the page should show the user's data):",
-  '- Fetch from the SAME-ORIGIN Lattice read API with plain relative `fetch()`:',
-  '    GET  /api/tables/<table>/rows?limit=<n>&offset=<n>   → { rows: [ ... ] }',
-  '    GET  /api/tables/<table>/rows/<id>                   → a single row object',
-  '    POST /api/search   with JSON { "query": "..." }      → full-text search results',
-  '  Use the REAL table and column names from the schema below. Load data client-side on page load (e.g. an async init function) and render gracefully when a fetch returns no rows or fails.',
+  '- A global `window.lattice` object is preloaded. Every method returns a Promise:',
+  '    lattice.query(table, { limit, offset })  → resolves to { rows: [ ... ] }',
+  '    lattice.get(table, id)                   → resolves to a single row object',
+  '    lattice.search(queryString)              → resolves to full-text search results',
+  '  Use the REAL table and column names from the schema below. Load data on page load (e.g. an async init function using await) and render gracefully when a query returns no rows or rejects. Reads are read-only; you cannot create, update, or delete.',
   '',
   'Make it clean, readable, and self-explanatory: a simple system-font stack and a responsive layout. Prefer clarity over cleverness.',
 ].join('\n');

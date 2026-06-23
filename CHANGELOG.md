@@ -26,12 +26,49 @@ never-published `lattice connect` surface in favour of it.
   larger output budget for the heavy page generation. It uses the same
   machine-local Claude key as the rest of the assistant (`TurnParams` gains an
   optional `maxTokens`).
-- **Live data + offline charts.** Authored pages read live data through the
-  existing same-origin read API (`/api/tables/:table/rows`, `/api/search`) — no new
-  HTTP endpoints. A charting library is bundled with the GUI and injected into the
-  frame, so pages can draw charts with no CDN and fully offline. The frame carries
-  an injected Content-Security-Policy that permits same-origin data reads but blocks
-  every cross-origin request (so a page can read your data but cannot exfiltrate it).
+- **Live data + offline charts.** Authored pages read live data through an injected
+  `window.lattice` bridge (`.query` / `.get` / `.search`), which a read-only,
+  table-gated parent broker services against the existing read API
+  (`/api/tables/:table/rows`, `/api/search`) — no new HTTP endpoints. A charting
+  library is bundled with the GUI and injected into the frame, so pages draw charts
+  with no CDN and fully offline.
+
+### Security
+
+The authored HTML is treated as **untrusted code** and runs fully isolated:
+
+- **Origin-isolated frame.** Rendered in an `<iframe sandbox="allow-scripts">` (no
+  `allow-same-origin`, `allow-popups`, `allow-top-navigation`, or `allow-forms`), so
+  it loads in an opaque/null origin and cannot reach the host GUI's
+  window/DOM/storage/cookies or the chat.
+- **No network egress.** The injected Content-Security-Policy is emitted as the
+  unconditional first element of the document (the authored markup is confined to
+  `<body>`, so it can never run before the policy), with `connect-src 'none'` plus
+  `child-src` / `frame-src` / `object-src` / `worker-src` / `manifest-src 'none'`
+  and `img-src`/`font-src`/`media-src data:` — the page cannot `fetch`, open a
+  socket, beacon, or load a remote resource.
+- **Read-only, mediated data access.** The frame has no direct API access; all reads
+  go through the parent broker over `postMessage`, which (a) only honours messages
+  whose source is the frame's own window, (b) allows exactly three **read** ops, and
+  (c) refuses `secrets` / `chat_*` / `_lattice_*` tables. Server-side RLS still
+  applies, so a cloud member only ever reads rows they may already see.
+- **Executable artifacts are provenance-gated.** `artifact_type='html'` — the marker
+  that makes a file render as an executable page — can be set ONLY by the trusted
+  `create_html_file` / `edit_html_file` tools (`guardReservedFileColumns`); generic
+  `create_row` / `update_row` / `bulk_update` and the HTTP row routes are refused.
+  The same gate also reserves rewriting an existing html artifact's BODY
+  (`extracted_text`) to the trusted edit tool, so a caller (or a prompt injection)
+  can neither plant a new executable page nor swap the contents of one another
+  member would render.
+- **Known residual.** A sandboxed frame can still navigate _itself_ (e.g. `location =`),
+  which no cross-browser CSP directive blocks; this is inherent to in-browser
+  rendering of untrusted scripts. It is bounded by the provenance gate (only
+  first-party-authored pages execute) and RLS (the broker serves only the viewer's
+  own data), so it does not exceed the assistant's existing prompt-injection surface.
+  Rendering on a distinct throwaway origin is recorded as a future hardening.
+
+The design was adversarially reviewed (multi-agent red-team with independent
+verification) and the findings folded into the above.
 
 ### Removed
 

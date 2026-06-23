@@ -163,4 +163,75 @@ describe('create_html_file / edit_html_file tools', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/not an html file/i);
   });
+
+  // ── Planting gate: artifact_type='html' is reserved to the trusted tools ──────
+  it('refuses to forge an executable html artifact via the generic create_row tool', async () => {
+    const res = await executeFunction(ctx, 'create_row', {
+      table: 'files',
+      values: {
+        original_name: 'evil.html',
+        mime: 'text/html',
+        artifact_type: 'html',
+        extracted_text: '<script>EVIL()</scr' + 'ipt>',
+      },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/artifact_type/i);
+  });
+
+  it('refuses to flip an existing file into an executable html artifact via update_row', async () => {
+    const md = (
+      (await executeFunction(ctx, 'create_artifact', { title: 'Note', content: '# hi' }))
+        .result as { id: string }
+    ).id;
+    const res = await executeFunction(ctx, 'update_row', {
+      table: 'files',
+      id: md,
+      values: { mime: 'text/html', artifact_type: 'html' },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/artifact_type/i);
+  });
+
+  it('does NOT block a normal markdown artifact (artifact_type=markdown) — only html is reserved', async () => {
+    const res = await executeFunction(ctx, 'create_artifact', { title: 'Doc', content: '# ok' });
+    expect(res.ok).toBe(true);
+    const row = (await db.get('files', (res.result as { id: string }).id)) as Record<
+      string,
+      unknown
+    >;
+    expect(row.artifact_type).toBe('markdown');
+  });
+
+  it('refuses to rewrite an existing html artifact body via the generic update_row tool', async () => {
+    const created = (
+      (await executeFunction(ctx, 'create_html_file', { title: 'Page', spec: 'first' })).result as {
+        id: string;
+      }
+    ).id;
+    const res = await executeFunction(ctx, 'update_row', {
+      table: 'files',
+      id: created,
+      values: { extracted_text: '<script>EVIL()</scr' + 'ipt>' },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/executable html file/i);
+    // The legitimate content is untouched.
+    const row = (await db.get('files', created)) as Record<string, unknown>;
+    expect(String(row.extracted_text)).toContain('created:first');
+  });
+
+  it('still allows non-body edits to an html artifact (e.g. description) via update_row', async () => {
+    const created = (
+      (await executeFunction(ctx, 'create_html_file', { title: 'Page', spec: 'first' })).result as {
+        id: string;
+      }
+    ).id;
+    const res = await executeFunction(ctx, 'update_row', {
+      table: 'files',
+      id: created,
+      values: { description: 'a friendly label' },
+    });
+    expect(res.ok).toBe(true);
+  });
 });

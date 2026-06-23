@@ -165,7 +165,15 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
       const spec = requireString(args.spec, 'spec');
       const html = await ctx.htmlAuthor(spec);
       const { row } = await htmlArtifactFileRow(ctx.db, title, html);
-      const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
+      // allowReservedFileCols: this is the trusted authoring path, so it may set the
+      // executable artifact_type='html' marker that createRow refuses from every
+      // other caller (guardReservedFileColumns).
+      const { id } = await createRow(
+        { ...mctx, allowReservedFileCols: true },
+        table,
+        row,
+        ctx.privateMode ? 'private' : undefined,
+      );
       return { ok: true, result: { id, table: 'files', open: true } };
     }
     case 'edit_html_file': {
@@ -195,7 +203,9 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         return { ok: false, error: `Row "${targetId}" is not an HTML file.` };
       }
       const html = await ctx.htmlAuthor(instruction, existing.extracted_text ?? '');
-      await updateRow(mctx, table, targetId, {
+      // allowReservedFileCols: the trusted authoring path may rewrite an executable
+      // artifact's body, which updateRow refuses from every other caller.
+      await updateRow({ ...mctx, allowReservedFileCols: true }, table, targetId, {
         extracted_text: html,
         size_bytes: Buffer.byteLength(html, 'utf8'),
       });

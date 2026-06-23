@@ -25,9 +25,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // `artifact_type='html'` file live in a sandboxed `srcdoc` frame (with an injected
 // CSP + the bundled chart library decoded from a window global), plus the bundled
 // minified Chart.js itself (assigned to `window.__LATTICE_CHART_LIB__`), which is
-// the bulk of the size jump. Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 691419;
-const ORIGINAL_SHA256 = 'c5b05708483b005e52ace7b4289531ffa0135d64bba7db63e4533fa06f105747';
+// the bulk of the size jump. The HTML file renders in a null-origin sandboxed frame
+// (no allow-same-origin) with no network (CSP connect-src 'none'); a parent-side
+// read-only postMessage broker mediates all data reads, and an injected
+// `window.lattice` bridge is how an authored page asks for them. Recapture the
+// length + hash on any intended change.
+const ORIGINAL_LENGTH = 697300;
+const ORIGINAL_SHA256 = 'f7128159ff14fc7690d454d246baddf7e69162f34d4d8d7933e42be2787a1bd4';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {
