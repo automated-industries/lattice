@@ -33,7 +33,7 @@ import { appJs } from '../../src/gui/app/script.js';
 // mediates all data reads, and an injected `window.lattice` bridge is how an
 // authored page asks for them. Recapture the length + hash on any intended change.
 const ORIGINAL_LENGTH = 705847;
-const ORIGINAL_SHA256 = 'a0a94a30ce5e566cdd32e830d81c32b3ba515828b0823bcde8de4261b333de6b';
+const ORIGINAL_SHA256 = '24a47fe09ad3cb3eb4df962a49918d6ad554bbd79b50d41c97002849f4bb7c32';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

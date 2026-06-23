@@ -51,6 +51,11 @@ export const appJs = [
   routerJs,
   dashboardJs,
   tableViewJs,
+  // Must stay INSIDE the main client IIFE (alongside selectDrawerTab, which
+  // dispatches to it) so renderConnectorsPanel can see the wrapper-scoped
+  // helpers (fetchJson, escapeHtml). Appended last, it would be defined at true
+  // global scope and throw "fetchJson is not defined" when the tab is opened.
+  connectorsSettingsJs,
   detailViewJs,
   markdownJs,
   settingsDrawerJs,
@@ -62,5 +67,4 @@ export const appJs = [
   onboardingJs,
   createDatabaseWizardJs,
   inlineImportJs,
-  connectorsSettingsJs,
 ].join('');
