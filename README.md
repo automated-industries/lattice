@@ -2914,6 +2914,10 @@ vanished from the source.
 On a cloud workspace, the owner calls `enableConnectorRls(db, connector, 'jira')`
 to scope connected rows per member (private by default, or shared per type).
 
+In the **GUI**, all of this is point-and-click: open **Settings → Connectors**,
+paste your Composio API key, and connect / refresh / disconnect a toolkit.
+Connected data types show a "Connected" badge in the Objects list.
+
 See [docs/connectors.md](docs/connectors.md) for the full guide and the connector
 SPI (to add a new toolkit or provider).
 

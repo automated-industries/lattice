@@ -51,9 +51,11 @@ connector is configured.
   visibility (`private` per member, or `everyone`). Owner-only; a no-op on
   SQLite / non-cloud / non-owner. Derived enrichment over connected rows
   inherits source visibility via the existing source-gated fold.
-- **GUI connectors API.** Server routes to list/connect/refresh/disconnect and a
-  `sync-if-stale` load hook; `/api/entities` now reports a per-table
-  `connectorToolkit`. (The Connectors settings page UI lands in a follow-up.)
+- **GUI connectors.** A **Connectors** settings tab to set the Composio API key
+  and connect / refresh / disconnect a toolkit (Jira), backed by server routes
+  (list / connect / refresh / disconnect + a `sync-if-stale` load hook).
+  Connected data types are marked with a "Connected" badge in the Objects list
+  (`/api/entities` reports a per-table `connectorToolkit`).
 
 ## [4.2.1] — unreleased
 

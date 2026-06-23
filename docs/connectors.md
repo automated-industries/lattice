@@ -29,7 +29,15 @@ A connected table's **natural key is its primary key** (a stable external id), s
 re-syncs upsert idempotently. Every row carries connector lineage:
 `_source_connector_id` and `_source_model` (immutable) plus `_source_synced_at`.
 
-## Quick start
+## Using the GUI
+
+Open **Settings → Connectors**, paste your Composio API key, then **Connect** a
+toolkit (Jira). The connect flow opens the Composio OAuth page in a new tab; click
+**Finish connecting** when you return and the initial sync runs. Each connected
+toolkit shows its status + last-synced time with **Refresh** and **Disconnect**
+buttons, and connected data types get a "Connected" badge in the Objects list.
+
+## Quick start (programmatic)
 
 ```typescript
 import {
