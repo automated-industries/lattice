@@ -92,6 +92,16 @@ A bare `new Lattice(path)` does **not** auto-render (`_scheduleAutoRender`
 early-returns when no output dir is set) — call `render(dir)` / `reconcile(dir)`
 manually, or opt in with `enableAutoRender(dir)`.
 
+On open, a staleness gate decides whether the existing tree can be reused or must
+be re-rendered. Alongside the data cursor (has anything the tree depends on
+changed?), the manifest records a **render-output format version**. When a
+release changes how the tree is derived or templated — i.e. the bytes a clean
+render produces for unchanged data — that version is bumped, and the gate treats
+any workspace whose manifest records an older version as stale. The result is a
+**one-time full re-render on the first open after upgrading**, so a render-logic
+fix reaches workspaces rendered by an older version automatically; once the
+manifest is re-stamped, subsequent opens skip again when nothing has changed.
+
 ## File loopback (3.4)
 
 When the GUI is serving a workspace, editing a rendered `.md` file on disk is automatically captured back into the database through the normal write path — so the change lands in the changelog (versioned/undoable) and appears live in the GUI, exactly as if the edit had been made there. Structured frontmatter and body `key: value` fields round-trip automatically; edits that can't be safely parsed (free-form or custom renders) are surfaced as a notice rather than guessed at, so a lossy render can't corrupt a row. Render echoes are suppressed via the manifest, so there is no write loop.
