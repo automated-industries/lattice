@@ -21,11 +21,19 @@ import { appJs } from '../../src/gui/app/script.js';
 // frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
 // JSON/xlsx file into the assistant chat: the upload returns a proposal and an
 // inline confirm card renders into the assistant rail (no top-bar button, no
-// modal), and the 4.3 Connectors settings panel (renderConnectorsPanel + the
-// "Connectors" drawer tab + the sidebar "Connected" badge for connected data
-// types). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 422201;
-const ORIGINAL_SHA256 = '4fdf92288ee386b70cb66baca607db9e090e0aaf8113390a4b4b5eee0650e82a';
+// modal). The 4.2.4 release adds two GUI features. (1) The Connectors settings
+// panel (renderConnectorsPanel + the "Connectors" drawer tab + the sidebar
+// "Connected" badge for connected data types). (2) Inline HTML files: the file
+// preview renders an `artifact_type='html'` file live in a sandboxed `srcdoc`
+// frame (with an injected CSP + the bundled chart library decoded from a window
+// global), plus the bundled minified Chart.js itself (assigned to
+// `window.__LATTICE_CHART_LIB__`), which is the bulk of the size jump. The HTML
+// file renders in a null-origin sandboxed frame (no allow-same-origin) with no
+// network (CSP connect-src 'none'); a parent-side read-only postMessage broker
+// mediates all data reads, and an injected `window.lattice` bridge is how an
+// authored page asks for them. Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 705847;
+const ORIGINAL_SHA256 = 'a0a94a30ce5e566cdd32e830d81c32b3ba515828b0823bcde8de4261b333de6b';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

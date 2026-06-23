@@ -109,17 +109,150 @@ export const dashboardJs = `    // ───────────────
         download: (isS3File(row) && !hasLocalBytes(row)) || (hasLocalBytes(row) && !inline),
       };
     }
+    // ── Inline HTML files: isolation model ──────────────────────────────────
+    // An authored HTML file is UNTRUSTED code. It runs in an iframe sandboxed
+    // WITHOUT allow-same-origin, so it loads in an opaque (null) origin and cannot
+    // touch the host GUI (no window.parent DOM/storage/cookies) and — with the CSP
+    // below — has ZERO network egress (connect-src 'none'). It therefore cannot
+    // fetch anything itself; all data access is mediated by the parent through the
+    // postMessage broker below, which is READ-ONLY and table-gated. So even a fully
+    // compromised page (e.g. via injected row data) can neither exfiltrate nor write.
+
+    // Injected into the frame: a tiny window.lattice data API that talks to the
+    // parent broker over postMessage and returns Promises. Written as a plain string
+    // (double-quoted internals) so it survives the template literal untouched and
+    // never contains a literal closing-script token. The page calls
+    // window.lattice.query/get/search — it cannot reach the network directly.
+    var __LATTICE_DATA_BRIDGE =
+      'window.__lp={};window.__ls=0;' +
+      'window.addEventListener("message",function(e){' +
+      'var d=e.data;if(!d||d.__latticeReply!==true||e.source!==window.parent)return;' +
+      'var p=window.__lp[d.rid];if(!p)return;delete window.__lp[d.rid];' +
+      'if(d.ok)p.resolve(d.data);else p.reject(new Error(d.error||"lattice request failed"));});' +
+      'function __lreq(op,extra){return new Promise(function(res,rej){' +
+      'var rid="r"+(++window.__ls);window.__lp[rid]={resolve:res,reject:rej};' +
+      'var m={__lattice:true,rid:rid,op:op};for(var k in extra)m[k]=extra[k];' +
+      'window.parent.postMessage(m,"*");' +
+      'setTimeout(function(){if(window.__lp[rid]){delete window.__lp[rid];rej(new Error("lattice request timed out"));}},15000);});}' +
+      'window.lattice={' +
+      'query:function(t,o){o=o||{};return __lreq("query",{table:t,limit:o.limit,offset:o.offset});},' +
+      'get:function(t,id){return __lreq("get",{table:t,id:id});},' +
+      'search:function(q){return __lreq("search",{query:q});}};';
+
+    // Parent-side broker: the ONLY bridge between the isolated frame and the data
+    // API. Strictly READ-ONLY — it performs exactly three GET/search reads against
+    // the existing same-origin API and nothing else (no create/update/delete, no
+    // arbitrary path), and refuses system/credential tables. RLS still applies
+    // server-side, so a cloud member only ever reads rows they may already see.
+    function __latticeReadOnlyFetch(msg) {
+      var op = msg && msg.op;
+      var table = String((msg && msg.table) || '');
+      var DENY = { secrets: 1, chat_threads: 1, chat_messages: 1 };
+      if (op === 'search') {
+        return fetch('/api/search', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: String((msg && msg.query) || '') }),
+        }).then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      if (!table || table.charAt(0) === '_' || DENY[table]) {
+        return Promise.resolve({ ok: false, error: 'forbidden table' });
+      }
+      if (op === 'query') {
+        var lim = Math.min(Math.max(parseInt(msg.limit, 10) || 50, 1), 500);
+        var off = Math.max(parseInt(msg.offset, 10) || 0, 0);
+        return fetch('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + lim + '&offset=' + off)
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      if (op === 'get') {
+        return fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(String(msg.id || '')))
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      return Promise.resolve({ ok: false, error: 'unsupported op' });
+    }
+    var __latticeHtmlBrokerInstalled = false;
+    function installHtmlFileBroker() {
+      if (__latticeHtmlBrokerInstalled) return;
+      __latticeHtmlBrokerInstalled = true;
+      window.addEventListener('message', function (e) {
+        var d = e.data;
+        if (!d || d.__lattice !== true) return;
+        // Identity check: only honour messages whose source IS the live HTML-file
+        // frame's window — an unforgeable handle. (The frame is null-origin, so we
+        // can't match on e.origin; source identity is the real gate.)
+        var frame = document.getElementById('html-file-frame');
+        if (!frame || !frame.contentWindow || e.source !== frame.contentWindow) return;
+        var rid = d.rid;
+        var reply = function (payload) {
+          payload.__latticeReply = true;
+          payload.rid = rid;
+          try { frame.contentWindow.postMessage(payload, '*'); } catch (x) { /* frame gone */ }
+        };
+        __latticeReadOnlyFetch(d).then(function (res) {
+          reply({ ok: !!res.ok, data: res.data, error: res.error });
+        }).catch(function (err) {
+          reply({ ok: false, error: String((err && err.message) || err) });
+        });
+      });
+    }
+
+    // Build the document for an HTML-file frame's srcdoc. The CSP <meta> MUST be the
+    // very first thing the parser sees — a meta policy only governs content that
+    // FOLLOWS it, and the authored document is untrusted, so we must never splice the
+    // CSP into the author's markup (anything the author places before it — including
+    // a leading <script>, or a <head> token hidden in a comment — would otherwise run
+    // with no policy and could open a network channel). Instead we emit OUR OWN
+    // document head (CSP first, then the chart lib + data bridge) and place the entire
+    // authored document inside OUR <body>. The browser flattens the author's own
+    // <html>/<head>/<body> tags into this body, so every authored script runs after
+    // (and is therefore governed by) our CSP; an author-supplied CSP <meta> can only
+    // intersect/further-restrict ours, never loosen it.
+    // The CSP grants inline script/style only, NO network at all (connect-src 'none'
+    // + every fetch-directive 'none'/data:), and no nested browsing contexts — data
+    // comes through the postMessage broker, not the network.
+    function htmlFileSrcdoc(rawHtml) {
+      var csp = '<meta http-equiv="Content-Security-Policy" content="' +
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+        "img-src data:; font-src data:; media-src data:; connect-src 'none'; " +
+        "child-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; " +
+        "manifest-src 'none'; base-uri 'none'; form-action 'none'" +
+        '">';
+      var lib = '';
+      try {
+        var b64 = window.__LATTICE_CHART_LIB__;
+        // Split the script tags so this source never contains a literal closing
+        // script tag (which would terminate the GUI's own inline script early). The
+        // vendored library is ASCII and contains no closing script tag of its own.
+        if (b64) lib = '<scr' + 'ipt>' + atob(b64) + '</scr' + 'ipt>';
+      } catch (e) { lib = ''; }
+      var bridge = '<scr' + 'ipt>' + __LATTICE_DATA_BRIDGE + '</scr' + 'ipt>';
+      // CSP first, unconditionally — the authored document is confined to <body>.
+      return '<!doctype html><html><head>' + csp + lib + bridge + '</head><body>' +
+        String(rawHtml || '') + '</body></html>';
+    }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
       var mime = row.mime || '';
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
       var viewable = hasViewableFile(row);
+      var isHtmlFile = mime === 'text/html' && row.artifact_type === 'html';
       var html = '';
-      // System-created artifact: a small pill above the rendered markdown.
-      if (row.artifact_type) html += '<div class="artifact-badge">✦ Artifact</div>';
+      // System-created artifact: a small pill above the rendered content. An HTML
+      // file gets its own badge so it reads as a live page, not a markdown note.
+      if (isHtmlFile) html += '<div class="artifact-badge html-badge">🌐 HTML</div>';
+      else if (row.artifact_type) html += '<div class="artifact-badge">✦ Artifact</div>';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
-      if (isImageFile(row) && viewable) {
+      if (isHtmlFile) {
+        // Render the saved HTML live in a fully isolated inline frame. The srcdoc is
+        // set as a PROPERTY below (no attribute-escaping for a large document).
+        // sandbox WITHOUT allow-same-origin → opaque (null) origin: the page cannot
+        // touch the host GUI, and the injected CSP gives it no network at all. Data
+        // reads go through the parent's read-only postMessage broker.
+        html +=
+          '<iframe id="html-file-frame" class="html-frame" title="HTML file"' +
+          ' sandbox="allow-scripts"></iframe>';
+      } else if (isImageFile(row) && viewable) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
       } else if (mime === 'application/pdf' && viewable) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
@@ -142,6 +275,15 @@ export const dashboardJs = `    // ───────────────
         '</div>';
       }
       host.innerHTML = html;
+      if (isHtmlFile) {
+        // Install the read-only data broker (once) and set the frame content as a
+        // property (no attribute-escaping needed). Re-runs on every re-render, so a
+        // chat edit that rewrites this row's extracted_text reloads the frame with
+        // the new page in place — no page refresh.
+        installHtmlFileBroker();
+        var frame = document.getElementById('html-file-frame');
+        if (frame) frame.srcdoc = htmlFileSrcdoc(row.extracted_text);
+      }
       var openBtn = document.getElementById('file-open');
       if (openBtn) openBtn.addEventListener('click', function () {
         fetch('/api/files/' + encodeURIComponent(id) + '/open-in-finder', { method: 'POST' })
@@ -688,6 +830,7 @@ export const dashboardJs = `    // ───────────────
     // File-type glyph for native files-entity rows.
     function fileEmoji(row) {
       var m = (row && row.mime) || '';
+      if (m === 'text/html' && row && row.artifact_type === 'html') return '🌐';
       if (m.indexOf('image/') === 0) return '🖼️';
       if (m === 'application/pdf') return '📕';
       if (MD_MIMES.indexOf(m) >= 0 || m.indexOf('text/') === 0) return '📝';

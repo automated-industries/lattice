@@ -13,12 +13,10 @@ Release on the 4.2 line. Two additive features — **connectors** and inline
 unchanged); the connector layer and its optional dependency are inert until a
 connector is configured.
 
-### Connectors
+### Added — Connectors
 
 Sync external sources into Lattice as a new kind of table, the **connected data
 type**.
-
-### Added
 
 - **Connected data types.** A table can declare `source` on its
   `TableDefinition` to mark it as backed by an external system. The framework
@@ -71,6 +69,77 @@ type**.
   Connected data types are marked with a "Connected" badge in the Objects list
   (`/api/entities` reports a per-table `connectorToolkit`).
 
+### Added — Inline HTML files
+
+Inline HTML files in the GUI assistant; this also retires the never-published
+`lattice connect` surface in favour of it.
+
+- **Create & edit HTML files from chat, rendered inline.** The GUI assistant gains
+  two tools — `create_html_file` and `edit_html_file`. Ask it for a page, a report,
+  or a chart of your data and it authors a complete standalone HTML file that is
+  saved like any other file and rendered live in the main content view (a sandboxed
+  `srcdoc` frame). Ask for a change while viewing it ("make it a pie chart",
+  "recolour the header") and the open view updates in place — no page refresh. HTML
+  files are distinguished from markdown artifacts in the file list and preview.
+- **Tool-delegated authoring.** The chat itself stays on the fast default model;
+  the HTML authoring is delegated to a stronger model (`claude-sonnet-4-6`) with a
+  larger output budget for the heavy page generation. It uses the same
+  machine-local Claude key as the rest of the assistant (`TurnParams` gains an
+  optional `maxTokens`).
+- **Live data + offline charts.** Authored pages read live data through an injected
+  `window.lattice` bridge (`.query` / `.get` / `.search`), which a read-only,
+  table-gated parent broker services against the existing read API
+  (`/api/tables/:table/rows`, `/api/search`) — no new HTTP endpoints. A charting
+  library is bundled with the GUI and injected into the frame, so pages draw charts
+  with no CDN and fully offline.
+
+### Security
+
+The authored HTML is treated as **untrusted code** and runs fully isolated:
+
+- **Origin-isolated frame.** Rendered in an `<iframe sandbox="allow-scripts">` (no
+  `allow-same-origin`, `allow-popups`, `allow-top-navigation`, or `allow-forms`), so
+  it loads in an opaque/null origin and cannot reach the host GUI's
+  window/DOM/storage/cookies or the chat.
+- **No network egress.** The injected Content-Security-Policy is emitted as the
+  unconditional first element of the document (the authored markup is confined to
+  `<body>`, so it can never run before the policy), with `connect-src 'none'` plus
+  `child-src` / `frame-src` / `object-src` / `worker-src` / `manifest-src 'none'`
+  and `img-src`/`font-src`/`media-src data:` — the page cannot `fetch`, open a
+  socket, beacon, or load a remote resource.
+- **Read-only, mediated data access.** The frame has no direct API access; all reads
+  go through the parent broker over `postMessage`, which (a) only honours messages
+  whose source is the frame's own window, (b) allows exactly three **read** ops, and
+  (c) refuses `secrets` / `chat_*` / `_lattice_*` tables. Server-side RLS still
+  applies, so a cloud member only ever reads rows they may already see.
+- **Executable artifacts are provenance-gated.** `artifact_type='html'` — the marker
+  that makes a file render as an executable page — can be set ONLY by the trusted
+  `create_html_file` / `edit_html_file` tools (`guardReservedFileColumns`); generic
+  `create_row` / `update_row` / `bulk_update` and the HTTP row routes are refused.
+  The same gate also reserves rewriting an existing html artifact's BODY
+  (`extracted_text`) to the trusted edit tool, so a caller (or a prompt injection)
+  can neither plant a new executable page nor swap the contents of one another
+  member would render.
+- **Known residual.** A sandboxed frame can still navigate _itself_ (e.g. `location =`),
+  which no cross-browser CSP directive blocks; this is inherent to in-browser
+  rendering of untrusted scripts. It is bounded by the provenance gate (only
+  first-party-authored pages execute) and RLS (the broker serves only the viewer's
+  own data), so it does not exceed the assistant's existing prompt-injection surface.
+  Rendering on a distinct throwaway origin is recorded as a future hardening.
+
+The design was adversarially reviewed (multi-agent red-team with independent
+verification) and the findings folded into the above.
+
+### Removed
+
+- **The `lattice connect` command** and its `--dashboard <file|folder>` "serve your
+  own HTML at `/`" surface (added in an unreleased branch, never published) are
+  removed — superseded by AI-authored inline HTML files. The encrypted,
+  machine-local Claude key it used to onboard is unchanged; set or change it from
+  the GUI's assistant settings.
+
+---
+
 ## [4.2.3] — unreleased
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
@@ -107,6 +176,8 @@ unchanged).
   same-slug directories and sweeps the collapsed-context directories; subsequent
   opens skip again once the manifest is re-stamped.
 
+---
+
 ## [4.2.2] — unreleased
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
@@ -130,6 +201,8 @@ unchanged).
   a full render) — there is no ongoing per-open cost. Going forward, any change
   to how the entity-context is derived or templated must bump this version so
   the new output reaches existing workspaces.
+
+---
 
 ## [4.2.1] — unreleased
 
