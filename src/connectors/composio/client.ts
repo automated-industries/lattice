@@ -92,7 +92,7 @@ interface ComposioSdkInstance {
     list(query: {
       userIds?: string[];
       toolkitSlugs?: string[];
-    }): Promise<{ items: Array<{ id: string }> }>;
+    }): Promise<{ items: { id: string }[] }>;
     delete(id: string): Promise<void>;
   };
   tools: {

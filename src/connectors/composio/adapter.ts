@@ -123,7 +123,7 @@ export class ComposioConnector implements Connector {
       cursor = nextCursor;
     }
     throw new Error(
-      `Composio fetch for ${toolkit}/${model} exceeded ${MAX_PAGES} pages — aborting to avoid an unbounded loop.`,
+      `Composio fetch for ${toolkit}/${model} exceeded ${String(MAX_PAGES)} pages — aborting to avoid an unbounded loop.`,
     );
   }
 

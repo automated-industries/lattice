@@ -276,7 +276,11 @@ function nextOffsetCursor(payload: Record<string, unknown>, fetched: number): st
   return fetched < PAGE_SIZE ? null : String(next);
 }
 
-const str = (v: unknown): string | null => (v == null ? null : String(v));
+const str = (v: unknown): string | null => {
+  if (v == null) return null;
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v as string | number | boolean);
+};
 
 /** Build an offset-paged fetch spec from an arg-builder + a per-item mapper. */
 function offsetFetch(

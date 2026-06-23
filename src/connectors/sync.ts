@@ -178,7 +178,7 @@ export async function collectConnectorKeys(
     });
     for (const r of page.rows) {
       const v = r[keyColumn];
-      if (v != null) keys.push(String(v));
+      if (v != null) keys.push(String(v as string | number));
     }
     if (!page.hasMore || !page.nextCursor) break;
     cursor = page.nextCursor;

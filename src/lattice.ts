@@ -1123,8 +1123,8 @@ export class Lattice {
     const source = this._connectedSources.get(table);
     if (!source) return row;
     const out = { ...row };
-    if (out._source_model == null) out._source_model = source.model;
-    if (out._source_synced_at == null) out._source_synced_at = new Date().toISOString();
+    out._source_model ??= source.model;
+    out._source_synced_at ??= new Date().toISOString();
     return out;
   }
 

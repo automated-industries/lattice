@@ -43,6 +43,9 @@ export default tseslint.config(
       '@typescript-eslint/no-unnecessary-condition': 'off',
       '@typescript-eslint/no-base-to-string': 'off',
       '@typescript-eslint/prefer-nullish-coalescing': 'off',
+      // Test fakes implement async interfaces with no real awaits / empty bodies.
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-empty-function': 'off',
     },
   },
   {
