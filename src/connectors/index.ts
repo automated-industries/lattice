@@ -54,8 +54,17 @@ export {
   defineJiraTables,
 } from './composio/jira.js';
 
-export { syncConnector, syncIfStale, syncStaleConnectors, DEFAULT_STALE_MS } from './sync.js';
+export {
+  syncConnector,
+  syncIfStale,
+  syncStaleConnectors,
+  collectConnectorKeys,
+  DEFAULT_STALE_MS,
+} from './sync.js';
 export type { SyncConnectorResult, SyncConnectorOptions } from './sync.js';
+
+export { disconnectConnector } from './teardown.js';
+export type { DisconnectOptions, DisconnectResult } from './teardown.js';
 
 import { registerJiraToolkit } from './composio/jira.js';
 

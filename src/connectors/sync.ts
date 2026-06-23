@@ -157,9 +157,10 @@ async function pruneVanished_(
 
 /**
  * Collect all natural keys for a connector's rows in a table, paged + projected
- * to the single key column (bounded reads — never a full-row table scan).
+ * to the single key column (bounded reads — never a full-row table scan). Shared
+ * by the sync prune pass and the disconnect teardown.
  */
-async function collectConnectorKeys(
+export async function collectConnectorKeys(
   db: Lattice,
   table: string,
   keyColumn: string,
