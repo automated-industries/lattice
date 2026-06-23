@@ -510,7 +510,11 @@ export class RenderEngine {
       // from the SAME (member-visible) row set the render wrote — otherwise
       // cleanup would prune the member's own just-rendered files.
       const rows = await this._schema.queryTable(this._adapter, table, this._schema.readRel);
-      const slugs = new Set(rows.map((row) => def.slug(row)));
+      // Use the SAME disambiguated slugs the render loop wrote to disk (sanitized
+      // + collision-suffixed), so cleanup sees the real directory names — otherwise
+      // a disambiguated dir would look orphaned and get wrongly removed.
+      const entityPk = this._schema.getPrimaryKey(table)[0] ?? 'id';
+      const slugs = new Set(RenderEngine._disambiguateSlugs(rows, def.slug, entityPk));
       currentSlugsByTable.set(table, slugs);
     }
     return cleanupEntityContexts(
@@ -564,6 +568,98 @@ export class RenderEngine {
    */
   private static _normKey(v: string | number | bigint | boolean): string {
     return String(v);
+  }
+
+  /**
+   * Sanitize and validate ONE base slug.
+   *
+   * Replaces non-ASCII whitespace (e.g. the macOS narrow no-break space U+202F
+   * that shows up in screenshot filenames) with a regular space, strips control
+   * characters, then rejects any slug that still contains a character outside the
+   * allowed set (the path-traversal guard). Throws on an invalid slug — never
+   * silently rewrites it.
+   */
+  private static _sanitizeSlug(rawSlug: string): string {
+    const slug = rawSlug
+      .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001F\u007F]/g, '');
+    if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~[\]]/.test(slug)) {
+      throw new Error(`Invalid slug "${slug}": contains characters outside the allowed set`);
+    }
+    return slug;
+  }
+
+  /**
+   * Disambiguate per-row slugs so two rows that produce the SAME base slug do not
+   * write to (and clobber) the same directory.
+   *
+   * Returns one final slug per row, in the SAME order as `rows`. A base slug used
+   * by exactly one row is returned unchanged (no churn for the common case). When
+   * a base slug is shared by >1 row, EVERY colliding row gets a short, stable
+   * suffix derived from its primary key (`<base>-<pk8>`), so the result is
+   * order-independent: the same row gets the same slug on every render regardless
+   * of row order. The suffix lengthens only if two rows' 8-char PK prefixes still
+   * collide (e.g. shared prefix), guaranteeing uniqueness without changing the
+   * common-case output. Slugs are sanitized + path-traversal-validated via
+   * {@link _sanitizeSlug}; `def.slug` itself is never modified.
+   */
+  private static _disambiguateSlugs(
+    rows: readonly Row[],
+    slugFn: (row: Row) => string,
+    pkCol: string,
+  ): string[] {
+    const baseSlugs = rows.map((row) => RenderEngine._sanitizeSlug(slugFn(row)));
+
+    // Group the row indices that share each base slug.
+    const byBase = new Map<string, number[]>();
+    for (let i = 0; i < baseSlugs.length; i++) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const base = baseSlugs[i]!;
+      const bucket = byBase.get(base);
+      if (bucket) bucket.push(i);
+      else byBase.set(base, [i]);
+    }
+
+    const final: string[] = baseSlugs.map(() => '');
+
+    // Path-safe stringified PK for a row (covers number / bigint PKs; strips path
+    // separators and any disallowed chars so the suffix can never escape the dir).
+    const pkOf = (i: number): string => {
+      const v = rows[i]?.[pkCol];
+      // Stringify only scalar PKs; a non-scalar PK is degenerate but must never
+      // fall through to Object's `[object Object]` — JSON-encode it instead.
+      let s: string;
+      if (v == null) s = '';
+      else if (typeof v === 'object') s = JSON.stringify(v);
+      else s = String(v as string | number | bigint | boolean);
+      return RenderEngine._sanitizeSlug(s).replace(/[ /\\]/g, '');
+    };
+
+    for (const [base, indices] of byBase) {
+      if (indices.length === 1) {
+        // Unique base slug → keep it verbatim (no churn for the common case).
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        final[indices[0]!] = base;
+        continue;
+      }
+      // Collision: append a stable PK-derived suffix to EVERY colliding row.
+      // Find the SHORTEST prefix length (>=8) that makes the colliding rows'
+      // suffixes pairwise distinct. PKs are unique, so the full PK always
+      // suffices; we just shorten it for readability when 8 chars already
+      // disambiguate. The result depends only on PK values (order-independent).
+      const pks = indices.map(pkOf);
+      const maxLen = Math.max(...pks.map((p) => p.length), 1);
+      let len = 8;
+      while (len < maxLen && new Set(pks.map((p) => p.slice(0, len))).size !== pks.length) {
+        len += 4;
+      }
+      for (let k = 0; k < indices.length; k++) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        final[indices[k]!] = `${base}-${pks[k]!.slice(0, len)}`;
+      }
+    }
+    return final;
   }
 
   /**
@@ -681,6 +777,15 @@ export class RenderEngine {
         const allRows = this._foldRows ? await this._foldRows(table, baseRows) : baseRows;
         const directoryRoot = def.directoryRoot ?? table;
 
+        // Disambiguate per-row slugs UP FRONT so two rows whose `def.slug` returns
+        // the same base value don't write to (and clobber) the same directory.
+        // `finalSlugs[i]` is parallel to `allRows`; it equals the sanitized base
+        // slug for a unique row, or `<base>-<pk-prefix>` for a colliding one. The
+        // result is order-independent (keyed on the PK), so a row keeps the same
+        // directory across renders. This is also threaded into the manifest key
+        // and into cleanup()'s currentSlugs so cleanup sees the real dirs on disk.
+        const finalSlugs = RenderEngine._disambiguateSlugs(allRows, def.slug, entityPk);
+
         // Prefetch the SAFE-SUBSET belongsTo reads for this table as one
         // `WHERE pk IN (...)` per group (vs one query per parent row). Routed
         // through `_readRel`, so a masked target reads `<table>_v`. A null
@@ -751,18 +856,12 @@ export class RenderEngine {
             await new Promise((r) => setImmediate(r));
           }
 
-          // Sanitize slug: replace non-ASCII whitespace (e.g., macOS narrow no-break space
-          // U+202F in screenshot filenames) with regular space, strip control characters.
-          const rawSlug = def.slug(entityRow);
-          const slug = rawSlug
-            .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
-            // eslint-disable-next-line no-control-regex
-            .replace(/[\u0000-\u001F\u007F]/g, '');
-
-          // Validate slug against path traversal
-          if (/[^a-zA-Z0-9.\-_ @(),#&'+:;!~[\]]/.test(slug)) {
-            throw new Error(`Invalid slug "${slug}": contains characters outside the allowed set`);
-          }
+          // Per-row slug, already sanitized + path-traversal-validated AND made
+          // unique within this table by _disambiguateSlugs (so same-titled rows
+          // get distinct dirs instead of clobbering one). `def.slug` is never
+          // mutated — the disambiguation wraps it.
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          const slug = finalSlugs[i]!;
 
           const entityDir = def.directory
             ? join(outputDir, def.directory(entityRow))
