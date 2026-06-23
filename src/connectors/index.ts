@@ -46,3 +46,15 @@ export {
   ConnectorUnavailableError,
 } from './composio/client.js';
 export type { ComposioClient, ComposioActionResult } from './composio/client.js';
+
+export {
+  JIRA_TOOLKIT,
+  JIRA_MODELS,
+  registerJiraToolkit,
+  defineJiraTables,
+} from './composio/jira.js';
+
+import { registerJiraToolkit } from './composio/jira.js';
+
+// Register the built-in toolkits so the Composio connector can serve them.
+registerJiraToolkit();
