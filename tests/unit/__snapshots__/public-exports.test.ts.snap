@@ -111,6 +111,7 @@ exports[`public API surface (additive-only) > exports only grow — no removal/r
   "dropVectorIndex",
   "enableAudienceView",
   "enableChangelogRls",
+  "enableConnectorRls",
   "enableRlsForTable",
   "encrypt",
   "enrichKnowledge",
