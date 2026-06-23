@@ -41,6 +41,8 @@ import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
+import { dispatchConnectorsRoute } from './connectors-routes.js';
+import { ComposioConnector } from '../connectors/index.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
@@ -762,6 +764,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 latticeRoot: dirname(active.configPath),
                 validTables: active.validTables,
                 softDeletable: active.softDeletable,
+              });
+            },
+          },
+          // ── Connectors: connect/refresh/disconnect external sources ──
+          // Composio-backed connected data types (Jira, …). Sync runs on connect,
+          // on manual refresh, and on GUI load (/sync-if-stale).
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/connectors')) return false;
+              const ident = readIdentity();
+              return await dispatchConnectorsRoute(req, res, {
+                db: active.db,
+                connector: new ComposioConnector(),
+                outputDir: active.outputDir,
+                connectedBy: ident.email || ident.display_name || 'local',
               });
             },
           },

@@ -22,6 +22,11 @@ export interface GuiTableSummary {
   rowCount?: number | null;
   /** True for framework-shipped native entities (files, secrets). Set by the server. */
   native?: boolean;
+  /**
+   * Connected data type only: the toolkit this table is synced from (e.g. `'jira'`).
+   * Drives the "Connected" badge in the Objects list. Set by the server.
+   */
+  connectorToolkit?: string;
   /** Team cloud only: this table is shared to the whole team. Set by the server. */
   shared?: boolean;
   /** Team cloud only: the operator owns this table. Set by the server. */

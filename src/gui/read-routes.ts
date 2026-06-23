@@ -139,6 +139,9 @@ async function entitiesWithCounts(
           : await db.count(t.name);
       }
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
+      // Connected data type → expose its toolkit so the Objects list can badge it.
+      const connectedSource = db.getConnectedSource(t.name);
+      if (connectedSource) base.connectorToolkit = connectedSource.toolkit;
       // Column → SQL type, for the Data Model schema cards (name : type).
       const colTypes = db.getRegisteredColumns(t.name);
       if (colTypes) base.columnTypes = colTypes;
