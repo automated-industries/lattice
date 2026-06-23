@@ -1,6 +1,7 @@
 // Composes the GUI client script from its per-subsystem segments, in exact original
 // order, joined with the empty string. The concatenation is byte-identical to the
 // original single template literal (pinned by tests/unit/app-js-composition.test.ts).
+import { chartLibJs } from './chart-lib.js';
 import { displayConfigJs } from './display-config.js';
 import { bootJs } from './boot.js';
 import { bootInterstitialJs } from './boot-interstitial.js';
@@ -31,6 +32,7 @@ import { createDatabaseWizardJs } from './create-database-wizard.js';
 import { inlineImportJs } from './inline-import.js';
 
 export const appJs = [
+  chartLibJs,
   displayConfigJs,
   bootJs,
   bootInterstitialJs,

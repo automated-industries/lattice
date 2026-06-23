@@ -12,10 +12,10 @@ import { css } from '../../src/gui/app/css.js';
 //
 // These constants were captured from the pre-split `css` value. If `css` is
 // ever changed intentionally, recapture the length + hash and update them here.
-// Most recently re-homed to the inline-import segment (the chat-drop confirm card
-// in the assistant rail).
-const ORIGINAL_LENGTH = 78072;
-const ORIGINAL_SHA256 = 'd04047e6e3a2debbc8a3fb29ff72bc000c67d9ebbbaeb28db7ad79e779f05f43';
+// Most recently: the 4.4 inline-HTML-file styles (a taller `.html-frame` for a
+// live HTML file plus its `.html-badge`) in the file-preview segment.
+const ORIGINAL_LENGTH = 78425;
+const ORIGINAL_SHA256 = '2b79e7d3136b2065ab34f8b8820dd5b44905323472851eff3676c1b828615ee6';
 
 describe('css composition', () => {
   it('matches the original length exactly', () => {

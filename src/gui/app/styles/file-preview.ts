@@ -33,5 +33,8 @@ export const filePreviewCss = `    /* ── File preview (files detail page) �
     .file-preview .md-body th, .file-preview .md-body td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
     .file-preview .md-body th { background: var(--surface-2); font-weight: 600; }
     .file-preview .file-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+    /* A live HTML file renders in a taller frame than the generic file/PDF iframe. */
+    .file-preview .html-frame { width: 100%; height: 78vh; min-height: 420px; border: 1px solid var(--border); border-radius: 8px; background: #fff; display: block; }
+    .file-preview .artifact-badge.html-badge { color: var(--text); background: var(--surface-2); }
 
 `;

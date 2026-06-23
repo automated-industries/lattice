@@ -6,6 +6,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.4.0] — unreleased
+
+Feature release (**additive for the published API** — every 4.2 caller runs
+unchanged). Adds inline HTML files to the GUI assistant, and retires the
+never-published `lattice connect` surface in favour of it.
+
+### Added
+
+- **Create & edit HTML files from chat, rendered inline.** The GUI assistant gains
+  two tools — `create_html_file` and `edit_html_file`. Ask it for a page, a report,
+  or a chart of your data and it authors a complete standalone HTML file that is
+  saved like any other file and rendered live in the main content view (a sandboxed
+  `srcdoc` frame). Ask for a change while viewing it ("make it a pie chart",
+  "recolour the header") and the open view updates in place — no page refresh. HTML
+  files are distinguished from markdown artifacts in the file list and preview.
+- **Tool-delegated authoring.** The chat itself stays on the fast default model;
+  the HTML authoring is delegated to a stronger model (`claude-sonnet-4-6`) with a
+  larger output budget for the heavy page generation. It uses the same
+  machine-local Claude key as the rest of the assistant (`TurnParams` gains an
+  optional `maxTokens`).
+- **Live data + offline charts.** Authored pages read live data through the
+  existing same-origin read API (`/api/tables/:table/rows`, `/api/search`) — no new
+  HTTP endpoints. A charting library is bundled with the GUI and injected into the
+  frame, so pages can draw charts with no CDN and fully offline. The frame carries
+  an injected Content-Security-Policy that permits same-origin data reads but blocks
+  every cross-origin request (so a page can read your data but cannot exfiltrate it).
+
+### Removed
+
+- **The `lattice connect` command** and its `--dashboard <file|folder>` "serve your
+  own HTML at `/`" surface (added in an unreleased branch, never published) are
+  removed — superseded by AI-authored inline HTML files. The encrypted,
+  machine-local Claude key it used to onboard is unchanged; set or change it from
+  the GUI's assistant settings.
+
+---
+
 ## [4.2.1] — unreleased
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs

@@ -7,7 +7,14 @@ import {
   getAggressiveness,
   aggressivenessToTemperature,
 } from './assistant-routes.js';
-import { createAnthropicClient, runChat, type LlmMessage, type ContentBlock } from './ai/chat.js';
+import {
+  createAnthropicClient,
+  runChat,
+  buildSchemaContext,
+  type LlmMessage,
+  type ContentBlock,
+} from './ai/chat.js';
+import { generateHtmlFile } from './ai/html-author.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle } from './ai/summarize.js';
@@ -573,6 +580,32 @@ export async function dispatchChatRoute(
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
   };
+
+  // Delegated HTML-file authoring: create_html_file / edit_html_file call this to
+  // author a full standalone HTML page on a stronger model. The closure builds its
+  // own client from the SAME resolved auth (api-key or OAuth) and the live schema,
+  // so the SDK-missing / provider errors surface as a tool error (recoverable),
+  // never a crash. If the user is viewing an html artifact, expose its id so
+  // edit_html_file targets the file on screen by default.
+  dispatch.htmlAuthor = async (spec: string, currentHtml?: string): Promise<string> => {
+    const schema = await buildSchemaContext(dispatch);
+    return generateHtmlFile({
+      client: createAnthropicClient(auth),
+      schema,
+      spec,
+      ...(currentHtml !== undefined ? { currentHtml } : {}),
+    });
+  };
+  if (activeContext?.table === 'files') {
+    try {
+      const open = (await ctx.db.get('files', activeContext.id)) as {
+        artifact_type?: string;
+      } | null;
+      if (open?.artifact_type === 'html') dispatch.activeHtmlFileId = activeContext.id;
+    } catch {
+      // Best-effort: a stale/invisible id just means no default edit target.
+    }
+  }
 
   // When the assistant started working on this request — persisted so a reloaded
   // turn can show the task DURATION (start → last event) rather than "ago".

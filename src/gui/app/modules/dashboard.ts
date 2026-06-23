@@ -109,17 +109,59 @@ export const dashboardJs = `    // ───────────────
         download: (isS3File(row) && !hasLocalBytes(row)) || (hasLocalBytes(row) && !inline),
       };
     }
+    // Build the document for an HTML-file frame's srcdoc: inject a restrictive CSP
+    // <meta> (allow inline script/style + SAME-ORIGIN data fetch, block every
+    // cross-origin request so an authored page can read the user's data but can't
+    // exfiltrate it) plus the bundled chart library (decoded from the window global)
+    // so pages can use the Chart global offline. The library + CSP go inside <head>.
+    function htmlFileSrcdoc(rawHtml) {
+      var csp = '<meta http-equiv="Content-Security-Policy" content="' +
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+        "img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; " +
+        "base-uri 'none'; form-action 'none'" + '">';
+      var lib = '';
+      try {
+        var b64 = window.__LATTICE_CHART_LIB__;
+        // Split the script tags so this source never contains a literal closing
+        // script tag (which would terminate the GUI's own inline script early). The
+        // vendored library is ASCII and contains no closing script tag of its own.
+        if (b64) lib = '<scr' + 'ipt>' + atob(b64) + '</scr' + 'ipt>';
+      } catch (e) { lib = ''; }
+      var head = csp + lib;
+      var src = String(rawHtml || '');
+      // Use a function replacer so the (large) head string is inserted verbatim —
+      // a string replacement would interpret $&/$1 sequences inside it.
+      if (/<head[^>]*>/i.test(src)) {
+        src = src.replace(/<head[^>]*>/i, function (m) { return m + head; });
+      } else if (/<html[^>]*>/i.test(src)) {
+        src = src.replace(/<html[^>]*>/i, function (m) { return m + '<head>' + head + '</head>'; });
+      } else {
+        src = head + src;
+      }
+      return src;
+    }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
       var mime = row.mime || '';
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
       var viewable = hasViewableFile(row);
+      var isHtmlFile = mime === 'text/html' && row.artifact_type === 'html';
       var html = '';
-      // System-created artifact: a small pill above the rendered markdown.
-      if (row.artifact_type) html += '<div class="artifact-badge">✦ Artifact</div>';
+      // System-created artifact: a small pill above the rendered content. An HTML
+      // file gets its own badge so it reads as a live page, not a markdown note.
+      if (isHtmlFile) html += '<div class="artifact-badge html-badge">🌐 HTML</div>';
+      else if (row.artifact_type) html += '<div class="artifact-badge">✦ Artifact</div>';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
-      if (isImageFile(row) && viewable) {
+      if (isHtmlFile) {
+        // Render the saved HTML live in a sandboxed inline frame. The srcdoc is set
+        // as a PROPERTY below (not inlined here) so a large document needs no
+        // attribute-escaping. allow-same-origin lets the page fetch the same-origin
+        // read API; the injected CSP blocks any cross-origin exfiltration.
+        html +=
+          '<iframe id="html-file-frame" class="html-frame" title="HTML file"' +
+          ' sandbox="allow-scripts allow-same-origin"></iframe>';
+      } else if (isImageFile(row) && viewable) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
       } else if (mime === 'application/pdf' && viewable) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
@@ -142,6 +184,13 @@ export const dashboardJs = `    // ───────────────
         '</div>';
       }
       host.innerHTML = html;
+      if (isHtmlFile) {
+        // Set the frame content as a property (no attribute-escaping needed). Re-runs
+        // on every re-render, so a chat edit that rewrites this row's extracted_text
+        // reloads the frame with the new page in place — no page refresh.
+        var frame = document.getElementById('html-file-frame');
+        if (frame) frame.srcdoc = htmlFileSrcdoc(row.extracted_text);
+      }
       var openBtn = document.getElementById('file-open');
       if (openBtn) openBtn.addEventListener('click', function () {
         fetch('/api/files/' + encodeURIComponent(id) + '/open-in-finder', { method: 'POST' })
@@ -688,6 +737,7 @@ export const dashboardJs = `    // ───────────────
     // File-type glyph for native files-entity rows.
     function fileEmoji(row) {
       var m = (row && row.mime) || '';
+      if (m === 'text/html' && row && row.artifact_type === 'html') return '🌐';
       if (m.indexOf('image/') === 0) return '🖼️';
       if (m === 'application/pdf') return '📕';
       if (MD_MIMES.indexOf(m) >= 0 || m.indexOf('text/') === 0) return '📝';

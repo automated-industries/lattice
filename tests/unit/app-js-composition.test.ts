@@ -21,9 +21,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
 // JSON/xlsx file into the assistant chat: the upload returns a proposal and an
 // inline confirm card renders into the assistant rail (no top-bar button, no
-// modal). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 413654;
-const ORIGINAL_SHA256 = '7468ba0374c997fd7f4986ea7123f5ae21433e744738e8243a3f3ae1cdc946bf';
+// modal), and the 4.4 inline-HTML-file feature: the file preview renders an
+// `artifact_type='html'` file live in a sandboxed `srcdoc` frame (with an injected
+// CSP + the bundled chart library decoded from a window global), plus the bundled
+// minified Chart.js itself (assigned to `window.__LATTICE_CHART_LIB__`), which is
+// the bulk of the size jump. Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 691419;
+const ORIGINAL_SHA256 = 'c5b05708483b005e52ace7b4289531ffa0135d64bba7db63e4533fa06f105747';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

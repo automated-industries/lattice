@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../../../lattice.js';
 import type { Row } from '../../../types.js';
 import { createRow, updateRow, deleteRow, linkRows, unlinkRows } from '../../mutations.js';
-import { artifactFileRow } from '../../file-row.js';
+import { artifactFileRow, htmlArtifactFileRow } from '../../file-row.js';
 import { FetchBudget } from '../../../ai/fetch-policy.js';
 import {
   findTableDuplicates,
@@ -150,6 +150,56 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
       const { row } = await artifactFileRow(ctx.db, title, content);
       const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
       return { ok: true, result: { id, table: 'files', open: true } };
+    }
+    case 'create_html_file': {
+      // Author a standalone HTML file (a `files` row flagged artifact_type='html',
+      // HTML inline in extracted_text — see htmlArtifactFileRow) via the delegated
+      // authoring sub-call. Same createRow path as create_artifact, so private mode
+      // forces it private atomically. open:true tells the chat route to open it in
+      // the main view, where it renders in a sandboxed inline frame.
+      if (!ctx.htmlAuthor) {
+        return { ok: false, error: 'HTML authoring is unavailable (no model client configured).' };
+      }
+      const table = requireTable('files', ctx.validTables);
+      const title = requireString(args.title, 'title');
+      const spec = requireString(args.spec, 'spec');
+      const html = await ctx.htmlAuthor(spec);
+      const { row } = await htmlArtifactFileRow(ctx.db, title, html);
+      const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
+      return { ok: true, result: { id, table: 'files', open: true } };
+    }
+    case 'edit_html_file': {
+      // Re-author an existing HTML file in place. Targets the file the user is
+      // viewing (ctx.activeHtmlFileId) unless an explicit id is given. The new HTML
+      // replaces extracted_text via updateRow on the SAME row, so the open view
+      // refreshes to the edited file with no new file created. Fails loud when
+      // there's no resolvable target or the row isn't an html artifact.
+      if (!ctx.htmlAuthor) {
+        return { ok: false, error: 'HTML editing is unavailable (no model client configured).' };
+      }
+      const table = requireTable('files', ctx.validTables);
+      const targetId =
+        typeof args.id === 'string' && args.id.trim() ? args.id.trim() : ctx.activeHtmlFileId;
+      if (!targetId) {
+        return {
+          ok: false,
+          error: 'No HTML file is open to edit. Open the HTML file first, or pass its id as `id`.',
+        };
+      }
+      const instruction = requireString(args.instruction, 'instruction');
+      const existing = (await ctx.db.get('files', targetId)) as {
+        extracted_text?: string;
+        artifact_type?: string;
+      } | null;
+      if (existing?.artifact_type !== 'html') {
+        return { ok: false, error: `Row "${targetId}" is not an HTML file.` };
+      }
+      const html = await ctx.htmlAuthor(instruction, existing.extracted_text ?? '');
+      await updateRow(mctx, table, targetId, {
+        extracted_text: html,
+        size_bytes: Buffer.byteLength(html, 'utf8'),
+      });
+      return { ok: true, result: { id: targetId, table: 'files', open: true } };
     }
     case 'ingest_url': {
       // Fetch a USER-PROVIDED web URL, save its readable text as a `files` row
