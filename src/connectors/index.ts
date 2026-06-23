@@ -27,6 +27,7 @@ export {
   setConnectorStatus,
   deleteConnectorRecord,
   updateConnectorConnection,
+  resolveConnectorIdentity,
   CONNECTORS_TABLE,
 } from './registry.js';
 export type { ConnectorRecord, ConnectorStatus, CreateConnectorInput } from './registry.js';
@@ -67,7 +68,7 @@ export type { SyncConnectorResult, SyncConnectorOptions } from './sync.js';
 export { disconnectConnector } from './teardown.js';
 export type { DisconnectOptions, DisconnectResult } from './teardown.js';
 
-export { enableConnectorRls } from './acl.js';
+export { enableConnectorRls, secureConnectorTables } from './acl.js';
 
 import { registerJiraToolkit } from './composio/jira.js';
 

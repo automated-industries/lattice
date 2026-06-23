@@ -95,6 +95,7 @@ const issues = model(
     sprint_id: 'TEXT',
     labels: 'TEXT',
     url: 'TEXT',
+    updated: 'TEXT',
   },
   {
     description: 'Jira issues',
@@ -164,7 +165,14 @@ const comments = model(
 // Comments come from the per-issue Jira endpoint: the sync engine iterates the
 // already-synced issue keys, passes each as `parentKey`, and stamps it onto the
 // comment's `issue_key` FK column.
-comments.parent = { table: 'jira_issues', keyColumn: 'issue_key', childColumn: 'issue_key' };
+comments.parent = {
+  table: 'jira_issues',
+  keyColumn: 'issue_key',
+  childColumn: 'issue_key',
+  // After the first sync, only re-fetch comments for issues whose `updated`
+  // advanced since the last sync (adding a comment bumps the issue's updated).
+  incrementalColumn: 'updated',
+};
 
 const users = model(
   'jira_users',
@@ -432,6 +440,7 @@ const fetch: Record<string, ModelFetchSpec> = {
           sprint_id: str(get(f.sprint, 'id')),
           labels,
           url: str(it.self),
+          updated: str(f.updated),
         },
       };
     },

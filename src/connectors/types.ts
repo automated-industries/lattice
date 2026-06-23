@@ -59,6 +59,13 @@ export interface ConnectedModelDef {
     keyColumn: string;
     /** The FK column on THIS table to stamp with each parent key during sync. */
     childColumn: string;
+    /**
+     * Optional parent timestamp column (e.g. `'updated'`). When set, after the
+     * first sync only parents whose timestamp advanced since the connector's last
+     * sync are re-fetched — bounding an O(parents) per-parent crawl on a large
+     * source. (The pass is then incremental, so vanished children aren't pruned.)
+     */
+    incrementalColumn?: string;
   };
 }
 

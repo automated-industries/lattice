@@ -52,3 +52,19 @@ export async function enableConnectorRls(
     );
   }
 }
+
+/**
+ * Define + secure EVERY toolkit's connected tables (and the registry) for a
+ * connector. Run by the owner on workspace open so connected tables created in a
+ * member's session are RLS-protected even though the owner never connected — the
+ * durable fix for "a member's lazily-registered connected table is born without
+ * RLS." Owner-only; a no-op on SQLite / non-cloud / non-owner.
+ */
+export async function secureConnectorTables(db: Lattice, connector: Connector): Promise<void> {
+  for (const toolkit of connector.toolkits()) {
+    // Ensure the tables physically exist + are registered (idempotent), so RLS
+    // can be enabled on them regardless of who first synced.
+    for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+    await enableConnectorRls(db, connector, toolkit);
+  }
+}

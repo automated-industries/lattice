@@ -219,6 +219,20 @@ export async function recordSync(
   }
 }
 
+/**
+ * The per-member identity to key connectors on. On a cloud (Postgres) this is the
+ * member's `session_user` (the scoped login role the RLS ownership model keys on),
+ * so the connector's per-member partition and the row-ownership stamp agree. On
+ * SQLite / non-cloud it's the caller's `fallback` (the machine-local identity).
+ */
+export async function resolveConnectorIdentity(db: Lattice, fallback: string): Promise<string> {
+  if (db.getDialect() !== 'postgres') return fallback;
+  const row = (await getAsyncOrSync(db.adapter, 'SELECT session_user AS u')) as
+    | { u?: string }
+    | undefined;
+  return row?.u ?? fallback;
+}
+
 /** Set a connector's lifecycle status (e.g. `'disconnected'` on teardown). */
 export async function setConnectorStatus(
   db: Lattice,

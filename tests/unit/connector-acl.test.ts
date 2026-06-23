@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { enableConnectorRls } from '../../src/connectors/acl.js';
+import { enableConnectorRls, secureConnectorTables } from '../../src/connectors/acl.js';
+import { resolveConnectorIdentity } from '../../src/connectors/registry.js';
 import type { Connector, ConnectedModelDef, ExternalRecord } from '../../src/connectors/types.js';
 
 /**
@@ -55,5 +56,20 @@ describe('connector ACL (SQLite no-op)', () => {
     await db.defineLate('demo_things', MODELS[0]!.definition);
     // Must not throw and must not have applied any RLS DDL (SQLite has no RLS).
     await expect(enableConnectorRls(db, new FakeConnector(), 'demo')).resolves.toBeUndefined();
+  });
+
+  it('secureConnectorTables defines the toolkit tables (no-op RLS on SQLite)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    await secureConnectorTables(db, new FakeConnector());
+    // The connected table is now defined + queryable (and no RLS error on SQLite).
+    expect(db.connectedTables()).toContain('demo_things');
+    expect(await db.query('demo_things', {})).toEqual([]);
+  });
+
+  it('resolveConnectorIdentity returns the fallback on SQLite (no session_user)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    expect(await resolveConnectorIdentity(db, 'alice@example.com')).toBe('alice@example.com');
   });
 });

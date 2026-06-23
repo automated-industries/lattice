@@ -11,7 +11,7 @@ import {
 } from '../connectors/registry.js';
 import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
-import { enableConnectorRls } from '../connectors/acl.js';
+import { enableConnectorRls, secureConnectorTables } from '../connectors/acl.js';
 import {
   getComposioApiKey,
   setComposioApiKey,
@@ -96,7 +96,11 @@ export async function dispatchConnectorsRoute(
 
     // POST /api/connectors/sync-if-stale — GUI-load refresh hook.
     if (pathname === '/api/connectors/sync-if-stale' && method === 'POST') {
-      const { synced, failed } = await syncStaleConnectors(db, connector);
+      // Owner-only no-op: ensure connected tables created in any member's session
+      // are RLS-secured on the cloud (the owner auto-secures on open).
+      await secureConnectorTables(db, connector);
+      // Scope to THIS member — never sync another member's connectors as ourselves.
+      const { synced, failed } = await syncStaleConnectors(db, connector, undefined, connectedBy);
       sendJson(res, { synced: synced.length, failed: failed.length });
       return true;
     }

@@ -42,7 +42,7 @@ import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
-import { ComposioConnector } from '../connectors/index.js';
+import { ComposioConnector, resolveConnectorIdentity } from '../connectors/index.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
@@ -774,11 +774,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             handle: async (req, res) => {
               if (!pathname.startsWith('/api/connectors')) return false;
               const ident = readIdentity();
+              const fallback = ident.email || ident.display_name || 'local';
+              // On a cloud, key connectors on the member's session_user (the role
+              // RLS ownership uses) so partitions + ownership agree; else fallback.
+              const connectedBy = await resolveConnectorIdentity(active.db, fallback);
               return await dispatchConnectorsRoute(req, res, {
                 db: active.db,
                 connector: new ComposioConnector(),
                 outputDir: active.outputDir,
-                connectedBy: ident.email || ident.display_name || 'local',
+                connectedBy,
               });
             },
           },

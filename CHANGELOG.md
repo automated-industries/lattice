@@ -38,9 +38,14 @@ connector is configured.
 - **Sync engine.** `syncConnector` (idempotent upsert, per-parent fetch for
   comments, vanished-row pruning, graph-edge derivation), plus `syncIfStale` /
   `syncStaleConnectors` for "sync on connect, on load if older than an hour, and
-  on manual refresh" — no scheduler. Reads are bounded + projected; an
-  external-sync failure is recorded on the connector and re-thrown (never
-  swallowed).
+  on manual refresh" — no scheduler. `syncStaleConnectors` is scoped per member.
+  Reads are bounded + projected; an external-sync failure is recorded on the
+  connector and re-thrown (never swallowed).
+- **Incremental per-parent sync.** A per-parent model whose parent declares an
+  `incrementalColumn` (Jira comments → the issue `updated` timestamp) only
+  re-fetches children of parents changed since the last sync — bounding an
+  O(parents) crawl on a large source. (The incremental pass skips pruning, since
+  its seen-set is partial.)
 - **Disconnect teardown.** `disconnectConnector` soft-deletes every ingested row
   (children before parents), prunes rendered context files, marks the connector
   disconnected (or removes it in hard mode), and revokes the backend connection.
@@ -48,9 +53,13 @@ connector is configured.
   automatically.
 - **Cloud ACL.** `enableConnectorRls` enables per-member Row-Level Security on
   the registry + a toolkit's connected tables and applies each type's default
-  visibility (`private` per member, or `everyone`). Owner-only; a no-op on
-  SQLite / non-cloud / non-owner. Derived enrichment over connected rows
-  inherits source visibility via the existing source-gated fold.
+  visibility (`private` per member, or `everyone`). `secureConnectorTables` lets
+  the owner define + secure every toolkit's tables on workspace open (so a table
+  first created in a member's session is still RLS-protected); the GUI runs it on
+  load. Connectors key per-member identity on the cloud `session_user` (the role
+  RLS ownership uses) so the connector partition and row ownership agree. All
+  owner-only; no-ops on SQLite / non-cloud / non-owner. Derived enrichment over
+  connected rows inherits source visibility via the existing source-gated fold.
 - **GUI connectors.** A **Connectors** settings tab to set the Composio API key
   and connect / refresh / disconnect a toolkit (Jira), backed by server routes
   (list / connect / refresh / disconnect + a `sync-if-stale` load hook).

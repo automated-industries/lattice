@@ -77,9 +77,22 @@ export async function syncConnector(
     syncedAt: now,
   };
 
+  // The connector's last successful sync, used to bound incremental per-parent
+  // fetches (e.g. only comments of issues changed since then).
+  const prevSyncAt = record.lastSyncAt;
+
   try {
     for (const m of models) {
-      const { seen, edges } = await syncModel(db, connector, toolkit, m, ctxBase, connectorId, now);
+      const { seen, edges, partial } = await syncModel(
+        db,
+        connector,
+        toolkit,
+        m,
+        ctxBase,
+        connectorId,
+        now,
+        prevSyncAt,
+      );
       result.upserted[m.table] = seen.size;
       // Edges are derived inline from the rows just synced (bounded to what
       // changed) and batched — never a full-table re-scan of the connected table.
@@ -87,7 +100,10 @@ export async function syncConnector(
         await addEdges(db.adapter, edges);
         result.edges += edges.length;
       }
-      if (pruneVanished) {
+      // Don't prune after an INCREMENTAL pass: `seen` then covers only the
+      // re-fetched subset (e.g. changed issues' comments), so a prune would wrong-
+      // ly soft-delete every child of an unchanged parent.
+      if (pruneVanished && !partial) {
         result.softDeleted[m.table] = await pruneVanished_(db, m, connectorId, seen, now);
       }
     }
@@ -100,7 +116,11 @@ export async function syncConnector(
   return result;
 }
 
-/** Sync one model, returning the natural keys seen this pass + the edges to add. */
+/**
+ * Sync one model. Returns the natural keys seen this pass, the edges to add, and
+ * whether the pass was `partial` (an incremental per-parent fetch — only some
+ * parents re-fetched), which suppresses pruning for that model.
+ */
 async function syncModel(
   db: Lattice,
   connector: Connector,
@@ -109,9 +129,11 @@ async function syncModel(
   ctxBase: Omit<ListChangesContext, 'parentKey'>,
   connectorId: string,
   now: string,
-): Promise<{ seen: Set<string>; edges: GraphEdge[] }> {
+  prevSyncAt: string | null,
+): Promise<{ seen: Set<string>; edges: GraphEdge[]; partial: boolean }> {
   const seen = new Set<string>();
   const edges: GraphEdge[] = [];
+  let partial = false;
   // Clear deleted_at so a previously soft-deleted natural key is RESURRECTED on
   // conflict when it reappears in the source (otherwise it would stay hidden).
   const stamp = (row: Row): Row => ({
@@ -143,7 +165,13 @@ async function syncModel(
 
   if (m.parent) {
     const parent = m.parent;
-    const parentKeys = await collectConnectorKeys(db, parent.table, parent.keyColumn, connectorId);
+    // Incremental when the parent declares a timestamp column AND we've synced
+    // before: only re-fetch children of parents changed since the last sync.
+    const incremental = !!parent.incrementalColumn && !!prevSyncAt;
+    partial = incremental;
+    const parentKeys = incremental
+      ? await collectChangedParentKeys(db, parent, connectorId, prevSyncAt)
+      : await collectConnectorKeys(db, parent.table, parent.keyColumn, connectorId);
     for (const parentKey of parentKeys) {
       for await (const rec of connector.listChanges(toolkit, m.model, { ...ctxBase, parentKey })) {
         await ingest(rec, { [parent.childColumn]: parentKey });
@@ -154,7 +182,50 @@ async function syncModel(
       await ingest(rec);
     }
   }
-  return { seen, edges };
+  return { seen, edges, partial };
+}
+
+/**
+ * Live parent keys whose `incrementalColumn` timestamp advanced since
+ * `prevSyncAt`. Compared via `Date.parse` (not SQL string compare) so mixed
+ * ISO/offset timestamp formats are handled; a parent with a missing/unparseable
+ * timestamp is included (fail-open — better a redundant fetch than a missed one).
+ */
+async function collectChangedParentKeys(
+  db: Lattice,
+  parent: NonNullable<ConnectedModelDef['parent']>,
+  connectorId: string,
+  prevSyncAt: string,
+): Promise<string[]> {
+  const incCol = parent.incrementalColumn;
+  if (!incCol) return collectConnectorKeys(db, parent.table, parent.keyColumn, connectorId);
+  const since = Date.parse(prevSyncAt);
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await db.queryPage(parent.table, {
+      filters: [
+        { col: '_source_connector_id', op: 'eq', val: connectorId },
+        { col: 'deleted_at', op: 'isNull' },
+      ],
+      projection: [parent.keyColumn, incCol],
+      orderBy: parent.keyColumn,
+      limit: KEY_PAGE_SIZE,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const r of page.rows) {
+      const k = r[parent.keyColumn];
+      if (k == null) continue;
+      const ts = r[incCol];
+      const tsMs = ts == null ? NaN : Date.parse(String(ts as string | number));
+      if (Number.isNaN(since) || Number.isNaN(tsMs) || tsMs > since) {
+        keys.push(String(k as string | number));
+      }
+    }
+    if (!page.hasMore || !page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return keys;
 }
 
 const EDGES_TABLE = '__lattice_edges';
@@ -256,16 +327,19 @@ export interface SyncStaleResult {
  * Sync every stale connector served by this connector implementation. The GUI
  * calls this on load so connected data refreshes hourly without a scheduler.
  *
- * Per-connector failures are ISOLATED: one connector with a broken/expired
- * connection records its error (via syncConnector's recordSync) and is reported
- * in `failed`, but never blocks the refresh of the member's other connectors.
+ * Scope to the connecting member with `connectedBy` — each member syncs only
+ * their OWN connectors (their session stamps row ownership; an owner must not
+ * sync members' connectors as themselves). Per-connector failures are ISOLATED:
+ * one broken connection records its error and is reported in `failed`, but never
+ * blocks the refresh of the member's other connectors.
  */
 export async function syncStaleConnectors(
   db: Lattice,
   connector: Connector,
   maxAgeMs: number = DEFAULT_STALE_MS,
+  connectedBy?: string,
 ): Promise<SyncStaleResult> {
-  const all = await listConnectors(db);
+  const all = await listConnectors(db, connectedBy);
   const synced: SyncConnectorResult[] = [];
   const failed: { connectorId: string; error: string }[] = [];
   for (const rec of all) {
