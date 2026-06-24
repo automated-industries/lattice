@@ -21,9 +21,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
 // JSON/xlsx file into the assistant chat: the upload returns a proposal and an
 // inline confirm card renders into the assistant rail (no top-bar button, no
-// modal). Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 413654;
-const ORIGINAL_SHA256 = '7468ba0374c997fd7f4986ea7123f5ae21433e744738e8243a3f3ae1cdc946bf';
+// modal), and the single-source-of-truth pass: a shared `claudeAuth(cfg)` helper
+// (in display-config) that every assistant-connection check now goes through —
+// killing the divergent "Connected with Claude" derivations — plus the
+// disconnect pill no longer hardcoding 'cloud' (it preserves the known mode so a
+// local-workspace WS drop can't flip cloudMode and divert writes offline).
+// Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 414882;
+const ORIGINAL_SHA256 = 'd771eece45cc9a465f01190708b6ef207c4fe00ece0c88c799d825cbc8418668';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

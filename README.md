@@ -138,6 +138,8 @@ npm install latticesql
 
 Requires **Node.js 18+**. The default backend is SQLite (`better-sqlite3`) — no external database process needed.
 
+> **Prefer a desktop app?** Download a native, double-click build of the GUI (no terminal) for macOS or Windows from [latticesql.com/install](https://latticesql.com/install) — it runs the same GUI server. See [docs/desktop.md](docs/desktop.md).
+
 To use the Postgres backend (for Supabase, Neon, RDS, or any other Postgres-compatible database), install the optional dependency:
 
 ```bash

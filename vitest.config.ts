@@ -5,6 +5,9 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // tests/deno/** are Deno-runtime tests (node:sqlite + jsr: imports) run via
+    // `npm run test:deno`, not vitest — exclude them from the Node test run.
+    exclude: ['node_modules/**', 'dist/**', 'tests/deno/**'],
     // Provision a disposable Postgres for the `*-postgres.test.ts` suite when no
     // LATTICE_TEST_PG_URL is set and we're not in CI (see tests/setup/). CI's
     // real `postgres:16` service and an explicitly-set URL are used untouched.
@@ -30,6 +33,11 @@ export default defineConfig({
         'src/schema/entity-context.ts',
         'src/config/types.ts',
         'src/db/adapter.ts',
+        // Deno-only / desktop entry: exercised by the Deno test suite (tests/deno),
+        // not by vitest — CI's Node predates node:sqlite, and the buildAdapter Deno
+        // branch is never taken under Node. Covered, just not by this runner.
+        'src/db/sqlite-deno.ts',
+        'src/desktop-entry.ts',
         // The library AI client is the lazy-loaded real @anthropic-ai/sdk glue:
         // its createLlmClient()/defaultSender() only run with a real key + the
         // SDK installed, so they can't execute in the harness (same rationale as
