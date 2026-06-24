@@ -180,18 +180,26 @@ export const sourcesJs = `
       fetchJson('/api/connectors')
         .then(function (data) {
           var connectors = (data && data.connectors) || [];
+          var presById = {};
+          ((data && data.toolkits) || []).forEach(function (t) { presById[t.toolkit] = t; });
           host.innerHTML = connectors.length
             ? '<ul class="src-tree">' + connectors.map(function (c) {
+                var pres = presById[c.toolkit] || {};
                 var color = c.status === 'connected' ? 'var(--accent)'
                   : (c.status === 'error' ? 'var(--danger, #c0392b)' : 'var(--text-muted)');
-                var title = c.toolkit.charAt(0).toUpperCase() + c.toolkit.slice(1);
+                // Each connected source shows its logo, with the status as a small
+                // colored ring/dot overlay.
+                var mark = pres.icon
+                  ? '<span class="src-conn-ic"><img class="connector-icon" src="' + escapeHtml(pres.icon) + '" alt="">' +
+                      '<span class="src-conn-dot" style="background:' + color + '"></span></span>'
+                  : '<span class="src-dot" style="background:' + color + '"></span>';
+                var label = pres.label || (c.toolkit.charAt(0).toUpperCase() + c.toolkit.slice(1));
                 return '<li class="src-node src-conn"><div class="src-row" style="padding-left:14px">' +
-                  '<span class="src-dot" style="background:' + color + '"></span>' +
-                  '<span class="src-name">' + escapeHtml(title) + '</span></div></li>';
+                  mark + '<span class="src-name">' + escapeHtml(label) + '</span></div></li>';
               }).join('') + '</ul>'
             : '<div class="src-empty">None connected.</div>';
           host.querySelectorAll('.src-conn > .src-row').forEach(function (row) {
-            row.addEventListener('click', function () { openSettingsDrawer('connectors'); });
+            row.addEventListener('click', function () { openConnectorsDialog(); });
           });
         })
         .catch(function () { host.innerHTML = ''; });
@@ -213,7 +221,7 @@ export const sourcesJs = `
       var addConn = document.getElementById('src-add-connector');
       if (addConn && !addConn.__wired) {
         addConn.__wired = true;
-        addConn.addEventListener('click', function () { openSettingsDrawer('connectors'); });
+        addConn.addEventListener('click', function () { openConnectorsDialog(); });
       }
     }
 

@@ -144,10 +144,18 @@ export const guiAppHtml = `<!doctype html>
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
-      <button class="drawer-tab" data-tab="connectors">Connectors</button>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+
+  <div class="connectors-backdrop" id="connectors-backdrop" hidden></div>
+  <aside class="connectors-dialog" id="connectors-dialog" hidden aria-label="Connectors">
+    <div class="drawer-head">
+      <span class="drawer-title">Add a Connector</span>
+      <button class="drawer-close" id="connectors-dialog-close" title="Close" aria-label="Close connectors">✕</button>
+    </div>
+    <div class="drawer-body" id="connectors-dialog-body"></div>
   </aside>
 
   <script>${analyticsJs}</script>

@@ -30,7 +30,7 @@ test('the sidebar shows the three Sources sections', async ({ page }) => {
   await page.goto(gui.url + '#/');
   const src = page.locator('#sources-nav');
   await expect(src.getByText('Files', { exact: true })).toBeVisible({ timeout: 5000 });
-  await expect(src.getByText('Artifacts', { exact: true })).toBeVisible();
+  await expect(src.getByText('Built by Lattice', { exact: true })).toBeVisible();
   await expect(src.getByText('Connectors', { exact: true })).toBeVisible();
   // Artifacts is empty on a fresh workspace.
   await expect(page.locator('#src-artifacts-tree')).toContainText('Nothing created yet');
@@ -57,9 +57,9 @@ test('a registered folder renders as a tree and lazily expands one level', async
   await expect(tree.getByText('deep.txt', { exact: true })).toHaveCount(0);
 });
 
-test('"Add a Connector" opens the Connectors drawer', async ({ page }) => {
+test('"Add a Connector" opens the connectors dialog', async ({ page }) => {
   await page.goto(gui.url + '#/');
   await page.locator('#src-add-connector').click();
-  await expect(page.locator('#settings-drawer')).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('#drawer-body')).toContainText('Connectors');
+  await expect(page.locator('#connectors-dialog')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#connectors-dialog-body')).toContainText('Jira');
 });
