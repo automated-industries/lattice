@@ -93,7 +93,13 @@ export const guiAppHtml = `<!doctype html>
         <ul id="system-nav"></ul>
       </div>
     </nav>
-    <main id="content"></main>
+    <main class="content-wrap">
+      <div class="tabstrip" id="tabstrip">
+        <div class="tabstrip-tabs" id="tabstrip-tabs"></div>
+        <div class="tabstrip-status" id="tabstrip-status"></div>
+      </div>
+      <div id="content"></div>
+    </main>
     <aside class="assistant-rail" id="assistant-rail">
       <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
       <div class="rail-handle" id="rail-handle" title="Expand / collapse"></div>

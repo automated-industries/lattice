@@ -32,7 +32,25 @@ export const systemTablesJs = `    // ──────────────
     var DM_FK_COLOR = '#22c55e'; // belongsTo — an enforced reference
     var DM_M2M_COLOR = '#22d3ee'; // many-to-many — a junction join
 
-    function renderDataModelInto(host) {
+    // The brain graph as the center pane's main view — the schema graph, full
+    // size, with no inline entity editor (schema/column editing lives in
+    // Settings → Data Model). Clicking a node opens that object's tab.
+    function renderBrainGraph(content) {
+      if (!content) content = document.getElementById('content');
+      if (!content) return;
+      dmActiveTable = null; // no inline editor in the center view
+      content.innerHTML =
+        '<div class="brain-graph"><div id="graph-mount">' +
+          '<div class="muted" style="padding:24px">Loading brain graph…</div>' +
+        '</div></div>';
+      renderSchemaGraph();
+    }
+
+    // Settings → Data Model: an entity list + the entity editor panel (the schema
+    // graph itself moved to the center brain view). Clicking an entity opens its
+    // editor in #dm-panel; "+ New entity" opens the create form.
+    function renderEntityEditorInto(host) {
+      if (!host) return;
       host.innerHTML =
         '<div class="dbconfig-panel" style="margin-top:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
@@ -40,16 +58,38 @@ export const systemTablesJs = `    // ──────────────
             '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
           '</div>' +
           '<div class="dm-layout">' +
-            '<div id="graph-mount"><div class="muted" style="padding:24px">Loading schema graph…</div></div>' +
+            '<div id="dm-entity-list"></div>' +
             '<aside id="dm-panel" hidden></aside>' +
           '</div>' +
         '</div>';
-
       document.getElementById('new-entity-btn').addEventListener('click', function () {
         dmShowEntityEditor(null);
       });
+      renderEntityList();
+    }
 
-      renderSchemaGraph();
+    // The clickable list of entities shown in Settings → Data Model.
+    function renderEntityList() {
+      var host = document.getElementById('dm-entity-list');
+      if (!host) return;
+      var tables = ((state.entities && state.entities.tables) || []).filter(function (t) {
+        return !isJunction(t);
+      });
+      tables.sort(function (a, b) {
+        return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
+      });
+      host.innerHTML = tables.length
+        ? '<ul class="dm-entity-list">' + tables.map(function (t) {
+            var d = displayFor(t.name);
+            return '<li><button type="button" class="dm-entity-item' +
+              (t.name === dmActiveTable ? ' active' : '') + '" data-table="' + escapeHtml(t.name) + '">' +
+              '<span class="dm-entity-icon">' + d.icon + '</span>' +
+              '<span class="dm-entity-label">' + escapeHtml(d.label) + '</span></button></li>';
+          }).join('') + '</ul>'
+        : '<div class="muted" style="padding:12px">No entities yet — use “+ New entity”.</div>';
+      host.querySelectorAll('.dm-entity-item').forEach(function (b) {
+        b.addEventListener('click', function () { dmShowEntityEditor(b.getAttribute('data-table')); });
+      });
     }
 
     // Force-directed schema graph (vanilla — no external lib). Nodes are
@@ -63,7 +103,7 @@ export const systemTablesJs = `    // ──────────────
       fetchJson('/api/graph').then(function (graph) {
         var model = buildSchemaModel(graph);
         if (!model.nodes.length) {
-          mount.innerHTML = '<div class="muted" style="padding:24px">No entities yet — use “+ New entity”.</div>';
+          mount.innerHTML = '<div class="muted" style="padding:24px">No objects with data yet. Add files or connect a source to populate the graph.</div>';
           return;
         }
         forceLayout(model.nodes, model.links);
@@ -91,6 +131,7 @@ export const systemTablesJs = `    // ──────────────
         if (index[name] != null) return;
         var meta = byName[name] || {};
         var rc = (meta.rowCount != null) ? meta.rowCount : 0;
+        if (rc <= 0) return; // only show objects that have items in them (non-empty)
         index[name] = nodes.length;
         nodes.push({
           name: name,
@@ -329,8 +370,9 @@ export const systemTablesJs = `    // ──────────────
       });
       svg.addEventListener('pointerup', function (ev) {
         if (drag && drag.kind === 'node' && !drag.moved) {
-          dmShowEntityEditor(drag.name);
-          highlightGraphNode(drag.name);
+          // Open the clicked object's table in a tab — schema/column editing now
+          // lives in Settings → Data Model, not the graph.
+          location.hash = (advancedMode() ? '#/objects/' : '#/fs/') + encodeURIComponent(drag.name);
         }
         drag = null;
         try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
@@ -346,6 +388,7 @@ export const systemTablesJs = `    // ──────────────
     function dmShowEntityEditor(tableName) {
       dmActiveTable = tableName;
       var panel = document.getElementById('dm-panel');
+      if (!panel) return; // the editor panel only exists in Settings → Data Model
       panel.hidden = false;
       var creating = !tableName;
       if (creating) {

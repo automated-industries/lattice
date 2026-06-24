@@ -22,6 +22,7 @@ import { settingsDrawerCss } from './settings-drawer.js';
 import { assistantRailCss } from './assistant-rail.js';
 import { chatCss } from './chat.js';
 import { inlineImportCss } from './inline-import.js';
+import { tabsCss } from './tabs.js';
 
 export const css = [
   tokensCss,
@@ -45,4 +46,5 @@ export const css = [
   assistantRailCss,
   chatCss,
   inlineImportCss,
+  tabsCss,
 ].join('');

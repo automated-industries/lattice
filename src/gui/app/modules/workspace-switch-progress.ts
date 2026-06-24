@@ -34,9 +34,16 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       if (content && !soft) content.innerHTML = routeLoadingHtml();
       if (!state.entities) return; // shell still booting — the loading frame stays
       highlightActive();
+      // Reconcile the center tab strip with this hash (creates/activates a tab),
+      // then paint it. Settings overlays map to no tab and leave the active one.
+      reconcileTab(hash);
+      renderTabStrip();
       if (window.LatticeGA) window.LatticeGA.pageView(routeType(hash));
 
-      if (hash === '#/' || hash === '') { renderDashboard(content); return; }
+      // The brain graph is the default + permanent view; the dashboard moves to
+      // its own reachable route.
+      if (hash === '#/' || hash === '' || hash === '#/graph') { renderBrainGraph(content); return; }
+      if (hash === '#/dashboard') { renderDashboard(content); return; }
 
       // File-system workspace (default mode): #/fs/<table>[/<id>/<rel>/<id>…].
       // Even segment count → item view; odd → folder/collection view.

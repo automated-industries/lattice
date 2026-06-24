@@ -59,10 +59,9 @@ export const renderProgressStateJs = `    // ───────────�
      * container), so the user's scroll position is preserved. Use this instead
      * of reloadEverything()/renderRoute() in the editor handlers.
      *
-     * rebuildGraph: pass true when the node/edge set changed (add/destroy link,
-     * rename, delete table) — remounts only #graph-mount. Omit for column-only
-     * edits (add/rename column, secret, icon, share), which leave the graph as
-     * is (node sizes may be slightly stale until the drawer is reopened).
+     * rebuildGraph is kept for call-site compatibility; the Settings editor now
+     * refreshes the entity list (the schema graph moved to the center brain view
+     * and reloads its own data whenever it is shown).
      */
     function dmRefreshPanel(name, rebuildGraph) {
       return Promise.all([
@@ -76,16 +75,14 @@ export const renderProgressStateJs = `    // ───────────�
         loadedTables = {};
         renderSidebar();
         dmActiveTable = name || null;
-        if (rebuildGraph) {
-          // renderSchemaGraph remounts #graph-mount and re-shows the editor for
-          // dmActiveTable (or leaves the panel hidden when name is null).
-          renderSchemaGraph();
-          if (!name) {
-            var p = document.getElementById('dm-panel');
-            if (p) p.hidden = true;
-          }
-        } else if (name) {
-          dmShowEntityEditor(name);
+        // The schema graph moved to the center brain view; Settings → Data Model
+        // shows an entity list. Refresh the list + (re)show the editor for the
+        // active entity, or hide the panel when there is none.
+        renderEntityList();
+        if (name) dmShowEntityEditor(name);
+        else {
+          var p = document.getElementById('dm-panel');
+          if (p) p.hidden = true;
         }
       });
     }

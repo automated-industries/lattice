@@ -725,7 +725,7 @@ export const dataModelJs = `    // ───────────────
       renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
       renderSystemPromptPanel(document.getElementById('system-prompt-host'));
-      renderDataModelInto(document.getElementById('data-model-host'));
+      renderEntityEditorInto(document.getElementById('data-model-host'));
       renderDatabaseDangerZone(document.getElementById('db-danger-host'));
     }
 
