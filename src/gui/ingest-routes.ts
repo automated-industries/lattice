@@ -317,6 +317,110 @@ function readBuffer(req: IncomingMessage, maxBytes = MAX_INGEST_BYTES): Promise<
   });
 }
 
+/** Outcome of {@link ingestLocalFile}. `status` is set only for a pre-create
+ *  validation error (bad path / too large); otherwise the row was created. */
+export interface LocalFileIngestResult {
+  id?: string;
+  extraction_status: string;
+  suggestedLinks?: ClassifyMatch[];
+  error?: string;
+  status?: number;
+}
+
+/**
+ * Reference a single local file in place as a `files` row (`local_ref`), extract
+ * its text, and enrich it — the shared core of the `/api/ingest/file` route AND
+ * the folder-ingest BFS (so both behave identically and emit the same
+ * `source:'ingest'` feed events). No bytes are copied. Validation failures return
+ * `{ error, status }` before any row is created; an extraction/enrichment failure
+ * is recorded on the created row and returned (never thrown).
+ */
+export async function ingestLocalFile(
+  ctx: IngestContext,
+  mctx: MutationCtx,
+  rawPath: string,
+  forcePrivate: boolean,
+): Promise<LocalFileIngestResult> {
+  const abs = resolve(rawPath);
+  let size = 0;
+  try {
+    const st = statSync(abs);
+    if (!st.isFile())
+      return { extraction_status: 'error', error: 'path is not a file', status: 400 };
+    size = st.size;
+  } catch {
+    return { extraction_status: 'error', error: `file not found: ${abs}`, status: 400 };
+  }
+  // Bound the file read before extraction — a multi-GB local file can't be
+  // slurped into memory (zip formats add their own decompression caps too).
+  if (size > MAX_INGEST_BYTES)
+    return { extraction_status: 'error', error: 'file too large', status: 413 };
+
+  const name = basename(abs);
+  const mime = mimeFor(name);
+  const localFileId = crypto.randomUUID();
+  const localRow: Record<string, unknown> = {
+    id: localFileId,
+    ...fileIdentity(name, localFileId),
+    // Reference the file in place: a `local_ref` whose `ref_uri` is the absolute
+    // OS path. No bytes are copied; the resolver serves it straight from disk.
+    ref_kind: 'local_ref',
+    ref_uri: abs,
+    ref_provider: 'fs',
+    original_name: name,
+    mime,
+    size_bytes: size,
+    extraction_status: 'pending',
+  };
+  const { id } = await createRow(
+    mctx,
+    'files',
+    {
+      ...(await requiredFileDefaults(ctx.db, name, localFileId, localRow)),
+      ...localRow,
+    },
+    forcePrivate ? 'private' : undefined,
+  );
+
+  // Extract inline (the GUI is local; files are typically small). Failures are
+  // recorded on the row, not swallowed.
+  try {
+    const result = await extractSource(ctx.db, abs, mime, name);
+    await updateRow(mctx, 'files', id, {
+      extracted_text: result.text,
+      description: describe(result.text, mime, name),
+      extraction_status: result.skip ? 'skipped' : 'extracted',
+    });
+    const suggestedLinks = result.skip
+      ? []
+      : await enrichWithLlm(
+          mctx,
+          ctx.db,
+          id,
+          result.text,
+          name,
+          ctx.fileJunctions,
+          ctx.entityDescriptions,
+          ctx.createJunction,
+          ctx.aggressiveness,
+          ctx.createEntity,
+          false,
+          forcePrivate,
+        );
+    return { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks };
+  } catch (e) {
+    const err = e as Error;
+    console.error(
+      `[ingest] extraction/enrichment failed for file ${id}: ${err.message}\n${err.stack ?? ''}`,
+    );
+    await updateRow(mctx, 'files', id, {
+      extraction_status: 'failed',
+      description: `Extraction failed: ${err.message}`,
+    });
+    return { id, extraction_status: 'failed', error: err.message };
+  }
+}
+
 const INGEST_PATHS = new Set(['/api/ingest/text', '/api/ingest/file', '/api/ingest/upload']);
 
 export async function dispatchIngestRoute(
@@ -664,101 +768,26 @@ export async function dispatchIngestRoute(
     return true;
   }
 
-  // /api/ingest/file — reference a local path.
+  // /api/ingest/file — reference a local path (delegates to the shared core).
   const rawPath = typeof body.path === 'string' ? body.path.trim() : '';
   if (!rawPath) {
     sendJson(res, { error: 'path is required' }, 400);
     return true;
   }
-  const abs = resolve(rawPath);
-  let size = 0;
-  try {
-    const st = statSync(abs);
-    if (!st.isFile()) {
-      sendJson(res, { error: 'path is not a file' }, 400);
-      return true;
-    }
-    size = st.size;
-  } catch {
-    sendJson(res, { error: `file not found: ${abs}` }, 400);
+  const r = await ingestLocalFile(ctx, mctx, rawPath, forcePrivate);
+  if (r.error && r.status) {
+    sendJson(res, { error: r.error }, r.status); // pre-create validation failure
     return true;
   }
-  // Bound the file read before extraction — mirrors the upload route's cap so a
-  // multi-GB local file can't be slurped into memory (and, for zip formats,
-  // inflated on top of that). The extractors add their own decompression caps.
-  if (size > MAX_INGEST_BYTES) {
-    sendJson(res, { error: 'file too large' }, 413);
-    return true;
-  }
-
-  const name = basename(abs);
-  const mime = mimeFor(name);
-  const localFileId = crypto.randomUUID();
-  const localRow: Record<string, unknown> = {
-    id: localFileId,
-    ...fileIdentity(name, localFileId),
-    // Reference the file in place: a `local_ref` whose `ref_uri` is the absolute
-    // OS path. No bytes are copied; the resolver serves it straight from disk.
-    ref_kind: 'local_ref',
-    ref_uri: abs,
-    ref_provider: 'fs',
-    original_name: name,
-    mime,
-    size_bytes: size,
-    extraction_status: 'pending',
-  };
-  const { id } = await createRow(
-    mctx,
-    'files',
+  sendJson(
+    res,
     {
-      ...(await requiredFileDefaults(ctx.db, name, localFileId, localRow)),
-      ...localRow,
+      id: r.id,
+      extraction_status: r.extraction_status,
+      suggestedLinks: r.suggestedLinks ?? [],
+      ...(r.error ? { error: r.error } : {}),
     },
-    forcePrivate ? 'private' : undefined,
+    201,
   );
-
-  // Extract inline (the GUI is local; files are typically small). Failures are
-  // recorded on the row, not swallowed.
-  try {
-    const result = await extractSource(ctx.db, abs, mime, name);
-    await updateRow(mctx, 'files', id, {
-      extracted_text: result.text,
-      description: describe(result.text, mime, name),
-      extraction_status: result.skip ? 'skipped' : 'extracted',
-    });
-    const suggestedLinks = result.skip
-      ? []
-      : await enrichWithLlm(
-          mctx,
-          ctx.db,
-          id,
-          result.text,
-          name,
-          ctx.fileJunctions,
-          ctx.entityDescriptions,
-          ctx.createJunction,
-          ctx.aggressiveness,
-          ctx.createEntity,
-          false,
-          forcePrivate,
-        );
-    sendJson(
-      res,
-      { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks },
-      201,
-    );
-  } catch (e) {
-    const err = e as Error;
-    // Log loudly server-side (with stack) in addition to the durable
-    // row status + client-surfaced error — never let the real cause vanish.
-    console.error(
-      `[ingest] extraction/enrichment failed for file ${id}: ${err.message}\n${err.stack ?? ''}`,
-    );
-    await updateRow(mctx, 'files', id, {
-      extraction_status: 'failed',
-      description: `Extraction failed: ${err.message}`,
-    });
-    sendJson(res, { id, extraction_status: 'failed', error: err.message }, 201);
-  }
   return true;
 }
