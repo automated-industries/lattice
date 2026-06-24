@@ -3,6 +3,8 @@
 // Serves the EXACT same GUI as the web (`startGuiServer`, version-stamped from
 // the same build constant) in a native window, with a system-browser bridge for
 // external links/OAuth and built-in upgrade-on-run via `Deno.autoUpdate()`.
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { startGuiServer, VERSION } from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
 
@@ -28,7 +30,12 @@ async function runAutoUpdate(): Promise<void> {
 }
 
 // ── Boot the GUI server ──────────────────────────────────────────────────────
-const root = `${Deno.env.get('HOME') ?? Deno.cwd()}/.lattice`;
+// Data dir lives under the user's home directory. `HOME` is Unix-only and is
+// unset on Windows, where the old `Deno.cwd()` fallback resolved to the app's
+// install directory (read-only for a normal user), so the mkdir failed and the
+// app never opened a window. `homedir()` resolves the correct, writable per-user
+// home on every platform; `join` keeps the path separator native.
+const root = join(homedir(), '.lattice');
 await Deno.mkdir(root, { recursive: true });
 
 const handle = await startGuiServer({
