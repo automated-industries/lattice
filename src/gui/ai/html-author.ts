@@ -1,4 +1,5 @@
 import type { LlmClient } from './chat.js';
+import { DEFAULT_MODEL } from './chat.js';
 
 /**
  * Author a complete, standalone HTML file via a focused model sub-call.
@@ -17,8 +18,18 @@ import type { LlmClient } from './chat.js';
  * if the model returns something that isn't HTML.
  */
 
-/** The model used for HTML authoring — stronger than the chat default. */
-export const HTML_AUTHOR_MODEL = 'claude-sonnet-4-6';
+/**
+ * The model used for HTML authoring. It MUST be a model the resolved Claude auth
+ * can actually call, so it tracks the chat model (`DEFAULT_MODEL`) rather than
+ * hardcoding a separate, "stronger" one. A connected Claude *subscription*
+ * ("Connect with Claude") is entitled only to the models on the user's plan; a
+ * hardcoded model the plan lacks returns a `429 rate_limit_error` on EVERY call
+ * — even a one-token one — so authoring would fail 100% of the time for those
+ * users (verified live: `claude-haiku-4-5` OK, `claude-sonnet-4-6` 429 on a
+ * subscription that only entitled haiku). Using the chat's own model guarantees
+ * the authoring sub-call works wherever the chat itself works.
+ */
+export const HTML_AUTHOR_MODEL = DEFAULT_MODEL;
 
 /** Output budget for a full standalone HTML document (well under the model ceiling). */
 const HTML_MAX_TOKENS = 16000;

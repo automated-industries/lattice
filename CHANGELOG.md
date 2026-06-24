@@ -81,11 +81,16 @@ Inline HTML files in the GUI assistant; this also retires the never-published
   `srcdoc` frame). Ask for a change while viewing it ("make it a pie chart",
   "recolour the header") and the open view updates in place — no page refresh. HTML
   files are distinguished from markdown artifacts in the file list and preview.
-- **Tool-delegated authoring.** The chat itself stays on the fast default model;
-  the HTML authoring is delegated to a stronger model (`claude-sonnet-4-6`) with a
-  larger output budget for the heavy page generation. It uses the same
-  machine-local Claude key as the rest of the assistant (`TurnParams` gains an
-  optional `maxTokens`).
+- **Tool-delegated authoring.** The HTML authoring runs as a focused sub-call —
+  its own HTML-specific system prompt and a larger output budget (`TurnParams`
+  gains an optional `maxTokens`) — using the **same model as the chat**
+  (`DEFAULT_MODEL`). The model is deliberately NOT hardcoded to a separate
+  "stronger" one: a connected Claude _subscription_ is entitled only to the
+  models on the user's plan, so a hardcoded model the plan lacks returns a
+  `429 rate_limit_error` on every call and authoring fails 100% of the time.
+  Tracking the chat model guarantees the sub-call works wherever the chat works
+  (API key or subscription). It uses the same machine-local Claude auth as the
+  rest of the assistant.
 - **Live data + offline charts.** Authored pages read live data through an injected
   `window.lattice` bridge (`.query` / `.get` / `.search`), which a read-only,
   table-gated parent broker services against the existing read API

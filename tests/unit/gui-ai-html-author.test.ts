@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateHtmlFile, HTML_AUTHOR_MODEL } from '../../src/gui/ai/html-author.js';
+import { DEFAULT_MODEL } from '../../src/gui/ai/chat.js';
 import type { LlmClient, TurnParams } from '../../src/gui/ai/chat.js';
 
 /** A fake client that returns a fixed reply and captures the turn it was given. */
@@ -14,7 +15,7 @@ function fakeClient(reply: string, capture?: (p: TurnParams) => void): LlmClient
 }
 
 describe('generateHtmlFile (delegated HTML authoring)', () => {
-  it('returns the model HTML and uses the stronger model + a large token budget, no tools', async () => {
+  it('returns the model HTML and uses the chat model + a large token budget, no tools', async () => {
     let seen: TurnParams | undefined;
     const client = fakeClient('<!doctype html><html><body>hi</body></html>', (p) => {
       seen = p;
@@ -26,12 +27,27 @@ describe('generateHtmlFile (delegated HTML authoring)', () => {
     });
     expect(html).toContain('<!doctype html>');
     expect(seen?.model).toBe(HTML_AUTHOR_MODEL);
-    expect(seen?.model).toBe('claude-sonnet-4-6');
     expect(seen?.maxTokens ?? 0).toBeGreaterThan(4096);
     expect(seen?.tools).toEqual([]);
     // Both the schema and the spec reach the prompt so the page wires up real names.
     expect(String(seen?.messages?.[0]?.content)).toContain('tables: widgets(name)');
     expect(String(seen?.messages?.[0]?.content)).toContain('build a page');
+  });
+
+  // Regression: the author once hardcoded `claude-sonnet-4-6`, a model a connected
+  // Claude *subscription* ("Connect with Claude") may not be entitled to. Every
+  // authoring sub-call then returned `429 rate_limit_error` — even a one-token one —
+  // so no HTML file ever built, on local AND cloud (it's auth/model-based, not
+  // DB-based). The author MUST use the chat's own model so it works wherever the
+  // chat works. (Verified live on a subscription: haiku-4-5 OK, sonnet-4-6 429.)
+  it('authors with the chat model, not a hardcoded model the auth may lack', async () => {
+    let seen: TurnParams | undefined;
+    const client = fakeClient('<!doctype html><html><body>x</body></html>', (p) => {
+      seen = p;
+    });
+    await generateHtmlFile({ client, schema: '', spec: 's' });
+    expect(seen?.model).toBe(DEFAULT_MODEL);
+    expect(seen?.model).not.toBe('claude-sonnet-4-6');
   });
 
   it('strips a ```html fence the model may wrap the document in', async () => {
