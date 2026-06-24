@@ -39,7 +39,8 @@ import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
-import { dispatchIngestRoute } from './ingest-routes.js';
+import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
+import { dispatchSourcesRoute } from './sources-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
 import { JiraConnector, resolveConnectorIdentity } from '../connectors/index.js';
@@ -746,6 +747,40 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 configPath: active.configPath,
                 outputDir: active.outputDir,
                 sessionId,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── Sources: local file/folder roots for the Sources sidebar ──
+          // Local-only (gated by LATTICE_LOCAL_OPEN): register on-disk roots,
+          // browse one directory level, and ingest a folder's files via a bounded
+          // BFS over the shared ingest core (driving the brain-graph animation).
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/sources/')) return false;
+              const ingestCtx = {
+                db: active.db,
+                feed: active.feed,
+                softDeletable: active.softDeletable,
+                fileJunctions: fileJunctions(active.configPath, active.outputDir),
+                entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
+                createJunction: (otherTable: string) =>
+                  createFileJunction(active, otherTable, sessionId),
+                createEntity: (entity: string, columns: string[]) =>
+                  createUserEntity(active, entity, columns, sessionId),
+                aggressiveness: getAggressiveness(),
+                latticeRoot: dirname(active.configPath),
+                configPath: active.configPath,
+                outputDir: active.outputDir,
+                sessionId,
+                pathname,
+                method,
+              };
+              const mctx = ingestMutationCtx(ingestCtx);
+              return await dispatchSourcesRoute(req, res, {
+                db: active.db,
+                ingestFile: (p: string) => ingestLocalFile(ingestCtx, mctx, p, false),
                 pathname,
                 method,
               });

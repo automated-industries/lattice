@@ -23,6 +23,7 @@ import { assistantRailCss } from './assistant-rail.js';
 import { chatCss } from './chat.js';
 import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
+import { sourcesCss } from './sources.js';
 
 export const css = [
   tokensCss,
@@ -47,4 +48,5 @@ export const css = [
   chatCss,
   inlineImportCss,
   tabsCss,
+  sourcesCss,
 ].join('');

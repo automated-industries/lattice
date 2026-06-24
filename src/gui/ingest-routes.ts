@@ -423,6 +423,18 @@ export async function ingestLocalFile(
 
 const INGEST_PATHS = new Set(['/api/ingest/text', '/api/ingest/file', '/api/ingest/upload']);
 
+/** The shared source='ingest' mutation context (audited + fed). Reused by the
+ *  ingest routes and the Sources folder-ingest so both write identically. */
+export function ingestMutationCtx(ctx: IngestContext): MutationCtx {
+  return {
+    db: ctx.db,
+    feed: ctx.feed,
+    softDeletable: ctx.softDeletable,
+    source: 'ingest',
+    onColumnsAdded: columnDescriptionHook(ctx.db),
+  };
+}
+
 export async function dispatchIngestRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -430,13 +442,7 @@ export async function dispatchIngestRoute(
 ): Promise<boolean> {
   if (ctx.method !== 'POST' || !INGEST_PATHS.has(ctx.pathname)) return false;
 
-  const mctx: MutationCtx = {
-    db: ctx.db,
-    feed: ctx.feed,
-    softDeletable: ctx.softDeletable,
-    source: 'ingest',
-    onColumnsAdded: columnDescriptionHook(ctx.db),
-  };
+  const mctx: MutationCtx = ingestMutationCtx(ctx);
 
   // The GUI's "Private mode" intent for this ingest. The upload (raw-bytes)
   // path carries it as an `x-lattice-private` header (the body is the file

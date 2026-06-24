@@ -30,6 +30,10 @@ export const versionHistoryUndoJs = `    // ────────────
       // System tables surface in Advanced View (no separate preference).
       var show = advancedMode();
       if (section) section.hidden = !show;
+      // The flat Objects list is Advanced-view only; the Sources sidebar (Files /
+      // Artifacts / Connectors) is the default-mode entry point.
+      var objSection = document.getElementById('objects-section');
+      if (objSection) objSection.hidden = !show;
       var sys = document.getElementById('system-nav');
       if (sys) {
         sys.innerHTML = show
@@ -39,6 +43,9 @@ export const versionHistoryUndoJs = `    // ────────────
             }).join('')
           : '';
       }
+
+      // Populate the Sources sidebar (Files tree / Artifacts / Connectors).
+      if (typeof renderSources === 'function') renderSources();
 
       highlightActive();
     }

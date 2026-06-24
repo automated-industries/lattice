@@ -32,6 +32,7 @@ import { onboardingJs } from './onboarding.js';
 import { createDatabaseWizardJs } from './create-database-wizard.js';
 import { inlineImportJs } from './inline-import.js';
 import { connectorsSettingsJs } from './connectors-settings.js';
+import { sourcesJs } from './sources.js';
 
 export const appJs = [
   chartLibJs,
@@ -58,6 +59,7 @@ export const appJs = [
   // helpers (fetchJson, escapeHtml). Appended last, it would be defined at true
   // global scope and throw "fetchJson is not defined" when the tab is opened.
   connectorsSettingsJs,
+  sourcesJs,
   detailViewJs,
   markdownJs,
   settingsDrawerJs,

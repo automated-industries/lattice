@@ -35,17 +35,16 @@ test('the non-empty filter shows objects with rows', async ({ page }) => {
   await expect(page.locator('g.gnode[data-table="items"]')).toBeVisible({ timeout: 5000 });
 });
 
-test('clicking a sidebar object opens a closable tab and re-clicking dedups', async ({ page }) => {
-  await page.goto(gui.url + '#/');
-  const itemsLink = page.locator('#object-nav a[data-route="#/fs/items"]');
-  await itemsLink.click();
+test('opening an object opens a closable tab and re-opening dedups', async ({ page }) => {
+  await page.goto(gui.url + '#/graph');
+  await page.locator('g.gnode[data-table="items"]').click();
   const itemsTab = page.locator('.tab[data-key="table:items"]');
   await expect(itemsTab).toBeVisible({ timeout: 5000 });
   await expect(itemsTab).toHaveClass(/active/);
   await expect(itemsTab.locator('.tab-close')).toHaveCount(1);
-  // Re-clicking the same sidebar item activates the existing tab — no duplicate.
+  // Back to the graph, then re-open items — the existing tab activates (no dup).
   await page.locator('.tab[data-key="graph"]').click();
-  await itemsLink.click();
+  await page.locator('g.gnode[data-table="items"]').click();
   await expect(page.locator('.tab[data-key="table:items"]')).toHaveCount(1);
 });
 
@@ -57,8 +56,8 @@ test('clicking a graph node opens that object’s tab', async ({ page }) => {
 });
 
 test('closing the active tab falls back to the Brain Graph', async ({ page }) => {
-  await page.goto(gui.url + '#/');
-  await page.locator('#object-nav a[data-route="#/fs/items"]').click();
+  await page.goto(gui.url + '#/graph');
+  await page.locator('g.gnode[data-table="items"]').click();
   const itemsTab = page.locator('.tab[data-key="table:items"]');
   await expect(itemsTab).toHaveClass(/active/, { timeout: 5000 });
   await itemsTab.locator('.tab-close').click();

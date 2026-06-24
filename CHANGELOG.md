@@ -72,6 +72,28 @@ type**.
   with a "Connected" badge in the Objects list (`/api/entities` reports a
   per-table `connectorToolkit`).
 
+### Added — GUI layout redesign
+
+The desktop/web GUI is reorganized around the data graph.
+
+- **Tabbed center pane with the brain graph as the default view.** The schema /
+  data-model graph moves out of Settings and becomes the main center view: a
+  permanent, non-closable **Brain Graph** tab plus one closable tab per opened
+  object, file, or page (router-driven — a tab is a hash, so re-opening dedups and
+  closing the active tab falls back to a neighbor). Clicking a graph node opens
+  that object's table in a tab. The graph shows only objects that have rows
+  (non-empty filter). Schema/column editing stays in **Settings → Data Model**,
+  now an entity list + editor.
+- **Sources sidebar.** The left sidebar is reorganized into three peer sections —
+  **Files** (a lazy, infinitely-nestable tree of on-disk roots; "Files never leave
+  your computer"), **Artifacts** (Lattice-created files), and **Connectors**.
+  Adding a file or folder uses a native OS picker and ingests it in place
+  (`local_ref`, no copy); a folder is a bounded breadth-first ingest. A new
+  local-only `sources-routes` backend (gated by `LATTICE_LOCAL_OPEN`) registers
+  roots in a machine-local store, lists **one directory level at a time**
+  (entry-capped, confined to a registered root, symlink-safe), and never touches a
+  path outside a root. The flat Objects list remains in Advanced view.
+
 ### Added — Inline HTML files
 
 Inline HTML files in the GUI assistant; this also retires the never-published

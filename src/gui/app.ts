@@ -86,8 +86,30 @@ export const guiAppHtml = `<!doctype html>
   </header>
   <div class="layout">
     <nav class="sidebar">
-      <div class="section-label">Objects</div>
-      <ul id="object-nav"></ul>
+      <div id="sources-nav">
+        <div class="src-group">
+          <div class="section-label">Files</div>
+          <div id="src-files-tree"></div>
+          <div class="src-add-row">
+            <button class="src-add" id="src-add-folder" type="button">＋ Folder</button>
+            <button class="src-add" id="src-add-file" type="button">＋ File</button>
+          </div>
+          <div class="src-note">Files never leave your computer.</div>
+        </div>
+        <div class="src-group">
+          <div class="section-label">Artifacts</div>
+          <div id="src-artifacts-tree"></div>
+        </div>
+        <div class="src-group">
+          <div class="section-label">Connectors</div>
+          <div id="src-connectors-list"></div>
+          <button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button>
+        </div>
+      </div>
+      <div id="objects-section" hidden>
+        <div class="section-label">Objects</div>
+        <ul id="object-nav"></ul>
+      </div>
       <div id="system-section" hidden>
         <div class="section-label">System</div>
         <ul id="system-nav"></ul>
