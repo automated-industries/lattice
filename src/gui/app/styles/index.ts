@@ -26,6 +26,7 @@ import { tabsCss } from './tabs.js';
 import { sourcesCss } from './sources.js';
 import { statusIndicatorCss } from './status-indicator.js';
 import { graphIngestAnimationCss } from './graph-ingest-animation.js';
+import { fileDocCss } from './file-doc.js';
 
 export const css = [
   tokensCss,
@@ -53,4 +54,5 @@ export const css = [
   sourcesCss,
   statusIndicatorCss,
   graphIngestAnimationCss,
+  fileDocCss,
 ].join('');

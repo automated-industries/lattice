@@ -186,9 +186,9 @@ test('a long-form field edits as a textarea and round-trips newlines losslessly 
 
 test('Advanced mode toggle restores the classic row/table editor', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author' });
-  await page.goto(gui.url);
-
-  // Default: dashboard cards point at the file-system route.
+  // The dashboard (now reached via its own route; the graph is the default view)
+  // lists cards that point at the file-system route in default mode.
+  await page.goto(`${gui.url}#/dashboard`);
   const card = page.locator('.card').first();
   await expect(card).toHaveAttribute('href', /#\/fs\//);
 

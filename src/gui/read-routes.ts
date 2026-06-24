@@ -673,14 +673,39 @@ export async function handleReadRoutes(
     return true;
   }
 
-  // ── Per-row version history (cloud): the recoverable trail of every
-  // edit to one row, newest first.
-  // GET /api/tables/:table/rows/:id/history. Empty on local SQLite.
+  // ── Per-row version history: the recoverable trail of every edit to one
+  // row, newest first, from the GUI audit log. Bounded (clamped limit) so a
+  // long-lived row's history can't be read unbounded.
+  // GET /api/tables/:table/rows/:id/history
   const rowHistMatch = ROW_HISTORY_PATH.exec(pathname);
   if (rowHistMatch && method === 'GET') {
-    // Per-row history is rebuilt on the RLS change-feed (__lattice_changes)
-    // in a follow-up; empty for now.
-    sendJson(res, { history: [] });
+    const histTable = decodeURIComponent(rowHistMatch[1] ?? '');
+    const histRowId = decodeURIComponent(rowHistMatch[2] ?? '');
+    const histLimitRaw = url.searchParams.get('limit');
+    const histLimit = parsePageParam(histLimitRaw, 'limit');
+    if (histLimit === 'invalid') {
+      sendJson(res, { error: 'limit must be a non-negative integer' }, 400);
+      return true;
+    }
+    const rows = (await active.db.query('_lattice_gui_audit', {
+      filters: [
+        { col: 'table_name', op: 'eq', val: histTable },
+        { col: 'row_id', op: 'eq', val: histRowId },
+      ],
+      limit: histLimitRaw === null ? 100 : histLimit,
+    })) as Record<string, unknown>[];
+    const asStr = (v: unknown): string =>
+      typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+    const history = rows
+      .map((r) => ({
+        id: asStr(r.id),
+        ts: asStr(r.ts),
+        operation: asStr(r.operation),
+        undone: r.undone === 1 || r.undone === true,
+        sessionId: typeof r.session_id === 'string' ? r.session_id : null,
+      }))
+      .sort((a, b) => b.ts.localeCompare(a.ts));
+    sendJson(res, { history });
     return true;
   }
 

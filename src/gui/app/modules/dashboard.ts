@@ -1145,6 +1145,10 @@ export const dashboardJs = `    // ───────────────
           return;
         }
         var d = displayFor(table);
+        // Files + artifacts get the two-view document layout (formatted display +
+        // a View Source toggle) with a Version History + Remove toolbar — not the
+        // column-by-column field dump or the "Inside" grid.
+        if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d); return; }
         var bt = belongsToColumns(t);
         var rels = fsRelations(table);
         // Preload belongsTo targets so parent links can show names.
@@ -1196,6 +1200,128 @@ export const dashboardJs = `    // ───────────────
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // ── File / artifact document view (two-view: Display ↔ Source) ──────
+    // Per-open-item view state (display | source), so each tab toggles
+    // independently and re-renders in place without navigating.
+    var fileViewMode = {};
+    function sourceTextOf(row) {
+      return row && typeof row.extracted_text === 'string' ? row.extracted_text : '';
+    }
+    function renderFsDocItem(content, segs, crumbs, id, row, d) {
+      var mode = fileViewMode[id] || 'display';
+      var isArtifact = !!row.artifact_type;
+      var src = sourceTextOf(row);
+      // An artifact (Lattice-created) is editable in place; an ingested file's
+      // source is a read-only view of its extracted text.
+      var sourceView = isArtifact
+        ? '<div class="file-source">' +
+            '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
+            '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
+            '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
+          '</div>'
+        : '<pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre>';
+      content.innerHTML =
+        fsBreadcrumb(segs, crumbs) +
+        '<div class="view-header">' +
+          '<span class="entity-icon">' + fileEmoji(row) + '</span>' +
+          '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+          '<div class="actions">' +
+            '<button class="btn" id="file-viewsource">' + (mode === 'source' ? 'View Formatted' : 'View Source') + '</button>' +
+            '<button class="btn" id="file-history">Version History</button>' +
+            '<button class="btn danger" id="file-remove">Remove</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="file-history-panel" class="file-history-panel" hidden></div>' +
+        (mode === 'source' ? sourceView : '<div class="file-preview" id="file-preview"></div>');
+      if (mode === 'display') renderFilePreview(row);
+      wireFsDocToolbar(content, segs, id, row);
+    }
+
+    function wireFsDocToolbar(content, segs, id, row) {
+      var vs = content.querySelector('#file-viewsource');
+      if (vs) vs.addEventListener('click', function () {
+        fileViewMode[id] = fileViewMode[id] === 'source' ? 'display' : 'source';
+        renderFsItem(content, segs); // re-render this item in place
+      });
+      var hist = content.querySelector('#file-history');
+      if (hist) hist.addEventListener('click', function () { toggleFileHistory(content, id); });
+      var rm = content.querySelector('#file-remove');
+      if (rm) rm.addEventListener('click', function () { removeFile(segs, id, row); });
+      var save = content.querySelector('#file-source-save');
+      if (save) save.addEventListener('click', function () { saveFileSource(content, segs, id); });
+    }
+
+    function toggleFileHistory(content, id) {
+      var panel = content.querySelector('#file-history-panel');
+      if (!panel) return;
+      if (!panel.hidden) { panel.hidden = true; return; }
+      panel.hidden = false;
+      panel.innerHTML = '<div class="muted" style="padding:8px">Loading history…</div>';
+      fetchJson('/api/tables/files/rows/' + encodeURIComponent(id) + '/history')
+        .then(function (data) {
+          var hist = (data && data.history) || [];
+          if (!hist.length) { panel.innerHTML = '<div class="muted" style="padding:8px">No prior versions yet.</div>'; return; }
+          panel.innerHTML = '<h3 class="file-history-title">Version history</h3><ul class="file-history-list">' +
+            hist.map(function (h) {
+              return '<li class="file-history-item">' +
+                '<span class="fh-op">' + escapeHtml(h.operation) + '</span>' +
+                '<span class="fh-ts">' + escapeHtml(h.ts) + '</span>' +
+                (h.undone ? '<span class="fh-undone">undone</span>' : '') +
+                '<button class="btn fh-revert" data-rev="' + escapeHtml(h.id) + '">Revert</button></li>';
+            }).join('') + '</ul>';
+          panel.querySelectorAll('.fh-revert').forEach(function (b) {
+            b.addEventListener('click', function () { revertFileVersion(b.getAttribute('data-rev')); });
+          });
+        })
+        .catch(function (e) {
+          panel.innerHTML = '<div class="muted" style="padding:8px">Failed: ' + escapeHtml(e.message) + '</div>';
+        });
+    }
+
+    function revertFileVersion(auditId) {
+      fetch('/api/history/revert/' + encodeURIComponent(auditId), { method: 'POST' })
+        .then(function (r) { if (!r.ok) throw new Error('revert failed (' + r.status + ')'); return r.json(); })
+        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () { showToast('Reverted', { undo: undoLast }); renderRoute({ soft: true }); })
+        .catch(function (e) { showToast('Revert failed: ' + e.message, {}); });
+    }
+
+    function saveFileSource(content, segs, id) {
+      var ta = content.querySelector('#file-source-text');
+      if (!ta) return;
+      fetch('/api/tables/files/rows/' + encodeURIComponent(id) + '/content', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: ta.value }),
+      })
+        .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () {
+          fileViewMode[id] = 'display'; // back to the formatted view
+          showToast('Saved', { undo: undoLast });
+          renderFsItem(content, segs);
+        })
+        .catch(function (e) { showToast('Save failed: ' + e.message, {}); });
+    }
+
+    // Soft-delete (Remove): recoverable, and NEVER touches the on-disk file — it
+    // only soft-deletes the Lattice record. Closes the item's tab afterward.
+    function removeFile(segs, id, row) {
+      fetch('/api/tables/files/rows/' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+        .then(function (r) { if (!r.ok) throw new Error('remove failed (' + r.status + ')'); return r.json(); })
+        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () {
+          showToast('Removed "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
+          if (typeof closeTab === 'function') closeTab(tabKeyForHash(location.hash));
+          else location.hash = '#/graph';
+        })
+        .catch(function (e) { showToast('Remove failed: ' + e.message, {}); });
     }
 
     // Click-to-edit on rendered values. Reuses fieldFor() for the input and the

@@ -107,6 +107,15 @@ The desktop/web GUI is reorganized around the data graph.
   (so settled nodes barely move), and animates only the delta (capped, with a
   whole-stage fade above the cap; honors `prefers-reduced-motion`). A background
   refresh no longer rebuilds the graph out from under the animation.
+- **File / artifact document view: two views, in-place edit, version history,
+  soft-delete.** Opening a file or artifact shows the **formatted view only** (no
+  column-by-column dump) with a toolbar: **View Source** toggles to the raw
+  markdown/HTML/extracted text (per-tab, independent); **Version History** lists
+  the row's edit trail from the audit log (`GET …/rows/:id/history`, now
+  implemented + bounded) with Revert; **Remove** is a recoverable **soft-delete**
+  that never touches the on-disk file. Editing an artifact's body writes
+  `extracted_text` on the **same row** (`PUT …/rows/:id/content`, audited → kept in
+  history) — it never spawns a new file.
 
 ### Added — Inline HTML files
 
