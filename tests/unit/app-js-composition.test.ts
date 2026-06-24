@@ -21,19 +21,17 @@ import { appJs } from '../../src/gui/app/script.js';
 // frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
 // JSON/xlsx file into the assistant chat: the upload returns a proposal and an
 // inline confirm card renders into the assistant rail (no top-bar button, no
-// modal). The 4.3 release adds two GUI features. (1) The Connectors settings
-// panel (renderConnectorsPanel + the "Connectors" drawer tab + the sidebar
-// "Connected" badge for connected data types). (2) Inline HTML files: the file
-// preview renders an `artifact_type='html'` file live in a sandboxed `srcdoc`
-// frame (with an injected CSP + the bundled chart library decoded from a window
-// global), plus the bundled minified Chart.js itself (assigned to
-// `window.__LATTICE_CHART_LIB__`), which is the bulk of the size jump. The HTML
-// file renders in a null-origin sandboxed frame (no allow-same-origin) with no
-// network (CSP connect-src 'none'); a parent-side read-only postMessage broker
-// mediates all data reads, and an injected `window.lattice` bridge is how an
-// authored page asks for them. Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 738481;
-const ORIGINAL_SHA256 = '15f1df3933353d2b1ec326401ff3fe6c13368731fe98c6b0f4b7d465ec71703e';
+// modal). The 4.3 release adds the Connectors settings panel + inline HTML files
+// (the file preview renders an `artifact_type='html'` file live in a sandboxed,
+// null-origin `srcdoc` frame — no network, a read-only postMessage broker + an
+// injected `window.lattice` bridge — with the bundled minified Chart.js assigned
+// to `window.__LATTICE_CHART_LIB__`, the bulk of the size), the 4.3 GUI layout
+// redesign (tab strip + center brain graph, Sources sidebar, single top-right
+// status, live ingest animation, file two-view/history/remove), plus 4.2.4's
+// desktop build + the shared `claudeAuth()` single-source-of-truth pass merged
+// from main. Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 739709;
+const ORIGINAL_SHA256 = '3e665a9940a5d461fceda1de5498b0f4908a02b3b6dba0926389c4c010a92b4f';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

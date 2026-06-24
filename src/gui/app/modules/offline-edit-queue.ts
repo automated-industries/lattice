@@ -203,7 +203,12 @@ export const offlineEditQueueJs = `    // ────────────�
         if (eventStreamClosed) return;
         // Unexpected drop: show the disconnect on the pill and auto-reconnect with
         // backoff (the server replays state + render snapshot on reconnect).
-        setStatusPill('cloud', 'disconnected');
+        // Preserve the KNOWN mode (cloudMode is the single source of truth, set
+        // from the server's realtime-state message) — never hardcode 'cloud',
+        // which on a LOCAL (SQLite) workspace would flip cloudMode=true and divert
+        // writes into the offline queue with a bogus "will sync when cloud
+        // reconnects" toast against a workspace that has no cloud.
+        setStatusPill(cloudMode ? 'cloud' : 'local', 'disconnected');
         scheduleEventStreamReconnect();
       };
     }

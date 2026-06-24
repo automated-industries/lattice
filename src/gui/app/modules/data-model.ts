@@ -448,7 +448,7 @@ export const dataModelJs = `    // ───────────────
             '</p>' +
             // Connect-with-Claude is the primary path (use your subscription, no
             // API key). A pasted API key is demoted to an "Advanced" disclosure.
-            (cfg.claudeAuthKind === 'oauth'
+            (claudeAuth(cfg).oauth
               ? '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
                   '<span class="feed-source" style="background:var(--accent-soft);color:var(--accent)">Connected with Claude</span>' +
                   '<button id="asst-oauth-disconnect" class="btn">Disconnect</button>' +
@@ -470,7 +470,7 @@ export const dataModelJs = `    // ───────────────
                   '</div>' +
                   '<div id="connect-claude-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
                 '</div>') +
-            '<details style="margin-bottom:12px"' + (cfg.claudeAuthKind === 'key' ? ' open' : '') + '>' +
+            '<details style="margin-bottom:12px"' + (claudeAuth(cfg).kind === 'key' ? ' open' : '') + '>' +
               '<summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Advanced — use an API key instead</summary>' +
               '<div style="margin-top:8px">' +
                 rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +

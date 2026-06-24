@@ -217,7 +217,38 @@ verification) and the findings folded into the above.
 
 ---
 
-## [4.2.3] — unreleased
+## [4.2.4]
+
+Adds the downloadable desktop app and a pair of GUI single-source-of-truth
+fixes (**additive — no library API change**; every 4.2 caller runs unchanged).
+
+### Added
+
+- **Downloadable desktop app (`deno desktop`).** A native, double-click build of
+  the Lattice GUI for macOS (`.dmg`) and Windows (`.msi`), in addition to the
+  `lattice gui` CLI. It serves the same GUI server in a native window and uses a
+  `node:sqlite`-backed adapter (`DenoSqliteAdapter`) in place of the native
+  `better-sqlite3` addon, which cannot load under Deno — the npm/Node build is
+  unchanged and still uses `better-sqlite3`. External links / OAuth open in the
+  system browser (a webview has no tabs). Upgrade-on-run via `Deno.autoUpdate()`;
+  installers + a `latest.json` manifest publish to GitHub Releases on a version
+  tag. Requires a Deno canary to build; v1 installers are unsigned. See
+  [docs/desktop.md](docs/desktop.md).
+
+### Fixed
+
+- **The assistant "Connected with Claude" state is now derived in one place.**
+  The onboarding feed and the settings panel computed it from different fields,
+  so an API-key-only setup could show "Connected with Claude" in one and "not
+  connected" in the other. A single `claudeAuth(cfg)` helper now derives it
+  solely from `claudeAuthKind` — "Connected with Claude" means a connected
+  subscription everywhere.
+- **A local (SQLite) workspace no longer flips to "cloud — disconnected" on a
+  socket drop.** The realtime disconnect handler hardcoded the cloud mode, which
+  could divert writes into the offline queue on a workspace that has no cloud; it
+  now preserves the known mode.
+
+## [4.2.3]
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
 unchanged).
