@@ -37,6 +37,9 @@ export const fileDocCss = `    /* ── File / artifact document view ───
       background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.28);
     }
+    /* display:flex above would otherwise beat the UA [hidden] rule and leave the
+       menu stuck open — force it gone when hidden. */
+    .file-menu[hidden] { display: none; }
     .file-menu-item {
       text-align: left; background: none; border: 0; color: var(--text);
       font-size: 13px; padding: 7px 10px; border-radius: 6px; cursor: pointer;

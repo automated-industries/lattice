@@ -14,8 +14,8 @@ import { css } from '../../src/gui/app/css.js';
 // ever changed intentionally, recapture the length + hash and update them here.
 // Most recently: the 4.3 inline-HTML-file styles (a taller `.html-frame` for a
 // live HTML file plus its `.html-badge`) in the file-preview segment.
-const ORIGINAL_LENGTH = 87933;
-const ORIGINAL_SHA256 = '477c5d54a180047da80f6d00a42c41aeb5f5d1499dfbb51156ddba15ea008335';
+const ORIGINAL_LENGTH = 89408;
+const ORIGINAL_SHA256 = '0c9a3ac6e30dbf20de543b686a2f8b659c6181dab91e94c0bce82e7a923f031b';
 
 describe('css composition', () => {
   it('matches the original length exactly', () => {

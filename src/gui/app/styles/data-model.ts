@@ -30,7 +30,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .dm-graph .gnode { cursor: pointer; }
     .dm-graph .gnode-glow { fill: var(--accent); opacity: 0; transition: opacity 0.1s ease; }
     .dm-graph .gnode-dot { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.5; transition: stroke 0.1s ease; }
-    .dm-graph .gnode-label { fill: var(--text); font-size: 12px; font-weight: 500; }
+    .dm-graph .gnode-label { fill: var(--text); font-size: 10px; font-weight: 400; }
     .dm-graph .gnode-icon { dominant-baseline: middle; }
     .dm-graph .gnode:hover .gnode-dot { stroke: var(--text-muted); }
     /* Share-status stroke (cloud workspaces only): yellow = shared, red = private. */

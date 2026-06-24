@@ -44,7 +44,7 @@ export const systemTablesJs = `    // ──────────────
       dmActiveTable = null; // no inline editor in the center view
       content.innerHTML =
         '<div class="brain-graph"><div id="graph-mount">' +
-          '<div class="muted" style="padding:24px">Loading brain graph…</div>' +
+          '<div class="muted" style="padding:24px">A live force-directed graph that builds as Claude streams.</div>' +
         '</div></div>';
       renderSchemaGraph();
     }

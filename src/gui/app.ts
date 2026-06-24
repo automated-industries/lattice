@@ -92,10 +92,10 @@ export const guiAppHtml = `<!doctype html>
             <button class="src-add" id="src-add-folder" type="button">＋ Folder</button>
             <button class="src-add" id="src-add-file" type="button">＋ File</button>
           </div>
-          <div class="src-note">Files never leave your computer.</div>
+          <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
         </div>
         <div class="src-group">
-          <div class="section-label">Artifacts</div>
+          <div class="section-label">Built by Lattice</div>
           <div id="src-artifacts-tree"></div>
         </div>
         <div class="src-group">

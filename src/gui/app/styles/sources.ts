@@ -2,7 +2,8 @@
 // sidebar: Files tree / Artifacts / Connectors sections + the lazy file tree.
 export const sourcesCss = `    /* ── Sources sidebar ───────────────────────────────────── */
     .src-group { margin-bottom: 16px; }
-    .src-note { font-size: 11px; color: var(--text-muted); padding: 4px 12px 0; }
+    .src-note { font-size: 11px; color: var(--text-muted); padding: 8px 12px 4px; display: flex; align-items: center; gap: 5px; }
+    .src-note-ic { font-size: 10px; flex: none; line-height: 1; }
     .src-empty { font-size: 12px; color: var(--text-muted); padding: 4px 12px; }
     .src-add-row { display: flex; gap: 6px; padding: 4px 8px 0; }
     .src-add {
