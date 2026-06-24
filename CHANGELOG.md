@@ -27,17 +27,18 @@ type**.
   `connectedColumns`, `ConnectedSourceImmutableError`); new accessors
   `db.getConnectedSource(table)` / `db.connectedTables()`.
 - **Connector framework** (`src/connectors/`). A small fetch/auth SPI
-  (`Connector`: `authorize` / `completeAuth` / `listChanges` / `disconnect`), an
-  on-demand registry (`__lattice_connectors`), a sync engine, and a teardown
-  cascade. Driven entirely by per-model descriptors — no per-product code in the
-  core.
-- **Composio connector** (`src/connectors/composio/`). Wraps the **optional**
-  dependency `@composio/core` (lazy-loaded — the package compiles and runs
-  without it; a clear error is thrown only when a connector is actually used).
-  Generic over per-toolkit specs.
-- **Jira toolkit** — the first connector: six connected data types (projects,
-  issues, comments, users, boards, sprints) with FK relations that derive graph
-  edges and FTS on text columns.
+  (`Connector`: `authorize` / `completeAuth` / `listChanges` / `disconnect`, with
+  an optional credential `connect` for token-based sources), an on-demand registry
+  (`__lattice_connectors`), a sync engine, and a teardown cascade. Driven entirely
+  by per-model descriptors — no per-product code in the core.
+- **Jira connector** (`src/connectors/jira/`). Talks to Jira Cloud's REST + Agile
+  APIs directly via the **optional** dependency `jira.js` (lazy-loaded — the
+  package compiles and runs without it; a clear error is thrown only when the
+  connector is actually used), authenticated with the user's own Atlassian
+  credentials (site URL + email + API token, HTTP Basic) — no broker service, no
+  extra API key. Six connected data types (projects, issues, comments, users,
+  boards, sprints) with FK relations that derive graph edges and FTS on text
+  columns; comments are fetched per issue and sprints per board.
 - **Sync engine.** `syncConnector` (idempotent upsert, per-parent fetch for
   comments, vanished-row pruning, graph-edge derivation), plus `syncIfStale` /
   `syncStaleConnectors` for "sync on connect, on load if older than an hour, and
@@ -51,7 +52,7 @@ type**.
   its seen-set is partial.)
 - **Disconnect teardown.** `disconnectConnector` soft-deletes every ingested row
   (children before parents), prunes rendered context files, marks the connector
-  disconnected (or removes it in hard mode), and revokes the backend connection.
+  disconnected (or removes it in hard mode), and drops the stored credentials.
   Soft-deleted rows drop out of queries, search, and graph traversal
   automatically.
 - **Cloud ACL.** `enableConnectorRls` enables per-member Row-Level Security on
@@ -63,11 +64,13 @@ type**.
   RLS ownership uses) so the connector partition and row ownership agree. All
   owner-only; no-ops on SQLite / non-cloud / non-owner. Derived enrichment over
   connected rows inherits source visibility via the existing source-gated fold.
-- **GUI connectors.** A **Connectors** settings tab to set the Composio API key
-  and connect / refresh / disconnect a toolkit (Jira), backed by server routes
-  (list / connect / refresh / disconnect + a `sync-if-stale` load hook).
-  Connected data types are marked with a "Connected" badge in the Objects list
-  (`/api/entities` reports a per-table `connectorToolkit`).
+- **GUI connectors.** A **Connectors** settings tab to enter your Jira
+  credentials (site URL + email + API token) and connect / refresh / disconnect,
+  backed by server routes (list / connect / refresh / disconnect + a
+  `sync-if-stale` load hook). Credentials are validated on connect and stored in
+  the machine-local encrypted credential store. Connected data types are marked
+  with a "Connected" badge in the Objects list (`/api/entities` reports a
+  per-table `connectorToolkit`).
 
 ### Added — Inline HTML files
 

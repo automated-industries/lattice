@@ -1,13 +1,13 @@
 /**
  * Connector SPI — the fetch/auth contract a connector implementation satisfies.
  *
- * Lattice ships no per-SaaS API clients of its own. A *connector* (e.g. the
- * Composio adapter) handles OAuth and data fetching for a family of external
- * products (*toolkits*, e.g. `jira`), and exposes each external object type as a
- * *connected data type* — a Lattice table whose rows are synced from the source.
+ * A *connector* (e.g. the built-in Jira connector) handles authentication and
+ * data fetching for an external product (*toolkit*, e.g. `jira`), and exposes
+ * each external object type as a *connected data type* — a Lattice table whose
+ * rows are synced from the source.
  *
- * The SPI is deliberately small: authorize a member, finalize the connection,
- * stream normalized records for a model, and revoke. Everything Lattice-specific
+ * The SPI is deliberately small: establish a connection, stream normalized
+ * records for a model, and revoke. Everything Lattice-specific
  * (schema, ACL, graph edges, teardown) is driven from the {@link ConnectedModelDef}
  * descriptors and handled by the sync engine — a connector only fetches + maps.
  */
@@ -108,11 +108,11 @@ export interface ListChangesContext {
 }
 
 /**
- * A connector implementation. Concrete connectors (e.g. Composio) implement this;
- * the sync engine and GUI program against it.
+ * A connector implementation. Concrete connectors (e.g. the Jira connector)
+ * implement this; the sync engine and GUI program against it.
  */
 export interface Connector {
-  /** Connector id (e.g. `'composio'`). */
+  /** Connector id (e.g. `'jira'`). */
   readonly connector: string;
   /** The toolkits this connector can serve (e.g. `['jira']`). */
   toolkits(): string[];

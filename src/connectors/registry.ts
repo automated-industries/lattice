@@ -3,11 +3,11 @@
  *
  * One internal `__lattice_connectors` table (GUI-hidden by the `__lattice_`
  * prefix) records each connector instance: which implementation backs it
- * (`connector`, e.g. `'composio'`), which product (`toolkit`, e.g. `'jira'`),
- * the opaque per-member auth handle (`composio_connection_id`), who connected
+ * (`connector`, e.g. `'jira'`), which product (`toolkit`, e.g. `'jira'`),
+ * the opaque per-member connection handle (`connectionRef`), who connected
  * it, and its sync state. No secret material is stored here — the connector's
- * API key lives in the machine-local encrypted credential store, and the SaaS
- * OAuth tokens live in the connector backend (e.g. Composio).
+ * credentials (e.g. a SaaS API token) live in the machine-local encrypted
+ * credential store, keyed by the connection handle.
  *
  * On a cloud workspace the table is RLS-scoped private-to-owner (see the ACL
  * wiring), so each member sees and manages only their own connectors.
@@ -28,14 +28,14 @@ export type ConnectorStatus = 'connected' | 'error' | 'disconnected';
 /** A row in the connector registry. */
 export interface ConnectorRecord {
   id: string;
-  /** Connector implementation, e.g. `'composio'`. */
+  /** Connector implementation, e.g. `'jira'`. */
   connector: string;
   /** External product/toolkit, e.g. `'jira'`. */
   toolkit: string;
   /** Human-friendly label shown in the GUI. */
   displayName: string | null;
-  /** Opaque per-member auth handle from the connector backend (e.g. Composio). */
-  composioConnectionId: string | null;
+  /** Opaque per-member connection handle (the key for the connection's stored credentials). */
+  connectionRef: string | null;
   /** Identity that connected this instance (member role / user id). */
   connectedBy: string | null;
   status: ConnectorStatus;
@@ -87,7 +87,8 @@ function toRecord(r: ConnectorRow): ConnectorRecord {
     connector: r.connector,
     toolkit: r.toolkit,
     displayName: r.display_name,
-    composioConnectionId: r.composio_connection_id,
+    // The SQL column keeps its original name (internal); the public field is generic.
+    connectionRef: r.composio_connection_id,
     connectedBy: r.connected_by,
     status: r.status as ConnectorStatus,
     lastSyncAt: r.last_sync_at,
@@ -101,7 +102,7 @@ export interface CreateConnectorInput {
   connector: string;
   toolkit: string;
   displayName?: string;
-  composioConnectionId?: string;
+  connectionRef?: string;
   connectedBy?: string;
 }
 
@@ -120,7 +121,7 @@ export async function createConnector(db: Lattice, input: CreateConnectorInput):
       input.connector,
       input.toolkit,
       input.displayName ?? null,
-      input.composioConnectionId ?? null,
+      input.connectionRef ?? null,
       input.connectedBy ?? null,
       now,
       now,
@@ -188,12 +189,12 @@ export async function listConnectors(
 export async function updateConnectorConnection(
   db: Lattice,
   id: string,
-  composioConnectionId: string,
+  connectionRef: string,
 ): Promise<void> {
   await runAsyncOrSync(
     db.adapter,
     `UPDATE "${CONNECTORS_TABLE}" SET "composio_connection_id" = ?, "status" = 'connected', "updated_at" = ? WHERE "id" = ?`,
-    [composioConnectionId, new Date().toISOString(), id],
+    [connectionRef, new Date().toISOString(), id],
   );
 }
 

@@ -17,7 +17,9 @@ test.afterEach(async () => {
 // Keeping the module inside the wrapper (next to selectDrawerTab) is what makes the
 // in-IIFE helpers visible. This test fails loudly if it ever drifts back out: the
 // panel won't render and a page error fires.
-test('Connectors settings tab renders the Composio panel (helpers in scope)', async ({ page }) => {
+test('Connectors settings tab renders the connectors panel (helpers in scope)', async ({
+  page,
+}) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
@@ -27,14 +29,15 @@ test('Connectors settings tab renders the Composio panel (helpers in scope)', as
   await page.locator('.drawer-tab[data-tab="connectors"]').click();
 
   const body = page.locator('#drawer-body');
-  // The Composio key panel + the Jira card render only if renderConnectorsPanel ran
-  // to completion (it calls the IIFE-scoped fetchJson on its first line). Assert on
-  // the panel's own headings (the "Connectors" h3 and the "Jira" toolkit h4).
+  // The header + the Jira card (credential form) render only if renderConnectorsPanel
+  // ran to completion (it calls the IIFE-scoped fetchJson on its first line). Assert on
+  // the panel's own headings (the "Connectors" h3 and the "Jira" toolkit h4) and the
+  // Jira site-URL field — proof the credential form, not just the shell, rendered.
   await expect(body.getByRole('heading', { name: 'Connectors', exact: true })).toBeVisible({
     timeout: 5000,
   });
   await expect(body.getByRole('heading', { name: 'Jira', exact: true })).toBeVisible();
-  await expect(body.getByText('Composio API key', { exact: true })).toBeVisible();
+  await expect(body.locator('#jira-site')).toBeVisible();
 
   // The bug surfaced as an uncaught "fetchJson is not defined" before the body was
   // written — assert no page error escaped.

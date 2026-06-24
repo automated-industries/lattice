@@ -5,62 +5,74 @@ types** — tables whose rows are ingested from a source rather than authored
 locally. They make external data first-class Lattice data: queryable, full-text
 searchable, rendered to context, linked on the graph, and ACL-scoped on a cloud.
 
-Lattice ships no per-SaaS API clients of its own. A _connector_ wraps an
-integration provider and exposes one or more _toolkits_ (external products). The
-built-in connector wraps [Composio](https://composio.dev); the first toolkit is
-**Jira**. Adding Gmail, Slack, Zoom, etc. is a new toolkit spec, not new core
-code.
+A _connector_ talks to one external product (a _toolkit_) and exposes its object
+types as connected data types. The built-in connector is **Jira**, which talks to
+Jira Cloud's REST + Agile APIs directly via [`jira.js`](https://github.com/MrRefactoring/jira.js)
+using your own Atlassian credentials — there is no broker service and no extra
+API key. Adding another source (Gmail, Slack, …) is a new `Connector`
+implementation, not changes to the core.
 
-> `@composio/core` is an **optional dependency**. The package compiles and runs
-> without it; it is loaded lazily and a clear error is thrown only when a
-> connector is actually used. Install it to use connectors:
-> `npm install @composio/core`.
+> `jira.js` is an **optional dependency**. The package compiles and runs without
+> it; it is loaded lazily and a clear error is thrown only when the Jira connector
+> is actually used. Install it to use the connector: `npm install jira.js`.
 
 ## Concepts
 
-| Concept                 | Meaning                                                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Connector**           | An implementation of the fetch/auth SPI (e.g. the Composio connector).                                           |
-| **Toolkit**             | An external product a connector serves (e.g. `jira`).                                                            |
-| **Connected data type** | A Lattice table with a `source` descriptor — its rows are synced from a toolkit model.                           |
-| **Connector instance**  | A registered connection (`__lattice_connectors` row): which toolkit, the per-member auth handle, and sync state. |
+| Concept                 | Meaning                                                                                                                |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Connector**           | An implementation of the fetch/auth SPI (e.g. the Jira connector).                                                     |
+| **Toolkit**             | An external product a connector serves (e.g. `jira`).                                                                  |
+| **Connected data type** | A Lattice table with a `source` descriptor — its rows are synced from a toolkit model.                                 |
+| **Connector instance**  | A registered connection (`__lattice_connectors` row): which toolkit, the per-member connection handle, and sync state. |
 
 A connected table's **natural key is its primary key** (a stable external id), so
 re-syncs upsert idempotently. Every row carries connector lineage:
 `_source_connector_id` and `_source_model` (immutable) plus `_source_synced_at`.
 
+## Credentials
+
+The Jira connector authenticates as **you**, with an Atlassian **API token**
+(HTTP Basic auth: your account email + the token). Create one at
+<https://id.atlassian.com/manage-profile/security/api-tokens>. Lattice validates
+the credentials against Jira on connect (`GET /myself`) and stores them in the
+**machine-local encrypted credential store** — they never leave the machine
+except to call the Jira API directly, and they are never written to the registry,
+logs, or any rendered context.
+
 ## Using the GUI
 
-Open **Settings → Connectors**, paste your Composio API key, then **Connect** a
-toolkit (Jira). The connect flow opens the Composio OAuth page in a new tab; click
-**Finish connecting** when you return and the initial sync runs. Each connected
-toolkit shows its status + last-synced time with **Refresh** and **Disconnect**
-buttons, and connected data types get a "Connected" badge in the Objects list.
+Open **Settings → Connectors**, fill in your Jira **site URL**
+(`https://your-domain.atlassian.net`), **account email**, and **API token**, then
+**Connect**. The credentials are validated and the initial sync runs. Each
+connected toolkit shows its status + last-synced time with **Refresh** and
+**Disconnect** buttons, and connected data types get a "Connected" badge in the
+Objects list.
 
 ## Quick start (programmatic)
 
 ```typescript
 import {
-  ComposioConnector,
+  JiraConnector,
   createConnector,
   syncConnector,
   syncIfStale,
   disconnectConnector,
-  setComposioApiKey,
 } from 'latticesql';
 
-setComposioApiKey(process.env.COMPOSIO_API_KEY!);
-const connector = new ComposioConnector();
+const connector = new JiraConnector();
 
-// Authorize a member (OAuth via Composio), then finalize the connection:
-const { redirectUrl } = await connector.authorize('user-123', 'jira');
-// → send the user to redirectUrl; after they return:
-const { connectionId } = await connector.completeAuth('user-123', 'jira');
+// Validate + store the member's Atlassian credentials, returning a connection handle:
+const { connectionId, displayName } = await connector.connect({
+  site: 'https://your-domain.atlassian.net',
+  email: 'you@example.com',
+  apiToken: process.env.JIRA_API_TOKEN!,
+});
 
 const connectorId = await createConnector(db, {
-  connector: 'composio',
+  connector: 'jira',
   toolkit: 'jira',
-  composioConnectionId: connectionId,
+  displayName: displayName ?? 'jira',
+  connectionRef: connectionId,
   connectedBy: 'user-123',
 });
 
@@ -81,8 +93,8 @@ await syncConnector(db, connector, connectorId); // defines the tables + ingests
   data refreshes hourly **without a scheduler**. Manual refresh forces a sync.
 
 Reads done by the sync engine are bounded and column-projected — it never scans a
-full table to diff. Per-parent models (e.g. comments, fetched per issue) iterate
-the parent's already-synced keys.
+full table to diff. Per-parent models iterate the parent's already-synced keys
+(comments are fetched per issue; sprints per board).
 
 ## Disconnecting
 
@@ -92,7 +104,7 @@ await disconnectConnector(db, connector, connectorId, { outputDir });
 
 Soft-deletes every ingested row (children before parents), prunes rendered
 context files, marks the connector `disconnected` (use `{ mode: 'hard' }` to also
-remove the registry row), and revokes the backend connection. Soft-deleted rows
+remove the registry row), and drops the stored credentials. Soft-deleted rows
 drop out of the rendered context, full-text search, and the GUI listings (all of
 which filter `deleted_at IS NULL`), and their graph edges are removed — so the
 data is no longer available to the agent while remaining physically present and
@@ -111,10 +123,10 @@ tables and applies each type's default visibility — `private` (visible only to
 the connecting member) or `everyone` (shared with the team). It is a no-op on
 SQLite, a non-cloud Postgres, or for a non-owner role.
 
-Because each member authorizes their own account, the data a member syncs is
-already scoped to what they can see in the source — per-user OAuth, not a shared
-admin credential. Derived enrichment over connected rows inherits the source's
-visibility automatically: write it through
+Because each member connects with their own Atlassian credentials, the data a
+member syncs is already scoped to what they can see in the source — per-user
+auth, not a shared admin credential. Derived enrichment over connected rows
+inherits the source's visibility automatically: write it through
 `db.observe(table, pk, { changeKind: 'derived', sourceRef: [connectedRowId] })`,
 and the source-gated fold hides it from a viewer who can't see the source.
 
@@ -129,32 +141,26 @@ Connecting Jira creates six connected data types:
 | `jira_comments` | comment id  | fetched per issue; edges → issue, author                      |
 | `jira_users`    | account id  |                                                               |
 | `jira_boards`   | board id    | edge → project                                                |
-| `jira_sprints`  | sprint id   | edge → board                                                  |
+| `jira_sprints`  | sprint id   | fetched per board; edge → board                               |
 
-## Adding a toolkit or connector
+## Adding a connector
 
-Implement the `Connector` SPI (`authorize` / `completeAuth` / `listChanges` /
-`disconnect`) or, for a new Composio toolkit, register a `ToolkitSpec` describing
-its connected models and, per model, the Composio action to call, how to page it,
-and how to map the result into normalized records:
+Implement the `Connector` SPI and point the GUI/registry at it. The SPI is small:
 
-```typescript
-import { registerToolkit } from 'latticesql';
-
-registerToolkit({
-  toolkit: 'gmail',
-  models: [
-    /* ConnectedModelDef[] */
-  ],
-  fetch: {
-    message: {
-      action: 'GMAIL_FETCH_MESSAGES',
-      args: (cursor) => ({ pageToken: cursor }),
-      map: (data) => ({ records: /* … */ [], nextCursor: /* … */ null }),
-    },
-  },
-});
-```
+- `connector` / `toolkits()` / `models(toolkit)` — identity + the connected
+  `ConnectedModelDef`s (table schema, natural key, FK relations → graph edges).
+- `listChanges(toolkit, model, ctx)` — an async iterable of normalized
+  `ExternalRecord`s for one model, **paged and bounded** (per-parent models read
+  `ctx.parentKey`).
+- `disconnect(connectionRef)` — revoke / drop the stored connection.
+- `authorize` / `completeAuth` — for an OAuth-redirect source. A
+  credential-based connector (like Jira) instead exposes a `connect(creds)`
+  method that validates + stores the credentials and returns a connection handle;
+  the GUI route calls it when the connector supports it.
 
 The sync engine, graph wiring, teardown, and ACL all work from the model
 descriptors — no further code is required.
+
+```
+
+```

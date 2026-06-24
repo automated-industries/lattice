@@ -2857,42 +2857,43 @@ See Scarf's own [privacy documentation](https://docs.scarf.sh) for the upstream 
 
 Connectors sync data from external systems into Lattice as **connected data
 types** — tables whose rows are ingested from a source rather than authored
-locally. Lattice ships no per-SaaS API clients of its own; instead a connector
-wraps an integration provider. The first connector wraps
-[Composio](https://composio.dev) and the first toolkit is **Jira**.
+locally. A connector talks to one external product directly using your own
+credentials. The built-in connector is **Jira**, which talks to Jira Cloud's
+REST + Agile APIs via [`jira.js`](https://github.com/MrRefactoring/jira.js) — no
+broker service, no extra API key.
 
-`@composio/core` is an **optional dependency** — install it only to use
-connectors:
+`jira.js` is an **optional dependency** — install it only to use the connector:
 
 ```bash
-npm install @composio/core
+npm install jira.js
 ```
 
 Connect, sync, and disconnect programmatically:
 
 ```typescript
 import {
-  ComposioConnector,
+  JiraConnector,
   createConnector,
   syncConnector,
   syncIfStale,
   disconnectConnector,
-  setComposioApiKey,
 } from 'latticesql';
 
-setComposioApiKey(process.env.COMPOSIO_API_KEY!); // or set COMPOSIO_API_KEY in env
-const connector = new ComposioConnector();
+const connector = new JiraConnector();
 
-// 1. The member authorizes their Jira account (OAuth via Composio):
-const { redirectUrl } = await connector.authorize('user-123', 'jira');
-// → send the user to redirectUrl, then once they return:
-const { connectionId } = await connector.completeAuth('user-123', 'jira');
+// 1. Validate + store the member's Atlassian credentials (site + email + API token):
+const { connectionId, displayName } = await connector.connect({
+  site: 'https://your-domain.atlassian.net',
+  email: 'you@example.com',
+  apiToken: process.env.JIRA_API_TOKEN!,
+});
 
 // 2. Register + sync (defines the six jira_* connected tables and ingests):
 const connectorId = await createConnector(db, {
-  connector: 'composio',
+  connector: 'jira',
   toolkit: 'jira',
-  composioConnectionId: connectionId,
+  displayName: displayName ?? 'jira',
+  connectionRef: connectionId,
   connectedBy: 'user-123',
 });
 await syncConnector(db, connector, connectorId);
@@ -2900,7 +2901,7 @@ await syncConnector(db, connector, connectorId);
 // 3. Keep fresh — no scheduler: re-sync on load if older than an hour.
 await syncIfStale(db, connector, connectorId);
 
-// 4. Disconnect — soft-deletes the ingested rows + revokes the connection.
+// 4. Disconnect — soft-deletes the ingested rows + drops the stored credentials.
 await disconnectConnector(db, connector, connectorId);
 ```
 
@@ -2915,11 +2916,11 @@ On a cloud workspace, the owner calls `enableConnectorRls(db, connector, 'jira')
 to scope connected rows per member (private by default, or shared per type).
 
 In the **GUI**, all of this is point-and-click: open **Settings → Connectors**,
-paste your Composio API key, and connect / refresh / disconnect a toolkit.
+enter your Jira site URL + email + API token, and connect / refresh / disconnect.
 Connected data types show a "Connected" badge in the Objects list.
 
 See [docs/connectors.md](docs/connectors.md) for the full guide and the connector
-SPI (to add a new toolkit or provider).
+SPI (to add a new connector).
 
 ---
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Lattice } from '../../src/lattice.js';
@@ -8,8 +8,10 @@ import type { Connector, ConnectedModelDef, ExternalRecord } from '../../src/con
 
 /**
  * 4.3 — connectors GUI routes (SQLite, fake connector). Exercises the connect →
- * sync → refresh → disconnect HTTP surface without the real Composio SDK and
- * without touching the machine-local credential store.
+ * sync → refresh → disconnect HTTP surface without any real SDK and without
+ * touching the machine-local credential store. The fake connector exposes a
+ * credential `connect()` (like the Jira connector), so the route's duck-typed
+ * capability check engages.
  */
 
 const MODELS: ConnectedModelDef[] = [
@@ -33,6 +35,8 @@ const MODELS: ConnectedModelDef[] = [
   },
 ];
 
+const CREDS_BODY = { site: 'https://x.atlassian.net', email: 'a@x.com', token: 'tok' };
+
 class FakeConnector implements Connector {
   readonly connector = 'fake';
   things: ExternalRecord[] = [{ id: 'T1', row: { tid: 'T1', name: 'one' } }];
@@ -43,19 +47,38 @@ class FakeConnector implements Connector {
   models() {
     return MODELS;
   }
-  async authorize() {
-    return { redirectUrl: 'https://auth.example/go', pendingId: 'pend-1' };
+  authorize() {
+    return Promise.resolve({ redirectUrl: 'https://auth.example/go', pendingId: 'pend-1' });
   }
-  async completeAuth() {
-    return { connectionId: 'conn-1' };
+  completeAuth() {
+    return Promise.resolve({ connectionId: 'conn-1' });
   }
-  async disconnect(id: string) {
+  // Credential connect (validated + stored by a real connector); fixed handle here.
+  connect() {
+    return Promise.resolve({ connectionId: 'conn-1', displayName: 'Demo' });
+  }
+  disconnect(id: string) {
     this.revoked.push(id);
+    return Promise.resolve();
   }
   async *listChanges(): AsyncIterable<ExternalRecord> {
     yield* this.things;
   }
 }
+
+/** A connector with no credential `connect()` — exercises the capability guard. */
+const oauthOnly: Connector = {
+  connector: 'oauthy',
+  toolkits: () => ['demo'],
+  models: () => MODELS,
+  authorize: () => Promise.resolve({ redirectUrl: 'https://auth.example/go' }),
+  completeAuth: () => Promise.resolve({ connectionId: 'x' }),
+  disconnect: () => Promise.resolve(),
+  // eslint-disable-next-line require-yield
+  listChanges: async function* () {
+    return;
+  },
+};
 
 function fakeReq(method: string, url: string, jsonBody?: unknown): IncomingMessage {
   const req = new EventEmitter() as unknown as IncomingMessage;
@@ -90,12 +113,6 @@ describe('connectors routes (SQLite)', () => {
   let db: Lattice | undefined;
   const fake = new FakeConnector();
 
-  beforeAll(() => {
-    process.env.COMPOSIO_API_KEY = 'test-key'; // so apiKeySet reads true without the store
-  });
-  afterAll(() => {
-    delete process.env.COMPOSIO_API_KEY;
-  });
   afterEach(() => {
     db?.close();
     db = undefined;
@@ -106,12 +123,13 @@ describe('connectors routes (SQLite)', () => {
     url: string,
     body?: unknown,
     connectedBy = 'u1',
+    connector: Connector = fake,
   ): Promise<{ status: number; body: unknown; handled: boolean }> {
     const req = fakeReq(method, url, body);
     const { res, done } = fakeRes();
     const handled = await dispatchConnectorsRoute(req, res, {
       db: db!,
-      connector: fake,
+      connector,
       outputDir: '/tmp/does-not-matter',
       connectedBy,
     });
@@ -124,35 +142,52 @@ describe('connectors routes (SQLite)', () => {
     await db.init();
   }
 
-  it('GET /api/connectors lists connectors + key state', async () => {
+  it('GET /api/connectors lists this member’s connectors + toolkits', async () => {
     await open();
     const r = await call('GET', '/api/connectors');
     expect(r.handled).toBe(true);
-    expect(r.body).toMatchObject({ apiKeySet: true, toolkits: ['demo'], connectors: [] });
+    expect(r.body).toMatchObject({ toolkits: ['demo'], connectors: [] });
   });
 
-  it('authorize returns a redirect URL', async () => {
+  it('connect validates credentials, creates the connector + runs an initial sync', async () => {
     await open();
-    const r = await call('POST', '/api/connectors/demo/authorize');
-    expect(r.body).toMatchObject({ redirectUrl: 'https://auth.example/go', pendingId: 'pend-1' });
-  });
-
-  it('finalize creates the connector + runs an initial sync', async () => {
-    await open();
-    const r = await call('POST', '/api/connectors/demo/finalize');
+    const r = await call('POST', '/api/connectors/demo/connect', CREDS_BODY);
     expect(r.status).toBe(200);
     const body = r.body as { connectorId: string; result: { upserted: Record<string, number> } };
     expect(body.connectorId).toBeTruthy();
     expect(body.result.upserted).toEqual({ demo_things: 1 });
-    // the connected row landed
     expect(await db!.get('demo_things', 'T1')).toMatchObject({ tid: 'T1', name: 'one' });
-    // and a registry row exists
     expect(await getConnectorByToolkit(db!, 'demo', 'u1')).not.toBeNull();
+  });
+
+  it('connect rejects missing credentials with 400', async () => {
+    await open();
+    const r = await call('POST', '/api/connectors/demo/connect', {
+      site: '',
+      email: '',
+      token: '',
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('connect rejects a non-URL site with 400', async () => {
+    await open();
+    const r = await call('POST', '/api/connectors/demo/connect', {
+      ...CREDS_BODY,
+      site: 'not-a-url',
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('connect on a connector without credential support returns 400', async () => {
+    await open();
+    const r = await call('POST', '/api/connectors/demo/connect', CREDS_BODY, 'u1', oauthOnly);
+    expect(r.status).toBe(400);
   });
 
   it('refresh re-syncs the connected toolkit', async () => {
     await open();
-    await call('POST', '/api/connectors/demo/finalize');
+    await call('POST', '/api/connectors/demo/connect', CREDS_BODY);
     fake.things = [
       { id: 'T1', row: { tid: 'T1', name: 'one' } },
       { id: 'T2', row: { tid: 'T2', name: 'two' } },
@@ -175,11 +210,10 @@ describe('connectors routes (SQLite)', () => {
     await open();
     fake.things = [{ id: 'T1', row: { tid: 'T1', name: 'one' } }];
     fake.revoked = [];
-    await call('POST', '/api/connectors/demo/finalize');
+    await call('POST', '/api/connectors/demo/connect', CREDS_BODY);
     expect(await db!.query('demo_things', {})).toHaveLength(1);
     const r = await call('DELETE', '/api/connectors/demo', {});
     expect(r.status).toBe(200);
-    // hidden from live reads (deleted_at filtered), but soft-deleted (recoverable)
     const live = await db!.query('demo_things', { filters: [{ col: 'deleted_at', op: 'isNull' }] });
     expect(live).toHaveLength(0);
     expect((await db!.query('demo_things', {}))[0]?.deleted_at).toBeTruthy();
@@ -200,16 +234,13 @@ describe('connectors routes (SQLite)', () => {
 
   it('scopes connectors per identity: member B cannot see/refresh/disconnect member A’s', async () => {
     await open();
-    // A connects.
-    const a = (await call('POST', '/api/connectors/demo/finalize', undefined, 'alice')).body as {
+    const a = (await call('POST', '/api/connectors/demo/connect', CREDS_BODY, 'alice')).body as {
       connectorId: string;
     };
-    // B lists — sees none of A's connectors.
     const bList = (await call('GET', '/api/connectors', undefined, 'bob')).body as {
       connectors: unknown[];
     };
     expect(bList.connectors).toHaveLength(0);
-    // B tries to refresh A's connector by id → 404 (app-layer ownership check).
     const bRefresh = await call(
       'POST',
       '/api/connectors/demo/refresh',
@@ -217,7 +248,6 @@ describe('connectors routes (SQLite)', () => {
       'bob',
     );
     expect(bRefresh.status).toBe(404);
-    // B tries to disconnect A's connector by id → 404; A's data survives.
     const bDelete = await call(
       'DELETE',
       '/api/connectors/demo',
@@ -230,12 +260,12 @@ describe('connectors routes (SQLite)', () => {
     ).toHaveLength(1);
   });
 
-  it('finalize is idempotent — re-running reuses the same connector (no duplicate)', async () => {
+  it('connect is idempotent — re-running reuses the same connector (no duplicate)', async () => {
     await open();
-    const first = (await call('POST', '/api/connectors/demo/finalize')).body as {
+    const first = (await call('POST', '/api/connectors/demo/connect', CREDS_BODY)).body as {
       connectorId: string;
     };
-    const second = (await call('POST', '/api/connectors/demo/finalize')).body as {
+    const second = (await call('POST', '/api/connectors/demo/connect', CREDS_BODY)).body as {
       connectorId: string;
     };
     expect(second.connectorId).toBe(first.connectorId);

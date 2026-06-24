@@ -1,10 +1,11 @@
 /**
  * Connectors — sync external sources into Lattice as connected data types.
  *
- * Public surface: the SPI types, the connector registry, and the Composio
- * connector (which wraps the optional `@composio/core` dependency). Toolkit
- * specs (e.g. Jira) register themselves with the Composio connector; the sync
- * engine and teardown drive everything from the {@link ConnectedModelDef}s.
+ * Public surface: the SPI types, the connector registry, the sync engine,
+ * teardown + ACL helpers, and the built-in Jira connector (which talks to Jira
+ * Cloud directly via the optional `jira.js` dependency). Everything is driven
+ * from the {@link ConnectedModelDef}s a connector exposes — adding another
+ * source is a new {@link Connector} implementation, not changes here.
  */
 
 export type {
@@ -33,28 +34,16 @@ export {
 export type { ConnectorRecord, ConnectorStatus, CreateConnectorInput } from './registry.js';
 
 export {
-  ComposioConnector,
-  registerToolkit,
-  registeredToolkits,
-  getToolkitSpec,
-} from './composio/adapter.js';
-export type { ToolkitSpec, ModelFetchSpec } from './composio/adapter.js';
-
-export {
-  getComposioApiKey,
-  setComposioApiKey,
-  clearComposioApiKey,
-  loadComposioClient,
+  JiraConnector,
   ConnectorUnavailableError,
-} from './composio/client.js';
-export type { ComposioClient, ComposioActionResult } from './composio/client.js';
+  loadJiraClient,
+  getJiraCreds,
+  setJiraCreds,
+  clearJiraCreds,
+} from './jira/connector.js';
+export type { JiraCreds, JiraClient } from './jira/connector.js';
 
-export {
-  JIRA_TOOLKIT,
-  JIRA_MODELS,
-  registerJiraToolkit,
-  defineJiraTables,
-} from './composio/jira.js';
+export { JIRA_MODELS, defineJiraTables } from './jira/models.js';
 
 export {
   syncConnector,
@@ -69,8 +58,3 @@ export { disconnectConnector } from './teardown.js';
 export type { DisconnectOptions, DisconnectResult } from './teardown.js';
 
 export { enableConnectorRls, secureConnectorTables } from './acl.js';
-
-import { registerJiraToolkit } from './composio/jira.js';
-
-// Register the built-in toolkits so the Composio connector can serve them.
-registerJiraToolkit();

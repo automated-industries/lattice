@@ -42,7 +42,7 @@ import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchIngestRoute } from './ingest-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
-import { ComposioConnector, resolveConnectorIdentity } from '../connectors/index.js';
+import { JiraConnector, resolveConnectorIdentity } from '../connectors/index.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
@@ -768,8 +768,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             },
           },
           // ── Connectors: connect/refresh/disconnect external sources ──
-          // Composio-backed connected data types (Jira, …). Sync runs on connect,
-          // on manual refresh, and on GUI load (/sync-if-stale).
+          // Connected data types synced from external sources (Jira, …). Sync runs
+          // on connect, on manual refresh, and on GUI load (/sync-if-stale).
           {
             handle: async (req, res) => {
               if (!pathname.startsWith('/api/connectors')) return false;
@@ -780,7 +780,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const connectedBy = await resolveConnectorIdentity(active.db, fallback);
               return await dispatchConnectorsRoute(req, res, {
                 db: active.db,
-                connector: new ComposioConnector(),
+                connector: new JiraConnector(),
                 outputDir: active.outputDir,
                 connectedBy,
               });

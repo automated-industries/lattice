@@ -75,7 +75,7 @@ describe('connector teardown (SQLite)', () => {
     const id = await createConnector(db, {
       connector: 'fake',
       toolkit: 'demo',
-      composioConnectionId: 'conn-9',
+      connectionRef: 'conn-9',
       connectedBy: 'u1',
     });
     await syncConnector(db, fake, id);

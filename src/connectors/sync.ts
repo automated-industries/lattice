@@ -54,12 +54,12 @@ export async function syncConnector(
 ): Promise<SyncConnectorResult> {
   const record = await getConnector(db, connectorId);
   if (!record) throw new Error(`Connector "${connectorId}" not found in the registry.`);
-  if (!record.composioConnectionId) {
+  if (!record.connectionRef) {
     throw new Error(`Connector "${connectorId}" has no connection — authorize it first.`);
   }
   const { toolkit } = record;
   const ctxBase: Omit<ListChangesContext, 'parentKey'> = {
-    connectionId: record.composioConnectionId,
+    connectionId: record.connectionRef,
     userId: record.connectedBy ?? connectorId,
   };
   const pruneVanished = opts.pruneVanished !== false;

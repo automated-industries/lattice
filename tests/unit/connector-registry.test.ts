@@ -37,19 +37,19 @@ describe('connector registry (SQLite)', () => {
   it('creates and reads back a connector', async () => {
     const d = await open();
     const id = await createConnector(d, {
-      connector: 'composio',
+      connector: 'jira',
       toolkit: 'jira',
       displayName: 'Atlassian Jira',
-      composioConnectionId: 'conn_123',
+      connectionRef: 'conn_123',
       connectedBy: 'alice',
     });
     const rec = await getConnector(d, id);
     expect(rec).toMatchObject({
       id,
-      connector: 'composio',
+      connector: 'jira',
       toolkit: 'jira',
       displayName: 'Atlassian Jira',
-      composioConnectionId: 'conn_123',
+      connectionRef: 'conn_123',
       connectedBy: 'alice',
       status: 'connected',
       lastSyncAt: null,
@@ -59,8 +59,8 @@ describe('connector registry (SQLite)', () => {
 
   it('looks up by toolkit, optionally scoped to the connecting identity', async () => {
     const d = await open();
-    await createConnector(d, { connector: 'composio', toolkit: 'jira', connectedBy: 'alice' });
-    await createConnector(d, { connector: 'composio', toolkit: 'jira', connectedBy: 'bob' });
+    await createConnector(d, { connector: 'jira', toolkit: 'jira', connectedBy: 'alice' });
+    await createConnector(d, { connector: 'jira', toolkit: 'jira', connectedBy: 'bob' });
     const anyJira = await getConnectorByToolkit(d, 'jira');
     expect(anyJira?.toolkit).toBe('jira');
     const bobJira = await getConnectorByToolkit(d, 'jira', 'bob');
@@ -70,7 +70,7 @@ describe('connector registry (SQLite)', () => {
 
   it('records sync success and failure', async () => {
     const d = await open();
-    const id = await createConnector(d, { connector: 'composio', toolkit: 'jira' });
+    const id = await createConnector(d, { connector: 'jira', toolkit: 'jira' });
     await recordSync(d, id, { ok: true, at: '2026-06-23T00:00:00.000Z' });
     let rec = await getConnector(d, id);
     expect(rec?.status).toBe('connected');
@@ -87,7 +87,7 @@ describe('connector registry (SQLite)', () => {
 
   it('sets status and deletes', async () => {
     const d = await open();
-    const id = await createConnector(d, { connector: 'composio', toolkit: 'jira' });
+    const id = await createConnector(d, { connector: 'jira', toolkit: 'jira' });
     await setConnectorStatus(d, id, 'disconnected');
     expect((await getConnector(d, id))?.status).toBe('disconnected');
     await deleteConnectorRecord(d, id);

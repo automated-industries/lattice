@@ -41,24 +41,24 @@ describe('connectors panel (jsdom)', () => {
     document.body.appendChild(host);
   });
 
-  it('renders the API-key panel and a disabled Connect prompt when no key is set', async () => {
-    const render = loadPanel({ apiKeySet: false, toolkits: ['jira'], connectors: [] }, []);
+  it('renders the Jira credential form when not connected', async () => {
+    const render = loadPanel({ toolkits: ['jira'], connectors: [] }, []);
     render(host);
     await flush();
-    expect(host.innerHTML).toContain('Composio API key');
-    expect(host.innerHTML).toContain('Not set');
+    expect(host.innerHTML).toContain('Connectors');
     expect(host.innerHTML).toContain('Jira');
-    expect(host.innerHTML).toContain('Set the Composio API key first');
-    // Connect is present but disabled until a key is set.
+    // The credential fields + Connect button are present.
+    expect(host.querySelector('#jira-site')).toBeTruthy();
+    expect(host.querySelector('#jira-email')).toBeTruthy();
+    expect(host.querySelector('#jira-token')).toBeTruthy();
     const connect = host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!;
     expect(connect).toBeTruthy();
-    expect(connect.disabled).toBe(true);
+    expect(connect.disabled).toBe(false);
   });
 
   it('shows Refresh + Disconnect + status for a connected toolkit', async () => {
     const render = loadPanel(
       {
-        apiKeySet: true,
         toolkits: ['jira'],
         connectors: [
           { id: 'c1', toolkit: 'jira', status: 'connected', lastSyncAt: '2026-06-23T00:00:00Z' },
@@ -68,33 +68,40 @@ describe('connectors panel (jsdom)', () => {
     );
     render(host);
     await flush();
-    expect(host.innerHTML).toContain('Set'); // key chip
     expect(host.innerHTML).toContain('connected');
     expect(host.innerHTML).toContain('last synced');
     expect(host.querySelector('button[data-act="refresh"]')).toBeTruthy();
     expect(host.querySelector('button[data-act="disconnect"]')).toBeTruthy();
+    // No credential form once connected.
+    expect(host.querySelector('#jira-token')).toBeNull();
   });
 
-  it('Save posts the Composio key; Refresh hits the refresh endpoint', async () => {
+  it('Connect posts the entered credentials to the connect endpoint', async () => {
+    const calls: FetchCall[] = [];
+    const render = loadPanel({ toolkits: ['jira'], connectors: [] }, calls);
+    render(host);
+    await flush();
+
+    host.querySelector<HTMLInputElement>('#jira-site')!.value = 'https://x.atlassian.net';
+    host.querySelector<HTMLInputElement>('#jira-email')!.value = 'a@x.com';
+    host.querySelector<HTMLInputElement>('#jira-token')!.value = 'sk-test';
+    host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!.click();
+    await flush();
+
+    const post = calls.find((c) => c.url === '/api/connectors/jira/connect' && c.method === 'POST');
+    expect(post).toBeTruthy();
+    expect(post!.body).toContain('x.atlassian.net');
+    expect(post!.body).toContain('sk-test');
+  });
+
+  it('Refresh hits the refresh endpoint', async () => {
     const calls: FetchCall[] = [];
     const render = loadPanel(
-      {
-        apiKeySet: true,
-        toolkits: ['jira'],
-        connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }],
-      },
+      { toolkits: ['jira'], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
       calls,
     );
     render(host);
     await flush();
-
-    host.querySelector<HTMLInputElement>('#composio-key')!.value = 'sk-test';
-    host.querySelector<HTMLButtonElement>('#composio-key-save')!.click();
-    await flush();
-    const put = calls.find((c) => c.url === '/api/connectors/composio-key' && c.method === 'PUT');
-    expect(put).toBeTruthy();
-    expect(put!.body).toContain('sk-test');
-
     host.querySelector<HTMLButtonElement>('button[data-act="refresh"]')!.click();
     await flush();
     expect(calls.some((c) => c.url === '/api/connectors/jira/refresh' && c.method === 'POST')).toBe(
@@ -105,11 +112,7 @@ describe('connectors panel (jsdom)', () => {
   it('Disconnect hits the DELETE endpoint', async () => {
     const calls: FetchCall[] = [];
     const render = loadPanel(
-      {
-        apiKeySet: true,
-        toolkits: ['jira'],
-        connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }],
-      },
+      { toolkits: ['jira'], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
       calls,
     );
     render(host);

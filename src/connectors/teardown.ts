@@ -67,8 +67,8 @@ export async function disconnectConnector(
   //    the registry — so a failed revoke leaves a retryable handle rather than a
   //    live SaaS grant we can no longer reach (especially in hard mode, which
   //    deletes the row). External op → surfaced loudly on failure.
-  if (record.composioConnectionId) {
-    await connector.disconnect(record.composioConnectionId);
+  if (record.connectionRef) {
+    await connector.disconnect(record.connectionRef);
   }
 
   // 4. Only after a successful revoke, finalize local registry state.

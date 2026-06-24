@@ -60,8 +60,8 @@ observe the cross-module scope boundary.
 ## Regression tests
 
 - `tests/e2e/connectors-settings.spec.ts` — opens the drawer on another tab,
-  clicks the Connectors tab, and asserts the Composio panel + Jira card render
-  with **no page error**. Verified to fail when the module is appended last
-  (the bug) and pass when it is composed inside the wrapper (the fix).
+  clicks the Connectors tab, and asserts the connectors panel + Jira credential
+  form render with **no page error**. Verified to fail when the module is appended
+  last (the bug) and pass when it is composed inside the wrapper (the fix).
 - `tests/unit/app-js-composition.test.ts` — length/hash re-pinned after the
   composition-order change.

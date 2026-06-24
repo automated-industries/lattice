@@ -12,25 +12,22 @@ import {
 import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
 import { enableConnectorRls, secureConnectorTables } from '../connectors/acl.js';
-import {
-  getComposioApiKey,
-  setComposioApiKey,
-  clearComposioApiKey,
-  ConnectorUnavailableError,
-} from '../connectors/composio/client.js';
+import { ConnectorUnavailableError } from '../connectors/jira/connector.js';
 
 /**
  * Connectors settings routes — connect/refresh/disconnect external sources and
- * read connector status. The connect flow is a Composio OAuth redirect; sync
- * runs on connect, on manual refresh, and (via /sync-if-stale) on GUI load.
+ * read connector status. Jira connects with the user's own Atlassian credentials
+ * (site URL + email + API token, validated against Jira on connect — no OAuth
+ * redirect, no broker key). Sync runs on connect, on manual refresh, and (via
+ * /sync-if-stale) on GUI load.
  *
- * User-actionable failures (missing API key / dependency, bad input) answer with
- * a clear error JSON; unexpected errors propagate to the server's loud 500.
+ * User-actionable failures (bad credentials, missing dependency, bad input)
+ * answer with a clear error JSON; unexpected errors propagate to the loud 500.
  */
 
 export interface ConnectorsRouteDeps {
   db: Lattice;
-  /** The connector implementation serving the GUI (e.g. the Composio connector). */
+  /** The connector implementation serving the GUI (the Jira connector). */
   connector: Connector;
   /** Rendered-context output dir, for teardown to prune files. */
   outputDir: string;
@@ -38,9 +35,20 @@ export interface ConnectorsRouteDeps {
   connectedBy: string;
 }
 
-/** Map a ConnectorUnavailableError (no key / no dep) to a 422 the GUI can show. */
+/** Map a ConnectorUnavailableError (no dep / no stored creds) to a 422 the GUI can show. */
 function isActionable(err: unknown): err is Error {
   return err instanceof ConnectorUnavailableError;
+}
+
+/** A connector that connects via direct credentials (validated + stored), not an OAuth redirect. */
+type CredentialConnector = Connector & {
+  connect(creds: { site: string; email: string; apiToken: string }): Promise<{
+    connectionId: string;
+    displayName: string | null;
+  }>;
+};
+function supportsCredentialConnect(c: Connector): c is CredentialConnector {
+  return typeof (c as Partial<CredentialConnector>).connect === 'function';
 }
 
 export async function dispatchConnectorsRoute(
@@ -56,11 +64,10 @@ export async function dispatchConnectorsRoute(
   const { db, connector, outputDir, connectedBy } = deps;
 
   try {
-    // GET /api/connectors — list THIS member's connectors + whether the key is set.
+    // GET /api/connectors — list THIS member's connectors + the available toolkits.
     if (pathname === '/api/connectors' && method === 'GET') {
       const connectors = await listConnectors(db, connectedBy);
       sendJson(res, {
-        apiKeySet: getComposioApiKey() !== null,
         toolkits: connector.toolkits(),
         connectors: connectors.map((c) => ({
           id: c.id,
@@ -72,26 +79,6 @@ export async function dispatchConnectorsRoute(
         })),
       });
       return true;
-    }
-
-    // PUT/DELETE /api/connectors/composio-key — manage the workspace API key.
-    if (pathname === '/api/connectors/composio-key') {
-      if (method === 'PUT') {
-        const body = await readJson<{ key?: unknown }>(req).catch(() => ({}) as { key?: unknown });
-        const key = typeof body.key === 'string' ? body.key.trim() : '';
-        if (!key) {
-          sendJson(res, { error: 'key is required' }, 400);
-          return true;
-        }
-        setComposioApiKey(key);
-        sendJson(res, { ok: true });
-        return true;
-      }
-      if (method === 'DELETE') {
-        clearComposioApiKey();
-        sendJson(res, { ok: true });
-        return true;
-      }
     }
 
     // POST /api/connectors/sync-if-stale — GUI-load refresh hook.
@@ -122,29 +109,59 @@ export async function dispatchConnectorsRoute(
         return true;
       }
 
-      // POST /api/connectors/<toolkit>/authorize — begin OAuth, return redirect URL.
-      if (action === 'authorize' && method === 'POST') {
-        const { redirectUrl, pendingId } = await connector.authorize(connectedBy, toolkit);
-        sendJson(res, { redirectUrl, pendingId });
-        return true;
-      }
-
-      // POST /api/connectors/<toolkit>/finalize — record the connection + initial sync.
-      // Idempotent: re-running OAuth reuses the existing connector for this
-      // (toolkit, member) instead of orphaning the prior one with a duplicate row.
-      if (action === 'finalize' && method === 'POST') {
-        const { connectionId } = await connector.completeAuth(connectedBy, toolkit);
+      // POST /api/connectors/<toolkit>/connect — validate credentials, store them,
+      // record the connection + run the initial sync. Idempotent: reconnecting
+      // reuses this (toolkit, member)'s registry row and retires the old creds.
+      if (action === 'connect' && method === 'POST') {
+        if (!supportsCredentialConnect(connector)) {
+          sendJson(
+            res,
+            { error: `Toolkit "${toolkit}" does not support credential connect.` },
+            400,
+          );
+          return true;
+        }
+        const body = await readJson<{ site?: unknown; email?: unknown; token?: unknown }>(
+          req,
+        ).catch(() => ({}) as { site?: unknown; email?: unknown; token?: unknown });
+        const site = typeof body.site === 'string' ? body.site.trim().replace(/\/+$/, '') : '';
+        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        const token = typeof body.token === 'string' ? body.token.trim() : '';
+        if (!site || !email || !token) {
+          sendJson(res, { error: 'site, email, and token are all required' }, 400);
+          return true;
+        }
+        if (!/^https?:\/\//i.test(site)) {
+          sendJson(
+            res,
+            { error: 'site must be a full URL, e.g. https://your-domain.atlassian.net' },
+            400,
+          );
+          return true;
+        }
+        let connection: { connectionId: string; displayName: string | null };
+        try {
+          connection = await connector.connect({ site, email, apiToken: token });
+        } catch (e) {
+          // Bad credentials / unreachable site — surface the specific reason.
+          sendJson(res, { error: (e as Error).message }, 422);
+          return true;
+        }
         const existing = await getConnectorByToolkit(db, toolkit, connectedBy);
         let connectorId: string;
         if (existing) {
-          await updateConnectorConnection(db, existing.id, connectionId);
+          // Retire the prior connection's stored credentials before repointing.
+          if (existing.connectionRef && existing.connectionRef !== connection.connectionId) {
+            await connector.disconnect(existing.connectionRef);
+          }
+          await updateConnectorConnection(db, existing.id, connection.connectionId);
           connectorId = existing.id;
         } else {
           connectorId = await createConnector(db, {
             connector: connector.connector,
             toolkit,
-            displayName: toolkit,
-            composioConnectionId: connectionId,
+            displayName: connection.displayName ?? toolkit,
+            connectionRef: connection.connectionId,
             connectedBy,
           });
         }

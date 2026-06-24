@@ -24,7 +24,7 @@ describe('connected data type (SQLite)', () => {
         deleted_at: 'TEXT',
       },
       primaryKey: 'issue_key',
-      source: { connector: 'composio', toolkit: 'jira', model: 'issue', naturalKey: 'issue_key' },
+      source: { connector: 'jira', toolkit: 'jira', model: 'issue', naturalKey: 'issue_key' },
       render: () => '',
       outputFile: 'i.md',
     });
@@ -50,7 +50,7 @@ describe('connected data type (SQLite)', () => {
     const d = await setup();
     expect(d.connectedTables()).toEqual(['jira_issues']);
     expect(d.getConnectedSource('jira_issues')).toMatchObject({
-      connector: 'composio',
+      connector: 'jira',
       toolkit: 'jira',
       model: 'issue',
     });

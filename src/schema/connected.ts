@@ -47,7 +47,7 @@ export type ConnectedVisibility = 'private' | 'everyone';
  * {@link TableDefinition} as `source`.
  */
 export interface ConnectorSource {
-  /** The connector implementation that backs this table (e.g. `'composio'`). */
+  /** The connector implementation that backs this table (e.g. `'jira'`). */
   connector: string;
   /** The external product/toolkit (e.g. `'jira'`). */
   toolkit: string;

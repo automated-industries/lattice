@@ -103,7 +103,7 @@ describe('incremental per-parent sync (SQLite)', () => {
     const id = await createConnector(db, {
       connector: 'fake',
       toolkit: 'demo',
-      composioConnectionId: 'conn',
+      connectionRef: 'conn',
       connectedBy: 'u1',
     });
 
