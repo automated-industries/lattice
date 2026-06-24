@@ -154,6 +154,11 @@ The desktop/web GUI is reorganized around the data graph.
   entity rows around it (bounded fetch with a "Show more"), and its related
   objects on the rim. Clicking an entity opens its tab; clicking a related object
   zooms into that object's graph. A "List view" toggle keeps the tile grid.
+- **Files open as their on-disk folder hierarchy.** The Files object page shows the
+  registered folder roots and any loose files as graph nodes; clicking a folder
+  drills into it (`#/folder/<path>`) and shows that folder's immediate sub-folders
+  and files, and so on. A file's breadcrumb runs through its folders
+  (`Home ▸ Files ▸ Downloads ▸ claude-ai.svg`); each folder crumb is clickable.
 - **Tab overflow.** Tabs shrink to fit the strip (no horizontal scrollbar); past a
   minimum width the trailing tabs collapse into a "⋯" menu that lists them with a
   ✕ to close. The active tab stays visible; the strip re-fits on resize.

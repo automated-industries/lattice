@@ -1044,6 +1044,9 @@ export const dashboardJs = `    // ───────────────
     var FS_GRAPH_ROW_MAX = 250; // hard ceiling for "Show more"
     var fsGraphCap = {}; // per-table cap override when the user clicks "Show more"
     function renderFsObjectGraph(content, table) {
+      // Files are special: their object page is the on-disk FOLDER hierarchy
+      // (roots + loose files, drillable), not a flat list of file rows.
+      if (table === 'files') { renderFilesRootView(content); return; }
       var myGen = renderGen;
       clearUnseen(table);
       var t = tableByName(table);
@@ -1164,6 +1167,8 @@ export const dashboardJs = `    // ───────────────
         var label = nd.label.length > 22 ? nd.label.slice(0, 21) + '…' : nd.label;
         var attr = nd.kind === 'entity' ? (' data-kind="entity" data-id="' + escapeHtml(String(nd.id)) + '"')
           : nd.kind === 'related' ? (' data-kind="related" data-table="' + escapeHtml(nd.name) + '"')
+          : nd.kind === 'folder' ? (' data-kind="folder" data-path="' + escapeHtml(String(nd.path)) + '"')
+          : nd.kind === 'file' ? (' data-kind="file" data-path="' + escapeHtml(String(nd.path || '')) + '" data-id="' + escapeHtml(String(nd.id || '')) + '"')
           : ' data-kind="object"';
         var iconSvg = nd.icon
           ? '<text class="gnode-icon" y="' + (nd.r * 0.34).toFixed(1) + '" text-anchor="middle" font-size="' + (nd.r * 0.9).toFixed(1) + '">' + nd.icon + '</text>'
@@ -1232,9 +1237,151 @@ export const dashboardJs = `    // ───────────────
           var nd = model.nodes[Number(drag.i)];
           if (nd && nd.kind === 'entity') location.hash = '#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(nd.id);
           else if (nd && nd.kind === 'related') location.hash = '#/fs/' + encodeURIComponent(nd.name);
+          else if (nd && nd.kind === 'folder') location.hash = '#/folder/' + encodeURIComponent(nd.path);
+          else if (nd && nd.kind === 'file') openGraphFile(nd);
         }
         drag = null;
         try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
+      });
+    }
+
+    // ── Folder navigation (the Files object's on-disk hierarchy) ─────────────
+    // The Files object opens as its folder roots + loose files; drilling into a
+    // folder (#/folder/<abs path>) shows that folder's immediate sub-folders +
+    // files as graph nodes — click a folder to go deeper, a file to open it. Paths
+    // use "/" (the local GUI runs on the user's own machine).
+    function fsBasename(p) {
+      var s = String(p || '');
+      while (s.length > 1 && s.charAt(s.length - 1) === '/') s = s.slice(0, -1);
+      var i = s.lastIndexOf('/');
+      return i >= 0 ? s.slice(i + 1) : s;
+    }
+    function fsDirname(p) {
+      var s = String(p || '');
+      var i = s.lastIndexOf('/');
+      return i > 0 ? s.slice(0, i) : s;
+    }
+    function openGraphFile(nd) {
+      if (nd.id) { location.hash = '#/fs/files/' + encodeURIComponent(nd.id); return; }
+      if (nd.path && typeof openSourceFile === 'function') openSourceFile(nd.path); // ingest-then-open
+    }
+    // Home ▸ Files ▸ <root> ▸ …folders… [▸ <leafLabel current>]. Folder crumbs link
+    // to their #/folder route; leafLabel (a filename) is appended non-linked.
+    function folderBreadcrumb(path, roots, leafLabel) {
+      var parts = ['<a href="#/graph">Home</a>', '<a href="#/fs/files">Files</a>'];
+      var root = null;
+      (roots || []).forEach(function (r) {
+        if (r.kind !== 'folder') return;
+        if (path === r.path || path.indexOf(r.path + '/') === 0) {
+          if (!root || r.path.length > root.path.length) root = r;
+        }
+      });
+      if (root) {
+        parts.push('<a href="#/folder/' + encodeURIComponent(root.path) + '">' + escapeHtml(root.name || fsBasename(root.path)) + '</a>');
+        var rel = path.slice(root.path.length);
+        while (rel.charAt(0) === '/') rel = rel.slice(1);
+        var acc = root.path;
+        if (rel) {
+          rel.split('/').forEach(function (seg) {
+            if (!seg) return;
+            acc = acc + '/' + seg;
+            parts.push('<a href="#/folder/' + encodeURIComponent(acc) + '">' + escapeHtml(seg) + '</a>');
+          });
+        }
+      } else if (!leafLabel) {
+        parts.push('<span class="fs-crumb-cur">' + escapeHtml(fsBasename(path)) + '</span>');
+      }
+      if (leafLabel) parts.push('<span class="fs-crumb-cur">' + escapeHtml(leafLabel) + '</span>');
+      return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
+    }
+    // center object + folder/file children → graph model (reuses objectGraphSvg).
+    function buildFolderGraphModel(centerLabel, entries, filesByPath) {
+      var nodes = [{ kind: 'object', name: centerLabel, label: centerLabel, icon: '📂', r: 24, x: 0, y: 0, vx: 0, vy: 0 }];
+      var links = [];
+      (entries || []).forEach(function (e) {
+        var idx = nodes.length;
+        if (e.kind === 'folder') {
+          nodes.push({ kind: 'folder', path: e.path, label: e.name, icon: '📁', r: 18, x: 0, y: 0, vx: 0, vy: 0 });
+        } else {
+          var id = e.id || (filesByPath ? filesByPath[e.path] : '') || '';
+          nodes.push({ kind: 'file', path: e.path || '', id: id, label: e.name, icon: '📄', r: 12, x: 0, y: 0, vx: 0, vy: 0 });
+        }
+        links.push({ si: 0, ti: idx });
+      });
+      return { nodes: nodes, links: links };
+    }
+    function paintFolderGraph(content, header, name, entries, filesByPath, emptyMsg, listToggle) {
+      if (!entries.length) {
+        content.innerHTML = header +
+          '<div class="brain-graph object-graph"><div id="fsg-mount"><div class="fs-empty" style="padding:24px">' +
+          emptyMsg + '</div></div></div>';
+      } else {
+        var model = buildFolderGraphModel(name, entries, filesByPath || {});
+        forceLayout(model.nodes, model.links, 360);
+        content.innerHTML = header +
+          '<div class="brain-graph object-graph"><div id="fsg-mount">' + objectGraphSvg(model) + '</div></div>';
+        var mount = document.getElementById('fsg-mount');
+        if (mount) wireObjectGraph(mount, model, 'files');
+      }
+      if (listToggle) {
+        var lv = content.querySelector('#fsg-view-list');
+        if (lv) lv.addEventListener('click', function () { fsObjectView['files'] = 'list'; renderFsCollection(content, ['files']); });
+      }
+    }
+    // #/folder/<abs path> — one folder's immediate children as a graph.
+    function renderFolderView(content, path) {
+      var myGen = renderGen;
+      var name = fsBasename(path) || 'Folder';
+      if (typeof setTabTitle === 'function') setTabTitle(tabKeyForHash(location.hash), name);
+      Promise.all([
+        fetchJson('/api/sources/list?path=' + encodeURIComponent(path)).catch(function () { return { entries: [] }; }),
+        fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
+        fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
+      ]).then(function (res) {
+        if (myGen !== renderGen) return;
+        var entries = (res[0] && res[0].entries) || [];
+        var truncated = res[0] && res[0].truncated;
+        var filesByPath = {};
+        ((res[1] && res[1].rows) || []).forEach(function (r) {
+          if (!r.deleted_at && r.ref_kind === 'local_ref' && r.ref_uri) filesByPath[r.ref_uri] = r.id;
+        });
+        var roots = (res[2] && res[2].roots) || [];
+        var header = folderBreadcrumb(path, roots) +
+          '<div class="view-header"><span class="entity-icon">📂</span><h1>' + escapeHtml(name) + '</h1>' +
+          '<span class="count">' + entries.length + (truncated ? '+' : '') + ' item' + (entries.length === 1 ? '' : 's') + '</span></div>';
+        paintFolderGraph(content, header, name, entries, filesByPath, 'This folder is empty.', false);
+      }).catch(function (err) {
+        if (myGen !== renderGen) return;
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+    // The Files object page (#/fs/files): the folder roots + loose files.
+    function renderFilesRootView(content) {
+      var myGen = renderGen;
+      if (typeof setTabTitle === 'function') setTabTitle(tabKeyForHash(location.hash), 'Files');
+      Promise.all([
+        fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
+        fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
+      ]).then(function (res) {
+        if (myGen !== renderGen) return;
+        var roots = (res[0] && res[0].roots) || [];
+        var rows = ((res[1] && res[1].rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; });
+        var folderPaths = roots.filter(function (r) { return r.kind === 'folder'; }).map(function (r) { return r.path; });
+        var entries = [];
+        roots.forEach(function (r) { if (r.kind === 'folder') entries.push({ kind: 'folder', path: r.path, name: r.name || fsBasename(r.path) }); });
+        rows.forEach(function (r) {
+          var under = r.ref_uri && folderPaths.some(function (p) { return r.ref_uri === p || r.ref_uri.indexOf(p + '/') === 0; });
+          if (!under) entries.push({ kind: 'file', path: r.ref_uri || '', name: r.name || r.original_name || 'Untitled', id: r.id });
+        });
+        var d = displayFor('files');
+        var header = fsBreadcrumb(['files'], []) +
+          '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1>' +
+          '<span class="count">' + entries.length + ' item' + (entries.length === 1 ? '' : 's') + '</span>' +
+          '<div class="actions"><button class="btn" id="fsg-view-list" type="button">List view</button></div></div>';
+        paintFolderGraph(content, header, 'Files', entries, {}, 'No files yet. Add a folder or file from the sidebar.', true);
+      }).catch(function (err) {
+        if (myGen !== renderGen) return;
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
 
@@ -1461,6 +1608,16 @@ export const dashboardJs = `    // ───────────────
       if (mode === 'display') renderFilePreview(row);
       else if (mode === 'history') loadFileHistoryInto(content, id);
       wireFsDocToolbar(content, segs, id, row);
+      // Upgrade the breadcrumb to the file's FOLDER path (Home ▸ Files ▸ Downloads
+      // ▸ <file>) when it lives under a registered folder root.
+      if (row.ref_uri) {
+        var crumbGen = renderGen;
+        fetchJson('/api/sources/roots').then(function (data) {
+          if (crumbGen !== renderGen) return;
+          var nav = content.querySelector('.fs-crumbs');
+          if (nav) nav.outerHTML = folderBreadcrumb(fsDirname(row.ref_uri), (data && data.roots) || [], fsDisplayName(row) || d.label);
+        }).catch(function () { /* keep the default breadcrumb */ });
+      }
     }
 
     // The body for the current view mode (display | source | history).

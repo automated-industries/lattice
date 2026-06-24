@@ -50,6 +50,10 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       }
       if (hash === '#/dashboard') { renderDashboard(content); return; }
 
+      // Folder drill-in (the Files object's on-disk hierarchy): #/folder/<abs path>.
+      var folm = /^#\\/folder\\/(.+)$/.exec(hash);
+      if (folm) { renderFolderView(content, decodeURIComponent(folm[1])); return; }
+
       // File-system workspace (default mode): #/fs/<table>[/<id>/<rel>/<id>…].
       // Even segment count → item view; odd → folder/collection view.
       var fsegs = fsParse(hash);
