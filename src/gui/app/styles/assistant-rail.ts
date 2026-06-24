@@ -27,6 +27,27 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       box-shadow: 0 0 8px rgba(190, 242, 100, 0.5);
       transition: width 0.3s ease;
     }
+    /* Staging tray — dropped/picked files awaiting review before ingest. */
+    .staging-tray {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 10px; margin: 4px 0; border-radius: 10px;
+      background: var(--surface); border: 1px solid rgba(190, 242, 100, 0.28);
+      box-shadow: var(--shadow-1), var(--glow-accent-soft);
+    }
+    .staging-head { font-size: 12px; font-weight: 600; color: var(--text); }
+    .staging-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .staging-file { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .staging-file-ic { flex: none; }
+    .staging-file-name {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
+    }
+    .staging-file-x {
+      flex: none; background: none; border: 0; color: var(--text-muted);
+      cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+    }
+    .staging-file-x:hover { background: var(--surface-2); color: var(--danger, #c0392b); }
+    .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
+    .staging-send { flex: 1; }
     .assistant-rail {
       position: relative;
       background:

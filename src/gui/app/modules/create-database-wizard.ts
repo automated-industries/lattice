@@ -151,6 +151,71 @@ export const createDatabaseWizardJs = `    // ───────────�
       }
       runIngestBatch(thunks, INGEST_MAX_CONCURRENCY, bar.update).then(bar.done);
     }
+    // ── Staging tray ────────────────────────────────────────────────────────
+    // A dropped file (or one picked via the paperclip) is NOT ingested on the
+    // spot — it's staged in a tray the user reviews first: "Send" ingests the
+    // batch (→ uploadFiles), "✕" drops one file, "Cancel" discards all. Multiple
+    // drops accumulate into the one tray (deduped by name+size).
+    var stagedFiles = [];
+    function removeStagingTray() {
+      var el = document.getElementById('staging-tray');
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    }
+    function clearStaging() { stagedFiles = []; removeStagingTray(); }
+    function sendStaged() {
+      if (!stagedFiles.length) return;
+      var batch = stagedFiles.slice();
+      clearStaging();
+      uploadFiles(batch); // the actual ingest (pending bubbles + graph animation)
+    }
+    function stageFiles(fileList) {
+      if (!fileList || !fileList.length) return;
+      for (var i = 0; i < fileList.length; i++) {
+        var f = fileList[i];
+        var dup = stagedFiles.some(function (s) { return s.name === f.name && s.size === f.size; });
+        if (!dup) stagedFiles.push(f);
+      }
+      renderStagingTray();
+    }
+    function renderStagingTray() {
+      removeStagingTray();
+      if (!stagedFiles.length) return;
+      var feedEl = document.getElementById('rail-feed');
+      if (!feedEl) return;
+      railEmptyGone();
+      var n = stagedFiles.length;
+      var rows = stagedFiles.map(function (f, idx) {
+        return '<li class="staging-file">' +
+          '<span class="staging-file-ic">📄</span>' +
+          '<span class="staging-file-name">' + escapeHtml(f.name || 'file') + '</span>' +
+          '<button class="staging-file-x" data-idx="' + idx + '" type="button" title="Remove" aria-label="Remove">✕</button>' +
+        '</li>';
+      }).join('');
+      var tray = document.createElement('div');
+      tray.className = 'staging-tray';
+      tray.id = 'staging-tray';
+      tray.innerHTML =
+        '<div class="staging-head">' + n + (n === 1 ? ' file to add' : ' files to add') + '</div>' +
+        '<ul class="staging-list">' + rows + '</ul>' +
+        '<div class="staging-actions">' +
+          '<button class="btn primary staging-send" type="button">Send</button>' +
+          '<button class="btn staging-cancel" type="button">Cancel</button>' +
+        '</div>';
+      // Same bottom-pin rule as the pending cards: don't bury a streaming turn.
+      var anchor = feedTypingAnchor(feedEl);
+      if (anchor) feedEl.insertBefore(tray, anchor); else feedEl.appendChild(tray);
+      feedEl.scrollTop = feedEl.scrollHeight;
+      tray.querySelectorAll('.staging-file-x').forEach(function (b) {
+        b.addEventListener('click', function () {
+          stagedFiles.splice(Number(b.getAttribute('data-idx')), 1);
+          renderStagingTray();
+        });
+      });
+      var send = tray.querySelector('.staging-send');
+      if (send) send.addEventListener('click', sendStaged);
+      var cancel = tray.querySelector('.staging-cancel');
+      if (cancel) cancel.addEventListener('click', clearStaging);
+    }
     // Mobile: tapping the handle expands/collapses the bottom drawer.
     function initRailDrawer() {
       var handle = document.getElementById('rail-handle');
@@ -183,7 +248,8 @@ export const createDatabaseWizardJs = `    // ───────────�
       rail.addEventListener('drop', function (e) {
         e.preventDefault();
         clearOverlay();
-        if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+        // Stage the dropped files for review (Send / ✕) rather than ingesting now.
+        if (e.dataTransfer && e.dataTransfer.files) stageFiles(e.dataTransfer.files);
       });
       // Backstops: a drag cancelled outside the window, or a drop anywhere, must
       // clear the overlay — the per-element dragleave can miss those exits.
@@ -253,7 +319,7 @@ export const createDatabaseWizardJs = `    // ───────────�
           var fileInput = document.getElementById('chat-file');
           if (clipBtn && fileInput) {
             clipBtn.addEventListener('click', function () { fileInput.click(); });
-            fileInput.addEventListener('change', function () { uploadFiles(fileInput.files); fileInput.value = ''; });
+            fileInput.addEventListener('change', function () { stageFiles(fileInput.files); fileInput.value = ''; });
           }
           // Grow the textarea to fit its content (wrapped lines included), capped
           // so it never swallows the feed. Recompute on input AND whenever the

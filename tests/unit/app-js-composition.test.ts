@@ -30,8 +30,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // status, live ingest animation, file two-view/history/remove), plus 4.2.4's
 // desktop build + the shared `claudeAuth()` single-source-of-truth pass merged
 // from main. Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 741646;
-const ORIGINAL_SHA256 = '550f77dbb1ff7d9bbe69e626e7a0562595ed9e2bfb24ec406af662b117e6ad66';
+const ORIGINAL_LENGTH = 757080;
+const ORIGINAL_SHA256 = '6e309f3cbdbc378c8b3e3acf78a53cc20327965febdd4479e81be87783f274d6';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

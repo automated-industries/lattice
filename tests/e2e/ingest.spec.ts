@@ -9,9 +9,21 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('dropping a file on the rail shows an "Analyzing…" indicator while ingesting', async ({
-  page,
-}) => {
+// Dispatch a synthetic file drop on the rail (browsers block real paths).
+async function dropFiles(page: import('@playwright/test').Page, names: string[]) {
+  await page.evaluate((fileNames) => {
+    const rail = document.getElementById('assistant-rail')!;
+    const dt = new DataTransfer();
+    for (const name of fileNames) {
+      dt.items.add(new File(['hello ' + name], name, { type: 'text/markdown' }));
+    }
+    rail.dispatchEvent(
+      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }),
+    );
+  }, names);
+}
+
+test('dropping a file stages it for review, then Send ingests it', async ({ page }) => {
   // Delay the ingest response so the transient pending row is observable.
   await page.route('**/api/ingest/upload', async (route) => {
     await new Promise((r) => setTimeout(r, 600));
@@ -25,17 +37,16 @@ test('dropping a file on the rail shows an "Analyzing…" indicator while ingest
   await page.goto(gui.url);
   await expect(page.locator('#assistant-rail')).toBeVisible();
 
-  // Dispatch a synthetic file drop on the rail (browsers block real paths).
-  await page.evaluate(() => {
-    const rail = document.getElementById('assistant-rail')!;
-    const dt = new DataTransfer();
-    dt.items.add(new File(['hello ingest'], 'memo.md', { type: 'text/markdown' }));
-    rail.dispatchEvent(
-      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }),
-    );
-  });
+  await dropFiles(page, ['memo.md']);
 
-  // The "Analyzing memo.md…" row appears while the request is in flight…
+  // The file is STAGED (listed in the tray), not ingested immediately.
+  await expect(page.locator('.staging-tray')).toBeVisible();
+  await expect(page.locator('.staging-file-name')).toContainText('memo.md');
+  await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0);
+
+  // Send → the "Analyzing memo.md…" row appears while the request is in flight…
+  await page.locator('.staging-send').click();
+  await expect(page.locator('.staging-tray')).toHaveCount(0);
   const pending = page.locator('.feed-item.feed-pending');
   await expect(pending).toHaveCount(1);
   await expect(pending).toContainText('Analyzing memo.md');
@@ -44,9 +55,36 @@ test('dropping a file on the rail shows an "Analyzing…" indicator while ingest
   await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0, { timeout: 5000 });
 });
 
-test('a multi-file drop caps concurrent uploads and shows batch progress', async ({ page }) => {
+test('the staging tray supports removing a file and cancelling without ingesting', async ({
+  page,
+}) => {
+  let ingestCalls = 0;
+  await page.route('**/api/ingest/upload', async (route) => {
+    ingestCalls++;
+    await route.fulfill({ status: 201, contentType: 'application/json', body: '{"id":"x"}' });
+  });
+
+  await page.goto(gui.url);
+  await expect(page.locator('#assistant-rail')).toBeVisible();
+
+  await dropFiles(page, ['a.md', 'b.md']);
+  await expect(page.locator('.staging-file')).toHaveCount(2);
+
+  // Remove one → the tray now lists a single file.
+  await page.locator('.staging-file-x').first().click();
+  await expect(page.locator('.staging-file')).toHaveCount(1);
+
+  // Cancel → the tray disappears and NOTHING was ingested.
+  await page.locator('.staging-cancel').click();
+  await expect(page.locator('.staging-tray')).toHaveCount(0);
+  expect(ingestCalls).toBe(0);
+});
+
+test('a multi-file drop stages all, and Send caps concurrent uploads with batch progress', async ({
+  page,
+}) => {
   // Track how many ingest requests are in flight at once. The fix's whole point
-  // is that a bulk drop must NOT saturate the browser's ~6-per-host HTTP/1.1
+  // is that a bulk send must NOT saturate the browser's ~6-per-host HTTP/1.1
   // budget (which would freeze the rest of the GUI), so the in-flight count
   // must never exceed the client concurrency cap.
   let inFlight = 0;
@@ -70,16 +108,16 @@ test('a multi-file drop caps concurrent uploads and shows batch progress', async
   await expect(page.locator('#assistant-rail')).toBeVisible();
 
   const FILE_COUNT = 7;
-  await page.evaluate((n) => {
-    const rail = document.getElementById('assistant-rail')!;
-    const dt = new DataTransfer();
-    for (let i = 0; i < n; i++) {
-      dt.items.add(new File(['hello ' + i], 'doc-' + i + '.md', { type: 'text/markdown' }));
-    }
-    rail.dispatchEvent(
-      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }),
-    );
-  }, FILE_COUNT);
+  await dropFiles(
+    page,
+    Array.from({ length: FILE_COUNT }, (_, i) => 'doc-' + i + '.md'),
+  );
+
+  // All files are staged; nothing ingests until Send.
+  await expect(page.locator('.staging-file')).toHaveCount(FILE_COUNT);
+  await expect(page.locator('.ingest-progress')).toHaveCount(0);
+
+  await page.locator('.staging-send').click();
 
   // The batch progress bar appears while the queue drains…
   const bar = page.locator('.ingest-progress');
