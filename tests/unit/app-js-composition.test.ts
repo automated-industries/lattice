@@ -32,8 +32,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // network (CSP connect-src 'none'); a parent-side read-only postMessage broker
 // mediates all data reads, and an injected `window.lattice` bridge is how an
 // authored page asks for them. Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 726645;
-const ORIGINAL_SHA256 = 'a975a8215949294b9a2113455e3920d98654316f95dc8e9989b12e51e576cee4';
+const ORIGINAL_LENGTH = 731405;
+const ORIGINAL_SHA256 = '3b550484f85d2ee37512afa37bd73d25ca0e9c57c840c5f7a73a4ae69b4de4ba';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

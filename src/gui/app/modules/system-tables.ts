@@ -5,6 +5,9 @@ export const systemTablesJs = `    // ──────────────
     // (row-level link/unlink lives on the row detail page now)
     // ────────────────────────────────────────────────────────────
     var dmActiveTable = null;
+    // The last rendered brain-graph model, so the ingest animation can diff the
+    // delta (new nodes/edges) and seed their start positions from the prior layout.
+    var graphModelCache = null;
 
     /** Columns that are structurally part of every entity and shouldn't be
      * renamed or removed from the GUI. id is the primary key; deleted_at is
@@ -109,6 +112,7 @@ export const systemTablesJs = `    // ──────────────
         forceLayout(model.nodes, model.links);
         mount.innerHTML = schemaGraphSvg(model);
         wireSchemaGraph(mount, model);
+        graphModelCache = model; // seed the delta baseline for the ingest animation
         if (dmActiveTable) {
           dmShowEntityEditor(dmActiveTable);
           highlightGraphNode(dmActiveTable);
@@ -167,7 +171,7 @@ export const systemTablesJs = `    // ──────────────
     // A small deterministic force simulation: ~500 settle ticks of pairwise
     // repulsion + link springs + center gravity. O(n²) repulsion is fine for
     // schema-scale graphs (tens of tables).
-    function forceLayout(nodes, links) {
+    function forceLayout(nodes, links, iters) {
       var n = nodes.length;
       var W = 1000, H = 700, cx = W / 2, cy = H / 2;
       var ringR = Math.min(W, H) * 0.32;
@@ -178,7 +182,8 @@ export const systemTablesJs = `    // ──────────────
         nodes[i].vx = 0; nodes[i].vy = 0;
       }
       var REPULSION = 9000, SPRING_LEN = 140, SPRING_K = 0.02, GRAVITY = 0.012, DAMP = 0.85;
-      for (var it = 0; it < 500; it++) {
+      var ticks = iters || 500;
+      for (var it = 0; it < ticks; it++) {
         for (var p = 0; p < n; p++) {
           for (var q = p + 1; q < n; q++) {
             var dx = nodes[p].x - nodes[q].x, dy = nodes[p].y - nodes[q].y;

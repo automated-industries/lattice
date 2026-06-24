@@ -100,6 +100,13 @@ The desktop/web GUI is reorganized around the data graph.
   resumes when a higher one clears. An ingest burst surfaces an "Ingesting…"
   status. The cloud-connection dot stays in the workspace switcher; per-card
   render bars stay.
+- **Live brain-graph ingestion animation.** While the graph is the visible view,
+  ingesting files animates the result in place: new object nodes bubble in and new
+  edges draw, live, with no reload. The animation re-fetches the authoritative
+  graph, seeds existing node positions from the prior layout + runs a short relax
+  (so settled nodes barely move), and animates only the delta (capped, with a
+  whole-stage fade above the cap; honors `prefers-reduced-motion`). A background
+  refresh no longer rebuilds the graph out from under the animation.
 
 ### Added — Inline HTML files
 

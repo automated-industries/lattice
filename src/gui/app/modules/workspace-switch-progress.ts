@@ -42,7 +42,12 @@ export const workspaceSwitchProgressJs = `    // ──────────�
 
       // The brain graph is the default + permanent view; the dashboard moves to
       // its own reachable route.
-      if (hash === '#/' || hash === '' || hash === '#/graph') { renderBrainGraph(content); return; }
+      if (hash === '#/' || hash === '' || hash === '#/graph') {
+        // A soft (background) refresh must NOT rebuild the graph — the ingest
+        // animation owns in-place graph updates, and a rebuild here would wipe it.
+        if (!soft) renderBrainGraph(content);
+        return;
+      }
       if (hash === '#/dashboard') { renderDashboard(content); return; }
 
       // File-system workspace (default mode): #/fs/<table>[/<id>/<rel>/<id>…].

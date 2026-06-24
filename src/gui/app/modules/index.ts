@@ -25,6 +25,7 @@ import { detailViewJs } from './detail-view.js';
 import { markdownJs } from './markdown.js';
 import { settingsDrawerJs } from './settings-drawer.js';
 import { systemTablesJs } from './system-tables.js';
+import { graphIngestAnimationJs } from './graph-ingest-animation.js';
 import { versionHistoryPageJs } from './version-history-page.js';
 import { rowContextJs } from './row-context.js';
 import { dataModelJs } from './data-model.js';
@@ -66,6 +67,7 @@ export const appJs = [
   markdownJs,
   settingsDrawerJs,
   systemTablesJs,
+  graphIngestAnimationJs,
   versionHistoryPageJs,
   rowContextJs,
   dataModelJs,
