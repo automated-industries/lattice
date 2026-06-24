@@ -218,7 +218,7 @@ export const createDatabaseWizardJs = `    // ───────────�
     function renderComposer() {
       var host = document.getElementById('rail-composer'); if (!host) return;
       fetchJson('/api/assistant/config').then(function (cfg) {
-        if (cfg && cfg.hasClaudeAuth) {
+        if (claudeAuth(cfg).any) {
           var micHtml = cfg.hasVoiceKey
             ? '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>'
             : '';

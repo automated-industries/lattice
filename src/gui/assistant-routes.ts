@@ -306,18 +306,13 @@ export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth 
   return apiKey ? { apiKey } : null;
 }
 
-/** Whether any Claude auth (subscription OR API key) is configured. */
-export async function hasClaudeAuth(db: Lattice | null): Promise<boolean> {
-  return (
-    Boolean(await readMachineCredential(db, CLAUDE_OAUTH_KIND)) ||
-    (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY'))
-  );
-}
-
 /**
- * Which kind of Claude auth is active — so the GUI can show "Connected with
- * Claude" vs "API key set". A connected subscription wins (it's what
- * resolveClaudeAuth prefers).
+ * Which kind of Claude auth is active — the SINGLE source of truth for the
+ * assistant's connection state. The GUI derives everything from this (one
+ * client helper, `claudeAuth(cfg)`): a connected subscription ('oauth') shows
+ * "Connected with Claude"; a pasted API key ('key') is the API-key path; null
+ * is not-connected. A connected subscription wins (resolveClaudeAuth prefers
+ * it). Do NOT add a second "has any auth" flag — it is exactly `kind !== null`.
  */
 export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | 'key' | null> {
   if (await readMachineCredential(db, CLAUDE_OAUTH_KIND)) return 'oauth';
@@ -371,7 +366,6 @@ export async function dispatchAssistantRoute(
       hasAnthropicKey,
       hasOpenaiKey,
       hasElevenlabsKey,
-      hasClaudeAuth: await hasClaudeAuth(db),
       claudeAuthKind: await claudeAuthKind(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
