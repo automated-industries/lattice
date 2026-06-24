@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
@@ -115,6 +115,36 @@ export function getOrCreateMasterKey(): string {
     const key = randomBytes(32).toString('base64');
     writeFileAtomic(keyPath, key);
     return key;
+  });
+}
+
+const ANALYTICS_ID_FILENAME = 'analytics-id';
+
+/**
+ * A stable, machine-local, ANONYMIZED analytics client id (a random UUID, no
+ * PII). It exists only so Google Analytics can collapse one machine's reloads
+ * and relaunches into a SINGLE client, instead of counting every session as a
+ * brand-new user — the embedded desktop webview does not reliably persist gtag's
+ * own client-id cookie, so without a server-pinned id the active-user count
+ * inflates to ~one-per-session. Generated once, then reused forever.
+ */
+export function getOrCreateAnalyticsId(): string {
+  const dir = ensureConfigDir();
+  const idPath = join(dir, ANALYTICS_ID_FILENAME);
+  if (existsSync(idPath)) {
+    const v = readFileSync(idPath, 'utf8').trim();
+    if (v) return v;
+  }
+  // Create under the cross-process lock with a re-check, so two fresh processes
+  // don't write divergent ids (mirrors getOrCreateMasterKey).
+  return withCredentialLock(() => {
+    if (existsSync(idPath)) {
+      const v = readFileSync(idPath, 'utf8').trim();
+      if (v) return v;
+    }
+    const id = randomUUID();
+    writeFileAtomic(idPath, id);
+    return id;
   });
 }
 

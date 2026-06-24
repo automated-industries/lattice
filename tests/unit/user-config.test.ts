@@ -11,6 +11,7 @@ import {
   deleteDbCredential,
   deleteToken,
   getDbCredential,
+  getOrCreateAnalyticsId,
   getOrCreateMasterKey,
   listDbCredentials,
   listTokens,
@@ -41,6 +42,19 @@ describe('framework user-config', () => {
     if (savedEnv.LATTICE_ENCRYPTION_KEY === undefined) delete process.env.LATTICE_ENCRYPTION_KEY;
     else process.env.LATTICE_ENCRYPTION_KEY = savedEnv.LATTICE_ENCRYPTION_KEY;
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  describe('analytics client id', () => {
+    it('generates a stable anonymized id, persists it, and reuses it across calls', () => {
+      const first = getOrCreateAnalyticsId();
+      // Looks like a UUID, contains no PII.
+      expect(first).toMatch(/^[0-9a-f-]{36}$/);
+      // Persisted to disk + reused (one machine = one id forever).
+      expect(existsSync(join(tmpDir, 'analytics-id'))).toBe(true);
+      expect(getOrCreateAnalyticsId()).toBe(first);
+      // The on-disk value IS the returned id.
+      expect(readFileSync(join(tmpDir, 'analytics-id'), 'utf8').trim()).toBe(first);
+    });
   });
 
   describe('configDir() + master key', () => {

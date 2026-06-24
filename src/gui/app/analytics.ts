@@ -15,6 +15,7 @@ export const analyticsJs = `
   var DISABLE_FLAG = 'ga-disable-' + MEASUREMENT_ID;
   var loaded = false;
   var consent = false;
+  var pinnedClientId = null;
 
   window.dataLayer = window.dataLayer || [];
   function gtag() { window.dataLayer.push(arguments); }
@@ -25,6 +26,29 @@ export const analyticsJs = `
   }
 
   // Inject gtag.js exactly once, and only when called (i.e. only with consent).
+  // A STABLE client_id so one machine's reloads/relaunches count as a single
+  // user. Prefer the server-pinned anonymized id (persists on disk — survives the
+  // webview clearing its storage); fall back to a localStorage UUID. Without it
+  // the embedded webview drops gtag's own client-id cookie between sessions and
+  // every visit looks like a brand-new user (active users ≈ sessions).
+  function stableClientId() {
+    if (pinnedClientId) return pinnedClientId;
+    try {
+      var k = 'lattice:ga_cid';
+      var v = window.localStorage.getItem(k);
+      if (!v) {
+        v =
+          window.crypto && window.crypto.randomUUID
+            ? window.crypto.randomUUID()
+            : String(Date.now()) + '.' + Math.floor(Math.random() * 1e9);
+        window.localStorage.setItem(k, v);
+      }
+      return v;
+    } catch (_) {
+      return null; // storage blocked → let gtag manage its own (best-effort)
+    }
+  }
+
   function load() {
     if (loaded) return;
     loaded = true;
@@ -33,12 +57,15 @@ export const analyticsJs = `
     s.src = 'https://www.googletagmanager.com/gtag/js?id=' + MEASUREMENT_ID;
     document.head.appendChild(s);
     gtag('js', new Date());
-    gtag('config', MEASUREMENT_ID, {
+    var cfg = {
       send_page_view: false,
       allow_google_signals: false,
       allow_ad_personalization_signals: false,
       anonymize_ip: true,
-    });
+    };
+    var cid = stableClientId();
+    if (cid) cfg.client_id = cid;
+    gtag('config', MEASUREMENT_ID, cfg);
   }
 
   // Allow only a small, safe set of value types. Strings must be short enum-like
@@ -60,8 +87,9 @@ export const analyticsJs = `
     MEASUREMENT_ID: MEASUREMENT_ID,
     // Called once at boot with the resolved consent. Loads gtag.js only if
     // consented (and DNT off); otherwise no network contact happens at all.
-    init: function (enabled) {
+    init: function (enabled, clientId) {
       consent = !!enabled;
+      if (clientId && typeof clientId === 'string') pinnedClientId = clientId;
       window[DISABLE_FLAG] = !consent;
       if (consent && !doNotTrack()) load();
     },
