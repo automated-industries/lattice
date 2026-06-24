@@ -4,9 +4,11 @@ import { connectorsSettingsJs } from '../../src/gui/app/modules/connectors-setti
 import { appJs } from '../../src/gui/app/script.js';
 
 /**
- * 4.3 — the Connectors settings panel (client). Executed in a jsdom window with
- * stubbed fetchJson/fetch so we assert the REAL rendered DOM + that the buttons
- * call the right endpoints — the part that can't be checked from the server side.
+ * 4.3 — the data-driven Connectors panel (client), rendered into the left-sliding
+ * "Add a Connector" dialog. Executed in a jsdom window with stubbed fetchJson/fetch
+ * so we assert the REAL rendered DOM (cards built from each toolkit's declared
+ * fields) + that the buttons call the right endpoints — the part that can't be
+ * checked server-side.
  */
 
 interface FetchCall {
@@ -14,6 +16,19 @@ interface FetchCall {
   method: string;
   body?: string;
 }
+
+// A toolkit descriptor as GET /api/connectors now returns it (presentation + fields).
+const JIRA_TK = {
+  toolkit: 'jira',
+  label: 'Jira',
+  icon: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+  credentialFields: [
+    { key: 'site', label: 'Site URL', type: 'text', placeholder: 'https://your.atlassian.net' },
+    { key: 'email', label: 'Email', type: 'text' },
+    { key: 'token', label: 'API token', type: 'password' },
+  ],
+  helpUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
+};
 
 function loadPanel(data: unknown, calls: FetchCall[]): (host: HTMLElement) => void {
   const w = globalThis as unknown as Record<string, unknown>;
@@ -41,16 +56,17 @@ describe('connectors panel (jsdom)', () => {
     document.body.appendChild(host);
   });
 
-  it('renders the Jira credential form when not connected', async () => {
-    const render = loadPanel({ toolkits: ['jira'], connectors: [] }, []);
+  it('renders a data-driven credential form from the toolkit fields when not connected', async () => {
+    const render = loadPanel({ toolkits: [JIRA_TK], connectors: [] }, []);
     render(host);
     await flush();
-    expect(host.innerHTML).toContain('Connectors');
     expect(host.innerHTML).toContain('Jira');
-    // The credential fields + Connect button are present.
-    expect(host.querySelector('#jira-site')).toBeTruthy();
-    expect(host.querySelector('#jira-email')).toBeTruthy();
-    expect(host.querySelector('#jira-token')).toBeTruthy();
+    // One input per declared credential field, id'd as cred-<toolkit>-<key>.
+    expect(host.querySelector('#cred-jira-site')).toBeTruthy();
+    expect(host.querySelector('#cred-jira-email')).toBeTruthy();
+    expect(host.querySelector('#cred-jira-token')).toBeTruthy();
+    // The logo renders from the toolkit's icon.
+    expect(host.querySelector('img.connector-icon')).toBeTruthy();
     const connect = host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!;
     expect(connect).toBeTruthy();
     expect(connect.disabled).toBe(false);
@@ -59,7 +75,7 @@ describe('connectors panel (jsdom)', () => {
   it('shows Refresh + Disconnect + status for a connected toolkit', async () => {
     const render = loadPanel(
       {
-        toolkits: ['jira'],
+        toolkits: [JIRA_TK],
         connectors: [
           { id: 'c1', toolkit: 'jira', status: 'connected', lastSyncAt: '2026-06-23T00:00:00Z' },
         ],
@@ -73,18 +89,18 @@ describe('connectors panel (jsdom)', () => {
     expect(host.querySelector('button[data-act="refresh"]')).toBeTruthy();
     expect(host.querySelector('button[data-act="disconnect"]')).toBeTruthy();
     // No credential form once connected.
-    expect(host.querySelector('#jira-token')).toBeNull();
+    expect(host.querySelector('#cred-jira-token')).toBeNull();
   });
 
   it('Connect posts the entered credentials to the connect endpoint', async () => {
     const calls: FetchCall[] = [];
-    const render = loadPanel({ toolkits: ['jira'], connectors: [] }, calls);
+    const render = loadPanel({ toolkits: [JIRA_TK], connectors: [] }, calls);
     render(host);
     await flush();
 
-    host.querySelector<HTMLInputElement>('#jira-site')!.value = 'https://x.atlassian.net';
-    host.querySelector<HTMLInputElement>('#jira-email')!.value = 'a@x.com';
-    host.querySelector<HTMLInputElement>('#jira-token')!.value = 'sk-test';
+    host.querySelector<HTMLInputElement>('#cred-jira-site')!.value = 'https://x.atlassian.net';
+    host.querySelector<HTMLInputElement>('#cred-jira-email')!.value = 'a@x.com';
+    host.querySelector<HTMLInputElement>('#cred-jira-token')!.value = 'sk-test';
     host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!.click();
     await flush();
 
@@ -97,7 +113,7 @@ describe('connectors panel (jsdom)', () => {
   it('Refresh hits the refresh endpoint', async () => {
     const calls: FetchCall[] = [];
     const render = loadPanel(
-      { toolkits: ['jira'], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
+      { toolkits: [JIRA_TK], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
       calls,
     );
     render(host);
@@ -112,7 +128,7 @@ describe('connectors panel (jsdom)', () => {
   it('Disconnect hits the DELETE endpoint', async () => {
     const calls: FetchCall[] = [];
     const render = loadPanel(
-      { toolkits: ['jira'], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
+      { toolkits: [JIRA_TK], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
       calls,
     );
     render(host);
@@ -124,10 +140,13 @@ describe('connectors panel (jsdom)', () => {
 });
 
 describe('connectors panel wiring (structural + parse-safety)', () => {
-  it('is composed into appJs and wired to the drawer + sidebar', () => {
+  it('is composed into appJs and wired to the left-sliding dialog (not the drawer)', () => {
     expect(appJs).toContain('function renderConnectorsPanel(host)');
-    expect(appJs).toContain("else if (tab === 'connectors') renderConnectorsPanel(body)");
-    expect(appJs).toContain('Connected — synced from'); // sidebar badge
+    expect(appJs).toContain('function openConnectorsDialog()');
+    // The connectors panel no longer lives in the Settings drawer.
+    expect(appJs).not.toContain("tab === 'connectors'");
+    // The sidebar's "Add a Connector" opens the dialog.
+    expect(appJs).toContain('openConnectorsDialog()');
   });
 
   it('the composed client script is syntactically valid (no broken template)', () => {

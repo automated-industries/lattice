@@ -1483,6 +1483,22 @@ export const dashboardJs = `    // ───────────────
       return '<div class="file-preview" id="file-preview"></div>';
     }
 
+    // ONE document-level outside-click closer for the file-actions menu. The menu
+    // + button are re-created with stable ids on every renderFsDocItem, so a
+    // per-render listener would leak (stale closures accumulating on document and
+    // firing on every click). Registered exactly once; reads the current nodes by id.
+    var fileMenuDocWired = false;
+    function wireFileMenuGlobal() {
+      if (fileMenuDocWired) return;
+      fileMenuDocWired = true;
+      document.addEventListener('click', function (e) {
+        var menu = document.getElementById('file-menu');
+        var btn = document.getElementById('file-menu-btn');
+        if (!menu || menu.hidden) return;
+        if ((btn && btn.contains(e.target)) || menu.contains(e.target)) return;
+        menu.hidden = true; if (btn) btn.setAttribute('aria-expanded', 'false');
+      });
+    }
     function wireFsDocToolbar(content, segs, id, row) {
       var btn = content.querySelector('#file-menu-btn');
       var menu = content.querySelector('#file-menu');
@@ -1493,10 +1509,7 @@ export const dashboardJs = `    // ───────────────
           menu.hidden = !willShow;
           btn.setAttribute('aria-expanded', willShow ? 'true' : 'false');
         });
-        // Click elsewhere closes the menu.
-        document.addEventListener('click', function () {
-          if (!menu.hidden) { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
-        });
+        wireFileMenuGlobal();
       }
       content.querySelectorAll('.file-menu-item').forEach(function (it) {
         it.addEventListener('click', function (e) {
