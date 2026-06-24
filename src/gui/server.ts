@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dirname, resolve } from 'node:path';
 import { sendJson, readJson } from './http.js';
@@ -102,6 +103,16 @@ export interface StartGuiServerOptions {
    */
   version?: string;
   /**
+   * Absolute path to the built `dist/gui-assets/` directory (the on-device voice
+   * worker + ONNX-Runtime WASM), served read-only at `GET /gui-assets/*`. Passed
+   * by `cli.ts` (resolved against the package via `import.meta.url`, like
+   * `version`) because server.ts is bundled to both CJS and ESM — reading the
+   * path via `import.meta.url` here would break the CJS bundle. Omitted ⇒ a
+   * best-effort default (sibling of the running CLI bundle, else `<cwd>/dist/
+   * gui-assets`), so source/dev/test runs still serve the assets when present.
+   */
+  guiAssetsDir?: string;
+  /**
    * Realtime backstop liveness-poll interval (ms) for the RealtimeBroker. A
    * managed-Postgres proxy (e.g. AWS RDS Proxy) can silently drop the LISTEN
    * without closing the socket; the poll re-delivers missed changes regardless.
@@ -148,6 +159,20 @@ export interface GuiServerHandle {
    * resolves immediately for a non-cloud / virgin workspace.
    */
   whenConverged: () => Promise<void>;
+}
+
+/**
+ * Best-effort default for the vendored GUI assets dir when the caller didn't pass
+ * one. Used by dev/source/test runs (the CLI passes an explicit path resolved
+ * against the package). Prefer a `gui-assets` sibling of the running bundle
+ * (published layout: `dist/cli.js` + `dist/gui-assets/`), else `<cwd>/dist/
+ * gui-assets` (source/test runs from the repo root). Returns the first that
+ * exists, else the cwd guess — the route 404s when it's wrong, never crashes.
+ */
+function resolveDefaultGuiAssetsDir(): string {
+  const bundleSibling = process.argv[1] ? resolve(dirname(process.argv[1]), 'gui-assets') : null;
+  if (bundleSibling && existsSync(bundleSibling)) return bundleSibling;
+  return resolve(process.cwd(), 'dist', 'gui-assets');
 }
 
 function sendText(
@@ -249,6 +274,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
+  // Where the vendored GUI assets (on-device voice worker + ORT WASM) live. The
+  // CLI passes this resolved against the package (it knows the package root via
+  // import.meta.url). When omitted (dev/source/test runs), fall back to a sibling
+  // of the running bundle, else `<cwd>/dist/gui-assets`. The route 404s if the dir
+  // is absent (fail-soft asset build skipped), so a wrong guess just hides voice —
+  // never crashes.
+  const guiAssetsDir = options.guiAssetsDir ?? resolveDefaultGuiAssetsDir();
   const desktopOpenExternal = options.desktopOpenExternal;
   // One id per GUI server process. Stamped on every audit entry so the header
   // undo/redo stack is scoped to THIS session's own actions (you undo what you
@@ -495,7 +527,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // Process-constant dependencies for the extracted read-route dispatcher
   // (host/guiVersion/guiAppHtml/sendText never change for the server's life),
   // built once here rather than per request.
-  const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText };
+  const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText, guiAssetsDir };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };

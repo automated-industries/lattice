@@ -429,9 +429,16 @@ export const dataModelJs = `    // ───────────────
             '</div>' +
           '</div>';
         }
-        // Only the selected provider's key input is shown (declutter). 'auto'
-        // ("No Voice") shows no key row and disables voice — no STT provider.
+        // Only the selected provider's key input is shown (declutter). 'local'
+        // (on-device) shows a short note + no key field; 'auto' ("Off") shows
+        // nothing and disables voice. Cloud providers show their key row.
         function voiceRowHtml(provider) {
+          if (provider === 'local') {
+            return '<p class="lead" style="margin:2px 0 0;font-size:12px;color:var(--text-muted)">' +
+              'Runs in your browser — no API key, and your voice never leaves this machine. ' +
+              'The first use downloads a small speech model once (then it works offline).' +
+              '</p>';
+          }
           if (provider === 'openai') {
             return rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…');
           }
@@ -496,12 +503,13 @@ export const dataModelJs = `    // ───────────────
             '<div style="margin:6px 0 8px;display:flex;align-items:center;gap:8px">' +
               '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
               '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
-                '<option value="auto">No Voice</option>' +
+                '<option value="local">On-device (private)</option>' +
                 '<option value="openai">OpenAI</option>' +
                 '<option value="elevenlabs">ElevenLabs</option>' +
+                '<option value="auto">Off</option>' +
               '</select>' +
             '</div>' +
-            '<div id="asst-voice-key">' + voiceRowHtml(cfg.sttPreference || 'auto') + '</div>' +
+            '<div id="asst-voice-key">' + voiceRowHtml(cfg.sttPreference || 'local') + '</div>' +
             '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
@@ -565,7 +573,7 @@ export const dataModelJs = `    // ───────────────
           else if (provider === 'elevenlabs') wire('asst-elevenlabs', 'elevenlabs');
         }
         if (sttSel) {
-          sttSel.value = cfg.sttPreference || 'auto';
+          sttSel.value = cfg.sttPreference || 'local';
           wireVoiceKey(sttSel.value);
           sttSel.addEventListener('change', function () {
             if (voiceKeyHost) voiceKeyHost.innerHTML = voiceRowHtml(sttSel.value);

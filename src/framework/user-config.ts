@@ -222,9 +222,15 @@ export interface UserPreferences {
    * Preferred speech-to-text provider for the assistant's voice notes. This is
    * a USER preference, not a workspace secret — it lives here (machine-local) so
    * it persists across workspaces and never appears in any workspace's `secrets`
-   * object. `'auto'` infers from whichever provider key is configured.
+   * object.
+   *   `'local'`      — on-device, in-browser speech model. The keyless default:
+   *                    no API key, no config, audio never leaves the machine.
+   *   `'openai'` /   — cloud providers (fallback when a key IS configured).
+   *   `'elevenlabs'`
+   *   `'auto'`       — infer from whichever cloud provider key is configured;
+   *                    legacy "off" sentinel kept for back-compat.
    */
-  voice_provider: 'auto' | 'openai' | 'elevenlabs';
+  voice_provider: 'local' | 'auto' | 'openai' | 'elevenlabs';
   /**
    * Inference aggressiveness (0 = conservative … 1 = aggressive). Drives the
    * assistant's sampling temperature and how liberally ingest links/extracts.
@@ -236,7 +242,9 @@ export interface UserPreferences {
 const DEFAULT_PREFERENCES: UserPreferences = {
   show_system_tables: false,
   analytics: true,
-  voice_provider: 'auto',
+  // On-device is the keyless default — voice dictation works with no API key and
+  // no config, and audio never leaves the machine.
+  voice_provider: 'local',
   aggressiveness: 0.85,
 };
 
@@ -261,6 +269,7 @@ export function readPreferences(): UserPreferences {
       analytics:
         typeof parsed.analytics === 'boolean' ? parsed.analytics : DEFAULT_PREFERENCES.analytics,
       voice_provider:
+        parsed.voice_provider === 'local' ||
         parsed.voice_provider === 'openai' ||
         parsed.voice_provider === 'elevenlabs' ||
         parsed.voice_provider === 'auto'

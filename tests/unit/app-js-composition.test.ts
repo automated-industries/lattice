@@ -29,9 +29,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // redesign (tab strip + center brain graph, Sources sidebar, single top-right
 // status, live ingest animation, file two-view/history/remove), plus 4.2.4's
 // desktop build + the shared `claudeAuth()` single-source-of-truth pass merged
-// from main. Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 773151;
-const ORIGINAL_SHA256 = 'e10737c60a8503bbf5b804b41c51e65345ee4d42cb255be57c93f27c96c5c004';
+// from main, and the on-device voice-dictation host glue (the new voice-local
+// segment: a module Web Worker runs an in-browser speech model so dictation works
+// with NO API key and audio never leaves the machine; rec.onstop branches on the
+// resolved voice mode — local decodes + transcribes in the browser, cloud keeps
+// the POST fallback — and the mic shows whenever voice isn't off). Recapture the
+// length + hash on any intended change.
+const ORIGINAL_LENGTH = 784790;
+const ORIGINAL_SHA256 = 'e2a16aacc806ddb87852c9c4dd6101ac4c413c95c04a893bce59706ec1035bb1';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

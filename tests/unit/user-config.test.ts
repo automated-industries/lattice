@@ -110,13 +110,24 @@ describe('framework user-config', () => {
     const DEFAULTS = {
       show_system_tables: false,
       analytics: true,
-      voice_provider: 'auto',
+      // On-device dictation is the keyless default (no API key, audio stays local).
+      voice_provider: 'local',
       aggressiveness: 0.85,
     };
 
     it('returns defaults when the file is missing (analytics on by default)', () => {
       const prefs = readPreferences();
       expect(prefs).toEqual(DEFAULTS);
+    });
+
+    it("round-trips the on-device 'local' voice provider (the keyless default)", () => {
+      writePreferences({
+        show_system_tables: false,
+        analytics: true,
+        voice_provider: 'local',
+        aggressiveness: 0.85,
+      });
+      expect(readPreferences().voice_provider).toBe('local');
     });
 
     it('round-trips write → read (incl. analytics consent + voice/aggressiveness prefs)', () => {
@@ -155,7 +166,7 @@ describe('framework user-config', () => {
       );
       const prefs = readPreferences();
       expect(prefs.show_system_tables).toBe(true);
-      expect(prefs.voice_provider).toBe('auto'); // unknown value → default
+      expect(prefs.voice_provider).toBe('local'); // unknown value → default
       expect(prefs.aggressiveness).toBe(1); // clamped into [0, 1]
     });
 

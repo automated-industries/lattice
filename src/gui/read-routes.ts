@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, parsePageParam } from './http.js';
 import { Lattice } from '../lattice.js';
 import type { StorageAdapter } from '../db/adapter.js';
@@ -43,7 +45,23 @@ export interface ReadRoutesDeps {
   guiAppHtml: string;
   /** server.ts-local sendText (NOT exported from http.ts). Threaded by reference so GET / stays byte-identical. */
   sendText: (res: ServerResponse, body: string, status?: number, contentType?: string) => void;
+  /**
+   * Absolute path to the built `dist/gui-assets/` directory, served read-only at
+   * `GET /gui-assets/*` (the on-device voice worker + ONNX-Runtime WASM). Resolved
+   * once in server.ts. When the fail-soft asset build skipped (the dir or a file
+   * is absent), the route 404s and the GUI degrades — voice falls back or hides.
+   */
+  guiAssetsDir: string;
 }
+
+/** Static MIME types for the vendored GUI assets. Defaults to octet-stream. */
+const GUI_ASSET_MIME: Record<string, string> = {
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+};
 
 /**
  * Tables the live Lattice schema manager knows about that the YAML
@@ -312,6 +330,37 @@ export async function handleReadRoutes(
       200,
       'text/html; charset=utf-8',
     );
+    return true;
+  }
+
+  // ── Vendored GUI assets: on-device voice worker + ONNX-Runtime WASM ──
+  // GET /gui-assets/<path> serves read-only from dist/gui-assets/ with the right
+  // MIME (text/javascript for .mjs, application/wasm for .wasm) and a long-lived
+  // immutable cache header (content-addressed, vendored bytes). Same-origin
+  // localhost, no CDN. When the fail-soft asset build skipped these files the
+  // route 404s and the GUI degrades (voice hides / falls back) — never a 500.
+  if (method === 'GET' && pathname.startsWith('/gui-assets/')) {
+    const rel = decodeURIComponent(pathname.slice('/gui-assets/'.length));
+    // Resolve under the assets dir and reject any path that escapes it (`..`,
+    // absolute, symlink-ish). `normalize` collapses `..`; the prefix check is the
+    // traversal guard.
+    const base = deps.guiAssetsDir;
+    const target = normalize(join(base, rel));
+    const within = target === base || target.startsWith(base + sep);
+    if (!within || !existsSync(target) || !statSync(target).isFile()) {
+      sendJson(res, { error: 'asset not found' }, 404);
+      return true;
+    }
+    const mime = GUI_ASSET_MIME[extname(target).toLowerCase()] ?? 'application/octet-stream';
+    res.writeHead(200, {
+      'content-type': mime,
+      'cache-control': 'public, max-age=31536000, immutable',
+      'x-content-type-options': 'nosniff',
+      // The worker uses WASM threads/SharedArrayBuffer when the browser allows it;
+      // these headers don't hurt single-threaded WASM and enable the threaded path.
+      'cross-origin-resource-policy': 'same-origin',
+    });
+    createReadStream(target).pipe(res);
     return true;
   }
 

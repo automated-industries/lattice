@@ -285,7 +285,11 @@ export const createDatabaseWizardJs = `    // ───────────�
       var host = document.getElementById('rail-composer'); if (!host) return;
       fetchJson('/api/assistant/config').then(function (cfg) {
         if (claudeAuth(cfg).any) {
-          var micHtml = cfg.hasVoiceKey
+          // On-device dictation is the keyless default, so the mic shows whenever
+          // voice isn't explicitly off — no cloud voice key required. Stash the
+          // resolved mode for rec.onstop (local → in-browser; cloud → POST).
+          voiceMode = cfg.voiceMode || 'local';
+          var micHtml = voiceMode !== 'off'
             ? '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>'
             : '';
           host.innerHTML =

@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { transcribe, type SttProvider } from './ai/transcribe.js';
+import { voiceModeFromConfig, type VoiceMode } from './ai/voice-mode.js';
 import {
   readOAuthConfig,
   oauthConfigured,
@@ -387,6 +388,17 @@ export async function dispatchAssistantRoute(
       hasCredential(db, 'elevenlabs', 'ELEVENLABS_API_KEY'),
     ]);
     const voice = await getVoiceCredential(db);
+    const sttPreference = readPreferences().voice_provider;
+    // On-device dictation is the keyless default — the mic is no longer gated on a
+    // cloud voice key. `voiceMode` is the single signal the GUI acts on: 'local'
+    // (on-device, keyless), a cloud provider (when its key is set), or 'off' (the
+    // legacy "No Voice" sentinel). A configured cloud key still drives the cloud
+    // transcribe fallback (POST /api/assistant/transcribe).
+    const voiceMode: VoiceMode = voiceModeFromConfig({
+      preference: sttPreference,
+      hasOpenaiKey,
+      hasElevenlabsKey,
+    });
     sendJson(res, {
       hasAnthropicKey,
       hasOpenaiKey,
@@ -394,7 +406,11 @@ export async function dispatchAssistantRoute(
       claudeAuthKind: await claudeAuthKind(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
-      sttPreference: readPreferences().voice_provider,
+      sttPreference,
+      voiceMode,
+      // On-device speech is always available in a supporting browser; the asset
+      // step is fail-soft, so the GUI also feature-detects the Worker at runtime.
+      localVoiceAvailable: true,
       aggressiveness: getAggressiveness(),
       oauthEnabled: oauthConfigured(),
     });
@@ -430,8 +446,13 @@ export async function dispatchAssistantRoute(
       sendJson(res, { error: (e as Error).message }, 400);
       return true;
     }
-    const provider = typeof body.provider === 'string' ? body.provider : 'auto';
-    if (provider !== 'auto' && provider !== 'openai' && provider !== 'elevenlabs') {
+    const provider = typeof body.provider === 'string' ? body.provider : 'local';
+    if (
+      provider !== 'local' &&
+      provider !== 'auto' &&
+      provider !== 'openai' &&
+      provider !== 'elevenlabs'
+    ) {
       sendJson(res, { error: `unknown provider: ${provider}` }, 400);
       return true;
     }
