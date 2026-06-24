@@ -143,6 +143,22 @@ verification) and the findings folded into the above.
   machine-local Claude key it used to onboard is unchanged; set or change it from
   the GUI's assistant settings.
 
+### Changed
+
+- **Cloud query pool routes through Supabase's transaction-mode pooler.** A
+  cloud workspace on a `*.pooler.supabase.com` connection now opens its query
+  pool against the transaction pooler (port 6543) instead of the session pooler
+  (5432). Session mode pins one scarce upstream slot per pooled client for its
+  lifetime, so a small `pool_size` (commonly 15) was exhausted by the pool + the
+  realtime `LISTEN` client + a burst of concurrent queries — surfacing as
+  `EMAXCONNSESSION` and failing queries under load. Transaction mode hands the
+  upstream connection back at COMMIT and multiplexes many clients over far fewer
+  slots; the adapter holds no cross-statement session state, so it is
+  transaction-pooler-safe. The realtime broker keeps its dedicated session-mode
+  connection (LISTEN/NOTIFY requires it). Only Supabase pooler hosts on :5432 are
+  rewritten; direct/non-Supabase/already-:6543 URLs are untouched. Set
+  `LATTICE_PG_SESSION_POOLER=1` to opt out.
+
 ---
 
 ## [4.2.3] — unreleased
