@@ -232,7 +232,20 @@ describe('assistant key storage', () => {
 
   it('serves the on-device voice worker at /gui-assets/* with the right MIME', async () => {
     const { configPath, outputDir } = writeMinimalConfig();
-    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    // Point the route at a controlled assets dir with a dummy worker — the real
+    // dist/gui-assets is a BUILD artifact, absent during the test phase (CI runs
+    // tests before the build). This exercises the route + MIME + traversal guard,
+    // not the build output.
+    const assetsDir = mkdtempSync(join(tmpdir(), 'lattice-gui-assets-'));
+    dirs.push(assetsDir);
+    writeFileSync(join(assetsDir, 'transcriber.worker.mjs'), 'export const ok = 1;\n');
+    const server = await startGuiServer({
+      configPath,
+      outputDir,
+      port: 0,
+      openBrowser: false,
+      guiAssetsDir: assetsDir,
+    });
     servers.push(server);
 
     const res = await fetch(`${server.url}/gui-assets/transcriber.worker.mjs`);
