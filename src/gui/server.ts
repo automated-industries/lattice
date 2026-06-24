@@ -121,6 +121,13 @@ export interface StartGuiServerOptions {
    * it overrides `selfUpdate`'s default factory.
    */
   updateServiceFactory?: (emit: (type: string, data: unknown) => void) => UpdateService;
+  /**
+   * Desktop shell only: open an external URL in the OS default browser. The
+   * embedded desktop webview has no tabs, so `target="_blank"` links are routed
+   * to `GET /api/desktop/open` which calls this. Omitted for the web/CLI GUI —
+   * the route then 404s, so a browser-served GUI can never trigger an OS open.
+   */
+  desktopOpenExternal?: (url: string) => void;
 }
 
 export interface GuiServerHandle {
@@ -239,6 +246,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
+  const desktopOpenExternal = options.desktopOpenExternal;
   // One id per GUI server process. Stamped on every audit entry so the header
   // undo/redo stack is scoped to THIS session's own actions (you undo what you
   // did, not another cloud user's edit). The per-entry Revert stays global.
@@ -521,6 +529,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // server relaunched onto a new build, so the tab reloads itself.
         if (method === 'GET' && pathname === '/api/version') {
           sendJson(res, { version: guiVersion });
+          return;
+        }
+        // Desktop shell only: open an external URL in the OS default browser.
+        // The embedded webview has no tabs, so its injected link-interceptor
+        // routes `target="_blank"` clicks here. 404s unless the desktop host
+        // supplied an opener, so a web-served GUI can't trigger an OS open. Only
+        // http(s) URLs are honored.
+        if (method === 'GET' && pathname === '/api/desktop/open') {
+          if (!desktopOpenExternal) {
+            sendJson(res, { error: 'not found' }, 404);
+            return;
+          }
+          const target = new URL(req.url ?? '', 'http://localhost').searchParams.get('url');
+          if (!target || !/^https?:\/\//i.test(target)) {
+            sendJson(res, { error: 'url must be http(s)' }, 400);
+            return;
+          }
+          desktopOpenExternal(target);
+          sendJson(res, { ok: true });
           return;
         }
         if (method === 'GET' && pathname === '/api/update/status') {

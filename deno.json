@@ -1,0 +1,17 @@
+{
+  "version": "4.2.4",
+  "desktop": {
+    "app": {
+      "name": "Lattice",
+      "identifier": "com.latticesql.lattice",
+      "icons": {
+        "macos": "./desktop/lattice.icns",
+        "windows": "./desktop/lattice.ico"
+      }
+    },
+    "backend": "webview",
+    "release": {
+      "baseUrl": "https://github.com/automated-industries/lattice/releases/latest/download/"
+    }
+  }
+}
