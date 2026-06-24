@@ -435,10 +435,15 @@ export async function addUserColumn(
     table.startsWith('__lattice_') ||
     isNativeEntity(table)
   ) {
-    return {
-      ok: false,
-      error: `Columns can't be added to "${table}" — it's a system or relationship table.`,
-    };
+    // Deterministic refusal that STEERS rather than just blocks: a managed object
+    // (files/secrets/…) can't take new columns, so the right move is to model the
+    // new attribute as its own object the records link to — never alter the
+    // managed table. The wording is user-facing (no schema jargon) so the
+    // assistant can relay it verbatim and follow it.
+    const steer = isNativeEntity(table)
+      ? `"${table}" is a managed object, so it can't take new columns. To record a new attribute — for example a category like state or status — create a new object for that attribute and link your records to it instead.`
+      : `"${table}" is a relationship table, so columns can't be added to it.`;
+    return { ok: false, error: steer };
   }
   const col = column
     .trim()
