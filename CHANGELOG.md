@@ -243,6 +243,17 @@ verification) and the findings folded into the above.
   connected subscription is kept (the existing access token is used); the API key
   is reached only when no usable OAuth credential is configured at all.
 
+### Fixed
+
+- **The Windows desktop app now opens its window.** On boot the app created its
+  data directory at `$HOME/.lattice`, falling back to the current working
+  directory when `$HOME` was unset. `$HOME` is Unix-only, so on Windows the
+  fallback resolved to the app's install directory — read-only for a normal
+  user — and the `mkdir` threw before the window opened. The data directory is
+  now resolved from `os.homedir()` (correct and writable on every platform) and
+  the path is built with `path.join` so the separator is native. macOS and Linux
+  are unaffected.
+
 ---
 
 ## [4.2.4]

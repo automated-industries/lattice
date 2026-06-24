@@ -3,6 +3,8 @@
 // Serves the EXACT same GUI as the web (`startGuiServer`, version-stamped from
 // the same build constant) in a native window, with a system-browser bridge for
 // external links/OAuth and built-in upgrade-on-run via `Deno.autoUpdate()`.
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { startGuiServer, VERSION, ensureRootForGui } from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
 
@@ -28,8 +30,13 @@ async function runAutoUpdate(): Promise<void> {
 }
 
 // ── Boot the GUI server ──────────────────────────────────────────────────────
-const home = Deno.env.get('HOME') ?? Deno.cwd();
-const root = `${home}/.lattice`;
+// Data dir lives under the user's home directory. `HOME` is Unix-only and is
+// unset on Windows, where the old `Deno.cwd()` fallback resolved to the app's
+// install directory (read-only for a normal user), so the mkdir failed and the
+// app never opened a window. `homedir()` resolves the correct, writable per-user
+// home on every platform; `join` keeps the path separator native.
+const home = homedir();
+const root = join(home, '.lattice');
 await Deno.mkdir(root, { recursive: true });
 
 // Resolve the active workspace (if any) so the app opens it rather than always
@@ -40,7 +47,7 @@ await Deno.mkdir(root, { recursive: true });
 // there genuinely are no workspaces.
 const boot = ensureRootForGui({
   startDir: home,
-  configPath: `${root}/lattice.config.yml`,
+  configPath: join(root, 'lattice.config.yml'),
   explicitConfig: false,
 });
 
