@@ -1,0 +1,79 @@
+# Build the Lattice desktop apps (macOS .dmg + Windows .msi) on a version tag and
+# publish them, plus the latest.json auto-update manifest, to the GitHub Release.
+# Runs alongside release.yml (npm publish) — same `v*` tag, independent artifacts.
+name: Desktop Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: # allow a manual rebuild against the current ref
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: canary # `deno desktop` is canary-only for now
+      - run: npm ci
+      - run: npm run desktop:build:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lattice-macos
+          path: dist-desktop/Lattice.dmg
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: canary
+      - run: npm ci
+      - run: npm run desktop:build:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lattice-windows
+          path: dist-desktop/Lattice.msi
+          if-no-files-found: error
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/update the GitHub Release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage installers
+        run: |
+          mkdir -p dist-desktop
+          cp artifacts/lattice-macos/Lattice.dmg dist-desktop/Lattice.dmg
+          cp artifacts/lattice-windows/Lattice.msi dist-desktop/Lattice.msi
+      - name: Generate latest.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          node scripts/gen-desktop-manifest.mjs "$VERSION" "$BASE" \
+            darwin=dist-desktop/Lattice.dmg windows=dist-desktop/Lattice.msi \
+            > dist-desktop/latest.json
+          cat dist-desktop/latest.json
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-desktop/Lattice.dmg
+            dist-desktop/Lattice.msi
+            dist-desktop/latest.json

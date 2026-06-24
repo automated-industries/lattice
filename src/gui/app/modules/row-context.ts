@@ -130,7 +130,7 @@ export const rowContextJs = `    // ──────────────�
         var cfg = res[1];
         st.name = (id && id.display_name) || '';
         st.email = (id && id.email) || '';
-        st.connected = !!(cfg && (cfg.claudeAuthKind === 'oauth' || cfg.hasAnthropicKey));
+        st.connected = claudeAuth(cfg).oauth;
         if (!st.wsName && st.name) st.wsName = st.name + "'s Workspace";
         render();
       });
