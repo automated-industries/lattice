@@ -143,9 +143,12 @@ export const offlineEditQueueJs = `    // ────────────�
         // renderFeedItem now flashes each change as a transient top-right status
         // (the realtime update) — no rail pills.
         try { renderFeedItem(data); } catch (_) { /* best-effort */ }
-        // An ingest also drives the live brain-graph animation (node bubble-in /
-        // edge draw).
-        if (data && data.source === 'ingest' && ['insert', 'link', 'schema'].indexOf(data.op) !== -1) {
+        // Any structural change drives the live brain-graph animation (node
+        // bubble-in / edge draw) — a new object/edge, OR a row that takes a table
+        // from empty to non-empty. Not only ingests: an assistant-created object
+        // must appear without a refresh too. scheduleGraphIngestAnim no-ops unless
+        // the graph is the visible view, so this never fetches off-graph.
+        if (data && ['insert', 'link', 'schema'].indexOf(data.op) !== -1) {
           scheduleGraphIngestAnim();
         }
         if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
