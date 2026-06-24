@@ -46,6 +46,14 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'docs-generated/**', 'eslint.config.js'],
+    // Plain-Node build scripts (not part of the typed TS project) + generated/vendored trees.
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      'docs-generated/**',
+      'eslint.config.js',
+      'scripts/**/*.mjs',
+    ],
   },
 );

@@ -58,6 +58,7 @@ import {
   addColumnAsyncOrSync,
 } from './db/adapter.js';
 import { SQLiteAdapter } from './db/sqlite.js';
+import { DenoSqliteAdapter } from './db/sqlite-deno.js';
 import { PostgresAdapter } from './db/postgres.js';
 import {
   serializeRowPk as _serializeRowPkCodec,
@@ -200,6 +201,13 @@ function buildAdapter(dbPath: string, options: LatticeOptions): StorageAdapter {
   const adapterOpts: { wal?: boolean; busyTimeout?: number } = {};
   if (options.wal !== undefined) adapterOpts.wal = options.wal;
   if (options.busyTimeout !== undefined) adapterOpts.busyTimeout = options.busyTimeout;
+  // Under a runtime that ships `node:sqlite` but can't load native addons
+  // (the desktop build), use the node:sqlite-backed adapter instead of the
+  // better-sqlite3 one. Node/npm consumers are unaffected — `Deno` is undefined
+  // there, so this branch is never taken.
+  if (typeof (globalThis as { Deno?: unknown }).Deno !== 'undefined') {
+    return new DenoSqliteAdapter(sqlitePath, adapterOpts);
+  }
   return new SQLiteAdapter(sqlitePath, adapterOpts);
 }
 
