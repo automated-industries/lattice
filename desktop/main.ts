@@ -39,13 +39,19 @@ const handle = await startGuiServer({
   autoRender: true,
   version: VERSION, // same version the web GUI shows
   selfUpdate: false, // desktop uses Deno.autoUpdate, not the npm supervisor
+  // The webview's injected link-interceptor POSTs external URLs to
+  // /api/desktop/open, which calls this — routing target=_blank / OAuth to the
+  // OS default browser (a webview has no tabs).
+  desktopOpenExternal: (url: string) => {
+    console.log('[desktop] opening external link in system browser:', url);
+    openInSystemBrowser(url);
+  },
 });
 console.log(`[desktop] Lattice ${VERSION} serving at ${handle.url}`);
 
 // ── Native window + system-browser bridge ────────────────────────────────────
 type Win = {
   navigate(url: string): void;
-  bind(name: string, fn: (...a: unknown[]) => unknown): void;
   executeJs(code: string): void;
 };
 const BrowserWindow = (
@@ -56,23 +62,22 @@ if (!BrowserWindow) {
   console.error('[desktop] Deno.BrowserWindow unavailable — launch via `deno desktop`.');
 } else {
   const win = new BrowserWindow({ title: 'Lattice', width: 1280, height: 860 });
-  // Bind BEFORE navigate so the page's interceptor can call it on first paint.
-  win.bind('openExternal', (url: unknown) => {
-    if (typeof url === 'string') openInSystemBrowser(url);
-  });
   win.navigate(handle.url);
 
-  // The GUI is a SPA with no load event we can hook here; inject the idempotent
-  // interceptor a few times so it lands once the document exists.
-  for (const delay of [400, 1200, 2500]) {
-    setTimeout(() => {
-      try {
-        win.executeJs(LINK_INTERCEPTOR_JS);
-      } catch {
-        /* page not ready yet — a later attempt will land */
-      }
-    }, delay);
-  }
+  // Keep the link bridge installed. The GUI reloads the document on some actions
+  // (e.g. creating a workspace), which drops any injected listener — and there's
+  // no host-side page-load event to hook — so re-inject on an interval. The script
+  // is idempotent (it guards on a window flag), so re-runs are no-ops until a
+  // reload clears the flag and it re-installs on the fresh document.
+  const injectBridge = () => {
+    try {
+      win.executeJs(LINK_INTERCEPTOR_JS);
+    } catch {
+      /* page mid-navigation — the next tick lands it */
+    }
+  };
+  injectBridge();
+  setInterval(injectBridge, 1000);
 
   // Check for updates shortly after launch (don't block first paint).
   setTimeout(() => void runAutoUpdate(), 4000);
