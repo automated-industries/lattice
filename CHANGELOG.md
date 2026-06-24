@@ -93,6 +93,13 @@ The desktop/web GUI is reorganized around the data graph.
   roots in a machine-local store, lists **one directory level at a time**
   (entry-capped, confined to a registered root, symlink-safe), and never touches a
   path outside a root. The flat Objects list remains in Advanced view.
+- **Single top-right status indicator.** The scattered progress/update pills
+  (offline queue, applying-update, workspace switch, background render) collapse
+  into one indicator in the tab strip that shows exactly one status at a time
+  (highest priority, ties → most recent); a still-active lower-priority status
+  resumes when a higher one clears. An ingest burst surfaces an "Ingesting…"
+  status. The cloud-connection dot stays in the workspace switcher; per-card
+  render bars stay.
 
 ### Added — Inline HTML files
 

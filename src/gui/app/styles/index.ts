@@ -24,6 +24,7 @@ import { chatCss } from './chat.js';
 import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
 import { sourcesCss } from './sources.js';
+import { statusIndicatorCss } from './status-indicator.js';
 
 export const css = [
   tokensCss,
@@ -49,4 +50,5 @@ export const css = [
   inlineImportCss,
   tabsCss,
   sourcesCss,
+  statusIndicatorCss,
 ].join('');

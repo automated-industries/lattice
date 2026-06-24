@@ -67,10 +67,9 @@ export const realtimeFeedJs = `    // ──────────────
         : 'e-' + Date.now() + '-' + Math.round(Math.random() * 1e9);
     }
     function updatePendingPill(n) {
-      var el = document.getElementById('offline-pill');
-      if (!el) return;
-      if (n > 0) { el.hidden = false; el.textContent = '⏳ ' + n + ' pending'; }
-      else { el.hidden = true; el.textContent = ''; }
+      // The offline-queue state now shows in the single top-right status indicator.
+      if (n > 0) setStatus({ id: 'offline', kind: 'warn', text: '⏳ ' + n + ' pending', priority: 40, sticky: true });
+      else clearStatus('offline');
     }
     function refreshPendingPill() {
       idbAll().then(function (items) {

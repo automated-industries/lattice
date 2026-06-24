@@ -11,6 +11,7 @@ export const toastJs = `    // ────────────────�
     var wsSwitching = false;
     function beginWsSwitching() {
       wsSwitching = true;
+      setStatus({ id: 'ws-switch', kind: 'accent', text: 'Switching workspace…', priority: 70, sticky: true });
       var btn = document.getElementById('ws-button');
       var nameEl = document.getElementById('ws-name');
       var iconEl = btn && btn.querySelector('.db-icon');
@@ -20,6 +21,7 @@ export const toastJs = `    // ────────────────�
     }
     function endWsSwitching(failed) {
       wsSwitching = false;
+      clearStatus('ws-switch');
       var btn = document.getElementById('ws-button');
       var iconEl = btn && btn.querySelector('.db-icon');
       if (iconEl) iconEl.textContent = '📂';

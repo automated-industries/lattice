@@ -22,12 +22,10 @@ export const offlineEditQueueJs = `    // ────────────�
     })();
     var reloadingForUpdate = false;
     function showUpdatePill(text) {
-      var el = document.getElementById('app-update');
-      if (el) { el.textContent = text; el.hidden = false; }
+      setStatus({ id: 'update', kind: 'accent', text: text, priority: 60, sticky: true });
     }
     function hideUpdatePill() {
-      var el = document.getElementById('app-update');
-      if (el) { el.hidden = true; }
+      clearStatus('update');
     }
     function reloadForUpdate(label) {
       if (reloadingForUpdate) return;
@@ -143,11 +141,15 @@ export const offlineEditQueueJs = `    // ────────────�
         scheduleRealtimeRefresh();
       } else if (type === 'feed') {
         try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
+        // An ingest burst drives the top-right "Ingesting…" status (debounced clear).
+        if (data && data.source === 'ingest') noteIngestActivity();
         if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
       } else if (type === 'render-snapshot') {
         if (data) applyRenderSnapshot(data);
+        updateRenderStatus();
       } else if (type === 'render-progress') {
         if (data) onRenderEvent(data);
+        updateRenderStatus();
       } else if (type === 'update-applied') {
         // Files on disk are the new version; the server is about to relaunch.
         // Don't reload yet (the server is exiting) — the reconnect version check
