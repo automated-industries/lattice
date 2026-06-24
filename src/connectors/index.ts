@@ -10,6 +10,9 @@
 
 export type {
   Connector,
+  CredentialConnector,
+  CredentialField,
+  ToolkitPresentation,
   ConnectedModelDef,
   ConnectedEdgeSpec,
   ExternalRecord,
@@ -17,6 +20,9 @@ export type {
   ConnectionResult,
   ListChangesContext,
 } from './types.js';
+export { isCredentialConnector } from './types.js';
+
+export { builtinConnectors } from './catalog.js';
 
 export {
   ensureConnectorRegistry,
@@ -44,6 +50,17 @@ export {
 export type { JiraCreds, JiraClient } from './jira/connector.js';
 
 export { JIRA_MODELS, defineJiraTables } from './jira/models.js';
+
+export {
+  TrelloConnector,
+  loadTrelloClient,
+  getTrelloCreds,
+  setTrelloCreds,
+  clearTrelloCreds,
+} from './trello/connector.js';
+export type { TrelloCreds, TrelloClient, TrelloPageOpts } from './trello/connector.js';
+
+export { TRELLO_MODELS, defineTrelloTables } from './trello/models.js';
 
 export {
   syncConnector,

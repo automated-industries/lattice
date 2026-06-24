@@ -37,6 +37,8 @@ const MODELS: ConnectedModelDef[] = [
 
 const CREDS_BODY = { site: 'https://x.atlassian.net', email: 'a@x.com', token: 'tok' };
 
+const ICON = 'data:image/svg+xml;base64,PHN2Zy8+';
+
 class FakeConnector implements Connector {
   readonly connector = 'fake';
   things: ExternalRecord[] = [{ id: 'T1', row: { tid: 'T1', name: 'one' } }];
@@ -47,14 +49,32 @@ class FakeConnector implements Connector {
   models() {
     return MODELS;
   }
+  presentation() {
+    return { label: 'Demo', icon: ICON };
+  }
+  // Credential connect form metadata (data-driven by the generic route).
+  credentialFields() {
+    return [
+      { key: 'site', label: 'Site URL', type: 'text' as const, required: true },
+      { key: 'email', label: 'Email', type: 'text' as const, required: true },
+      { key: 'token', label: 'API token', type: 'password' as const, required: true },
+    ];
+  }
+  helpUrl() {
+    return 'https://example.com/help';
+  }
   authorize() {
     return Promise.resolve({ redirectUrl: 'https://auth.example/go', pendingId: 'pend-1' });
   }
   completeAuth() {
     return Promise.resolve({ connectionId: 'conn-1' });
   }
-  // Credential connect (validated + stored by a real connector); fixed handle here.
-  connect() {
+  // Credential connect (validated + stored by a real connector); fixed handle here,
+  // but it validates the `site` is a URL like a real credential connector would.
+  connect(creds: Record<string, string>) {
+    if (!/^https?:\/\//i.test(creds.site ?? '')) {
+      return Promise.reject(new Error('site must be a full URL'));
+    }
     return Promise.resolve({ connectionId: 'conn-1', displayName: 'Demo' });
   }
   disconnect(id: string) {
@@ -66,11 +86,44 @@ class FakeConnector implements Connector {
   }
 }
 
+/** A second credential connector on a distinct toolkit — exercises multi-connector routing. */
+class SecondConnector implements Connector {
+  readonly connector = 'second';
+  toolkits() {
+    return ['widget'];
+  }
+  models() {
+    return MODELS;
+  }
+  presentation() {
+    return { label: 'Widget', icon: ICON };
+  }
+  credentialFields() {
+    return [{ key: 'apiKey', label: 'API key', type: 'text' as const, required: true }];
+  }
+  authorize() {
+    return Promise.resolve({ redirectUrl: 'https://auth.example/go' });
+  }
+  completeAuth() {
+    return Promise.resolve({ connectionId: 'w1' });
+  }
+  connect() {
+    return Promise.resolve({ connectionId: 'w1', displayName: 'Widget' });
+  }
+  disconnect() {
+    return Promise.resolve();
+  }
+  async *listChanges(): AsyncIterable<ExternalRecord> {
+    yield { id: 'W1', row: { tid: 'W1', name: 'w' } };
+  }
+}
+
 /** A connector with no credential `connect()` — exercises the capability guard. */
 const oauthOnly: Connector = {
   connector: 'oauthy',
   toolkits: () => ['demo'],
   models: () => MODELS,
+  presentation: () => ({ label: 'OAuthy' }),
   authorize: () => Promise.resolve({ redirectUrl: 'https://auth.example/go' }),
   completeAuth: () => Promise.resolve({ connectionId: 'x' }),
   disconnect: () => Promise.resolve(),
@@ -123,13 +176,13 @@ describe('connectors routes (SQLite)', () => {
     url: string,
     body?: unknown,
     connectedBy = 'u1',
-    connector: Connector = fake,
+    connectors: Connector[] = [fake],
   ): Promise<{ status: number; body: unknown; handled: boolean }> {
     const req = fakeReq(method, url, body);
     const { res, done } = fakeRes();
     const handled = await dispatchConnectorsRoute(req, res, {
       db: db!,
-      connector,
+      connectors,
       outputDir: '/tmp/does-not-matter',
       connectedBy,
     });
@@ -142,11 +195,42 @@ describe('connectors routes (SQLite)', () => {
     await db.init();
   }
 
-  it('GET /api/connectors lists this member’s connectors + toolkits', async () => {
+  it('GET /api/connectors lists this member’s connectors + toolkit descriptors', async () => {
     await open();
     const r = await call('GET', '/api/connectors');
     expect(r.handled).toBe(true);
-    expect(r.body).toMatchObject({ toolkits: ['demo'], connectors: [] });
+    const body = r.body as {
+      toolkits: {
+        toolkit: string;
+        label: string;
+        icon?: string;
+        credentialFields?: unknown[];
+        helpUrl?: string;
+      }[];
+      connectors: unknown[];
+    };
+    expect(body.connectors).toEqual([]);
+    expect(body.toolkits).toHaveLength(1);
+    expect(body.toolkits[0]).toMatchObject({
+      toolkit: 'demo',
+      label: 'Demo',
+      icon: ICON,
+      helpUrl: 'https://example.com/help',
+    });
+    expect(body.toolkits[0]?.credentialFields).toHaveLength(3);
+  });
+
+  it('GET /api/connectors lists every connector’s toolkit with its presentation + fields', async () => {
+    await open();
+    const r = await call('GET', '/api/connectors', undefined, 'u1', [fake, new SecondConnector()]);
+    const body = r.body as {
+      toolkits: { toolkit: string; label: string; credentialFields?: unknown[] }[];
+    };
+    const tks = body.toolkits.map((t) => t.toolkit).sort();
+    expect(tks).toEqual(['demo', 'widget']);
+    const widget = body.toolkits.find((t) => t.toolkit === 'widget');
+    expect(widget).toMatchObject({ label: 'Widget' });
+    expect(widget?.credentialFields).toHaveLength(1);
   });
 
   it('connect validates credentials, creates the connector + runs an initial sync', async () => {
@@ -170,19 +254,55 @@ describe('connectors routes (SQLite)', () => {
     expect(r.status).toBe(400);
   });
 
-  it('connect rejects a non-URL site with 400', async () => {
+  it('connect rejects a non-URL site with 422 (the connector validates the value)', async () => {
     await open();
     const r = await call('POST', '/api/connectors/demo/connect', {
       ...CREDS_BODY,
       site: 'not-a-url',
     });
-    expect(r.status).toBe(400);
+    expect(r.status).toBe(422);
   });
 
   it('connect on a connector without credential support returns 400', async () => {
     await open();
-    const r = await call('POST', '/api/connectors/demo/connect', CREDS_BODY, 'u1', oauthOnly);
+    const r = await call('POST', '/api/connectors/demo/connect', CREDS_BODY, 'u1', [oauthOnly]);
     expect(r.status).toBe(400);
+  });
+
+  it('connect is generic — a second toolkit connects via its own declared fields', async () => {
+    await open();
+    const connectors: Connector[] = [fake, new SecondConnector()];
+    const r = await call(
+      'POST',
+      '/api/connectors/widget/connect',
+      { apiKey: 'abc' },
+      'u1',
+      connectors,
+    );
+    expect(r.status).toBe(200);
+    const body = r.body as { connectorId: string; result: { upserted: Record<string, number> } };
+    expect(body.connectorId).toBeTruthy();
+    expect(body.result.upserted).toEqual({ demo_things: 1 });
+    expect(await getConnectorByToolkit(db!, 'widget', 'u1')).not.toBeNull();
+  });
+
+  it('connect on the second toolkit rejects its own missing required field with 400', async () => {
+    await open();
+    const connectors: Connector[] = [fake, new SecondConnector()];
+    const r = await call(
+      'POST',
+      '/api/connectors/widget/connect',
+      { apiKey: '' },
+      'u1',
+      connectors,
+    );
+    expect(r.status).toBe(400);
+  });
+
+  it('an unknown toolkit is not handled (falls through to 404)', async () => {
+    await open();
+    const r = await call('POST', '/api/connectors/nope/connect', CREDS_BODY);
+    expect(r.handled).toBe(false);
   });
 
   it('refresh re-syncs the connected toolkit', async () => {
@@ -224,6 +344,14 @@ describe('connectors routes (SQLite)', () => {
     await open();
     const r = await call('POST', '/api/connectors/sync-if-stale');
     expect(r.body).toMatchObject({ synced: 0 });
+  });
+
+  it('sync-if-stale aggregates across all connectors', async () => {
+    await open();
+    const connectors: Connector[] = [fake, new SecondConnector()];
+    // Nothing connected yet → both loop, both report zero, aggregated.
+    const r = await call('POST', '/api/connectors/sync-if-stale', undefined, 'u1', connectors);
+    expect(r.body).toMatchObject({ synced: 0, failed: 0 });
   });
 
   it('returns false for a non-connectors path', async () => {

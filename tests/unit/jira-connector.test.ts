@@ -13,6 +13,8 @@ import type { ExternalRecord, ListChangesContext } from '../../src/connectors/ty
  */
 
 const CREDS: JiraCreds = { site: 'https://x.atlassian.net', email: 'a@x.com', apiToken: 'tok' };
+/** The wire shape connect() reads (the form/route key for the token stays `token`). */
+const CONNECT_BODY = { site: 'https://x.atlassian.net', email: 'a@x.com', token: 'tok' };
 
 async function collect(it: AsyncIterable<ExternalRecord>): Promise<ExternalRecord[]> {
   const out: ExternalRecord[] = [];
@@ -77,7 +79,7 @@ describe('Jira connector', () => {
     const conn = connectorWith(
       fakeClient({ myself: () => Promise.resolve({ displayName: 'Alice' }) }),
     );
-    const r = await conn.connect(CREDS);
+    const r = await conn.connect(CONNECT_BODY);
     expect(r.connectionId).toBeTruthy();
     expect(r.displayName).toBe('Alice');
   });
@@ -86,7 +88,34 @@ describe('Jira connector', () => {
     const conn = connectorWith(
       fakeClient({ myself: () => Promise.reject(new Error('401 Unauthorized')) }),
     );
-    await expect(conn.connect(CREDS)).rejects.toThrow(/Could not authenticate with Jira/);
+    await expect(conn.connect(CONNECT_BODY)).rejects.toThrow(/Could not authenticate with Jira/);
+  });
+
+  it('connect() throws when site, email, or token is missing', async () => {
+    const conn = connectorWith(fakeClient());
+    await expect(conn.connect({ site: '', email: 'a@x.com', token: 'tok' })).rejects.toThrow(
+      /required/,
+    );
+  });
+
+  it('connect() throws when the site is not a URL', async () => {
+    const conn = connectorWith(fakeClient());
+    await expect(
+      conn.connect({ site: 'not-a-url', email: 'a@x.com', token: 'tok' }),
+    ).rejects.toThrow(/must be a full URL/);
+  });
+
+  it('presentation() returns the Jira label + a data-URI icon', () => {
+    const pres = connectorWith(fakeClient()).presentation('jira');
+    expect(pres.label).toBe('Jira');
+    expect(pres.icon).toMatch(/^data:image\/svg\+xml;base64,/);
+  });
+
+  it('credentialFields() declares site, email, and token', () => {
+    const keys = connectorWith(fakeClient())
+      .credentialFields()
+      .map((f) => f.key);
+    expect(keys).toEqual(['site', 'email', 'token']);
   });
 
   it('listChanges(issue) maps a Jira REST issue into a row', async () => {

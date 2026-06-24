@@ -81,6 +81,36 @@ export interface ExternalRecord {
   row: Record<string, unknown>;
 }
 
+/**
+ * Sidebar/settings presentation metadata for one toolkit — the label and logo
+ * the GUI renders. Driven entirely by the connector so adding a connector needs
+ * no GUI code.
+ */
+export interface ToolkitPresentation {
+  /** Human-readable name shown next to the logo (e.g. `'Jira'`). */
+  label: string;
+  /** Logo as a `data:` URI (e.g. `data:image/svg+xml;base64,…`), shown as an `<img src>`. */
+  icon?: string;
+}
+
+/**
+ * One credential input on a connector's connect form — METADATA describing the
+ * field, never a value. The GUI renders one input per entry; the generic connect
+ * handler reads the submitted values by `key`.
+ */
+export interface CredentialField {
+  /** Body key the submitted value is sent under (e.g. `'token'`). */
+  key: string;
+  /** Field label shown to the user (e.g. `'API token'`). */
+  label: string;
+  /** Input type — `'password'` masks the value. */
+  type: 'text' | 'password';
+  /** Optional placeholder shown in the empty input. */
+  placeholder?: string;
+  /** Whether the value is required (default true at the route layer). */
+  required?: boolean;
+}
+
 /** Result of beginning an OAuth authorization for a member. */
 export interface AuthorizeResult {
   /** The URL the member must visit to grant access. */
@@ -118,6 +148,8 @@ export interface Connector {
   toolkits(): string[];
   /** The connected-data-type models for a toolkit. */
   models(toolkit: string): ConnectedModelDef[];
+  /** Sidebar/settings presentation (label + logo) for a toolkit this connector serves. */
+  presentation(toolkit: string): ToolkitPresentation;
   /** Begin OAuth for a member + toolkit; returns a redirect URL. */
   authorize(userId: string, toolkit: string): Promise<AuthorizeResult>;
   /** Finalize the connection once the member has completed OAuth. */
@@ -133,4 +165,38 @@ export interface Connector {
   ): AsyncIterable<ExternalRecord>;
   /** Revoke a connected account (teardown). */
   disconnect(connectionId: string): Promise<void>;
+}
+
+/**
+ * A connector that connects via direct credentials the member pastes in — an API
+ * key, token, site URL, etc. — rather than an OAuth redirect. The GUI renders a
+ * form from {@link CredentialConnector.credentialFields} and calls
+ * {@link CredentialConnector.connect} with the collected values; the connector
+ * validates them against the source and stores them encrypted.
+ */
+export interface CredentialConnector extends Connector {
+  /** The credential inputs the connect form must render (metadata only). */
+  credentialFields(): CredentialField[];
+  /**
+   * Validate the submitted credentials against the source and, on success, store
+   * them encrypted under a fresh connection id. Returns the connection id (the
+   * caller records it in the registry) and a validated display name for the UI.
+   * Throws loudly on invalid credentials — never returns a silent default.
+   */
+  connect(creds: Record<string, string>): Promise<{
+    connectionId: string;
+    displayName: string | null;
+  }>;
+  /** Optional URL to docs for obtaining the credentials (shown as a help link). */
+  helpUrl?(): string | undefined;
+}
+
+/**
+ * True when `c` is a {@link CredentialConnector} — i.e. it connects via direct
+ * credentials (both `connect` and `credentialFields` are functions). The route
+ * layer uses this to decide whether to serve the credential connect form.
+ */
+export function isCredentialConnector(c: Connector): c is CredentialConnector {
+  const cc = c as Partial<CredentialConnector>;
+  return typeof cc.connect === 'function' && typeof cc.credentialFields === 'function';
 }

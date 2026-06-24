@@ -20,14 +20,17 @@ import {
   deleteAssistantCredential,
 } from '../../framework/user-config.js';
 import type {
-  Connector,
+  CredentialConnector,
+  CredentialField,
   ConnectedModelDef,
   ExternalRecord,
   AuthorizeResult,
   ConnectionResult,
   ListChangesContext,
+  ToolkitPresentation,
 } from '../types.js';
 import { JIRA_MODELS } from './models.js';
+import { JIRA_ICON } from './icon.js';
 
 /** Page size for every paged Jira fetch. */
 const PAGE_SIZE = 50;
@@ -358,7 +361,7 @@ const ISSUE_FIELDS = [
   'updated',
 ];
 
-export class JiraConnector implements Connector {
+export class JiraConnector implements CredentialConnector {
   readonly connector = 'jira';
 
   /**
@@ -383,6 +386,31 @@ export class JiraConnector implements Connector {
     return JIRA_MODELS;
   }
 
+  presentation(toolkit: string): ToolkitPresentation {
+    if (toolkit !== 'jira') {
+      throw new Error(`Unknown toolkit "${toolkit}" — the Jira connector serves only "jira".`);
+    }
+    return { label: 'Jira', icon: JIRA_ICON };
+  }
+
+  credentialFields(): CredentialField[] {
+    return [
+      {
+        key: 'site',
+        label: 'Site URL',
+        type: 'text',
+        placeholder: 'https://your-domain.atlassian.net',
+        required: true,
+      },
+      { key: 'email', label: 'Email', type: 'text', required: true },
+      { key: 'token', label: 'API token', type: 'password', required: true },
+    ];
+  }
+
+  helpUrl(): string {
+    return 'https://id.atlassian.com/manage-profile/security/api-tokens';
+  }
+
   /**
    * Jira authenticates with direct credentials, not an OAuth redirect. The GUI
    * collects the site/email/token and calls {@link connect}; these SPI methods are
@@ -405,23 +433,41 @@ export class JiraConnector implements Connector {
 
   /**
    * Validate Atlassian credentials against Jira (`GET /myself`) and, on success,
-   * store them encrypted under a fresh connection id. Returns the connection id
-   * (recorded in the registry by the caller) and the validated account display
-   * name (for the UI). Throws if the credentials are invalid.
+   * store them encrypted under a fresh connection id. Reads the submitted
+   * `site` / `email` / `token` values (the wire key stays `token`; it maps to the
+   * internal `apiToken`). Returns the connection id (recorded in the registry by
+   * the caller) and the validated account display name (for the UI). Throws a
+   * clear, actionable error if the inputs are missing, the site isn't a URL, or
+   * the credentials are invalid.
    */
-  async connect(creds: JiraCreds): Promise<{ connectionId: string; displayName: string | null }> {
-    const client = await this.clientFactory(creds);
+  async connect(creds: Record<string, string>): Promise<{
+    connectionId: string;
+    displayName: string | null;
+  }> {
+    const site = (creds.site ?? '').trim().replace(/\/+$/, '');
+    const email = (creds.email ?? '').trim();
+    const apiToken = (creds.token ?? '').trim();
+    if (!site || !email || !apiToken) {
+      throw new ConnectorUnavailableError('site, email, and token are all required.');
+    }
+    if (!/^https?:\/\//i.test(site)) {
+      throw new ConnectorUnavailableError(
+        'site must be a full URL, e.g. https://your-domain.atlassian.net',
+      );
+    }
+    const resolved: JiraCreds = { site, email, apiToken };
+    const client = await this.clientFactory(resolved);
     let me: Json;
     try {
       me = await client.myself();
     } catch (e) {
       throw new Error(
-        `Could not authenticate with Jira at ${creds.site}: ${(e as Error).message}. ` +
+        `Could not authenticate with Jira at ${site}: ${(e as Error).message}. ` +
           'Check the site URL, email, and API token.',
       );
     }
     const connectionId = uuidv4();
-    setJiraCreds(connectionId, creds);
+    setJiraCreds(connectionId, resolved);
     return { connectionId, displayName: str(me.displayName) };
   }
 

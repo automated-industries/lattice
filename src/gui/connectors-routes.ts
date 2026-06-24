@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { sendJson, readJson } from './http.js';
-import type { Connector } from '../connectors/types.js';
+import type { Connector, CredentialField } from '../connectors/types.js';
+import { isCredentialConnector } from '../connectors/types.js';
 import {
   listConnectors,
   getConnector,
@@ -16,10 +17,12 @@ import { ConnectorUnavailableError } from '../connectors/jira/connector.js';
 
 /**
  * Connectors settings routes — connect/refresh/disconnect external sources and
- * read connector status. Jira connects with the user's own Atlassian credentials
- * (site URL + email + API token, validated against Jira on connect — no OAuth
- * redirect, no broker key). Sync runs on connect, on manual refresh, and (via
- * /sync-if-stale) on GUI load.
+ * read connector status. Many connectors are served at once; each declares its
+ * presentation (label + logo) and, for credential connectors, its credential
+ * form, so the route + GUI are fully data-driven and adding a connector touches
+ * neither. Credential connectors validate the submitted credentials against the
+ * source on connect (no OAuth redirect, no broker key). Sync runs on connect, on
+ * manual refresh, and (via /sync-if-stale) on GUI load.
  *
  * User-actionable failures (bad credentials, missing dependency, bad input)
  * answer with a clear error JSON; unexpected errors propagate to the loud 500.
@@ -27,28 +30,56 @@ import { ConnectorUnavailableError } from '../connectors/jira/connector.js';
 
 export interface ConnectorsRouteDeps {
   db: Lattice;
-  /** The connector implementation serving the GUI (the Jira connector). */
-  connector: Connector;
+  /** The connector implementations serving the GUI (one per built-in toolkit). */
+  connectors: Connector[];
   /** Rendered-context output dir, for teardown to prune files. */
   outputDir: string;
   /** Identity that owns connections made in this session (member role / user id). */
   connectedBy: string;
 }
 
-/** Map a ConnectorUnavailableError (no dep / no stored creds) to a 422 the GUI can show. */
+/** Map a ConnectorUnavailableError (no dep / no stored creds / bad input) to a 422 the GUI can show. */
 function isActionable(err: unknown): err is Error {
   return err instanceof ConnectorUnavailableError;
 }
 
-/** A connector that connects via direct credentials (validated + stored), not an OAuth redirect. */
-type CredentialConnector = Connector & {
-  connect(creds: { site: string; email: string; apiToken: string }): Promise<{
-    connectionId: string;
-    displayName: string | null;
-  }>;
-};
-function supportsCredentialConnect(c: Connector): c is CredentialConnector {
-  return typeof (c as Partial<CredentialConnector>).connect === 'function';
+/** Index connectors by toolkit (first wins — a toolkit collision is a wiring bug). */
+function indexByToolkit(connectors: Connector[]): Map<string, Connector> {
+  const map = new Map<string, Connector>();
+  for (const c of connectors) {
+    for (const tk of c.toolkits()) {
+      if (!map.has(tk)) map.set(tk, c);
+    }
+  }
+  return map;
+}
+
+/** A toolkit's presentation + credential form, for the GET /api/connectors response. */
+function toolkitDescriptor(
+  connector: Connector,
+  toolkit: string,
+): {
+  toolkit: string;
+  label: string;
+  icon?: string;
+  credentialFields?: CredentialField[];
+  helpUrl?: string;
+} {
+  const pres = connector.presentation(toolkit);
+  const out: {
+    toolkit: string;
+    label: string;
+    icon?: string;
+    credentialFields?: CredentialField[];
+    helpUrl?: string;
+  } = { toolkit, label: pres.label };
+  if (pres.icon !== undefined) out.icon = pres.icon;
+  if (isCredentialConnector(connector)) {
+    out.credentialFields = connector.credentialFields();
+    const help = connector.helpUrl?.();
+    if (help !== undefined) out.helpUrl = help;
+  }
+  return out;
 }
 
 export async function dispatchConnectorsRoute(
@@ -61,15 +92,22 @@ export async function dispatchConnectorsRoute(
   const method = req.method ?? 'GET';
   if (!pathname.startsWith('/api/connectors')) return false;
 
-  const { db, connector, outputDir, connectedBy } = deps;
+  const { db, connectors, outputDir, connectedBy } = deps;
+  const byToolkit = indexByToolkit(connectors);
 
   try {
-    // GET /api/connectors — list THIS member's connectors + the available toolkits.
+    // GET /api/connectors — list THIS member's connectors + the available toolkits
+    // (each with its presentation + credential form so the GUI renders no per-
+    // connector code).
     if (pathname === '/api/connectors' && method === 'GET') {
-      const connectors = await listConnectors(db, connectedBy);
+      const connected = await listConnectors(db, connectedBy);
+      const toolkits: ReturnType<typeof toolkitDescriptor>[] = [];
+      for (const c of connectors) {
+        for (const tk of c.toolkits()) toolkits.push(toolkitDescriptor(c, tk));
+      }
       sendJson(res, {
-        toolkits: connector.toolkits(),
-        connectors: connectors.map((c) => ({
+        toolkits,
+        connectors: connected.map((c) => ({
           id: c.id,
           toolkit: c.toolkit,
           displayName: c.displayName,
@@ -81,14 +119,21 @@ export async function dispatchConnectorsRoute(
       return true;
     }
 
-    // POST /api/connectors/sync-if-stale — GUI-load refresh hook.
+    // POST /api/connectors/sync-if-stale — GUI-load refresh hook. Loops every
+    // connector; each filters to its own registry rows, so no cross-talk.
     if (pathname === '/api/connectors/sync-if-stale' && method === 'POST') {
-      // Owner-only no-op: ensure connected tables created in any member's session
-      // are RLS-secured on the cloud (the owner auto-secures on open).
-      await secureConnectorTables(db, connector);
-      // Scope to THIS member — never sync another member's connectors as ourselves.
-      const { synced, failed } = await syncStaleConnectors(db, connector, undefined, connectedBy);
-      sendJson(res, { synced: synced.length, failed: failed.length });
+      let synced = 0;
+      let failed = 0;
+      for (const connector of connectors) {
+        // Owner-only no-op: ensure connected tables created in any member's session
+        // are RLS-secured on the cloud (the owner auto-secures on open).
+        await secureConnectorTables(db, connector);
+        // Scope to THIS member — never sync another member's connectors as ourselves.
+        const r = await syncStaleConnectors(db, connector, undefined, connectedBy);
+        synced += r.synced.length;
+        failed += r.failed.length;
+      }
+      sendJson(res, { synced, failed });
       return true;
     }
 
@@ -96,7 +141,8 @@ export async function dispatchConnectorsRoute(
     const rest = pathname.slice('/api/connectors/'.length).split('/');
     const toolkit = rest[0] ?? '';
     const action = rest[1] ?? '';
-    if (toolkit && connector.toolkits().includes(toolkit)) {
+    const connector = toolkit ? byToolkit.get(toolkit) : undefined;
+    if (toolkit && connector) {
       // GET /api/connectors/<toolkit>/models — the connected data types + visibility.
       if (action === 'models' && method === 'GET') {
         sendJson(res, {
@@ -113,7 +159,7 @@ export async function dispatchConnectorsRoute(
       // record the connection + run the initial sync. Idempotent: reconnecting
       // reuses this (toolkit, member)'s registry row and retires the old creds.
       if (action === 'connect' && method === 'POST') {
-        if (!supportsCredentialConnect(connector)) {
+        if (!isCredentialConnector(connector)) {
           sendJson(
             res,
             { error: `Toolkit "${toolkit}" does not support credential connect.` },
@@ -121,29 +167,31 @@ export async function dispatchConnectorsRoute(
           );
           return true;
         }
-        const body = await readJson<{ site?: unknown; email?: unknown; token?: unknown }>(
-          req,
-        ).catch(() => ({}) as { site?: unknown; email?: unknown; token?: unknown });
-        const site = typeof body.site === 'string' ? body.site.trim().replace(/\/+$/, '') : '';
-        const email = typeof body.email === 'string' ? body.email.trim() : '';
-        const token = typeof body.token === 'string' ? body.token.trim() : '';
-        if (!site || !email || !token) {
-          sendJson(res, { error: 'site, email, and token are all required' }, 400);
-          return true;
+        // Generic credential read: collect every declared field by key, coercing
+        // to string + trimming. Presence-check the required fields here (400);
+        // format/auth validation lives in the connector's connect() (→ 422).
+        const raw = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+        const fields = connector.credentialFields();
+        const creds: Record<string, string> = {};
+        const missing: string[] = [];
+        for (const f of fields) {
+          const v = typeof raw[f.key] === 'string' ? (raw[f.key] as string).trim() : '';
+          creds[f.key] = v;
+          if (f.required !== false && !v) missing.push(f.key);
         }
-        if (!/^https?:\/\//i.test(site)) {
+        if (missing.length > 0) {
           sendJson(
             res,
-            { error: 'site must be a full URL, e.g. https://your-domain.atlassian.net' },
+            { error: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required` },
             400,
           );
           return true;
         }
         let connection: { connectionId: string; displayName: string | null };
         try {
-          connection = await connector.connect({ site, email, apiToken: token });
+          connection = await connector.connect(creds);
         } catch (e) {
-          // Bad credentials / unreachable site — surface the specific reason.
+          // Bad credentials / bad input / unreachable source — surface the reason.
           sendJson(res, { error: (e as Error).message }, 422);
           return true;
         }
