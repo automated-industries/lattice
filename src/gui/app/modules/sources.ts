@@ -12,9 +12,14 @@ export const sourcesJs = `
     function renderSources() {
       renderSourcesConnectors();
       // One files load drives both the Files ref_uri map and the Artifacts list.
-      loadAllRows('files')
-        .then(function (rows) {
-          rows = (rows || []).filter(function (r) { return !r.deleted_at; });
+      // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
+      // row) the sidebar never reads — this runs on every sidebar re-render, so a
+      // SELECT * here would be a large repeated read (bounded-reads). RLS scoping
+      // is unchanged (same /rows endpoint).
+      fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
+        .then(function (data) {
+          var rows = (data && data.rows) || [];
+          rows = rows.filter(function (r) { return !r.deleted_at; });
           sourcesFilesByPath = {};
           rows.forEach(function (r) {
             if (r.ref_kind === 'local_ref' && r.ref_uri) sourcesFilesByPath[r.ref_uri] = r.id;

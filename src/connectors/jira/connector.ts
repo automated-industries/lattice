@@ -99,6 +99,7 @@ export interface JiraClient {
     jql: string;
     nextPageToken?: string;
     maxResults: number;
+    fields?: string[];
   }): Promise<{ issues: Json[]; nextPageToken?: string }>;
   searchProjects(args: {
     startAt: number;
@@ -341,6 +342,21 @@ function mapComment(c: Json, issueKey: string): ExternalRecord | null {
 
 /** A bounded query (the enhanced JQL search requires a search restriction, not just ORDER BY). */
 const ALL_ISSUES_JQL = 'created >= "1970-01-01" ORDER BY created ASC';
+// The enhanced JQL search (`/rest/api/3/search/jql`) returns IDs ONLY unless an
+// explicit `fields` list is requested — so ask for exactly the fields mapIssue
+// reads, or every issue column would come back null.
+const ISSUE_FIELDS = [
+  'summary',
+  'description',
+  'status',
+  'issuetype',
+  'priority',
+  'assignee',
+  'reporter',
+  'labels',
+  'project',
+  'updated',
+];
 
 export class JiraConnector implements Connector {
   readonly connector = 'jira';
@@ -463,9 +479,15 @@ export class JiraConnector implements Connector {
         yield* this.pageToken(
           model,
           async (token) => {
-            const args: { jql: string; nextPageToken?: string; maxResults: number } = {
+            const args: {
+              jql: string;
+              nextPageToken?: string;
+              maxResults: number;
+              fields: string[];
+            } = {
               jql: ALL_ISSUES_JQL,
               maxResults: PAGE_SIZE,
+              fields: ISSUE_FIELDS,
             };
             if (token) args.nextPageToken = token;
             const r = await client.searchIssues(args);

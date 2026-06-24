@@ -132,6 +132,20 @@ describe('Jira connector', () => {
     });
   });
 
+  it('listChanges(issue) requests an explicit fields list (the enhanced search returns IDs only otherwise)', async () => {
+    let captured: { fields?: string[] } | undefined;
+    const client = fakeClient({
+      searchIssues: (a) => {
+        captured = a;
+        return Promise.resolve({ issues: [] });
+      },
+    });
+    await collect(connectorWith(client).listChanges('jira', 'issue', ctx()));
+    expect(captured?.fields).toBeDefined();
+    expect(captured?.fields).toContain('summary');
+    expect(captured?.fields).toContain('updated');
+  });
+
   it('listChanges(issue) follows nextPageToken across pages', async () => {
     let calls = 0;
     const client = fakeClient({

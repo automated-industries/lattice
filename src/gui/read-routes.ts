@@ -677,6 +677,10 @@ export async function handleReadRoutes(
   // row, newest first, from the GUI audit log. Bounded (clamped limit) so a
   // long-lived row's history can't be read unbounded.
   // GET /api/tables/:table/rows/:id/history
+  // FOLLOW-UP: `_lattice_gui_audit` has no index on (table_name, row_id), so on a
+  // large cloud audit log this filtered read is a sequential scan. Correctness is
+  // fine (bounded by the clamped limit) and it's on-click (not a hot path); a
+  // composite index is the optimization when audit volume warrants it.
   const rowHistMatch = ROW_HISTORY_PATH.exec(pathname);
   if (rowHistMatch && method === 'GET') {
     const histTable = decodeURIComponent(rowHistMatch[1] ?? '');

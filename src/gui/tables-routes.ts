@@ -112,6 +112,19 @@ export async function handleTablesRoutes(
             { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
           ];
         }
+        // Optional column projection (?exclude=col,col) so a caller can skip heavy
+        // columns it doesn't need — e.g. the Sources sidebar excluding
+        // files.extracted_text (up to 200 KB/row) on its frequent re-renders
+        // (bounded-reads). RLS still applies (the read goes through the same
+        // relation); the excluded columns are simply not selected.
+        const excludeParam = url.searchParams.get('exclude');
+        if (excludeParam) {
+          const cols = excludeParam
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (cols.length) queryOpts.projection = { exclude: cols };
+        }
         // #2.1 — a member reads an audience-masked table through its
         // `<table>_v` view (base SELECT was revoked); the base name is used
         // everywhere else (validTables, ownership lookups, writes).
