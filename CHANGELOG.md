@@ -159,6 +159,13 @@ verification) and the findings folded into the above.
   connection (LISTEN/NOTIFY requires it). Only Supabase pooler hosts on :5432 are
   rewritten; direct/non-Supabase/already-:6543 URLs are untouched. Set
   `LATTICE_PG_SESSION_POOLER=1` to opt out.
+- **A connected Claude subscription is strictly preferred over an API key.** When
+  both are configured, the assistant uses the subscription (OAuth). It previously
+  did too — except a transient OAuth token-refresh failure was caught and the code
+  **silently fell back to the API key**, quietly running the assistant on a
+  different credential/billing. Now a refresh failure is surfaced (logged) and the
+  connected subscription is kept (the existing access token is used); the API key
+  is reached only when no usable OAuth credential is configured at all.
 
 ---
 

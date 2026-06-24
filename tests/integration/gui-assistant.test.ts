@@ -249,4 +249,30 @@ describe('assistant key storage', () => {
     };
     expect(cfg2.hasAnthropicKey).toBe(true);
   });
+
+  // Regression: a connected subscription must stay preferred even when its token
+  // refresh transiently fails — the resolver previously caught the refresh error
+  // and SILENTLY fell back to the API key, quietly running the assistant on a
+  // different credential. Now it keeps the subscription (uses the existing access
+  // token) and surfaces the failure instead.
+  it('keeps OAuth when token refresh fails — never silently switches to the API key', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-key-must-not-win';
+    const savedTokenUrl = process.env.ANTHROPIC_OAUTH_TOKEN_URL;
+    process.env.ANTHROPIC_OAUTH_TOKEN_URL = 'http://127.0.0.1:1/oauth/token'; // refused → refresh throws
+    // Expired access token (expires_at in the past) forces a refresh attempt.
+    setAssistantCredential(
+      'claude_oauth',
+      JSON.stringify({ access_token: 'oauth-existing-tok', refresh_token: 'rt', expires_at: 1 }),
+    );
+    try {
+      const auth = await resolveClaudeAuth(null);
+      expect(auth?.authToken).toBe('oauth-existing-tok');
+      expect(auth?.apiKey).toBeUndefined();
+    } finally {
+      deleteAssistantCredential('claude_oauth');
+      if (savedTokenUrl === undefined) delete process.env.ANTHROPIC_OAUTH_TOKEN_URL;
+      else process.env.ANTHROPIC_OAUTH_TOKEN_URL = savedTokenUrl;
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
 });
