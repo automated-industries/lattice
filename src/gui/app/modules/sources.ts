@@ -25,9 +25,12 @@ export const sourcesJs = `
             if (r.ref_kind === 'local_ref' && r.ref_uri) sourcesFilesByPath[r.ref_uri] = r.id;
           });
           renderSourcesArtifacts(rows.filter(function (r) { return r.artifact_type; }));
+          // Source files = everything the user ingested/uploaded (NOT Lattice-created
+          // artifacts). Shown in the Files section alongside any registered on-disk
+          // roots — so existing files appear even before a folder is added.
+          renderSourcesFiles(rows.filter(function (r) { return !r.artifact_type; }));
         })
-        .catch(function () { renderSourcesArtifacts([]); });
-      renderSourcesFiles();
+        .catch(function () { renderSourcesArtifacts([]); renderSourcesFiles([]); });
       wireSourcesButtons();
     }
 
@@ -46,23 +49,47 @@ export const sourcesJs = `
         '<span class="src-ic">📄</span><span class="src-name">' + escapeHtml(name) + '</span></div></li>';
     }
 
-    function renderSourcesFiles() {
+    function renderSourcesFiles(sourceFiles) {
       var host = document.getElementById('src-files-tree');
       if (!host) return;
-      // Files are on-disk + local-only; the endpoint reports enabled:false on a
-      // cloud/locked workspace, where the tree simply isn't offered.
+      sourceFiles = sourceFiles || [];
+      // The Files section shows the user's source files (ingested/uploaded) PLUS any
+      // registered on-disk roots as lazy trees. Roots live on the local FS so the
+      // roots endpoint reports enabled:false on a cloud/locked workspace; the
+      // already-ingested source files still show there (they're DB rows).
       fetchJson('/api/sources/roots')
         .then(function (data) {
-          if (!data || data.enabled === false) {
-            host.innerHTML = '<div class="src-note">Available on a local workspace.</div>';
-            return;
-          }
-          var roots = data.roots || [];
-          host.innerHTML = roots.length
+          var roots = (data && data.roots) || [];
+          var folderPaths = roots
+            .filter(function (r) { return r.kind === 'folder'; })
+            .map(function (r) { return r.path; });
+          // Loose files = source files NOT under a registered folder root (those show
+          // inside the tree); an uploaded file (no on-disk path) is always loose.
+          var loose = sourceFiles.filter(function (r) {
+            if (!r.ref_uri) return true;
+            return !folderPaths.some(function (p) {
+              return r.ref_uri === p || r.ref_uri.indexOf(p + '/') === 0;
+            });
+          });
+          var rootsHtml = roots.length
             ? '<ul class="src-tree">' + roots.map(function (r) {
                 return sourceNodeHtml(r.path, r.name, r.kind, 0);
               }).join('') + '</ul>'
-            : '<div class="src-empty">No files yet.</div>';
+            : '';
+          var looseHtml = loose.length
+            ? '<ul class="src-tree">' + loose.map(function (r) {
+                var name = r.name || r.original_name || 'Untitled';
+                return '<li class="src-node src-file" data-id="' + escapeHtml(r.id) +
+                  '"><div class="src-row" style="padding-left:14px">' +
+                  '<span class="src-ic">' + fileEmoji(r) + '</span>' +
+                  '<span class="src-name">' + escapeHtml(name) + '</span></div></li>';
+              }).join('') + '</ul>'
+            : '';
+          if (!rootsHtml && !looseHtml) {
+            host.innerHTML = '<div class="src-empty">No files yet.</div>';
+            return;
+          }
+          host.innerHTML = rootsHtml + looseHtml;
           wireSourceTree(host);
         })
         .catch(function () { host.innerHTML = ''; });
@@ -77,7 +104,14 @@ export const sourcesJs = `
       scope.querySelectorAll('.src-file > .src-row').forEach(function (row) {
         if (row.__wired) return;
         row.__wired = true;
-        row.addEventListener('click', function () { openSourceFile(row.parentNode.getAttribute('data-path')); });
+        row.addEventListener('click', function () {
+          var li = row.parentNode;
+          // A loose source file carries the files-row id (open it directly); an
+          // on-disk tree leaf carries its path (resolve/ingest, then open).
+          var id = li.getAttribute('data-id');
+          if (id) { location.hash = '#/fs/files/' + encodeURIComponent(id); return; }
+          openSourceFile(li.getAttribute('data-path'));
+        });
       });
     }
 
@@ -195,10 +229,17 @@ export const sourcesJs = `
           if (!d || d.enabled === false) { showToast('Local file access is disabled.', {}); return; }
           if (d.cancelled || !d.path) return;
           showToast(kind === 'folder' ? 'Ingesting folder…' : 'Ingesting file…', {});
-          return fetch('/api/sources/roots', {
+          // A folder is registered as a browsable root (and its files ingested); a
+          // single file is just ingested — it shows in the Files list as a loose
+          // file. Registering a one-file "root" would double it (root leaf + the
+          // ingested row). The ingest's realtime feed drives the graph animation;
+          // we deliberately DON'T navigate to the new file (it just appears).
+          var url = kind === 'folder' ? '/api/sources/roots' : '/api/ingest/file';
+          var body = kind === 'folder' ? { path: d.path, kind: kind } : { path: d.path };
+          return fetch(url, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ path: d.path, kind: kind }),
+            body: JSON.stringify(body),
           })
             .then(function (r) { return r.json(); })
             .then(function (res) {

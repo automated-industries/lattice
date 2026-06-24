@@ -117,6 +117,34 @@ The desktop/web GUI is reorganized around the data graph.
   `extracted_text` on the **same row** (`PUT …/rows/:id/content`, audited → kept in
   history) — it never spawns a new file.
 
+### Changed — GUI redesign refinements
+
+- **Realtime activity flashes in the top-right status indicator** instead of
+  rendering persistent pills in the right rail. Each change shows briefly as it
+  happens, then clears; the rail is reserved for the assistant conversation. The
+  live brain-graph ingestion animation is unchanged (ingests still land on the
+  graph).
+- **Brain graph.** Every relationship renders as a solid **green** many-to-many
+  link — the foreign-key edge style and the FK/many-to-many legend are removed
+  (foreign keys are deprecated). Scroll-to-zoom is now smooth and proportional
+  (scales by the scroll delta rather than a fixed step) and is capped at the fit
+  view — the outermost objects plus their padding — so you can't zoom out into
+  empty space.
+- **File / artifact view.** The toolbar buttons are consolidated into a dropdown
+  menu beside the title (**View source**, **Version history**, **Delete**). View
+  source and Version history are now full-page modes that replace the body (no
+  overlay panel); **Remove** is renamed **Delete**. The tab now shows the file's
+  name (e.g. "Properties Dashboard") rather than the object name.
+- **PDF preview renders inline again.** The blob route's `sandbox`
+  Content-Security-Policy — which also blanked the browser's built-in PDF viewer —
+  is no longer sent for `application/pdf`; `X-Content-Type-Options: nosniff` plus
+  the declared type still prevent a non-PDF being interpreted as HTML.
+- **Files sidebar lists ingested source files**, not only registered on-disk
+  roots — so existing files show even before a folder is added. Adding a single
+  file ingests it (it appears as a loose file) instead of registering a one-file
+  root that would double it.
+- **Default inference aggressiveness is now 0.85** (was 0.5).
+
 ### Added — Inline HTML files
 
 Inline HTML files in the GUI assistant; this also retires the never-published

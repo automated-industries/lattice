@@ -207,7 +207,7 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   show_system_tables: false,
   analytics: true,
   voice_provider: 'auto',
-  aggressiveness: 0.5,
+  aggressiveness: 0.85,
 };
 
 /**

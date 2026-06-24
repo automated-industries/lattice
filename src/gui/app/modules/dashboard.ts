@@ -1145,8 +1145,13 @@ export const dashboardJs = `    // ───────────────
           return;
         }
         var d = displayFor(table);
+        // The tab shows the open RECORD's name (e.g. an entity row), not the
+        // object/table name.
+        if (typeof setTabTitle === 'function') {
+          setTabTitle(tabKeyForHash(location.hash), fsDisplayName(row) || d.label);
+        }
         // Files + artifacts get the two-view document layout (formatted display +
-        // a View Source toggle) with a Version History + Remove toolbar — not the
+        // a View Source toggle) with a Version History + Delete dropdown — not the
         // column-by-column field dump or the "Inside" grid.
         if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d); return; }
         var bt = belongsToColumns(t);
@@ -1210,60 +1215,92 @@ export const dashboardJs = `    // ───────────────
       return row && typeof row.extracted_text === 'string' ? row.extracted_text : '';
     }
     function renderFsDocItem(content, segs, crumbs, id, row, d) {
+      // The tab shows the FILE's name (e.g. "Properties Dashboard"), not the
+      // object name ("Files").
+      if (typeof setTabTitle === 'function') {
+        setTabTitle(tabKeyForHash(location.hash), fsDisplayName(row) || d.label);
+      }
       var mode = fileViewMode[id] || 'display';
-      var isArtifact = !!row.artifact_type;
-      var src = sourceTextOf(row);
-      // An artifact (Lattice-created) is editable in place; an ingested file's
-      // source is a read-only view of its extracted text.
-      var sourceView = isArtifact
-        ? '<div class="file-source">' +
-            '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
-            '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
-            '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
-          '</div>'
-        : '<pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre>';
+      // Actions live in a dropdown menu next to the title; View source / Version
+      // history are full-page modes (they replace the body, not overlay it).
       content.innerHTML =
         fsBreadcrumb(segs, crumbs) +
         '<div class="view-header">' +
           '<span class="entity-icon">' + fileEmoji(row) + '</span>' +
           '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
-          '<div class="actions">' +
-            '<button class="btn" id="file-viewsource">' + (mode === 'source' ? 'View Formatted' : 'View Source') + '</button>' +
-            '<button class="btn" id="file-history">Version History</button>' +
-            '<button class="btn danger" id="file-remove">Remove</button>' +
+          '<div class="actions file-menu-wrap">' +
+            '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">⋯</button>' +
+            '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+              (mode !== 'display' ? '<button class="file-menu-item" data-act="display" role="menuitem">Formatted view</button>' : '') +
+              (mode !== 'source' ? '<button class="file-menu-item" data-act="source" role="menuitem">View source</button>' : '') +
+              (mode !== 'history' ? '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' : '') +
+              '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
+            '</div>' +
           '</div>' +
         '</div>' +
-        '<div id="file-history-panel" class="file-history-panel" hidden></div>' +
-        (mode === 'source' ? sourceView : '<div class="file-preview" id="file-preview"></div>');
+        '<div id="file-body">' + fileBodyHtml(mode, row) + '</div>';
       if (mode === 'display') renderFilePreview(row);
+      else if (mode === 'history') loadFileHistoryInto(content, id);
       wireFsDocToolbar(content, segs, id, row);
     }
 
+    // The body for the current view mode (display | source | history).
+    function fileBodyHtml(mode, row) {
+      if (mode === 'source') {
+        var src = sourceTextOf(row);
+        // An artifact (Lattice-created) edits in place; an ingested file's source
+        // is read-only extracted text.
+        return row.artifact_type
+          ? '<div class="file-source">' +
+              '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
+              '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
+              '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
+            '</div>'
+          : '<pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre>';
+      }
+      if (mode === 'history') {
+        return '<div class="file-history-view" id="file-history-view"><div class="muted" style="padding:8px">Loading history…</div></div>';
+      }
+      return '<div class="file-preview" id="file-preview"></div>';
+    }
+
     function wireFsDocToolbar(content, segs, id, row) {
-      var vs = content.querySelector('#file-viewsource');
-      if (vs) vs.addEventListener('click', function () {
-        fileViewMode[id] = fileViewMode[id] === 'source' ? 'display' : 'source';
-        renderFsItem(content, segs); // re-render this item in place
+      var btn = content.querySelector('#file-menu-btn');
+      var menu = content.querySelector('#file-menu');
+      if (btn && menu) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var willShow = menu.hidden;
+          menu.hidden = !willShow;
+          btn.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+        });
+        // Click elsewhere closes the menu.
+        document.addEventListener('click', function () {
+          if (!menu.hidden) { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+        });
+      }
+      content.querySelectorAll('.file-menu-item').forEach(function (it) {
+        it.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var act = it.getAttribute('data-act');
+          if (act === 'delete') { removeFile(segs, id, row); return; }
+          fileViewMode[id] = act; // display | source | history
+          renderFsItem(content, segs); // re-render this item in the new mode
+        });
       });
-      var hist = content.querySelector('#file-history');
-      if (hist) hist.addEventListener('click', function () { toggleFileHistory(content, id); });
-      var rm = content.querySelector('#file-remove');
-      if (rm) rm.addEventListener('click', function () { removeFile(segs, id, row); });
       var save = content.querySelector('#file-source-save');
       if (save) save.addEventListener('click', function () { saveFileSource(content, segs, id); });
     }
 
-    function toggleFileHistory(content, id) {
-      var panel = content.querySelector('#file-history-panel');
-      if (!panel) return;
-      if (!panel.hidden) { panel.hidden = true; return; }
-      panel.hidden = false;
-      panel.innerHTML = '<div class="muted" style="padding:8px">Loading history…</div>';
+    // Load the row's version history into the full-page history view.
+    function loadFileHistoryInto(content, id) {
+      var host = content.querySelector('#file-history-view');
+      if (!host) return;
       fetchJson('/api/tables/files/rows/' + encodeURIComponent(id) + '/history')
         .then(function (data) {
           var hist = (data && data.history) || [];
-          if (!hist.length) { panel.innerHTML = '<div class="muted" style="padding:8px">No prior versions yet.</div>'; return; }
-          panel.innerHTML = '<h3 class="file-history-title">Version history</h3><ul class="file-history-list">' +
+          if (!hist.length) { host.innerHTML = '<div class="muted" style="padding:8px">No prior versions yet.</div>'; return; }
+          host.innerHTML = '<ul class="file-history-list">' +
             hist.map(function (h) {
               return '<li class="file-history-item">' +
                 '<span class="fh-op">' + escapeHtml(h.operation) + '</span>' +
@@ -1271,12 +1308,12 @@ export const dashboardJs = `    // ───────────────
                 (h.undone ? '<span class="fh-undone">undone</span>' : '') +
                 '<button class="btn fh-revert" data-rev="' + escapeHtml(h.id) + '">Revert</button></li>';
             }).join('') + '</ul>';
-          panel.querySelectorAll('.fh-revert').forEach(function (b) {
+          host.querySelectorAll('.fh-revert').forEach(function (b) {
             b.addEventListener('click', function () { revertFileVersion(b.getAttribute('data-rev')); });
           });
         })
         .catch(function (e) {
-          panel.innerHTML = '<div class="muted" style="padding:8px">Failed: ' + escapeHtml(e.message) + '</div>';
+          host.innerHTML = '<div class="muted" style="padding:8px">Failed: ' + escapeHtml(e.message) + '</div>';
         });
     }
 
@@ -1306,7 +1343,7 @@ export const dashboardJs = `    // ───────────────
         .catch(function (e) { showToast('Save failed: ' + e.message, {}); });
     }
 
-    // Soft-delete (Remove): recoverable, and NEVER touches the on-disk file — it
+    // Soft-delete (Delete): recoverable, and NEVER touches the on-disk file — it
     // only soft-deletes the Lattice record. Closes the item's tab afterward.
     function removeFile(segs, id, row) {
       fetch('/api/tables/files/rows/' + encodeURIComponent(id), {
@@ -1314,14 +1351,14 @@ export const dashboardJs = `    // ───────────────
         headers: { 'content-type': 'application/json' },
         body: '{}',
       })
-        .then(function (r) { if (!r.ok) throw new Error('remove failed (' + r.status + ')'); return r.json(); })
+        .then(function (r) { if (!r.ok) throw new Error('delete failed (' + r.status + ')'); return r.json(); })
         .then(function () { invalidate('files'); return refreshEntities(); })
         .then(function () {
-          showToast('Removed "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
+          showToast('Deleted "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
           if (typeof closeTab === 'function') closeTab(tabKeyForHash(location.hash));
           else location.hash = '#/graph';
         })
-        .catch(function (e) { showToast('Remove failed: ' + e.message, {}); });
+        .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }
 
     // Click-to-edit on rendered values. Reuses fieldFor() for the input and the

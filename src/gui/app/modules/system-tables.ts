@@ -33,7 +33,7 @@ export const systemTablesJs = `    // ──────────────
     // join (via a junction). Colors live here, not in CSS, because they're
     // drawn into the SVG per edge.
     var DM_FK_COLOR = '#22c55e'; // belongsTo — an enforced reference
-    var DM_M2M_COLOR = '#22d3ee'; // many-to-many — a junction join
+    var DM_M2M_COLOR = '#22c55e'; // every relationship is many-to-many now (FK deprecated) — green
 
     // The brain graph as the center pane's main view — the schema graph, full
     // size, with no inline entity editor (schema/column editing lives in
@@ -216,7 +216,7 @@ export const systemTablesJs = `    // ──────────────
         minX = Math.min(minX, nd.x - nd.r); minY = Math.min(minY, nd.y - nd.r);
         maxX = Math.max(maxX, nd.x + nd.r); maxY = Math.max(maxY, nd.y + nd.r);
       });
-      var pad = 60;
+      var pad = 50;
       var vb = [minX - pad, minY - pad, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad];
       var defs =
         '<defs>' +
@@ -227,8 +227,8 @@ export const systemTablesJs = `    // ──────────────
         '</defs>';
       var edgeSvg = links.map(function (l, i) {
         var a = nodes[l.si], b = nodes[l.ti];
-        var color = l.kind === 'fk' ? DM_FK_COLOR : DM_M2M_COLOR;
-        var dash = l.kind === 'm2m' ? ' stroke-dasharray="6 4"' : '';
+        var color = DM_FK_COLOR; // green for every relationship
+        var dash = ''; // solid lines for all (m2m is the only relationship now)
         var markEnd = ' marker-end="url(#dm-arrow-' + l.kind + ')"';
         var markStart = l.kind === 'm2m' ? ' marker-start="url(#dm-arrow-m2m)"' : '';
         var title = l.kind === 'fk'
@@ -255,22 +255,10 @@ export const systemTablesJs = `    // ──────────────
           '<title>' + escapeHtml(nd.label + ' · ' + nd.rowCount + ' rows · ' + nd.cols + ' columns' + shareTitle) + '</title>' +
           '</g>';
       }).join('');
-      // Share legend entries only make sense on a cloud workspace (where nodes
-      // carry share status). Local DBs show just the relationship key.
-      var anyCloud = nodes.some(function (nd) { return nd.cloudWorkspace; });
-      var shareLegend = anyCloud
-        ? '<span><i class="sw sw-shared"></i><span style="color:var(--text-muted)">shared</span></span>' +
-          '<span><i class="sw sw-private"></i><span style="color:var(--text-muted)">private</span></span>' +
-          '<span><i class="sw sw-selected"></i><span style="color:var(--text-muted)">selected</span></span>'
-        : '';
-      var legend =
-        '<div class="dm-legend">' +
-          '<span style="color:' + DM_FK_COLOR + '"><i></i><span style="color:var(--text-muted)">foreign key</span></span>' +
-          '<span style="color:' + DM_M2M_COLOR + '"><i class="dash"></i><span style="color:var(--text-muted)">many-to-many</span></span>' +
-          shareLegend +
-        '</div>';
+      // No legend: every relationship is a green many-to-many link now (foreign
+      // keys are deprecated), so there's nothing to disambiguate.
       return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
-        defs + '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>' + legend;
+        defs + '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>';
     }
 
     function highlightGraphNode(tableName) {
@@ -321,12 +309,15 @@ export const systemTablesJs = `    // ──────────────
       svg.addEventListener('wheel', function (ev) {
         ev.preventDefault();
         var b = vb(); var pt = toData(ev);
-        var factor = ev.deltaY > 0 ? 1.12 : 0.89;
+        // Smooth, proportional zoom — scale by the (clamped) scroll delta instead
+        // of a fixed 12% step, which felt jumpy. A trackpad sends many small deltas
+        // → continuous; a mouse notch is clamped so it can't lurch.
+        var d = Math.max(-50, Math.min(50, ev.deltaY));
+        var factor = Math.pow(1.0018, d);
         var nw = b[2] * factor, nh = b[3] * factor;
-        if (nw >= fitVb[2] || nh >= fitVb[3]) {
-          setVb(fitVb.slice()); // can't zoom out past all entities
-          return;
-        }
+        // Cap zoom-OUT at the fit view (outermost objects + their padding) so the
+        // graph can never shrink into empty space.
+        if (nw >= fitVb[2] || nh >= fitVb[3]) { setVb(fitVb.slice()); return; }
         setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
       }, { passive: false });
 

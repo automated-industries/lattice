@@ -7,6 +7,10 @@ export const statusIndicatorCss = `    /* ── Top-right status indicator ─�
       background: var(--surface-2); border: 1px solid var(--border);
       color: var(--text-muted); font-size: 12px; white-space: nowrap;
     }
+    /* When idle the status is hidden via the [hidden] attribute — but the
+       display:inline-flex above would otherwise win over the UA [hidden] rule and
+       leave an empty bubble. Force it gone. */
+    .app-status[hidden] { display: none; }
     .app-status .spinner { width: 11px; height: 11px; }
     .app-status-accent { color: var(--accent); border-color: var(--accent-soft); }
     .app-status-warn { color: var(--warn, #d97706); }

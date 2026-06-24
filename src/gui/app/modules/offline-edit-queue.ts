@@ -140,12 +140,13 @@ export const offlineEditQueueJs = `    // ────────────�
         if (data) onRealtimeChange(data);
         scheduleRealtimeRefresh();
       } else if (type === 'feed') {
-        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
-        // An ingest burst drives the top-right "Ingesting…" status (debounced clear)
-        // and the live brain-graph animation (node bubble-in / edge draw).
-        if (data && data.source === 'ingest') {
-          noteIngestActivity();
-          if (['insert', 'link', 'schema'].indexOf(data.op) !== -1) scheduleGraphIngestAnim();
+        // renderFeedItem now flashes each change as a transient top-right status
+        // (the realtime update) — no rail pills.
+        try { renderFeedItem(data); } catch (_) { /* best-effort */ }
+        // An ingest also drives the live brain-graph animation (node bubble-in /
+        // edge draw).
+        if (data && data.source === 'ingest' && ['insert', 'link', 'schema'].indexOf(data.op) !== -1) {
+          scheduleGraphIngestAnim();
         }
         if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
       } else if (type === 'render-snapshot') {

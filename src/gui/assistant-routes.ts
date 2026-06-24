@@ -190,7 +190,7 @@ const STT_PROVIDER_KIND = 'stt_provider';
 const AGGRESSIVENESS_KIND = 'assistant_aggressiveness';
 
 /** Default inference aggressiveness (0 = conservative … 1 = aggressive). */
-export const DEFAULT_AGGRESSIVENESS = 0.5;
+export const DEFAULT_AGGRESSIVENESS = 0.85;
 
 /**
  * The user's "inference aggressiveness" — a single behaviour knob (0 = only

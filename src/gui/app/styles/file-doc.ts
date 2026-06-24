@@ -16,11 +16,8 @@ export const fileDocCss = `    /* ── File / artifact document view ───
       background: var(--surface-2); color: var(--text);
       border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow: auto;
     }
-    .file-history-panel {
-      border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
-      padding: 8px 12px; margin: 10px 0;
-    }
-    .file-history-title { margin: 4px 0 8px; font-size: 13px; }
+    /* Full-page version-history view (replaces the body, not an overlay). */
+    .file-history-view { padding: 4px 2px; }
     .file-history-list { list-style: none; margin: 0; padding: 0; }
     .file-history-item {
       display: flex; align-items: center; gap: 10px; padding: 5px 0;
@@ -31,5 +28,20 @@ export const fileDocCss = `    /* ── File / artifact document view ───
     .fh-ts { color: var(--text-muted); }
     .fh-undone { color: var(--text-muted); font-style: italic; }
     .fh-revert { margin-left: auto; }
+    /* ── File actions dropdown (next to the title) ─────────── */
+    .file-menu-wrap { position: relative; }
+    .file-menu-btn { font-size: 18px; line-height: 1; padding: 2px 10px; }
+    .file-menu {
+      position: absolute; right: 0; top: calc(100% + 4px); z-index: 30;
+      min-width: 172px; padding: 5px; display: flex; flex-direction: column;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+    }
+    .file-menu-item {
+      text-align: left; background: none; border: 0; color: var(--text);
+      font-size: 13px; padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    }
+    .file-menu-item:hover { background: var(--surface-2); }
+    .file-menu-item.danger { color: var(--danger, #c0392b); }
 
 `;

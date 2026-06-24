@@ -80,13 +80,4 @@ export const statusIndicatorJs = `
       delete appStatuses[id];
       renderAppStatus();
     }
-
-    // A burst of source:'ingest' feed events shows one "Ingesting…" status that
-    // clears shortly after the burst ends (debounced).
-    var ingestClearTimer = null;
-    function noteIngestActivity() {
-      setStatus({ id: 'ingest', kind: 'accent', text: 'Ingesting…', priority: 50, sticky: true });
-      if (ingestClearTimer) clearTimeout(ingestClearTimer);
-      ingestClearTimer = setTimeout(function () { clearStatus('ingest'); }, 2000);
-    }
 `;

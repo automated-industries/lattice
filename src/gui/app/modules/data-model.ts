@@ -1704,52 +1704,12 @@ export const dataModelJs = `    // ───────────────
       };
     }
     function renderFeedItem(ev) {
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return;
-      var empty = document.getElementById('rail-empty');
-      if (empty) empty.remove();
-      // Coalesce same-TYPE events into one counted card within a recency window —
-      // even across different objects (op+source key, table excluded), so a bulk
-      // run collapses to one card ("Removed 49 rows across 9 tables") instead of
-      // spamming the rail. Distinct tables touched are tracked so a single-table
-      // run still reads "… from <table>".
-      var groupKey = feedGroupKey(ev);
-      var nowMs = Date.now();
-      if (groupKey) {
-        var g = feedGroups[groupKey];
-        // A group stays open to merge while: (a) we're inside the SAME assistant
-        // turn that opened it — no time limit, so a slow bulk run (deleting many
-        // tables against a remote DB) stays one card instead of splitting when a
-        // 15s window lapses mid-run; or (b) outside a turn (manual edits / another
-        // client), within the rolling window. Cross-turn events never merge.
-        var open = g && g.item.parentNode === feedEl && (
-          feedTurnActive ? (g.turnId === feedTurnId) : ((nowMs - g.last) < FEED_GROUP_WINDOW_MS)
-        );
-        if (open) {
-          applyGroupHit(g, ev, nowMs);
-          g.last = nowMs;
-          feedEl.scrollTop = feedEl.scrollHeight;
-          return;
-        }
-      }
-      var card = makeFeedCard(ev);
-      // Keep a streaming chat turn's typing bubble pinned to the bottom: insert
-      // this card above it rather than appending below (the dots are the next
-      // message, not done yet). No active turn → append as usual.
-      var anchor = feedTypingAnchor(feedEl);
-      if (anchor) feedEl.insertBefore(card.item, anchor); else feedEl.appendChild(card.item);
-      feedEl.scrollTop = feedEl.scrollHeight;
-      // Anchor the card's duration to the turn start (so even a single-op card
-      // shows how long the task took); fall back to now for non-turn activity.
-      var startMs = (feedTurnActive && feedTurnStartMs) ? feedTurnStartMs : nowMs;
-      if (groupKey) {
-        var grp = newGroup(ev, card, startMs, nowMs);
-        grp.turnId = feedTurnId;
-        grp.last = nowMs;
-        feedGroups[groupKey] = grp;
-        setGroupTime(grp);
-      } else {
-        card.timeEl.textContent = formatElapsed(Math.max(0, nowMs - startMs));
+      // Realtime activity now surfaces as a transient TOP-RIGHT status (it flashes
+      // as it happens, then clears) — no persistent activity pills in the right
+      // rail. The rail is for the assistant conversation; the live brain-graph
+      // animation still shows ingests landing on the graph.
+      if (ev && ev.summary && typeof setStatus === 'function') {
+        setStatus({ id: 'activity', kind: 'accent', text: ev.summary, priority: 30, sticky: false, ttl: 4500 });
       }
     }
     // Replay a persisted assistant turn's data-change events as collapsed activity
