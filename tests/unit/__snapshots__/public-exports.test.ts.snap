@@ -12,6 +12,7 @@ exports[`public API surface (additive-only) > exports only grow — no removal/r
   "DEFAULT_ENTRY_TYPES",
   "DEFAULT_MAX_NODES",
   "DEFAULT_TYPE_ALIASES",
+  "DenoSqliteAdapter",
   "EMBEDDINGS_TABLE",
   "EmbeddingDimensionMismatchError",
   "EmbeddingScanTooLargeError",

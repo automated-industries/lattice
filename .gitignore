@@ -9,6 +9,11 @@ coverage/
 .env
 .DS_Store
 docs-generated/
+# Desktop build artifacts (produced by `deno desktop`; published to GitHub Releases, never committed)
+dist-desktop/
+*.app
+*.dmg
+*.msi
 test-results/
 playwright-report/
 playwright/.cache/
