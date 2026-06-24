@@ -144,6 +144,58 @@ The desktop/web GUI is reorganized around the data graph.
   file ingests it (it appears as a loose file) instead of registering a one-file
   root that would double it.
 - **Default inference aggressiveness is now 0.85** (was 0.5).
+- **Drag-drop / paperclip uploads stage first.** Dropping files on the rail (or
+  picking them with the paperclip) now stages them in a review tray — each file
+  listed with a ✕ to drop it, plus **Send** to ingest the batch or **Cancel** to
+  discard — instead of auto-ingesting on drop. Send runs the existing
+  bounded-concurrency ingest.
+- **The object page is a focused graph.** Opening an object (e.g. "Insured
+  Properties") shows a zoom-in of the brain graph: the object at the center, its
+  entity rows around it (bounded fetch with a "Show more"), and its related
+  objects on the rim. Clicking an entity opens its tab; clicking a related object
+  zooms into that object's graph. A "List view" toggle keeps the tile grid.
+- **Tab overflow.** Tabs shrink to fit the strip (no horizontal scrollbar); past a
+  minimum width the trailing tabs collapse into a "⋯" menu that lists them with a
+  ✕ to close. The active tab stays visible; the strip re-fits on resize.
+- **Connectors moved to a left-sliding "Add a Connector" dialog** (opened from the
+  Sources sidebar), out of the Settings drawer. The panel is data-driven off
+  `/api/connectors` — each toolkit renders as a card with its logo, a credential
+  form built from its declared fields, and refresh/disconnect when connected.
+- **Sidebar labels.** "Files never leave your computer" gains a lock icon and
+  reads "Secured: files never leave your computer"; "Artifacts" → "Built by
+  Lattice"; the brain graph shows the build caption "A live force-directed graph
+  that builds as Claude streams" and uses smaller node labels.
+
+### Fixed — GUI + assistant
+
+- **Google Analytics counts one machine as one user.** The embedded webview drops
+  gtag's own client-id cookie between sessions, so active users inflated to roughly
+  one-per-session. The server now mints a stable, machine-local, anonymized
+  analytics id (a random UUID — no PII) and the GUI pins GA's `client_id` to it.
+- **Live brain graph updates on any structural change**, not only ingests — an
+  assistant-created object (or a row that takes a table from empty to non-empty)
+  appears without a manual refresh.
+- **The file-actions dropdown no longer sticks open** (its `display:flex` was
+  overriding the UA `[hidden]` rule).
+- **Schema edits are steered away from managed objects.** Adding a column to a
+  managed object (files/secrets/…) is refused with a deterministic, user-facing
+  message that points to modeling the new attribute as its own object the records
+  link to — so the assistant never mangles a managed table.
+
+### Added — Trello connector + data-driven connector layer
+
+Sync **Trello** into Lattice as connected data types (boards, lists, cards,
+members, labels, comments, checklists — 11 namespaced `trello_*` tables, with
+junction tables for the many-to-many edges). Authenticated with your own Trello
+API key + token (validated on connect, stored encrypted); no broker service and
+no new dependency (it talks to Trello's REST API over the built-in `fetch`).
+
+The connector layer is now **data-driven for scale**: a `CredentialConnector` SPI
+plus a `presentation()` (label + logo) on every connector, a single
+`builtinConnectors()` catalog as the one registration point, and multi-connector
+routes — so adding a connector is a module plus one catalog line, with **zero**
+GUI changes. Sources stay distinct and namespaced (`jira_*` vs `trello_*`): no
+shared tables, no cross-source edges. Jira is migrated onto the same SPI.
 
 ### Added — Inline HTML files
 
