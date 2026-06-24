@@ -5,6 +5,11 @@
 // app and its installers report the identical version as the web GUI).
 export { startGuiServer } from './gui/server.js';
 export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';
+// Workspace resolver — so the desktop shell opens the active workspace (and shows
+// the welcome screen ONLY when there are genuinely none), exactly like the CLI's
+// `lattice gui`. Without this the desktop hardcoded a virgin boot.
+export { ensureRootForGui } from './framework/gui-bootstrap.js';
+export type { GuiBootstrap } from './framework/gui-bootstrap.js';
 
 declare const __LATTICE_VERSION__: string | undefined;
 
