@@ -83,14 +83,15 @@ Inline HTML files in the GUI assistant; this also retires the never-published
   files are distinguished from markdown artifacts in the file list and preview.
 - **Tool-delegated authoring.** The HTML authoring runs as a focused sub-call —
   its own HTML-specific system prompt and a larger output budget (`TurnParams`
-  gains an optional `maxTokens`) — using the **same model as the chat**
-  (`DEFAULT_MODEL`). The model is deliberately NOT hardcoded to a separate
-  "stronger" one: a connected Claude _subscription_ is entitled only to the
-  models on the user's plan, so a hardcoded model the plan lacks returns a
-  `429 rate_limit_error` on every call and authoring fails 100% of the time.
-  Tracking the chat model guarantees the sub-call works wherever the chat works
-  (API key or subscription). It uses the same machine-local Claude auth as the
-  rest of the assistant.
+  gains an optional `maxTokens`) — on **the strongest model the resolved auth can
+  actually run**: a stronger model (`claude-sonnet-4-6`) for an Anthropic **API
+  key** (entitled to all GA models), and the **chat model** (`DEFAULT_MODEL`) for
+  a connected Claude **subscription**. A subscription is entitled only to the
+  models on the user's plan — a model the plan lacks returns a
+  `429 rate_limit_error` on _every_ call (even a one-token one), so a hardcoded
+  model would make authoring fail 100% of the time for those users. Picking by
+  auth kind keeps authoring strong for API keys and working for subscriptions. It
+  uses the same machine-local Claude auth as the rest of the assistant.
 - **Live data + offline charts.** Authored pages read live data through an injected
   `window.lattice` bridge (`.query` / `.get` / `.search`), which a read-only,
   table-gated parent broker services against the existing read API

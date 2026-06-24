@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { generateHtmlFile, HTML_AUTHOR_MODEL } from '../../src/gui/ai/html-author.js';
+import {
+  generateHtmlFile,
+  htmlAuthorModelForAuth,
+  HTML_AUTHOR_MODEL,
+  HTML_AUTHOR_STRONG_MODEL,
+} from '../../src/gui/ai/html-author.js';
 import { DEFAULT_MODEL } from '../../src/gui/ai/chat.js';
 import type { LlmClient, TurnParams } from '../../src/gui/ai/chat.js';
 
@@ -50,6 +55,15 @@ describe('generateHtmlFile (delegated HTML authoring)', () => {
     expect(seen?.model).not.toBe('claude-sonnet-4-6');
   });
 
+  it('honors an explicit model (the stronger model passed for API-key auth)', async () => {
+    let seen: TurnParams | undefined;
+    const client = fakeClient('<!doctype html><html><body>x</body></html>', (p) => {
+      seen = p;
+    });
+    await generateHtmlFile({ client, schema: '', spec: 's', model: HTML_AUTHOR_STRONG_MODEL });
+    expect(seen?.model).toBe(HTML_AUTHOR_STRONG_MODEL);
+  });
+
   it('strips a ```html fence the model may wrap the document in', async () => {
     const fenced = '```html\n<!doctype html><html><body>x</body></html>\n```';
     const html = await generateHtmlFile({ client: fakeClient(fenced), schema: '', spec: 's' });
@@ -90,5 +104,19 @@ describe('generateHtmlFile (delegated HTML authoring)', () => {
         spec: 's',
       }),
     ).rejects.toThrow(/HTML/i);
+  });
+});
+
+describe('htmlAuthorModelForAuth', () => {
+  // An API key is entitled to all GA models → author on the stronger model.
+  it('uses the stronger model for an API key', () => {
+    expect(htmlAuthorModelForAuth({ apiKey: 'sk-ant-xxx' })).toBe(HTML_AUTHOR_STRONG_MODEL);
+  });
+
+  // An OAuth subscription's entitlements vary (some are single-model); a
+  // non-entitled model 429s every call, so use the proven-entitled chat model.
+  it('uses the chat model for an OAuth subscription (no api key)', () => {
+    expect(htmlAuthorModelForAuth({})).toBe(HTML_AUTHOR_MODEL);
+    expect(htmlAuthorModelForAuth({ apiKey: null })).toBe(HTML_AUTHOR_MODEL);
   });
 });

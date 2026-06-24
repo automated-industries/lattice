@@ -31,6 +31,26 @@ import { DEFAULT_MODEL } from './chat.js';
  */
 export const HTML_AUTHOR_MODEL = DEFAULT_MODEL;
 
+/**
+ * The preferred authoring model when the resolved auth can actually run it. An
+ * Anthropic API key is entitled to all GA models, so API-key users get the
+ * stronger model — better, more reliable pages (and edits), which is the model
+ * the feature was designed around. It is deliberately NOT used for an OAuth
+ * subscription: subscription entitlements vary and may be limited to a single
+ * model, and a non-entitled model returns `429 rate_limit_error` on every call
+ * (see {@link HTML_AUTHOR_MODEL}).
+ */
+export const HTML_AUTHOR_STRONG_MODEL = 'claude-sonnet-4-6';
+
+/**
+ * Pick the authoring model for a resolved Claude auth: the stronger model for an
+ * API key (entitled to all models), the chat model for an OAuth subscription
+ * (proven entitled in-session — never 429s for lack of entitlement).
+ */
+export function htmlAuthorModelForAuth(auth: { apiKey?: string | null | undefined }): string {
+  return auth.apiKey ? HTML_AUTHOR_STRONG_MODEL : HTML_AUTHOR_MODEL;
+}
+
 /** Output budget for a full standalone HTML document (well under the model ceiling). */
 const HTML_MAX_TOKENS = 16000;
 
@@ -76,6 +96,8 @@ export interface HtmlAuthorRequest {
   spec: string;
   /** For an edit: the current HTML to modify. Absent → author from scratch. */
   currentHtml?: string;
+  /** Authoring model. Defaults to the chat model ({@link HTML_AUTHOR_MODEL}). */
+  model?: string;
 }
 
 /**
@@ -84,7 +106,7 @@ export interface HtmlAuthorRequest {
  * both work. Throws if authoring fails or the result is not HTML.
  */
 export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> {
-  const { client, schema, spec, currentHtml } = req;
+  const { client, schema, spec, currentHtml, model } = req;
   const parts: string[] = [`# Available data (tables and columns)\n${schema}`];
   if (currentHtml?.trim()) {
     parts.push(
@@ -98,7 +120,7 @@ export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> 
 
   let captured = '';
   const turn = await client.runTurn({
-    model: HTML_AUTHOR_MODEL,
+    model: model ?? HTML_AUTHOR_MODEL,
     system: HTML_SYSTEM,
     messages: [{ role: 'user', content: parts.join('\n\n') }],
     tools: [],

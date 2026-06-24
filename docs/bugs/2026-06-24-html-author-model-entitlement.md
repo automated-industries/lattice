@@ -41,12 +41,22 @@ model, not transient.
 
 ## Fix
 
-The author model must be one the resolved auth can actually call. The chat model
-is proven to work in-session, so the author now tracks it:
-`HTML_AUTHOR_MODEL = DEFAULT_MODEL`. The authoring is still a focused, delegated
-sub-call (its own system prompt + a larger `maxTokens`), just on the model the
-chat is already using — so it works wherever the chat works (API key OR
-subscription).
+The author model must be one the resolved auth can actually call, and ideally the
+strongest such model. `htmlAuthorModelForAuth(auth)` picks by **auth kind**: a
+stronger model (`claude-sonnet-4-6`) for an Anthropic **API key** (entitled to all
+GA models — restoring the strong authoring the feature was designed around), and
+the **chat model** (`DEFAULT_MODEL`, proven entitled in-session) for an OAuth
+**subscription** (whose entitlements vary; a non-entitled model 429s every call).
+The authoring is still a focused, delegated sub-call (its own system prompt + a
+larger `maxTokens`) — it just never assumes a model the auth can't run.
+
+**Caveat — Haiku-only subscriptions.** Some "Connect with Claude" subscriptions
+entitle _only_ `claude-haiku-4-5` (verified: every Opus/Sonnet model 429s). On
+those, authoring uses Haiku and works, but Haiku is the weakest model and is not
+reliable for multi-step agentic editing (it returns valid HTML but may not honor
+the change, and may narrate an action without calling the tool). For dependable
+authoring/editing, use an Anthropic **API key** (Settings → Assistant → Advanced),
+which entitles the stronger model.
 
 ## Lessons
 

@@ -14,7 +14,7 @@ import {
   type LlmMessage,
   type ContentBlock,
 } from './ai/chat.js';
-import { generateHtmlFile } from './ai/html-author.js';
+import { generateHtmlFile, htmlAuthorModelForAuth } from './ai/html-author.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle } from './ai/summarize.js';
@@ -582,17 +582,21 @@ export async function dispatchChatRoute(
   };
 
   // Delegated HTML-file authoring: create_html_file / edit_html_file call this to
-  // author a full standalone HTML page on a stronger model. The closure builds its
-  // own client from the SAME resolved auth (api-key or OAuth) and the live schema,
-  // so the SDK-missing / provider errors surface as a tool error (recoverable),
-  // never a crash. If the user is viewing an html artifact, expose its id so
-  // edit_html_file targets the file on screen by default.
+  // author a full standalone HTML page. The closure builds its own client from the
+  // SAME resolved auth (api-key or OAuth) and the live schema, so SDK-missing /
+  // provider errors surface as a tool error (recoverable), never a crash. The model
+  // is the strongest the auth can actually run — sonnet for an API key (entitled to
+  // all models), the chat model for an OAuth subscription (whose entitlements vary;
+  // a non-entitled model 429s every call). If the user is viewing an html artifact,
+  // expose its id so edit_html_file targets the file on screen by default.
+  const authorModel = htmlAuthorModelForAuth(auth);
   dispatch.htmlAuthor = async (spec: string, currentHtml?: string): Promise<string> => {
     const schema = await buildSchemaContext(dispatch);
     return generateHtmlFile({
       client: createAnthropicClient(auth),
       schema,
       spec,
+      model: authorModel,
       ...(currentHtml !== undefined ? { currentHtml } : {}),
     });
   };
