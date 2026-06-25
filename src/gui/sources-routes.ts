@@ -1,6 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { statSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve, join, basename, sep } from 'node:path';
+import {
+  statSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+} from 'node:fs';
+import { resolve, join, basename, sep, dirname } from 'node:path';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
@@ -26,6 +34,12 @@ export interface SourcesRouteDeps {
   db: Lattice;
   /** Ingest one local file in place (the shared core from ingest-routes). */
   ingestFile: (absPath: string) => Promise<LocalFileIngestResult>;
+  /**
+   * Absolute path to the ACTIVE workspace's config file. The roots registry
+   * (sources.json) lives next to it (`dirname(configPath)`), so registered
+   * folder roots are scoped to this workspace and never leak across workspaces.
+   */
+  configPath: string;
   pathname: string;
   method: string;
 }
@@ -47,20 +61,87 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', '.DS_Store', '__pycache__', '
 
 // --- Root persistence (machine-local, never cloud-synced) --------------------
 
-function rootsFile(): string {
-  return join(configDir(), 'sources.json');
+/**
+ * Per-workspace roots registry path. Each workspace keeps its OWN sources.json
+ * next to its config file (`dirname(configPath)` — e.g.
+ * `~/.lattice/Workspaces/<dir>/sources.json` for a scaffolded workspace), so the
+ * registered folder roots shown in the Files sidebar are scoped to that
+ * workspace and NEVER leak into another. (Pre-4.3.2 this was a single
+ * machine-global `sources.json` under `configDir()`, shared by every workspace —
+ * which is exactly how a brand-new workspace showed another workspace's files.)
+ */
+function rootsFile(configPath: string): string {
+  return join(dirname(configPath), 'sources.json');
 }
-function readRoots(): SourceRoot[] {
+
+/**
+ * One-time, lazy migration for installs that registered roots before 4.3.2,
+ * when roots lived in the machine-global `configDir()/sources.json`. On the
+ * first read for a workspace that has no per-workspace registry yet, ADOPT the
+ * legacy roots into this workspace and RETIRE the global file so no other (or
+ * newly created) workspace can re-inherit them. The roots land in the FIRST
+ * workspace opened after upgrade — for the desktop app that is the last-active
+ * (primary) workspace it restores on launch.
+ *
+ * Copy-then-delete (not an atomic rename) so it works even when the workspace
+ * lives on a different filesystem than `~/.lattice` (an adopted-in-place
+ * `--config`, where a rename would throw EXDEV). The order is load-bearing: the
+ * per-workspace file is written BEFORE the global one is removed, so an
+ * interruption between the two leaves the legacy file intact (recoverable)
+ * rather than losing the roots — and each failure mode is handled explicitly so
+ * a failed retire can never silently re-leak.
+ */
+function migrateGlobalRootsIfNeeded(configPath: string): void {
+  const wsFile = rootsFile(configPath);
+  if (existsSync(wsFile)) return; // this workspace already has its own registry
+  const globalFile = join(configDir(), 'sources.json');
+  if (globalFile === wsFile || !existsSync(globalFile)) return; // nothing legacy to adopt
+
+  // Validate the legacy file first; a corrupt or empty one is left untouched.
+  let roots: SourceRoot[];
   try {
-    const raw = readFileSync(rootsFile(), 'utf8');
+    const parsed = JSON.parse(readFileSync(globalFile, 'utf8')) as { roots?: SourceRoot[] };
+    if (!Array.isArray(parsed.roots) || parsed.roots.length === 0) return;
+    roots = parsed.roots;
+  } catch {
+    return; // unreadable / corrupt → leave it; this workspace just starts empty
+  }
+
+  // 1) Write the roots into this workspace (creating its dir if needed). On
+  //    failure, leave the legacy file untouched — no adoption, but no data loss.
+  try {
+    mkdirSync(dirname(wsFile), { recursive: true });
+    writeFileSync(wsFile, JSON.stringify({ roots }, null, 2), 'utf8');
+  } catch {
+    return;
+  }
+
+  // 2) Retire the legacy file so the roots are adopted exactly once. If the
+  //    delete fails (rare), blank it so no other workspace re-adopts them — the
+  //    roots are already safe in this workspace either way.
+  try {
+    rmSync(globalFile, { force: true });
+  } catch {
+    try {
+      writeFileSync(globalFile, JSON.stringify({ roots: [] }, null, 2), 'utf8');
+    } catch {
+      /* best-effort; a fresh workspace re-adopting a copy is non-fatal and rare */
+    }
+  }
+}
+
+function readRoots(configPath: string): SourceRoot[] {
+  migrateGlobalRootsIfNeeded(configPath);
+  try {
+    const raw = readFileSync(rootsFile(configPath), 'utf8');
     const parsed = JSON.parse(raw) as { roots?: SourceRoot[] };
     return Array.isArray(parsed.roots) ? parsed.roots : [];
   } catch {
     return []; // absent / unreadable → no roots yet
   }
 }
-function writeRoots(roots: SourceRoot[]): void {
-  writeFileSync(rootsFile(), JSON.stringify({ roots }, null, 2), 'utf8');
+function writeRoots(configPath: string, roots: SourceRoot[]): void {
+  writeFileSync(rootsFile(configPath), JSON.stringify({ roots }, null, 2), 'utf8');
 }
 
 /**
@@ -189,7 +270,7 @@ export async function dispatchSourcesRoute(
   res: ServerResponse,
   deps: SourcesRouteDeps,
 ): Promise<boolean> {
-  const { pathname, method, ingestFile } = deps;
+  const { pathname, method, ingestFile, configPath } = deps;
   if (!pathname.startsWith('/api/sources/')) return false;
 
   // Local-filesystem access floor: when disabled, every route degrades to a
@@ -201,7 +282,7 @@ export async function dispatchSourcesRoute(
 
   // GET /api/sources/roots — the registered roots for the sidebar.
   if (pathname === '/api/sources/roots' && method === 'GET') {
-    sendJson(res, { enabled: true, roots: readRoots() });
+    sendJson(res, { enabled: true, roots: readRoots(configPath) });
     return true;
   }
 
@@ -229,12 +310,12 @@ export async function dispatchSourcesRoute(
       sendJson(res, { error: `path not found: ${abs}` }, 400);
       return true;
     }
-    const roots = readRoots();
+    const roots = readRoots(configPath);
     let root = roots.find((r) => resolve(r.path) === abs);
     if (!root) {
       root = { id: randomUUID(), path: abs, kind, name: basename(abs) || abs };
       roots.push(root);
-      writeRoots(roots);
+      writeRoots(configPath, roots);
     }
     // Ingest on add (drives the brain-graph animation via source:'ingest' feed).
     let result: { ingested: number; skipped: number } | LocalFileIngestResult;
@@ -248,8 +329,8 @@ export async function dispatchSourcesRoute(
   const delMatch = /^\/api\/sources\/roots\/([^/]+)$/.exec(pathname);
   if (delMatch && method === 'DELETE') {
     const id = decodeURIComponent(delMatch[1] ?? '');
-    const roots = readRoots().filter((r) => r.id !== id);
-    writeRoots(roots);
+    const roots = readRoots(configPath).filter((r) => r.id !== id);
+    writeRoots(configPath, roots);
     sendJson(res, { ok: true });
     return true;
   }
@@ -271,7 +352,7 @@ export async function dispatchSourcesRoute(
       sendJson(res, { error: 'path is required' }, 400);
       return true;
     }
-    const abs = safeResolveInside(target, readRoots());
+    const abs = safeResolveInside(target, readRoots(configPath));
     if (!abs) {
       sendJson(res, { error: 'path is outside any registered source root' }, 403);
       return true;
@@ -288,7 +369,7 @@ export async function dispatchSourcesRoute(
   if (pathname === '/api/sources/ingest-folder' && method === 'POST') {
     const body = await readJson<{ path?: unknown }>(req).catch(() => ({}) as never);
     const target = typeof body.path === 'string' ? body.path : '';
-    const abs = safeResolveInside(target, readRoots());
+    const abs = safeResolveInside(target, readRoots(configPath));
     if (!abs) {
       sendJson(res, { error: 'path is outside any registered source root' }, 403);
       return true;

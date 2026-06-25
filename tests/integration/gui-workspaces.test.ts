@@ -153,4 +153,73 @@ describe('GUI /api/workspaces', () => {
     expect(list.workspaces).toEqual([]);
     expect(list.current).toBeNull();
   });
+
+  // 4.3.2 regression — the reported files-leak. Registering a source root in one
+  // workspace must NOT appear in another after switching. Pre-fix, roots lived in
+  // a single machine-global sources.json, so a brand-new workspace showed the
+  // previous workspace's folders.
+  it('source roots do NOT leak across a workspace switch', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'lattice-gws-srcleak-'));
+    dirs.push(base);
+    process.env.LATTICE_ROOT = join(base, '.lattice');
+    delete process.env.LATTICE_LOCAL_OPEN; // default: local file access enabled
+    const root = ensureLatticeRoot(base);
+    const alpha = addWorkspace(root, { displayName: 'Alpha' });
+    const beta = addWorkspace(root, { displayName: 'Beta' });
+    (await Lattice.openWorkspace({ root, workspaceId: alpha.id })).close();
+
+    const pa = resolveWorkspacePaths(root, alpha);
+    const server = await startGuiServer({
+      configPath: pa.configPath,
+      outputDir: pa.contextDir,
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    // A folder to register as a source root while Alpha is the active workspace.
+    const srcDir = mkdtempSync(join(tmpdir(), 'lattice-gws-src-'));
+    dirs.push(srcDir);
+    writeFileSync(join(srcDir, 'note.txt'), 'hello');
+
+    interface RootsResp {
+      enabled: boolean;
+      roots?: { path: string }[];
+    }
+    const reg = await fetch(`${server.url}/api/sources/roots`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: srcDir, kind: 'folder' }),
+    });
+    expect(reg.status).toBe(200);
+
+    // Alpha sees its root.
+    const a = (await (await fetch(`${server.url}/api/sources/roots`)).json()) as RootsResp;
+    expect(a.roots).toHaveLength(1);
+    expect(a.roots?.[0]?.path).toBe(srcDir);
+
+    // Switch to Beta — a brand-new workspace.
+    const sw = (await (
+      await fetch(`${server.url}/api/workspaces/switch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: beta.id }),
+      })
+    ).json()) as { ok?: boolean };
+    expect(sw.ok).toBe(true);
+
+    // Beta must be EMPTY — the roots must not have leaked across the switch.
+    const b = (await (await fetch(`${server.url}/api/sources/roots`)).json()) as RootsResp;
+    expect(b.roots ?? []).toHaveLength(0);
+
+    // Switching back to Alpha still shows its root (no data loss).
+    await fetch(`${server.url}/api/workspaces/switch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: alpha.id }),
+    });
+    const a2 = (await (await fetch(`${server.url}/api/sources/roots`)).json()) as RootsResp;
+    expect(a2.roots).toHaveLength(1);
+    expect(a2.roots?.[0]?.path).toBe(srcDir);
+  });
 });

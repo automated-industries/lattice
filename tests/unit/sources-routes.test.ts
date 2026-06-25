@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
@@ -17,6 +17,7 @@ import type { LocalFileIngestResult } from '../../src/gui/ingest-routes.js';
 let cfgDir: string;
 let workDir: string;
 let db: Lattice;
+const extraDirs: string[] = []; // per-test temp workspace dirs, cleaned in afterEach
 const ingested: string[] = [];
 const fakeIngest = (p: string): Promise<LocalFileIngestResult> => {
   ingested.push(p);
@@ -35,7 +36,16 @@ afterEach(() => {
   db.close();
   rmSync(cfgDir, { recursive: true, force: true });
   rmSync(workDir, { recursive: true, force: true });
+  for (const d of extraDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
+
+// A workspace is identified to the sources routes by its config-file path; its
+// roots registry (sources.json) lives next to it. Make a fresh temp workspace.
+function newWorkspace(label: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'lattice-ws-' + label + '-'));
+  extraDirs.push(dir);
+  return join(dir, 'workspace.yml');
+}
 
 function fakeReq(method: string, url: string, jsonBody?: unknown): IncomingMessage {
   const req = new EventEmitter() as unknown as IncomingMessage;
@@ -68,6 +78,10 @@ async function call(
   method: string,
   url: string,
   body?: unknown,
+  // Which workspace this request targets. Defaults to a config file inside the
+  // global cfgDir, so dirname(configPath) === configDir() and the per-workspace
+  // sources.json coincides with the legacy global one (existing tests unchanged).
+  configPath: string = join(cfgDir, 'workspace.yml'),
 ): Promise<{ status: number; body: unknown; handled: boolean }> {
   const path = new URL(url, 'http://localhost').pathname;
   const req = fakeReq(method, url, body);
@@ -75,6 +89,7 @@ async function call(
   const handled = await dispatchSourcesRoute(req, res, {
     db,
     ingestFile: fakeIngest,
+    configPath,
     pathname: path,
     method,
   });
@@ -147,5 +162,70 @@ describe('sources routes', () => {
   it('returns false for a non-sources path', async () => {
     const r = await call('GET', '/api/something-else');
     expect(r.handled).toBe(false);
+  });
+
+  // 4.3.2 regression — the workspace files-leak. Source roots were stored in a
+  // single machine-global sources.json, so a brand-new workspace showed another
+  // workspace's folders. Roots must be scoped to the workspace that registered
+  // them and NEVER appear in another.
+  it('roots are isolated per workspace (registering in A never leaks into B)', async () => {
+    const wsA = newWorkspace('a');
+    const wsB = newWorkspace('b');
+    writeFileSync(join(workDir, 'a.txt'), 'a');
+
+    // Register a folder root while workspace A is active.
+    const reg = await call('POST', '/api/sources/roots', { path: workDir, kind: 'folder' }, wsA);
+    expect(reg.status).toBe(200);
+
+    // Workspace A sees its root.
+    const a = (await call('GET', '/api/sources/roots', undefined, wsA)).body as {
+      roots: { path: string }[];
+    };
+    expect(a.roots).toHaveLength(1);
+    expect(a.roots[0]!.path).toBe(workDir);
+
+    // Workspace B is empty — no leak across workspaces.
+    const b = (await call('GET', '/api/sources/roots', undefined, wsB)).body as {
+      roots: unknown[];
+    };
+    expect(b.roots).toHaveLength(0);
+
+    // And a path registered only in A is NOT browsable while B is active.
+    const list = await call(
+      'GET',
+      '/api/sources/list?path=' + encodeURIComponent(workDir),
+      undefined,
+      wsB,
+    );
+    expect(list.status).toBe(403);
+  });
+
+  // 4.3.2 migration — installs that registered roots before the fix have them in
+  // the legacy global sources.json. On first read they adopt into the active
+  // workspace exactly once; the global file is retired so no other (or newly
+  // created) workspace can re-adopt them.
+  it('adopts legacy global roots into the first workspace opened, not into others', async () => {
+    const legacyGlobal = join(cfgDir, 'sources.json'); // configDir() === cfgDir here
+    writeFileSync(
+      legacyGlobal,
+      JSON.stringify({ roots: [{ id: 'r1', path: workDir, kind: 'folder', name: 'work' }] }),
+    );
+
+    // First workspace to read adopts the legacy roots…
+    const wsA = newWorkspace('a');
+    const a = (await call('GET', '/api/sources/roots', undefined, wsA)).body as {
+      roots: { path: string }[];
+    };
+    expect(a.roots).toHaveLength(1);
+    expect(a.roots[0]!.path).toBe(workDir);
+    // …and the global file is gone (moved, not copied), so it can't be re-adopted.
+    expect(existsSync(legacyGlobal)).toBe(false);
+
+    // A second workspace starts empty — the legacy roots do NOT leak into it.
+    const wsB = newWorkspace('b');
+    const b = (await call('GET', '/api/sources/roots', undefined, wsB)).body as {
+      roots: unknown[];
+    };
+    expect(b.roots).toHaveLength(0);
   });
 });
