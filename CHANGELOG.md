@@ -6,7 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [4.3.1] — unreleased
+## [4.3.2] — 2026-06-25
+
+Patch release. Workspace data-isolation fix.
+
+### Fixed
+
+- **Source roots no longer leak across workspaces.** The Files sidebar's
+  registered folder roots were stored in a single machine-global `sources.json`,
+  so switching to — or creating — another workspace still showed the previous
+  workspace's folders. Each workspace now keeps its own roots registry next to
+  its config (`dirname(configPath)/sources.json`), scoped to that workspace and
+  never shared. Installs that registered roots before this release adopt them,
+  once, into the first workspace opened after upgrade — the legacy global file is
+  then **retired**, so no other or newly created workspace re-inherits them.
+
+## [4.3.1] — 2026-06-25
 
 Patch release. Bug fixes on 4.3.0.
 
