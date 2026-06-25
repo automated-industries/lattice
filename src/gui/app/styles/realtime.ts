@@ -22,9 +22,9 @@ export const realtimeCss = `    /* ── Realtime collaboration cues ───�
     }
     .app-version { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
     .app-version:empty { display: none; }
-    .app-update { flex: 0 0 auto; color: var(--accent, #4a9); font-size: 12px; white-space: nowrap; }
+    .app-update { flex: 0 0 auto; color: var(--accent, #3b82f6); font-size: 12px; white-space: nowrap; }
     .app-update[hidden] { display: none; }
-    #app-update-link { flex: 0 0 auto; margin-left: 8px; color: var(--accent, #4a9); font-size: 12px; cursor: pointer; white-space: nowrap; }
+    #app-update-link { flex: 0 0 auto; margin-left: 8px; color: var(--accent, #3b82f6); font-size: 12px; cursor: pointer; white-space: nowrap; }
     #app-update-link[hidden] { display: none; }
     /* Unseen-change count next to a sidebar entity. */
     .nav-badge {

@@ -30,7 +30,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .dm-graph .gnode { cursor: pointer; }
     .dm-graph .gnode-glow { fill: var(--accent); opacity: 0; transition: opacity 0.1s ease; }
     .dm-graph .gnode-dot { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.5; transition: stroke 0.1s ease; }
-    .dm-graph .gnode-label { fill: var(--text); font-size: 12px; font-weight: 500; }
+    .dm-graph .gnode-label { fill: var(--text); font-size: var(--gnode-label-size, 13px); font-weight: 400; }
     .dm-graph .gnode-icon { dominant-baseline: middle; }
     .dm-graph .gnode:hover .gnode-dot { stroke: var(--text-muted); }
     /* Share-status stroke (cloud workspaces only): yellow = shared, red = private. */
@@ -41,10 +41,23 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .dm-graph .gnode.active .gnode-glow { opacity: 0.18; }
     .dm-graph .gnode.active .gnode-label { fill: var(--accent); }
     .dm-edge { transition: opacity 0.1s ease; }
+    /* Object page = a focused graph (entity rows + related objects). Reuses the
+       .dm-graph node primitives; #fsg-mount mirrors #graph-mount's sizing. */
+    #fsg-mount {
+      position: relative; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 10px; height: 64vh; overflow: hidden;
+    }
+    /* Center object node: accented; related objects: dashed ring; entities: plain. */
+    .dm-graph .ognode-object .gnode-dot { fill: var(--accent-deep, #2563eb); stroke: var(--accent); stroke-width: 2; }
+    .dm-graph .ognode-object .gnode-label { fill: var(--accent); font-weight: 600; }
+    .dm-graph .ognode-related .gnode-dot { stroke: var(--text-muted); stroke-dasharray: 3 2; }
+    .dm-graph .ognode-related .gnode-label { fill: var(--text-muted); }
+    .dm-graph .ognode-entity .gnode-dot { fill: var(--surface); }
+    .fsg-more { position: absolute; left: 12px; bottom: 12px; z-index: 4; }
     .dm-legend {
       position: absolute; top: 10px; left: 12px; display: flex; gap: 14px;
       font-size: 11px; color: var(--text-muted);
-      background: rgba(11, 13, 16, 0.7); border: 1px solid var(--border);
+      background: var(--glass-strong); border: 1px solid var(--border);
       border-radius: 8px; padding: 6px 10px; backdrop-filter: blur(2px);
     }
     .dm-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -177,7 +190,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
       background: var(--glass-strong);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
       padding: 8px; border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(15, 23, 42, 0.04);
       box-shadow: var(--shadow-3), var(--hl-top);
     }
     .emoji-grid[hidden] { display: none; }

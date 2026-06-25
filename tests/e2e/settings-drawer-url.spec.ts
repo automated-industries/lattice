@@ -51,11 +51,11 @@ test('a live refresh updates the middle pane in place without flashing a loading
   for (let i = 0; i < 8; i++) await createRow(gui.url, 'items', { name: 'Item ' + String(i) });
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
-  // Land on the items collection (a stable view to refresh).
+  // Land on the items object page (a stable view to refresh).
   await page.evaluate(() => {
     window.location.hash = '#/fs/items';
   });
-  await expect(page.locator('.fs-tile:not(.fs-tile-create)').first()).toBeVisible({
+  await expect(page.locator('.ognode-entity').first()).toBeVisible({
     timeout: 5000,
   });
 
@@ -77,7 +77,7 @@ test('a live refresh updates the middle pane in place without flashing a loading
   // spinner — the existing tiles stay on screen and are swapped only when ready.
   for (let i = 0; i < 6; i++) {
     expect(await page.locator('#content .route-loading').count()).toBe(0);
-    expect(await page.locator('.fs-tile:not(.fs-tile-create)').count()).toBeGreaterThan(0);
+    expect(await page.locator('.ognode-entity').count()).toBeGreaterThan(0);
     await page.waitForTimeout(120);
   }
 });

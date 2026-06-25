@@ -11,7 +11,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
       min-height: 56px; padding: 8px 20px;
       background: var(--glass);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      border-bottom: 1px solid rgba(15, 23, 42, 0.04);
       box-shadow: var(--shadow-1), var(--hl-top);
       color: var(--text);
       flex-wrap: wrap;
@@ -21,28 +21,29 @@ export const topbarCss = `    /* ── Top bar ──────────�
       flex-shrink: 0; border-radius: 6px;
       padding: 2px; cursor: pointer;
     }
-    .brand:hover { background: rgba(255, 255, 255, 0.06); }
+    .brand:hover { background: rgba(15, 23, 42, 0.04); }
     .brand-logo {
       width: 32px; height: 32px; display: block;
       /* object-fit keeps an owner's custom <img> logo from distorting when it
          isn't a perfect 32px square (the default inline SVG ignores this). */
       object-fit: contain; border-radius: 4px;
-      filter: drop-shadow(0 0 6px rgba(190, 242, 100, 0.35));
+      filter: none;
       transition: filter 0.18s ease;
     }
-    .brand:hover .brand-logo { filter: drop-shadow(0 0 10px rgba(190, 242, 100, 0.55)); }
+    .brand:hover .brand-logo { filter: none; }
 
     /* History controls — dark variant */
     .history-controls { display: inline-flex; gap: 4px; }
     .history-btn {
       display: inline-flex; align-items: center; justify-content: center;
       width: 32px; height: 32px;
-      background: transparent; border: 1px solid #2a2f36;
+      background: transparent; border: 1px solid #e6eaf0;
       border-radius: 6px; cursor: pointer;
-      color: #e6e8eb; font-size: 16px; text-decoration: none;
+      color: #0f172a; font-size: 16px; text-decoration: none;
     }
-    .history-btn:hover:not([disabled]) { background: rgba(255, 255, 255, 0.06); }
+    .history-btn:hover:not([disabled]) { background: rgba(15, 23, 42, 0.04); }
     .history-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
+    .history-btn svg { width: 16px; height: 16px; display: block; }
 
     /* History page */
     .history-list {
@@ -84,8 +85,8 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .db-button {
       display: inline-flex; align-items: center; gap: 6px;
       height: 32px; padding: 0 10px;
-      background: #1a1d22; color: #e6e8eb;
-      border: 1px solid #2a2f36; border-radius: 6px;
+      background: #f1f5f9; color: #0f172a;
+      border: 1px solid #e6eaf0; border-radius: 6px;
       font-size: 13px; cursor: pointer;
     }
     /* Realtime connection status indicator inside .db-button.
@@ -98,8 +99,8 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .db-button .db-status.is-cloud-connected { background: var(--accent); }
     .db-button .db-status.is-cloud-disconnected { background: #ef4444; }
     .db-button .db-status.is-cloud-connecting { background: var(--warn); }
-    .db-button:hover { background: rgba(255, 255, 255, 0.08); }
-    .db-button .db-caret { color: #9aa1ad; font-size: 10px; }
+    .db-button:hover { background: rgba(15, 23, 42, 0.05); }
+    .db-button .db-caret { color: #64748b; font-size: 10px; }
     /* While a workspace switch is in flight, the stable header button shows a
        spinner (swapped for the 📂 icon) so the switch is visible for its whole
        duration — POST + reloadEverything — not just while the dropdown is open. */
@@ -110,7 +111,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
       position: absolute; top: 38px; left: 0;
       min-width: 260px; background: var(--glass-strong);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-      border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px;
+      border: 1px solid rgba(15, 23, 42, 0.04); border-radius: 8px;
       box-shadow: var(--shadow-3), var(--hl-top);
       z-index: 60; padding: 6px;
     }

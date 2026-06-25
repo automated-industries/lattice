@@ -22,12 +22,10 @@ export const offlineEditQueueJs = `    // ────────────�
     })();
     var reloadingForUpdate = false;
     function showUpdatePill(text) {
-      var el = document.getElementById('app-update');
-      if (el) { el.textContent = text; el.hidden = false; }
+      setStatus({ id: 'update', kind: 'accent', text: text, priority: 60, sticky: true });
     }
     function hideUpdatePill() {
-      var el = document.getElementById('app-update');
-      if (el) { el.hidden = true; }
+      clearStatus('update');
     }
     function reloadForUpdate(label) {
       if (reloadingForUpdate) return;
@@ -142,12 +140,24 @@ export const offlineEditQueueJs = `    // ────────────�
         if (data) onRealtimeChange(data);
         scheduleRealtimeRefresh();
       } else if (type === 'feed') {
-        try { renderFeedItem(data); } catch (_) { /* render best-effort */ }
+        // renderFeedItem now flashes each change as a transient top-right status
+        // (the realtime update) — no rail pills.
+        try { renderFeedItem(data); } catch (_) { /* best-effort */ }
+        // Any structural change drives the live brain-graph animation (node
+        // bubble-in / edge draw) — a new object/edge, OR a row that takes a table
+        // from empty to non-empty. Not only ingests: an assistant-created object
+        // must appear without a refresh too. scheduleGraphIngestAnim no-ops unless
+        // the graph is the visible view, so this never fetches off-graph.
+        if (data && ['insert', 'link', 'schema'].indexOf(data.op) !== -1) {
+          scheduleGraphIngestAnim();
+        }
         if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
       } else if (type === 'render-snapshot') {
         if (data) applyRenderSnapshot(data);
+        updateRenderStatus();
       } else if (type === 'render-progress') {
         if (data) onRenderEvent(data);
+        updateRenderStatus();
       } else if (type === 'update-applied') {
         // Files on disk are the new version; the server is about to relaunch.
         // Don't reload yet (the server is exiting) — the reconnect version check

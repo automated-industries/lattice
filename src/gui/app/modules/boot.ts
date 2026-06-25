@@ -73,35 +73,49 @@ export const bootJs = `    // ────────────────�
         // local_open defaults true (the server defaults it on) — drives whether the
         // file view offers "Open in Finder". Treat a missing field as enabled.
         state.localOpen = !results[4] || results[4].local_open !== false;
-        // Boot analytics with the resolved consent (no network contact when off),
-        // then record the session open. advanced_mode is a boolean — safe to send.
-        if (window.LatticeGA) window.LatticeGA.init(state.analyticsEffective);
-        // Deduplicate unique users in GA: set the GA user_id to a SHA-256 hash of
-        // the operator's email. Anonymized — the plaintext is hashed in-browser and
-        // never sent (analytics.ts only accepts a hex digest). Without a user_id,
-        // GA counts each session/device as a new user (active-users ≈ events).
-        // Best-effort + only when analytics consent is on.
-        if (window.LatticeGA && state.analyticsEffective && window.crypto && window.crypto.subtle) {
-          fetchJson('/api/userconfig/identity')
-            .then(function (id) {
-              var email = id && id.email ? String(id.email).trim().toLowerCase() : '';
-              if (!email) return undefined;
-              return window.crypto.subtle
-                .digest('SHA-256', new TextEncoder().encode(email))
-                .then(function (buf) {
-                  var hex = Array.prototype.map
-                    .call(new Uint8Array(buf), function (b) {
-                      return ('0' + b.toString(16)).slice(-2);
-                    })
-                    .join('');
-                  window.LatticeGA.setUser(hex);
-                });
-            })
-            .catch(function () {
-              /* best-effort — GA still functions without a user_id */
-            });
+        // Boot analytics with the resolved consent AND a stable, anonymized
+        // client_id from the server, so a machine's reloads/relaunches collapse
+        // into ONE user instead of one-per-session (the webview drops gtag's own
+        // client-id cookie between sessions). The same identity fetch also yields
+        // the operator email, hashed in-browser into the GA user_id for cross-
+        // device dedup — the plaintext is never sent (analytics.ts only accepts a
+        // hex digest). All best-effort: analytics still works if the fetch fails;
+        // init makes NO network contact when consent is off.
+        if (window.LatticeGA) {
+          var gaEnabled = state.analyticsEffective;
+          var startGa = function (clientId, emailHash) {
+            window.LatticeGA.init(gaEnabled, clientId);
+            if (emailHash) window.LatticeGA.setUser(emailHash);
+            gaTrack('app_open', { advanced_mode: advancedMode() });
+          };
+          if (gaEnabled) {
+            fetchJson('/api/userconfig/identity')
+              .then(function (id) {
+                var clientId =
+                  id && id.analyticsClientId ? String(id.analyticsClientId) : undefined;
+                var email = id && id.email ? String(id.email).trim().toLowerCase() : '';
+                if (email && window.crypto && window.crypto.subtle) {
+                  return window.crypto.subtle
+                    .digest('SHA-256', new TextEncoder().encode(email))
+                    .then(function (buf) {
+                      var hex = Array.prototype.map
+                        .call(new Uint8Array(buf), function (b) {
+                          return ('0' + b.toString(16)).slice(-2);
+                        })
+                        .join('');
+                      startGa(clientId, hex);
+                    });
+                }
+                startGa(clientId, null);
+                return undefined;
+              })
+              .catch(function () {
+                startGa(undefined, null); // best-effort — GA still functions without ids
+              });
+          } else {
+            startGa(undefined, null);
+          }
         }
-        gaTrack('app_open', { advanced_mode: advancedMode() });
         document.body.classList.toggle('advanced-mode', advancedMode());
         wireSettingsDrawer();
         renderWsSwitcher(results[5]);

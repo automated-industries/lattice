@@ -107,12 +107,12 @@ async function ingest(url: string): Promise<void> {
 }
 
 describe('inference aggressiveness', () => {
-  it('defaults to 0.5 and round-trips through PUT /api/assistant/aggressiveness', async () => {
+  it('defaults to 0.85 and round-trips through PUT /api/assistant/aggressiveness', async () => {
     const server = await boot();
     const initial = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
       aggressiveness: number;
     };
-    expect(initial.aggressiveness).toBe(0.5);
+    expect(initial.aggressiveness).toBe(0.85);
 
     const put = await fetch(`${server.url}/api/assistant/aggressiveness`, {
       method: 'PUT',

@@ -84,6 +84,7 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
     await page.evaluate(() => {
       window.location.hash = '#/fs/items';
     });
+    // The loading frame repaints immediately, never frozen on the pending fetch.
     await expect(page.locator('.route-loading')).toBeVisible({ timeout: 1500 });
     await page.evaluate(() => {
       window.location.hash = '#/';
@@ -95,7 +96,7 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
   await page.evaluate(() => {
     window.location.hash = '#/fs/items';
   });
-  await expect(page.locator('.fs-tile:not(.fs-tile-create)').first()).toBeVisible({
+  await expect(page.locator('.ognode-entity').first()).toBeVisible({
     timeout: 5000,
   });
 

@@ -10,9 +10,9 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('GUI boots and renders the entity sidebar', async ({ page }) => {
+test('GUI boots and renders the Sources sidebar', async ({ page }) => {
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
-  // The seeded `items` entity should appear as a sidebar card.
-  await expect(page.getByText('items', { exact: false }).first()).toBeVisible();
+  // The default sidebar is now Sources (Files / Artifacts / Connectors).
+  await expect(page.locator('#sources-nav').getByText('Files', { exact: true })).toBeVisible();
 });

@@ -122,6 +122,7 @@ opt-in per table/call; absent the opt-in, behavior is byte-identical to 4.0.
 - [Pluggable backends (v1.6+)](#pluggable-backends-v16)
 - [Architecture](#architecture)
 - [Examples](#examples)
+- [Connectors (v4.3+)](#connectors-v43)
 - [Staying up to date](#staying-up-to-date)
   - [Auto-update](#auto-update-v11)
 - [Telemetry](#telemetry)
@@ -2219,7 +2220,10 @@ undoable. A Claude subscription can be connected instead via OAuth when the
 
 Optional extras, each enabled by its own key/binary:
 
-- **Voice** — set an OpenAI (Whisper) or ElevenLabs key to dictate into the composer.
+- **Voice** — the composer's 🎙 mic dictates on-device (in-browser WASM Whisper),
+  no key or setup, and audio never leaves your machine. Keyed cloud transcription
+  (OpenAI Whisper / ElevenLabs) stays available to API callers for backward
+  compatibility.
 - **File ingest** — reference a local file or paste text; it becomes a row in the
   native `files` entity with extracted text + (with a Claude key) an
   LLM-written description and links to related records. Documents (PDF, Word,
@@ -2851,6 +2855,77 @@ npm install latticesql --ignore-scripts
 Opting out has no effect on functionality — the package works identically. The Scarf postinstall is a fire-and-forget HTTPS ping with a short timeout; even when enabled it cannot fail your install.
 
 See Scarf's own [privacy documentation](https://docs.scarf.sh) for the upstream policy.
+
+---
+
+## Connectors (v4.3+)
+
+Connectors sync data from external systems into Lattice as **connected data
+types** — tables whose rows are ingested from a source rather than authored
+locally. A connector talks to one external product directly using your own
+credentials. The built-in connector is **Jira**, which talks to Jira Cloud's
+REST + Agile APIs via [`jira.js`](https://github.com/MrRefactoring/jira.js) — no
+broker service, no extra API key.
+
+`jira.js` is an **optional dependency** — install it only to use the connector:
+
+```bash
+npm install jira.js
+```
+
+Connect, sync, and disconnect programmatically:
+
+```typescript
+import {
+  JiraConnector,
+  createConnector,
+  syncConnector,
+  syncIfStale,
+  disconnectConnector,
+} from 'latticesql';
+
+const connector = new JiraConnector();
+
+// 1. Validate + store the member's Atlassian credentials (site + email + API token):
+const { connectionId, displayName } = await connector.connect({
+  site: 'https://your-domain.atlassian.net',
+  email: 'you@example.com',
+  apiToken: process.env.JIRA_API_TOKEN!,
+});
+
+// 2. Register + sync (defines the six jira_* connected tables and ingests):
+const connectorId = await createConnector(db, {
+  connector: 'jira',
+  toolkit: 'jira',
+  displayName: displayName ?? 'jira',
+  connectionRef: connectionId,
+  connectedBy: 'user-123',
+});
+await syncConnector(db, connector, connectorId);
+
+// 3. Keep fresh — no scheduler: re-sync on load if older than an hour.
+await syncIfStale(db, connector, connectorId);
+
+// 4. Disconnect — soft-deletes the ingested rows + drops the stored credentials.
+await disconnectConnector(db, connector, connectorId);
+```
+
+Connected tables (`jira_projects`, `jira_issues`, `jira_comments`, `jira_users`,
+`jira_boards`, `jira_sprints`) are full Lattice tables: queryable, full-text
+searchable, rendered to context, and linked on the graph (issue → project,
+comment → issue, …). Each row carries immutable lineage (`_source_connector_id`,
+`_source_model`); a re-sync upserts on the natural key and soft-deletes rows that
+vanished from the source.
+
+On a cloud workspace, the owner calls `enableConnectorRls(db, connector, 'jira')`
+to scope connected rows per member (private by default, or shared per type).
+
+In the **GUI**, all of this is point-and-click: open **Settings → Connectors**,
+enter your Jira site URL + email + API token, and connect / refresh / disconnect.
+Connected data types show a "Connected" badge in the Objects list.
+
+See [docs/connectors.md](docs/connectors.md) for the full guide and the connector
+SPI (to add a new connector).
 
 ---
 
