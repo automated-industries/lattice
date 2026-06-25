@@ -16,13 +16,26 @@ import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
 // them relative to this module (in `deno desktop` dev mode this is the real built
 // `dist/gui-assets`). Absent (e.g. a build without the assets) → voice degrades.
 function resolveGuiAssetsDir(): string | undefined {
-  try {
-    const dir = fileURLToPath(new URL('../dist/gui-assets/', import.meta.url));
-    if (existsSync(dir)) return dir;
-  } catch {
-    /* not resolvable in this packaging — voice degrades gracefully */
+  // Embedded via `deno desktop --include dist/gui-assets`; deno extracts included
+  // files next to the bundled modules at runtime (in dev mode this is the real
+  // built dir). Resolve relative to this module. NO trailing slash — the asset
+  // route's containment check expects a bare directory path. The candidates cover
+  // the few spots the bundle layout can place this module.
+  const candidates = [
+    '../dist/gui-assets',
+    './dist/gui-assets',
+    '../../dist/gui-assets',
+    './gui-assets',
+  ];
+  for (const rel of candidates) {
+    try {
+      const dir = fileURLToPath(new URL(rel, import.meta.url));
+      if (existsSync(dir)) return dir;
+    } catch {
+      /* try the next candidate */
+    }
   }
-  return undefined;
+  return undefined; // absent → voice degrades gracefully
 }
 
 // ── Auto-update (upgrade-on-run) ─────────────────────────────────────────────

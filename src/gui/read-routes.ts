@@ -344,7 +344,10 @@ export async function handleReadRoutes(
     // Resolve under the assets dir and reject any path that escapes it (`..`,
     // absolute, symlink-ish). `normalize` collapses `..`; the prefix check is the
     // traversal guard.
-    const base = deps.guiAssetsDir;
+    // Strip any trailing separator so the `base + sep` containment check below
+    // can't form a double-separator that never matches (some callers pass a
+    // dir resolved from a URL ending in "/").
+    const base = deps.guiAssetsDir.replace(/[/\\]+$/, '');
     const target = normalize(join(base, rel));
     const within = target === base || target.startsWith(base + sep);
     if (!within || !existsSync(target) || !statSync(target).isFile()) {
