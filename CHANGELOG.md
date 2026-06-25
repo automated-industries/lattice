@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.3.6] — 2026-06-25
+
+Patch release. Postgres error diagnostics.
+
+### Changed
+
+- **A failing Postgres query now names its statement in the error.** A bare
+  Postgres message — e.g. `invalid input syntax for type timestamp with time
+  zone: ""` — identifies neither the query nor the table/column, so a failure deep
+  inside an open-time convergence was undebuggable from the message alone. The
+  adapter now appends `[lattice-sql] failing statement: <sql>` to any query error
+  (once, across all query paths incl. transactions). No behavior change on the
+  success path. This makes the kind of upgrade-time cast error that 4.3.3
+  addressed self-locating if one still surfaces on a specific deployment.
+
 ## [4.3.5] — 2026-06-25
 
 Patch release. A desktop-only fix so the downloadable app is usable on Windows
