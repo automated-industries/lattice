@@ -1162,7 +1162,7 @@ export const dashboardJs = `    // ───────────────
         var a = nodes[l.si], b = nodes[l.ti];
         return '<line class="dm-edge" data-si="' + l.si + '" data-ti="' + l.ti + '" x1="' + a.x.toFixed(1) +
           '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) +
-          '" stroke="#22c55e" stroke-width="1.4" opacity="0.5"></line>';
+          '" stroke="#3b82f6" stroke-width="1.4" opacity="0.5"></line>';
       }).join('');
       var nodeSvg = nodes.map(function (nd, i) {
         var label = nd.label.length > 22 ? nd.label.slice(0, 21) + '…' : nd.label;

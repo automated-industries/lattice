@@ -32,8 +32,8 @@ export const systemTablesJs = `    // ──────────────
     // Edge styling for the schema graph: a real foreign key vs a many-to-many
     // join (via a junction). Colors live here, not in CSS, because they're
     // drawn into the SVG per edge.
-    var DM_FK_COLOR = '#22c55e'; // belongsTo — an enforced reference
-    var DM_M2M_COLOR = '#22c55e'; // every relationship is many-to-many now (FK deprecated) — green
+    var DM_FK_COLOR = '#3b82f6'; // belongsTo — an enforced reference
+    var DM_M2M_COLOR = '#3b82f6'; // every relationship is many-to-many now (FK deprecated) — green
 
     // The brain graph as the center pane's main view — the schema graph, full
     // size, with no inline entity editor (schema/column editing lives in

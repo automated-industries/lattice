@@ -2,17 +2,17 @@
 // css template literal — do not hand-edit; see styles/index.ts for composition.
 export const settingsDrawerCss = `    /* ── Settings drawer (slide-over) ───────────────────── */
     .drawer-backdrop {
-      position: fixed; inset: 0; background: rgba(7, 9, 11, 0.55);
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       z-index: 120; opacity: 0; transition: opacity 0.2s ease;
     }
     .drawer-backdrop.open { opacity: 1; }
     .settings-drawer {
       position: fixed; top: 0; right: 0; height: 100vh;
-      width: min(620px, 94vw); background: rgba(19, 23, 27, 0.82);
+      width: min(620px, 94vw); background: rgba(255, 255, 255, 0.82);
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-left: 1px solid rgba(255, 255, 255, 0.06);
-      box-shadow: -12px 0 32px rgba(0, 0, 0, 0.4), var(--shadow-4);
+      border-left: 1px solid rgba(15, 23, 42, 0.04);
+      box-shadow: -12px 0 32px rgba(15, 23, 42, 0.08), var(--shadow-4);
       z-index: 130; display: flex; flex-direction: column;
       transform: translateX(100%); transition: transform 0.22s ease;
     }
@@ -50,6 +50,7 @@ export const settingsDrawerCss = `    /* ── Settings drawer (slide-over) ─
     .toggle-thumb {
       position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
       background: #fff; border-radius: 50%; transition: transform 0.15s ease;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
     }
     .toggle input:checked + .toggle-track { background: var(--accent); }
     .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
@@ -58,17 +59,17 @@ export const settingsDrawerCss = `    /* ── Settings drawer (slide-over) ─
 
     /* ── Connectors dialog (slides in from the LEFT) ────── */
     .connectors-backdrop {
-      position: fixed; inset: 0; background: rgba(7, 9, 11, 0.55);
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       z-index: 120; opacity: 0; transition: opacity 0.2s ease;
     }
     .connectors-backdrop.open { opacity: 1; }
     .connectors-dialog {
       position: fixed; top: 0; left: 0; height: 100vh;
-      width: min(460px, 92vw); background: rgba(19, 23, 27, 0.86);
+      width: min(460px, 92vw); background: rgba(255, 255, 255, 0.86);
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-right: 1px solid rgba(255, 255, 255, 0.06);
-      box-shadow: 12px 0 32px rgba(0, 0, 0, 0.4), var(--shadow-4);
+      border-right: 1px solid rgba(15, 23, 42, 0.04);
+      box-shadow: 12px 0 32px rgba(15, 23, 42, 0.08), var(--shadow-4);
       z-index: 130; display: flex; flex-direction: column;
       transform: translateX(-100%); transition: transform 0.22s ease;
     }

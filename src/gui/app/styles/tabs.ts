@@ -33,7 +33,7 @@ export const tabsCss = `    /* ── Center tab strip + tabbed content ──�
       min-width: 220px; max-height: 60vh; overflow-y: auto;
       display: flex; flex-direction: column; padding: 5px;
       background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
     }
     .tab-overflow-menu[hidden] { display: none; }
     .tab-ov-item {

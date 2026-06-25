@@ -9,7 +9,7 @@ export const buttonsCss = `    /* ── Buttons ──────────�
       font-size: 13px;
     }
     .btn:hover { background: var(--row-hover); }
-    .btn.primary { background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: #0b0d10; border-color: var(--accent-deep); font-weight: 600; box-shadow: var(--glow-accent-soft); }
+    .btn.primary { background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: var(--btn-text); border-color: var(--accent-deep); font-weight: 600; box-shadow: var(--glow-accent-soft); }
     .btn.primary:hover { background: linear-gradient(135deg, var(--accent-glow), var(--accent)); border-color: var(--accent-glow); box-shadow: var(--glow-accent); }
     .btn.danger { color: var(--warn); border-color: rgba(251, 146, 60, 0.4); }
     .btn.danger:hover { background: rgba(251, 146, 60, 0.12); }

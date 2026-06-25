@@ -10,12 +10,12 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     }
     .chat-bubble.user {
       background: linear-gradient(135deg, var(--accent-glow), var(--accent) 55%, var(--accent-deep));
-      color: #0b0d10;
+      color: var(--btn-text);
       border-radius: 14px 14px 4px 14px;
-      box-shadow: 0 2px 10px -2px rgba(132, 204, 22, 0.5);
+      box-shadow: 0 2px 10px -2px rgba(37, 99, 235, 0.5);
     }
     .chat-bubble.assistant {
-      background: var(--surface-2); color: var(--text); border: 1px solid rgba(255, 255, 255, 0.06);
+      background: var(--surface-2); color: var(--text); border: 1px solid rgba(15, 23, 42, 0.04);
       border-radius: 14px 14px 14px 4px;
       white-space: normal; /* rendered Markdown flows as HTML, not pre-wrapped */
     }
@@ -59,8 +59,8 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
       30% { opacity: 0.9; transform: translateY(-2px); }
     }
     .rail-composer {
-      flex: 0 0 auto; border-top: 1px solid rgba(255, 255, 255, 0.06); padding: 10px 12px;
-      background: linear-gradient(180deg, rgba(17, 21, 26, 0), rgba(17, 21, 26, 0.6) 40%);
+      flex: 0 0 auto; border-top: 1px solid rgba(15, 23, 42, 0.04); padding: 10px 12px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.6) 40%);
     }
     .rail-composer textarea {
       width: 100%; min-width: 0; resize: none; min-height: 38px; max-height: 160px;
@@ -79,7 +79,7 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .rail-composer .composer-row { display: flex; gap: 8px; align-items: flex-end; }
     .rail-composer .composer-send {
       flex: 0 0 auto; height: 38px; padding: 0 14px; border: none; border-radius: 8px;
-      background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: #0b0d10; font-weight: 600; cursor: pointer;
+      background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: var(--btn-text); font-weight: 600; cursor: pointer;
       box-shadow: var(--glow-accent-soft); transition: filter 0.18s ease, box-shadow 0.18s ease, transform 0.08s ease;
     }
     .rail-composer .composer-send:hover:not(:disabled) { filter: brightness(1.06); box-shadow: var(--glow-accent); }
@@ -102,7 +102,7 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
       border: 1px solid var(--border-strong); border-radius: 8px;
       background: var(--surface-2); color: var(--text-muted); cursor: pointer;
     }
-    .rail-composer .composer-mic.recording { background: var(--warn); color: #0b0d10; border-color: var(--warn); box-shadow: 0 0 14px -2px rgba(251, 146, 60, 0.6); }
+    .rail-composer .composer-mic.recording { background: var(--warn); color: var(--text); border-color: var(--warn); box-shadow: 0 0 14px -2px rgba(251, 146, 60, 0.6); }
     .rail-composer .composer-mic.transcribing { color: var(--accent); }
     /* No microphone available: faded + not-allowed, but still hoverable so the
        title tooltip ("No microphone available") shows. Not natively disabled —
@@ -119,12 +119,12 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .assistant-rail.dragging-file::after {
       content: 'Drop to ingest'; position: absolute; inset: 0; z-index: 10;
       display: flex; align-items: center; justify-content: center;
-      background: rgba(190, 242, 100, 0.10);
+      background: rgba(59, 130, 246, 0.10);
       -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
       border: 2px dashed var(--accent);
-      box-shadow: inset 0 0 60px rgba(190, 242, 100, 0.25);
+      box-shadow: inset 0 0 60px rgba(59, 130, 246, 0.25);
       color: var(--accent); font-weight: 600; pointer-events: none;
-      text-shadow: 0 0 12px rgba(190, 242, 100, 0.6);
+      text-shadow: 0 0 12px rgba(59, 130, 246, 0.6);
     }
     .rail-handle { display: none; }
     @media (max-width: 720px) {
@@ -134,7 +134,7 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
       .assistant-rail {
         position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
         border-left: none; border-top: 1px solid var(--border);
-        max-height: 62svh; box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+        max-height: 62svh; box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.08);
       }
       .rail-resize { display: none; }
       .rail-handle {

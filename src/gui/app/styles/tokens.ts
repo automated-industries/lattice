@@ -1,48 +1,49 @@
 // Auto-composed section of the GUI stylesheet. Verbatim substring of the original
 // css template literal — do not hand-edit; see styles/index.ts for composition.
 export const tokensCss = `
-    /* Design tokens copied from lattice-website's tailwind.config.ts
-       (tailwind.config theme.extend.colors). The local GUI ships these
-       inline so it doesn't need a build step or a network fetch — keep
-       in sync manually when the website's palette changes. Last sync:
-       tailwind.config.ts as of feat/teams branch. */
+    /* Design tokens — kept in sync with lattice-website's tailwind.config.ts
+       (theme.extend.colors). The GUI ships these inline so it needs no build
+       step or network fetch — keep in sync manually when the website palette
+       changes. Enterprise light theme: white background, light-blue accent,
+       light borders, flat surfaces with only subtle elevation. */
     :root {
-      --bg: #0b0d10;
-      --surface: #13171b;
-      --surface-2: #1a1f25;
-      --border: #262d36;
-      --border-strong: #2f3742;
-      --text: #e7ecf0;
-      --text-muted: #8b96a3;
-      --accent: #bef264;
-      --accent-deep: #84cc16;
-      --accent-glow: #d9f99d;
-      --accent-soft: rgba(190, 242, 100, 0.12);
-      --row-hover: #1a1f25;
-      --signal: #22d3ee;
-      --warn: #fb923c;
+      --bg: #ffffff;
+      --surface: #ffffff;
+      --surface-2: #f1f5f9;
+      --border: #e6eaf0;
+      --border-strong: #cbd5e1;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --accent: #3b82f6;
+      --accent-deep: #2563eb;
+      --accent-glow: #60a5fa;
+      --accent-soft: rgba(59, 130, 246, 0.12);
+      --btn-text: #ffffff;                  /* text/icon sitting on the accent fill */
+      --row-hover: #f4f7fb;
+      --signal: #2563eb;
+      --warn: #f59e0b;
       --danger: #ef4444;
       --danger-deep: #dc2626;
 
-      /* Elevation — layered, dark-tuned (the flat --shadow becomes an alias) */
-      --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-      --shadow-2: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
-      --shadow-3: 0 10px 30px -8px rgba(0, 0, 0, 0.55);
-      --shadow-4: 0 24px 60px -16px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4);
+      /* Elevation — light + subtle (flat with only a hint of depth) */
+      --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+      --shadow-2: 0 2px 8px -2px rgba(15, 23, 42, 0.08);
+      --shadow-3: 0 10px 30px -8px rgba(15, 23, 42, 0.10);
+      --shadow-4: 0 24px 60px -16px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.06);
       --shadow: var(--shadow-1);            /* back-compat alias for existing uses */
-      --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.06); /* top highlight for elevated/glass surfaces */
+      --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.6); /* subtle top highlight on white surfaces */
 
-      /* Glass (frosted chrome) */
-      --glass: rgba(19, 23, 27, 0.72);
-      --glass-strong: rgba(19, 23, 27, 0.85);
-      --blur: saturate(140%) blur(14px);
-      --blur-lg: saturate(140%) blur(20px);
+      /* Glass (frosted chrome) — light */
+      --glass: rgba(255, 255, 255, 0.72);
+      --glass-strong: rgba(255, 255, 255, 0.85);
+      --blur: saturate(120%) blur(14px);
+      --blur-lg: saturate(120%) blur(20px);
 
-      /* Single-hue sheen + lime glow */
-      --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0) 64px);
-      --glow-accent: 0 0 0 1px rgba(190, 242, 100, 0.35), 0 0 18px -2px rgba(190, 242, 100, 0.45);
-      --glow-accent-soft: 0 0 14px -4px rgba(190, 242, 100, 0.35);
-      --glow-focus: 0 0 0 2px #0b0d10, 0 0 0 4px rgba(190, 242, 100, 0.55);
+      /* Subtle sheen + light-blue glow */
+      --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 64px);
+      --glow-accent: 0 0 0 1px rgba(59, 130, 246, 0.30), 0 0 18px -2px rgba(59, 130, 246, 0.35);
+      --glow-accent-soft: 0 0 14px -4px rgba(59, 130, 246, 0.30);
+      --glow-focus: 0 0 0 2px #ffffff, 0 0 0 4px rgba(59, 130, 246, 0.55);
 
       --nav-width: 220px;
       --sidebar-width: 320px;
@@ -63,20 +64,12 @@ export const tokensCss = `
     code, kbd, samp, pre {
       font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    /* Form controls inherit the body text color so they're readable
-       on the dark surface. Browsers default inputs to the OS color
-       (typically black), which disappears on var(--surface)=#13171b.
-       Placeholders default ~black too — bump them to --text-muted.
-       Affects every input/select/textarea across the GUI (Data Model
-       editor, Database wizard, User Config Identity, all modals). */
+    /* Form controls take the theme tokens so they're consistent across every
+       surface (a bare input on a modal, the Database wizard, User Config, etc.):
+       dark text on a white field with a light border. Placeholders use the
+       muted token. Affects every input/select/textarea across the GUI. */
     input, select, textarea {
       color: var(--text);
-      /* Without an explicit background, bare inputs (Database Settings
-         name field, Lattice Settings, invite token box) render the
-         browser-default white background while the global color above
-         is the light dark-theme text — i.e. light-on-white, unreadable.
-         Default to the dark surface; contexts that want a different
-         background (modals, wizard) override via more specific rules. */
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -88,7 +81,7 @@ export const tokensCss = `
     a { color: inherit; text-decoration: none; }
     button { font: inherit; cursor: pointer; }
 
-    /* Lime focus ring for keyboard nav (mouse focus unaffected) */
+    /* Light-blue focus ring for keyboard nav (mouse focus unaffected) */
     :where(button, a, [tabindex]):focus-visible {
       outline: none; box-shadow: var(--glow-focus); border-radius: 6px;
     }

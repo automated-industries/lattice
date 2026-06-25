@@ -13,22 +13,22 @@ export const guiAppHtml = `<!doctype html>
 <body>
   <div id="app-loading" class="app-loading" role="status" aria-live="polite" aria-busy="true" aria-label="Loading Lattice">
     <svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect width="24" height="24" rx="4" fill="#0b0d10"/>
-      <line x1="6" y1="6" x2="18" y2="6" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="6" y1="12" x2="18" y2="12" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="6" y1="18" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="6" y1="6" x2="6" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="12" y1="6" x2="12" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="18" y1="6" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <circle cx="6" cy="6" r="1.5" fill="#bef264"/>
-      <circle cx="12" cy="6" r="1.5" fill="#bef264"/>
-      <circle cx="18" cy="6" r="1.5" fill="#bef264"/>
-      <circle cx="6" cy="12" r="1.5" fill="#bef264"/>
-      <circle cx="12" cy="12" r="2" fill="#bef264"/>
-      <circle cx="18" cy="12" r="1.5" fill="#bef264"/>
-      <circle cx="6" cy="18" r="1.5" fill="#bef264"/>
-      <circle cx="12" cy="18" r="1.5" fill="#bef264"/>
-      <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
+      <rect x="0.5" y="0.5" width="23" height="23" rx="5" fill="#eff6ff" stroke="#dbeafe"/>
+      <line x1="6" y1="6" x2="18" y2="6" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="6" y1="12" x2="18" y2="12" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="6" y1="18" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="6" y1="6" x2="6" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="12" y1="6" x2="12" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="18" y1="6" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <circle cx="6" cy="6" r="1.7" fill="#3b82f6"/>
+      <circle cx="12" cy="6" r="1.7" fill="#3b82f6"/>
+      <circle cx="18" cy="6" r="1.7" fill="#3b82f6"/>
+      <circle cx="6" cy="12" r="1.7" fill="#3b82f6"/>
+      <circle cx="12" cy="12" r="2.4" fill="#3b82f6"/>
+      <circle cx="18" cy="12" r="1.7" fill="#3b82f6"/>
+      <circle cx="6" cy="18" r="1.7" fill="#3b82f6"/>
+      <circle cx="12" cy="18" r="1.7" fill="#3b82f6"/>
+      <circle cx="18" cy="18" r="1.7" fill="#3b82f6"/>
     </svg>
     <span class="app-loading-spinner" aria-hidden="true"></span>
     <div class="app-loading-text">Loading…</div>
@@ -36,22 +36,22 @@ export const guiAppHtml = `<!doctype html>
   <header class="topbar">
     <a class="brand" href="#/" title="Go to dashboard" aria-label="Lattice — dashboard">
       <svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect width="24" height="24" rx="4" fill="#0b0d10"/>
-        <line x1="6" y1="6" x2="18" y2="6" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="6" y1="12" x2="18" y2="12" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="6" y1="18" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="6" y1="6" x2="6" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="12" y1="6" x2="12" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="18" y1="6" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <circle cx="6" cy="6" r="1.5" fill="#bef264"/>
-        <circle cx="12" cy="6" r="1.5" fill="#bef264"/>
-        <circle cx="18" cy="6" r="1.5" fill="#bef264"/>
-        <circle cx="6" cy="12" r="1.5" fill="#bef264"/>
-        <circle cx="12" cy="12" r="2" fill="#bef264"/>
-        <circle cx="18" cy="12" r="1.5" fill="#bef264"/>
-        <circle cx="6" cy="18" r="1.5" fill="#bef264"/>
-        <circle cx="12" cy="18" r="1.5" fill="#bef264"/>
-        <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
+        <rect x="0.5" y="0.5" width="23" height="23" rx="5" fill="#eff6ff" stroke="#dbeafe"/>
+        <line x1="6" y1="6" x2="18" y2="6" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="6" y1="12" x2="18" y2="12" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="6" y1="18" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="6" y1="6" x2="6" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="12" y1="6" x2="12" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="18" y1="6" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <circle cx="6" cy="6" r="1.7" fill="#3b82f6"/>
+        <circle cx="12" cy="6" r="1.7" fill="#3b82f6"/>
+        <circle cx="18" cy="6" r="1.7" fill="#3b82f6"/>
+        <circle cx="6" cy="12" r="1.7" fill="#3b82f6"/>
+        <circle cx="12" cy="12" r="2.4" fill="#3b82f6"/>
+        <circle cx="18" cy="12" r="1.7" fill="#3b82f6"/>
+        <circle cx="6" cy="18" r="1.7" fill="#3b82f6"/>
+        <circle cx="12" cy="18" r="1.7" fill="#3b82f6"/>
+        <circle cx="18" cy="18" r="1.7" fill="#3b82f6"/>
       </svg>
     </a>
     <div class="db-switcher" id="ws-switcher">

@@ -142,7 +142,7 @@ export const dataModelJs = `    // ───────────────
                 wizState.entities.map(function (e) {
                   var tag = wizState.kind === 'cloud'
                     ? (e.share ? ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:var(--accent-soft);color:var(--accent)">shared</span>'
-                              : ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:rgba(255,255,255,0.06);color:var(--text-muted)">local only</span>')
+                              : ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:rgba(15, 23, 42, 0.04);color:var(--text-muted)">local only</span>')
                     : '';
                   return '<li>' + escapeHtml(e.name) + tag + '</li>';
                 }).join('') +
@@ -857,7 +857,7 @@ export const dataModelJs = `    // ───────────────
             '<div style="display:flex;align-items:center;gap:8px">' +
               '<input id="db-name-input" type="text" value="' + escapeHtml(name) + '" maxlength="200" style="flex:1"' + (canRename ? '' : ' disabled') + ' />' +
               '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' +
-                (isCloud ? 'var(--accent-soft)' : 'rgba(255,255,255,0.06)') +
+                (isCloud ? 'var(--accent-soft)' : 'rgba(15, 23, 42, 0.04)') +
                 ';color:' + (isCloud ? 'var(--accent)' : 'var(--text-muted)') +
                 ';text-transform:uppercase;letter-spacing:0.04em">' + kind + '</span>' +
               (canRename ? '<button class="btn primary" id="db-name-save">Save</button>' : '') +

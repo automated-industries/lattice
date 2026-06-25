@@ -111,7 +111,7 @@ export const toastJs = `    // ────────────────�
           var isCloud = w.kind === 'cloud';
           var dotClass = isCloud ? 'is-cloud-connected' : '';
           var chipText = isCloud ? 'Cloud' : 'Local';
-          var chipBg = isCloud ? 'var(--accent-soft)' : 'rgba(255,255,255,0.06)';
+          var chipBg = isCloud ? 'var(--accent-soft)' : 'rgba(15, 23, 42, 0.04)';
           var chipColor = isCloud ? 'var(--accent)' : 'var(--text-muted)';
           return '<button class="db-item' + (isCurrent ? ' active' : '') +
             '" data-id="' + escapeHtml(w.id) + '">' +

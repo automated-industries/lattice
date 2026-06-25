@@ -48,7 +48,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
       border: 1px solid var(--border); border-radius: 10px; height: 64vh; overflow: hidden;
     }
     /* Center object node: accented; related objects: dashed ring; entities: plain. */
-    .dm-graph .ognode-object .gnode-dot { fill: var(--accent-deep, #233614); stroke: var(--accent); stroke-width: 2; }
+    .dm-graph .ognode-object .gnode-dot { fill: var(--accent-deep, #2563eb); stroke: var(--accent); stroke-width: 2; }
     .dm-graph .ognode-object .gnode-label { fill: var(--accent); font-weight: 600; }
     .dm-graph .ognode-related .gnode-dot { stroke: var(--text-muted); stroke-dasharray: 3 2; }
     .dm-graph .ognode-related .gnode-label { fill: var(--text-muted); }
@@ -57,7 +57,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .dm-legend {
       position: absolute; top: 10px; left: 12px; display: flex; gap: 14px;
       font-size: 11px; color: var(--text-muted);
-      background: rgba(11, 13, 16, 0.7); border: 1px solid var(--border);
+      background: var(--glass-strong); border: 1px solid var(--border);
       border-radius: 8px; padding: 6px 10px; backdrop-filter: blur(2px);
     }
     .dm-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -190,7 +190,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
       background: var(--glass-strong);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
       padding: 8px; border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(15, 23, 42, 0.04);
       box-shadow: var(--shadow-3), var(--hl-top);
     }
     .emoji-grid[hidden] { display: none; }

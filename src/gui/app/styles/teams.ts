@@ -75,15 +75,15 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
     /* Modal — used by the teams flows. Self-contained so it doesn't
        collide with any modal styles the GUI agent may add later. */
     .modal-backdrop {
-      position: fixed; inset: 0; background: rgba(7, 9, 11, 0.55);
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       display: flex; align-items: center; justify-content: center;
       z-index: 1000;
     }
     .modal {
-      background: rgba(19, 23, 27, 0.80);
+      background: rgba(255, 255, 255, 0.80);
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px;
+      border: 1px solid rgba(15, 23, 42, 0.04); border-radius: 12px;
       box-shadow: var(--shadow-4), var(--hl-top);
       min-width: 420px; max-width: 560px; max-height: 80vh;
       display: flex; flex-direction: column; overflow: hidden;
@@ -105,7 +105,7 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
     }
     .modal-foot .btn:hover { background: var(--row-hover); }
     .modal-foot .btn.primary {
-      background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: #0b0d10; border-color: var(--accent-deep); font-weight: 600; box-shadow: var(--glow-accent-soft);
+      background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: var(--btn-text); border-color: var(--accent-deep); font-weight: 600; box-shadow: var(--glow-accent-soft);
     }
     .modal-foot .btn.primary:hover { background: linear-gradient(135deg, var(--accent-glow), var(--accent)); border-color: var(--accent-glow); box-shadow: var(--glow-accent); }
     .modal .field { margin-bottom: 12px; }
