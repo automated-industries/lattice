@@ -476,37 +476,108 @@ export const POSTGRES_POLYFILLS: readonly { warn: string; sql: string }[] = [
     END $do$;`,
   },
   {
-    warn: 'could not register strftime polyfill:',
+    warn: 'could not register strftime format helper:',
+    // Shared format translator (SQLite strftime tokens → to_char patterns), in UTC.
+    // Factored out so the 2-arg and 3-arg strftime overloads share one definition.
+    // Each polyfill below is CREATE OR REPLACE (so an existing cloud's prior copy is
+    // UPGRADED when the owner opens), wrapped in a DO block whose EXCEPTION swallows a
+    // scoped member's insufficient-privilege failure IN A SUBTRANSACTION — so a member
+    // that runs registration inside a transaction is NOT aborted. ("must be owner of
+    // function", raised when a non-owner CREATE OR REPLACEs another role's function, is
+    // SQLSTATE 42501 / `insufficient_privilege`, same class as "permission denied".) The
+    // owner already owns + replaced the function; the member simply uses the owner's
+    // copy — and `ownPolyfillsByGroup` re-owns the whole set to the member group so any
+    // member can replace them on a later upgrade.
     sql: `DO $do$ BEGIN
-      IF to_regprocedure('strftime(text, text)') IS NULL THEN
-        CREATE FUNCTION strftime(format text, modifier text)
-          RETURNS text
-          LANGUAGE plpgsql
-          IMMUTABLE
-          AS $fn$
-          DECLARE ts timestamptz;
-          BEGIN
-            IF modifier = 'now' THEN
-              ts := now();
-            ELSE
+      CREATE OR REPLACE FUNCTION __lattice_strftime_fmt(ts timestamptz, format text)
+        RETURNS text
+        LANGUAGE sql
+        IMMUTABLE
+        AS $fn$
+          SELECT to_char(
+            ts AT TIME ZONE 'UTC',
+            replace(replace(replace(replace(replace(replace(replace(replace(
+              format,
+              '%Y', 'YYYY'),
+              '%m', 'MM'),
+              '%d', 'DD'),
+              '%H', 'HH24'),
+              '%M', 'MI'),
+              '%S', 'SS'),
+              '%f', 'MS'),
+              'T', '"T"')
+          );
+        $fn$;
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END $do$;`,
+  },
+  {
+    warn: 'could not register strftime polyfill:',
+    // The pre-4.3.3 strftime cast the modifier straight to timestamptz and threw
+    // `invalid input syntax for type timestamp with time zone: ""` on a legacy ''
+    // value (3.x stored nullable TEXT timestamps as ''), bricking the whole workspace
+    // open. Now an empty, whitespace, or unparseable time string returns NULL (SQLite's
+    // strftime semantics) instead of aborting the query.
+    sql: `DO $do$ BEGIN
+      CREATE OR REPLACE FUNCTION strftime(format text, modifier text)
+        RETURNS text
+        LANGUAGE plpgsql
+        IMMUTABLE
+        AS $fn$
+        DECLARE ts timestamptz;
+        BEGIN
+          IF modifier = 'now' THEN
+            ts := now();
+          ELSIF NULLIF(btrim(modifier), '') IS NULL THEN
+            RETURN NULL;
+          ELSE
+            BEGIN
               ts := modifier::timestamptz;
-            END IF;
-            RETURN to_char(
-              ts AT TIME ZONE 'UTC',
-              replace(replace(replace(replace(replace(replace(replace(replace(
-                format,
-                '%Y', 'YYYY'),
-                '%m', 'MM'),
-                '%d', 'DD'),
-                '%H', 'HH24'),
-                '%M', 'MI'),
-                '%S', 'SS'),
-                '%f', 'MS'),
-                'T', '"T"')
-            );
+            EXCEPTION WHEN others THEN
+              RETURN NULL;
+            END;
+          END IF;
+          RETURN __lattice_strftime_fmt(ts, format);
+        END;
+        $fn$;
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END $do$;`,
+  },
+  {
+    warn: 'could not register 3-arg strftime polyfill:',
+    // SQLite's 3-arg strftime(format, timestring, modifier) — used by the changelog
+    // retention prune (e.g. strftime('%Y-...','now','-30 days')). Postgres had no
+    // 3-arg overload, so that prune threw `function strftime(...) does not exist` on
+    // every PG cloud with retention. Resolve the base time, apply the modifier as an
+    // interval, then reuse the shared formatter. Empty/invalid → NULL, never throws.
+    sql: `DO $do$ BEGIN
+      CREATE OR REPLACE FUNCTION strftime(format text, timestring text, modifier text)
+        RETURNS text
+        LANGUAGE plpgsql
+        IMMUTABLE
+        AS $fn$
+        DECLARE ts timestamptz;
+        BEGIN
+          IF timestring = 'now' THEN
+            ts := now();
+          ELSIF NULLIF(btrim(timestring), '') IS NULL THEN
+            RETURN NULL;
+          ELSE
+            BEGIN
+              ts := timestring::timestamptz;
+            EXCEPTION WHEN others THEN
+              RETURN NULL;
+            END;
+          END IF;
+          BEGIN
+            ts := ts + modifier::interval;
+          EXCEPTION WHEN others THEN
+            RETURN NULL;
           END;
-          $fn$;
-      END IF;
+          RETURN __lattice_strftime_fmt(ts, format);
+        END;
+        $fn$;
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
     END $do$;`,
   },
 ];
@@ -530,11 +601,13 @@ export async function registerPostgresPolyfills(
       // create these nor CREATE OR REPLACE the owner's — but the owner already
       // created them during secureCloud and members hold EXECUTE on them, so this
       // is expected-and-recovered, not a failure. Collapse the per-statement
-      // "permission denied for schema public" noise into ONE debug line instead
-      // of three warnings on every member connect. A genuine non-permission
-      // failure (e.g. pgcrypto unavailable while securing as the owner) still
-      // warns loudly — it is actionable.
-      if (/permission denied/i.test(msg)) {
+      // "permission denied for schema public" / "must be owner of function" noise
+      // into ONE debug line instead of a warning per statement on every member
+      // connect. ("must be owner of function" is what a member's CREATE OR REPLACE
+      // of the owner's strftime/json_extract raises.) A genuine non-permission
+      // failure (e.g. pgcrypto unavailable while securing as the owner) still warns
+      // loudly — it is actionable.
+      if (/permission denied/i.test(msg) || /must be owner of/i.test(msg)) {
         permissionDenied = true;
       } else {
         console.warn(`[PostgresAdapter] ${warn}`, msg);
