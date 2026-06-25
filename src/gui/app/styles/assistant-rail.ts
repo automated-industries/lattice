@@ -14,8 +14,8 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       position: sticky; top: 0; z-index: 3;
       display: flex; flex-direction: column; gap: 6px;
       padding: 8px 10px; border-radius: 8px;
-      background: var(--surface); border: 1px solid rgba(190, 242, 100, 0.22);
-      box-shadow: var(--shadow-1), var(--glow-accent-soft);
+      background: var(--surface); border: 1px solid rgba(59, 130, 246, 0.22);
+      box-shadow: var(--shadow-1);
     }
     .ingest-progress-label { font-size: 12px; font-weight: 500; color: var(--text); }
     .ingest-progress-track {
@@ -23,19 +23,40 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     }
     .ingest-progress-fill {
       height: 100%; width: 0%; border-radius: 999px;
-      background: linear-gradient(90deg, var(--accent-deep), var(--accent));
-      box-shadow: 0 0 8px rgba(190, 242, 100, 0.5);
+      background: var(--accent);
+      box-shadow: 0 0 8px rgba(59, 130, 246, 0.5);
       transition: width 0.3s ease;
     }
+    /* Staging tray — dropped/picked files awaiting review before ingest. */
+    .staging-tray {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 10px; margin: 4px 0; border-radius: 10px;
+      background: var(--surface); border: 1px solid rgba(59, 130, 246, 0.28);
+      box-shadow: var(--shadow-1);
+    }
+    .staging-head { font-size: 12px; font-weight: 600; color: var(--text); }
+    .staging-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .staging-file { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .staging-file-ic { flex: none; }
+    .staging-file-name {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
+    }
+    .staging-file-x {
+      flex: none; background: none; border: 0; color: var(--text-muted);
+      cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+    }
+    .staging-file-x:hover { background: var(--surface-2); color: var(--danger, #c0392b); }
+    .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
+    .staging-send { flex: 1; }
     .assistant-rail {
       position: relative;
       background:
-        radial-gradient(120% 60% at 100% 0%, rgba(190, 242, 100, 0.10), rgba(190, 242, 100, 0) 60%),
+        radial-gradient(120% 60% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
         var(--sheen),
-        rgba(17, 21, 26, 0.66);
+        rgba(255, 255, 255, 0.66);
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-left: 1px solid rgba(190, 242, 100, 0.10);
-      box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.05), -16px 0 40px -24px rgba(0, 0, 0, 0.7);
+      border-left: 1px solid rgba(59, 130, 246, 0.10);
+      box-shadow: inset 1px 0 0 rgba(15, 23, 42, 0.035), -16px 0 40px -24px rgba(15, 23, 42, 0.12);
       display: flex; flex-direction: column;
       min-width: 0; overflow: hidden;
     }
@@ -47,19 +68,19 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .rail-resize:hover, .rail-resize.dragging { background: var(--accent-soft); }
     .rail-header {
       flex: 0 0 auto; padding: 12px 14px;
-      background: linear-gradient(180deg, rgba(190, 242, 100, 0.10), rgba(190, 242, 100, 0) 100%);
-      border-bottom: 1px solid rgba(190, 242, 100, 0.14);
+      background: linear-gradient(180deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 100%);
+      border-bottom: 1px solid rgba(59, 130, 246, 0.14);
       display: flex; align-items: center; gap: 8px;
     }
     .rail-title {
       font-size: 11px; font-weight: 600; color: var(--accent);
       text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto;
-      text-shadow: 0 0 10px rgba(190, 242, 100, 0.35);
+      text-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
     }
     /* Title glows while the assistant is working (pending feed / typing) */
     @keyframes railPulse {
-      0%, 100% { text-shadow: 0 0 10px rgba(190, 242, 100, 0.3); }
-      50% { text-shadow: 0 0 18px rgba(190, 242, 100, 0.7); }
+      0%, 100% { text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
+      50% { text-shadow: 0 0 18px rgba(59, 130, 246, 0.7); }
     }
     .assistant-rail:has(.feed-pending) .rail-title,
     .assistant-rail:has(.chat-typing) .rail-title { animation: railPulse 1.6s ease-in-out infinite; }
@@ -80,12 +101,12 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .feed-item {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px;
       align-items: baseline; padding: 7px 9px; border-radius: 8px;
-      background: var(--sheen), var(--surface-2); border: 1px solid rgba(255, 255, 255, 0.05);
+      background: var(--sheen), var(--surface-2); border: 1px solid rgba(15, 23, 42, 0.035);
       box-shadow: var(--shadow-1);
       animation: feedIn 0.18s ease-out;
     }
     .feed-item.feed-clickable { cursor: pointer; transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease; }
-    .feed-item.feed-clickable:hover { border-color: rgba(190, 242, 100, 0.4); background: var(--surface-2); box-shadow: var(--shadow-2), var(--glow-accent-soft); transform: translateY(-1px); }
+    .feed-item.feed-clickable:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--surface-2); box-shadow: var(--shadow-2); transform: translateY(-1px); }
     .feed-item.feed-clickable:focus-visible { outline: none; box-shadow: var(--glow-focus); }
     @keyframes feedIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .feed-icon { text-align: center; font-size: 13px; }
@@ -96,7 +117,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
       padding: 1px 6px; border-radius: 999px;
       background: var(--accent-soft); color: var(--accent);
-      box-shadow: var(--glow-accent-soft);
+      box-shadow: none;
     }
     .feed-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 

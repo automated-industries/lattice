@@ -76,7 +76,9 @@ async function seedChain(base: string): Promise<{ authorId: string; bookId: stri
   return { authorId, bookId };
 }
 
-test('clicking an object shows its rows as a folder grid', async ({ page }) => {
+test('clicking an object shows its rows in the focused graph (List view shows the grid)', async ({
+  page,
+}) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
@@ -86,7 +88,13 @@ test('clicking an object shows its rows as a folder grid', async ({ page }) => {
   await expect(navLink).toHaveAttribute('href', /#\/fs\//);
 
   await page.goto(`${gui.url}#/fs/authors`);
-  // Data tiles only — exclude the 1.16.2 "New" create tile (also a .fs-tile).
+  // The object page is a focused graph: the row shows as an entity node.
+  const entity = page.locator('.ognode-entity');
+  await expect(entity).toHaveCount(1);
+  await expect(entity.first()).toContainText('Jane Author');
+
+  // "List view" switches to the tile grid.
+  await page.locator('#fsg-view-list').click();
   const tile = page.locator('.fs-tile:not(.fs-tile-create)');
   await expect(tile).toHaveCount(1);
   await expect(tile.first()).toContainText('Jane Author');
@@ -186,9 +194,9 @@ test('a long-form field edits as a textarea and round-trips newlines losslessly 
 
 test('Advanced mode toggle restores the classic row/table editor', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author' });
-  await page.goto(gui.url);
-
-  // Default: dashboard cards point at the file-system route.
+  // The dashboard (now reached via its own route; the graph is the default view)
+  // lists cards that point at the file-system route in default mode.
+  await page.goto(`${gui.url}#/dashboard`);
   const card = page.locator('.card').first();
   await expect(card).toHaveAttribute('href', /#\/fs\//);
 
@@ -242,9 +250,9 @@ test('the simple-view create tile opens an inline form that makes a new object w
     window.location.hash = '#/fs/books';
   });
 
-  // The "New" create tile navigates to an INLINE create form (no modal),
-  // styled like the item page (#/fs/books/new).
-  await page.locator('.fs-tile-create').click();
+  // The "+ New" button in the object-graph header navigates to an INLINE create
+  // form (no modal), styled like the item page (#/fs/books/new).
+  await page.locator('.view-header a.btn').first().click();
   const form = page.locator('.fs-create-form');
   await expect(form).toBeVisible();
   await expect(page.locator('.modal')).toHaveCount(0);

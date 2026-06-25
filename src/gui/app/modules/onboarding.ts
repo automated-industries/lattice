@@ -226,7 +226,7 @@ export const onboardingJs = `    // ──────────────�
       }
       return buffer;
     }
-    function sendChat(text) {
+    function sendChat(text, attachedFiles) {
       if (chatBusy || !text) return;
       chatBusy = true;
       gaTrack('assistant_message', {}); // no message text — just the event
@@ -253,7 +253,7 @@ export const onboardingJs = `    // ──────────────�
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement() })
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
@@ -355,42 +355,67 @@ export const onboardingJs = `    // ──────────────�
       btn.title = 'Record voice';
       btn.removeAttribute('aria-disabled');
     }
-    // Reflect microphone presence on the button. enumerateDevices lists an
-    // audioinput entry whenever mic hardware exists (even before permission is
-    // granted), so zero such entries means "no mic" → fade + tooltip.
+    // The user's chosen input device (used only when the default doesn't work).
+    var selectedMicId = null;
+    try { selectedMicId = (window.localStorage && localStorage.getItem('lattice.micDeviceId')) || null; } catch (e) {}
+    function micConstraint() { return selectedMicId ? { deviceId: { exact: selectedMicId } } : true; }
+    // Default the mic to ENABLED — assume the system microphone works. Browsers
+    // and the desktop webview are unreliable about enumerateDevices BEFORE mic
+    // permission is granted (often an empty list, or audioinput entries with no
+    // label), so a missing entry does NOT mean "no mic". Only fade the button when
+    // we positively know there ARE devices yet none is an audio input; genuine
+    // failures are surfaced at record time, with a device-picker fallback.
     function refreshMicAvailability(btn) {
       if (!btn) return;
+      markMicAvailable(btn);
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+      navigator.mediaDevices.enumerateDevices().then(function (devices) {
+        var inputs = devices.filter(function (d) { return d.kind === 'audioinput'; });
+        if (devices.length > 0 && inputs.length === 0) markMicUnavailable(btn);
+        else markMicAvailable(btn);
+      }).catch(function () { /* enumeration blocked — leave enabled */ });
+    }
+    // When the default mic fails, let the user pick a specific input + retry.
+    function offerMicPicker(btn, input) {
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-        markMicUnavailable(btn); return;
+        markMicUnavailable(btn); showToast('No microphone available', {}); return;
       }
       navigator.mediaDevices.enumerateDevices().then(function (devices) {
-        var hasMic = devices.some(function (d) { return d.kind === 'audioinput'; });
-        if (hasMic) markMicAvailable(btn); else markMicUnavailable(btn);
-      }).catch(function () { /* enumeration blocked — leave as-is */ });
+        var inputs = devices.filter(function (d) { return d.kind === 'audioinput'; });
+        if (!inputs.length) { markMicUnavailable(btn); showToast('No microphone available', {}); return; }
+        var host = btn.parentNode; if (!host) return;
+        var old = host.querySelector('.mic-picker'); if (old) old.remove();
+        var sel = document.createElement('select');
+        sel.className = 'mic-picker';
+        sel.title = 'Choose a microphone';
+        sel.innerHTML = '<option value="">Choose a microphone…</option>' +
+          inputs.map(function (d, i) {
+            return '<option value="' + escapeHtml(d.deviceId) + '">' + escapeHtml(d.label || ('Microphone ' + (i + 1))) + '</option>';
+          }).join('');
+        sel.addEventListener('change', function () {
+          if (!sel.value) return;
+          selectedMicId = sel.value;
+          try { if (window.localStorage) localStorage.setItem('lattice.micDeviceId', selectedMicId); } catch (e) {}
+          sel.remove(); markMicAvailable(btn); startRecording(btn, input);
+        });
+        host.insertBefore(sel, btn.nextSibling);
+      }).catch(function () { markMicUnavailable(btn); showToast('No microphone available', {}); });
     }
     function startRecording(btn, input) {
       if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
         showToast('Voice recording is not supported in this browser.'); return;
       }
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      navigator.mediaDevices.getUserMedia({ audio: micConstraint() }).then(function (stream) {
         var rec = new MediaRecorder(stream);
         audioChunks = [];
         rec.ondataavailable = function (e) { if (e.data && e.data.size) audioChunks.push(e.data); };
         rec.onstop = function () {
           stream.getTracks().forEach(function (t) { t.stop(); });
           var blob = new Blob(audioChunks, { type: rec.mimeType || 'audio/webm' });
-          setMicState(btn, 'transcribing');
-          fetch('/api/assistant/transcribe', { method: 'POST', headers: { 'content-type': blob.type }, body: blob })
-            .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-            .then(function (j) {
-              if (input && j.text) {
-                input.value = (input.value ? input.value + ' ' : '') + j.text;
-                input.dispatchEvent(new Event('input'));
-                input.focus();
-              }
-            })
-            .catch(function (e) { showToast('Transcription failed: ' + e.message); })
-            .finally(function () { setMicState(btn, 'idle'); });
+          // The GUI ALWAYS dictates on-device (keyless; the audio never leaves the
+          // machine). The cloud transcribe route stays available to API callers for
+          // backward compatibility, but the GUI never uses it.
+          dictateLocal(blob, btn, input);
         };
         rec.start();
         mediaRecorder = rec;
@@ -401,8 +426,10 @@ export const onboardingJs = `    // ──────────────�
         // surface as a toast (the device is there, so don't mark it unavailable).
         var name = (e && e.name) || '';
         if (/NotFound|DevicesNotFound|OverConstrained/i.test(name)) {
-          markMicUnavailable(btn);
-          showToast('No microphone available', {});
+          // The default (or previously-chosen) device didn't work — drop a stale
+          // choice and let the user pick another input, then retry.
+          if (selectedMicId) { selectedMicId = null; try { if (window.localStorage) localStorage.removeItem('lattice.micDeviceId'); } catch (e2) {} }
+          offerMicPicker(btn, input);
         } else if (/NotAllowed|Permission|Security/i.test(name)) {
           showToast('Microphone permission denied — allow it in your browser settings.', {});
         } else {

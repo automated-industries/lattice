@@ -38,17 +38,17 @@ test('navigation paints the new view immediately even when row data is slow', as
   await page.evaluate(() => {
     window.location.hash = '#/fs/items';
   });
+  // A loading frame must appear well before the 800ms data — the view never
+  // blocks on the fetch.
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …then the data fills in.
-  await expect(page.locator('.fs-tile:not(.fs-tile-create)').first()).toBeVisible({
-    timeout: 5000,
-  });
+  // …then the entity nodes fill in.
+  await expect(page.locator('.ognode-entity').first()).toBeVisible({ timeout: 5000 });
 
-  // Click into an item: the collection grid must be REPLACED by the item frame
+  // Click into an entity node: the graph must be REPLACED by the item frame
   // immediately (well under the 800ms item-data delay), not persist until the
   // item's data arrives. This is the exact freeze the user hit.
-  await page.locator('.fs-tile:not(.fs-tile-create)').first().click();
-  await expect(page.locator('.fs-grid')).toHaveCount(0, { timeout: 400 });
+  await page.locator('.ognode-entity').first().click();
+  await expect(page.locator('.object-graph')).toHaveCount(0, { timeout: 400 });
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
   // …and the item content eventually loads.
   await expect(page.locator('.fs-doc')).toBeVisible({ timeout: 5000 });

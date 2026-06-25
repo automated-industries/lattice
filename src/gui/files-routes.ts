@@ -194,13 +194,22 @@ export function contentDispositionInline(name: string): string {
 }
 
 function blobResponseHeaders(contentType: string, name: string): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     'content-type': contentType,
     'content-disposition': contentDispositionInline(name),
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
-    'content-security-policy': "default-src 'none'; sandbox",
   };
+  // A no-allowances `sandbox` CSP neutralizes an HTML/SVG blob (which a member
+  // could stage over the shared bucket) from executing same-origin when opened
+  // inline. But that SAME directive also blanks the browser's built-in PDF viewer,
+  // which runs its own scripts — so a PDF served with it renders empty. `nosniff`
+  // plus the declared `application/pdf` type already stop a non-PDF being sniffed
+  // as HTML, so PDFs are served WITHOUT the sandbox so the viewer can display them.
+  if (contentType !== 'application/pdf') {
+    headers['content-security-policy'] = "default-src 'none'; sandbox";
+  }
+  return headers;
 }
 
 const BLOB_RE = /^\/api\/files\/([^/]+)\/blob$/;

@@ -121,6 +121,33 @@ const SYNC_NOT_SUPPORTED_MSG =
   'Use the async surface (runAsync/getAsync/allAsync/prepareAsync/introspectColumnsAsync/addColumnAsync/withClient) instead. ' +
   'Lattice core methods (Lattice.query, .insert, .update, .render, etc.) already route through the async surface — only consumer code that escapes into adapter.run/get/all directly needs migrating.';
 
+/**
+ * Route the query pool through Supabase's TRANSACTION-mode pooler.
+ *
+ * Supabase exposes a session-mode pooler on port 5432 and a transaction-mode
+ * pooler on port 6543 at the same `*.pooler.supabase.com` host. Session mode
+ * pins one scarce upstream slot per pooled client for the client's whole
+ * lifetime, so a small pooler `pool_size` (commonly 15) is quickly exhausted by
+ * the query pool + the realtime LISTEN client + a burst of concurrent queries —
+ * surfacing as `EMAXCONNSESSION`. Transaction mode hands back the upstream
+ * connection at COMMIT, multiplexing many clients over far fewer slots. The
+ * query pool only ever needs a connection per transaction (this adapter holds no
+ * cross-statement session state — see `prepareAsync`), so it belongs on 6543.
+ *
+ * Only the QUERY POOL is rewritten. The realtime broker is a separate `pg.Client`
+ * that MUST stay on the session pooler (LISTEN/NOTIFY requires session mode) and
+ * is untouched by this.
+ *
+ * Surgical + conservative: only a Supabase pooler host on the session port is
+ * bumped to 6543 — direct/non-Supabase/already-6543/unparseable URLs are left
+ * exactly as-is, and only the host:port is touched (never userinfo). Set
+ * `LATTICE_PG_SESSION_POOLER=1` to force the pool back onto session mode.
+ */
+export function toTransactionPoolerUrl(connectionString: string): string {
+  if (process.env.LATTICE_PG_SESSION_POOLER) return connectionString;
+  return connectionString.replace(/(\.pooler\.supabase\.com):5432\b/, '$1:6543');
+}
+
 export class PostgresAdapter implements StorageAdapter {
   readonly dialect = 'postgres' as const;
   private readonly _connectionString: string;
@@ -148,7 +175,7 @@ export class PostgresAdapter implements StorageAdapter {
       );
     }
     this._pool = new pgMod.Pool({
-      connectionString: this._connectionString,
+      connectionString: toTransactionPoolerUrl(this._connectionString),
       max: this._poolSize,
     });
     // An idle pooled client can emit 'error' when its TCP connection drops out

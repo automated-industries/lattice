@@ -14,7 +14,7 @@ export const dashboardCss = `    /* ── Dashboard ─────────
       box-shadow: var(--shadow-2), var(--hl-top);
       transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
     }
-    .card:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: var(--shadow-3), var(--glow-accent-soft); }
+    .card:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: var(--shadow-3); }
     .card-icon { font-size: 22px; }
     .card-label { font-size: 15px; font-weight: 600; }
     .card-count { font-size: 28px; font-weight: 700; color: var(--text-muted); margin-top: auto; }
@@ -28,7 +28,7 @@ export const dashboardCss = `    /* ── Dashboard ─────────
     .card.is-rendering .card-count { opacity: 0.45; transition: opacity 0.2s ease; }
     .card-render-fill {
       position: absolute; left: 0; bottom: 0; height: 3px; width: 0%;
-      background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+      background: var(--accent);
       transition: width 0.2s ease; pointer-events: none;
     }
     .card-render-pill {

@@ -11,7 +11,7 @@ export const layoutCss = `    /* ── Layout ───────────
       height: calc(100vh - 56px);
     }
     @media (max-width: 720px) {
-      main#content { padding-bottom: 24px; }
+      #content { padding-bottom: 24px; }
     }
     nav.sidebar {
       background: var(--surface); border-right: 1px solid var(--border);
@@ -34,8 +34,10 @@ export const layoutCss = `    /* ── Layout ───────────
     }
     nav li a .nav-icon { width: 18px; text-align: center; font-size: 14px; }
     nav li a:hover { background: var(--row-hover); }
-    nav li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; box-shadow: var(--glow-accent-soft); }
+    nav li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; box-shadow: none; }
 
-    main#content { padding: 24px; overflow: auto; }
+    /* The middle grid cell is now a flex column: the tab strip + the scrollable
+       content pane (#content padding/scroll moved to styles/tabs.ts). */
+    .content-wrap { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 
 `;
