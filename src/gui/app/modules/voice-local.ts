@@ -67,6 +67,14 @@ export const voiceLocalJs = `    // ──────────────�
       return _voiceWorker;
     }
 
+    // Warm up the voice worker + model in the BACKGROUND on launch, so dictation is
+    // ready by the time the user records and any first-run weight fetch happens
+    // silently up front (never mid-recording, never with a visible "downloading"
+    // state). Idempotent + best-effort — a failure just leaves the mic to lazy-init.
+    function voicePreload() {
+      try { getVoiceWorker(); } catch (_) { /* best-effort */ }
+    }
+
     function voicePreferredDevice() {
       // WebGPU when the browser exposes it, else WASM. The worker downgrades to
       // wasm itself if the runtime can't honor webgpu, so this is just a hint.
@@ -88,14 +96,14 @@ export const voiceLocalJs = `    // ──────────────�
       _voiceWorkerReady = false;
     }
 
-    // Forward model-download progress to the composer placeholder so the first
-    // use shows "Downloading voice model… N%" (it needs the network ONCE; after
-    // that it's cached and offline).
-    function onVoiceProgress(file, progress) {
-      var inp = document.getElementById('chat-input');
-      if (!inp) return;
-      var pct = (typeof progress === 'number' && progress > 0) ? (' ' + Math.round(progress) + '%') : '';
-      inp.setAttribute('placeholder', 'Downloading voice model…' + pct);
+    // Model loading is SILENT — the user never sees a "downloading voice model"
+    // state. The worker + model are warmed up in the background on launch (see
+    // voicePreload), and the ORT runtime ships bundled, so by the time anyone
+    // records, dictation is ready. We intentionally surface no loading progress in
+    // the composer; if a first-run weight fetch is still in flight, the existing
+    // "Transcribing…" placeholder covers it.
+    function onVoiceProgress(_file, _progress) {
+      /* intentionally silent — no visible voice-model loading UI */
     }
 
     // Decode a recorded audio blob to mono 16 kHz PCM (Float32Array), entirely in
