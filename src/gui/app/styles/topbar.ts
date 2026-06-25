@@ -27,10 +27,10 @@ export const topbarCss = `    /* ── Top bar ──────────�
       /* object-fit keeps an owner's custom <img> logo from distorting when it
          isn't a perfect 32px square (the default inline SVG ignores this). */
       object-fit: contain; border-radius: 4px;
-      filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.35));
+      filter: none;
       transition: filter 0.18s ease;
     }
-    .brand:hover .brand-logo { filter: drop-shadow(0 0 10px rgba(59, 130, 246, 0.55)); }
+    .brand:hover .brand-logo { filter: none; }
 
     /* History controls — dark variant */
     .history-controls { display: inline-flex; gap: 4px; }
@@ -43,6 +43,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
     }
     .history-btn:hover:not([disabled]) { background: rgba(15, 23, 42, 0.04); }
     .history-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
+    .history-btn svg { width: 16px; height: 16px; display: block; }
 
     /* History page */
     .history-list {

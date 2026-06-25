@@ -9,7 +9,7 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
       white-space: pre-wrap; word-break: break-word;
     }
     .chat-bubble.user {
-      background: linear-gradient(135deg, var(--accent-glow), var(--accent) 55%, var(--accent-deep));
+      background: var(--accent);
       color: var(--btn-text);
       border-radius: 14px 14px 4px 14px;
       box-shadow: 0 2px 10px -2px rgba(37, 99, 235, 0.5);
@@ -79,10 +79,10 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .rail-composer .composer-row { display: flex; gap: 8px; align-items: flex-end; }
     .rail-composer .composer-send {
       flex: 0 0 auto; height: 38px; padding: 0 14px; border: none; border-radius: 8px;
-      background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: var(--btn-text); font-weight: 600; cursor: pointer;
-      box-shadow: var(--glow-accent-soft); transition: filter 0.18s ease, box-shadow 0.18s ease, transform 0.08s ease;
+      background: var(--accent); color: var(--btn-text); font-weight: 600; cursor: pointer;
+      box-shadow: none; transition: filter 0.18s ease, box-shadow 0.18s ease, transform 0.08s ease;
     }
-    .rail-composer .composer-send:hover:not(:disabled) { filter: brightness(1.06); box-shadow: var(--glow-accent); }
+    .rail-composer .composer-send:hover:not(:disabled) { filter: brightness(1.06); box-shadow: var(--shadow-2); }
     .rail-composer .composer-send:active:not(:disabled) { transform: translateY(1px); }
     .rail-composer .composer-send:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
     .rail-composer .composer-setup { font-size: 12.5px; color: var(--text-muted); text-align: center; }
@@ -108,6 +108,7 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
        title tooltip ("No microphone available") shows. Not natively disabled —
        disabled buttons suppress the tooltip. */
     .rail-composer .composer-mic.composer-mic-unavailable { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+    .rail-composer .mic-picker { flex: 0 0 auto; max-width: 150px; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); }
     .rail-composer .composer-clip {
       flex: 0 0 auto; height: 38px; width: 38px;
       display: inline-flex; align-items: center; justify-content: center;

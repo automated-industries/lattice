@@ -105,9 +105,9 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
     }
     .modal-foot .btn:hover { background: var(--row-hover); }
     .modal-foot .btn.primary {
-      background: linear-gradient(135deg, var(--accent-glow), var(--accent-deep)); color: var(--btn-text); border-color: var(--accent-deep); font-weight: 600; box-shadow: var(--glow-accent-soft);
+      background: var(--accent); color: var(--btn-text); border-color: var(--accent-deep); font-weight: 600; box-shadow: none;
     }
-    .modal-foot .btn.primary:hover { background: linear-gradient(135deg, var(--accent-glow), var(--accent)); border-color: var(--accent-glow); box-shadow: var(--glow-accent); }
+    .modal-foot .btn.primary:hover { background: var(--accent-deep); border-color: var(--accent-glow); box-shadow: var(--shadow-2); }
     .modal .field { margin-bottom: 12px; }
     .modal .field label {
       display: block; margin-bottom: 4px; font-size: 12px;

@@ -17,7 +17,7 @@ export const tabsCss = `    /* ── Center tab strip + tabbed content ──�
       flex: 0 1 auto; min-width: 34px; max-width: 220px; white-space: nowrap; overflow: hidden;
     }
     .tab:hover { background: var(--row-hover); color: var(--text); }
-    .tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; box-shadow: var(--glow-accent-soft); }
+    .tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; box-shadow: none; }
     .tab-icon { font-size: 13px; flex: none; }
     .tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .tab-close {

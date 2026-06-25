@@ -1193,8 +1193,10 @@ export const dashboardJs = `    // ───────────────
       mount.querySelectorAll('g.gnode').forEach(function (g) { nodeEls[g.getAttribute('data-i')] = g; });
       var edgeEls = mount.querySelectorAll('line.dm-edge');
       function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
-      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); }
+      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); syncGraphLabelScale(svg); }
       var fitVb = vb();
+      syncGraphLabelScale(svg);
+      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { syncGraphLabelScale(svg); }).observe(svg);
       function toData(ev) {
         var rect = svg.getBoundingClientRect(); var b = vb();
         return { x: b[0] + ((ev.clientX - rect.left) / rect.width) * b[2], y: b[1] + ((ev.clientY - rect.top) / rect.height) * b[3] };

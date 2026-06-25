@@ -2,8 +2,13 @@ import { test, expect } from '@playwright/test';
 import { bootGui, type BootedGui } from './helpers.js';
 
 let gui: BootedGui;
-test.beforeEach(async () => {
+test.beforeEach(async ({ page }) => {
   gui = await bootGui();
+  // The composer (and its single Send button, which now ingests staged files) only
+  // renders when the assistant is configured — as it always is in real use.
+  await page.request.put(`${gui.url}/api/assistant/key`, {
+    data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
+  });
 });
 test.afterEach(async () => {
   await gui.close();
@@ -44,8 +49,9 @@ test('dropping a file stages it for review, then Send ingests it', async ({ page
   await expect(page.locator('.staging-file-name')).toContainText('memo.md');
   await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0);
 
-  // Send → the "Analyzing memo.md…" row appears while the request is in flight…
-  await page.locator('.staging-send').click();
+  // The main composer Send ingests the staged files (no separate tray Send) → the
+  // "Analyzing memo.md…" row appears while the request is in flight…
+  await page.locator('#chat-send').click();
   await expect(page.locator('.staging-tray')).toHaveCount(0);
   const pending = page.locator('.feed-item.feed-pending');
   await expect(pending).toHaveCount(1);
@@ -55,7 +61,7 @@ test('dropping a file stages it for review, then Send ingests it', async ({ page
   await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0, { timeout: 5000 });
 });
 
-test('the staging tray supports removing a file and cancelling without ingesting', async ({
+test('staged files can be removed with ✕, and nothing ingests until Send', async ({
   page,
 }) => {
   let ingestCalls = 0;
@@ -70,12 +76,12 @@ test('the staging tray supports removing a file and cancelling without ingesting
   await dropFiles(page, ['a.md', 'b.md']);
   await expect(page.locator('.staging-file')).toHaveCount(2);
 
-  // Remove one → the tray now lists a single file.
+  // The per-file ✕ removes a single file → the tray now lists one.
   await page.locator('.staging-file-x').first().click();
   await expect(page.locator('.staging-file')).toHaveCount(1);
 
-  // Cancel → the tray disappears and NOTHING was ingested.
-  await page.locator('.staging-cancel').click();
+  // Removing the last one empties the tray. Nothing ingested — Send was never clicked.
+  await page.locator('.staging-file-x').first().click();
   await expect(page.locator('.staging-tray')).toHaveCount(0);
   expect(ingestCalls).toBe(0);
 });
@@ -117,7 +123,7 @@ test('a multi-file drop stages all, and Send caps concurrent uploads with batch 
   await expect(page.locator('.staging-file')).toHaveCount(FILE_COUNT);
   await expect(page.locator('.ingest-progress')).toHaveCount(0);
 
-  await page.locator('.staging-send').click();
+  await page.locator('#chat-send').click();
 
   // The batch progress bar appears while the queue drains…
   const bar = page.locator('.ingest-progress');

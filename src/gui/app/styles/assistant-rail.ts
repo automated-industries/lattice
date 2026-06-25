@@ -15,7 +15,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       display: flex; flex-direction: column; gap: 6px;
       padding: 8px 10px; border-radius: 8px;
       background: var(--surface); border: 1px solid rgba(59, 130, 246, 0.22);
-      box-shadow: var(--shadow-1), var(--glow-accent-soft);
+      box-shadow: var(--shadow-1);
     }
     .ingest-progress-label { font-size: 12px; font-weight: 500; color: var(--text); }
     .ingest-progress-track {
@@ -23,7 +23,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     }
     .ingest-progress-fill {
       height: 100%; width: 0%; border-radius: 999px;
-      background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+      background: var(--accent);
       box-shadow: 0 0 8px rgba(59, 130, 246, 0.5);
       transition: width 0.3s ease;
     }
@@ -32,7 +32,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       display: flex; flex-direction: column; gap: 8px;
       padding: 10px; margin: 4px 0; border-radius: 10px;
       background: var(--surface); border: 1px solid rgba(59, 130, 246, 0.28);
-      box-shadow: var(--shadow-1), var(--glow-accent-soft);
+      box-shadow: var(--shadow-1);
     }
     .staging-head { font-size: 12px; font-weight: 600; color: var(--text); }
     .staging-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -106,7 +106,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       animation: feedIn 0.18s ease-out;
     }
     .feed-item.feed-clickable { cursor: pointer; transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease; }
-    .feed-item.feed-clickable:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--surface-2); box-shadow: var(--shadow-2), var(--glow-accent-soft); transform: translateY(-1px); }
+    .feed-item.feed-clickable:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--surface-2); box-shadow: var(--shadow-2); transform: translateY(-1px); }
     .feed-item.feed-clickable:focus-visible { outline: none; box-shadow: var(--glow-focus); }
     @keyframes feedIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .feed-icon { text-align: center; font-size: 13px; }
@@ -117,7 +117,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
       padding: 1px 6px; border-radius: 999px;
       background: var(--accent-soft); color: var(--accent);
-      box-shadow: var(--glow-accent-soft);
+      box-shadow: none;
     }
     .feed-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 

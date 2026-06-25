@@ -46,7 +46,7 @@ export const tokensCss = `
       --glow-focus: 0 0 0 2px #ffffff, 0 0 0 4px rgba(59, 130, 246, 0.55);
 
       --nav-width: 220px;
-      --sidebar-width: 320px;
+      --sidebar-width: 416px;
     }
     /* Keep frosted surfaces opaque where backdrop-filter is unsupported */
     @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {

@@ -153,9 +153,9 @@ export const createDatabaseWizardJs = `    // ───────────�
     }
     // ── Staging tray ────────────────────────────────────────────────────────
     // A dropped file (or one picked via the paperclip) is NOT ingested on the
-    // spot — it's staged in a tray the user reviews first: "Send" ingests the
-    // batch (→ uploadFiles), "✕" drops one file, "Cancel" discards all. Multiple
-    // drops accumulate into the one tray (deduped by name+size).
+    // spot — it's staged in a tray the user reviews first. The "✕" drops one file;
+    // the main composer Send ingests the batch (→ uploadFiles) along with any typed
+    // message. Multiple drops accumulate into the one tray (deduped by name+size).
     var stagedFiles = [];
     function removeStagingTray() {
       var el = document.getElementById('staging-tray');
@@ -196,11 +196,9 @@ export const createDatabaseWizardJs = `    // ───────────�
       tray.id = 'staging-tray';
       tray.innerHTML =
         '<div class="staging-head">' + n + (n === 1 ? ' file to add' : ' files to add') + '</div>' +
-        '<ul class="staging-list">' + rows + '</ul>' +
-        '<div class="staging-actions">' +
-          '<button class="btn primary staging-send" type="button">Send</button>' +
-          '<button class="btn staging-cancel" type="button">Cancel</button>' +
-        '</div>';
+        '<ul class="staging-list">' + rows + '</ul>';
+      // The tray just DISPLAYS the staged files (each removable with its ✕); the
+      // main composer Send ingests them — no separate Send/Cancel here.
       // Same bottom-pin rule as the pending cards: don't bury a streaming turn.
       var anchor = feedTypingAnchor(feedEl);
       if (anchor) feedEl.insertBefore(tray, anchor); else feedEl.appendChild(tray);
@@ -211,10 +209,6 @@ export const createDatabaseWizardJs = `    // ───────────�
           renderStagingTray();
         });
       });
-      var send = tray.querySelector('.staging-send');
-      if (send) send.addEventListener('click', sendStaged);
-      var cancel = tray.querySelector('.staging-cancel');
-      if (cancel) cancel.addEventListener('click', clearStaging);
     }
     // Mobile: tapping the handle expands/collapses the bottom drawer.
     function initRailDrawer() {
@@ -335,10 +329,19 @@ export const createDatabaseWizardJs = `    // ───────────�
             new ResizeObserver(function () { autoGrowInput(); }).observe(input);
           }
           autoGrowInput(); // fit the initial height
+          // The ONE Send button (and Enter) sends staged files AND the typed
+          // message together in the same turn — they're often related content.
+          // Ingest the files first so the assistant can see them, then send the
+          // message. Works with files only, text only, or both.
+          function submitComposer() {
+            var t = input.value.trim();
+            if (stagedFiles.length) sendStaged();
+            if (t) sendChat(t);
+          }
           input.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(input.value.trim()); }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComposer(); }
           });
-          sendBtn.addEventListener('click', function () { sendChat(input.value.trim()); });
+          sendBtn.addEventListener('click', function () { submitComposer(); });
           var micBtn = document.getElementById('chat-mic');
           if (micBtn) {
             micBtn.addEventListener('click', function () {

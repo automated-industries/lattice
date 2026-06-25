@@ -36,8 +36,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
 // reachable to API callers for backward compatibility, but the GUI never calls it.
 // Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 781343;
-const ORIGINAL_SHA256 = '116268089161cdbbe08aca165578765dfcb77bdfd28223e1a8ec82eb0b720b0c';
+const ORIGINAL_LENGTH = 785572;
+const ORIGINAL_SHA256 = 'ab58773640a2a2adbeab4900e35e7e8721c45737f743b7622e0a0a8d2e2c92ba';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

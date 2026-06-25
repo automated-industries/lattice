@@ -270,6 +270,18 @@ export const systemTablesJs = `    // ──────────────
     // Wire interactions on the rendered schema graph: node click → editor,
     // node drag → reposition (live edge updates), background drag → pan, wheel
     // → zoom. Pan/zoom are done by mutating the SVG viewBox.
+    // Keep graph node labels at a constant ON-SCREEN size (matching the sidebar
+    // text), independent of viewBox zoom. font-size on SVG text is in user units,
+    // so divide the target px by the current zoom (viewBoxWidth / renderedWidth);
+    // re-run on every viewBox change + on resize. Shared by BOTH graphs.
+    function syncGraphLabelScale(svg) {
+      if (!svg) return;
+      var vbAttr = svg.getAttribute('viewBox'); if (!vbAttr) return;
+      var vw = parseFloat(vbAttr.split(' ')[2]); if (!(vw > 0)) return;
+      var rect = svg.getBoundingClientRect();
+      var screenW = rect.width || vw;
+      svg.style.setProperty('--gnode-label-size', (13 * vw / screenW).toFixed(2) + 'px');
+    }
     function wireSchemaGraph(mount, model) {
       var svg = mount.querySelector('svg.dm-graph');
       if (!svg) return;
@@ -278,10 +290,12 @@ export const systemTablesJs = `    // ──────────────
       var edgeEls = mount.querySelectorAll('line.dm-edge');
 
       function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
-      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); }
+      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); syncGraphLabelScale(svg); }
       // The initial viewBox fits all entities — that's the maximum zoom-out;
       // don't let the user zoom out past it into empty space.
       var fitVb = vb();
+      syncGraphLabelScale(svg);
+      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { syncGraphLabelScale(svg); }).observe(svg);
       function toData(ev) {
         var rect = svg.getBoundingClientRect();
         var b = vb();

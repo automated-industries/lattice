@@ -71,8 +71,18 @@ export const sourcesJs = `
               return r.ref_uri === p || r.ref_uri.indexOf(p + '/') === 0;
             });
           });
-          var rootsHtml = roots.length
-            ? '<ul class="src-tree">' + roots.map(function (r) {
+          // Only show roots that aren't nested INSIDE another shown root. A folder
+          // that physically lives under another folder (e.g. Downloads/Hello world)
+          // must appear ONLY in its real place — lazily, under its parent — never
+          // duplicated at the top level. Mirrors the real filesystem tree.
+          var topRoots = roots.filter(function (r) {
+            if (r.kind !== 'folder' || !r.path) return true;
+            return !roots.some(function (o) {
+              return o !== r && o.kind === 'folder' && o.path && r.path.indexOf(o.path + '/') === 0;
+            });
+          });
+          var rootsHtml = topRoots.length
+            ? '<ul class="src-tree">' + topRoots.map(function (r) {
                 return sourceNodeHtml(r.path, r.name, r.kind, 0);
               }).join('') + '</ul>'
             : '';

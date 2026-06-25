@@ -34,7 +34,7 @@ export const layoutCss = `    /* ── Layout ───────────
     }
     nav li a .nav-icon { width: 18px; text-align: center; font-size: 14px; }
     nav li a:hover { background: var(--row-hover); }
-    nav li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; box-shadow: var(--glow-accent-soft); }
+    nav li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; box-shadow: none; }
 
     /* The middle grid cell is now a flex column: the tab strip + the scrollable
        content pane (#content padding/scroll moved to styles/tabs.ts). */

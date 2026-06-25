@@ -61,8 +61,7 @@ export const connectorsSettingsJs = `
         }
         host.innerHTML =
           '<p class="conn-lead">Sync an external source into Lattice as connected data types. ' +
-          'Your credentials are validated on connect and stored encrypted on this machine — they ' +
-          'never leave it except to call the source API directly.</p>' +
+          'Your credentials are validated on connect and stored encrypted on this machine.</p>' +
           '<div id="connectors-msg" class="conn-msg"></div>' +
           (toolkits.length ? toolkits.map(card).join('') : '<div class="conn-sub">No connectors available.</div>');
         var msg = host.querySelector('#connectors-msg');
