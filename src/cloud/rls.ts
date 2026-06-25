@@ -806,7 +806,17 @@ CREATE TRIGGER "${trg}" AFTER INSERT OR UPDATE OR DELETE ON ${q}
 export async function ownPolyfillsByGroup(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
   const group = await memberGroupFor(db);
-  for (const sig of ['json_extract(text, text)', 'strftime(text, text)']) {
+  // Every polyfill function — including the 4.3.3 additions (the shared strftime
+  // formatter + the 3-arg strftime overload) — must be group-owned, never owned by a
+  // single role. If only the 2-arg strftime were group-owned, a member that replaced
+  // it could end up referencing an owner-only helper it can't (re)create. Keeping the
+  // whole set group-owned keeps replacement symmetric.
+  for (const sig of [
+    'json_extract(text, text)',
+    'strftime(text, text)',
+    'strftime(text, text, text)',
+    '__lattice_strftime_fmt(timestamptz, text)',
+  ]) {
     try {
       const reg = await getAsyncOrSync(db.adapter, `SELECT to_regprocedure($1) AS reg`, [sig]);
       if (reg?.reg == null) continue; // not created yet — nothing to reassign
