@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.3.1] — unreleased
+
+Patch release. A desktop-only fix so the downloadable app is usable on Windows
+(**additive — no library API change**; every 4.3 caller runs unchanged).
+
+### Fixed
+
+- **The desktop app now opens on Windows.** On some Windows machines the embedded
+  WebView2 host fails to create its environment and aborts the process natively —
+  before any window appears — even though the GUI server is already serving. The
+  abort throws no catchable error, so the app left the user with no window. The
+  desktop app now opens the GUI in the user's default browser on Windows (it
+  renders the exact same local server); macOS and Linux keep the native window.
+  Two env overrides: `LATTICE_DESKTOP_BROWSER=1` forces the system browser on any
+  OS, and `LATTICE_DESKTOP_WEBVIEW=1` forces the native window (for when the
+  Windows webview host is fixed upstream).
+
 ## [4.3.0] — unreleased
 
 Minor release. Two additive features — **connectors** and inline **HTML files**
