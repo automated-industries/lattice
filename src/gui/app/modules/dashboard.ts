@@ -1522,9 +1522,14 @@ export const dashboardJs = `    // ───────────────
         }
         var d = displayFor(table);
         // The tab shows the open RECORD's name (e.g. an entity row), not the
-        // object/table name.
+        // object/table name. Guard: only retitle a RECORD ('item:') tab — never the
+        // shared Brain Graph ('graph') tab, even if a record render briefly runs
+        // while the hash still resolves to the graph (which would rename 🧠).
         if (typeof setTabTitle === 'function') {
-          setTabTitle(tabKeyForHash(location.hash), fsDisplayName(row) || d.label);
+          var fsItemKey = tabKeyForHash(location.hash);
+          if (fsItemKey && fsItemKey.indexOf('item:') === 0) {
+            setTabTitle(fsItemKey, fsDisplayName(row) || d.label);
+          }
         }
         // Files + artifacts get the two-view document layout (formatted display +
         // a View Source toggle) with a Version History + Delete dropdown — not the
@@ -1594,7 +1599,10 @@ export const dashboardJs = `    // ───────────────
       // The tab shows the FILE's name (e.g. "Properties Dashboard"), not the
       // object name ("Files").
       if (typeof setTabTitle === 'function') {
-        setTabTitle(tabKeyForHash(location.hash), fsDisplayName(row) || d.label);
+        var fsDocKey = tabKeyForHash(location.hash);
+        if (fsDocKey && fsDocKey.indexOf('item:') === 0) {
+          setTabTitle(fsDocKey, fsDisplayName(row) || d.label);
+        }
       }
       var mode = fileViewMode[id] || 'display';
       // Actions live in a dropdown menu next to the title; View source / Version
