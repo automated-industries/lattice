@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
+import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, parsePageParam } from './http.js';
 import { Lattice } from '../lattice.js';
 import type { StorageAdapter } from '../db/adapter.js';
@@ -43,7 +45,23 @@ export interface ReadRoutesDeps {
   guiAppHtml: string;
   /** server.ts-local sendText (NOT exported from http.ts). Threaded by reference so GET / stays byte-identical. */
   sendText: (res: ServerResponse, body: string, status?: number, contentType?: string) => void;
+  /**
+   * Absolute path to the built `dist/gui-assets/` directory, served read-only at
+   * `GET /gui-assets/*` (the on-device voice worker + ONNX-Runtime WASM). Resolved
+   * once in server.ts. When the fail-soft asset build skipped (the dir or a file
+   * is absent), the route 404s and the GUI degrades — voice falls back or hides.
+   */
+  guiAssetsDir: string;
 }
+
+/** Static MIME types for the vendored GUI assets. Defaults to octet-stream. */
+const GUI_ASSET_MIME: Record<string, string> = {
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+};
 
 /**
  * Tables the live Lattice schema manager knows about that the YAML
@@ -139,6 +157,9 @@ async function entitiesWithCounts(
           : await db.count(t.name);
       }
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
+      // Connected data type → expose its toolkit so the Objects list can badge it.
+      const connectedSource = db.getConnectedSource(t.name);
+      if (connectedSource) base.connectorToolkit = connectedSource.toolkit;
       // Column → SQL type, for the Data Model schema cards (name : type).
       const colTypes = db.getRegisteredColumns(t.name);
       if (colTypes) base.columnTypes = colTypes;
@@ -309,6 +330,55 @@ export async function handleReadRoutes(
       200,
       'text/html; charset=utf-8',
     );
+    return true;
+  }
+
+  // ── Vendored GUI assets: on-device voice worker + ONNX-Runtime WASM ──
+  // GET /gui-assets/<path> serves read-only from dist/gui-assets/ with the right
+  // MIME (text/javascript for .mjs, application/wasm for .wasm) and a long-lived
+  // immutable cache header (content-addressed, vendored bytes). Same-origin
+  // localhost, no CDN. When the fail-soft asset build skipped these files the
+  // route 404s and the GUI degrades (voice hides / falls back) — never a 500.
+  if (method === 'GET' && pathname.startsWith('/gui-assets/')) {
+    const rel = decodeURIComponent(pathname.slice('/gui-assets/'.length));
+    // Resolve under the assets dir and reject any path that escapes it (`..`,
+    // absolute, symlink-ish). `normalize` collapses `..`; the prefix check is the
+    // traversal guard.
+    // Strip any trailing separator so the `base + sep` containment check below
+    // can't form a double-separator that never matches (some callers pass a
+    // dir resolved from a URL ending in "/").
+    const base = deps.guiAssetsDir.replace(/[/\\]+$/, '');
+    const target = normalize(join(base, rel));
+    const within = target === base || target.startsWith(base + sep);
+    if (!within || !existsSync(target) || !statSync(target).isFile()) {
+      sendJson(res, { error: 'asset not found' }, 404);
+      return true;
+    }
+    // Defense-in-depth against symlinks: `normalize` is text-only and doesn't
+    // follow links, and `statSync` DOES follow them — so a symlink under the
+    // assets dir could otherwise read a file outside it. Resolve the real path
+    // (and the real base) and re-confirm containment.
+    try {
+      const real = realpathSync(target);
+      const realBase = realpathSync(base);
+      if (real !== realBase && !real.startsWith(realBase + sep)) {
+        sendJson(res, { error: 'asset not found' }, 404);
+        return true;
+      }
+    } catch {
+      sendJson(res, { error: 'asset not found' }, 404);
+      return true;
+    }
+    const mime = GUI_ASSET_MIME[extname(target).toLowerCase()] ?? 'application/octet-stream';
+    res.writeHead(200, {
+      'content-type': mime,
+      'cache-control': 'public, max-age=31536000, immutable',
+      'x-content-type-options': 'nosniff',
+      // The worker uses WASM threads/SharedArrayBuffer when the browser allows it;
+      // these headers don't hurt single-threaded WASM and enable the threaded path.
+      'cross-origin-resource-policy': 'same-origin',
+    });
+    createReadStream(target).pipe(res);
     return true;
   }
 
@@ -670,14 +740,43 @@ export async function handleReadRoutes(
     return true;
   }
 
-  // ── Per-row version history (cloud): the recoverable trail of every
-  // edit to one row, newest first.
-  // GET /api/tables/:table/rows/:id/history. Empty on local SQLite.
+  // ── Per-row version history: the recoverable trail of every edit to one
+  // row, newest first, from the GUI audit log. Bounded (clamped limit) so a
+  // long-lived row's history can't be read unbounded.
+  // GET /api/tables/:table/rows/:id/history
+  // FOLLOW-UP: `_lattice_gui_audit` has no index on (table_name, row_id), so on a
+  // large cloud audit log this filtered read is a sequential scan. Correctness is
+  // fine (bounded by the clamped limit) and it's on-click (not a hot path); a
+  // composite index is the optimization when audit volume warrants it.
   const rowHistMatch = ROW_HISTORY_PATH.exec(pathname);
   if (rowHistMatch && method === 'GET') {
-    // Per-row history is rebuilt on the RLS change-feed (__lattice_changes)
-    // in a follow-up; empty for now.
-    sendJson(res, { history: [] });
+    const histTable = decodeURIComponent(rowHistMatch[1] ?? '');
+    const histRowId = decodeURIComponent(rowHistMatch[2] ?? '');
+    const histLimitRaw = url.searchParams.get('limit');
+    const histLimit = parsePageParam(histLimitRaw, 'limit');
+    if (histLimit === 'invalid') {
+      sendJson(res, { error: 'limit must be a non-negative integer' }, 400);
+      return true;
+    }
+    const rows = (await active.db.query('_lattice_gui_audit', {
+      filters: [
+        { col: 'table_name', op: 'eq', val: histTable },
+        { col: 'row_id', op: 'eq', val: histRowId },
+      ],
+      limit: histLimitRaw === null ? 100 : histLimit,
+    })) as Record<string, unknown>[];
+    const asStr = (v: unknown): string =>
+      typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+    const history = rows
+      .map((r) => ({
+        id: asStr(r.id),
+        ts: asStr(r.ts),
+        operation: asStr(r.operation),
+        undone: r.undone === 1 || r.undone === true,
+        sessionId: typeof r.session_id === 'string' ? r.session_id : null,
+      }))
+      .sort((a, b) => b.ts.localeCompare(a.ts));
+    sendJson(res, { history });
     return true;
   }
 

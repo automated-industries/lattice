@@ -3,10 +3,10 @@
 export const toastCss = `    /* ── Toast / undo banner ──────────────────────────── */
     .toast {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-      background: #1f2328; color: white;
+      background: #ffffff; color: var(--text); border: 1px solid var(--border);
       padding: 10px 18px; border-radius: 999px;
       display: flex; align-items: center; gap: 14px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+      box-shadow: var(--shadow-3);
       /* Above every overlay (.modal-backdrop is z-index 1000, drawers 120-130) so
          an error thrown by an overlay screen is always visible on top. */
       z-index: 2000; font-size: 13.5px;
@@ -86,14 +86,14 @@ export const toastCss = `    /* ── Toast / undo banner ───────
     button.is-busy { opacity: 0.75; cursor: progress; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     .toast .undo-link {
-      color: #87b3ff; cursor: pointer; font-weight: 600;
+      color: var(--accent); cursor: pointer; font-weight: 600;
       background: transparent; border: none; padding: 0; font: inherit;
     }
-    .toast .undo-link:hover { color: white; }
+    .toast .undo-link:hover { color: var(--accent-deep); }
     .toast .toast-dismiss {
-      background: transparent; border: none; color: #9aa1ad;
+      background: transparent; border: none; color: #64748b;
       cursor: pointer; padding: 0 4px; font-size: 16px; line-height: 1;
     }
-    .toast .toast-dismiss:hover { color: white; }
+    .toast .toast-dismiss:hover { color: var(--text); }
 
 `;

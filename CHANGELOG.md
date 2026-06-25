@@ -6,7 +6,347 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [4.2.4] — unreleased
+## [4.3.0] — unreleased
+
+Minor release. Two additive features — **connectors** and inline **HTML files**
+in the GUI assistant. Additive on 4.2 (every 4.2 caller runs unchanged); the
+connector layer and its optional dependency are inert until a connector is
+configured.
+
+### Added — Connectors
+
+Sync external sources into Lattice as a new kind of table, the **connected data
+type**.
+
+- **Connected data types.** A table can declare `source` on its
+  `TableDefinition` to mark it as backed by an external system. The framework
+  adds connector-lineage columns (`_source_connector_id`, `_source_model` —
+  immutable; `_source_synced_at`), stamped at ingest. The natural key is the
+  primary key, so re-syncs upsert idempotently and the lineage is preserved on
+  conflict. New module `src/schema/connected.ts` (`ConnectorSource`,
+  `connectedColumns`, `ConnectedSourceImmutableError`); new accessors
+  `db.getConnectedSource(table)` / `db.connectedTables()`.
+- **Connector framework** (`src/connectors/`). A small fetch/auth SPI
+  (`Connector`: `authorize` / `completeAuth` / `listChanges` / `disconnect`, with
+  an optional credential `connect` for token-based sources), an on-demand registry
+  (`__lattice_connectors`), a sync engine, and a teardown cascade. Driven entirely
+  by per-model descriptors — no per-product code in the core.
+- **Jira connector** (`src/connectors/jira/`). Talks to Jira Cloud's REST + Agile
+  APIs directly via the **optional** dependency `jira.js` (lazy-loaded — the
+  package compiles and runs without it; a clear error is thrown only when the
+  connector is actually used), authenticated with the user's own Atlassian
+  credentials (site URL + email + API token, HTTP Basic) — no broker service, no
+  extra API key. Six connected data types (projects, issues, comments, users,
+  boards, sprints) with FK relations that derive graph edges and FTS on text
+  columns; comments are fetched per issue and sprints per board.
+- **Sync engine.** `syncConnector` (idempotent upsert, per-parent fetch for
+  comments, vanished-row pruning, graph-edge derivation), plus `syncIfStale` /
+  `syncStaleConnectors` for "sync on connect, on load if older than an hour, and
+  on manual refresh" — no scheduler. `syncStaleConnectors` is scoped per member.
+  Reads are bounded + projected; an external-sync failure is recorded on the
+  connector and re-thrown (never swallowed).
+- **Incremental per-parent sync.** A per-parent model whose parent declares an
+  `incrementalColumn` (Jira comments → the issue `updated` timestamp) only
+  re-fetches children of parents changed since the last sync — bounding an
+  O(parents) crawl on a large source. (The incremental pass skips pruning, since
+  its seen-set is partial.)
+- **Disconnect teardown.** `disconnectConnector` soft-deletes every ingested row
+  (children before parents), prunes rendered context files, marks the connector
+  disconnected (or removes it in hard mode), and drops the stored credentials.
+  Soft-deleted rows drop out of queries, search, and graph traversal
+  automatically.
+- **Cloud ACL.** `enableConnectorRls` enables per-member Row-Level Security on
+  the registry + a toolkit's connected tables and applies each type's default
+  visibility (`private` per member, or `everyone`). `secureConnectorTables` lets
+  the owner define + secure every toolkit's tables on workspace open (so a table
+  first created in a member's session is still RLS-protected); the GUI runs it on
+  load. Connectors key per-member identity on the cloud `session_user` (the role
+  RLS ownership uses) so the connector partition and row ownership agree. All
+  owner-only; no-ops on SQLite / non-cloud / non-owner. Derived enrichment over
+  connected rows inherits source visibility via the existing source-gated fold.
+- **GUI connectors.** A **Connectors** settings tab to enter your Jira
+  credentials (site URL + email + API token) and connect / refresh / disconnect,
+  backed by server routes (list / connect / refresh / disconnect + a
+  `sync-if-stale` load hook). Credentials are validated on connect and stored in
+  the machine-local encrypted credential store. Connected data types are marked
+  with a "Connected" badge in the Objects list (`/api/entities` reports a
+  per-table `connectorToolkit`).
+
+### Added — GUI layout redesign
+
+The desktop/web GUI is reorganized around the data graph.
+
+- **Tabbed center pane with the brain graph as the default view.** The schema /
+  data-model graph moves out of Settings and becomes the main center view: a
+  permanent, non-closable **Brain Graph** tab plus one closable tab per opened
+  object, file, or page (router-driven — a tab is a hash, so re-opening dedups and
+  closing the active tab falls back to a neighbor). Clicking a graph node opens
+  that object's table in a tab. The graph shows only objects that have rows
+  (non-empty filter). Schema/column editing stays in **Settings → Data Model**,
+  now an entity list + editor.
+- **Sources sidebar.** The left sidebar is reorganized into three peer sections —
+  **Files** (a lazy, infinitely-nestable tree of on-disk roots; "Files never leave
+  your computer"), **Artifacts** (Lattice-created files), and **Connectors**.
+  Adding a file or folder uses a native OS picker and ingests it in place
+  (`local_ref`, no copy); a folder is a bounded breadth-first ingest. A new
+  local-only `sources-routes` backend (gated by `LATTICE_LOCAL_OPEN`) registers
+  roots in a machine-local store, lists **one directory level at a time**
+  (entry-capped, confined to a registered root, symlink-safe), and never touches a
+  path outside a root. The flat Objects list remains in Advanced view.
+- **Single top-right status indicator.** The scattered progress/update pills
+  (offline queue, applying-update, workspace switch, background render) collapse
+  into one indicator in the tab strip that shows exactly one status at a time
+  (highest priority, ties → most recent); a still-active lower-priority status
+  resumes when a higher one clears. An ingest burst surfaces an "Ingesting…"
+  status. The cloud-connection dot stays in the workspace switcher; per-card
+  render bars stay.
+- **Live brain-graph ingestion animation.** While the graph is the visible view,
+  ingesting files animates the result in place: new object nodes bubble in and new
+  edges draw, live, with no reload. The animation re-fetches the authoritative
+  graph, seeds existing node positions from the prior layout + runs a short relax
+  (so settled nodes barely move), and animates only the delta (capped, with a
+  whole-stage fade above the cap; honors `prefers-reduced-motion`). A background
+  refresh no longer rebuilds the graph out from under the animation.
+- **File / artifact document view: two views, in-place edit, version history,
+  soft-delete.** Opening a file or artifact shows the **formatted view only** (no
+  column-by-column dump) with a toolbar: **View Source** toggles to the raw
+  markdown/HTML/extracted text (per-tab, independent); **Version History** lists
+  the row's edit trail from the audit log (`GET …/rows/:id/history`, now
+  implemented + bounded) with Revert; **Remove** is a recoverable **soft-delete**
+  that never touches the on-disk file. Editing an artifact's body writes
+  `extracted_text` on the **same row** (`PUT …/rows/:id/content`, audited → kept in
+  history) — it never spawns a new file.
+
+### Changed — GUI redesign refinements
+
+- **Realtime activity flashes in the top-right status indicator** instead of
+  rendering persistent pills in the right rail. Each change shows briefly as it
+  happens, then clears; the rail is reserved for the assistant conversation. The
+  live brain-graph ingestion animation is unchanged (ingests still land on the
+  graph).
+- **Brain graph.** Every relationship renders as a solid **green** many-to-many
+  link — the foreign-key edge style and the FK/many-to-many legend are removed
+  (foreign keys are deprecated). Scroll-to-zoom is now smooth and proportional
+  (scales by the scroll delta rather than a fixed step) and is capped at the fit
+  view — the outermost objects plus their padding — so you can't zoom out into
+  empty space.
+- **File / artifact view.** The toolbar buttons are consolidated into a dropdown
+  menu beside the title (**View source**, **Version history**, **Delete**). View
+  source and Version history are now full-page modes that replace the body (no
+  overlay panel); **Remove** is renamed **Delete**. The tab now shows the file's
+  name (e.g. "Properties Dashboard") rather than the object name.
+- **PDF preview renders inline again.** The blob route's `sandbox`
+  Content-Security-Policy — which also blanked the browser's built-in PDF viewer —
+  is no longer sent for `application/pdf`; `X-Content-Type-Options: nosniff` plus
+  the declared type still prevent a non-PDF being interpreted as HTML.
+- **Files sidebar lists ingested source files**, not only registered on-disk
+  roots — so existing files show even before a folder is added. Adding a single
+  file ingests it (it appears as a loose file) instead of registering a one-file
+  root that would double it.
+- **Default inference aggressiveness is now 0.85** (was 0.5).
+- **Drag-drop / paperclip uploads stage first.** Dropping files on the rail (or
+  picking them with the paperclip) now stages them in a review tray — each file
+  listed with a ✕ to drop it, plus **Send** to ingest the batch or **Cancel** to
+  discard — instead of auto-ingesting on drop. Send runs the existing
+  bounded-concurrency ingest.
+- **The object page is a focused graph.** Opening an object (e.g. "Insured
+  Properties") shows a zoom-in of the brain graph: the object at the center, its
+  entity rows around it (bounded fetch with a "Show more"), and its related
+  objects on the rim. Clicking an entity opens its tab; clicking a related object
+  zooms into that object's graph. A "List view" toggle keeps the tile grid.
+- **Files open as their on-disk folder hierarchy.** The Files object page shows the
+  registered folder roots and any loose files as graph nodes; clicking a folder
+  drills into it (`#/folder/<path>`) and shows that folder's immediate sub-folders
+  and files, and so on. A file's breadcrumb runs through its folders
+  (`Home ▸ Files ▸ Downloads ▸ claude-ai.svg`); each folder crumb is clickable.
+- **Tab overflow.** Tabs shrink to fit the strip (no horizontal scrollbar); past a
+  minimum width the trailing tabs collapse into a "⋯" menu that lists them with a
+  ✕ to close. The active tab stays visible; the strip re-fits on resize.
+- **Connectors moved to a left-sliding "Add a Connector" dialog** (opened from the
+  Sources sidebar), out of the Settings drawer. The panel is data-driven off
+  `/api/connectors` — each toolkit renders as a card with its logo, a credential
+  form built from its declared fields, and refresh/disconnect when connected.
+- **Sidebar labels.** "Files never leave your computer" gains a lock icon and
+  reads "Secured: files never leave your computer"; "Artifacts" → "Built by
+  Lattice"; the brain graph shows the build caption "A live force-directed graph
+  that builds as Claude streams" and uses smaller node labels.
+
+### Fixed — GUI + assistant
+
+- **Google Analytics counts one machine as one user.** The embedded webview drops
+  gtag's own client-id cookie between sessions, so active users inflated to roughly
+  one-per-session. The server now mints a stable, machine-local, anonymized
+  analytics id (a random UUID — no PII) and the GUI pins GA's `client_id` to it.
+- **Live brain graph updates on any structural change**, not only ingests — an
+  assistant-created object (or a row that takes a table from empty to non-empty)
+  appears without a manual refresh.
+- **The file-actions dropdown no longer sticks open** (its `display:flex` was
+  overriding the UA `[hidden]` rule).
+- **Schema edits are steered away from managed objects.** Adding a column to a
+  managed object (files/secrets/…) is refused with a deterministic, user-facing
+  message that points to modeling the new attribute as its own object the records
+  link to — so the assistant never mangles a managed table.
+- **A chat message is connected to the files attached to it.** Files dropped into
+  the composer are now ingested FIRST, then the message is sent referencing the
+  just-added files, so the assistant works on exactly what was attached (any file
+  type, single or many) with its existing file tools — instead of replying that it
+  "doesn't see any attached files". The model-facing note is grounded against the
+  visible files table (stale/invented ids are dropped). See
+  `docs/bugs/2026-06-25-chat-attached-files-not-connected.md`.
+- **The Files tree mirrors the real filesystem.** A folder nested inside another
+  registered root no longer also appears at the top level; the containment check is
+  separator-agnostic so it holds on Windows too.
+
+### Added — Trello connector + data-driven connector layer
+
+Sync **Trello** into Lattice as connected data types (boards, lists, cards,
+members, labels, comments, checklists — 11 namespaced `trello_*` tables, with
+junction tables for the many-to-many edges). Authenticated with your own Trello
+API key + token (validated on connect, stored encrypted); no broker service and
+no new dependency (it talks to Trello's REST API over the built-in `fetch`).
+
+The connector layer is now **data-driven for scale**: a `CredentialConnector` SPI
+plus a `presentation()` (label + logo) on every connector, a single
+`builtinConnectors()` catalog as the one registration point, and multi-connector
+routes — so adding a connector is a module plus one catalog line, with **zero**
+GUI changes. Sources stay distinct and namespaced (`jira_*` vs `trello_*`): no
+shared tables, no cross-source edges. Jira is migrated onto the same SPI.
+
+### Added — On-device voice dictation (keyless)
+
+The assistant composer's 🎙 dictation now works with **no API key and no setup**,
+fully **on-device**: speech is transcribed in the browser by Whisper (WASM, via
+transformers.js) running in a module Web Worker — audio never leaves the machine.
+The model (~`whisper-tiny.en`, quantized) downloads once on first use from a
+public host and then caches; no voice data is ever uploaded. Dictation in the GUI
+is **always on-device** — there is no voice-provider choice in the UI and the 🎙
+mic always shows. The keyed cloud Whisper / ElevenLabs transcription route stays
+available to **API** callers for backward compatibility (`voice_provider` and
+`POST /api/assistant/transcribe` are unchanged), but the GUI never calls it.
+Failures are surfaced loudly (worker/model-load, decode, empty transcript) and
+never insert empty text.
+
+The on-device assets (the worker bundle + ONNX-Runtime WASM) ship in the package;
+the model weights do not (download-on-first-use). The build step that vendors them
+is **fail-soft** — built from an optional build-time dependency
+(`@huggingface/transformers`, a devDependency); if it is absent the package still
+builds, and on-device dictation then fails loudly at use time (the GUI has no
+silent cloud fallback). `GET /api/assistant/config` still reports `voiceMode` +
+`localVoiceAvailable` for API callers, and the assets are served from `GET
+/gui-assets/*` (same-origin, path-traversal-safe).
+
+### Added — Inline HTML files
+
+Inline HTML files in the GUI assistant; this also retires the never-published
+`lattice connect` surface in favour of it.
+
+- **Create & edit HTML files from chat, rendered inline.** The GUI assistant gains
+  two tools — `create_html_file` and `edit_html_file`. Ask it for a page, a report,
+  or a chart of your data and it authors a complete standalone HTML file that is
+  saved like any other file and rendered live in the main content view (a sandboxed
+  `srcdoc` frame). Ask for a change while viewing it ("make it a pie chart",
+  "recolour the header") and the open view updates in place — no page refresh. HTML
+  files are distinguished from markdown artifacts in the file list and preview.
+- **Tool-delegated authoring.** The HTML authoring runs as a focused sub-call —
+  its own HTML-specific system prompt and a larger output budget (`TurnParams`
+  gains an optional `maxTokens`) — on **the strongest model the resolved auth can
+  actually run**: a stronger model (`claude-sonnet-4-6`) for an Anthropic **API
+  key** (entitled to all GA models), and the **chat model** (`DEFAULT_MODEL`) for
+  a connected Claude **subscription**. A subscription is entitled only to the
+  models on the user's plan — a model the plan lacks returns a
+  `429 rate_limit_error` on _every_ call (even a one-token one), so a hardcoded
+  model would make authoring fail 100% of the time for those users. Picking by
+  auth kind keeps authoring strong for API keys and working for subscriptions. It
+  uses the same machine-local Claude auth as the rest of the assistant.
+- **Live data + offline charts.** Authored pages read live data through an injected
+  `window.lattice` bridge (`.query` / `.get` / `.search`), which a read-only,
+  table-gated parent broker services against the existing read API
+  (`/api/tables/:table/rows`, `/api/search`) — no new HTTP endpoints. A charting
+  library is bundled with the GUI and injected into the frame, so pages draw charts
+  with no CDN and fully offline.
+
+### Security
+
+The authored HTML is treated as **untrusted code** and runs fully isolated:
+
+- **Origin-isolated frame.** Rendered in an `<iframe sandbox="allow-scripts">` (no
+  `allow-same-origin`, `allow-popups`, `allow-top-navigation`, or `allow-forms`), so
+  it loads in an opaque/null origin and cannot reach the host GUI's
+  window/DOM/storage/cookies or the chat.
+- **No network egress.** The injected Content-Security-Policy is emitted as the
+  unconditional first element of the document (the authored markup is confined to
+  `<body>`, so it can never run before the policy), with `connect-src 'none'` plus
+  `child-src` / `frame-src` / `object-src` / `worker-src` / `manifest-src 'none'`
+  and `img-src`/`font-src`/`media-src data:` — the page cannot `fetch`, open a
+  socket, beacon, or load a remote resource.
+- **Read-only, mediated data access.** The frame has no direct API access; all reads
+  go through the parent broker over `postMessage`, which (a) only honours messages
+  whose source is the frame's own window, (b) allows exactly three **read** ops, and
+  (c) refuses `secrets` / `chat_*` / `_lattice_*` tables. Server-side RLS still
+  applies, so a cloud member only ever reads rows they may already see.
+- **Executable artifacts are provenance-gated.** `artifact_type='html'` — the marker
+  that makes a file render as an executable page — can be set ONLY by the trusted
+  `create_html_file` / `edit_html_file` tools (`guardReservedFileColumns`); generic
+  `create_row` / `update_row` / `bulk_update` and the HTTP row routes are refused.
+  The same gate also reserves rewriting an existing html artifact's BODY
+  (`extracted_text`) to the trusted edit tool, so a caller (or a prompt injection)
+  can neither plant a new executable page nor swap the contents of one another
+  member would render.
+- **Known residual.** A sandboxed frame can still navigate _itself_ (e.g. `location =`),
+  which no cross-browser CSP directive blocks; this is inherent to in-browser
+  rendering of untrusted scripts. It is bounded by the provenance gate (only
+  first-party-authored pages execute) and RLS (the broker serves only the viewer's
+  own data), so it does not exceed the assistant's existing prompt-injection surface.
+  Rendering on a distinct throwaway origin is recorded as a future hardening.
+
+The design was adversarially reviewed (multi-agent red-team with independent
+verification) and the findings folded into the above.
+
+### Removed
+
+- **The `lattice connect` command** and its `--dashboard <file|folder>` "serve your
+  own HTML at `/`" surface (added in an unreleased branch, never published) are
+  removed — superseded by AI-authored inline HTML files. The encrypted,
+  machine-local Claude key it used to onboard is unchanged; set or change it from
+  the GUI's assistant settings.
+
+### Changed
+
+- **Cloud query pool routes through Supabase's transaction-mode pooler.** A
+  cloud workspace on a `*.pooler.supabase.com` connection now opens its query
+  pool against the transaction pooler (port 6543) instead of the session pooler
+  (5432). Session mode pins one scarce upstream slot per pooled client for its
+  lifetime, so a small `pool_size` (commonly 15) was exhausted by the pool + the
+  realtime `LISTEN` client + a burst of concurrent queries — surfacing as
+  `EMAXCONNSESSION` and failing queries under load. Transaction mode hands the
+  upstream connection back at COMMIT and multiplexes many clients over far fewer
+  slots; the adapter holds no cross-statement session state, so it is
+  transaction-pooler-safe. The realtime broker keeps its dedicated session-mode
+  connection (LISTEN/NOTIFY requires it). Only Supabase pooler hosts on :5432 are
+  rewritten; direct/non-Supabase/already-:6543 URLs are untouched. Set
+  `LATTICE_PG_SESSION_POOLER=1` to opt out.
+- **A connected Claude subscription is strictly preferred over an API key.** When
+  both are configured, the assistant uses the subscription (OAuth). It previously
+  did too — except a transient OAuth token-refresh failure was caught and the code
+  **silently fell back to the API key**, quietly running the assistant on a
+  different credential/billing. Now a refresh failure is surfaced (logged) and the
+  connected subscription is kept (the existing access token is used); the API key
+  is reached only when no usable OAuth credential is configured at all.
+
+### Fixed
+
+- **The Windows desktop app now opens its window.** On boot the app created its
+  data directory at `$HOME/.lattice`, falling back to the current working
+  directory when `$HOME` was unset. `$HOME` is Unix-only, so on Windows the
+  fallback resolved to the app's install directory — read-only for a normal
+  user — and the `mkdir` threw before the window opened. The data directory is
+  now resolved from `os.homedir()` (correct and writable on every platform) and
+  the path is built with `path.join` so the separator is native. macOS and Linux
+  are unaffected.
+
+---
+
+## [4.2.4]
 
 Adds the downloadable desktop app and a pair of GUI single-source-of-truth
 fixes (**additive — no library API change**; every 4.2 caller runs unchanged).
@@ -73,6 +413,8 @@ unchanged).
   same-slug directories and sweeps the collapsed-context directories; subsequent
   opens skip again once the manifest is re-stamped.
 
+---
+
 ## [4.2.2] — unreleased
 
 Patch release on 4.2 (**additive — no API change**; every 4.2 caller runs
@@ -96,6 +438,8 @@ unchanged).
   a full render) — there is no ongoing per-open cost. Going forward, any change
   to how the entity-context is derived or templated must bump this version so
   the new output reaches existing workspaces.
+
+---
 
 ## [4.2.1] — unreleased
 

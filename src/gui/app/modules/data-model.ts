@@ -142,7 +142,7 @@ export const dataModelJs = `    // ───────────────
                 wizState.entities.map(function (e) {
                   var tag = wizState.kind === 'cloud'
                     ? (e.share ? ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:var(--accent-soft);color:var(--accent)">shared</span>'
-                              : ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:rgba(255,255,255,0.06);color:var(--text-muted)">local only</span>')
+                              : ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:rgba(15, 23, 42, 0.04);color:var(--text-muted)">local only</span>')
                     : '';
                   return '<li>' + escapeHtml(e.name) + tag + '</li>';
                 }).join('') +
@@ -429,17 +429,6 @@ export const dataModelJs = `    // ───────────────
             '</div>' +
           '</div>';
         }
-        // Only the selected provider's key input is shown (declutter). 'auto'
-        // ("No Voice") shows no key row and disables voice — no STT provider.
-        function voiceRowHtml(provider) {
-          if (provider === 'openai') {
-            return rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…');
-          }
-          if (provider === 'elevenlabs') {
-            return rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…');
-          }
-          return '';
-        }
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
@@ -492,16 +481,6 @@ export const dataModelJs = `    // ───────────────
                 'auto-creates link tables) when you drop in files. Higher extrapolates more.' +
               '</p>' +
             '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text</div>' +
-            '<div style="margin:6px 0 8px;display:flex;align-items:center;gap:8px">' +
-              '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
-              '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
-                '<option value="auto">No Voice</option>' +
-                '<option value="openai">OpenAI</option>' +
-                '<option value="elevenlabs">ElevenLabs</option>' +
-              '</select>' +
-            '</div>' +
-            '<div id="asst-voice-key">' + voiceRowHtml(cfg.sttPreference || 'auto') + '</div>' +
             '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
@@ -558,31 +537,6 @@ export const dataModelJs = `    // ───────────────
             }).catch(function (e) { if (cmsg) cmsg.textContent = 'Failed: ' + e.message; });
           });
         });
-        var sttSel = host.querySelector('#asst-stt');
-        var voiceKeyHost = host.querySelector('#asst-voice-key');
-        function wireVoiceKey(provider) {
-          if (provider === 'openai') wire('asst-openai', 'openai');
-          else if (provider === 'elevenlabs') wire('asst-elevenlabs', 'elevenlabs');
-        }
-        if (sttSel) {
-          sttSel.value = cfg.sttPreference || 'auto';
-          wireVoiceKey(sttSel.value);
-          sttSel.addEventListener('change', function () {
-            if (voiceKeyHost) voiceKeyHost.innerHTML = voiceRowHtml(sttSel.value);
-            wireVoiceKey(sttSel.value);
-            msg.textContent = 'Saving…';
-            fetch('/api/assistant/stt-provider', {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ provider: sttSel.value }),
-            })
-              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-              // Refresh the composer so the mic affordance disappears immediately
-              // when "No Voice" is selected (and reappears for a real provider).
-              .then(function () { msg.textContent = 'Saved.'; renderComposer(); })
-              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
-          });
-        }
         var aggr = host.querySelector('#asst-aggr');
         var aggrVal = host.querySelector('#asst-aggr-val');
         function aggrLabel(v) {
@@ -725,7 +679,7 @@ export const dataModelJs = `    // ───────────────
       renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
       renderSystemPromptPanel(document.getElementById('system-prompt-host'));
-      renderDataModelInto(document.getElementById('data-model-host'));
+      renderEntityEditorInto(document.getElementById('data-model-host'));
       renderDatabaseDangerZone(document.getElementById('db-danger-host'));
     }
 
@@ -903,7 +857,7 @@ export const dataModelJs = `    // ───────────────
             '<div style="display:flex;align-items:center;gap:8px">' +
               '<input id="db-name-input" type="text" value="' + escapeHtml(name) + '" maxlength="200" style="flex:1"' + (canRename ? '' : ' disabled') + ' />' +
               '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' +
-                (isCloud ? 'var(--accent-soft)' : 'rgba(255,255,255,0.06)') +
+                (isCloud ? 'var(--accent-soft)' : 'rgba(15, 23, 42, 0.04)') +
                 ';color:' + (isCloud ? 'var(--accent)' : 'var(--text-muted)') +
                 ';text-transform:uppercase;letter-spacing:0.04em">' + kind + '</span>' +
               (canRename ? '<button class="btn primary" id="db-name-save">Save</button>' : '') +
@@ -1704,52 +1658,12 @@ export const dataModelJs = `    // ───────────────
       };
     }
     function renderFeedItem(ev) {
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return;
-      var empty = document.getElementById('rail-empty');
-      if (empty) empty.remove();
-      // Coalesce same-TYPE events into one counted card within a recency window —
-      // even across different objects (op+source key, table excluded), so a bulk
-      // run collapses to one card ("Removed 49 rows across 9 tables") instead of
-      // spamming the rail. Distinct tables touched are tracked so a single-table
-      // run still reads "… from <table>".
-      var groupKey = feedGroupKey(ev);
-      var nowMs = Date.now();
-      if (groupKey) {
-        var g = feedGroups[groupKey];
-        // A group stays open to merge while: (a) we're inside the SAME assistant
-        // turn that opened it — no time limit, so a slow bulk run (deleting many
-        // tables against a remote DB) stays one card instead of splitting when a
-        // 15s window lapses mid-run; or (b) outside a turn (manual edits / another
-        // client), within the rolling window. Cross-turn events never merge.
-        var open = g && g.item.parentNode === feedEl && (
-          feedTurnActive ? (g.turnId === feedTurnId) : ((nowMs - g.last) < FEED_GROUP_WINDOW_MS)
-        );
-        if (open) {
-          applyGroupHit(g, ev, nowMs);
-          g.last = nowMs;
-          feedEl.scrollTop = feedEl.scrollHeight;
-          return;
-        }
-      }
-      var card = makeFeedCard(ev);
-      // Keep a streaming chat turn's typing bubble pinned to the bottom: insert
-      // this card above it rather than appending below (the dots are the next
-      // message, not done yet). No active turn → append as usual.
-      var anchor = feedTypingAnchor(feedEl);
-      if (anchor) feedEl.insertBefore(card.item, anchor); else feedEl.appendChild(card.item);
-      feedEl.scrollTop = feedEl.scrollHeight;
-      // Anchor the card's duration to the turn start (so even a single-op card
-      // shows how long the task took); fall back to now for non-turn activity.
-      var startMs = (feedTurnActive && feedTurnStartMs) ? feedTurnStartMs : nowMs;
-      if (groupKey) {
-        var grp = newGroup(ev, card, startMs, nowMs);
-        grp.turnId = feedTurnId;
-        grp.last = nowMs;
-        feedGroups[groupKey] = grp;
-        setGroupTime(grp);
-      } else {
-        card.timeEl.textContent = formatElapsed(Math.max(0, nowMs - startMs));
+      // Realtime activity now surfaces as a transient TOP-RIGHT status (it flashes
+      // as it happens, then clears) — no persistent activity pills in the right
+      // rail. The rail is for the assistant conversation; the live brain-graph
+      // animation still shows ingests landing on the graph.
+      if (ev && ev.summary && typeof setStatus === 'function') {
+        setStatus({ id: 'activity', kind: 'accent', text: ev.summary, priority: 30, sticky: false, ttl: 4500 });
       }
     }
     // Replay a persisted assistant turn's data-change events as collapsed activity

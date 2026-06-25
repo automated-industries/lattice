@@ -57,6 +57,26 @@ export async function handleTablesRoutes(
   const method = req.method ?? 'GET';
   const active = ctx.active();
 
+  // ── In-place artifact content edit ────────────────────────────────
+  // PUT /api/tables/files/rows/:id/content {text} — overwrite the artifact's body
+  // (extracted_text) on the SAME row (audited → version history), never spawning a
+  // new file. The reserved-file-col guard is relaxed for this trusted GUI path.
+  // Must precede ROWS_PATH, whose greedy :id would otherwise swallow "/content".
+  const contentMatch = /^\/api\/tables\/files\/rows\/([^/]+)\/content$/.exec(pathname);
+  if (contentMatch && method === 'PUT') {
+    const cid = decodeURIComponent(contentMatch[1] ?? '');
+    const body = await readJson<{ text?: unknown }>(req).catch(() => ({}) as { text?: unknown });
+    if (typeof body.text !== 'string') {
+      sendJson(res, { error: 'text is required' }, 400);
+      return true;
+    }
+    const mctx = ctx.buildMutationCtx({ clientTs: headerValue(req, 'x-lattice-client-ts') });
+    mctx.allowReservedFileCols = true;
+    await updateRow(mctx, 'files', cid, { extracted_text: body.text });
+    sendJson(res, { ok: true });
+    return true;
+  }
+
   // ── Row CRUD: /api/tables/:table/rows[/:id] ───────────────────────
   const rowsMatch = ROWS_PATH.exec(pathname);
   if (rowsMatch) {
@@ -91,6 +111,19 @@ export async function handleTablesRoutes(
           queryOpts.filters = [
             { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
           ];
+        }
+        // Optional column projection (?exclude=col,col) so a caller can skip heavy
+        // columns it doesn't need — e.g. the Sources sidebar excluding
+        // files.extracted_text (up to 200 KB/row) on its frequent re-renders
+        // (bounded-reads). RLS still applies (the read goes through the same
+        // relation); the excluded columns are simply not selected.
+        const excludeParam = url.searchParams.get('exclude');
+        if (excludeParam) {
+          const cols = excludeParam
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (cols.length) queryOpts.projection = { exclude: cols };
         }
         // #2.1 — a member reads an audience-masked table through its
         // `<table>_v` view (base SELECT was revoked); the base name is used

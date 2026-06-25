@@ -57,6 +57,8 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'get_history',
   'create_row',
   'create_artifact',
+  'create_html_file',
+  'edit_html_file',
   'create_secret',
   'ingest_url',
   'set_definition',

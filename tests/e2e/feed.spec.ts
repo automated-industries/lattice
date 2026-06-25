@@ -9,19 +9,22 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('a server-side mutation streams a bubble into the rail feed', async ({ page }) => {
+test('a server-side mutation flashes a transient top-right status (no rail pills)', async ({
+  page,
+}) => {
   await page.goto(gui.url);
   await expect(page.locator('#assistant-rail')).toBeVisible();
+  // Activity no longer renders as persistent pills in the right rail.
   await expect(page.locator('.feed-item')).toHaveCount(0);
 
   await createRow(gui.url, 'items', { name: 'Hello from e2e' });
 
   // The mutation is published to the in-process FeedBus and pushed as a `feed`
   // message over the multiplexed /api/stream WebSocket the page opened on boot.
-  await expect(page.locator('.feed-item')).toHaveCount(1);
-  await expect(page.locator('.feed-item .feed-summary')).toBeVisible();
-  // GUI-sourced mutations are tagged "you" in the source pill.
-  await expect(page.locator('.feed-item .feed-source')).toHaveText('you');
+  // The client flashes it as a transient note in the top-right status indicator
+  // (it auto-clears) — it does NOT create a rail pill.
+  await expect(page.locator('#app-status')).toBeVisible();
+  await expect(page.locator('.feed-item')).toHaveCount(0);
 });
 
 test('a server-side new entity appears in the sidebar without a reload', async ({ page }) => {
@@ -46,51 +49,4 @@ test('a server-side new entity appears in the sidebar without a reload', async (
   // used to stay missing until refresh, and routing to it showed
   // "Unknown entity").
   await expect(navItem).toHaveCount(1);
-});
-
-test('consecutive identical events collapse into one counted bubble', async ({ page }) => {
-  await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
-  await expect(page.locator('.feed-item')).toHaveCount(0);
-
-  // Three inserts into the same table — a bulk run that used to spam three
-  // near-identical bubbles now collapses into one with a count.
-  await createRow(gui.url, 'items', { name: 'a' });
-  await createRow(gui.url, 'items', { name: 'b' });
-  await createRow(gui.url, 'items', { name: 'c' });
-
-  await expect(page.locator('.feed-item')).toHaveCount(1);
-  await expect(page.locator('.feed-item .feed-summary')).toHaveText(/Added 3 rows to items/);
-});
-
-test("starting a new conversation clears the previous conversation's activity cards", async ({
-  page,
-}) => {
-  await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
-  await createRow(gui.url, 'items', { name: 'clear me' });
-  await expect(page.locator('.feed-item')).toHaveCount(1);
-
-  // The rail is conversation-scoped: "New conversation" runs newChat() →
-  // clearChat(), which now drops the activity cards too. Each conversation
-  // replays its own data-change cards from its persisted per-turn events, so a
-  // fresh conversation starts with an empty rail.
-  await page.locator('#rail-threads').selectOption('');
-  await expect(page.locator('.feed-item')).toHaveCount(0);
-});
-
-test('clicking a row feed item navigates to that object', async ({ page }) => {
-  await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
-
-  const created = (await createRow(gui.url, 'items', { name: 'Clickable target' })) as {
-    id: string;
-  };
-
-  const item = page.locator('.feed-item.feed-clickable').first();
-  await expect(item).toBeVisible();
-  await item.click();
-
-  // Navigates to the row detail (#/fs/items/<id> in simple mode).
-  await expect.poll(() => page.evaluate(() => location.hash)).toContain('items/' + created.id);
 });

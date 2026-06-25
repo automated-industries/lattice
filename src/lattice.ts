@@ -113,6 +113,12 @@ import {
 } from './schema/governance.js';
 import type { TrustState } from './schema/governance.js';
 import {
+  connectedColumns,
+  IMMUTABLE_CONNECTED_FIELDS,
+  ConnectedSourceImmutableError,
+} from './schema/connected.js';
+import type { ConnectorSource } from './schema/connected.js';
+import {
   addEdge,
   addEdges,
   removeEdge,
@@ -308,6 +314,8 @@ export class Lattice {
   private readonly _provenanceCols = new Map<string, string[]>();
   /** table → default trust state for new rows (governance: P-TRUST). */
   private readonly _trustDefault = new Map<string, TrustState>();
+  /** table → connector source descriptor (connected data types, 4.3+). */
+  private readonly _connectedSources = new Map<string, ConnectorSource>();
   /** table → computed-column specs + recompute order + dep set (P-VIEW). */
   private readonly _computed = new Map<
     string,
@@ -530,6 +538,10 @@ export class Lattice {
     if (def.trust) {
       columns = { ...columns, ...TRUST_COLUMNS };
       this._trustDefault.set(table, resolveTrustDefault(def.trust) ?? 'unverified');
+    }
+    if (def.source) {
+      columns = { ...columns, ...connectedColumns(def.source) };
+      this._connectedSources.set(table, def.source);
     }
     if (def.computed) {
       // Validate dependency order (throws on a cycle) before adding columns.
@@ -1051,9 +1063,12 @@ export class Lattice {
     this._assertIdent(table);
     const sanitized = this._applyComputedColumns(
       table,
-      this._applyGovernanceDefaults(
+      this._applyConnectedDefaults(
         table,
-        this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+        this._applyGovernanceDefaults(
+          table,
+          this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+        ),
       ),
     );
     const pkCols = this._schema.getPrimaryKey(table);
@@ -1105,6 +1120,32 @@ export class Lattice {
     return out;
   }
 
+  /**
+   * Stamp connector defaults at insert time for a connected data type: default
+   * `_source_model` from the table's source descriptor and `_source_synced_at`
+   * to now, when not already supplied. A no-op for tables without a `source`.
+   * The connector sync engine normally sets these explicitly; this is the
+   * safety net for a direct insert into a connected table.
+   */
+  private _applyConnectedDefaults(table: string, row: Row): Row {
+    const source = this._connectedSources.get(table);
+    if (!source) return row;
+    const out = { ...row };
+    out._source_model ??= source.model;
+    out._source_synced_at ??= new Date().toISOString();
+    return out;
+  }
+
+  /** The connector source descriptor for a connected data type, or undefined. */
+  getConnectedSource(table: string): ConnectorSource | undefined {
+    return this._connectedSources.get(table);
+  }
+
+  /** Names of all registered connected data types (tables with a `source`). */
+  connectedTables(): string[] {
+    return [...this._connectedSources.keys()];
+  }
+
   /** Post-insert side effects (changelog, audit, write hooks, embedding sync),
    *  identical for the plain and force-visibility insert paths. */
   private async _afterInsert(
@@ -1148,7 +1189,16 @@ export class Lattice {
     this._assertIdent(table);
     this._assertRowSize(table, row);
 
-    const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row));
+    // Apply governance + connector-lineage defaults so a direct upsert into a
+    // connected/provenance table stamps the same defaults an insert() would
+    // (no-op for plain tables).
+    const sanitized = this._applyConnectedDefaults(
+      table,
+      this._applyGovernanceDefaults(
+        table,
+        this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(row)),
+      ),
+    );
     const pkCols = this._schema.getPrimaryKey(table);
     const isDefaultPk = pkCols.length === 1 && pkCols[0] === 'id';
 
@@ -1174,7 +1224,11 @@ export class Lattice {
     // upsert against an existing row must NOT rewrite its lineage (P-PROV), just as
     // a plain update() rejects a provenance change — the first-insert provenance is
     // preserved on conflict.
-    const keepOnConflict = new Set([...pkCols, ...(this._provenanceCols.get(table) ?? [])]);
+    const keepOnConflict = new Set([
+      ...pkCols,
+      ...(this._provenanceCols.get(table) ?? []),
+      ...(this._connectedSources.has(table) ? IMMUTABLE_CONNECTED_FIELDS : []),
+    ]);
     const updateCols = Object.keys(encrypted)
       .filter((c) => !keepOnConflict.has(c))
       .map((c) => `"${c}" = excluded."${c}"`)
@@ -1246,6 +1300,13 @@ export class Lattice {
     if (provCols) {
       for (const c of provCols) {
         if (c in baseSanitized) throw new ProvenanceImmutableError(table, c);
+      }
+    }
+    // Connector lineage columns are immutable too — a row can't be relabeled to a
+    // different connector/model by update() (a re-sync preserves them via upsert).
+    if (this._connectedSources.has(table)) {
+      for (const c of IMMUTABLE_CONNECTED_FIELDS) {
+        if (c in baseSanitized) throw new ConnectedSourceImmutableError(table, c);
       }
     }
     // Recompute any computed columns whose dependencies changed (merges the
