@@ -103,12 +103,33 @@ export const sourcesJs = `
                   '<span class="src-name">' + escapeHtml(name) + '</span></div></li>';
               }).join('') + '</ul>'
             : '';
+          // Preserve expanded folders across this re-render so an in-progress
+          // ingest (which re-renders the sidebar) never snaps an open folder shut.
+          // Capture each expanded folder's path + its lazily-loaded children markup,
+          // then re-attach + re-open them after the rebuild (no re-fetch, no flicker).
+          var openFolders = {};
+          host.querySelectorAll('.src-folder[data-loaded="1"]').forEach(function (li) {
+            var ul0 = li.querySelector(':scope > .src-children');
+            if (ul0 && !ul0.hidden) openFolders[li.getAttribute('data-path')] = ul0.innerHTML;
+          });
           if (!rootsHtml && !looseHtml) {
             host.innerHTML = '<div class="src-empty">No files yet.</div>';
             return;
           }
           host.innerHTML = rootsHtml + looseHtml;
           wireSourceTree(host);
+          host.querySelectorAll('.src-folder').forEach(function (li) {
+            var saved = openFolders[li.getAttribute('data-path')];
+            if (saved == null) return;
+            var ul1 = li.querySelector(':scope > .src-children');
+            var caret = li.querySelector(':scope > .src-row > .src-caret');
+            if (!ul1) return;
+            ul1.innerHTML = saved;
+            ul1.hidden = false;
+            li.setAttribute('data-loaded', '1');
+            if (caret) caret.textContent = '▾';
+            wireSourceTree(ul1);
+          });
         })
         .catch(function () { host.innerHTML = ''; });
     }
