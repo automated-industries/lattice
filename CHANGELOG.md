@@ -27,19 +27,22 @@ Patch release. Bug fixes on 4.3.0.
 - **Files tree** — an expanded folder no longer snaps shut when an in-progress
   ingest re-renders the sidebar; expanded folders + their lazily-loaded children
   are preserved across the re-render.
+- **Brain Graph tab** — clicking through object-to-object graph exploration could
+  leave the shared Brain Graph tab renamed to a record's name; the record renderers
+  now only retitle a record (`item:`) tab, never the graph tab.
 
-### Added — macOS `.pkg` installer + portable launcher
+### Added — macOS `.pkg` download (no "damaged" block)
 
-`scripts/build-mac-pkg.sh` builds an **unsigned** `.pkg` for the Mac launcher. A
-browser-downloaded `.app` is quarantined and (pre-notarization) hard-blocked by
-Gatekeeper as "damaged"; a `.pkg` instead gets the soft "unidentified developer"
-prompt and **installs the app itself**, so the installed app is not quarantined and
-launches cleanly. The launcher inside is **portable** — it resolves node/npm/lattice
-at runtime (probing the common install dirs + a login shell) instead of baking
-absolute paths, so the same bundle works on any machine/user, and it is ad-hoc
-signed **after** its content is written (a valid seal — the old flow wrote paths
-after signing, breaking the seal). Developer-ID signing + notarization slot into the
-same script once the Apple account is approved.
+The macOS download is now an **unsigned `.pkg` installer** wrapping the same
+self-contained desktop app (no Node prerequisite), built in the release workflow
+(`scripts/build-mac-pkg.sh` + `desktop:build:mac:pkg`). A browser-downloaded
+`.app`/`.dmg` is quarantined and (pre-notarization) hard-blocked by Gatekeeper as
+"damaged"; a `.pkg` instead gets the soft "unidentified developer" prompt and
+**installs the app into /Applications itself**, so the installed app is not
+quarantined and launches cleanly. The `.dmg` is still published as the in-app
+auto-update artifact (`latest.json` is unchanged), so existing installs keep
+updating. Developer-ID signing + notarization slot into the same script once the
+Apple account is approved.
 
 ## [4.3.0] — 2026-06-25
 
