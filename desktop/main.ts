@@ -113,8 +113,34 @@ const BrowserWindow = (
   Deno as unknown as { BrowserWindow?: new (o: Record<string, unknown>) => Win }
 ).BrowserWindow;
 
-if (!BrowserWindow) {
-  console.error('[desktop] Deno.BrowserWindow unavailable — launch via `deno desktop`.');
+// Window vs. system browser.
+//
+// On some Windows machines the embedded WebView2 host fails to create its
+// environment and aborts the process natively — before any window appears —
+// even though the GUI server above is already serving. That native abort throws
+// no JS exception, so it can't be caught here; we cannot try-the-window-then-
+// recover in-process. Instead, on Windows the GUI opens in the user's default
+// browser (it renders the exact same server, reliably on every machine); macOS
+// and Linux keep the native window. Override with an env var:
+//   LATTICE_DESKTOP_BROWSER=1  → force the system browser on any OS
+//   LATTICE_DESKTOP_WEBVIEW=1  → force the native window (e.g. once the Windows
+//                                webview host is fixed upstream)
+const forceBrowser = Deno.env.get('LATTICE_DESKTOP_BROWSER') === '1';
+const forceWebview = Deno.env.get('LATTICE_DESKTOP_WEBVIEW') === '1';
+const useBrowser = forceBrowser || (!forceWebview && Deno.build.os === 'windows');
+
+if (!BrowserWindow || useBrowser) {
+  const reason = !BrowserWindow
+    ? 'native window backend unavailable'
+    : forceBrowser
+      ? 'LATTICE_DESKTOP_BROWSER=1'
+      : 'Windows (set LATTICE_DESKTOP_WEBVIEW=1 to force the native window)';
+  console.log(`[desktop] Opening Lattice in your default browser — ${reason}: ${handle.url}`);
+  openInSystemBrowser(handle.url);
+  // No native window owns the process lifetime now; keep the GUI server (and the
+  // upgrade-on-run check) alive until the user quits.
+  setTimeout(() => void runAutoUpdate(), 4000);
+  await new Promise<void>(() => {});
 } else {
   const win = new BrowserWindow({ title: 'Lattice', width: 1280, height: 860 });
   win.navigate(handle.url);
