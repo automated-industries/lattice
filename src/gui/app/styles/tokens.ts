@@ -68,12 +68,16 @@ export const tokensCss = `
        surface (a bare input on a modal, the Database wizard, User Config, etc.):
        dark text on a white field with a light border. Placeholders use the
        muted token. Affects every input/select/textarea across the GUI. */
-    input, select, textarea {
+    /* Text-like fields only — radios/checkboxes keep their native rendering
+       (the box/border treatment mangles them). The accent color tints the native
+       controls so checked radios/checkboxes are on-brand blue. */
+    input:not([type='radio']):not([type='checkbox']):not([type='range']), select, textarea {
       color: var(--text);
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 6px;
     }
+    input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
     input::placeholder, textarea::placeholder {
       color: var(--text-muted);
       opacity: 1;
