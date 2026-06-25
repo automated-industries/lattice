@@ -109,17 +109,150 @@ export const dashboardJs = `    // ───────────────
         download: (isS3File(row) && !hasLocalBytes(row)) || (hasLocalBytes(row) && !inline),
       };
     }
+    // ── Inline HTML files: isolation model ──────────────────────────────────
+    // An authored HTML file is UNTRUSTED code. It runs in an iframe sandboxed
+    // WITHOUT allow-same-origin, so it loads in an opaque (null) origin and cannot
+    // touch the host GUI (no window.parent DOM/storage/cookies) and — with the CSP
+    // below — has ZERO network egress (connect-src 'none'). It therefore cannot
+    // fetch anything itself; all data access is mediated by the parent through the
+    // postMessage broker below, which is READ-ONLY and table-gated. So even a fully
+    // compromised page (e.g. via injected row data) can neither exfiltrate nor write.
+
+    // Injected into the frame: a tiny window.lattice data API that talks to the
+    // parent broker over postMessage and returns Promises. Written as a plain string
+    // (double-quoted internals) so it survives the template literal untouched and
+    // never contains a literal closing-script token. The page calls
+    // window.lattice.query/get/search — it cannot reach the network directly.
+    var __LATTICE_DATA_BRIDGE =
+      'window.__lp={};window.__ls=0;' +
+      'window.addEventListener("message",function(e){' +
+      'var d=e.data;if(!d||d.__latticeReply!==true||e.source!==window.parent)return;' +
+      'var p=window.__lp[d.rid];if(!p)return;delete window.__lp[d.rid];' +
+      'if(d.ok)p.resolve(d.data);else p.reject(new Error(d.error||"lattice request failed"));});' +
+      'function __lreq(op,extra){return new Promise(function(res,rej){' +
+      'var rid="r"+(++window.__ls);window.__lp[rid]={resolve:res,reject:rej};' +
+      'var m={__lattice:true,rid:rid,op:op};for(var k in extra)m[k]=extra[k];' +
+      'window.parent.postMessage(m,"*");' +
+      'setTimeout(function(){if(window.__lp[rid]){delete window.__lp[rid];rej(new Error("lattice request timed out"));}},15000);});}' +
+      'window.lattice={' +
+      'query:function(t,o){o=o||{};return __lreq("query",{table:t,limit:o.limit,offset:o.offset});},' +
+      'get:function(t,id){return __lreq("get",{table:t,id:id});},' +
+      'search:function(q){return __lreq("search",{query:q});}};';
+
+    // Parent-side broker: the ONLY bridge between the isolated frame and the data
+    // API. Strictly READ-ONLY — it performs exactly three GET/search reads against
+    // the existing same-origin API and nothing else (no create/update/delete, no
+    // arbitrary path), and refuses system/credential tables. RLS still applies
+    // server-side, so a cloud member only ever reads rows they may already see.
+    function __latticeReadOnlyFetch(msg) {
+      var op = msg && msg.op;
+      var table = String((msg && msg.table) || '');
+      var DENY = { secrets: 1, chat_threads: 1, chat_messages: 1 };
+      if (op === 'search') {
+        return fetch('/api/search', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: String((msg && msg.query) || '') }),
+        }).then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      if (!table || table.charAt(0) === '_' || DENY[table]) {
+        return Promise.resolve({ ok: false, error: 'forbidden table' });
+      }
+      if (op === 'query') {
+        var lim = Math.min(Math.max(parseInt(msg.limit, 10) || 50, 1), 500);
+        var off = Math.max(parseInt(msg.offset, 10) || 0, 0);
+        return fetch('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + lim + '&offset=' + off)
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      if (op === 'get') {
+        return fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(String(msg.id || '')))
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      return Promise.resolve({ ok: false, error: 'unsupported op' });
+    }
+    var __latticeHtmlBrokerInstalled = false;
+    function installHtmlFileBroker() {
+      if (__latticeHtmlBrokerInstalled) return;
+      __latticeHtmlBrokerInstalled = true;
+      window.addEventListener('message', function (e) {
+        var d = e.data;
+        if (!d || d.__lattice !== true) return;
+        // Identity check: only honour messages whose source IS the live HTML-file
+        // frame's window — an unforgeable handle. (The frame is null-origin, so we
+        // can't match on e.origin; source identity is the real gate.)
+        var frame = document.getElementById('html-file-frame');
+        if (!frame || !frame.contentWindow || e.source !== frame.contentWindow) return;
+        var rid = d.rid;
+        var reply = function (payload) {
+          payload.__latticeReply = true;
+          payload.rid = rid;
+          try { frame.contentWindow.postMessage(payload, '*'); } catch (x) { /* frame gone */ }
+        };
+        __latticeReadOnlyFetch(d).then(function (res) {
+          reply({ ok: !!res.ok, data: res.data, error: res.error });
+        }).catch(function (err) {
+          reply({ ok: false, error: String((err && err.message) || err) });
+        });
+      });
+    }
+
+    // Build the document for an HTML-file frame's srcdoc. The CSP <meta> MUST be the
+    // very first thing the parser sees — a meta policy only governs content that
+    // FOLLOWS it, and the authored document is untrusted, so we must never splice the
+    // CSP into the author's markup (anything the author places before it — including
+    // a leading <script>, or a <head> token hidden in a comment — would otherwise run
+    // with no policy and could open a network channel). Instead we emit OUR OWN
+    // document head (CSP first, then the chart lib + data bridge) and place the entire
+    // authored document inside OUR <body>. The browser flattens the author's own
+    // <html>/<head>/<body> tags into this body, so every authored script runs after
+    // (and is therefore governed by) our CSP; an author-supplied CSP <meta> can only
+    // intersect/further-restrict ours, never loosen it.
+    // The CSP grants inline script/style only, NO network at all (connect-src 'none'
+    // + every fetch-directive 'none'/data:), and no nested browsing contexts — data
+    // comes through the postMessage broker, not the network.
+    function htmlFileSrcdoc(rawHtml) {
+      var csp = '<meta http-equiv="Content-Security-Policy" content="' +
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+        "img-src data:; font-src data:; media-src data:; connect-src 'none'; " +
+        "child-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; " +
+        "manifest-src 'none'; base-uri 'none'; form-action 'none'" +
+        '">';
+      var lib = '';
+      try {
+        var b64 = window.__LATTICE_CHART_LIB__;
+        // Split the script tags so this source never contains a literal closing
+        // script tag (which would terminate the GUI's own inline script early). The
+        // vendored library is ASCII and contains no closing script tag of its own.
+        if (b64) lib = '<scr' + 'ipt>' + atob(b64) + '</scr' + 'ipt>';
+      } catch (e) { lib = ''; }
+      var bridge = '<scr' + 'ipt>' + __LATTICE_DATA_BRIDGE + '</scr' + 'ipt>';
+      // CSP first, unconditionally — the authored document is confined to <body>.
+      return '<!doctype html><html><head>' + csp + lib + bridge + '</head><body>' +
+        String(rawHtml || '') + '</body></html>';
+    }
     function renderFilePreview(row) {
       var host = document.getElementById('file-preview'); if (!host || !row) return;
       var id = row.id;
       var mime = row.mime || '';
       var blobUrl = '/api/files/' + encodeURIComponent(id) + '/blob';
       var viewable = hasViewableFile(row);
+      var isHtmlFile = mime === 'text/html' && row.artifact_type === 'html';
       var html = '';
-      // System-created artifact: a small pill above the rendered markdown.
-      if (row.artifact_type) html += '<div class="artifact-badge">✦ Artifact</div>';
+      // System-created artifact: a small pill above the rendered content. An HTML
+      // file gets its own badge so it reads as a live page, not a markdown note.
+      if (isHtmlFile) html += '<div class="artifact-badge html-badge">🌐 HTML</div>';
+      else if (row.artifact_type) html += '<div class="artifact-badge">✦ Artifact</div>';
       if (row.description) html += '<div class="file-desc">' + escapeHtml(row.description) + '</div>';
-      if (isImageFile(row) && viewable) {
+      if (isHtmlFile) {
+        // Render the saved HTML live in a fully isolated inline frame. The srcdoc is
+        // set as a PROPERTY below (no attribute-escaping for a large document).
+        // sandbox WITHOUT allow-same-origin → opaque (null) origin: the page cannot
+        // touch the host GUI, and the injected CSP gives it no network at all. Data
+        // reads go through the parent's read-only postMessage broker.
+        html +=
+          '<iframe id="html-file-frame" class="html-frame" title="HTML file"' +
+          ' sandbox="allow-scripts"></iframe>';
+      } else if (isImageFile(row) && viewable) {
         html += '<img src="' + blobUrl + '" alt="' + escapeHtml(row.original_name || 'image') + '">';
       } else if (mime === 'application/pdf' && viewable) {
         html += '<iframe src="' + blobUrl + '" title="PDF preview"></iframe>';
@@ -142,6 +275,15 @@ export const dashboardJs = `    // ───────────────
         '</div>';
       }
       host.innerHTML = html;
+      if (isHtmlFile) {
+        // Install the read-only data broker (once) and set the frame content as a
+        // property (no attribute-escaping needed). Re-runs on every re-render, so a
+        // chat edit that rewrites this row's extracted_text reloads the frame with
+        // the new page in place — no page refresh.
+        installHtmlFileBroker();
+        var frame = document.getElementById('html-file-frame');
+        if (frame) frame.srcdoc = htmlFileSrcdoc(row.extracted_text);
+      }
       var openBtn = document.getElementById('file-open');
       if (openBtn) openBtn.addEventListener('click', function () {
         fetch('/api/files/' + encodeURIComponent(id) + '/open-in-finder', { method: 'POST' })
@@ -688,6 +830,7 @@ export const dashboardJs = `    // ───────────────
     // File-type glyph for native files-entity rows.
     function fileEmoji(row) {
       var m = (row && row.mime) || '';
+      if (m === 'text/html' && row && row.artifact_type === 'html') return '🌐';
       if (m.indexOf('image/') === 0) return '🖼️';
       if (m === 'application/pdf') return '📕';
       if (MD_MIMES.indexOf(m) >= 0 || m.indexOf('text/') === 0) return '📝';
@@ -814,12 +957,22 @@ export const dashboardJs = `    // ───────────────
         '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
     }
 
+    // Per-object view mode for the top-level object page: 'graph' (default — a
+    // focused zoom-in of the brain graph) or 'list' (the tile grid).
+    var fsObjectView = {};
     // Collection view — a folder of tiles. Top-level (#/fs/<table>) shows every
     // row; a nested path (#/fs/<table>/<id>/<rel>) shows the related rows.
     function renderFsCollection(content, segs) {
       var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
+      // The top-level object page defaults to a focused graph (a zoom-in of the
+      // brain graph); "List view" switches to the tile grid. Nested relation
+      // paths always use the grid.
+      if (topLevel && fsObjectView[segs[0]] !== 'list' && tableByName(segs[0])) {
+        renderFsObjectGraph(content, segs[0]);
+        return;
+      }
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
       crumbsP.then(function (crumbs) {
         var table, rowsP;
@@ -868,10 +1021,376 @@ export const dashboardJs = `    // ───────────────
               '<span class="entity-icon">' + d.icon + '</span>' +
               '<h1>' + escapeHtml(d.label) + '</h1>' +
               '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
+              (topLevel ? '<div class="actions"><button class="btn" id="fsg-view-graph" type="button">Graph view</button></div>' : '') +
             '</div>' +
             '<div class="fs-grid">' + createTile + rowTiles + '</div>';
+          var gv = content.querySelector('#fsg-view-graph');
+          if (gv) gv.addEventListener('click', function () {
+            fsObjectView[table] = 'graph';
+            renderFsCollection(content, segs);
+          });
         });
       }).catch(function (err) {
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // ── Object page as a focused graph ──────────────────────────────────────
+    // A zoom-in of the brain graph centered on ONE object: the object node in the
+    // middle, its entity rows around it (bounded for egress safety), and its
+    // related objects on the rim. Click an entity → open its tab; click a related
+    // → zoom into THAT object's graph. Reuses forceLayout + the graph CSS.
+    var FS_GRAPH_ROW_CAP = 50;
+    var FS_GRAPH_ROW_MAX = 250; // hard ceiling for "Show more"
+    var fsGraphCap = {}; // per-table cap override when the user clicks "Show more"
+    function renderFsObjectGraph(content, table) {
+      // Files are special: their object page is the on-disk FOLDER hierarchy
+      // (roots + loose files, drillable), not a flat list of file rows.
+      if (table === 'files') { renderFilesRootView(content); return; }
+      var myGen = renderGen;
+      clearUnseen(table);
+      var t = tableByName(table);
+      var d = displayFor(table);
+      var cap = fsGraphCap[table] || FS_GRAPH_ROW_CAP;
+      var total = (t && t.rowCount != null) ? t.rowCount : 0;
+      // Build the whole view AFTER the bounded fetch (mirrors renderFsCollection):
+      // on a hard nav the router shows its loading frame while this is in flight;
+      // on a soft (live) refresh the existing graph stays on screen until the new
+      // one is ready, so the pane never flashes a loading frame.
+      //
+      // Bounded, egress-safe fetch: only the capped number of rows, with the heavy
+      // text columns projected out (never load a whole table onto a hot path). The
+      // total comes from the cached entity meta, so there is no count query.
+      fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + cap +
+        '&exclude=' + encodeURIComponent('extracted_text,description'))
+        .then(function (resp) {
+          if (myGen !== renderGen) return;
+          // No setTabTitle — object pages share the one exploration (graph) tab,
+          // which stays labeled "Brain Graph"; the breadcrumb shows the location.
+          var rows = (resp && resp.rows) || [];
+          var model = buildObjectGraphModel(table, d, t, rows);
+          var header =
+            fsBreadcrumb([table], []) +
+            '<div class="view-header">' +
+              '<span class="entity-icon">' + d.icon + '</span>' +
+              '<h1>' + escapeHtml(d.label) + '</h1>' +
+              '<span class="count">' + total + ' item' + (total === 1 ? '' : 's') + '</span>' +
+              '<div class="actions">' +
+                '<a class="btn" href="' + fsHref([table, 'new']) + '">+ New ' + escapeHtml(d.label) + '</a>' +
+                '<button class="btn" id="fsg-view-list" type="button">List view</button>' +
+              '</div>' +
+            '</div>';
+          if (!rows.length && model.nodes.length <= 1) {
+            content.innerHTML = header +
+              '<div class="brain-graph object-graph"><div id="fsg-mount">' +
+                '<div class="fs-empty" style="padding:24px">Nothing here yet. ' +
+                '<a href="' + fsHref([table, 'new']) + '">Create the first ' + escapeHtml(d.label) + '</a>.</div>' +
+              '</div></div>';
+          } else {
+            forceLayout(model.nodes, model.links, 360);
+            content.innerHTML = header +
+              '<div class="brain-graph object-graph"><div id="fsg-mount">' + objectGraphSvg(model) + '</div></div>';
+            var mount = document.getElementById('fsg-mount');
+            if (mount) {
+              wireObjectGraph(mount, model, table);
+              var hidden = (total || rows.length) - rows.length;
+              if (hidden > 0 && cap < FS_GRAPH_ROW_MAX) {
+                var more = document.createElement('button');
+                more.className = 'btn fsg-more';
+                more.type = 'button';
+                more.textContent = 'Show more (' + rows.length + ' of ' + total + ')';
+                more.addEventListener('click', function () {
+                  fsGraphCap[table] = Math.min(FS_GRAPH_ROW_MAX, cap + FS_GRAPH_ROW_CAP);
+                  renderFsObjectGraph(content, table);
+                });
+                mount.appendChild(more);
+              }
+            }
+          }
+          var lv = content.querySelector('#fsg-view-list');
+          if (lv) lv.addEventListener('click', function () {
+            fsObjectView[table] = 'list';
+            renderFsCollection(content, [table]);
+          });
+        })
+        .catch(function (err) {
+          if (myGen !== renderGen) return;
+          content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+        });
+    }
+
+    // Build the focused-graph model: center object + entity rows + related-object
+    // rim nodes (deduped; only related objects that have rows). Links connect the
+    // center to each node.
+    function buildObjectGraphModel(table, d, t, rows) {
+      var byName = {};
+      ((state.entities && state.entities.tables) || []).forEach(function (e) { byName[e.name] = e; });
+      var nodes = [{ kind: 'object', name: table, label: d.label, icon: d.icon, r: 26, x: 0, y: 0, vx: 0, vy: 0 }];
+      var links = [];
+      rows.forEach(function (row) {
+        var idx = nodes.length;
+        nodes.push({
+          kind: 'entity', id: row.id, label: fsDisplayName(row) || '(untitled)',
+          icon: (table === 'files') ? fileEmoji(row) : '', r: 13, x: 0, y: 0, vx: 0, vy: 0,
+        });
+        links.push({ si: 0, ti: idx });
+      });
+      var rim = {};
+      fsRelations(table).forEach(function (r) { if (r.targetTable) rim[r.targetTable] = true; });
+      belongsToColumns(t || { relations: {} }).forEach(function (b) { if (b.rel && b.rel.table) rim[b.rel.table] = true; });
+      delete rim[table];
+      Object.keys(rim).forEach(function (rt) {
+        var rc = (byName[rt] && byName[rt].rowCount != null) ? byName[rt].rowCount : 0;
+        if (rc <= 0) return; // only related objects that actually have rows
+        var idx = nodes.length;
+        nodes.push({ kind: 'related', name: rt, label: displayFor(rt).label, icon: displayFor(rt).icon, r: 19, x: 0, y: 0, vx: 0, vy: 0 });
+        links.push({ si: 0, ti: idx });
+      });
+      return { nodes: nodes, links: links };
+    }
+
+    function objectGraphSvg(model) {
+      var nodes = model.nodes, links = model.links;
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      nodes.forEach(function (nd) {
+        minX = Math.min(minX, nd.x - nd.r); minY = Math.min(minY, nd.y - nd.r);
+        maxX = Math.max(maxX, nd.x + nd.r); maxY = Math.max(maxY, nd.y + nd.r);
+      });
+      var pad = 50;
+      var vb = [minX - pad, minY - pad, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad];
+      var edgeSvg = links.map(function (l) {
+        var a = nodes[l.si], b = nodes[l.ti];
+        return '<line class="dm-edge" data-si="' + l.si + '" data-ti="' + l.ti + '" x1="' + a.x.toFixed(1) +
+          '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) +
+          '" stroke="#3b82f6" stroke-width="1.4" opacity="0.5"></line>';
+      }).join('');
+      var nodeSvg = nodes.map(function (nd, i) {
+        var label = nd.label.length > 22 ? nd.label.slice(0, 21) + '…' : nd.label;
+        var attr = nd.kind === 'entity' ? (' data-kind="entity" data-id="' + escapeHtml(String(nd.id)) + '"')
+          : nd.kind === 'related' ? (' data-kind="related" data-table="' + escapeHtml(nd.name) + '"')
+          : nd.kind === 'folder' ? (' data-kind="folder" data-path="' + escapeHtml(String(nd.path)) + '"')
+          : nd.kind === 'file' ? (' data-kind="file" data-path="' + escapeHtml(String(nd.path || '')) + '" data-id="' + escapeHtml(String(nd.id || '')) + '"')
+          : ' data-kind="object"';
+        var iconSvg = nd.icon
+          ? '<text class="gnode-icon" y="' + (nd.r * 0.34).toFixed(1) + '" text-anchor="middle" font-size="' + (nd.r * 0.9).toFixed(1) + '">' + nd.icon + '</text>'
+          : '';
+        return '<g class="gnode ognode-' + nd.kind + '" data-i="' + i + '"' + attr +
+          ' transform="translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')">' +
+          '<circle class="gnode-glow" r="' + (nd.r + 8).toFixed(1) + '"/>' +
+          '<circle class="gnode-dot" r="' + nd.r.toFixed(1) + '"/>' +
+          iconSvg +
+          '<text class="gnode-label" y="' + (nd.r + 15).toFixed(1) + '" text-anchor="middle">' + escapeHtml(label) + '</text>' +
+          '<title>' + escapeHtml(nd.label) + '</title>' +
+          '</g>';
+      }).join('');
+      return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
+        '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>';
+    }
+
+    function wireObjectGraph(mount, model, table) {
+      var svg = mount.querySelector('svg.dm-graph'); if (!svg) return;
+      var nodeEls = {};
+      mount.querySelectorAll('g.gnode').forEach(function (g) { nodeEls[g.getAttribute('data-i')] = g; });
+      var edgeEls = mount.querySelectorAll('line.dm-edge');
+      function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
+      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); syncGraphLabelScale(svg); }
+      var fitVb = vb();
+      syncGraphLabelScale(svg);
+      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { syncGraphLabelScale(svg); }).observe(svg);
+      function toData(ev) {
+        var rect = svg.getBoundingClientRect(); var b = vb();
+        return { x: b[0] + ((ev.clientX - rect.left) / rect.width) * b[2], y: b[1] + ((ev.clientY - rect.top) / rect.height) * b[3] };
+      }
+      function updateNode(i) {
+        var nd = model.nodes[i]; var g = nodeEls[i]; if (!nd || !g) return;
+        g.setAttribute('transform', 'translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')');
+        edgeEls.forEach(function (ln) {
+          if (ln.getAttribute('data-si') === String(i)) { ln.setAttribute('x1', nd.x.toFixed(1)); ln.setAttribute('y1', nd.y.toFixed(1)); }
+          if (ln.getAttribute('data-ti') === String(i)) { ln.setAttribute('x2', nd.x.toFixed(1)); ln.setAttribute('y2', nd.y.toFixed(1)); }
+        });
+      }
+      svg.addEventListener('wheel', function (ev) {
+        ev.preventDefault();
+        var b = vb(); var pt = toData(ev);
+        var dd = Math.max(-50, Math.min(50, ev.deltaY));
+        var factor = Math.pow(1.0018, dd);
+        var nw = b[2] * factor, nh = b[3] * factor;
+        if (nw >= fitVb[2] || nh >= fitVb[3]) { setVb(fitVb.slice()); return; }
+        setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
+      }, { passive: false });
+      var drag = null;
+      svg.addEventListener('pointerdown', function (ev) {
+        var g = ev.target.closest && ev.target.closest('g.gnode');
+        if (g) drag = { kind: 'node', i: g.getAttribute('data-i'), moved: false };
+        else drag = { kind: 'pan', sx: ev.clientX, sy: ev.clientY, vb: vb() };
+        svg.setPointerCapture(ev.pointerId);
+      });
+      svg.addEventListener('pointermove', function (ev) {
+        if (!drag) return;
+        if (drag.kind === 'node') {
+          var pt = toData(ev); var nd = model.nodes[Number(drag.i)];
+          if (nd) { nd.x = pt.x; nd.y = pt.y; updateNode(Number(drag.i)); drag.moved = true; }
+        } else {
+          var rect = svg.getBoundingClientRect(); var b = drag.vb;
+          setVb([b[0] - (ev.clientX - drag.sx) * (b[2] / rect.width), b[1] - (ev.clientY - drag.sy) * (b[3] / rect.height), b[2], b[3]]);
+        }
+      });
+      svg.addEventListener('pointerup', function (ev) {
+        if (drag && drag.kind === 'node' && !drag.moved) {
+          var nd = model.nodes[Number(drag.i)];
+          if (nd && nd.kind === 'entity') location.hash = '#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(nd.id);
+          else if (nd && nd.kind === 'related') location.hash = '#/fs/' + encodeURIComponent(nd.name);
+          else if (nd && nd.kind === 'folder') location.hash = '#/folder/' + encodeURIComponent(nd.path);
+          else if (nd && nd.kind === 'file') openGraphFile(nd);
+        }
+        drag = null;
+        try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
+      });
+    }
+
+    // ── Folder navigation (the Files object's on-disk hierarchy) ─────────────
+    // The Files object opens as its folder roots + loose files; drilling into a
+    // folder (#/folder/<abs path>) shows that folder's immediate sub-folders +
+    // files as graph nodes — click a folder to go deeper, a file to open it. Paths
+    // come from the backend platform-native, so handle BOTH "/" and "\\" (Windows).
+    function fsBasename(p) {
+      var s = String(p || '').replace(/[\\\\/]+$/, ''); // strip trailing separators
+      var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\\\'));
+      return i >= 0 ? s.slice(i + 1) : s;
+    }
+    function fsDirname(p) {
+      var s = String(p || '');
+      var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\\\'));
+      if (i < 0) return '';
+      if (i === 0) return s.slice(0, 1); // root: keep the leading separator
+      return s.slice(0, i);
+    }
+    // True when child is parent or sits beneath it (separator-aware).
+    function fsUnder(child, parent) {
+      if (child === parent) return true;
+      if (child.indexOf(parent) !== 0) return false;
+      var c = child.charAt(parent.length);
+      return c === '/' || c === '\\\\';
+    }
+    function openGraphFile(nd) {
+      if (nd.id) { location.hash = '#/fs/files/' + encodeURIComponent(nd.id); return; }
+      if (nd.path && typeof openSourceFile === 'function') openSourceFile(nd.path); // ingest-then-open
+    }
+    // Home ▸ Files ▸ <root> ▸ …folders… [▸ <leafLabel current>]. Folder crumbs link
+    // to their #/folder route; leafLabel (a filename) is appended non-linked.
+    function folderBreadcrumb(path, roots, leafLabel) {
+      var parts = ['<a href="#/graph">Home</a>', '<a href="#/fs/files">Files</a>'];
+      var root = null;
+      (roots || []).forEach(function (r) {
+        if (r.kind !== 'folder') return;
+        if (fsUnder(path, r.path) && (!root || r.path.length > root.path.length)) root = r;
+      });
+      if (root) {
+        // Rebuild crumb paths with the SAME native separator the path uses.
+        var sep = root.path.indexOf('\\\\') >= 0 ? '\\\\' : '/';
+        parts.push('<a href="#/folder/' + encodeURIComponent(root.path) + '">' + escapeHtml(root.name || fsBasename(root.path)) + '</a>');
+        var rel = path.slice(root.path.length).replace(/^[\\\\/]+/, '');
+        var acc = root.path;
+        if (rel) {
+          rel.split(/[\\\\/]+/).forEach(function (seg) {
+            if (!seg) return;
+            acc = acc + sep + seg;
+            parts.push('<a href="#/folder/' + encodeURIComponent(acc) + '">' + escapeHtml(seg) + '</a>');
+          });
+        }
+      } else if (!leafLabel) {
+        parts.push('<span class="fs-crumb-cur">' + escapeHtml(fsBasename(path)) + '</span>');
+      }
+      if (leafLabel) parts.push('<span class="fs-crumb-cur">' + escapeHtml(leafLabel) + '</span>');
+      return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
+    }
+    // center object + folder/file children → graph model (reuses objectGraphSvg).
+    function buildFolderGraphModel(centerLabel, entries, filesByPath) {
+      var nodes = [{ kind: 'object', name: centerLabel, label: centerLabel, icon: '📂', r: 24, x: 0, y: 0, vx: 0, vy: 0 }];
+      var links = [];
+      (entries || []).forEach(function (e) {
+        var idx = nodes.length;
+        if (e.kind === 'folder') {
+          nodes.push({ kind: 'folder', path: e.path, label: e.name, icon: '📁', r: 18, x: 0, y: 0, vx: 0, vy: 0 });
+        } else {
+          var id = e.id || (filesByPath ? filesByPath[e.path] : '') || '';
+          nodes.push({ kind: 'file', path: e.path || '', id: id, label: e.name, icon: '📄', r: 12, x: 0, y: 0, vx: 0, vy: 0 });
+        }
+        links.push({ si: 0, ti: idx });
+      });
+      return { nodes: nodes, links: links };
+    }
+    function paintFolderGraph(content, header, name, entries, filesByPath, emptyMsg, listToggle) {
+      if (!entries.length) {
+        content.innerHTML = header +
+          '<div class="brain-graph object-graph"><div id="fsg-mount"><div class="fs-empty" style="padding:24px">' +
+          emptyMsg + '</div></div></div>';
+      } else {
+        var model = buildFolderGraphModel(name, entries, filesByPath || {});
+        forceLayout(model.nodes, model.links, 360);
+        content.innerHTML = header +
+          '<div class="brain-graph object-graph"><div id="fsg-mount">' + objectGraphSvg(model) + '</div></div>';
+        var mount = document.getElementById('fsg-mount');
+        if (mount) wireObjectGraph(mount, model, 'files');
+      }
+      if (listToggle) {
+        var lv = content.querySelector('#fsg-view-list');
+        if (lv) lv.addEventListener('click', function () { fsObjectView['files'] = 'list'; renderFsCollection(content, ['files']); });
+      }
+    }
+    // #/folder/<abs path> — one folder's immediate children as a graph.
+    function renderFolderView(content, path) {
+      var myGen = renderGen;
+      var name = fsBasename(path) || 'Folder';
+      // No setTabTitle — folder drilling stays in the shared exploration tab.
+      Promise.all([
+        fetchJson('/api/sources/list?path=' + encodeURIComponent(path)).catch(function () { return { entries: [] }; }),
+        fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
+        fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
+      ]).then(function (res) {
+        if (myGen !== renderGen) return;
+        var entries = (res[0] && res[0].entries) || [];
+        var truncated = res[0] && res[0].truncated;
+        var filesByPath = {};
+        ((res[1] && res[1].rows) || []).forEach(function (r) {
+          if (!r.deleted_at && r.ref_kind === 'local_ref' && r.ref_uri) filesByPath[r.ref_uri] = r.id;
+        });
+        var roots = (res[2] && res[2].roots) || [];
+        var header = folderBreadcrumb(path, roots) +
+          '<div class="view-header"><span class="entity-icon">📂</span><h1>' + escapeHtml(name) + '</h1>' +
+          '<span class="count">' + entries.length + (truncated ? '+' : '') + ' item' + (entries.length === 1 ? '' : 's') + '</span></div>';
+        paintFolderGraph(content, header, name, entries, filesByPath, 'This folder is empty.', false);
+      }).catch(function (err) {
+        if (myGen !== renderGen) return;
+        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+    // The Files object page (#/fs/files): the folder roots + loose files.
+    function renderFilesRootView(content) {
+      var myGen = renderGen;
+      // No setTabTitle — the Files object page shares the exploration tab.
+      Promise.all([
+        fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
+        fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
+      ]).then(function (res) {
+        if (myGen !== renderGen) return;
+        var roots = (res[0] && res[0].roots) || [];
+        var rows = ((res[1] && res[1].rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; });
+        var folderPaths = roots.filter(function (r) { return r.kind === 'folder'; }).map(function (r) { return r.path; });
+        var entries = [];
+        roots.forEach(function (r) { if (r.kind === 'folder') entries.push({ kind: 'folder', path: r.path, name: r.name || fsBasename(r.path) }); });
+        rows.forEach(function (r) {
+          var under = r.ref_uri && folderPaths.some(function (p) { return fsUnder(r.ref_uri, p); });
+          if (!under) entries.push({ kind: 'file', path: r.ref_uri || '', name: r.name || r.original_name || 'Untitled', id: r.id });
+        });
+        var d = displayFor('files');
+        var header = fsBreadcrumb(['files'], []) +
+          '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1>' +
+          '<span class="count">' + entries.length + ' item' + (entries.length === 1 ? '' : 's') + '</span>' +
+          '<div class="actions"><button class="btn" id="fsg-view-list" type="button">List view</button></div></div>';
+        paintFolderGraph(content, header, 'Files', entries, {}, 'No files yet. Add a folder or file from the sidebar.', true);
+      }).catch(function (err) {
+        if (myGen !== renderGen) return;
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
@@ -1002,6 +1521,15 @@ export const dashboardJs = `    // ───────────────
           return;
         }
         var d = displayFor(table);
+        // The tab shows the open RECORD's name (e.g. an entity row), not the
+        // object/table name.
+        if (typeof setTabTitle === 'function') {
+          setTabTitle(tabKeyForHash(location.hash), fsDisplayName(row) || d.label);
+        }
+        // Files + artifacts get the two-view document layout (formatted display +
+        // a View Source toggle) with a Version History + Delete dropdown — not the
+        // column-by-column field dump or the "Inside" grid.
+        if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d); return; }
         var bt = belongsToColumns(t);
         var rels = fsRelations(table);
         // Preload belongsTo targets so parent links can show names.
@@ -1053,6 +1581,183 @@ export const dashboardJs = `    // ───────────────
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // ── File / artifact document view (two-view: Display ↔ Source) ──────
+    // Per-open-item view state (display | source), so each tab toggles
+    // independently and re-renders in place without navigating.
+    var fileViewMode = {};
+    function sourceTextOf(row) {
+      return row && typeof row.extracted_text === 'string' ? row.extracted_text : '';
+    }
+    function renderFsDocItem(content, segs, crumbs, id, row, d) {
+      // The tab shows the FILE's name (e.g. "Properties Dashboard"), not the
+      // object name ("Files").
+      if (typeof setTabTitle === 'function') {
+        setTabTitle(tabKeyForHash(location.hash), fsDisplayName(row) || d.label);
+      }
+      var mode = fileViewMode[id] || 'display';
+      // Actions live in a dropdown menu next to the title; View source / Version
+      // history are full-page modes (they replace the body, not overlay it).
+      content.innerHTML =
+        fsBreadcrumb(segs, crumbs) +
+        '<div class="view-header">' +
+          '<span class="entity-icon">' + fileEmoji(row) + '</span>' +
+          '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+          '<div class="actions file-menu-wrap">' +
+            '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">⋯</button>' +
+            '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+              (mode !== 'display' ? '<button class="file-menu-item" data-act="display" role="menuitem">Formatted view</button>' : '') +
+              (mode !== 'source' ? '<button class="file-menu-item" data-act="source" role="menuitem">View source</button>' : '') +
+              (mode !== 'history' ? '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' : '') +
+              '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div id="file-body">' + fileBodyHtml(mode, row) + '</div>';
+      if (mode === 'display') renderFilePreview(row);
+      else if (mode === 'history') loadFileHistoryInto(content, id);
+      wireFsDocToolbar(content, segs, id, row);
+      // Upgrade the breadcrumb to the file's FOLDER path (Home ▸ Files ▸ Downloads
+      // ▸ <file>) when it lives under a registered folder root.
+      if (row.ref_uri) {
+        var crumbGen = renderGen;
+        fetchJson('/api/sources/roots').then(function (data) {
+          if (crumbGen !== renderGen) return;
+          var nav = content.querySelector('.fs-crumbs');
+          if (nav) nav.outerHTML = folderBreadcrumb(fsDirname(row.ref_uri), (data && data.roots) || [], fsDisplayName(row) || d.label);
+        }).catch(function () { /* keep the default breadcrumb */ });
+      }
+    }
+
+    // The body for the current view mode (display | source | history).
+    function fileBodyHtml(mode, row) {
+      if (mode === 'source') {
+        var src = sourceTextOf(row);
+        // An artifact (Lattice-created) edits in place; an ingested file's source
+        // is read-only extracted text.
+        return row.artifact_type
+          ? '<div class="file-source">' +
+              '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
+              '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
+              '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
+            '</div>'
+          : '<pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre>';
+      }
+      if (mode === 'history') {
+        return '<div class="file-history-view" id="file-history-view"><div class="muted" style="padding:8px">Loading history…</div></div>';
+      }
+      return '<div class="file-preview" id="file-preview"></div>';
+    }
+
+    // ONE document-level outside-click closer for the file-actions menu. The menu
+    // + button are re-created with stable ids on every renderFsDocItem, so a
+    // per-render listener would leak (stale closures accumulating on document and
+    // firing on every click). Registered exactly once; reads the current nodes by id.
+    var fileMenuDocWired = false;
+    function wireFileMenuGlobal() {
+      if (fileMenuDocWired) return;
+      fileMenuDocWired = true;
+      document.addEventListener('click', function (e) {
+        var menu = document.getElementById('file-menu');
+        var btn = document.getElementById('file-menu-btn');
+        if (!menu || menu.hidden) return;
+        if ((btn && btn.contains(e.target)) || menu.contains(e.target)) return;
+        menu.hidden = true; if (btn) btn.setAttribute('aria-expanded', 'false');
+      });
+    }
+    function wireFsDocToolbar(content, segs, id, row) {
+      var btn = content.querySelector('#file-menu-btn');
+      var menu = content.querySelector('#file-menu');
+      if (btn && menu) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var willShow = menu.hidden;
+          menu.hidden = !willShow;
+          btn.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+        });
+        wireFileMenuGlobal();
+      }
+      content.querySelectorAll('.file-menu-item').forEach(function (it) {
+        it.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var act = it.getAttribute('data-act');
+          if (act === 'delete') { removeFile(segs, id, row); return; }
+          fileViewMode[id] = act; // display | source | history
+          renderFsItem(content, segs); // re-render this item in the new mode
+        });
+      });
+      var save = content.querySelector('#file-source-save');
+      if (save) save.addEventListener('click', function () { saveFileSource(content, segs, id); });
+    }
+
+    // Load the row's version history into the full-page history view.
+    function loadFileHistoryInto(content, id) {
+      var host = content.querySelector('#file-history-view');
+      if (!host) return;
+      fetchJson('/api/tables/files/rows/' + encodeURIComponent(id) + '/history')
+        .then(function (data) {
+          var hist = (data && data.history) || [];
+          if (!hist.length) { host.innerHTML = '<div class="muted" style="padding:8px">No prior versions yet.</div>'; return; }
+          host.innerHTML = '<ul class="file-history-list">' +
+            hist.map(function (h) {
+              return '<li class="file-history-item">' +
+                '<span class="fh-op">' + escapeHtml(h.operation) + '</span>' +
+                '<span class="fh-ts">' + escapeHtml(h.ts) + '</span>' +
+                (h.undone ? '<span class="fh-undone">undone</span>' : '') +
+                '<button class="btn fh-revert" data-rev="' + escapeHtml(h.id) + '">Revert</button></li>';
+            }).join('') + '</ul>';
+          host.querySelectorAll('.fh-revert').forEach(function (b) {
+            b.addEventListener('click', function () { revertFileVersion(b.getAttribute('data-rev')); });
+          });
+        })
+        .catch(function (e) {
+          host.innerHTML = '<div class="muted" style="padding:8px">Failed: ' + escapeHtml(e.message) + '</div>';
+        });
+    }
+
+    function revertFileVersion(auditId) {
+      fetch('/api/history/revert/' + encodeURIComponent(auditId), { method: 'POST' })
+        .then(function (r) { if (!r.ok) throw new Error('revert failed (' + r.status + ')'); return r.json(); })
+        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () { showToast('Reverted', { undo: undoLast }); renderRoute({ soft: true }); })
+        .catch(function (e) { showToast('Revert failed: ' + e.message, {}); });
+    }
+
+    function saveFileSource(content, segs, id) {
+      var ta = content.querySelector('#file-source-text');
+      if (!ta) return;
+      fetch('/api/tables/files/rows/' + encodeURIComponent(id) + '/content', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: ta.value }),
+      })
+        .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
+        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () {
+          fileViewMode[id] = 'display'; // back to the formatted view
+          showToast('Saved', { undo: undoLast });
+          renderFsItem(content, segs);
+        })
+        .catch(function (e) { showToast('Save failed: ' + e.message, {}); });
+    }
+
+    // Soft-delete (Delete): recoverable, and NEVER touches the on-disk file — it
+    // only soft-deletes the Lattice record. Closes the item's tab afterward.
+    function removeFile(segs, id, row) {
+      fetch('/api/tables/files/rows/' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+        .then(function (r) { if (!r.ok) throw new Error('delete failed (' + r.status + ')'); return r.json(); })
+        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () {
+          showToast('Deleted "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
+          if (typeof closeTab === 'function') closeTab(tabKeyForHash(location.hash));
+          else location.hash = '#/graph';
+        })
+        .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }
 
     // Click-to-edit on rendered values. Reuses fieldFor() for the input and the

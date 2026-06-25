@@ -22,11 +22,13 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('data-tab="user"');
     expect(guiAppHtml).toContain('id="advanced-toggle"');
 
-    // Data Model still lives inside Database Settings (renderDataModelInto),
-    // now rendered into the drawer body rather than a full page.
+    // Data Model still lives inside Database Settings (renderEntityEditorInto —
+    // an entity list + editor), rendered into the drawer body. The schema graph
+    // itself moved to the center brain view (renderBrainGraph).
     expect(guiAppHtml).not.toContain('href="#/settings/data-model"');
     expect(guiAppHtml).toContain('id="data-model-host"');
-    expect(guiAppHtml).toContain('renderDataModelInto');
+    expect(guiAppHtml).toContain('renderEntityEditorInto');
+    expect(guiAppHtml).toContain('renderBrainGraph');
 
     // The file-system workspace + classic table editor both ship.
     expect(guiAppHtml).toContain('renderFsCollection');

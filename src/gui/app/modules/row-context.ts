@@ -8,10 +8,16 @@ export const rowContextJs = `    // ──────────────�
     // ────────────────────────────────────────────────────────────
     var BRAND_SVG =
       '<svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
-        '<rect width="24" height="24" rx="4" fill="#0b0d10"/>' +
-        '<circle cx="6" cy="6" r="1.5" fill="#bef264"/><circle cx="12" cy="6" r="1.5" fill="#bef264"/><circle cx="18" cy="6" r="1.5" fill="#bef264"/>' +
-        '<circle cx="6" cy="12" r="1.5" fill="#bef264"/><circle cx="12" cy="12" r="2" fill="#bef264"/><circle cx="18" cy="12" r="1.5" fill="#bef264"/>' +
-        '<circle cx="6" cy="18" r="1.5" fill="#bef264"/><circle cx="12" cy="18" r="1.5" fill="#bef264"/><circle cx="18" cy="18" r="1.5" fill="#bef264"/>' +
+        '<rect x="0.5" y="0.5" width="23" height="23" rx="5" fill="#eff6ff" stroke="#dbeafe"/>' +
+        '<g stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round">' +
+          '<line x1="6" y1="6" x2="18" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="18" x2="18" y2="18"/>' +
+          '<line x1="6" y1="6" x2="6" y2="18"/><line x1="12" y1="6" x2="12" y2="18"/><line x1="18" y1="6" x2="18" y2="18"/>' +
+        '</g>' +
+        '<g fill="#3b82f6">' +
+          '<circle cx="6" cy="6" r="1.7"/><circle cx="12" cy="6" r="1.7"/><circle cx="18" cy="6" r="1.7"/>' +
+          '<circle cx="6" cy="12" r="1.7"/><circle cx="12" cy="12" r="2.4"/><circle cx="18" cy="12" r="1.7"/>' +
+          '<circle cx="6" cy="18" r="1.7"/><circle cx="12" cy="18" r="1.7"/><circle cx="18" cy="18" r="1.7"/>' +
+        '</g>' +
       '</svg>';
 
     // The Claude "sunburst" mark — radiating spokes from the center. Drawn with

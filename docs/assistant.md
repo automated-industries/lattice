@@ -233,13 +233,17 @@ workspace's Secrets object.
 
 ## Voice (optional)
 
-Set `OPENAI_API_KEY` (Whisper) or `ELEVENLABS_API_KEY` to enable the composer
-mic; choose the provider in the Assistant settings (also a machine-local user
-preference, not a workspace secret). When no microphone is available the mic
-button is shown disabled with a tooltip rather than erroring. **While a note is
-recording or transcribing, the composer is read-only** — it shows a
-"Listening… / Transcribing…" placeholder and the Send button is disabled — and
-the transcript is inserted when you stop.
+The composer's 🎙 mic dictates **on-device** — speech is transcribed in your
+browser by Whisper (WASM), so it needs no API key or setup and audio never leaves
+your machine. There is no voice-provider choice in the GUI; the mic is always
+shown when a microphone is available, and shown disabled with a tooltip when none
+is. **While a note is recording or transcribing, the composer is read-only** — it
+shows a "Listening… / Transcribing…" placeholder and the Send button is disabled —
+and the transcript is inserted when you stop.
+
+Keyed cloud transcription (`OPENAI_API_KEY` / Whisper or `ELEVENLABS_API_KEY`)
+remains available to **API** callers via `POST /api/assistant/transcribe` for
+backward compatibility; the GUI itself always dictates on-device.
 
 ## Cloud
 

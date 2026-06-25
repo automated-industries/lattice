@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dirname, resolve } from 'node:path';
 import { sendJson, readJson } from './http.js';
@@ -39,8 +40,11 @@ import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
-import { dispatchIngestRoute } from './ingest-routes.js';
+import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
+import { dispatchSourcesRoute } from './sources-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
+import { dispatchConnectorsRoute } from './connectors-routes.js';
+import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
@@ -99,6 +103,16 @@ export interface StartGuiServerOptions {
    */
   version?: string;
   /**
+   * Absolute path to the built `dist/gui-assets/` directory (the on-device voice
+   * worker + ONNX-Runtime WASM), served read-only at `GET /gui-assets/*`. Passed
+   * by `cli.ts` (resolved against the package via `import.meta.url`, like
+   * `version`) because server.ts is bundled to both CJS and ESM — reading the
+   * path via `import.meta.url` here would break the CJS bundle. Omitted ⇒ a
+   * best-effort default (sibling of the running CLI bundle, else `<cwd>/dist/
+   * gui-assets`), so source/dev/test runs still serve the assets when present.
+   */
+  guiAssetsDir?: string;
+  /**
    * Realtime backstop liveness-poll interval (ms) for the RealtimeBroker. A
    * managed-Postgres proxy (e.g. AWS RDS Proxy) can silently drop the LISTEN
    * without closing the socket; the poll re-delivers missed changes regardless.
@@ -145,6 +159,20 @@ export interface GuiServerHandle {
    * resolves immediately for a non-cloud / virgin workspace.
    */
   whenConverged: () => Promise<void>;
+}
+
+/**
+ * Best-effort default for the vendored GUI assets dir when the caller didn't pass
+ * one. Used by dev/source/test runs (the CLI passes an explicit path resolved
+ * against the package). Prefer a `gui-assets` sibling of the running bundle
+ * (published layout: `dist/cli.js` + `dist/gui-assets/`), else `<cwd>/dist/
+ * gui-assets` (source/test runs from the repo root). Returns the first that
+ * exists, else the cwd guess — the route 404s when it's wrong, never crashes.
+ */
+function resolveDefaultGuiAssetsDir(): string {
+  const bundleSibling = process.argv[1] ? resolve(dirname(process.argv[1]), 'gui-assets') : null;
+  if (bundleSibling && existsSync(bundleSibling)) return bundleSibling;
+  return resolve(process.cwd(), 'dist', 'gui-assets');
 }
 
 function sendText(
@@ -246,6 +274,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
+  // Where the vendored GUI assets (on-device voice worker + ORT WASM) live. The
+  // CLI passes this resolved against the package (it knows the package root via
+  // import.meta.url). When omitted (dev/source/test runs), fall back to a sibling
+  // of the running bundle, else `<cwd>/dist/gui-assets`. The route 404s if the dir
+  // is absent (fail-soft asset build skipped), so a wrong guess just hides voice —
+  // never crashes.
+  const guiAssetsDir = options.guiAssetsDir ?? resolveDefaultGuiAssetsDir();
   const desktopOpenExternal = options.desktopOpenExternal;
   // One id per GUI server process. Stamped on every audit entry so the header
   // undo/redo stack is scoped to THIS session's own actions (you undo what you
@@ -492,7 +527,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // Process-constant dependencies for the extracted read-route dispatcher
   // (host/guiVersion/guiAppHtml/sendText never change for the server's life),
   // built once here rather than per request.
-  const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText };
+  const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText, guiAssetsDir };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
@@ -776,6 +811,40 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               });
             },
           },
+          // ── Sources: local file/folder roots for the Sources sidebar ──
+          // Local-only (gated by LATTICE_LOCAL_OPEN): register on-disk roots,
+          // browse one directory level, and ingest a folder's files via a bounded
+          // BFS over the shared ingest core (driving the brain-graph animation).
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/sources/')) return false;
+              const ingestCtx = {
+                db: active.db,
+                feed: active.feed,
+                softDeletable: active.softDeletable,
+                fileJunctions: fileJunctions(active.configPath, active.outputDir),
+                entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
+                createJunction: (otherTable: string) =>
+                  createFileJunction(active, otherTable, sessionId),
+                createEntity: (entity: string, columns: string[]) =>
+                  createUserEntity(active, entity, columns, sessionId),
+                aggressiveness: getAggressiveness(),
+                latticeRoot: dirname(active.configPath),
+                configPath: active.configPath,
+                outputDir: active.outputDir,
+                sessionId,
+                pathname,
+                method,
+              };
+              const mctx = ingestMutationCtx(ingestCtx);
+              return await dispatchSourcesRoute(req, res, {
+                db: active.db,
+                ingestFile: (p: string) => ingestLocalFile(ingestCtx, mctx, p, false),
+                pathname,
+                method,
+              });
+            },
+          },
           // ── Structured-source import (apply) ──
           // The importer is reachable only via dropping a file in the assistant
           // chat; this materializes the user-confirmed proposal, re-reading the
@@ -789,6 +858,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 latticeRoot: dirname(active.configPath),
                 validTables: active.validTables,
                 softDeletable: active.softDeletable,
+              });
+            },
+          },
+          // ── Connectors: connect/refresh/disconnect external sources ──
+          // Connected data types synced from external sources (Jira, …). Sync runs
+          // on connect, on manual refresh, and on GUI load (/sync-if-stale).
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/connectors')) return false;
+              const ident = readIdentity();
+              const fallback = ident.email || ident.display_name || 'local';
+              // On a cloud, key connectors on the member's session_user (the role
+              // RLS ownership uses) so partitions + ownership agree; else fallback.
+              const connectedBy = await resolveConnectorIdentity(active.db, fallback);
+              return await dispatchConnectorsRoute(req, res, {
+                db: active.db,
+                connectors: builtinConnectors(),
+                outputDir: active.outputDir,
+                connectedBy,
               });
             },
           },

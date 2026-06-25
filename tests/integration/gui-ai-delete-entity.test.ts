@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openConfig, type ActiveDb } from '../../src/gui/server.js';
-import { aiDeleteEntity } from '../../src/gui/schema-ops.js';
+import { aiDeleteEntity, addUserColumn } from '../../src/gui/schema-ops.js';
 
 /**
  * The assistant's guarded, reversible table delete (`delete_entity`). Exercises
@@ -136,5 +136,21 @@ describe('assistant delete_entity (aiDeleteEntity)', () => {
     const out = await aiDeleteEntity(active, 'people', { move_to: 'nope' }, 'sess');
     expect(out).toMatchObject({ ok: false });
     expect(active.validTables.has('people')).toBe(true);
+  });
+
+  it('refuses to add a column to the managed files object and steers toward an object', async () => {
+    const active = await boot();
+    const out = await addUserColumn(active, 'files', 'state', 'sess');
+    expect(out.ok).toBe(false);
+    // The refusal is deterministic, user-facing (no schema jargon), and STEERS
+    // toward modeling the attribute as its own object the records link to.
+    if (!out.ok) {
+      expect(out.error).toContain('managed object');
+      expect(out.error.toLowerCase()).toContain('create a new object');
+      expect(out.error).not.toContain('relationship table');
+    }
+    // A normal user table still accepts a column (the guard is system-table-only).
+    const ok = await addUserColumn(active, 'people', 'nickname', 'sess');
+    expect(ok.ok).toBe(true);
   });
 });

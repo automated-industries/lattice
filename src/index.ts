@@ -192,6 +192,18 @@ export type {
   TrustState,
 } from './schema/governance.js';
 
+// v4.3 — connected data types (tables backed by an external source/connector).
+export {
+  ConnectedSourceImmutableError,
+  connectedColumns,
+  CONNECTED_COLUMNS,
+  IMMUTABLE_CONNECTED_FIELDS,
+} from './schema/connected.js';
+export type { ConnectorSource, ConnectedVisibility } from './schema/connected.js';
+
+// v4.3 — connectors: SPI, registry, and the Jira connector (optional dep).
+export * from './connectors/index.js';
+
 // v4.1 — durable retry for transient DB failures (idempotent ops only).
 export { withRetry, isRetryableDbError } from './db/retry.js';
 export type { RetryOptions } from './db/retry.js';
