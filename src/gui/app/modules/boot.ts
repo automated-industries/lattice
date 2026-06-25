@@ -135,6 +135,9 @@ export const bootJs = `    // ────────────────�
         initRailDragDrop();
         renderComposer();
         initThreadControls();
+        // Warm up on-device voice in the background shortly after boot so dictation
+        // is ready on first use — no visible model-loading step, ever.
+        if (typeof voicePreload === 'function') setTimeout(voicePreload, 1500);
         checkNativeSetup();
         // App is fully populated — reveal it (Feature C).
         hideAppLoading();

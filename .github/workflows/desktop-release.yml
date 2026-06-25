@@ -22,10 +22,18 @@ jobs:
           deno-version: canary # `deno desktop` is canary-only for now
       - run: npm ci
       - run: npm run desktop:build:mac
+      # Also produce an UNSIGNED .pkg (self-contained app installer) for the website
+      # download: a .pkg gets the soft "unidentified developer" prompt + installs the
+      # app into /Applications, vs the hard "damaged" block a downloaded .app/.dmg
+      # hits pre-notarization. The .dmg above stays the auto-update artifact
+      # (latest.json), untouched.
+      - run: npm run desktop:build:mac:pkg
       - uses: actions/upload-artifact@v4
         with:
           name: lattice-macos
-          path: dist-desktop/Lattice.dmg
+          path: |
+            dist-desktop/Lattice.dmg
+            dist-desktop/Lattice.pkg
           if-no-files-found: error
 
   build-windows:
@@ -61,6 +69,7 @@ jobs:
         run: |
           mkdir -p dist-desktop
           cp artifacts/lattice-macos/Lattice.dmg dist-desktop/Lattice.dmg
+          cp artifacts/lattice-macos/Lattice.pkg dist-desktop/Lattice.pkg
           cp artifacts/lattice-windows/Lattice.msi dist-desktop/Lattice.msi
       - name: Generate latest.json
         run: |
@@ -75,5 +84,6 @@ jobs:
         with:
           files: |
             dist-desktop/Lattice.dmg
+            dist-desktop/Lattice.pkg
             dist-desktop/Lattice.msi
             dist-desktop/latest.json

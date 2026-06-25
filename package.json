@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "4.3.0",
+  "version": "4.3.1",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -48,6 +48,7 @@
     "test:deno": "deno test --no-check -A tests/deno/",
     "desktop:dev": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-all desktop/main.ts",
     "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.dmg desktop/main.ts",
+    "desktop:build:mac:pkg": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.app desktop/main.ts && sh scripts/build-mac-pkg.sh",
     "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.msi desktop/main.ts",
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
