@@ -130,6 +130,26 @@ export const eventStreamJs = `    // ──────────────�
         }
       }
     }
+    // Aggregate the per-table render progress into the single top-right status:
+    // "Rendering N%…" while any table is mid-render, cleared once all are done.
+    // The per-card progress bars stay (card-scoped, complementary).
+    function updateRenderStatus() {
+      var active = Object.keys(renderProgress).filter(function (t) {
+        var s = renderProgress[t];
+        return s && !s.done && !s.error;
+      });
+      if (!active.length) { clearStatus('render'); return; }
+      var sum = 0;
+      active.forEach(function (t) { sum += (renderProgress[t].pct || 0); });
+      setStatus({
+        id: 'render',
+        kind: 'accent',
+        text: 'Rendering ' + Math.round(sum / active.length) + '%…',
+        priority: 20,
+        sticky: true,
+      });
+    }
+
     // Render snapshot + progress are applied from the multiplexed /api/stream
     // WebSocket: the server replays a render-snapshot on connect (so a tab that
     // connects mid- or post-render paints correctly) and streams render-progress

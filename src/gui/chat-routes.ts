@@ -7,7 +7,14 @@ import {
   getAggressiveness,
   aggressivenessToTemperature,
 } from './assistant-routes.js';
-import { createAnthropicClient, runChat, type LlmMessage, type ContentBlock } from './ai/chat.js';
+import {
+  createAnthropicClient,
+  runChat,
+  buildSchemaContext,
+  type LlmMessage,
+  type ContentBlock,
+} from './ai/chat.js';
+import { generateHtmlFile, htmlAuthorModelForAuth } from './ai/html-author.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle } from './ai/summarize.js';
@@ -56,6 +63,52 @@ interface ChatContext {
 /** Coerce an unknown DB column to a string, with a fallback for null/non-string. */
 function asStr(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback;
+}
+
+/**
+ * Build the "the user just attached these files" note that connects a chat message
+ * to the files the user attached to it (ingested via the composer Send just before
+ * the message is sent). Each id is grounded against the VISIBLE files table — so a
+ * stale/invisible/invented id is dropped rather than referenced — and the resulting
+ * note (empty when nothing valid is attached) is prefixed to the model's turn so it
+ * works on exactly those files with its existing file tools. Any file type, any
+ * count. Exported for regression testing. Bounded to 25 ids.
+ */
+export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown): Promise<string> {
+  const ids = Array.isArray(attachedFiles)
+    ? (attachedFiles as unknown[])
+        .map((f) =>
+          f && typeof (f as { id?: unknown }).id === 'string' ? (f as { id: string }).id : null,
+        )
+        .filter((x): x is string => !!x)
+        .slice(0, 25)
+    : [];
+  if (!ids.length) return '';
+  const labels: string[] = [];
+  for (const id of ids) {
+    try {
+      const row = (await db.get('files', id)) as {
+        id: string;
+        name?: string;
+        original_name?: string;
+      } | null;
+      if (row) {
+        const display =
+          [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0) ??
+          'file';
+        labels.push(`"${display}" (files id ${row.id})`);
+      }
+    } catch {
+      // stale/invisible id — skip rather than invent a reference
+    }
+  }
+  if (!labels.length) return '';
+  const many = labels.length > 1;
+  return (
+    `[The user just attached ${many ? 'these files' : 'this file'} to this message — ` +
+    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. ` +
+    `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`
+  );
 }
 
 /** A chat is private to whoever created it. We never rely on Postgres RLS alone:
@@ -540,6 +593,10 @@ export async function dispatchChatRoute(
     console.warn('[chat] persist user message failed:', (e as Error).message);
   }
 
+  // Connect the request to the files the user just attached (ingested via the
+  // composer Send) so the assistant works on them with its existing file tools.
+  const attachedNote = await buildAttachedFilesNote(ctx.db, body.attachedFiles);
+
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-store, no-transform',
@@ -573,6 +630,36 @@ export async function dispatchChatRoute(
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
   };
+
+  // Delegated HTML-file authoring: create_html_file / edit_html_file call this to
+  // author a full standalone HTML page. The closure builds its own client from the
+  // SAME resolved auth (api-key or OAuth) and the live schema, so SDK-missing /
+  // provider errors surface as a tool error (recoverable), never a crash. The model
+  // is the strongest the auth can actually run — sonnet for an API key (entitled to
+  // all models), the chat model for an OAuth subscription (whose entitlements vary;
+  // a non-entitled model 429s every call). If the user is viewing an html artifact,
+  // expose its id so edit_html_file targets the file on screen by default.
+  const authorModel = htmlAuthorModelForAuth(auth);
+  dispatch.htmlAuthor = async (spec: string, currentHtml?: string): Promise<string> => {
+    const schema = await buildSchemaContext(dispatch);
+    return generateHtmlFile({
+      client: createAnthropicClient(auth),
+      schema,
+      spec,
+      model: authorModel,
+      ...(currentHtml !== undefined ? { currentHtml } : {}),
+    });
+  };
+  if (activeContext?.table === 'files') {
+    try {
+      const open = (await ctx.db.get('files', activeContext.id)) as {
+        artifact_type?: string;
+      } | null;
+      if (open?.artifact_type === 'html') dispatch.activeHtmlFileId = activeContext.id;
+    } catch {
+      // Best-effort: a stale/invisible id just means no default edit target.
+    }
+  }
 
   // When the assistant started working on this request — persisted so a reloaded
   // turn can show the task DURATION (start → last event) rather than "ago".
@@ -671,7 +758,9 @@ export async function dispatchChatRoute(
       client,
       dispatch,
       history,
-      userMessage: message,
+      // Prefix the attached-files note (if any) so the model connects the request
+      // to the files just added; the dispatch + tools still see the real message.
+      userMessage: attachedNote + message,
       temperature,
       // Give the assistant the operator's name so it addresses them and
       // resolves "me"/"my" without asking for a name it already has.

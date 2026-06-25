@@ -22,6 +22,11 @@ import { settingsDrawerCss } from './settings-drawer.js';
 import { assistantRailCss } from './assistant-rail.js';
 import { chatCss } from './chat.js';
 import { inlineImportCss } from './inline-import.js';
+import { tabsCss } from './tabs.js';
+import { sourcesCss } from './sources.js';
+import { statusIndicatorCss } from './status-indicator.js';
+import { graphIngestAnimationCss } from './graph-ingest-animation.js';
+import { fileDocCss } from './file-doc.js';
 
 export const css = [
   tokensCss,
@@ -45,4 +50,9 @@ export const css = [
   assistantRailCss,
   chatCss,
   inlineImportCss,
+  tabsCss,
+  sourcesCss,
+  statusIndicatorCss,
+  graphIngestAnimationCss,
+  fileDocCss,
 ].join('');

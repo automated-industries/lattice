@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { transcribe, type SttProvider } from './ai/transcribe.js';
+import { voiceModeFromConfig, type VoiceMode } from './ai/voice-mode.js';
 import {
   readOAuthConfig,
   oauthConfigured,
@@ -190,7 +191,7 @@ const STT_PROVIDER_KIND = 'stt_provider';
 const AGGRESSIVENESS_KIND = 'assistant_aggressiveness';
 
 /** Default inference aggressiveness (0 = conservative … 1 = aggressive). */
-export const DEFAULT_AGGRESSIVENESS = 0.5;
+export const DEFAULT_AGGRESSIVENESS = 0.85;
 
 /**
  * The user's "inference aggressiveness" — a single behaviour knob (0 = only
@@ -282,26 +283,51 @@ export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth 
   const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
   const oauthRaw = await readMachineCredential(db, CLAUDE_OAUTH_KIND);
   if (oauthRaw) {
+    // A connected Claude subscription is STRICTLY preferred over an API key:
+    // having a key configured must never override OAuth, and a transient refresh
+    // failure must NOT silently switch auth (that would quietly run the assistant
+    // on a different account/billing). We reach the API-key fallback below only
+    // when there is no usable OAuth token at all.
     try {
       let tokens = JSON.parse(oauthRaw) as StoredOAuthTokens;
-      const cfg = readOAuthConfig();
       if (tokens.refresh_token && tokens.expires_at && Date.now() > tokens.expires_at - 60_000) {
-        const refreshed = await refreshAccessToken(cfg, tokens.refresh_token);
-        tokens = {
-          access_token: refreshed.access_token,
-          refresh_token: refreshed.refresh_token ?? tokens.refresh_token,
-          expires_at: refreshed.expires_at,
-        };
-        // Refreshed tokens persist machine-level so the subscription stays
-        // connected across every workspace, not just the one that linked it.
-        setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
+        try {
+          const cfg = readOAuthConfig();
+          const refreshed = await refreshAccessToken(cfg, tokens.refresh_token);
+          tokens = {
+            access_token: refreshed.access_token,
+            refresh_token: refreshed.refresh_token ?? tokens.refresh_token,
+            expires_at: refreshed.expires_at,
+          };
+          // Refreshed tokens persist machine-level so the subscription stays
+          // connected across every workspace, not just the one that linked it.
+          setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
+        } catch (e) {
+          // Refresh failed (network blip / expired or revoked refresh token).
+          // Do NOT silently fall back to the API key — surface it and keep the
+          // connected subscription. If the existing access token has also expired
+          // the call returns 401, which tells the user to re-connect instead of
+          // quietly running on a different credential.
+          console.warn(
+            '[lattice/assistant] Claude subscription token refresh failed; keeping the connected subscription (re-connect if calls start failing):',
+            (e as Error).message,
+          );
+        }
       }
       if (tokens.access_token) return { authToken: tokens.access_token, betaHeader };
-    } catch {
-      // Malformed token blob — fall through to the API-key path.
+      console.warn(
+        '[lattice/assistant] Claude subscription is connected but has no usable access token — using the API key if one is configured.',
+      );
+    } catch (e) {
+      // The stored OAuth blob is corrupt/unreadable — genuinely unusable, so the
+      // API-key fallback below is the right move.
+      console.warn(
+        '[lattice/assistant] stored Claude subscription credential is unreadable; using the API key if configured:',
+        (e as Error).message,
+      );
     }
   }
-  // No OAuth → fall back to the (non-cleared) stored-or-env API key.
+  // No usable OAuth → fall back to the (non-cleared) stored-or-env API key.
   const apiKey = await resolveAnthropicKey(db);
   return apiKey ? { apiKey } : null;
 }
@@ -362,6 +388,17 @@ export async function dispatchAssistantRoute(
       hasCredential(db, 'elevenlabs', 'ELEVENLABS_API_KEY'),
     ]);
     const voice = await getVoiceCredential(db);
+    const sttPreference = readPreferences().voice_provider;
+    // On-device dictation is the keyless default — the mic is no longer gated on a
+    // cloud voice key. `voiceMode` is the single signal the GUI acts on: 'local'
+    // (on-device, keyless), a cloud provider (when its key is set), or 'off' (the
+    // legacy "No Voice" sentinel). A configured cloud key still drives the cloud
+    // transcribe fallback (POST /api/assistant/transcribe).
+    const voiceMode: VoiceMode = voiceModeFromConfig({
+      preference: sttPreference,
+      hasOpenaiKey,
+      hasElevenlabsKey,
+    });
     sendJson(res, {
       hasAnthropicKey,
       hasOpenaiKey,
@@ -369,7 +406,11 @@ export async function dispatchAssistantRoute(
       claudeAuthKind: await claudeAuthKind(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
-      sttPreference: readPreferences().voice_provider,
+      sttPreference,
+      voiceMode,
+      // On-device speech is always available in a supporting browser; the asset
+      // step is fail-soft, so the GUI also feature-detects the Worker at runtime.
+      localVoiceAvailable: true,
       aggressiveness: getAggressiveness(),
       oauthEnabled: oauthConfigured(),
     });
@@ -405,8 +446,13 @@ export async function dispatchAssistantRoute(
       sendJson(res, { error: (e as Error).message }, 400);
       return true;
     }
-    const provider = typeof body.provider === 'string' ? body.provider : 'auto';
-    if (provider !== 'auto' && provider !== 'openai' && provider !== 'elevenlabs') {
+    const provider = typeof body.provider === 'string' ? body.provider : 'local';
+    if (
+      provider !== 'local' &&
+      provider !== 'auto' &&
+      provider !== 'openai' &&
+      provider !== 'elevenlabs'
+    ) {
       sendJson(res, { error: `unknown provider: ${provider}` }, 400);
       return true;
     }

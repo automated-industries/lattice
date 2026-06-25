@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "4.2.4",
+  "version": "4.3.0",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -29,7 +29,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/build-gui-assets.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests scripts",
     "lint:fix": "eslint src tests scripts --fix",
@@ -47,8 +47,8 @@
     "desktop:version:check": "node scripts/sync-desktop-version.mjs --check",
     "test:deno": "deno test --no-check -A tests/deno/",
     "desktop:dev": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-all desktop/main.ts",
-    "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --output dist-desktop/Lattice.dmg desktop/main.ts",
-    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --output dist-desktop/Lattice.msi desktop/main.ts",
+    "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.dmg desktop/main.ts",
+    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.msi desktop/main.ts",
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
@@ -74,6 +74,7 @@
   "optionalDependencies": {
     "@aws-sdk/client-s3": "^3.1067.0",
     "exceljs": "^4.4.0",
+    "jira.js": "^5.3.1",
     "pg": "^8.11.0",
     "pgvector": "^0.2.0",
     "playwright": "^1.48.0",
@@ -82,6 +83,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@huggingface/transformers": "^4.2.0",
     "@playwright/test": "^1.48.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/jsdom": "^28.0.3",

@@ -299,6 +299,16 @@ export interface MutationCtx {
    * {@link sanitizeEditTs}; ignored if absent/implausible.
    */
   clientTs?: string | undefined;
+  /**
+   * Set ONLY by the trusted HTML-file authoring tools (create_html_file /
+   * edit_html_file). It permits a write to set the reserved `artifact_type='html'`
+   * marker that makes a `files` row render as an EXECUTABLE inline HTML document.
+   * Absent/false on every other path (generic create_row/update_row, bulk_update,
+   * the HTTP row-CRUD routes, ingest), so an untrusted caller — or a prompt
+   * injection — cannot forge an executable artifact for another viewer to render.
+   * See {@link guardReservedFileColumns}.
+   */
+  allowReservedFileCols?: boolean;
 }
 
 /**
@@ -406,6 +416,29 @@ export function deriveRowIdFromEditId(editId: string): string {
   return createHash('sha256').update(editId).digest('hex').slice(0, 32);
 }
 
+/**
+ * Reserve the executable-artifact marker. A `files` row renders as a live,
+ * script-running inline HTML document ONLY when artifact_type==='html' (see
+ * renderFilePreview). That column is therefore security-sensitive: only the trusted
+ * create_html_file / edit_html_file tools may set it (they pass
+ * allowReservedFileCols). Every other write path — generic create_row/update_row,
+ * bulk_update, the HTTP /api/tables/files/rows routes, ingest — is refused, so a
+ * caller (or a prompt injection) cannot plant an executable HTML artifact that
+ * another user would render. Fails loud rather than silently dropping the field.
+ */
+export function guardReservedFileColumns(
+  ctx: MutationCtx,
+  table: string,
+  values: Partial<Row> | undefined,
+): void {
+  if (table !== 'files' || ctx.allowReservedFileCols) return;
+  if (values && (values as Record<string, unknown>).artifact_type === 'html') {
+    throw new Error(
+      "artifact_type='html' marks an executable inline HTML file and may only be set by the create_html_file / edit_html_file tools",
+    );
+  }
+}
+
 export async function createRow(
   ctx: MutationCtx,
   table: string,
@@ -413,6 +446,7 @@ export async function createRow(
   forceVisibility?: 'private' | 'everyone',
   editId?: string,
 ): Promise<{ id: string; row: Row | null; idempotent: boolean }> {
+  guardReservedFileColumns(ctx, table, values);
   // #3.6 — offline-replay idempotency. Scoped to callers that carry an edit-id
   // (the GUI row-write path; the assistant/ingest paths pass none and keep their
   // prior behaviour untouched). When the table uses the default single-column
@@ -495,6 +529,7 @@ export async function updateRow(
   id: string,
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
+  guardReservedFileColumns(ctx, table, values);
   const before = await ctx.db.get(table, id);
   // Never silently "succeed" against a row that doesn't exist. A
   // missing row means the caller (e.g. the assistant) used a stale/wrong id;
@@ -502,6 +537,22 @@ export async function updateRow(
   // row link 404s on click. Fail loudly so the caller can correct.
   if (before === null) {
     throw writeConflict(`Cannot update "${table}": no row with id "${id}"`);
+  }
+  // Reserve EXECUTABLE-artifact bodies too. Changing the rendered content of a row
+  // that is ALREADY an html artifact is as security-sensitive as creating one — it
+  // changes what executes when a viewer re-opens it — so a body edit is likewise
+  // limited to the trusted edit_html_file tool (which passes allowReservedFileCols).
+  // (guardReservedFileColumns above only reserves SETTING the artifact_type marker;
+  // it can't see the existing row, which is why this lives here, after `before`.)
+  if (
+    table === 'files' &&
+    !ctx.allowReservedFileCols &&
+    (before as Record<string, unknown>).artifact_type === 'html' &&
+    Object.prototype.hasOwnProperty.call(values, 'extracted_text')
+  ) {
+    throw new Error(
+      'the body of an executable HTML file may only be changed by the edit_html_file tool',
+    );
   }
   // Persist fields the schema lacks by creating the columns first (no silent drop).
   const addedCols = await ensureColumns(ctx.db, table, values as Row);

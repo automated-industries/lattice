@@ -139,3 +139,33 @@ export async function artifactFileRow(
   const row: Row = { ...(await requiredFileDefaults(db, name, id, draft)), ...draft };
   return { row, id };
 }
+
+/**
+ * Build a complete `files` row for an assistant-authored HTML ARTIFACT: the HTML
+ * lives inline in `extracted_text` (so the viewer renders it in a sandboxed inline
+ * frame), flagged `artifact_type='html'`, with an `.html` display name + slug/name/
+ * title and any NOT-NULL defaults a customized files schema requires. Mirrors
+ * {@link artifactFileRow} (the markdown sibling); the caller persists it via
+ * `createRow`, which applies sharing/visibility like any other file.
+ */
+export async function htmlArtifactFileRow(
+  db: Lattice,
+  title: string,
+  html: string,
+): Promise<{ row: Row; id: string }> {
+  const id = crypto.randomUUID();
+  const trimmed = title.trim() || 'Untitled';
+  const name = /\.html?$/i.test(trimmed) ? trimmed : `${trimmed}.html`;
+  const draft: Row = {
+    id,
+    ...fileIdentity(trimmed, id),
+    original_name: name,
+    mime: 'text/html',
+    size_bytes: Buffer.byteLength(html, 'utf8'),
+    extracted_text: html,
+    extraction_status: 'extracted',
+    artifact_type: 'html',
+  };
+  const row: Row = { ...(await requiredFileDefaults(db, name, id, draft)), ...draft };
+  return { row, id };
+}

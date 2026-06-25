@@ -16,7 +16,7 @@ export const searchCss = `    /* ── Full-text search (top bar) ────�
       max-height: 60vh; overflow-y: auto;
       background: var(--glass-strong);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-      border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px;
+      border: 1px solid rgba(15, 23, 42, 0.04); border-radius: 8px;
       box-shadow: var(--shadow-3), var(--hl-top); z-index: 70; padding: 6px;
     }
     .search-empty { padding: 12px 10px; color: var(--text-muted); font-size: 13px; text-align: center; }

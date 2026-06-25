@@ -13,22 +13,22 @@ export const guiAppHtml = `<!doctype html>
 <body>
   <div id="app-loading" class="app-loading" role="status" aria-live="polite" aria-busy="true" aria-label="Loading Lattice">
     <svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect width="24" height="24" rx="4" fill="#0b0d10"/>
-      <line x1="6" y1="6" x2="18" y2="6" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="6" y1="12" x2="18" y2="12" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="6" y1="18" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="6" y1="6" x2="6" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="12" y1="6" x2="12" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <line x1="18" y1="6" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-      <circle cx="6" cy="6" r="1.5" fill="#bef264"/>
-      <circle cx="12" cy="6" r="1.5" fill="#bef264"/>
-      <circle cx="18" cy="6" r="1.5" fill="#bef264"/>
-      <circle cx="6" cy="12" r="1.5" fill="#bef264"/>
-      <circle cx="12" cy="12" r="2" fill="#bef264"/>
-      <circle cx="18" cy="12" r="1.5" fill="#bef264"/>
-      <circle cx="6" cy="18" r="1.5" fill="#bef264"/>
-      <circle cx="12" cy="18" r="1.5" fill="#bef264"/>
-      <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
+      <rect x="0.5" y="0.5" width="23" height="23" rx="5" fill="#eff6ff" stroke="#dbeafe"/>
+      <line x1="6" y1="6" x2="18" y2="6" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="6" y1="12" x2="18" y2="12" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="6" y1="18" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="6" y1="6" x2="6" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="12" y1="6" x2="12" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <line x1="18" y1="6" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+      <circle cx="6" cy="6" r="1.7" fill="#3b82f6"/>
+      <circle cx="12" cy="6" r="1.7" fill="#3b82f6"/>
+      <circle cx="18" cy="6" r="1.7" fill="#3b82f6"/>
+      <circle cx="6" cy="12" r="1.7" fill="#3b82f6"/>
+      <circle cx="12" cy="12" r="2.4" fill="#3b82f6"/>
+      <circle cx="18" cy="12" r="1.7" fill="#3b82f6"/>
+      <circle cx="6" cy="18" r="1.7" fill="#3b82f6"/>
+      <circle cx="12" cy="18" r="1.7" fill="#3b82f6"/>
+      <circle cx="18" cy="18" r="1.7" fill="#3b82f6"/>
     </svg>
     <span class="app-loading-spinner" aria-hidden="true"></span>
     <div class="app-loading-text">Loading…</div>
@@ -36,22 +36,22 @@ export const guiAppHtml = `<!doctype html>
   <header class="topbar">
     <a class="brand" href="#/" title="Go to dashboard" aria-label="Lattice — dashboard">
       <svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect width="24" height="24" rx="4" fill="#0b0d10"/>
-        <line x1="6" y1="6" x2="18" y2="6" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="6" y1="12" x2="18" y2="12" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="6" y1="18" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="6" y1="6" x2="6" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="12" y1="6" x2="12" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <line x1="18" y1="6" x2="18" y2="18" stroke="#bef264" stroke-width="0.5" opacity="0.4"/>
-        <circle cx="6" cy="6" r="1.5" fill="#bef264"/>
-        <circle cx="12" cy="6" r="1.5" fill="#bef264"/>
-        <circle cx="18" cy="6" r="1.5" fill="#bef264"/>
-        <circle cx="6" cy="12" r="1.5" fill="#bef264"/>
-        <circle cx="12" cy="12" r="2" fill="#bef264"/>
-        <circle cx="18" cy="12" r="1.5" fill="#bef264"/>
-        <circle cx="6" cy="18" r="1.5" fill="#bef264"/>
-        <circle cx="12" cy="18" r="1.5" fill="#bef264"/>
-        <circle cx="18" cy="18" r="1.5" fill="#bef264"/>
+        <rect x="0.5" y="0.5" width="23" height="23" rx="5" fill="#eff6ff" stroke="#dbeafe"/>
+        <line x1="6" y1="6" x2="18" y2="6" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="6" y1="12" x2="18" y2="12" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="6" y1="18" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="6" y1="6" x2="6" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="12" y1="6" x2="12" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <line x1="18" y1="6" x2="18" y2="18" stroke="#3b82f6" stroke-width="1.25" stroke-linecap="round"/>
+        <circle cx="6" cy="6" r="1.7" fill="#3b82f6"/>
+        <circle cx="12" cy="6" r="1.7" fill="#3b82f6"/>
+        <circle cx="18" cy="6" r="1.7" fill="#3b82f6"/>
+        <circle cx="6" cy="12" r="1.7" fill="#3b82f6"/>
+        <circle cx="12" cy="12" r="2.4" fill="#3b82f6"/>
+        <circle cx="18" cy="12" r="1.7" fill="#3b82f6"/>
+        <circle cx="6" cy="18" r="1.7" fill="#3b82f6"/>
+        <circle cx="12" cy="18" r="1.7" fill="#3b82f6"/>
+        <circle cx="18" cy="18" r="1.7" fill="#3b82f6"/>
       </svg>
     </a>
     <div class="db-switcher" id="ws-switcher">
@@ -69,12 +69,10 @@ export const guiAppHtml = `<!doctype html>
       <div class="search-results" id="search-results" hidden></div>
     </div>
     <div class="history-controls">
-      <button class="history-btn" id="undo-btn" title="Undo" disabled>↶</button>
-      <button class="history-btn" id="redo-btn" title="Redo" disabled>↷</button>
+      <button class="history-btn" id="undo-btn" title="Undo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
+      <button class="history-btn" id="redo-btn" title="Redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
       <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
     </div>
-    <span class="offline-pill" id="offline-pill" title="Edits queued offline — will sync when the cloud reconnects" hidden></span>
-    <span class="app-update" id="app-update" title="A new version is being applied" hidden></span>
     <span class="app-version" id="app-version" title="Lattice version"><!--LATTICE_VERSION--></span>
     <a id="app-update-link" href="#" hidden>Update available — Upgrade</a>
     <button id="settings-gear" title="Settings" aria-label="Open settings">
@@ -86,14 +84,42 @@ export const guiAppHtml = `<!doctype html>
   </header>
   <div class="layout">
     <nav class="sidebar">
-      <div class="section-label">Objects</div>
-      <ul id="object-nav"></ul>
+      <div id="sources-nav">
+        <div class="src-group">
+          <div class="section-label">Files</div>
+          <div id="src-files-tree"></div>
+          <div class="src-add-row">
+            <button class="src-add" id="src-add-folder" type="button">＋ Folder</button>
+            <button class="src-add" id="src-add-file" type="button">＋ File</button>
+          </div>
+          <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
+        </div>
+        <div class="src-group">
+          <div class="section-label">Built by Lattice</div>
+          <div id="src-artifacts-tree"></div>
+        </div>
+        <div class="src-group">
+          <div class="section-label">Connectors</div>
+          <div id="src-connectors-list"></div>
+          <button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button>
+        </div>
+      </div>
+      <div id="objects-section" hidden>
+        <div class="section-label">Objects</div>
+        <ul id="object-nav"></ul>
+      </div>
       <div id="system-section" hidden>
         <div class="section-label">System</div>
         <ul id="system-nav"></ul>
       </div>
     </nav>
-    <main id="content"></main>
+    <main class="content-wrap">
+      <div class="tabstrip" id="tabstrip">
+        <div class="tabstrip-tabs" id="tabstrip-tabs"></div>
+        <div class="tabstrip-status" id="tabstrip-status"></div>
+      </div>
+      <div id="content"></div>
+    </main>
     <aside class="assistant-rail" id="assistant-rail">
       <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
       <div class="rail-handle" id="rail-handle" title="Expand / collapse"></div>
@@ -121,6 +147,15 @@ export const guiAppHtml = `<!doctype html>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+
+  <div class="connectors-backdrop" id="connectors-backdrop" hidden></div>
+  <aside class="connectors-dialog" id="connectors-dialog" hidden aria-label="Connectors">
+    <div class="drawer-head">
+      <span class="drawer-title">Add a Connector</span>
+      <button class="drawer-close" id="connectors-dialog-close" title="Close" aria-label="Close connectors">✕</button>
+    </div>
+    <div class="drawer-body" id="connectors-dialog-body"></div>
   </aside>
 
   <script>${analyticsJs}</script>
