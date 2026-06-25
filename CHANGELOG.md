@@ -14,7 +14,7 @@ Patch release. Postgres error diagnostics.
 
 - **A failing Postgres query now names its statement in the error.** A bare
   Postgres message — e.g. `invalid input syntax for type timestamp with time
-  zone: ""` — identifies neither the query nor the table/column, so a failure deep
+zone: ""` — identifies neither the query nor the table/column, so a failure deep
   inside an open-time convergence was undebuggable from the message alone. The
   adapter now appends `[lattice-sql] failing statement: <sql>` to any query error
   (once, across all query paths incl. transactions). No behavior change on the
