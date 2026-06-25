@@ -250,18 +250,18 @@ export class PostgresAdapter implements StorageAdapter {
 
   async runAsync(sql: string, params: unknown[] = []): Promise<void> {
     const pool = await this._readyPool();
-    await pool.query(rewrite(sql), params);
+    await execQ(pool, sql, params);
   }
 
   async getAsync(sql: string, params: unknown[] = []): Promise<Row | undefined> {
     const pool = await this._readyPool();
-    const r = await pool.query(rewrite(sql), params);
+    const r = await execQ(pool, sql, params);
     return r.rows[0];
   }
 
   async allAsync(sql: string, params: unknown[] = []): Promise<Row[]> {
     const pool = await this._readyPool();
-    const r = await pool.query(rewrite(sql), params);
+    const r = await execQ(pool, sql, params);
     return r.rows;
   }
 
@@ -280,21 +280,20 @@ export class PostgresAdapter implements StorageAdapter {
    * client for the transaction lifetime and avoid the per-call setup.
    */
   prepareAsync(sql: string): PreparedStatementAsync {
-    const rewritten = rewrite(sql);
     return {
       run: async (...params: unknown[]) => {
         const pool = await this._readyPool();
-        const r = await pool.query(rewritten, params);
+        const r = await execQ(pool, sql, params);
         return { changes: r.rowCount ?? 0, lastInsertRowid: 0 };
       },
       get: async (...params: unknown[]) => {
         const pool = await this._readyPool();
-        const r = await pool.query(rewritten, params);
+        const r = await execQ(pool, sql, params);
         return r.rows[0];
       },
       all: async (...params: unknown[]) => {
         const pool = await this._readyPool();
-        const r = await pool.query(rewritten, params);
+        const r = await execQ(pool, sql, params);
         return r.rows;
       },
     };
@@ -350,7 +349,7 @@ export class PostgresAdapter implements StorageAdapter {
     if (upper.includes('PRIMARY KEY')) return;
     const translated = translateTypeSpec(typeSpec);
     const pool = await this._readyPool();
-    await pool.query(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${column}" ${translated}`);
+    await execQ(pool, `ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${column}" ${translated}`);
   }
 
   /**
@@ -369,15 +368,15 @@ export class PostgresAdapter implements StorageAdapter {
     const client = await pool.connect();
     const tx: TxClient = {
       run: async (sql: string, params?: unknown[]) => {
-        const r = await client.query(rewrite(sql), params ?? []);
+        const r = await execQ(client, sql, params);
         return { changes: r.rowCount ?? 0 };
       },
       get: async (sql: string, params?: unknown[]) => {
-        const r = await client.query(rewrite(sql), params ?? []);
+        const r = await execQ(client, sql, params);
         return r.rows[0];
       },
       all: async (sql: string, params?: unknown[]) => {
-        const r = await client.query(rewrite(sql), params ?? []);
+        const r = await execQ(client, sql, params);
         return r.rows;
       },
     };
@@ -960,6 +959,30 @@ function rewriteParams(sql: string): string {
 
 function rewrite(sql: string): string {
   return rewriteParams(translateDialect(sql));
+}
+
+/**
+ * Execute one query through {@link rewrite}, attaching the FAILING STATEMENT to
+ * any error. A bare Postgres error — e.g. `invalid input syntax for type
+ * timestamp with time zone: ""` — names neither the query nor the table/column,
+ * so a failure deep inside an open-time convergence is undebuggable from the
+ * message alone. We append the statement once (the `[lattice-sql]` marker guard
+ * keeps it from re-appending as the error unwinds through nested calls). Success
+ * path is unchanged.
+ */
+async function execQ(
+  runner: { query(sql: string, params?: unknown[]): Promise<PgQueryResult> },
+  sql: string,
+  params?: unknown[],
+): Promise<PgQueryResult> {
+  try {
+    return await runner.query(rewrite(sql), params ?? []);
+  } catch (err) {
+    if (err instanceof Error && !err.message.includes('[lattice-sql]')) {
+      err.message += `\n[lattice-sql] failing statement: ${sql.replace(/\s+/g, ' ').trim().slice(0, 300)}`;
+    }
+    throw err;
+  }
 }
 
 /** Exposed for unit testing. */
