@@ -6,7 +6,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [4.3.0] — unreleased
+## [4.3.1] — unreleased
+
+Patch release. Bug fixes on 4.3.0.
+
+### Fixed
+
+- **On-device voice dictation** — fixes "no available backend found / Importing a
+  module script failed". onnxruntime-web loads its wasm backend via a runtime
+  dynamic `import()` of `ort-wasm-simd-threaded*.mjs`, which esbuild does not
+  inline; the build now ships those `.mjs` next to the `.wasm` under
+  `/gui-assets/ort/`. The visible "Downloading voice model…" state is removed
+  (silent), and the worker + model are warmed up in the background on launch so
+  dictation is ready on first use.
+- **Form elements** — the generic input rule and the modal field-input rule both
+  styled radios/checkboxes as boxes (`width:100%` + border), mangling them. Both
+  now exclude radio/checkbox (native rendering, accent-tinted), and the
+  New-workspace "Kind" selector is a clean set of cards with a blue-highlighted
+  selection.
+- **Files tree** — an expanded folder no longer snaps shut when an in-progress
+  ingest re-renders the sidebar; expanded folders + their lazily-loaded children
+  are preserved across the re-render.
+
+### Added — macOS `.pkg` installer + portable launcher
+
+`scripts/build-mac-pkg.sh` builds an **unsigned** `.pkg` for the Mac launcher. A
+browser-downloaded `.app` is quarantined and (pre-notarization) hard-blocked by
+Gatekeeper as "damaged"; a `.pkg` instead gets the soft "unidentified developer"
+prompt and **installs the app itself**, so the installed app is not quarantined and
+launches cleanly. The launcher inside is **portable** — it resolves node/npm/lattice
+at runtime (probing the common install dirs + a login shell) instead of baking
+absolute paths, so the same bundle works on any machine/user, and it is ad-hoc
+signed **after** its content is written (a valid seal — the old flow wrote paths
+after signing, breaking the seal). Developer-ID signing + notarization slot into the
+same script once the Apple account is approved.
+
+## [4.3.0] — 2026-06-25
 
 Minor release. Two additive features — **connectors** and inline **HTML files**
 in the GUI assistant. Additive on 4.2 (every 4.2 caller runs unchanged); the
