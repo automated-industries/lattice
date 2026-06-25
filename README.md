@@ -2220,7 +2220,10 @@ undoable. A Claude subscription can be connected instead via OAuth when the
 
 Optional extras, each enabled by its own key/binary:
 
-- **Voice** — set an OpenAI (Whisper) or ElevenLabs key to dictate into the composer.
+- **Voice** — the composer's 🎙 mic dictates on-device (in-browser WASM Whisper),
+  no key or setup, and audio never leaves your machine. Keyed cloud transcription
+  (OpenAI Whisper / ElevenLabs) stays available to API callers for backward
+  compatibility.
 - **File ingest** — reference a local file or paste text; it becomes a row in the
   native `files` entity with extracted text + (with a Claude key) an
   LLM-written description and links to related records. Documents (PDF, Word,
