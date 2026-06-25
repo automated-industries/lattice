@@ -19,16 +19,21 @@ export const tabsJs = `
       if (hash === '#/dashboard') return 'dashboard';
       if (hash === '#/settings/history') return 'history';
       if (hash.indexOf('#/settings/') === 0) return null; // drawer overlay — no tab
+      // Drilling folders is exploration — it stays in the one graph tab.
+      if (hash.indexOf('#/folder/') === 0) return 'graph';
       var fs = /^#\\/fs\\/(.+)$/.exec(hash);
       if (fs) {
         var segs = fs[1].split('/').filter(Boolean);
         if (segs[segs.length - 1] === 'new') return 'new:' + segs[0];
-        // even segment count → item (table/id[/rel/id…]); odd → collection.
+        // Even segment count → an item (a record) → its OWN closable tab. Odd → a
+        // collection / object focused-graph → the single shared exploration (graph)
+        // tab, so navigating object↔object↔folder never spawns tabs; only opening a
+        // record does.
         if (segs.length % 2 === 0) return 'item:' + segs[0] + ':' + segs[segs.length - 1];
-        return 'table:' + segs[0];
+        return 'graph';
       }
       var ob = /^#\\/objects\\/([^/]+)(?:\\/(.+))?$/.exec(hash);
-      if (ob) return ob[2] ? 'item:' + ob[1] + ':' + ob[2] : 'table:' + ob[1];
+      if (ob) return ob[2] ? 'item:' + ob[1] + ':' + ob[2] : 'graph';
       var sys = /^#\\/system\\/([^/]+)$/.exec(hash);
       if (sys) return 'system:' + sys[1];
       return null;

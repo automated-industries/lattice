@@ -35,8 +35,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // resolved voice mode — local decodes + transcribes in the browser, cloud keeps
 // the POST fallback — and the mic shows whenever voice isn't off). Recapture the
 // length + hash on any intended change.
-const ORIGINAL_LENGTH = 785273;
-const ORIGINAL_SHA256 = 'e4b0337ed92727e39488fc0d378e9c716e651e0624354579d246f55307688f7d';
+const ORIGINAL_LENGTH = 785614;
+const ORIGINAL_SHA256 = '7cad85085f043ed2cff0bd593fe397e027280bb83d8bad552481faf6fd89f0c3';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

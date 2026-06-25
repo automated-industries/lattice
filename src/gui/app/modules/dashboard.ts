@@ -1065,7 +1065,8 @@ export const dashboardJs = `    // ───────────────
         '&exclude=' + encodeURIComponent('extracted_text,description'))
         .then(function (resp) {
           if (myGen !== renderGen) return;
-          if (typeof setTabTitle === 'function') setTabTitle(tabKeyForHash(location.hash), d.label);
+          // No setTabTitle — object pages share the one exploration (graph) tab,
+          // which stays labeled "Brain Graph"; the breadcrumb shows the location.
           var rows = (resp && resp.rows) || [];
           var model = buildObjectGraphModel(table, d, t, rows);
           var header =
@@ -1339,7 +1340,7 @@ export const dashboardJs = `    // ───────────────
     function renderFolderView(content, path) {
       var myGen = renderGen;
       var name = fsBasename(path) || 'Folder';
-      if (typeof setTabTitle === 'function') setTabTitle(tabKeyForHash(location.hash), name);
+      // No setTabTitle — folder drilling stays in the shared exploration tab.
       Promise.all([
         fetchJson('/api/sources/list?path=' + encodeURIComponent(path)).catch(function () { return { entries: [] }; }),
         fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
@@ -1365,7 +1366,7 @@ export const dashboardJs = `    // ───────────────
     // The Files object page (#/fs/files): the folder roots + loose files.
     function renderFilesRootView(content) {
       var myGen = renderGen;
-      if (typeof setTabTitle === 'function') setTabTitle(tabKeyForHash(location.hash), 'Files');
+      // No setTabTitle — the Files object page shares the exploration tab.
       Promise.all([
         fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
         fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
