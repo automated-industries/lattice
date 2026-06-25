@@ -18,12 +18,15 @@ const ORIGINAL_LENGTH = 91393;
 const ORIGINAL_SHA256 = '48f4fe7cd54a2f0548bbdf39829d2a80e78aa88f487c4e05bd576de238754202';
 
 describe('css composition', () => {
+  // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
+  // change the byte length/hash — the inlined stylesheet's meaning is unchanged.
+  const normalized = css.replace(/\r\n/g, '\n');
   it('matches the original length exactly', () => {
-    expect(css.length).toBe(ORIGINAL_LENGTH);
+    expect(normalized.length).toBe(ORIGINAL_LENGTH);
   });
 
   it('matches the original sha256 exactly (byte-identical)', () => {
-    const hash = createHash('sha256').update(css).digest('hex');
+    const hash = createHash('sha256').update(normalized).digest('hex');
     expect(hash).toBe(ORIGINAL_SHA256);
   });
 });

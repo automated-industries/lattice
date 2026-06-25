@@ -65,6 +65,52 @@ function asStr(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback;
 }
 
+/**
+ * Build the "the user just attached these files" note that connects a chat message
+ * to the files the user attached to it (ingested via the composer Send just before
+ * the message is sent). Each id is grounded against the VISIBLE files table — so a
+ * stale/invisible/invented id is dropped rather than referenced — and the resulting
+ * note (empty when nothing valid is attached) is prefixed to the model's turn so it
+ * works on exactly those files with its existing file tools. Any file type, any
+ * count. Exported for regression testing. Bounded to 25 ids.
+ */
+export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown): Promise<string> {
+  const ids = Array.isArray(attachedFiles)
+    ? (attachedFiles as unknown[])
+        .map((f) =>
+          f && typeof (f as { id?: unknown }).id === 'string' ? (f as { id: string }).id : null,
+        )
+        .filter((x): x is string => !!x)
+        .slice(0, 25)
+    : [];
+  if (!ids.length) return '';
+  const labels: string[] = [];
+  for (const id of ids) {
+    try {
+      const row = (await db.get('files', id)) as {
+        id: string;
+        name?: string;
+        original_name?: string;
+      } | null;
+      if (row) {
+        const display =
+          [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0) ??
+          'file';
+        labels.push(`"${display}" (files id ${row.id})`);
+      }
+    } catch {
+      // stale/invisible id — skip rather than invent a reference
+    }
+  }
+  if (!labels.length) return '';
+  const many = labels.length > 1;
+  return (
+    `[The user just attached ${many ? 'these files' : 'this file'} to this message — ` +
+    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. ` +
+    `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`
+  );
+}
+
 /** A chat is private to whoever created it. We never rely on Postgres RLS alone:
  *  the app connects as a BYPASSRLS role, so RLS does NOT filter the owner's
  *  connection — every chat read MUST also filter by this key in the app layer,
@@ -547,6 +593,10 @@ export async function dispatchChatRoute(
     console.warn('[chat] persist user message failed:', (e as Error).message);
   }
 
+  // Connect the request to the files the user just attached (ingested via the
+  // composer Send) so the assistant works on them with its existing file tools.
+  const attachedNote = await buildAttachedFilesNote(ctx.db, body.attachedFiles);
+
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-store, no-transform',
@@ -708,7 +758,9 @@ export async function dispatchChatRoute(
       client,
       dispatch,
       history,
-      userMessage: message,
+      // Prefix the attached-files note (if any) so the model connects the request
+      // to the files just added; the dispatch + tools still see the real message.
+      userMessage: attachedNote + message,
       temperature,
       // Give the assistant the operator's name so it addresses them and
       // resolves "me"/"my" without asking for a name it already has.

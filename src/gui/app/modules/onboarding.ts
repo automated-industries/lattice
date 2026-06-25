@@ -226,7 +226,7 @@ export const onboardingJs = `    // ──────────────�
       }
       return buffer;
     }
-    function sendChat(text) {
+    function sendChat(text, attachedFiles) {
       if (chatBusy || !text) return;
       chatBusy = true;
       gaTrack('assistant_message', {}); // no message text — just the event
@@ -253,7 +253,7 @@ export const onboardingJs = `    // ──────────────�
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement() })
+        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });

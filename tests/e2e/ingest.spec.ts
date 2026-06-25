@@ -61,9 +61,7 @@ test('dropping a file stages it for review, then Send ingests it', async ({ page
   await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0, { timeout: 5000 });
 });
 
-test('staged files can be removed with ✕, and nothing ingests until Send', async ({
-  page,
-}) => {
+test('staged files can be removed with ✕, and nothing ingests until Send', async ({ page }) => {
   let ingestCalls = 0;
   await page.route('**/api/ingest/upload', async (route) => {
     ingestCalls++;

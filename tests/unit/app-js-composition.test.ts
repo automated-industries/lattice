@@ -36,16 +36,20 @@ import { appJs } from '../../src/gui/app/script.js';
 // rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
 // reachable to API callers for backward compatibility, but the GUI never calls it.
 // Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 785572;
-const ORIGINAL_SHA256 = 'ab58773640a2a2adbeab4900e35e7e8721c45737f743b7622e0a0a8d2e2c92ba';
+const ORIGINAL_LENGTH = 786794;
+const ORIGINAL_SHA256 = '38acc52da1d4f20d0cd2098fa3b4253ea062d05863d9d3ae4ddf3446dafd36d4';
 
 describe('appJs composition', () => {
+  // Normalize line endings before pinning: a Windows checkout may materialize the
+  // source modules with CRLF, which would change the byte length/hash without
+  // changing the inlined script's meaning. Pin the LF-canonical form.
+  const normalized = appJs.replace(/\r\n/g, '\n');
   it('matches the original length exactly', () => {
-    expect(appJs.length).toBe(ORIGINAL_LENGTH);
+    expect(normalized.length).toBe(ORIGINAL_LENGTH);
   });
 
   it('matches the original sha256 exactly (byte-identical)', () => {
-    const hash = createHash('sha256').update(appJs).digest('hex');
+    const hash = createHash('sha256').update(normalized).digest('hex');
     expect(hash).toBe(ORIGINAL_SHA256);
   });
 });

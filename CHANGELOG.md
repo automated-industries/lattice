@@ -186,6 +186,16 @@ The desktop/web GUI is reorganized around the data graph.
   managed object (files/secrets/…) is refused with a deterministic, user-facing
   message that points to modeling the new attribute as its own object the records
   link to — so the assistant never mangles a managed table.
+- **A chat message is connected to the files attached to it.** Files dropped into
+  the composer are now ingested FIRST, then the message is sent referencing the
+  just-added files, so the assistant works on exactly what was attached (any file
+  type, single or many) with its existing file tools — instead of replying that it
+  "doesn't see any attached files". The model-facing note is grounded against the
+  visible files table (stale/invented ids are dropped). See
+  `docs/bugs/2026-06-25-chat-attached-files-not-connected.md`.
+- **The Files tree mirrors the real filesystem.** A folder nested inside another
+  registered root no longer also appears at the top level; the containment check is
+  separator-agnostic so it holds on Windows too.
 
 ### Added — Trello connector + data-driven connector layer
 

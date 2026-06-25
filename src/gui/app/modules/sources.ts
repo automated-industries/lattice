@@ -63,22 +63,30 @@ export const sourcesJs = `
           var folderPaths = roots
             .filter(function (r) { return r.kind === 'folder'; })
             .map(function (r) { return r.path; });
+          // Normalize path separators so the containment checks below work on
+          // Windows (the server stores native-separator absolute paths) as well as
+          // POSIX — '\\' → '/'.
+          var fsNorm = function (p) { return (p || '').replace(/\\\\/g, '/'); };
           // Loose files = source files NOT under a registered folder root (those show
           // inside the tree); an uploaded file (no on-disk path) is always loose.
           var loose = sourceFiles.filter(function (r) {
             if (!r.ref_uri) return true;
+            var u = fsNorm(r.ref_uri);
             return !folderPaths.some(function (p) {
-              return r.ref_uri === p || r.ref_uri.indexOf(p + '/') === 0;
+              var np = fsNorm(p);
+              return u === np || u.indexOf(np + '/') === 0;
             });
           });
           // Only show roots that aren't nested INSIDE another shown root. A folder
           // that physically lives under another folder (e.g. Downloads/Hello world)
           // must appear ONLY in its real place — lazily, under its parent — never
-          // duplicated at the top level. Mirrors the real filesystem tree.
+          // duplicated at the top level. Mirrors the real filesystem tree (separator-
+          // agnostic, so it holds on Windows too).
           var topRoots = roots.filter(function (r) {
             if (r.kind !== 'folder' || !r.path) return true;
+            var rn = fsNorm(r.path);
             return !roots.some(function (o) {
-              return o !== r && o.kind === 'folder' && o.path && r.path.indexOf(o.path + '/') === 0;
+              return o !== r && o.kind === 'folder' && o.path && rn.indexOf(fsNorm(o.path) + '/') === 0;
             });
           });
           var rootsHtml = topRoots.length

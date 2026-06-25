@@ -118,25 +118,32 @@ export const createDatabaseWizardJs = `    // ───────────�
         .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); })
         .finally(function () { done(); });
     }
-    function uploadFiles(files) {
-      if (!files || !files.length) return;
+    // Ingest the given files and RESOLVE with [{id, name}] for each that landed —
+    // so the caller (the composer Send) can reference the just-added files in the
+    // chat turn. opts.silent suppresses the single-file open-the-record navigation
+    // (used when a chat message accompanies the upload — the chat is the focus).
+    function uploadFiles(files, opts) {
+      opts = opts || {};
+      if (!files || !files.length) return Promise.resolve([]);
       gaTrack('file_ingest', { count: files.length }); // count only — never file names
       // Single-file drop: open the resulting record once it lands (the dedup
       // survivor if it was a duplicate). Multi-file drops do not navigate.
       if (files.length === 1) {
-        uploadFile(files[0]).then(function (j) {
+        return uploadFile(files[0]).then(function (j) {
           // A structured source the server flagged as confirmable comes back with
           // an autoImport proposal — render the inline confirm card instead of
           // navigating to the file record. A silent import (autoImport.imported,
           // no reason) or a plain file keeps the open-the-record behavior.
-          if (j && j.autoImport && j.autoImport.reason) { renderInlineImportCard(j.autoImport); return; }
-          if (j && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
+          if (j && j.autoImport && j.autoImport.reason) renderInlineImportCard(j.autoImport);
+          else if (!opts.silent && j && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
+          var sid = j && (j.duplicateOf || j.id);
+          return sid ? [{ id: sid, name: files[0].name }] : [];
         });
-        return;
       }
       // Multi-file: drain through the bounded-concurrency queue (so a big drop
       // can't saturate the connection budget) with a batch progress bar.
       var bar = ingestProgress(files.length);
+      var refs = [];
       var thunks = [];
       for (var i = 0; i < files.length; i++) {
         (function (f) {
@@ -145,11 +152,15 @@ export const createDatabaseWizardJs = `    // ───────────�
               // A structured source within a batch still gets its own inline
               // confirm card (the batch as a whole does not navigate).
               if (j && j.autoImport && j.autoImport.reason) renderInlineImportCard(j.autoImport);
+              var fid = j && (j.duplicateOf || j.id);
+              if (fid) refs.push({ id: fid, name: f.name });
             });
           });
         })(files[i]);
       }
-      runIngestBatch(thunks, INGEST_MAX_CONCURRENCY, bar.update).then(bar.done);
+      return runIngestBatch(thunks, INGEST_MAX_CONCURRENCY, bar.update)
+        .then(bar.done)
+        .then(function () { return refs; });
     }
     // ── Staging tray ────────────────────────────────────────────────────────
     // A dropped file (or one picked via the paperclip) is NOT ingested on the
@@ -162,12 +173,6 @@ export const createDatabaseWizardJs = `    // ───────────�
       if (el && el.parentNode) el.parentNode.removeChild(el);
     }
     function clearStaging() { stagedFiles = []; removeStagingTray(); }
-    function sendStaged() {
-      if (!stagedFiles.length) return;
-      var batch = stagedFiles.slice();
-      clearStaging();
-      uploadFiles(batch); // the actual ingest (pending bubbles + graph animation)
-    }
     function stageFiles(fileList) {
       if (!fileList || !fileList.length) return;
       for (var i = 0; i < fileList.length; i++) {
@@ -329,14 +334,18 @@ export const createDatabaseWizardJs = `    // ───────────�
             new ResizeObserver(function () { autoGrowInput(); }).observe(input);
           }
           autoGrowInput(); // fit the initial height
-          // The ONE Send button (and Enter) sends staged files AND the typed
-          // message together in the same turn — they're often related content.
-          // Ingest the files first so the assistant can see them, then send the
-          // message. Works with files only, text only, or both.
+          // The ONE Send button (and Enter). When files are staged, ADD them to
+          // Files FIRST (await ingest), then run the chat against those just-added
+          // files — so the assistant works on exactly what was attached, any file
+          // type, single or many. Files only → just add them. Text only → just chat.
           function submitComposer() {
             var t = input.value.trim();
-            if (stagedFiles.length) sendStaged();
-            if (t) sendChat(t);
+            if (!stagedFiles.length) { if (t) sendChat(t); return; }
+            var batch = stagedFiles.slice();
+            clearStaging();
+            uploadFiles(batch, { silent: !!t }).then(function (refs) {
+              if (t) sendChat(t, refs);
+            });
           }
           input.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComposer(); }
