@@ -90,15 +90,18 @@ export const dataModelJs = `    // ───────────────
           return '' +
             nameField +
             '<div class="field"><label>Kind</label>' +
-              '<div style="display:flex;gap:16px;margin-top:4px;flex-wrap:wrap">' +
-                '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
-                  '<input type="radio" name="wiz-kind" value="local"' + (kind === 'local' ? ' checked' : '') + ' /> New local (SQLite)' +
+              '<div class="wiz-kind-opts">' +
+                '<label class="wiz-kind-card">' +
+                  '<input type="radio" name="wiz-kind" value="local"' + (kind === 'local' ? ' checked' : '') + ' />' +
+                  '<span class="wiz-kind-name">New local <span class="wiz-kind-sub">SQLite</span></span>' +
                 '</label>' +
-                '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
-                  '<input type="radio" name="wiz-kind" value="cloud"' + (kind === 'cloud' ? ' checked' : '') + ' /> New cloud (Postgres)' +
+                '<label class="wiz-kind-card">' +
+                  '<input type="radio" name="wiz-kind" value="cloud"' + (kind === 'cloud' ? ' checked' : '') + ' />' +
+                  '<span class="wiz-kind-name">New cloud <span class="wiz-kind-sub">Postgres</span></span>' +
                 '</label>' +
-                '<label style="display:flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0">' +
-                  '<input type="radio" name="wiz-kind" value="join"' + (kind === 'join' ? ' checked' : '') + ' /> Join a team (invite)' +
+                '<label class="wiz-kind-card">' +
+                  '<input type="radio" name="wiz-kind" value="join"' + (kind === 'join' ? ' checked' : '') + ' />' +
+                  '<span class="wiz-kind-name">Join a team <span class="wiz-kind-sub">invite</span></span>' +
                 '</label>' +
               '</div>' +
               '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +

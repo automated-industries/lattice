@@ -112,16 +112,22 @@ async function main() {
     }
     if (distDir) {
       mkdirSync(ortDir, { recursive: true });
-      // Only the runtime `.wasm` binaries the worker actually loads — the matching
-      // JS glue (`.mjs`) is already inlined into transcriber.worker.mjs by esbuild,
-      // so re-shipping every ORT `.mjs` bundle would bloat the tarball for nothing.
-      // The CPU path needs the simd-threaded core + its asyncify variant; the jsep
-      // build is the WebGPU path (kept so `device:'webgpu'` works offline). The
-      // experimental jspi variant is skipped (a Chrome-flag-only path).
+      // The runtime `.wasm` binaries AND their matching `.mjs` backend modules.
+      // onnxruntime-web loads its wasm backend via a RUNTIME dynamic `import()` of
+      // `ort-wasm-simd-threaded*.mjs` — esbuild does NOT inline a dynamic import, so
+      // the `.mjs` must ship next to the `.wasm` under `/gui-assets/ort/`. Without
+      // them the worker fails with "no available backend found — [wasm] TypeError:
+      // Importing a module script failed" (the import 404s). The CPU path needs the
+      // simd-threaded core + its asyncify variant; the jsep build is the WebGPU path
+      // (kept so `device:'webgpu'` works offline). The Chrome-flag-only jspi variant
+      // is skipped.
       const WANTED = new Set([
         'ort-wasm-simd-threaded.wasm',
         'ort-wasm-simd-threaded.asyncify.wasm',
         'ort-wasm-simd-threaded.jsep.wasm',
+        'ort-wasm-simd-threaded.mjs',
+        'ort-wasm-simd-threaded.asyncify.mjs',
+        'ort-wasm-simd-threaded.jsep.mjs',
       ]);
       let copied = 0;
       for (const f of readdirSync(distDir)) {

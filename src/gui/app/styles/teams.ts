@@ -114,7 +114,7 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
       color: var(--text); font-weight: 500;
       text-transform: uppercase; letter-spacing: 0.04em;
     }
-    .modal .field input, .modal .field textarea {
+    .modal .field input:not([type='radio']):not([type='checkbox']), .modal .field textarea {
       width: 100%; padding: 6px 8px;
       background: var(--surface); color: var(--text);
       border: 1px solid var(--border-strong);
@@ -124,6 +124,20 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
       color: var(--text-muted);
     }
     .modal .field textarea { min-height: 60px; font-family: ui-monospace, monospace; font-size: 12px; }
+    /* New-workspace "Kind" selector — clean cards, blue-highlighted selection. */
+    .wiz-kind-opts { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+    .wiz-kind-card {
+      flex: 1 1 0; min-width: 132px; display: flex; align-items: center; gap: 9px;
+      padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); cursor: pointer;
+      transition: border-color 0.12s ease, background 0.12s ease;
+    }
+    .wiz-kind-card:hover { border-color: var(--border-strong); }
+    .wiz-kind-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+    .wiz-kind-card input { margin: 0; flex: 0 0 auto; }
+    .wiz-kind-name { font-size: 13px; color: var(--text); text-transform: none; letter-spacing: 0; }
+    .wiz-kind-sub { color: var(--text-muted); font-size: 11px; margin-left: 2px; }
+    .wiz-kind-card:has(input:checked) .wiz-kind-name { color: var(--accent-deep); font-weight: 500; }
     .modal .copy-token {
       padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border);
       border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px;

@@ -126,8 +126,10 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toMatch(
       /\.modal \.field label \{[\s\S]*?color: var\(--text\);[\s\S]*?font-weight: 500;/,
     );
+    // Text-like modal inputs (radios/checkboxes are excluded from this rule so
+    // they keep native rendering) pin an explicit surface + text color.
     expect(guiAppHtml).toMatch(
-      /\.modal \.field input, \.modal \.field textarea \{[\s\S]*?background: var\(--surface\);[\s\S]*?color: var\(--text\);/,
+      /\.modal \.field input[^{]*, \.modal \.field textarea \{[\s\S]*?background: var\(--surface\);[\s\S]*?color: var\(--text\);/,
     );
   });
 
