@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, parsePageParam } from './http.js';
 import { Lattice } from '../lattice.js';
@@ -348,6 +348,21 @@ export async function handleReadRoutes(
     const target = normalize(join(base, rel));
     const within = target === base || target.startsWith(base + sep);
     if (!within || !existsSync(target) || !statSync(target).isFile()) {
+      sendJson(res, { error: 'asset not found' }, 404);
+      return true;
+    }
+    // Defense-in-depth against symlinks: `normalize` is text-only and doesn't
+    // follow links, and `statSync` DOES follow them — so a symlink under the
+    // assets dir could otherwise read a file outside it. Resolve the real path
+    // (and the real base) and re-confirm containment.
+    try {
+      const real = realpathSync(target);
+      const realBase = realpathSync(base);
+      if (real !== realBase && !real.startsWith(realBase + sep)) {
+        sendJson(res, { error: 'asset not found' }, 404);
+        return true;
+      }
+    } catch {
       sendJson(res, { error: 'asset not found' }, 404);
       return true;
     }

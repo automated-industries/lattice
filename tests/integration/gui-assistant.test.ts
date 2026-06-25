@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
@@ -256,6 +256,15 @@ describe('assistant key storage', () => {
     // A traversal attempt outside the assets dir is rejected (never served).
     const escape = await fetch(`${server.url}/gui-assets/..%2f..%2fpackage.json`);
     expect(escape.status).toBe(404);
+
+    // A SYMLINK under the assets dir pointing OUTSIDE is rejected too — the guard
+    // resolves the real path, not just normalize() text (statSync would follow it).
+    const outsideDir = mkdtempSync(join(tmpdir(), 'lattice-outside-'));
+    dirs.push(outsideDir);
+    writeFileSync(join(outsideDir, 'secret.txt'), 'secret');
+    symlinkSync(join(outsideDir, 'secret.txt'), join(assetsDir, 'leak.mjs'));
+    const leak = await fetch(`${server.url}/gui-assets/leak.mjs`);
+    expect(leak.status).toBe(404);
   });
 
   it('rejects an empty key with 400', async () => {

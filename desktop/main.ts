@@ -3,10 +3,27 @@
 // Serves the EXACT same GUI as the web (`startGuiServer`, version-stamped from
 // the same build constant) in a native window, with a system-browser bridge for
 // external links/OAuth and built-in upgrade-on-run via `Deno.autoUpdate()`.
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startGuiServer, VERSION, ensureRootForGui } from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
+
+// On-device voice assets (the Whisper worker bundle + ONNX-Runtime WASM) are
+// embedded into the compiled app via `deno desktop --include dist/gui-assets`.
+// At runtime deno extracts included files next to the bundled modules, so resolve
+// them relative to this module (in `deno desktop` dev mode this is the real built
+// `dist/gui-assets`). Absent (e.g. a build without the assets) → voice degrades.
+function resolveGuiAssetsDir(): string | undefined {
+  try {
+    const dir = fileURLToPath(new URL('../dist/gui-assets/', import.meta.url));
+    if (existsSync(dir)) return dir;
+  } catch {
+    /* not resolvable in this packaging — voice degrades gracefully */
+  }
+  return undefined;
+}
 
 // ── Auto-update (upgrade-on-run) ─────────────────────────────────────────────
 // `deno desktop` ships a built-in updater: it polls <baseUrl>/latest.json, applies
@@ -51,6 +68,8 @@ const boot = ensureRootForGui({
   explicitConfig: false,
 });
 
+const guiAssetsDir = resolveGuiAssetsDir();
+
 const handle = await startGuiServer({
   latticeRoot: boot.root,
   configPath: boot.configPath, // an existing workspace → opens it; null → welcome
@@ -59,6 +78,9 @@ const handle = await startGuiServer({
   autoRender: true,
   version: VERSION, // same version the web GUI shows
   selfUpdate: false, // desktop uses Deno.autoUpdate, not the npm supervisor
+  // Serve the embedded on-device voice assets when present (omit when absent so
+  // the server falls back to its default resolution).
+  ...(guiAssetsDir ? { guiAssetsDir } : {}),
   // The webview's injected link-interceptor POSTs external URLs to
   // /api/desktop/open, which calls this — routing target=_blank / OAuth to the
   // OS default browser (a webview has no tabs).

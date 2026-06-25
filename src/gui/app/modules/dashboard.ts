@@ -1249,17 +1249,25 @@ export const dashboardJs = `    // ───────────────
     // The Files object opens as its folder roots + loose files; drilling into a
     // folder (#/folder/<abs path>) shows that folder's immediate sub-folders +
     // files as graph nodes — click a folder to go deeper, a file to open it. Paths
-    // use "/" (the local GUI runs on the user's own machine).
+    // come from the backend platform-native, so handle BOTH "/" and "\\" (Windows).
     function fsBasename(p) {
-      var s = String(p || '');
-      while (s.length > 1 && s.charAt(s.length - 1) === '/') s = s.slice(0, -1);
-      var i = s.lastIndexOf('/');
+      var s = String(p || '').replace(/[\\\\/]+$/, ''); // strip trailing separators
+      var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\\\'));
       return i >= 0 ? s.slice(i + 1) : s;
     }
     function fsDirname(p) {
       var s = String(p || '');
-      var i = s.lastIndexOf('/');
-      return i > 0 ? s.slice(0, i) : s;
+      var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\\\'));
+      if (i < 0) return '';
+      if (i === 0) return s.slice(0, 1); // root: keep the leading separator
+      return s.slice(0, i);
+    }
+    // True when child is parent or sits beneath it (separator-aware).
+    function fsUnder(child, parent) {
+      if (child === parent) return true;
+      if (child.indexOf(parent) !== 0) return false;
+      var c = child.charAt(parent.length);
+      return c === '/' || c === '\\\\';
     }
     function openGraphFile(nd) {
       if (nd.id) { location.hash = '#/fs/files/' + encodeURIComponent(nd.id); return; }
@@ -1272,19 +1280,18 @@ export const dashboardJs = `    // ───────────────
       var root = null;
       (roots || []).forEach(function (r) {
         if (r.kind !== 'folder') return;
-        if (path === r.path || path.indexOf(r.path + '/') === 0) {
-          if (!root || r.path.length > root.path.length) root = r;
-        }
+        if (fsUnder(path, r.path) && (!root || r.path.length > root.path.length)) root = r;
       });
       if (root) {
+        // Rebuild crumb paths with the SAME native separator the path uses.
+        var sep = root.path.indexOf('\\\\') >= 0 ? '\\\\' : '/';
         parts.push('<a href="#/folder/' + encodeURIComponent(root.path) + '">' + escapeHtml(root.name || fsBasename(root.path)) + '</a>');
-        var rel = path.slice(root.path.length);
-        while (rel.charAt(0) === '/') rel = rel.slice(1);
+        var rel = path.slice(root.path.length).replace(/^[\\\\/]+/, '');
         var acc = root.path;
         if (rel) {
-          rel.split('/').forEach(function (seg) {
+          rel.split(/[\\\\/]+/).forEach(function (seg) {
             if (!seg) return;
-            acc = acc + '/' + seg;
+            acc = acc + sep + seg;
             parts.push('<a href="#/folder/' + encodeURIComponent(acc) + '">' + escapeHtml(seg) + '</a>');
           });
         }
@@ -1335,7 +1342,7 @@ export const dashboardJs = `    // ───────────────
       if (typeof setTabTitle === 'function') setTabTitle(tabKeyForHash(location.hash), name);
       Promise.all([
         fetchJson('/api/sources/list?path=' + encodeURIComponent(path)).catch(function () { return { entries: [] }; }),
-        fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
+        fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
         fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
       ]).then(function (res) {
         if (myGen !== renderGen) return;
@@ -1361,7 +1368,7 @@ export const dashboardJs = `    // ───────────────
       if (typeof setTabTitle === 'function') setTabTitle(tabKeyForHash(location.hash), 'Files');
       Promise.all([
         fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
-        fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
+        fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
       ]).then(function (res) {
         if (myGen !== renderGen) return;
         var roots = (res[0] && res[0].roots) || [];
@@ -1370,7 +1377,7 @@ export const dashboardJs = `    // ───────────────
         var entries = [];
         roots.forEach(function (r) { if (r.kind === 'folder') entries.push({ kind: 'folder', path: r.path, name: r.name || fsBasename(r.path) }); });
         rows.forEach(function (r) {
-          var under = r.ref_uri && folderPaths.some(function (p) { return r.ref_uri === p || r.ref_uri.indexOf(p + '/') === 0; });
+          var under = r.ref_uri && folderPaths.some(function (p) { return fsUnder(r.ref_uri, p); });
           if (!under) entries.push({ kind: 'file', path: r.ref_uri || '', name: r.name || r.original_name || 'Untitled', id: r.id });
         });
         var d = displayFor('files');
