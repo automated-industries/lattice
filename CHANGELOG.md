@@ -6,6 +6,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.3.3] — 2026-06-25
+
+Patch release. Postgres-cloud upgrade-blocker fix.
+
+### Fixed
+
+- **Opening a 3.x-created Postgres cloud workspace on 4.x no longer fails with
+  `invalid input syntax for type timestamp with time zone: ""`.** 3.x persisted
+  nullable TEXT timestamp columns as the empty string `''`; the SQLite-compat
+  `strftime` polyfill cast its argument straight to `timestamptz`, so an open-time
+  query over a legacy `''` value threw and aborted the whole workspace open (a hard
+  upgrade blocker — the only workaround was staying on 3.x). The polyfill now
+  returns `NULL` for an empty, whitespace, or otherwise unparseable time string —
+  matching SQLite's `strftime` semantics — instead of casting and throwing. It is
+  installed with `CREATE OR REPLACE` (inside a privilege-safe `DO` block), so an
+  already-secured cloud's prior, unsafe function is **upgraded** the next time the
+  owner opens it; a scoped member's no-op replace can't abort its transaction.
+- **3-arg `strftime(format, timestring, modifier)` now works on Postgres.** The
+  changelog retention prune emits SQLite's 3-arg form (`strftime('%Y-…','now','-N
+days')`); Postgres had no 3-arg overload, so the prune raised `function
+strftime(…) does not exist`. Added the overload (applies the modifier as an
+  interval, empty/invalid → `NULL`).
+
 ## [4.3.2] — 2026-06-25
 
 Patch release. Workspace data-isolation fix.
