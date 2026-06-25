@@ -840,6 +840,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return await dispatchSourcesRoute(req, res, {
                 db: active.db,
                 ingestFile: (p: string) => ingestLocalFile(ingestCtx, mctx, p, false),
+                configPath: active.configPath,
                 pathname,
                 method,
               });
