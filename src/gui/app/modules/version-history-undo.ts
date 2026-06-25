@@ -18,14 +18,22 @@ export const versionHistoryUndoJs = `    // ────────────
           ? ' <span class="nav-badge" title="' + unseen + ' change' + (unseen === 1 ? '' : 's') +
             ' from another editor">' + (unseen > 99 ? '99+' : unseen) + '</span>'
           : '';
+        // Connected data types (synced from an external source) get a link chip.
+        var connBadge = t.connectorToolkit
+          ? ' <span class="nav-badge" title="Connected — synced from ' + escapeHtml(t.connectorToolkit) + '">🔗</span>'
+          : '';
         return '<li><a data-route="' + prefix + t.name + '" href="' + prefix + t.name +
-          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + navVisIcon(t) + badge + '</a></li>';
+          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + navVisIcon(t) + badge + connBadge + '</a></li>';
       }).join('');
 
       var section = document.getElementById('system-section');
       // System tables surface in Advanced View (no separate preference).
       var show = advancedMode();
       if (section) section.hidden = !show;
+      // The flat Objects list is Advanced-view only; the Sources sidebar (Files /
+      // Artifacts / Connectors) is the default-mode entry point.
+      var objSection = document.getElementById('objects-section');
+      if (objSection) objSection.hidden = !show;
       var sys = document.getElementById('system-nav');
       if (sys) {
         sys.innerHTML = show
@@ -35,6 +43,9 @@ export const versionHistoryUndoJs = `    // ────────────
             }).join('')
           : '';
       }
+
+      // Populate the Sources sidebar (Files tree / Artifacts / Connectors).
+      if (typeof renderSources === 'function') renderSources();
 
       highlightActive();
     }

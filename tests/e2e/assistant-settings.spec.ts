@@ -41,19 +41,16 @@ test('Connect-with-Claude is the primary auth; the API key is behind Advanced (3
   await expect(host.getByText('Advanced — use an API key instead')).toBeVisible();
 });
 
-test('voice section reveals only the selected provider key field', async ({ page }) => {
+test('settings expose NO voice provider option — dictation is always on-device', async ({
+  page,
+}) => {
   await page.goto(gui.url + '#/settings/user-config');
   const host = page.locator('#assistant-host');
-  await expect(host.locator('#asst-stt')).toBeVisible();
-  // Default "Select provider…" → neither provider's key field is shown.
+  // The GUI offers no voice-provider choice whatsoever: on-device is the only
+  // path, and the keyed/cloud route is reachable solely through the API. No
+  // dropdown, no cloud key fields, no "Use for voice" label.
+  await expect(host.locator('#asst-stt')).toHaveCount(0);
   await expect(host.locator('#asst-openai-key')).toHaveCount(0);
   await expect(host.locator('#asst-elevenlabs-key')).toHaveCount(0);
-  // Choosing OpenAI reveals only the OpenAI key field.
-  await host.locator('#asst-stt').selectOption('openai');
-  await expect(host.locator('#asst-openai-key')).toBeVisible();
-  await expect(host.locator('#asst-elevenlabs-key')).toHaveCount(0);
-  // Switching to ElevenLabs swaps the field — OpenAI's goes away.
-  await host.locator('#asst-stt').selectOption('elevenlabs');
-  await expect(host.locator('#asst-elevenlabs-key')).toBeVisible();
-  await expect(host.locator('#asst-openai-key')).toHaveCount(0);
+  await expect(host.getByText('Use for voice:')).toHaveCount(0);
 });

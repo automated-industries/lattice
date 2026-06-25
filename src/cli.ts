@@ -1,5 +1,5 @@
 import { resolve, dirname } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { parse } from 'yaml';
 import type { LatticeConfig } from './config/types.js';
@@ -308,6 +308,23 @@ function getVersion(): string {
 
 function printVersion(): void {
   console.log(getVersion());
+}
+
+/**
+ * Absolute path to the built `dist/gui-assets/` directory (on-device voice worker
+ * + ONNX-Runtime WASM). Resolved against the package via `import.meta.url` — the
+ * CLI is ESM-only, so this works whether running from the bundled `dist/cli.js`
+ * (assets are a sibling: `dist/gui-assets/`) or unbundled from source in dev
+ * (where `import.meta.url` points into `src/`, so `../dist/gui-assets`). Passed to
+ * `startGuiServer` because server.ts is dual-bundled (CJS+ESM) and can't read
+ * `import.meta.url` itself.
+ */
+function getGuiAssetsDir(): string {
+  // Bundled: import.meta.url is dist/cli.js → dist/gui-assets is a sibling.
+  // Source:  import.meta.url is src/cli.ts → ../dist/gui-assets.
+  const fromBundle = new URL('./gui-assets', import.meta.url).pathname;
+  if (existsSync(fromBundle)) return fromBundle;
+  return new URL('../dist/gui-assets', import.meta.url).pathname;
 }
 
 async function runUpdate(): Promise<void> {
@@ -674,6 +691,7 @@ async function runGui(args: ParsedArgs): Promise<void> {
       openBrowser: !args.noOpen,
       autoRender: true,
       version: getVersion(),
+      guiAssetsDir: getGuiAssetsDir(),
       // Only a supervised child polls + relaunches: exiting to apply an update is
       // safe solely when the supervisor is there to respawn it.
       selfUpdate: process.env.LATTICE_GUI_SUPERVISED === '1',

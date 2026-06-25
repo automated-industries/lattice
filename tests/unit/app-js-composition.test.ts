@@ -21,22 +21,35 @@ import { appJs } from '../../src/gui/app/script.js';
 // frame), and the 4.2 structured-source-importer GUI, reachable only by dropping a
 // JSON/xlsx file into the assistant chat: the upload returns a proposal and an
 // inline confirm card renders into the assistant rail (no top-bar button, no
-// modal), and the single-source-of-truth pass: a shared `claudeAuth(cfg)` helper
-// (in display-config) that every assistant-connection check now goes through —
-// killing the divergent "Connected with Claude" derivations — plus the
-// disconnect pill no longer hardcoding 'cloud' (it preserves the known mode so a
-// local-workspace WS drop can't flip cloudMode and divert writes offline).
+// modal). The 4.3 release adds the Connectors settings panel + inline HTML files
+// (the file preview renders an `artifact_type='html'` file live in a sandboxed,
+// null-origin `srcdoc` frame — no network, a read-only postMessage broker + an
+// injected `window.lattice` bridge — with the bundled minified Chart.js assigned
+// to `window.__LATTICE_CHART_LIB__`, the bulk of the size), the 4.3 GUI layout
+// redesign (tab strip + center brain graph, Sources sidebar, single top-right
+// status, live ingest animation, file two-view/history/remove), plus 4.2.4's
+// desktop build + the shared `claudeAuth()` single-source-of-truth pass merged
+// from main, and the on-device voice-dictation host glue (the voice-local segment:
+// a module Web Worker runs an in-browser speech model so dictation works with NO
+// API key and audio never leaves the machine). The GUI uses on-device dictation
+// ONLY — there is no voice-provider choice in settings and the mic always shows;
+// rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
+// reachable to API callers for backward compatibility, but the GUI never calls it.
 // Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 414882;
-const ORIGINAL_SHA256 = 'd771eece45cc9a465f01190708b6ef207c4fe00ece0c88c799d825cbc8418668';
+const ORIGINAL_LENGTH = 786794;
+const ORIGINAL_SHA256 = '38acc52da1d4f20d0cd2098fa3b4253ea062d05863d9d3ae4ddf3446dafd36d4';
 
 describe('appJs composition', () => {
+  // Normalize line endings before pinning: a Windows checkout may materialize the
+  // source modules with CRLF, which would change the byte length/hash without
+  // changing the inlined script's meaning. Pin the LF-canonical form.
+  const normalized = appJs.replace(/\r\n/g, '\n');
   it('matches the original length exactly', () => {
-    expect(appJs.length).toBe(ORIGINAL_LENGTH);
+    expect(normalized.length).toBe(ORIGINAL_LENGTH);
   });
 
   it('matches the original sha256 exactly (byte-identical)', () => {
-    const hash = createHash('sha256').update(appJs).digest('hex');
+    const hash = createHash('sha256').update(normalized).digest('hex');
     expect(hash).toBe(ORIGINAL_SHA256);
   });
 });

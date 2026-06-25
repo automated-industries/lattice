@@ -75,18 +75,26 @@ describe('team collaboration endpoints (local fallbacks)', () => {
     expect(((await res.json()) as { error: string }).error).toMatch(/unknown table/i);
   });
 
-  it('GET /api/tables/:table/rows/:id/history returns empty history on local', async () => {
+  it('GET /api/tables/:table/rows/:id/history returns the row’s audit trail', async () => {
     const s = await boot();
-    // Create a real row first so the path is exercised against a live id.
-    const created = (await (
-      await fetch(`${s.url}/api/tables/widgets/rows`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: randomUUID(), label: 'A' }),
-      })
-    ).json()) as { id: string };
-    expect(await getJson(`${s.url}/api/tables/widgets/rows/${created.id}/history`)).toEqual({
-      history: [],
+    const id = randomUUID();
+    // Create then edit the row so there are audited versions to return.
+    await fetch(`${s.url}/api/tables/widgets/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, label: 'A' }),
     });
+    await fetch(`${s.url}/api/tables/widgets/rows/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'B' }),
+    });
+    const res = (await getJson(`${s.url}/api/tables/widgets/rows/${id}/history`)) as {
+      history: { id: string; ts: string; operation: string }[];
+    };
+    // The trail reflects the edits (newest first), each with an id/ts/operation.
+    expect(res.history.length).toBeGreaterThanOrEqual(1);
+    expect(res.history[0]).toHaveProperty('operation');
+    expect(res.history[0]).toHaveProperty('ts');
   });
 });

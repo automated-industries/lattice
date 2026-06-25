@@ -208,6 +208,25 @@ describe('gui-bootstrap: ensureRootForGui', () => {
     expect(getActiveWorkspace(boot.root)).toBeNull();
   });
 
+  it('opens the existing workspace when launched with NO config file (desktop boot)', () => {
+    // Desktop regression: the app boots with no launch config (it passes a path
+    // that doesn't exist), so it must resolve the active workspace from the root
+    // and open it — NOT fall through to the welcome screen when workspaces exist.
+    const base = tmp();
+    const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');
+    const first = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: false });
+    expect(first.workspaceId).not.toBeNull();
+    // Re-launch with a non-existent config (the desktop case): still opens it.
+    const boot = ensureRootForGui({
+      startDir: base,
+      configPath: join(base, 'does-not-exist.yml'),
+      explicitConfig: false,
+    });
+    expect(boot.workspaceId).toBe(first.workspaceId);
+    expect(boot.configPath).not.toBeNull();
+    expect(boot.contextDir).not.toBeNull();
+  });
+
   it('still adopts + activates an explicit config (no virgin state when a config exists)', () => {
     const base = tmp();
     const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');

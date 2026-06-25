@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
@@ -143,7 +143,8 @@ describe('assistant key storage', () => {
     const cfg0 = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
       sttPreference: string;
     };
-    expect(cfg0.sttPreference).toBe('auto');
+    // On-device dictation is the keyless default.
+    expect(cfg0.sttPreference).toBe('local');
 
     const put = await fetch(`${server.url}/api/assistant/stt-provider`, {
       method: 'PUT',
@@ -172,6 +173,98 @@ describe('assistant key storage', () => {
       body: JSON.stringify({ provider: 'nope' }),
     });
     expect(bad.status).toBe(400);
+  });
+
+  it("reports voiceMode 'local' + on-device availability with NO voice key", async () => {
+    // Isolate the cloud-key env fallbacks so the keyless default is what's tested.
+    const savedOpenai = process.env.OPENAI_API_KEY;
+    const savedEleven = process.env.ELEVENLABS_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.ELEVENLABS_API_KEY;
+    try {
+      const { configPath, outputDir } = writeMinimalConfig();
+      const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+      servers.push(server);
+
+      const cfg = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
+        voiceMode: string;
+        localVoiceAvailable: boolean;
+        hasVoiceKey: boolean;
+        sttPreference: string;
+      };
+      // The keyless default: on-device, mic available, no cloud key required.
+      expect(cfg.sttPreference).toBe('local');
+      expect(cfg.voiceMode).toBe('local');
+      expect(cfg.localVoiceAvailable).toBe(true);
+      expect(cfg.hasVoiceKey).toBe(false);
+    } finally {
+      if (savedOpenai === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedOpenai;
+      if (savedEleven === undefined) delete process.env.ELEVENLABS_API_KEY;
+      else process.env.ELEVENLABS_API_KEY = savedEleven;
+    }
+  });
+
+  it("PUT /stt-provider accepts 'local' and the config reflects it", async () => {
+    const { configPath, outputDir } = writeMinimalConfig();
+    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(server);
+
+    // Move off local, then back to local via the API.
+    await fetch(`${server.url}/api/assistant/stt-provider`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'auto' }),
+    });
+    const put = await fetch(`${server.url}/api/assistant/stt-provider`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'local' }),
+    });
+    expect(put.status).toBe(200);
+    const cfg = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
+      sttPreference: string;
+      voiceMode: string;
+    };
+    expect(cfg.sttPreference).toBe('local');
+    expect(cfg.voiceMode).toBe('local');
+  });
+
+  it('serves the on-device voice worker at /gui-assets/* with the right MIME', async () => {
+    const { configPath, outputDir } = writeMinimalConfig();
+    // Point the route at a controlled assets dir with a dummy worker — the real
+    // dist/gui-assets is a BUILD artifact, absent during the test phase (CI runs
+    // tests before the build). This exercises the route + MIME + traversal guard,
+    // not the build output.
+    const assetsDir = mkdtempSync(join(tmpdir(), 'lattice-gui-assets-'));
+    dirs.push(assetsDir);
+    writeFileSync(join(assetsDir, 'transcriber.worker.mjs'), 'export const ok = 1;\n');
+    const server = await startGuiServer({
+      configPath,
+      outputDir,
+      port: 0,
+      openBrowser: false,
+      guiAssetsDir: assetsDir,
+    });
+    servers.push(server);
+
+    const res = await fetch(`${server.url}/gui-assets/transcriber.worker.mjs`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/javascript');
+    expect(res.headers.get('cache-control')).toContain('immutable');
+
+    // A traversal attempt outside the assets dir is rejected (never served).
+    const escape = await fetch(`${server.url}/gui-assets/..%2f..%2fpackage.json`);
+    expect(escape.status).toBe(404);
+
+    // A SYMLINK under the assets dir pointing OUTSIDE is rejected too — the guard
+    // resolves the real path, not just normalize() text (statSync would follow it).
+    const outsideDir = mkdtempSync(join(tmpdir(), 'lattice-outside-'));
+    dirs.push(outsideDir);
+    writeFileSync(join(outsideDir, 'secret.txt'), 'secret');
+    symlinkSync(join(outsideDir, 'secret.txt'), join(assetsDir, 'leak.mjs'));
+    const leak = await fetch(`${server.url}/gui-assets/leak.mjs`);
+    expect(leak.status).toBe(404);
   });
 
   it('rejects an empty key with 400', async () => {
@@ -248,5 +341,31 @@ describe('assistant key storage', () => {
       hasAnthropicKey: boolean;
     };
     expect(cfg2.hasAnthropicKey).toBe(true);
+  });
+
+  // Regression: a connected subscription must stay preferred even when its token
+  // refresh transiently fails — the resolver previously caught the refresh error
+  // and SILENTLY fell back to the API key, quietly running the assistant on a
+  // different credential. Now it keeps the subscription (uses the existing access
+  // token) and surfaces the failure instead.
+  it('keeps OAuth when token refresh fails — never silently switches to the API key', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-key-must-not-win';
+    const savedTokenUrl = process.env.ANTHROPIC_OAUTH_TOKEN_URL;
+    process.env.ANTHROPIC_OAUTH_TOKEN_URL = 'http://127.0.0.1:1/oauth/token'; // refused → refresh throws
+    // Expired access token (expires_at in the past) forces a refresh attempt.
+    setAssistantCredential(
+      'claude_oauth',
+      JSON.stringify({ access_token: 'oauth-existing-tok', refresh_token: 'rt', expires_at: 1 }),
+    );
+    try {
+      const auth = await resolveClaudeAuth(null);
+      expect(auth?.authToken).toBe('oauth-existing-tok');
+      expect(auth?.apiKey).toBeUndefined();
+    } finally {
+      deleteAssistantCredential('claude_oauth');
+      if (savedTokenUrl === undefined) delete process.env.ANTHROPIC_OAUTH_TOKEN_URL;
+      else process.env.ANTHROPIC_OAUTH_TOKEN_URL = savedTokenUrl;
+      delete process.env.ANTHROPIC_API_KEY;
+    }
   });
 });

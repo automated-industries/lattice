@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import {
   analyticsEnabled,
+  getOrCreateAnalyticsId,
   listDbCredentials,
   readIdentity,
   readPreferences,
@@ -94,7 +95,10 @@ export async function dispatchUserConfigRoute(
 
   if (pathname === '/api/userconfig/identity' && method === 'GET') {
     await tryHandler(res, () => {
-      sendJson(res, readIdentity());
+      // Include a stable, anonymized analytics client id (no PII) so the GUI can
+      // pin GA's client_id to ONE value per machine — otherwise the webview
+      // counts every reload/relaunch as a new user.
+      sendJson(res, { ...readIdentity(), analyticsClientId: getOrCreateAnalyticsId() });
       return Promise.resolve();
     });
     return true;
