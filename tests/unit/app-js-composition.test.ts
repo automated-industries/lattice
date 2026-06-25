@@ -29,14 +29,15 @@ import { appJs } from '../../src/gui/app/script.js';
 // redesign (tab strip + center brain graph, Sources sidebar, single top-right
 // status, live ingest animation, file two-view/history/remove), plus 4.2.4's
 // desktop build + the shared `claudeAuth()` single-source-of-truth pass merged
-// from main, and the on-device voice-dictation host glue (the new voice-local
-// segment: a module Web Worker runs an in-browser speech model so dictation works
-// with NO API key and audio never leaves the machine; rec.onstop branches on the
-// resolved voice mode — local decodes + transcribes in the browser, cloud keeps
-// the POST fallback — and the mic shows whenever voice isn't off). Recapture the
-// length + hash on any intended change.
-const ORIGINAL_LENGTH = 785614;
-const ORIGINAL_SHA256 = '7cad85085f043ed2cff0bd593fe397e027280bb83d8bad552481faf6fd89f0c3';
+// from main, and the on-device voice-dictation host glue (the voice-local segment:
+// a module Web Worker runs an in-browser speech model so dictation works with NO
+// API key and audio never leaves the machine). The GUI uses on-device dictation
+// ONLY — there is no voice-provider choice in settings and the mic always shows;
+// rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
+// reachable to API callers for backward compatibility, but the GUI never calls it.
+// Recapture the length + hash on any intended change.
+const ORIGINAL_LENGTH = 781042;
+const ORIGINAL_SHA256 = '258f4fbf452d3e6f00d4e50b7202ea5e557c587cb54ed5a3f8b72f4d6d859cc4';
 
 describe('appJs composition', () => {
   it('matches the original length exactly', () => {

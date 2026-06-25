@@ -23,21 +23,9 @@ test('on-device mic renders with NO voice key configured (the keyless default)',
   page,
 }) => {
   await enableComposer(page, gui.url);
-  // The core requirement: with only a Claude key (no OpenAI/ElevenLabs voice key),
-  // the 🎙 mic is present because on-device dictation is the keyless default.
+  // The core requirement: the 🎙 mic always renders — on-device dictation is the
+  // only voice path in the GUI and needs no key.
   await expect(page.locator('#chat-mic')).toBeVisible();
-});
-
-test('On-device persists as the selected voice provider in settings', async ({ page }) => {
-  await page.goto(gui.url + '#/settings/user-config');
-  const host = page.locator('#assistant-host');
-  await expect(host.locator('#asst-stt')).toBeVisible();
-  // Default selection is the on-device option, and it shows no key field (a note
-  // instead). The cloud providers + Off are still selectable.
-  await expect(host.locator('#asst-stt')).toHaveValue('local');
-  await expect(host.locator('#asst-openai-key')).toHaveCount(0);
-  await expect(host.locator('#asst-elevenlabs-key')).toHaveCount(0);
-  await expect(host.getByText('Runs in your browser')).toBeVisible();
 });
 
 test('a recorded clip is transcribed on-device and the text lands in #chat-input', async ({

@@ -429,24 +429,6 @@ export const dataModelJs = `    // ───────────────
             '</div>' +
           '</div>';
         }
-        // Only the selected provider's key input is shown (declutter). 'local'
-        // (on-device) shows a short note + no key field; 'auto' ("Off") shows
-        // nothing and disables voice. Cloud providers show their key row.
-        function voiceRowHtml(provider) {
-          if (provider === 'local') {
-            return '<p class="lead" style="margin:2px 0 0;font-size:12px;color:var(--text-muted)">' +
-              'Runs in your browser — no API key, and your voice never leaves this machine. ' +
-              'The first use downloads a small speech model once (then it works offline).' +
-              '</p>';
-          }
-          if (provider === 'openai') {
-            return rowHtml('asst-openai', 'OpenAI Whisper key', !!cfg.hasOpenaiKey, 'sk-…');
-          }
-          if (provider === 'elevenlabs') {
-            return rowHtml('asst-elevenlabs', 'ElevenLabs key', !!cfg.hasElevenlabsKey, 'xi-…');
-          }
-          return '';
-        }
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
@@ -499,17 +481,6 @@ export const dataModelJs = `    // ───────────────
                 'auto-creates link tables) when you drop in files. Higher extrapolates more.' +
               '</p>' +
             '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);margin:10px 0 8px;text-transform:uppercase;letter-spacing:0.05em">Voice — speech to text</div>' +
-            '<div style="margin:6px 0 8px;display:flex;align-items:center;gap:8px">' +
-              '<span style="font-size:12px;color:var(--text-muted)">Use for voice:</span>' +
-              '<select id="asst-stt" style="background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;padding:3px 6px">' +
-                '<option value="local">On-device (private)</option>' +
-                '<option value="openai">OpenAI</option>' +
-                '<option value="elevenlabs">ElevenLabs</option>' +
-                '<option value="auto">Off</option>' +
-              '</select>' +
-            '</div>' +
-            '<div id="asst-voice-key">' + voiceRowHtml(cfg.sttPreference || 'local') + '</div>' +
             '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
@@ -566,31 +537,6 @@ export const dataModelJs = `    // ───────────────
             }).catch(function (e) { if (cmsg) cmsg.textContent = 'Failed: ' + e.message; });
           });
         });
-        var sttSel = host.querySelector('#asst-stt');
-        var voiceKeyHost = host.querySelector('#asst-voice-key');
-        function wireVoiceKey(provider) {
-          if (provider === 'openai') wire('asst-openai', 'openai');
-          else if (provider === 'elevenlabs') wire('asst-elevenlabs', 'elevenlabs');
-        }
-        if (sttSel) {
-          sttSel.value = cfg.sttPreference || 'local';
-          wireVoiceKey(sttSel.value);
-          sttSel.addEventListener('change', function () {
-            if (voiceKeyHost) voiceKeyHost.innerHTML = voiceRowHtml(sttSel.value);
-            wireVoiceKey(sttSel.value);
-            msg.textContent = 'Saving…';
-            fetch('/api/assistant/stt-provider', {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ provider: sttSel.value }),
-            })
-              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-              // Refresh the composer so the mic affordance disappears immediately
-              // when "No Voice" is selected (and reappears for a real provider).
-              .then(function () { msg.textContent = 'Saved.'; renderComposer(); })
-              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
-          });
-        }
         var aggr = host.querySelector('#asst-aggr');
         var aggrVal = host.querySelector('#asst-aggr-val');
         function aggrLabel(v) {

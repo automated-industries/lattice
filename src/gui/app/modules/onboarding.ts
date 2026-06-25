@@ -305,11 +305,6 @@ export const onboardingJs = `    // ──────────────�
     var recState = 'idle';
     var mediaRecorder = null;
     var audioChunks = [];
-    // The resolved voice mode the composer last rendered with: 'local' (on-device,
-    // keyless — the default), 'openai' / 'elevenlabs' (cloud, when a key is set),
-    // or 'off'. Set in renderComposer from /api/assistant/config; rec.onstop
-    // branches on it (local → decode + transcribe in the browser; cloud → POST).
-    var voiceMode = 'local';
     function setMicState(btn, state) {
       recState = state;
       // Mirror the recording lifecycle onto the composer. While recording or
@@ -384,25 +379,10 @@ export const onboardingJs = `    // ──────────────�
         rec.onstop = function () {
           stream.getTracks().forEach(function (t) { t.stop(); });
           var blob = new Blob(audioChunks, { type: rec.mimeType || 'audio/webm' });
-          // On-device is the keyless default: decode + transcribe entirely in the
-          // browser (no server round-trip, audio never leaves the machine). A
-          // configured cloud provider keeps the existing POST fallback.
-          if (voiceMode === 'local') {
-            dictateLocal(blob, btn, input);
-            return;
-          }
-          setMicState(btn, 'transcribing');
-          fetch('/api/assistant/transcribe', { method: 'POST', headers: { 'content-type': blob.type }, body: blob })
-            .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-            .then(function (j) {
-              if (input && j.text) {
-                input.value = (input.value ? input.value + ' ' : '') + j.text;
-                input.dispatchEvent(new Event('input'));
-                input.focus();
-              }
-            })
-            .catch(function (e) { showToast('Transcription failed: ' + e.message); })
-            .finally(function () { setMicState(btn, 'idle'); });
+          // The GUI ALWAYS dictates on-device (keyless; the audio never leaves the
+          // machine). The cloud transcribe route stays available to API callers for
+          // backward compatibility, but the GUI never uses it.
+          dictateLocal(blob, btn, input);
         };
         rec.start();
         mediaRecorder = rec;

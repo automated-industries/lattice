@@ -208,19 +208,22 @@ The assistant composer's 🎙 dictation now works with **no API key and no setup
 fully **on-device**: speech is transcribed in the browser by Whisper (WASM, via
 transformers.js) running in a module Web Worker — audio never leaves the machine.
 The model (~`whisper-tiny.en`, quantized) downloads once on first use from a
-public host and then caches; no voice data is ever uploaded. On-device is the new
-keyless default (`voice_provider: 'local'`); the existing cloud Whisper /
-ElevenLabs transcription remains a fallback when a key is configured (the API is
-unchanged), and the GUI no longer asks for a voice key. Failures are surfaced
-loudly (worker/model-load, decode, empty transcript) and never insert empty text.
+public host and then caches; no voice data is ever uploaded. Dictation in the GUI
+is **always on-device** — there is no voice-provider choice in the UI and the 🎙
+mic always shows. The keyed cloud Whisper / ElevenLabs transcription route stays
+available to **API** callers for backward compatibility (`voice_provider` and
+`POST /api/assistant/transcribe` are unchanged), but the GUI never calls it.
+Failures are surfaced loudly (worker/model-load, decode, empty transcript) and
+never insert empty text.
 
 The on-device assets (the worker bundle + ONNX-Runtime WASM) ship in the package;
 the model weights do not (download-on-first-use). The build step that vendors them
 is **fail-soft** — built from an optional build-time dependency
 (`@huggingface/transformers`, a devDependency); if it is absent the package still
-builds and voice simply degrades (the mic hides or falls back to cloud). `GET
-/api/assistant/config` now also reports `voiceMode` + `localVoiceAvailable`, and
-the assets are served from `GET /gui-assets/*` (same-origin, path-traversal-safe).
+builds, and on-device dictation then fails loudly at use time (the GUI has no
+silent cloud fallback). `GET /api/assistant/config` still reports `voiceMode` +
+`localVoiceAvailable` for API callers, and the assets are served from `GET
+/gui-assets/*` (same-origin, path-traversal-safe).
 
 ### Added — Inline HTML files
 
