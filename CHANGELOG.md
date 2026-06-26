@@ -6,6 +6,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.3.7] — 2026-06-25
+
+Patch release. The real Postgres-cloud upgrade-blocker fix.
+
+### Fixed
+
+- **Opening a 3.x-created Postgres cloud whose `deleted_at` column is a real
+  `timestamptz` no longer aborts the workspace open.** The legacy `deleted_at = ''
+→ NULL` normalization ran `UPDATE … WHERE deleted_at = ''` over every table with
+  a `deleted_at` column. On a `timestamptz` column that predicate forces Postgres
+  to parse `''::timestamptz` at **plan time** — invalid input that throws
+  regardless of the data (a `timestamptz` column can't even hold `''`) — so it
+  aborted the entire open with `invalid input syntax for type timestamp with time
+zone: ""`. The normalization is now **type-aware** (it only touches text-typed
+  `deleted_at` columns — the only ones that can hold the legacy `''` sentinel; a
+  `timestamptz` one is correctly skipped) and **per-table fault-isolated** (one
+  un-normalizable table is warned and skipped, never fatal). This is the actual
+  root cause that 4.3.3's `strftime` change did not address; 4.3.6's failing-
+  statement diagnostic pinpointed it.
+
 ## [4.3.6] — 2026-06-25
 
 Patch release. Postgres error diagnostics.
