@@ -6,6 +6,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [4.3.8] — 2026-06-25
+
+Patch release. Finishes the job 4.3.7 started: makes the **entire class** of
+open-time forward-migration failure non-fatal, so a 3.x-created cloud whose schema
+has drifted from what 4.x declares always opens.
+
+### Fixed
+
+- **Opening a 3.x-created cloud no longer aborts when the legacy `files` backfill
+  runs before its target columns exist.** The `files` reference-model backfill ran
+  `UPDATE files SET ref_kind = …, ref_uri = path, ref_provider = 'fs' WHERE …` but
+  on a 3.x `files` table the 4.x reference columns (`ref_kind` / `ref_uri` /
+  `ref_provider` / `blob_path`) don't exist yet — the schema reconcile that adds
+  them is backgrounded on a cloud open — so the synchronous backfill threw `column
+"ref_kind" does not exist` and aborted the open. The backfill is now
+  **self-sufficient**: it introspects the `files` columns once and adds only the
+  missing reference columns (all `TEXT`, matching the native schema) before the
+  `UPDATE`. Adding only the _missing_ columns keeps it idempotent across re-opens
+  on SQLite too (whose `ADD COLUMN` is not idempotent, and the legacy `path` keeps
+  the backfill gate live).
+
+### Changed
+
+- **Every open-time data upgrade is now fault-isolated — a failing migration is
+  warned and skipped, never fatal to the workspace open.** A 3.x-origin schema can
+  drift from what 4.x declares in ways no single migration anticipates; rather than
+  fix each statement reactively (a `timestamptz` `deleted_at`, then a missing
+  `files` column, then …), the open-time data-upgrade pass now runs each step under
+  fault isolation and continues. Each step is a sentinel-gated, single-statement
+  `db.migrate` — atomic and idempotent — so a skipped step leaves no partial state
+  and re-runs on the next open (its sentinel is only stamped on success),
+  self-healing once the schema converges. Schema-reconcile DDL (creating declared
+  tables, the embeddings/full-text-search index builds) deliberately stays
+  fail-fast: those steps are multi-statement and not yet atomic, so a failure there
+  is surfaced loudly rather than silently degraded into a half-migrated table.
+
 ## [4.3.7] — 2026-06-25
 
 Patch release. The real Postgres-cloud upgrade-blocker fix.
