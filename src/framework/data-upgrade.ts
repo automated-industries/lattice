@@ -59,14 +59,40 @@ async function normalizeEmptyDeletedAt(db: Lattice): Promise<void> {
     await db.migrate([
       {
         version: `${DELETED_AT_SENTINEL}:all`,
+        // TYPE-AWARE: only a text-like deleted_at column can hold the legacy ''
+        // sentinel. A column that is a real `timestamptz` (some clouds' deleted_at
+        // is) MUST be skipped: the predicate `deleted_at = ''` forces Postgres to
+        // parse `''::timestamptz` at PLAN time — invalid input that throws regardless
+        // of data (a timestamptz column can't even hold ''), which aborted the entire
+        // workspace open. We BLACKLIST the non-text types (timestamp/date/time,
+        // numeric, boolean, json, uuid, bytea, xml) rather than allow-list text — so
+        // text-like columns we don't enumerate (citext, a DOMAIN over text, a custom
+        // text type) are still normalized instead of silently leaving '' rows that
+        // 4.x's `deleted_at IS NULL` predicate would read as DELETED. PER-TABLE FAULT
+        // ISOLATION is the backstop: each table's UPDATE runs in its own
+        // subtransaction, so an exotic type that still errors on `= ''` (enum, inet,
+        // interval, array) — or a blocking trigger/lock — is warned + skipped, never
+        // fatal to the open.
         sql: `DO $LATTICE_DAU$
   DECLARE r record;
 BEGIN
   FOR r IN
     SELECT table_name FROM information_schema.columns
-     WHERE table_schema = current_schema() AND column_name = 'deleted_at'
+     WHERE table_schema = current_schema()
+       AND column_name = 'deleted_at'
+       AND data_type NOT IN (
+         'timestamp with time zone', 'timestamp without time zone',
+         'date', 'time with time zone', 'time without time zone',
+         'integer', 'bigint', 'smallint', 'numeric', 'decimal',
+         'real', 'double precision', 'boolean', 'json', 'jsonb',
+         'bytea', 'uuid', 'xml'
+       )
   LOOP
-    EXECUTE format('UPDATE %I SET deleted_at = NULL WHERE deleted_at = ''''', r.table_name);
+    BEGIN
+      EXECUTE format('UPDATE %I SET deleted_at = NULL WHERE deleted_at = ''''', r.table_name);
+    EXCEPTION WHEN others THEN
+      RAISE WARNING 'lattice: skipped deleted_at normalization for %: %', r.table_name, SQLERRM;
+    END;
   END LOOP;
 END $LATTICE_DAU$;`,
       },
