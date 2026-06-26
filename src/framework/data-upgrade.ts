@@ -12,15 +12,37 @@
 // shared schema; the caller skips these on a member open.
 // ---------------------------------------------------------------------------
 import type { Lattice } from '../lattice.js';
-import { allAsyncOrSync } from '../db/adapter.js';
+import { allAsyncOrSync, addColumnAsyncOrSync } from '../db/adapter.js';
 
 const DELETED_AT_SENTINEL = 'internal:upgrade:deleted-at-empty-to-null:v1';
 const FILES_PATH_SENTINEL = 'internal:upgrade:files-path-to-local-ref:v1';
 
-/** Run every silent data upgrade in order. Idempotent + no-op on a 4.0-native DB. */
+/**
+ * Run every silent open-time data upgrade. Idempotent + no-op on a 4.0-native DB.
+ *
+ * FAIL-SAFE BY CLASS: each step is best-effort — a failure is logged and skipped,
+ * NEVER fatal to the workspace open. A 3.x-origin cloud schema can drift from what
+ * 4.x declares (a `deleted_at` that is `timestamptz` not `text`; a `files` table
+ * missing the 4.x reference columns; etc.), and an open-time migration that doesn't
+ * hold against that drift must converge or retry on a later open — it must not brick
+ * the open. Each step's `db.migrate` sentinel is only stamped on success, so a skipped
+ * step re-runs next open (and the once-it-holds case self-heals).
+ */
 export async function upgradeLegacyData(db: Lattice): Promise<void> {
-  await normalizeEmptyDeletedAt(db);
-  await backfillFilesPath(db);
+  await runUpgradeStep('deleted_at normalization', () => normalizeEmptyDeletedAt(db));
+  await runUpgradeStep('files path backfill', () => backfillFilesPath(db));
+}
+
+/** Best-effort runner for one open-time data-upgrade step (see {@link upgradeLegacyData}). */
+async function runUpgradeStep(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[lattice] open-time data upgrade step "${name}" skipped (will retry on next open): ${msg}`,
+    );
+  }
 }
 
 /** Tables carrying a `deleted_at` column (dialect-aware introspection). */
@@ -112,21 +134,15 @@ END $LATTICE_DAU$;`,
   if (migrations.length > 0) await db.migrate(migrations);
 }
 
-/** Does the `files` table physically carry the legacy `path` column (3.x shape)? */
-async function filesTableHasPath(db: Lattice): Promise<boolean> {
-  if (db.getDialect() === 'postgres') {
-    const rows = (await allAsyncOrSync(
-      db.adapter,
-      `SELECT 1 AS x FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = 'files' AND column_name = 'path'`,
-    )) as unknown[];
-    return rows.length > 0;
-  }
-  const rows = (await allAsyncOrSync(
-    db.adapter,
-    `SELECT 1 AS x FROM pragma_table_info('files') WHERE name = 'path'`,
-  )) as unknown[];
-  return rows.length > 0;
+/** The column names physically present on the `files` table (empty set if none). */
+async function filesColumns(db: Lattice): Promise<Set<string>> {
+  const sql =
+    db.getDialect() === 'postgres'
+      ? `SELECT column_name AS name FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'files'`
+      : `SELECT name FROM pragma_table_info('files')`;
+  const rows = (await allAsyncOrSync(db.adapter, sql)) as { name: string }[];
+  return new Set(rows.map((r) => r.name));
 }
 
 /**
@@ -141,7 +157,18 @@ async function filesTableHasPath(db: Lattice): Promise<boolean> {
  * there is no such column and there is nothing to do.
  */
 async function backfillFilesPath(db: Lattice): Promise<void> {
-  if (!(await filesTableHasPath(db))) return;
+  const cols = await filesColumns(db);
+  if (!cols.has('path')) return; // 4.0-native files table — no legacy `path`, nothing to do
+  // SELF-SUFFICIENT: ensure the 4.x reference columns exist before the backfill. On a
+  // cloud open the schema reconcile that adds them is BACKGROUNDED, so this synchronous
+  // backfill would otherwise hit `column "ref_kind" does not exist` and (pre-4.3.8)
+  // abort the whole open. Add only the columns actually MISSING — SQLite's ADD COLUMN
+  // is not idempotent (it throws "duplicate column" on a re-open, since the legacy
+  // `path` keeps the gate above true). All four are TEXT per native-entities.ts,
+  // matching the reconcile so there is no type drift.
+  for (const col of ['ref_kind', 'ref_uri', 'ref_provider', 'blob_path']) {
+    if (!cols.has(col)) await addColumnAsyncOrSync(db.adapter, 'files', col, 'TEXT');
+  }
   await db.migrate([
     {
       version: FILES_PATH_SENTINEL,
