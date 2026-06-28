@@ -2123,6 +2123,7 @@ export class Lattice {
       opts.minScore ?? 0,
       pkCol,
       this.isCloudMemberOpen(),
+      opts.efSearch,
     );
     if (!opts.reranker) return results;
 
@@ -2206,7 +2207,7 @@ export class Lattice {
         ),
       );
     }
-    return buildVectorIndex(this._adapter, table, dim, requireExtension);
+    return buildVectorIndex(this._adapter, table, dim, requireExtension, def.embeddings.index);
   }
 
   // -------------------------------------------------------------------------
