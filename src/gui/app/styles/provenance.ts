@@ -49,8 +49,8 @@ export const provenanceCss = `
       cursor: pointer; font-weight: 600; color: var(--text-muted); list-style: none; padding: 4px 0;
     }
     details.prov-panel > summary::-webkit-details-marker { display: none; }
-    details.prov-panel > summary::before { content: '\\u25B8 '; color: var(--text-muted); }
-    details.prov-panel[open] > summary::before { content: '\\u25BE '; }
+    details.prov-panel > summary::before { content: '▸ '; color: var(--text-muted); }
+    details.prov-panel[open] > summary::before { content: '▾ '; }
     details.prov-panel[open] > summary:hover { color: var(--text); }
     .prov-panel-body { padding-top: 6px; }
 `;
