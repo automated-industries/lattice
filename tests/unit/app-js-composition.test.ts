@@ -38,8 +38,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // Recapture the length + hash on any intended change. (Last bump: the data
 // provenance module — renderProvenance / renderProvenancePanel + the source
 // graph/table views.)
-const ORIGINAL_LENGTH = 801287;
-const ORIGINAL_SHA256 = 'b48159e666750dd0029d84b9a877df5ab9025cc5e405778cdab981b557b0eff9';
+const ORIGINAL_LENGTH = 801495;
+const ORIGINAL_SHA256 = 'f214903f9bf758dfcd548704866d516701e5fe9dafe19cadc38f230d8d0cd730';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

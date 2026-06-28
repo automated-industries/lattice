@@ -1569,10 +1569,13 @@ export const dashboardJs = `    // ───────────────
             // data view; the raw fields follow underneath.
             '<div class="fs-context" id="fs-context" hidden></div>' +
             '<div class="fs-doc">' + fields.join('') + '</div>' +
-            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
+            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '') +
+            '<div id="row-provenance"></div>';
           if (table === 'files') renderFilePreview(row);
           loadFsContext(table, id);
           wireFsEdit(content, table, id, t, row);
+          // Collapsed, lazy-loaded "Data provenance" panel for this row.
+          renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
           // Per-row sharing controls — same affordance as the advanced detail view.
           wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs); });
           rels.forEach(function (rel) {
