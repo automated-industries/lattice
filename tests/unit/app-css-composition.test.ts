@@ -14,9 +14,11 @@ import { css } from '../../src/gui/app/css.js';
 // ever changed intentionally, recapture the length + hash and update them here.
 // Most recently: the live force-graph renderer's hooks — edge stroke + arrowhead
 // fill (the renderer no longer inlines them) and a warm `.gnode-hot` search-
-// highlight accent — added to the data-model segment.
-const ORIGINAL_LENGTH = 93313;
-const ORIGINAL_SHA256 = 'a6c8462cd866da181c353e0a81c7579dd19f611377305d8b875cd7bf069bd7e2';
+// highlight accent — added to the data-model segment; and the now-unused
+// brain-graph ingest keyframes (.gnode-bubble-in / .graph-feed-in) removed, since
+// the live engine animates the delta itself.
+const ORIGINAL_LENGTH = 92681;
+const ORIGINAL_SHA256 = '5dcc3937d16e191f816df0ddc77cd42500dcd4baa7822182f281087478ee358e';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
