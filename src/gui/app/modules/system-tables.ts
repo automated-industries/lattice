@@ -217,59 +217,6 @@ export const systemTablesJs = `    // ──────────────
       return { nodes: nodes, links: links, index: index };
     }
 
-    // A small deterministic force simulation: ~500 settle ticks of pairwise
-    // repulsion + link springs + center gravity. O(n²) repulsion is fine for
-    // schema-scale graphs (tens of tables).
-    function forceLayout(nodes, links, iters) {
-      var n = nodes.length;
-      var W = 1000, H = 700, cx = W / 2, cy = H / 2;
-      var ringR = Math.min(W, H) * 0.32;
-      for (var i = 0; i < n; i++) {
-        var a = (i / Math.max(1, n)) * 2 * Math.PI;
-        nodes[i].x = cx + Math.cos(a) * ringR;
-        nodes[i].y = cy + Math.sin(a) * ringR;
-        nodes[i].vx = 0; nodes[i].vy = 0;
-      }
-      var REPULSION = 9000, SPRING_LEN = 140, SPRING_K = 0.02, GRAVITY = 0.012, DAMP = 0.85;
-      var ticks = iters || 500;
-      for (var it = 0; it < ticks; it++) {
-        for (var p = 0; p < n; p++) {
-          for (var q = p + 1; q < n; q++) {
-            var dx = nodes[p].x - nodes[q].x, dy = nodes[p].y - nodes[q].y;
-            var d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
-            var rep = REPULSION / d2;
-            var fx = (dx / d) * rep, fy = (dy / d) * rep;
-            nodes[p].vx += fx; nodes[p].vy += fy;
-            nodes[q].vx -= fx; nodes[q].vy -= fy;
-          }
-        }
-        links.forEach(function (l) {
-          var a2 = nodes[l.si], b2 = nodes[l.ti];
-          var dx2 = b2.x - a2.x, dy2 = b2.y - a2.y, d3 = Math.sqrt(dx2 * dx2 + dy2 * dy2) + 0.01;
-          var f = (d3 - SPRING_LEN) * SPRING_K, fx2 = (dx2 / d3) * f, fy2 = (dy2 / d3) * f;
-          a2.vx += fx2; a2.vy += fy2; b2.vx -= fx2; b2.vy -= fy2;
-        });
-        for (var m = 0; m < n; m++) {
-          nodes[m].vx += (cx - nodes[m].x) * GRAVITY;
-          nodes[m].vy += (cy - nodes[m].y) * GRAVITY;
-          nodes[m].vx *= DAMP; nodes[m].vy *= DAMP;
-          nodes[m].x += nodes[m].vx; nodes[m].y += nodes[m].vy;
-        }
-      }
-    }
-
-    // Keep graph node labels at a constant ON-SCREEN size (matching the sidebar
-    // text), independent of viewBox zoom. font-size on SVG text is in user units,
-    // so divide the target px by the current zoom (viewBoxWidth / renderedWidth);
-    // re-run on every viewBox change + on resize. Shared by BOTH graphs.
-    function syncGraphLabelScale(svg) {
-      if (!svg) return;
-      var vbAttr = svg.getAttribute('viewBox'); if (!vbAttr) return;
-      var vw = parseFloat(vbAttr.split(' ')[2]); if (!(vw > 0)) return;
-      var rect = svg.getBoundingClientRect();
-      var screenW = rect.width || vw;
-      svg.style.setProperty('--gnode-label-size', (13 * vw / screenW).toFixed(2) + 'px');
-    }
     /**
      * Show the editor for a selected entity. Pass null to render the
      * 'create new entity' form (same controls, different submit endpoint).
