@@ -2122,6 +2122,7 @@ export class Lattice {
       pool,
       opts.minScore ?? 0,
       pkCol,
+      this.isCloudMemberOpen(),
     );
     if (!opts.reranker) return results;
 
@@ -2153,6 +2154,7 @@ export class Lattice {
     const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
     const merged: HybridSearchOptions = { ...opts, pkColumn: pkCol };
     if (def?.embeddings) merged.embeddingsConfig = def.embeddings;
+    merged.isCloudMember = this.isCloudMemberOpen();
     return hybridSearch(this._adapter, table, query, merged);
   }
 
