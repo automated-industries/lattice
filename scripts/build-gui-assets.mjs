@@ -29,6 +29,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const assetsDir = join(repoRoot, 'dist', 'gui-assets');
 const ortDir = join(assetsDir, 'ort');
 const workerEntry = join(repoRoot, 'src', 'gui', 'app', 'worker', 'transcriber.worker.ts');
+const graphEntry = join(repoRoot, 'src', 'gui', 'app', 'graph', 'force-graph.ts');
 
 /**
  * Walk up from a resolved module entry to the directory that holds the package's
@@ -59,6 +60,31 @@ async function main() {
   } catch {
     skip('esbuild is not resolvable');
     return;
+  }
+
+  // 1b. Bundle the force-directed graph renderer (dependency-free) into an ESM
+  //     module loaded out-of-band by the GUI via dynamic import. Unlike the voice
+  //     assets below this is core, not optional — but it has no exotic deps, so
+  //     the bundle does not fail in practice. A failure here is logged; the GUI
+  //     surfaces a load error rather than crashing (graceful at runtime).
+  mkdirSync(assetsDir, { recursive: true });
+  try {
+    await esbuild.build({
+      entryPoints: [graphEntry],
+      outfile: join(assetsDir, 'force-graph.mjs'),
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      target: 'es2022',
+      minify: true,
+      logLevel: 'silent',
+    });
+    console.log('[gui-assets] built dist/gui-assets/force-graph.mjs');
+  } catch (e) {
+    console.warn(
+      `[gui-assets] graph renderer bundle failed (${e && e.message ? e.message : String(e)}); ` +
+        `the GUI will surface a graph load error at runtime`,
+    );
   }
 
   // 2. Locate the speech library (a devDependency, build-time only). Absent ⇒ skip.

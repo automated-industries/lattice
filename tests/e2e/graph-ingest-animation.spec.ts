@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { bootGui, createRow, type BootedGui } from './helpers.js';
 
 /**
- * 4.3 — live brain-graph ingestion animation. While the graph is the visible
- * view, ingesting a file (which emits source:'ingest' feed events) makes the new
- * object appear on the graph LIVE — no reload — and bubble in (gnode-bubble-in).
+ * 4.3 — live brain-graph ingestion. While the graph is the visible view,
+ * ingesting a file (which emits source:'ingest' feed events) makes the new object
+ * appear on the graph LIVE — no reload — flying in from the center as the live
+ * force engine reheats with the new node.
  */
 
 let gui: BootedGui;
@@ -22,13 +23,13 @@ test.afterEach(async () => {
   rmSync(srcDir, { recursive: true, force: true });
 });
 
-test('a newly ingested object bubbles into the graph live (no reload)', async ({ page }) => {
+test('a newly ingested object appears on the graph live (no reload)', async ({ page }) => {
   // Seed one object so the graph is non-empty + the delta baseline is established.
   await createRow(gui.url, 'items', { name: 'seed' });
   await page.goto(gui.url + '#/graph');
-  await expect(page.locator('g.gnode[data-table="items"]')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
   // `files` has no rows yet → no node.
-  await expect(page.locator('g.gnode[data-table="files"]')).toHaveCount(0);
+  await expect(page.locator('g.gnode[data-id="files"]')).toHaveCount(0);
 
   // Ingest a file via the real API; the server emits source:'ingest' feed events
   // over the stream the page is listening on.
@@ -37,9 +38,10 @@ test('a newly ingested object bubbles into the graph live (no reload)', async ({
   });
   expect(res.ok()).toBeTruthy();
 
-  // The files node appears LIVE (the animation re-rendered the graph in place)…
-  const filesNode = page.locator('g.gnode[data-table="files"]');
+  // The files node appears LIVE — the live engine appended it and reheated the
+  // layout in place, with no page reload.
+  const filesNode = page.locator('g.gnode[data-id="files"]');
   await expect(filesNode).toBeVisible({ timeout: 10000 });
-  // …and bubbles in (the delta animation marked the new node).
-  await expect(filesNode).toHaveClass(/gnode-bubble-in/, { timeout: 10000 });
+  // …and it is a fully rendered graph node (the engine drew its dot), not a stub.
+  await expect(filesNode.locator('.gnode-dot')).toBeVisible();
 });
