@@ -14,8 +14,8 @@ import { css } from '../../src/gui/app/css.js';
 // ever changed intentionally, recapture the length + hash and update them here.
 // Most recently: the data-provenance styles (per-tier node colors, the source
 // table, the collapsed detail panel) plus the collapsible sidebar-group rules.
-const ORIGINAL_LENGTH = 96623;
-const ORIGINAL_SHA256 = '98bbad05ac38f00c43a220151680e86a3f687fff53702ba2b460c45caac79088';
+const ORIGINAL_LENGTH = 96613;
+const ORIGINAL_SHA256 = '15fcbfa38389536f2dfc55b33053017083c4e07a0df89f8d3867bf265fce6e55';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
