@@ -319,6 +319,17 @@ export interface BuildGuiGraphOptions {
   visibleFilter?: (tableName: string) => boolean;
 }
 
+/**
+ * Tables that are first-class entities everywhere else (the Objects list,
+ * /api/entities, the Sources tree) but are intentionally OMITTED from the brain
+ * graph. `files` is referenced by so many objects that it renders as a dense hub
+ * that dominates the layout and drowns out the actual object↔object
+ * relationships — and a file is a SOURCE, not an object. The Files sidebar is the
+ * canonical entry point for files. This changes the /api/graph payload CONTENT
+ * (fewer nodes/edges), never its SHAPE — no API-contract change for consumers.
+ */
+const GRAPH_HIDDEN_TABLES = new Set<string>(['files']);
+
 export function buildGuiGraph(
   configPath: string,
   outputDir: string,
@@ -347,7 +358,9 @@ export function buildGuiGraph(
   // conversation storage. They're real tables but must never surface as nodes in
   // the Data Model graph — mirrors the Objects-list filter in entitiesWithCounts
   // (server.ts) so the visualization and the sidebar agree on what's user-facing.
-  data.tables = data.tables.filter((t) => !isInternalNativeEntity(t.name));
+  data.tables = data.tables.filter(
+    (t) => !isInternalNativeEntity(t.name) && !GRAPH_HIDDEN_TABLES.has(t.name),
+  );
   const nodes = new Map<string, GuiGraphNode>();
   const edges = new Map<string, GuiGraphEdge>();
   const fileOwners = new Map<string, GuiEntitySummary>();

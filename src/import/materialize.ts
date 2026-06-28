@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import type { Lattice } from '../lattice.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from '../gui/config-io.js';
+import { recordLineage } from '../gui/lineage-store.js';
 import { normalizeText } from '../dedup/normalize.js';
 import { parseCellDate } from './asof.js';
 import { normalizeName, sourceRecords } from './infer.js';
@@ -213,6 +214,19 @@ export async function materializeImport(
       });
       const n = await db.count(entity.name);
       rowsByTable[entity.name] = n;
+      // Provenance: record the import as a table-level (computed-tier) source.
+      // objectId '*' is the table-level sentinel — per-row import lineage would
+      // require an unbounded re-read of the just-seeded rows (Rule 28).
+      await recordLineage(db.adapter, [
+        {
+          objectTable: entity.name,
+          objectId: '*',
+          sourceKind: 'import',
+          tier: 'computed',
+          relation: 'materialized_from',
+          detailJson: JSON.stringify({ rows: n }),
+        },
+      ]);
       await report({
         phase: 'entities',
         table: entity.name,
