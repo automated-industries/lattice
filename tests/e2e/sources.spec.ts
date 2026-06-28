@@ -84,3 +84,26 @@ test('the Files object page is a folder graph and folders drill in', async ({ pa
   await expect(page.locator('g.ognode-file').first()).toBeVisible(); // note.txt
   await expect(page.locator('.fs-crumbs')).toContainText('Files');
 });
+
+// Regression: the collapsible group header must be the outermost (furthest-left)
+// element with its child rows indented under it — not inverted (header inset past
+// its own children).
+test('the Files group header sits left of its child rows (tree indentation)', async ({ page }) => {
+  const res = await page.request.post(gui.url + '/api/sources/roots', {
+    data: { path: srcDir, kind: 'folder' },
+  });
+  expect(res.ok()).toBeTruthy();
+
+  await page.goto(gui.url + '#/');
+  const header = page.locator('.section-toggle[data-group="files"] .section-label-text');
+  await expect(header).toBeVisible({ timeout: 5000 });
+  const child = page.locator('#src-files-tree .src-row').first();
+  await expect(child).toBeVisible({ timeout: 5000 });
+
+  const hb = await header.boundingBox();
+  const cb = await child.boundingBox();
+  expect(hb).toBeTruthy();
+  expect(cb).toBeTruthy();
+  // Header label is at or left of the child rows (allow a 1px rounding margin).
+  expect(hb!.x).toBeLessThanOrEqual(cb!.x + 1);
+});

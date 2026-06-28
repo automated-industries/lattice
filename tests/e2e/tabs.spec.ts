@@ -82,3 +82,18 @@ test('closing a record tab falls back to the Brain Graph', async ({ page }) => {
   await expect(page.locator('.tab[data-key^="item:items:"]')).toHaveCount(0);
   await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/);
 });
+
+// Regression: the object page's back breadcrumb must return to the Brain Graph,
+// not the object's table/list view (it used to href the list route).
+test('back from an object page returns to the Brain Graph, not the list view', async ({ page }) => {
+  await page.goto(gui.url + '#/graph');
+  // Into the object page — which defaults to the provenance view.
+  await page.locator('g.gnode[data-id="items"]').click();
+  await expect(page.locator('#pv-view-list')).toBeVisible({ timeout: 5000 });
+  // Click the "← Brain Graph" breadcrumb.
+  await page.locator('.breadcrumb').click();
+  // It must land on the Brain Graph — NOT the list view.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/graph');
+  await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/);
+  await expect(page.locator('.brain-graph #graph-mount')).toBeVisible();
+});

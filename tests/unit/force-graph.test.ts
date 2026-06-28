@@ -115,3 +115,39 @@ describe('createForceGraph — data + lifecycle', () => {
     }).not.toThrow();
   });
 });
+
+describe('createForceGraph — framing + label sizing (regressions)', () => {
+  // BUG 3: the renderer zooms via a CSS transform scale(); without counter-scaling
+  // the labels they magnify back to the old oversized font. It must pin them to a
+  // constant on-screen size via --gnode-label-size on every applyView().
+  it('counter-scales node labels to a constant on-screen size (--gnode-label-size)', () => {
+    const { mount } = mountGraph();
+    const svg = mount.querySelector('svg.dm-graph') as unknown as HTMLElement;
+    const size = svg.style.getPropertyValue('--gnode-label-size');
+    expect(size).not.toBe(''); // regression: the new renderer once never set it
+    // At the default zoom (k=1) the var equals the ~13px on-screen target that
+    // matches the sidebar/tab text.
+    expect(size).toBe('13.00px');
+  });
+
+  // BUG 1: the one-shot fit ran against a 0×0 mount (fallback 900/600), framing the
+  // graph into a corner. The renderer must observe the mount and re-fit once it has
+  // a real size.
+  it('observes the mount so it can re-fit once the pane has a real size', () => {
+    let observed: unknown = null;
+    const orig = (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      constructor(public cb: () => void) {}
+      observe(el: unknown): void {
+        observed = el;
+      }
+      disconnect(): void {}
+    };
+    try {
+      const { mount } = mountGraph();
+      expect(observed).toBe(mount);
+    } finally {
+      (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver = orig;
+    }
+  });
+});
