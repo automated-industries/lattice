@@ -276,6 +276,7 @@ export async function searchByEmbedding(
   minScore: number,
   pkColumn = 'id',
   isCloudMember = false,
+  efSearch?: number,
 ): Promise<SearchResult[]> {
   const queryVector = await config.embed(queryText);
   // Bound the candidate fan-out: the indexed arm over-fetches `k * 4` below, so
@@ -299,7 +300,7 @@ export async function searchByEmbedding(
     (await hasVectorIndex(adapter, table)) &&
     (await vectorIndexFresh(adapter, table))
   ) {
-    const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore);
+    const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore, efSearch);
     ranked = hits.map((h) => ({
       pk: h.pk,
       score: h.score,

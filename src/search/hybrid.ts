@@ -45,6 +45,8 @@ export interface HybridSearchOptions {
    * member-safe, row-visibility-filtered paths. Default false (owner / local).
    */
   isCloudMember?: boolean;
+  /** Query-time HNSW search breadth (pgvector `hnsw.ef_search`) for the vector arm. */
+  efSearch?: number;
 }
 
 /** Per-result score breakdown (the `--explain` payload). */
@@ -113,6 +115,7 @@ export async function hybridSearch(
       opts.minVectorScore ?? 0,
       pkColumn,
       isMember,
+      opts.efSearch,
     );
     vres.forEach((r, i) => {
       const id = String(r.row[pkColumn]);

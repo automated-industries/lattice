@@ -113,6 +113,15 @@ The member scan is exact and has no over-fetch by which a member could infer hid
 rows; result rows are re-checked by row-level security on the base relation. Owners
 and local (non-cloud) callers are unaffected — the routing is automatic.
 
+**Tuning & operations.** The HNSW index can be tuned at build time via
+`embeddings.index = { m, efConstruction }` and per query via `search(..., { efSearch })`
+(`hybridSearch` too); all default to pgvector's own values, so omitting them builds
+and queries exactly as before. `lattice index status` shows per-table index health
+(dimension, params, build time, staleness) from an internal `__lattice_vector_index`
+registry; `lattice reindex <table>` rebuilds one table's index, and `lattice doctor
+--fix` rebuilds any index it reports stale. An auto-rebuild after a bulk
+`refreshEmbeddings` reuses the recorded build params.
+
 > **v4.2 — bounded retrieval reads.** `search()` / `hybridSearch()` clamp the
 > caller's `topK` (`clampTopK`, `SEARCH_TOPK_MAX = 1000`) **before** the indexed
 > arm over-fetches `topK * N` candidates, so a single large `topK` can't fan out
