@@ -76,9 +76,7 @@ async function seedChain(base: string): Promise<{ authorId: string; bookId: stri
   return { authorId, bookId };
 }
 
-test('clicking an object shows its rows in the focused graph (List view shows the grid)', async ({
-  page,
-}) => {
+test('an object page shows its data provenance; List view shows the row grid', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
@@ -88,14 +86,12 @@ test('clicking an object shows its rows in the focused graph (List view shows th
   await expect(navLink).toHaveAttribute('href', /#\/fs\//);
 
   await page.goto(`${gui.url}#/fs/authors`);
-  // The object page is a focused graph: the row shows as an entity node.
-  const entity = page.locator('.ognode-entity');
-  await expect(entity).toHaveCount(1);
-  await expect(entity.first()).toContainText('Jane Author');
+  // The object page is the data-provenance view (graph/table of sources).
+  await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
 
-  // "List view" switches to the tile grid.
-  await page.locator('#fsg-view-list').click();
-  const tile = page.locator('.fs-tile:not(.fs-tile-create)');
+  // "List view" switches to the row tile grid.
+  await page.locator('#pv-view-list').click();
+  const tile = page.locator('.fs-tile');
   await expect(tile).toHaveCount(1);
   await expect(tile.first()).toContainText('Jane Author');
 });

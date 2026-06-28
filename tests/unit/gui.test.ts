@@ -205,8 +205,11 @@ describe('GUI graph builder', () => {
       ],
     });
     const nodeIds = graph.nodes.map((n) => n.id);
-    // Native entities, absent from the YAML, now show in the Data Model.
-    expect(nodeIds).toContain('table:files');
+    // Native entities, absent from the YAML, now show in the Data Model —
+    // except `files`, which is a SOURCE and is intentionally hidden from the
+    // brain graph (GRAPH_HIDDEN_TABLES) while staying a first-class entity
+    // everywhere else (Objects list, /api/entities, Sources tree).
+    expect(nodeIds).not.toContain('table:files');
     expect(nodeIds).toContain('table:secrets');
     // YAML tables still present.
     expect(nodeIds).toContain('table:agents');
@@ -294,10 +297,12 @@ describe('GUI server', () => {
     expect(graph.edges.length).toBeGreaterThan(0);
 
     // Native entities (files, secrets) are registered at runtime, not in
-    // the YAML — they must still appear in the Data Model graph and the
-    // entity list. Regression guard for the "Data Model is empty" bug.
+    // the YAML. `secrets` appears in the Data Model graph (regression guard for
+    // the "Data Model is empty" bug); `files` is intentionally hidden from the
+    // graph (it's a SOURCE — see GRAPH_HIDDEN_TABLES) but MUST still appear in
+    // the entity list and everywhere else it's first-class.
     const graphNodeIds = graph.nodes.map((n) => n.id);
-    expect(graphNodeIds).toContain('table:files');
+    expect(graphNodeIds).not.toContain('table:files');
     expect(graphNodeIds).toContain('table:secrets');
     const entityNames = entities.tables.map((t) => t.name);
     expect(entityNames).toContain('files');

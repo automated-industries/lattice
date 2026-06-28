@@ -40,22 +40,24 @@ test('exploring objects stays in the graph tab; opening a record opens a closabl
   page,
 }) => {
   await page.goto(gui.url + '#/graph');
-  // Clicking an object node navigates the SAME graph tab into the object's focused
-  // graph — no per-object tab is spawned (exploration is single-tab).
+  // Clicking an object node navigates the SAME graph tab into the object's page —
+  // no per-object tab is spawned (exploration is single-tab).
   await page.locator('g.gnode[data-table="items"]').click();
   await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/, { timeout: 5000 });
   await expect(page.locator('.tab[data-key^="table:"]')).toHaveCount(0);
-  // Clicking an ENTITY node opens THAT record in its own closable tab.
-  const entity = page.locator('g.ognode-entity').first();
-  await expect(entity).toBeVisible({ timeout: 5000 });
-  await entity.click();
+  // The object page is the provenance view; List view reaches the rows. Opening a
+  // record (a row tile) spawns its own closable tab.
+  await page.locator('#pv-view-list').click();
+  const tile = page.locator('.fs-tile').first();
+  await expect(tile).toBeVisible({ timeout: 5000 });
+  await tile.click();
   const recordTab = page.locator('.tab[data-key^="item:items:"]');
   await expect(recordTab).toBeVisible({ timeout: 5000 });
   await expect(recordTab).toHaveClass(/active/);
   await expect(recordTab.locator('.tab-close')).toHaveCount(1);
-  // Re-opening the same record from the object graph dedups (no second tab).
+  // Re-opening the same record dedups (no second tab).
   await page.locator('.tab[data-key="graph"]').click();
-  await page.locator('g.ognode-entity').first().click();
+  await page.locator('.fs-tile').first().click();
   await expect(page.locator('.tab[data-key^="item:items:"]')).toHaveCount(1);
 });
 
@@ -69,10 +71,11 @@ test('clicking a graph node navigates the single graph tab (no new tab)', async 
 
 test('closing a record tab falls back to the Brain Graph', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
-  await page.locator('g.gnode[data-table="items"]').click(); // into the object graph
-  const entity = page.locator('g.ognode-entity').first();
-  await expect(entity).toBeVisible({ timeout: 5000 });
-  await entity.click(); // open the record → a closable tab
+  await page.locator('g.gnode[data-table="items"]').click(); // into the object page
+  await page.locator('#pv-view-list').click(); // List view → the row grid
+  const tile = page.locator('.fs-tile').first();
+  await expect(tile).toBeVisible({ timeout: 5000 });
+  await tile.click(); // open the record → a closable tab
   const recordTab = page.locator('.tab[data-key^="item:items:"]');
   await expect(recordTab).toHaveClass(/active/, { timeout: 5000 });
   await recordTab.locator('.tab-close').click();
