@@ -35,9 +35,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // ONLY — there is no voice-provider choice in settings and the mic always shows;
 // rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
 // reachable to API callers for backward compatibility, but the GUI never calls it.
-// Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 789150;
-const ORIGINAL_SHA256 = 'f58f80020d06cda69163a91b4a56129e7f805084075fb9e1bef5c620716031b4';
+// Recapture the length + hash on any intended change. (Last bump: the data
+// provenance module — renderProvenance / renderProvenancePanel + the source
+// graph/table views.)
+const ORIGINAL_LENGTH = 801287;
+const ORIGINAL_SHA256 = 'b48159e666750dd0029d84b9a877df5ab9025cc5e405778cdab981b557b0eff9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -86,31 +86,51 @@ export const guiAppHtml = `<!doctype html>
     <nav class="sidebar">
       <div id="sources-nav">
         <div class="src-group">
-          <div class="section-label">Files</div>
-          <div id="src-files-tree"></div>
-          <div class="src-add-row">
-            <button class="src-add" id="src-add-folder" type="button">＋ Folder</button>
-            <button class="src-add" id="src-add-file" type="button">＋ File</button>
+          <button class="section-label section-toggle" data-group="files" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Files</span>
+          </button>
+          <div class="section-body" data-group-body="files">
+            <div id="src-files-tree"></div>
+            <div class="src-add-row">
+              <button class="src-add" id="src-add-folder" type="button">＋ Folder</button>
+              <button class="src-add" id="src-add-file" type="button">＋ File</button>
+            </div>
+            <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
           </div>
-          <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
         </div>
         <div class="src-group">
-          <div class="section-label">Built by Lattice</div>
-          <div id="src-artifacts-tree"></div>
+          <button class="section-label section-toggle" data-group="artifacts" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Built by Lattice</span>
+          </button>
+          <div class="section-body" data-group-body="artifacts">
+            <div id="src-artifacts-tree"></div>
+          </div>
         </div>
         <div class="src-group">
-          <div class="section-label">Connectors</div>
-          <div id="src-connectors-list"></div>
-          <button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button>
+          <button class="section-label section-toggle" data-group="connectors" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Connectors</span>
+          </button>
+          <div class="section-body" data-group-body="connectors">
+            <div id="src-connectors-list"></div>
+            <button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button>
+          </div>
         </div>
       </div>
       <div id="objects-section" hidden>
-        <div class="section-label">Objects</div>
-        <ul id="object-nav"></ul>
+        <button class="section-label section-toggle" data-group="objects" type="button" aria-expanded="true">
+          <span class="section-caret">▾</span><span class="section-label-text">Objects</span>
+        </button>
+        <div class="section-body" data-group-body="objects">
+          <ul id="object-nav"></ul>
+        </div>
       </div>
       <div id="system-section" hidden>
-        <div class="section-label">System</div>
-        <ul id="system-nav"></ul>
+        <button class="section-label section-toggle" data-group="system" type="button" aria-expanded="true">
+          <span class="section-caret">▾</span><span class="section-label-text">System</span>
+        </button>
+        <div class="section-body" data-group-body="system">
+          <ul id="system-nav"></ul>
+        </div>
       </div>
     </nav>
     <main class="content-wrap">

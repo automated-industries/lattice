@@ -29,6 +29,7 @@ import { graphIngestAnimationJs } from './graph-ingest-animation.js';
 import { versionHistoryPageJs } from './version-history-page.js';
 import { rowContextJs } from './row-context.js';
 import { dataModelJs } from './data-model.js';
+import { provenanceJs } from './provenance.js';
 import { latticeTeamsJs } from './lattice-teams.js';
 import { onboardingJs } from './onboarding.js';
 import { voiceLocalJs } from './voice-local.js';
@@ -72,6 +73,7 @@ export const appJs = [
   versionHistoryPageJs,
   rowContextJs,
   dataModelJs,
+  provenanceJs,
   latticeTeamsJs,
   onboardingJs,
   voiceLocalJs,
