@@ -6,6 +6,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+GUI/desktop auto-update visibility. The "update available" affordance now works on
+every surface (it was previously only ever surfaced by the npm-supervised CLI
+child), a long-open window notices new releases on its own, development builds are
+clearly marked, and auto-update can be turned off for testing.
+
+### Added
+
+- **`--no-auto-update` (and `LATTICE_NO_AUTO_UPDATE=1`) pin the GUI/desktop to the
+  current version.** A new `autoUpdate` option on `startGuiServer` (default on) is
+  the master switch: when off, the in-process update poll never runs (no registry
+  or manifest fetch, no install, no relaunch) and `GET /api/update/status` reports
+  `autoUpdate:false`. Intended for testing, air-gapped, and reproducible-demo runs.
+- **The desktop app surfaces an "Update available — Restart to update" hint.** It
+  probes the same release manifest its bundled updater applies from — read-only, so
+  it never downloads or relaunches until you act — meaning a window left open for
+  days still notices a new version. Acting on it applies the update via the bundled
+  updater and relaunches.
+
+### Changed
+
+- **`GET /api/update/status` now reports a surface-aware `action`**
+  (`upgrade-in-place` for an npm install, `restart-to-update` for the desktop app,
+  `none` otherwise) plus `autoUpdate`. The GUI's existing upgrade link uses it to
+  show the right affordance per surface, instead of appearing only for a supervised
+  npm install.
+- **A development / linked checkout is badged `vX.Y.Z (dev)`** on the version chip
+  (with an "auto-update disabled" tooltip), so a stale dev build can't be mistaken
+  for an auto-updating install.
+
+---
+
 ## [4.3.8] — 2026-06-25
 
 Patch release. Finishes the job 4.3.7 started: makes the **entire class** of
