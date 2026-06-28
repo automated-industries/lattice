@@ -35,22 +35,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // ONLY — there is no voice-provider choice in settings and the mic always shows;
 // rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
 // reachable to API callers for backward compatibility, but the GUI never calls it.
-// The update-visibility pass makes the existing upgrade pill surface-aware
-// (checkUpdateAvailable now branches on status.action: "Upgrade" for npm,
-// "Restart to update" for the desktop app, hidden otherwise), badges a dev/linked
-// or auto-update-disabled build on the version chip, and re-polls availability on
-// a slow interval so a long-open window still notices a new version.
-// Recapture the length + hash on any intended change.
-// All three graphs (schema brain graph + per-object graph + folder graph) moved
-// to the live force-directed renderer that loads out of band from
-// /gui-assets/force-graph.mjs. The inline host now only fetches each model, maps
-// it to the renderer's generic node/edge shape, and hands it to createForceGraph;
-// the static builders + wiring + the hand-rolled forceLayout sim (~16 KB) were
-// removed. The ingest animation feeds the live handle instead of re-rendering.
-// 5.0 combines this with the surface-aware auto-update pill above, so the pinned
-// length + hash below are recomputed for the merged inline host.
-const ORIGINAL_LENGTH = 775780;
-const ORIGINAL_SHA256 = 'bbd659f4244c1943d33bc1571c693c47c6b57f9579d156f4161e5a05c30628a4';
+// Recapture the length + hash on any intended change. 5.0 combines: the
+// surface-aware auto-update pill (checkUpdateAvailable branches on status.action,
+// dev/linked badge, slow-interval re-poll); the force-directed brain-graph
+// migration (all three graphs moved to the live renderer loaded out of band from
+// /gui-assets/force-graph.mjs; the static builders + hand-rolled forceLayout sim
+// removed; the ingest animation feeds the live handle); and the data-provenance
+// module (renderProvenance / renderProvenancePanel + the source graph/table
+// views). Pinned length + hash recomputed for the merged inline host.
+const ORIGINAL_LENGTH = 788125;
+const ORIGINAL_SHA256 = 'ced6814997a88ec0e320b42f1d38d69869a05df050a608aa29d3d973a6f1653b';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

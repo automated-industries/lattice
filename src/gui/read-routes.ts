@@ -14,6 +14,7 @@ import {
   type GuiTableSummary,
 } from './data.js';
 import { fullTextSearch } from '../search/fts.js';
+import { buildProvenanceGraph } from './provenance.js';
 import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import { resolveColumnDescription, resolveTableDescription } from './column-descriptions.js';
 import { parseAudit } from './mutations.js';
@@ -459,6 +460,45 @@ export async function handleReadRoutes(
       extraTables: registeredExtraTables(active.db, yamlNames),
     };
     sendJson(res, buildGuiGraph(active.configPath, active.outputDir, graphOpts));
+    return true;
+  }
+
+  // ── Data provenance / lineage ─────────────────────────────────────────
+  // GET /api/provenance?table=<t> → { nodes, edges } tracing the object's
+  // sources across the raw / computed / observation tiers. Allowlisted to
+  // validTables (same guard the search route uses), so the internal
+  // lineage/audit tables can never be targeted as the object.
+  if (method === 'GET' && pathname === '/api/provenance') {
+    const table = (url.searchParams.get('table') ?? '').trim();
+    if (!table) {
+      sendJson(res, { error: 'table is required' }, 400);
+      return true;
+    }
+    if (!active.validTables.has(table)) {
+      sendJson(res, { error: `Unknown table: ${table}` }, 400);
+      return true;
+    }
+    sendJson(res, await buildProvenanceGraph(active.db, table));
+    return true;
+  }
+  // GET /api/provenance/row?table=<t>&id=<id> → row-scoped provenance.
+  if (method === 'GET' && pathname === '/api/provenance/row') {
+    const table = (url.searchParams.get('table') ?? '').trim();
+    const id = (url.searchParams.get('id') ?? '').trim();
+    if (!table || !id) {
+      sendJson(res, { error: 'table and id are required' }, 400);
+      return true;
+    }
+    if (!active.validTables.has(table)) {
+      sendJson(res, { error: `Unknown table: ${table}` }, 400);
+      return true;
+    }
+    const row = await active.db.get(table, id);
+    if (row === null) {
+      sendJson(res, { error: 'Row not found' }, 404);
+      return true;
+    }
+    sendJson(res, await buildProvenanceGraph(active.db, table, { rowId: id }));
     return true;
   }
 
