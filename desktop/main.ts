@@ -7,7 +7,12 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startGuiServer, VERSION, ensureRootForGui } from '../dist/desktop-entry.js';
+import {
+  startGuiServer,
+  VERSION,
+  ensureRootForGui,
+  checkManifestForUpdate,
+} from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
 
 // On-device voice assets (the Whisper worker bundle + ONNX-Runtime WASM) are
@@ -46,7 +51,13 @@ const UPDATE_BASE_URL =
   Deno.env.get('LATTICE_DESKTOP_UPDATE_URL') ??
   'https://github.com/automated-industries/lattice/releases/latest/download/';
 
+// Master switch (default on). LATTICE_NO_AUTO_UPDATE=1 pins the app to its
+// current version: no manifest probe, no Deno.autoUpdate, no relaunch. Mirrors
+// the CLI's --no-auto-update for the desktop (which has no CLI args).
+const AUTO_UPDATE_ENABLED = Deno.env.get('LATTICE_NO_AUTO_UPDATE') !== '1';
+
 async function runAutoUpdate(): Promise<void> {
+  if (!AUTO_UPDATE_ENABLED) return; // pinned — never touch the network
   const autoUpdate = (
     Deno as unknown as { autoUpdate?: (o: { baseUrl: string }) => Promise<unknown> }
   ).autoUpdate;
@@ -91,6 +102,27 @@ const handle = await startGuiServer({
   autoRender: true,
   version: VERSION, // same version the web GUI shows
   selfUpdate: false, // desktop uses Deno.autoUpdate, not the npm supervisor
+  autoUpdate: AUTO_UPDATE_ENABLED, // honor LATTICE_NO_AUTO_UPDATE
+  // Tell the update service this is the desktop surface (not npm-installable, but
+  // self-updatable via the bundled binary updater) so the GUI offers a "Restart
+  // to update" pill instead of the npm "Upgrade in place" action.
+  updateContext: {
+    kind: 'desktop',
+    installable: false,
+    cwd: home,
+    packageRoot: null,
+    reason: 'desktop app — updates via the bundled binary updater',
+  },
+  // Probe the SAME release manifest the binary updater applies from, so the
+  // pill's "available" matches what a restart would actually install. Read-only:
+  // it never downloads or relaunches (that stays the user-triggered apply).
+  updateCheck: () => checkManifestForUpdate(UPDATE_BASE_URL, VERSION),
+  // The "Restart to update" pill POSTs /api/update/apply → this runs the real
+  // binary updater (download + relaunch); the reconnect version check then
+  // reloads the webview onto the new version.
+  desktopApplyUpdate: () => {
+    void runAutoUpdate();
+  },
   // Serve the embedded on-device voice assets when present (omit when absent so
   // the server falls back to its default resolution).
   ...(guiAssetsDir ? { guiAssetsDir } : {}),

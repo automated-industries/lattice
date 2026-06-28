@@ -38,6 +38,15 @@ browser tab.
   while keeping the auth session local to the app.
 - **Upgrade-on-run.** On launch the app checks the release channel via
   `Deno.autoUpdate()` and the `latest.json` manifest published with each release.
+- **Update-available hint while running.** A window left open for a long time would
+  otherwise miss releases that ship after launch, so the GUI also polls the same
+  `latest.json` (read-only — no download or relaunch) and shows an **"Update
+  available — Restart to update"** link next to the version chip when a newer
+  release is published. Clicking it runs the bundled updater (download + relaunch).
+- **Disable auto-update.** Set `LATTICE_NO_AUTO_UPDATE=1` to pin the app to its
+  current version — no manifest probe, no `Deno.autoUpdate()`, no relaunch (the
+  desktop equivalent of the CLI's `lattice gui --no-auto-update`). Useful for
+  testing, air-gapped, or reproducible-demo runs.
 - **Upgrade-on-install.** The download page always links the latest release, so a
   fresh install is always current.
 

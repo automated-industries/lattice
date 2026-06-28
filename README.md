@@ -2805,6 +2805,8 @@ if (result.restartRequired) {
 
 `autoUpdate()` is safe to call on every startup — it skips if already on the latest version. Pass `{ quiet: true }` to suppress console output.
 
+The **GUI and desktop app** auto-update on their own: `lattice gui` (when installed via npm) installs newer versions and relaunches in the background, and the desktop app applies updates on relaunch. Both show an "Update available" link next to the version chip when a newer release is published. To pin to the current version, pass `lattice gui --no-auto-update` or set `LATTICE_NO_AUTO_UPDATE=1` (the latter also covers the desktop app, which has no CLI flags).
+
 **`AutoUpdateResult`**
 
 ```typescript
