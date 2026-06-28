@@ -41,6 +41,14 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .dm-graph .gnode.active .gnode-glow { opacity: 0.18; }
     .dm-graph .gnode.active .gnode-label { fill: var(--accent); }
     .dm-edge { transition: opacity 0.1s ease; }
+    /* Live force-graph renderer: edges + arrowheads take their color from CSS now
+       (the renderer no longer inlines a stroke). A warm accent marks the search-
+       highlight pulse — the hybrid touch: warm focus moments over the cool
+       structural palette. */
+    svg.dm-graph { --graph-warm: #d98a3d; }
+    .dm-graph .dm-edge { stroke: var(--accent); }
+    .dm-graph .dm-arrow-fk, .dm-graph .dm-arrow-m2m { fill: var(--accent); }
+    .dm-graph .gnode-dot.gnode-hot { stroke: var(--graph-warm); stroke-width: 3; }
     /* Object page = a focused graph (entity rows + related objects). Reuses the
        .dm-graph node primitives; #fsg-mount mirrors #graph-mount's sizing. */
     #fsg-mount {
