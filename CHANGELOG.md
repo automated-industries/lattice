@@ -33,6 +33,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   re-checks visibility via row-level security on the base relation (or the masked
   audience view). The routing is automatic — owners and local/non-cloud callers
   are unchanged.
+- **`--no-auto-update` (and `LATTICE_NO_AUTO_UPDATE=1`) pin the GUI/desktop to the
+  current version.** A new `autoUpdate` option on `startGuiServer` (default on) is
+  the master switch: when off, the in-process update poll never runs (no registry
+  or manifest fetch, no install, no relaunch) and `GET /api/update/status` reports
+  `autoUpdate:false`. Intended for testing, air-gapped, and reproducible-demo runs.
+- **The desktop app surfaces an "Update available — Restart to update" hint.** It
+  probes the same release manifest its bundled updater applies from — read-only, so
+  it never downloads or relaunches until you act — meaning a window left open for
+  days still notices a new version. Acting on it applies the update via the bundled
+  updater and relaunches.
 
 ### Changed
 
@@ -51,6 +61,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
   Backward compatible: tables without a native index are unaffected, the public
   API is unchanged, and default behavior matches prior releases.
+- **`GET /api/update/status` now reports a surface-aware `action`**
+  (`upgrade-in-place` for an npm install, `restart-to-update` for the desktop app,
+  `none` otherwise) plus `autoUpdate`. The GUI's existing upgrade link uses it to
+  show the right affordance per surface, instead of appearing only for a supervised
+  npm install.
+- **A development / linked checkout is badged `vX.Y.Z (dev)`** on the version chip
+  (with an "auto-update disabled" tooltip), so a stale dev build can't be mistaken
+  for an auto-updating install.
 
 ### Fixed
 
