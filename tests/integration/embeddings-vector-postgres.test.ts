@@ -17,6 +17,7 @@ import {
   vectorIndexFresh,
   buildVectorIndex,
   getVectorIndexMeta,
+  vectorIndexName,
 } from '../../src/search/vector-index.js';
 import { semanticChunker } from '../../src/search/chunking.js';
 
@@ -202,6 +203,36 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
     // and still returns indexed results.
     const hits = await db.search(table, 'logistics', { topK: 1, efSearch: 64 });
     expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('supports half-precision (halfvec) index storage end-to-end (pgvector only)', async () => {
+    if (!(await vectorIndexAvailable(db.adapter))) return; // halfvec needs pgvector ≥ 0.7
+    // Build a half-precision index from the same full-precision store.
+    const n = await buildVectorIndex(db.adapter, table, 8, false, { quantization: 'halfvec' });
+    expect(n).toBeGreaterThan(0);
+    // The derived index column really is halfvec (the store stays full precision).
+    const col = await allAsyncOrSync(
+      db.adapter,
+      `SELECT udt_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = $1 AND column_name = 'embedding'`,
+      [vectorIndexName(table)],
+    );
+    expect(col[0]?.udt_name).toBe('halfvec');
+    // Search returns the right row through the halfvec cast/opclass.
+    const hits = await db.search(table, 'logistics', { topK: 1 });
+    expect(hits[0]!.row.id).toBe('d1');
+    // Incremental maintenance casts to halfvec too: a new row becomes searchable
+    // without a manual rebuild (proves mirrorVectorIndexRow's type-aware cast).
+    await db.insert(table, { id: 'hv1', title: 'logistics', body: 'logistics halfvec payload' });
+    await waitForEmbedding('hv1');
+    const deadline = Date.now() + 5000;
+    while (!(await vectorIndexFresh(db.adapter, table))) {
+      if (Date.now() > deadline) throw new Error('halfvec index did not converge after insert');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const after = await db.search(table, 'logistics halfvec payload', { topK: 5 });
+    expect(after.map((h) => h.row.id)).toContain('hv1');
+    await db.delete(table, 'hv1');
   });
 });
 
