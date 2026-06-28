@@ -12,10 +12,11 @@ import { css } from '../../src/gui/app/css.js';
 //
 // These constants were captured from the pre-split `css` value. If `css` is
 // ever changed intentionally, recapture the length + hash and update them here.
-// Most recently: the 4.3 inline-HTML-file styles (a taller `.html-frame` for a
-// live HTML file plus its `.html-badge`) in the file-preview segment.
-const ORIGINAL_LENGTH = 92788;
-const ORIGINAL_SHA256 = 'f7915d6ed3642362ddce80f8f27908bda77c1aa02de4f8bf0e1f3404f133458e';
+// Most recently: the live force-graph renderer's hooks — edge stroke + arrowhead
+// fill (the renderer no longer inlines them) and a warm `.gnode-hot` search-
+// highlight accent — added to the data-model segment.
+const ORIGINAL_LENGTH = 93313;
+const ORIGINAL_SHA256 = 'a6c8462cd866da181c353e0a81c7579dd19f611377305d8b875cd7bf069bd7e2';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
