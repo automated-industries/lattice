@@ -120,6 +120,7 @@ const AUDIT_COLUMNS = [
   'after_json',
   'undone',
   'session_id',
+  'source',
 ] as const;
 
 /**
@@ -139,6 +140,7 @@ function buildAuditRow(
   after: unknown,
   sessionId: string | undefined,
   editTs: string | undefined,
+  source: FeedSource = 'gui',
 ): Record<string, unknown> {
   return {
     id: crypto.randomUUID(),
@@ -150,6 +152,7 @@ function buildAuditRow(
     after_json: after ? JSON.stringify(after) : null,
     undone: 0,
     session_id: sessionId ?? null,
+    source,
   };
 }
 
@@ -210,7 +213,7 @@ export async function appendAudit(
   await purgeRedoStack(db, sessionId);
   await db.insert(
     '_lattice_gui_audit',
-    buildAuditRow(table, rowId, op, before, after, sessionId, editTs),
+    buildAuditRow(table, rowId, op, before, after, sessionId, editTs, source),
   );
   publishMutationFeed(feed, table, rowId, op, before, after, source);
 }
@@ -256,6 +259,7 @@ export async function recordSchemaAudit(
     after_json: after === null || after === undefined ? null : JSON.stringify(after),
     undone: 0,
     session_id: sessionId ?? null,
+    source,
   });
   feed.publish({ table, op: 'schema', rowId: null, source, summary });
 }
@@ -672,7 +676,16 @@ async function hardDelete(
     await ctx.db.delete(table, id);
     return;
   }
-  const auditRow = buildAuditRow(table, id, 'delete', before, null, ctx.sessionId, ctx.clientTs);
+  const auditRow = buildAuditRow(
+    table,
+    id,
+    'delete',
+    before,
+    null,
+    ctx.sessionId,
+    ctx.clientTs,
+    ctx.source,
+  );
   await purgeRedoStack(ctx.db, ctx.sessionId);
   const auditCols = AUDIT_COLUMNS.map((c) => `"${c}"`).join(', ');
   const auditPlaceholders = AUDIT_COLUMNS.map(() => '?').join(', ');

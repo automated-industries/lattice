@@ -6,6 +6,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Data provenance for every object.** A new `GET /api/provenance?table=<t>` (and
+  `…/row?table=<t>&id=<id>`) traces where an object's data came from across three
+  tiers — **raw** (uploaded files, connectors), **computed** (Lattice-created
+  artifacts, imports), and **observation** (AI / learning-loop edits) — returning a
+  generic tier-typed `{ nodes, edges }` graph. In the GUI an object's page now
+  defaults to this provenance view (a force-directed graph or a grouped source
+  table), and a single row's detail view gains a collapsed, lazy-loaded "Data
+  provenance" panel. Reads are bounded (grouped aggregates / indexed lookups).
+- **Lineage substrate (additive).** A new internal `__lattice_lineage` table records
+  durable source→object edges (file-extraction, import-materialization), and a new
+  nullable `_lattice_gui_audit.source` column persists which actor (`gui`/`ai`/…)
+  produced each change — the basis for the observation tier. Both are additive (no
+  data loss); the lineage table is `__lattice_`-internal (hidden from the Objects
+  list, brain graph, and cloud-member grants).
+
+### Changed
+
+- **The brain graph shows object↔object relationships only.** `files` is a data
+  _source_, not an object, so it is no longer rendered as a node in the brain graph
+  (it remains a first-class entity everywhere else — the Objects list, the Sources
+  tree, `/api/entities`). This changes the `/api/graph` payload content, not its
+  shape.
+- **Collapsible sidebar groups.** The top-level sidebar organizers (Files, Built by
+  Lattice, Connectors, and Objects/System) are now collapsible, with state
+  persisted per group.
+- The object-type page's prominent "New &lt;object&gt;" tile is replaced by a "New"
+  header action; row browsing remains available via "List view".
+
+---
+
 ## [4.3.8] — 2026-06-25
 
 Patch release. Finishes the job 4.3.7 started: makes the **entire class** of
