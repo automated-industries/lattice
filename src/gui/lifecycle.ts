@@ -24,6 +24,7 @@ import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { RealtimeBroker } from './realtime.js';
 import { FeedBus } from './feed.js';
+import { ensureLineageTable } from './lineage-store.js';
 import { createFileLoopbackWatcher } from './file-watcher.js';
 import { RenderProgressBus } from './render-progress.js';
 import type { RenderProgress } from '../render/progress.js';
@@ -184,6 +185,12 @@ export async function openConfig(
       // session. Nullable + additive (back-compat with pre-1.16 rows); added
       // idempotently to existing DBs by the schema reconcile.
       session_id: 'TEXT',
+      // Who/what triggered the mutation (gui|command|ai|ingest|cli|system|
+      // file-edit). Nullable + additive — added idempotently by the schema
+      // reconcile. Persisted from MutationCtx.source (previously recorded only
+      // on the live feed event); powers the provenance "observation" tier
+      // (rows last touched by the `ai` actor).
+      source: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
@@ -312,6 +319,11 @@ export async function openConfig(
     }
   }
   await db.init(memberOpen ? { introspectOnly: true } : {});
+
+  // Provenance lineage substrate — an unregistered __lattice_ bookkeeping table
+  // (raw DDL, like __lattice_connectors) so the renderer never scans it.
+  // Owner-only: a scoped cloud member has no DDL grant. Idempotent.
+  if (!memberOpen) await ensureLineageTable(db.adapter);
 
   // Per-viewer render: on a cloud MEMBER open, route every render-time table read
   // through the member's masking view (`<table>_v`) when one exists, so the

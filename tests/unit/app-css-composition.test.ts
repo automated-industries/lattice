@@ -12,13 +12,14 @@ import { css } from '../../src/gui/app/css.js';
 //
 // These constants were captured from the pre-split `css` value. If `css` is
 // ever changed intentionally, recapture the length + hash and update them here.
-// Most recently: the live force-graph renderer's hooks — edge stroke + arrowhead
-// fill (the renderer no longer inlines them) and a warm `.gnode-hot` search-
-// highlight accent — added to the data-model segment; and the now-unused
-// brain-graph ingest keyframes (.gnode-bubble-in / .graph-feed-in) removed, since
-// the live engine animates the delta itself.
-const ORIGINAL_LENGTH = 92681;
-const ORIGINAL_SHA256 = '5dcc3937d16e191f816df0ddc77cd42500dcd4baa7822182f281087478ee358e';
+// 5.0 combines: the live force-graph renderer's hooks (edge stroke + arrowhead
+// fill + a warm `.gnode-hot` search-highlight accent on the data-model segment;
+// the now-unused brain-graph ingest keyframes removed since the live engine
+// animates the delta itself) AND the data-provenance styles (per-tier node
+// colors, the source table, the collapsed detail panel) plus the collapsible
+// sidebar-group rules. Pinned length + hash recomputed for the merged CSS.
+const ORIGINAL_LENGTH = 96506;
+const ORIGINAL_SHA256 = '1fa9edbee7c69a3f304773240533dc0f3af47207c3a4c1ffd055b342829c7871';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

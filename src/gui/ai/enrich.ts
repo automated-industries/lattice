@@ -3,6 +3,7 @@ import type { FileJunction } from '../data.js';
 import { isNativeEntity } from '../../framework/native-entities.js';
 import { STRUCTURAL } from '../file-row.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from '../mutations.js';
+import { recordLineage } from '../lineage-store.js';
 import {
   resolveClaudeAuth,
   aggressivenessToTemperature,
@@ -281,6 +282,19 @@ export async function enrichWithLlm(
             // reload — so no extra, non-persisted feed event is published here.
             const { id: rowId } = await createRow(mctx, entity, row, forceVis);
             createdCount++;
+            // Provenance: record that this object row was EXTRACTED from the
+            // source file (raw tier) — durable, additive lineage bookkeeping.
+            await recordLineage(mctx.db.adapter, [
+              {
+                objectTable: entity,
+                objectId: rowId,
+                sourceKind: 'file',
+                sourceTable: 'files',
+                sourceId: fileId,
+                tier: 'raw',
+                relation: 'extracted_from',
+              },
+            ]);
             // Link the source file to the new object (auto-create the junction).
             // Force the junction private too when the source file is private:
             // even when the extracted object REUSES an existing SHARED entity,
