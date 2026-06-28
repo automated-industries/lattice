@@ -25,6 +25,7 @@ import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
+import type { InstallContext } from '../update-context.js';
 import { createGuiRequestContext, type GuiRequestContext } from './request-context.js';
 import { upsertTableMeta } from './column-descriptions.js';
 import {
@@ -120,12 +121,23 @@ export interface StartGuiServerOptions {
    */
   realtimeWatchdogMs?: number;
   /**
-   * Run the in-process auto-update poll: while the GUI is open, check npm for a
+   * Master switch for ALL auto-update behavior (default true). When false: the
+   * in-process poll never runs (no registry/manifest fetch, no install, no
+   * relaunch), `/api/update/status` reports `autoUpdate:false` / `action:'none'`,
+   * and the desktop/CLI callers skip their own updaters too. Provided so the GUI
+   * can be run pinned to its current version (testing, air-gapped, reproducible
+   * demos). `GET /api/version` + `GET /api/update/status` still answer.
+   */
+  autoUpdate?: boolean;
+  /**
+   * Run the in-process auto-update poll: while the GUI is open, check for a
    * newer version and, when one lands on an installable copy, install it and
    * exit with the supervisor's restart code so it relaunches on the new version.
    * Set ONLY for a supervised child (`LATTICE_GUI_SUPERVISED=1`) — exiting to
-   * apply an update is safe only when a supervisor is there to respawn it.
-   * `GET /api/version` + `GET /api/update/status` are served regardless.
+   * apply an update is safe only when a supervisor is there to respawn it. This
+   * is the npm install-and-relaunch SUB-behavior; it is forced off when
+   * `autoUpdate` is false. `GET /api/version` + `GET /api/update/status` are
+   * served regardless.
    */
   selfUpdate?: boolean;
   /**
@@ -135,6 +147,29 @@ export interface StartGuiServerOptions {
    * it overrides `selfUpdate`'s default factory.
    */
   updateServiceFactory?: (emit: (type: string, data: unknown) => void) => UpdateService;
+  /**
+   * Override the "is a newer version available?" probe. The desktop shell passes
+   * a function that reads its release manifest (latest.json) — the same source
+   * its bundled updater applies from — so the GUI surfaces a "restart to update"
+   * hint without coupling the desktop to the npm registry. Omitted ⇒ the default
+   * npm-registry check (web/CLI).
+   */
+  updateCheck?: (force: boolean) => Promise<string | null>;
+  /**
+   * Override the detected install context for the update service. The desktop
+   * shell passes `{ kind:'desktop', installable:false, … }` so the status route
+   * reports the desktop surface (→ `action:'restart-to-update'`) rather than
+   * "unknown / not installable".
+   */
+  updateContext?: InstallContext;
+  /**
+   * Desktop shell only: apply a pending update via the bundled binary updater
+   * (download + relaunch). Wired to `POST /api/update/apply` when the surface is
+   * the desktop app, so the "Restart to update" pill triggers the real updater
+   * instead of the npm install path (which the desktop can't use). Omitted ⇒ the
+   * apply route uses the npm path / reports "not available".
+   */
+  desktopApplyUpdate?: () => void;
   /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
@@ -274,6 +309,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
+  const autoUpdate = options.autoUpdate ?? true;
   // Where the vendored GUI assets (on-device voice worker + ORT WASM) live. The
   // CLI passes this resolved against the package (it knows the package root via
   // import.meta.url). When omitted (dev/source/test runs), fall back to a sibling
@@ -593,6 +629,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               latest: null,
               kind: 'unknown',
               installable: false,
+              autoUpdate,
+              action: 'none',
               checking: false,
               installing: false,
               lastError: null,
@@ -601,23 +639,33 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/update/apply') {
-          // Manual fallback to the automatic updater: force a check that, when a
-          // newer installable version exists, installs the latest and restarts
-          // the GUI onto it. The install is slow (an npm install), so kick it off
-          // without blocking the response — `checkNow(true)` logs/emits its own
-          // progress + errors (update-applied / update-error), which the client
-          // surfaces. When there is no update service (unsupervised or not
-          // installable) there is nothing to do: answer with a plain "can't",
-          // not a crash, so the client can tell the user how to upgrade by hand.
-          if (updateService) {
+          // Manual trigger behind the "update available" pill. The right action
+          // depends on the surface (reported as `status.action`):
+          //  - desktop (`restart-to-update`): run the bundled binary updater,
+          //    which downloads + relaunches — the npm install path can't touch a
+          //    compiled app.
+          //  - npm (`upgrade-in-place`): force a check that installs the latest
+          //    and restarts the GUI onto it. The install is slow (an npm
+          //    install), so kick it off without blocking — `checkNow(true)`
+          //    emits its own progress/errors (update-applied / update-error).
+          //  - anything else (no update, auto-update disabled, or a surface that
+          //    can't self-update): answer with a plain "can't", not a crash, so
+          //    the client can tell the user how to upgrade by hand.
+          const st = updateService?.status();
+          if (st?.action === 'restart-to-update' && options.desktopApplyUpdate) {
+            options.desktopApplyUpdate();
+            sendJson(res, { ok: true, status: st });
+          } else if (updateService && st?.action === 'upgrade-in-place') {
             void updateService.checkNow(true);
             sendJson(res, { ok: true, status: updateService.status() });
           } else {
             sendJson(res, {
               ok: false,
               error:
-                'Automatic update is not available for this install. ' +
-                'Reinstall from https://latticesql.com to get the latest version.',
+                st && !st.autoUpdate
+                  ? 'Automatic update is disabled for this session.'
+                  : 'Automatic update is not available for this install. ' +
+                    'Reinstall from https://latticesql.com to get the latest version.',
             });
           }
           return;
@@ -984,8 +1032,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
   if (options.updateServiceFactory) {
     updateService = options.updateServiceFactory(broadcast);
-  } else if (options.selfUpdate && guiVersion) {
-    updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
+  } else if (guiVersion) {
+    // Build the service on EVERY surface that knows its version (not only the
+    // supervised npm child) so `/api/update/status` reports a real `latest` +
+    // `action` — that is what lets the "update available" pill appear on the
+    // desktop app and a dev build, where it was previously always invisible. The
+    // service only *installs/relaunches* on the supervised npm surface
+    // (`selfUpdate`), and does nothing at all when `autoUpdate` is off.
+    updateService = createUpdateService({
+      currentVersion: guiVersion,
+      emit: broadcast,
+      autoUpdate,
+      selfUpdate: options.selfUpdate ?? false,
+      ...(options.updateCheck ? { check: options.updateCheck } : {}),
+      ...(options.updateContext ? { context: options.updateContext } : {}),
+    });
   }
 
   // Wire one connection's subscriptions. Bound to the workspace open at connect
