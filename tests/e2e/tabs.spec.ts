@@ -33,7 +33,7 @@ test('Brain Graph is the permanent default tab and cannot be closed', async ({ p
 test('the non-empty filter shows objects with rows', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
   // `items` has a row → its node appears.
-  await expect(page.locator('g.gnode[data-table="items"]')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
 });
 
 test('exploring objects stays in the graph tab; opening a record opens a closable tab (dedups)', async ({
@@ -42,7 +42,7 @@ test('exploring objects stays in the graph tab; opening a record opens a closabl
   await page.goto(gui.url + '#/graph');
   // Clicking an object node navigates the SAME graph tab into the object's focused
   // graph — no per-object tab is spawned (exploration is single-tab).
-  await page.locator('g.gnode[data-table="items"]').click();
+  await page.locator('g.gnode[data-id="items"]').click();
   await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/, { timeout: 5000 });
   await expect(page.locator('.tab[data-key^="table:"]')).toHaveCount(0);
   // Clicking an ENTITY node opens THAT record in its own closable tab.
@@ -61,7 +61,7 @@ test('exploring objects stays in the graph tab; opening a record opens a closabl
 
 test('clicking a graph node navigates the single graph tab (no new tab)', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
-  await page.locator('g.gnode[data-table="items"]').click();
+  await page.locator('g.gnode[data-id="items"]').click();
   await expect.poll(() => page.evaluate(() => location.hash)).toMatch(/items/);
   await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/, { timeout: 5000 });
   await expect(page.locator('.tab[data-key^="table:"]')).toHaveCount(0);
@@ -69,7 +69,7 @@ test('clicking a graph node navigates the single graph tab (no new tab)', async 
 
 test('closing a record tab falls back to the Brain Graph', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
-  await page.locator('g.gnode[data-table="items"]').click(); // into the object graph
+  await page.locator('g.gnode[data-id="items"]').click(); // into the object graph
   const entity = page.locator('g.ognode-entity').first();
   await expect(entity).toBeVisible({ timeout: 5000 });
   await entity.click(); // open the record → a closable tab
