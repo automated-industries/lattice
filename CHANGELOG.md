@@ -6,9 +6,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [5.0.0] — 2026-06-28
+
+Major release. Three things land together: a self-maintaining, cloud-safe, and
+tunable **native vector search substrate**; a live **force-directed brain graph**
+across all three GUI graph surfaces; and **auto-update made visible on every
+surface** (with an opt-out). The public API is unchanged and untuned/non-cloud
+behavior matches prior releases.
 
 ### Added
+
+- **Live force-directed brain graph across all three graph surfaces.** A new,
+  dependency-free force-directed layout engine (many-body repulsion, degree-biased
+  link springs, collision resolution, weak centering, alpha-cooled integration —
+  DOM-free and fully unit-testable) drives a live SVG renderer with continuous
+  animation, drag-to-pin, pan, pinch/wheel zoom, neighbor highlight/dim,
+  zoom-to-fit, and incremental fly-in growth. The schema **Brain Graph**, the
+  per-object graph, and the folder graph all move to it; the renderer loads out of
+  band from `/gui-assets/force-graph.mjs`, so the inline host script only maps each
+  model to a generic node/edge shape and wires that surface's routing. The old
+  static graph builders + hand-rolled layout simulation were removed.
 
 - **Tunable + observable native vector index.** New optional knobs (all default to
   prior behavior): `embeddings.index = { m, efConstruction }` sets the pgvector HNSW
@@ -61,6 +78,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
   Backward compatible: tables without a native index are unaffected, the public
   API is unchanged, and default behavior matches prior releases.
+
 - **`GET /api/update/status` now reports a surface-aware `action`**
   (`upgrade-in-place` for an npm install, `restart-to-update` for the desktop app,
   `none` otherwise) plus `autoUpdate`. The GUI's existing upgrade link uses it to
