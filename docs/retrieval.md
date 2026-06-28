@@ -104,6 +104,15 @@ ever costs a slower query, never a wrong result. (Incremental per-row maintenanc
 is currently Postgres-only; a `sqlite-vec` index falls back to the scan after a
 write until it is rebuilt — correct either way.)
 
+**Cloud members.** In a multi-member cloud, a scoped member has no grant on the
+internal embeddings store or the native index, so its `search()` / `hybridSearch()`
+reach the vectors only through a `SECURITY DEFINER` function that returns just the
+chunks for rows the member may see (filtered by the same row-visibility rule that
+governs every other read, keyed on the member's role) and scores them in-process.
+The member scan is exact and has no over-fetch by which a member could infer hidden
+rows; result rows are re-checked by row-level security on the base relation. Owners
+and local (non-cloud) callers are unaffected — the routing is automatic.
+
 > **v4.2 — bounded retrieval reads.** `search()` / `hybridSearch()` clamp the
 > caller's `topK` (`clampTopK`, `SEARCH_TOPK_MAX = 1000`) **before** the indexed
 > arm over-fetches `topK * N` candidates, so a single large `topK` can't fan out
