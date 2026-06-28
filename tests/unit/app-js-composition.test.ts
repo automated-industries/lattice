@@ -35,9 +35,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // ONLY — there is no voice-provider choice in settings and the mic always shows;
 // rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
 // reachable to API callers for backward compatibility, but the GUI never calls it.
+// The update-visibility pass makes the existing upgrade pill surface-aware
+// (checkUpdateAvailable now branches on status.action: "Upgrade" for npm,
+// "Restart to update" for the desktop app, hidden otherwise), badges a dev/linked
+// or auto-update-disabled build on the version chip, and re-polls availability on
+// a slow interval so a long-open window still notices a new version.
 // Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 789150;
-const ORIGINAL_SHA256 = 'f58f80020d06cda69163a91b4a56129e7f805084075fb9e1bef5c620716031b4';
+const ORIGINAL_LENGTH = 790854;
+const ORIGINAL_SHA256 = '29604450efcbe2b40fdd7bdcffcfd46be25ca1f3ee3f864d517a1aee1126977d';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
