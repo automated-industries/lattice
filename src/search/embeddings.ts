@@ -2,7 +2,13 @@ import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, allAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
 import type { Row, EmbeddingsConfig, SearchResult } from '../types.js';
 import { chunkText } from './chunking.js';
-import { vectorIndexAvailable, hasVectorIndex, searchVectorIndex } from './vector-index.js';
+import {
+  vectorIndexAvailable,
+  hasVectorIndex,
+  vectorIndexFresh,
+  searchVectorIndex,
+  syncIndexAfterBulk,
+} from './vector-index.js';
 import { clampTopK } from './limits.js';
 
 /** Internal table that stores one embedding vector per (table, row, chunk). */
@@ -271,8 +277,15 @@ export async function searchByEmbedding(
   const k = clampTopK(topK);
 
   // Native-index fast path (pgvector). Returns ranked (pk, chunk_index, score).
+  // The index is used only when it exists AND is in sync with the stored vectors;
+  // a drifted index falls back to the exact in-process scan so search never serves
+  // results from a stale index (the scan reads the source-of-truth store directly).
   let ranked: RankedChunk[];
-  if ((await vectorIndexAvailable(adapter)) && (await hasVectorIndex(adapter, table))) {
+  if (
+    (await vectorIndexAvailable(adapter)) &&
+    (await hasVectorIndex(adapter, table)) &&
+    (await vectorIndexFresh(adapter, table))
+  ) {
     const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore);
     ranked = hits.map((h) => ({
       pk: h.pk,
@@ -500,6 +513,10 @@ export async function refreshEmbeddings(
       removed++;
     }
   }
+
+  // Keep an existing native index in step with the refreshed vectors so semantic
+  // search keeps using the index (not the scan fallback) after a bulk backfill.
+  await syncIndexAfterBulk(adapter, table);
 
   return { embedded, skipped, removed };
 }

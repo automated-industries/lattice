@@ -92,6 +92,18 @@ Opt-in per-table approximate-nearest-neighbor index built from the stored vector
 `doctor` reports). Requires the extension server-side (pgvector) or loaded
 (sqlite-vec).
 
+Once built, the index is **kept in sync with writes** — you don't rebuild it by
+hand after every change. On Postgres each insert/update/delete mirrors the row
+into the index incrementally (on the same fire-and-forget path as the embedding
+write), and `refreshEmbeddings` reconciles the index after a bulk backfill. As a
+universal safety net across backends, `search()` **verifies the index is in sync
+with the stored vectors before trusting it** (a cheap count-parity check); if the
+index has drifted it transparently falls back to the exact in-process scan over
+the source-of-truth store, so a stale index is never silently served — it only
+ever costs a slower query, never a wrong result. (Incremental per-row maintenance
+is currently Postgres-only; a `sqlite-vec` index falls back to the scan after a
+write until it is rebuilt — correct either way.)
+
 > **v4.2 — bounded retrieval reads.** `search()` / `hybridSearch()` clamp the
 > caller's `topK` (`clampTopK`, `SEARCH_TOPK_MAX = 1000`) **before** the indexed
 > arm over-fetches `topK * N` candidates, so a single large `topK` can't fan out
