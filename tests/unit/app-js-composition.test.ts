@@ -36,13 +36,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // rec.onstop always transcribes on-device. The keyed/cloud transcribe route stays
 // reachable to API callers for backward compatibility, but the GUI never calls it.
 // Recapture the length + hash on any intended change.
-// The brain graph moved to a live force-directed renderer: the schema graph's
-// static-SVG builder + wiring (forceLayout-render-wire, ~9 KB) was removed from
-// the inline host and now loads out of band from /gui-assets/force-graph.mjs; the
-// host only fetches the model, maps it, and hands it to createForceGraph. The
-// ingest animation now feeds that live handle instead of re-rendering.
-const ORIGINAL_LENGTH = 780159;
-const ORIGINAL_SHA256 = '9034288567162d5764234dc2f07f3427d9844ef76a57f735bbb87db09760c20d';
+// All three graphs (schema brain graph + per-object graph + folder graph) moved
+// to the live force-directed renderer that loads out of band from
+// /gui-assets/force-graph.mjs. The inline host now only fetches each model, maps
+// it to the renderer's generic node/edge shape, and hands it to createForceGraph;
+// the static builders + wiring + the hand-rolled forceLayout sim (~16 KB) were
+// removed. The ingest animation feeds the live handle instead of re-rendering.
+const ORIGINAL_LENGTH = 774076;
+const ORIGINAL_SHA256 = '0669457eaedba321f6cc9ea0d1292a97eceac4c31cd65d630553d4b2eba98da2';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
