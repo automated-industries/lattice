@@ -5,9 +5,13 @@ export const systemTablesJs = `    // ──────────────
     // (row-level link/unlink lives on the row detail page now)
     // ────────────────────────────────────────────────────────────
     var dmActiveTable = null;
-    // The last rendered brain-graph model, so the ingest animation can diff the
-    // delta (new nodes/edges) and seed their start positions from the prior layout.
+    // The last rendered brain-graph model, kept so the ingest animation can feed
+    // the live renderer the authoritative node/edge set as data streams in.
     var graphModelCache = null;
+    // The live force-graph handle (from the out-of-band /gui-assets renderer) and a
+    // cached dynamic import of it, so the asset is fetched once per session.
+    var schemaGraphHandle = null;
+    var _forceGraphModule = null;
 
     /** Columns that are structurally part of every entity and shouldn't be
      * renamed or removed from the GUI. id is the primary key; deleted_at is
@@ -95,11 +99,34 @@ export const systemTablesJs = `    // ──────────────
       });
     }
 
-    // Force-directed schema graph (vanilla — no external lib). Nodes are
-    // tables, sized by row count; edges are foreign keys (belongsTo) and
-    // many-to-many joins (junctions surface as a single m2m edge). Drag a node
-    // to reposition, scroll to zoom, drag the background to pan, click a node
-    // to edit the entity.
+    // Live force-directed schema graph. Nodes are tables (sized by row count),
+    // edges are foreign keys + many-to-many joins. The renderer is loaded out of
+    // band (an ESM module under /gui-assets) so the heavy SVG/interaction code
+    // stays out of the inline host script; it owns the continuous layout, drag,
+    // pan, and zoom. Click a node to open its object; click an edge to edit it.
+    function loadForceGraph() {
+      if (!_forceGraphModule) _forceGraphModule = import('/gui-assets/force-graph.mjs');
+      return _forceGraphModule;
+    }
+    // Map the internal schema model to the renderer's generic node/edge shape,
+    // preserving cloud share-status classes, icons, sizes, and tooltips.
+    function schemaGraphData(model) {
+      var nodes = model.nodes.map(function (n) {
+        var shareCls = n.cloudWorkspace ? (n.shared ? 'gnode-shared' : 'gnode-private') : '';
+        var shareTitle = n.cloudWorkspace ? ' · ' + (n.shared ? 'shared' : 'private') : '';
+        return {
+          id: n.name, label: n.label, icon: n.icon, radius: n.r, cls: shareCls,
+          title: n.label + ' · ' + n.rowCount + ' rows · ' + n.cols + ' columns' + shareTitle,
+        };
+      });
+      var edges = model.links.map(function (l) {
+        var title = l.kind === 'fk'
+          ? l.s + ' → ' + l.t + (l.via ? ' · via ' + l.via : '') + ' (foreign key)'
+          : l.s + ' ↔ ' + l.t + ' (many-to-many)';
+        return { source: l.s, target: l.t, marker: l.kind, cls: 'dm-edge-' + l.kind, title: title };
+      });
+      return { nodes: nodes, edges: edges };
+    }
     function renderSchemaGraph() {
       var mount = document.getElementById('graph-mount');
       if (!mount) return;
@@ -109,14 +136,36 @@ export const systemTablesJs = `    // ──────────────
           mount.innerHTML = '<div class="muted" style="padding:24px">No objects with data yet. Add files or connect a source to populate the graph.</div>';
           return;
         }
-        forceLayout(model.nodes, model.links);
-        mount.innerHTML = schemaGraphSvg(model);
-        wireSchemaGraph(mount, model);
-        graphModelCache = model; // seed the delta baseline for the ingest animation
-        if (dmActiveTable) {
-          dmShowEntityEditor(dmActiveTable);
-          highlightGraphNode(dmActiveTable);
-        }
+        graphModelCache = model; // baseline for the live ingest animation
+        loadForceGraph().then(function (mod) {
+          var liveMount = document.getElementById('graph-mount');
+          if (!liveMount) return; // navigated away while the renderer loaded
+          if (schemaGraphHandle) { schemaGraphHandle.stop(); schemaGraphHandle = null; }
+          liveMount.innerHTML = '';
+          var data = schemaGraphData(model);
+          schemaGraphHandle = mod.createForceGraph(liveMount, {
+            nodes: data.nodes,
+            edges: data.edges,
+            reducedMotion: graphReducedMotion(),
+            onNode: function (node) {
+              location.hash = (advancedMode() ? '#/objects/' : '#/fs/') + encodeURIComponent(node.id);
+            },
+            onEdge: function (edge) {
+              // m2m → open the junction table; FK → open the child (source) table.
+              if (edge.marker === 'm2m') {
+                var j = junctionsFor(edge.source).find(function (x) { return x.remoteRel.table === edge.target; }) ||
+                        junctionsFor(edge.target).find(function (x) { return x.remoteRel.table === edge.source; });
+                dmShowEntityEditor(j ? j.junction : edge.source);
+              } else {
+                dmShowEntityEditor(edge.source);
+              }
+            },
+          });
+          if (dmActiveTable) { dmShowEntityEditor(dmActiveTable); schemaGraphHandle.setSelected(dmActiveTable); }
+        }).catch(function (err) {
+          var m = document.getElementById('graph-mount');
+          if (m) m.innerHTML = '<div class="muted" style="padding:24px">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+        });
       }).catch(function (err) {
         mount.innerHTML = '<div class="muted" style="padding:24px">Failed to load schema graph: ' +
           escapeHtml(err.message) + '</div>';
@@ -209,67 +258,6 @@ export const systemTablesJs = `    // ──────────────
       }
     }
 
-    function schemaGraphSvg(model) {
-      var nodes = model.nodes, links = model.links;
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      nodes.forEach(function (nd) {
-        minX = Math.min(minX, nd.x - nd.r); minY = Math.min(minY, nd.y - nd.r);
-        maxX = Math.max(maxX, nd.x + nd.r); maxY = Math.max(maxY, nd.y + nd.r);
-      });
-      var pad = 50;
-      var vb = [minX - pad, minY - pad, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad];
-      var defs =
-        '<defs>' +
-          '<marker id="dm-arrow-fk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
-            '<path d="M0,0 L10,5 L0,10 z" fill="' + DM_FK_COLOR + '"/></marker>' +
-          '<marker id="dm-arrow-m2m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
-            '<path d="M0,0 L10,5 L0,10 z" fill="' + DM_M2M_COLOR + '"/></marker>' +
-        '</defs>';
-      var edgeSvg = links.map(function (l, i) {
-        var a = nodes[l.si], b = nodes[l.ti];
-        var color = DM_FK_COLOR; // green for every relationship
-        var dash = ''; // solid lines for all (m2m is the only relationship now)
-        var markEnd = ' marker-end="url(#dm-arrow-' + l.kind + ')"';
-        var markStart = l.kind === 'm2m' ? ' marker-start="url(#dm-arrow-m2m)"' : '';
-        var title = l.kind === 'fk'
-          ? l.s + ' → ' + l.t + (l.via ? ' · via ' + l.via : '') + ' (foreign key)'
-          : l.s + ' ↔ ' + l.t + ' (many-to-many)';
-        return '<line class="dm-edge" data-edge="' + i + '" data-s="' + escapeHtml(l.s) + '" data-t="' +
-          escapeHtml(l.t) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' +
-          b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke="' + color + '" stroke-width="1.6"' +
-          dash + markStart + markEnd + ' opacity="0.7"><title>' + escapeHtml(title) + '</title></line>';
-      }).join('');
-      var nodeSvg = nodes.map(function (nd) {
-        // Share-status coloring applies only on cloud workspaces (G). On a
-        // local DB share status is N/A, so no extra class → neutral stroke.
-        var shareCls = nd.cloudWorkspace ? (nd.shared ? ' gnode-shared' : ' gnode-private') : '';
-        var shareTitle = nd.cloudWorkspace ? ' · ' + (nd.shared ? 'shared' : 'private') : '';
-        return '<g class="gnode' + shareCls + '" data-table="' + escapeHtml(nd.name) + '" transform="translate(' +
-          nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')">' +
-          '<circle class="gnode-glow" r="' + (nd.r + 8).toFixed(1) + '"/>' +
-          '<circle class="gnode-dot" r="' + nd.r.toFixed(1) + '"/>' +
-          '<text class="gnode-icon" y="' + (nd.r * 0.34).toFixed(1) + '" text-anchor="middle" font-size="' +
-            (nd.r * 0.95).toFixed(1) + '">' + nd.icon + '</text>' +
-          '<text class="gnode-label" y="' + (nd.r + 15).toFixed(1) + '" text-anchor="middle">' +
-            escapeHtml(nd.label) + '</text>' +
-          '<title>' + escapeHtml(nd.label + ' · ' + nd.rowCount + ' rows · ' + nd.cols + ' columns' + shareTitle) + '</title>' +
-          '</g>';
-      }).join('');
-      // No legend: every relationship is a green many-to-many link now (foreign
-      // keys are deprecated), so there's nothing to disambiguate.
-      return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
-        defs + '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>';
-    }
-
-    function highlightGraphNode(tableName) {
-      document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
-        g.classList.toggle('active', g.getAttribute('data-table') === tableName);
-      });
-    }
-
-    // Wire interactions on the rendered schema graph: node click → editor,
-    // node drag → reposition (live edge updates), background drag → pan, wheel
-    // → zoom. Pan/zoom are done by mutating the SVG viewBox.
     // Keep graph node labels at a constant ON-SCREEN size (matching the sidebar
     // text), independent of viewBox zoom. font-size on SVG text is in user units,
     // so divide the target px by the current zoom (viewBoxWidth / renderedWidth);
@@ -282,113 +270,6 @@ export const systemTablesJs = `    // ──────────────
       var screenW = rect.width || vw;
       svg.style.setProperty('--gnode-label-size', (13 * vw / screenW).toFixed(2) + 'px');
     }
-    function wireSchemaGraph(mount, model) {
-      var svg = mount.querySelector('svg.dm-graph');
-      if (!svg) return;
-      var nodeEls = {};
-      mount.querySelectorAll('g.gnode').forEach(function (g) { nodeEls[g.getAttribute('data-table')] = g; });
-      var edgeEls = mount.querySelectorAll('line.dm-edge');
-
-      function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
-      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); syncGraphLabelScale(svg); }
-      // The initial viewBox fits all entities — that's the maximum zoom-out;
-      // don't let the user zoom out past it into empty space.
-      var fitVb = vb();
-      syncGraphLabelScale(svg);
-      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { syncGraphLabelScale(svg); }).observe(svg);
-      function toData(ev) {
-        var rect = svg.getBoundingClientRect();
-        var b = vb();
-        return {
-          x: b[0] + ((ev.clientX - rect.left) / rect.width) * b[2],
-          y: b[1] + ((ev.clientY - rect.top) / rect.height) * b[3],
-        };
-      }
-      function nodeByName(name) {
-        for (var i = 0; i < model.nodes.length; i++) if (model.nodes[i].name === name) return model.nodes[i];
-        return null;
-      }
-      function updateNode(name) {
-        var nd = nodeByName(name); var g = nodeEls[name];
-        if (!nd || !g) return;
-        g.setAttribute('transform', 'translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')');
-        edgeEls.forEach(function (ln) {
-          if (ln.getAttribute('data-s') === name) { ln.setAttribute('x1', nd.x.toFixed(1)); ln.setAttribute('y1', nd.y.toFixed(1)); }
-          if (ln.getAttribute('data-t') === name) { ln.setAttribute('x2', nd.x.toFixed(1)); ln.setAttribute('y2', nd.y.toFixed(1)); }
-        });
-      }
-
-      // Wheel zoom toward the cursor. Zooming out is capped at the fit view
-      // (snap back to it) so the graph can't shrink into empty space.
-      svg.addEventListener('wheel', function (ev) {
-        ev.preventDefault();
-        var b = vb(); var pt = toData(ev);
-        // Smooth, proportional zoom — scale by the (clamped) scroll delta instead
-        // of a fixed 12% step, which felt jumpy. A trackpad sends many small deltas
-        // → continuous; a mouse notch is clamped so it can't lurch.
-        var d = Math.max(-50, Math.min(50, ev.deltaY));
-        var factor = Math.pow(1.0018, d);
-        var nw = b[2] * factor, nh = b[3] * factor;
-        // Cap zoom-OUT at the fit view (outermost objects + their padding) so the
-        // graph can never shrink into empty space.
-        if (nw >= fitVb[2] || nh >= fitVb[3]) { setVb(fitVb.slice()); return; }
-        setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
-      }, { passive: false });
-
-      // Click an edge to edit the relationship in the columns editor: an m2m
-      // edge opens its junction table (its two ref columns are editable there);
-      // a foreign-key edge opens the child entity that holds the FK column.
-      edgeEls.forEach(function (ln) {
-        ln.style.cursor = 'pointer';
-        ln.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-          var s = ln.getAttribute('data-s'), t = ln.getAttribute('data-t');
-          var edge = model.links[Number(ln.getAttribute('data-edge'))];
-          if (edge && edge.kind === 'm2m') {
-            var j = junctionsFor(s).find(function (x) { return x.remoteRel.table === t; }) ||
-                    junctionsFor(t).find(function (x) { return x.remoteRel.table === s; });
-            dmShowEntityEditor(j ? j.junction : s);
-          } else {
-            dmShowEntityEditor(s); // FK lives on the source (child) table
-          }
-        });
-      });
-
-      // Drag: a node repositions it; the background pans.
-      var drag = null;
-      svg.addEventListener('pointerdown', function (ev) {
-        var g = ev.target.closest && ev.target.closest('g.gnode');
-        if (g) {
-          drag = { kind: 'node', name: g.getAttribute('data-table'), moved: false };
-        } else {
-          var b = vb();
-          drag = { kind: 'pan', sx: ev.clientX, sy: ev.clientY, vb: b };
-        }
-        svg.setPointerCapture(ev.pointerId);
-      });
-      svg.addEventListener('pointermove', function (ev) {
-        if (!drag) return;
-        if (drag.kind === 'node') {
-          var pt = toData(ev); var nd = nodeByName(drag.name);
-          if (nd) { nd.x = pt.x; nd.y = pt.y; updateNode(drag.name); drag.moved = true; }
-        } else {
-          var rect = svg.getBoundingClientRect();
-          var b = drag.vb;
-          setVb([b[0] - (ev.clientX - drag.sx) * (b[2] / rect.width),
-                 b[1] - (ev.clientY - drag.sy) * (b[3] / rect.height), b[2], b[3]]);
-        }
-      });
-      svg.addEventListener('pointerup', function (ev) {
-        if (drag && drag.kind === 'node' && !drag.moved) {
-          // Open the clicked object's table in a tab — schema/column editing now
-          // lives in Settings → Data Model, not the graph.
-          location.hash = (advancedMode() ? '#/objects/' : '#/fs/') + encodeURIComponent(drag.name);
-        }
-        drag = null;
-        try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
-      });
-    }
-
     /**
      * Show the editor for a selected entity. Pass null to render the
      * 'create new entity' form (same controls, different submit endpoint).
